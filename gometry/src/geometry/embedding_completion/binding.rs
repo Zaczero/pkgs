@@ -26,9 +26,9 @@ fn validate_group_storage(
         )
         .into());
     }
-    work.charge(u64::try_from(offsets.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(offsets.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     for (group, (&start, &end)) in offsets.iter().zip(offsets.iter().skip(1)).enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if start < 0 || end < start {
             return Err(GeometryErrorKind::Invalid(
                 "group offsets are negative or decreasing".into(),
@@ -42,7 +42,7 @@ fn validate_group_storage(
             .into());
         }
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     Ok(group_count)
 }
 
@@ -53,7 +53,7 @@ fn validate_group_literal_map<I>(
     offsets: &[i64],
     work: &mut impl Work,
 ) -> Result<()> {
-    work.charge(u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     for (group, (&start, &end)) in offsets
         .iter()
         .zip(offsets.iter().skip(1))
@@ -65,7 +65,7 @@ fn validate_group_literal_map<I>(
         let end = usize::try_from(end)
             .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
         for value in start..end {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let binding = values.get(value).and_then(Option::as_ref);
             match (admitted_values.logical_row(value), binding) {
                 (Some(LogicalRow::Missing { .. }), None)
@@ -143,7 +143,7 @@ where
     let mut checked = Vec::new();
     let mut check =
         |address, image, record, expected_axes, stored_axes, work: &mut W| -> Result<()> {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if expected_axes != stored_axes || CoordinateAxes::from_point(record) != stored_axes {
                 rejected.push(image);
                 return Ok(());
@@ -212,9 +212,11 @@ fn visit_array_literals<I: Copy, W: Work>(
         )
         .into());
     }
-    work.charge(u64::try_from(visit_rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(visit_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     for logical in visit_rows.clone() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         match rows.logical_row(logical).ok_or_else(|| {
             GeometryErrorKind::Invalid("final storage has no admitted logical row".into())
         })? {
@@ -293,7 +295,7 @@ fn visit_group_literals<I: Copy, W: Work>(
         .take(group_count)
         .enumerate()
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if groups
             .missing
             .as_ref()
@@ -306,7 +308,7 @@ fn visit_group_literals<I: Copy, W: Work>(
         let end = usize::try_from(end)
             .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
         for value in start..end {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             match groups.values.logical_row(value).ok_or_else(|| {
                 GeometryErrorKind::Invalid("group value has no admitted logical row".into())
             })? {

@@ -697,8 +697,11 @@ pub(crate) fn coverage_is_valid(
     values: &Bound<'_, PyAny>,
     gap_width: f64,
 ) -> PyResult<bool> {
-    let (_, shapes) = pooled_shapes(values)?;
-    Ok(py.detach(move || geometry::coverage_is_valid(&shapes, gap_width))?)
+    let (shapes, metadata, _) = coverage_values(values)?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, _) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    Ok(py.detach(move || geometry::coverage_is_valid_with_domain(&shapes, gap_width, domain))?)
 }
 
 /// Per-row invalid coverage boundary linework.
@@ -749,7 +752,17 @@ pub(crate) fn coverage_invalid_edges(
     gap_width: f64,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, _) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let edges = py.detach(move || {
+        geometry::coverage_invalid_edges_with_domain(
+            &shapes,
+            gap_width,
+            domain,
+            "coverage_invalid_edges",
+        )
+    })?;
     let result = PyGeometryArray::from_shapes(edges, metadata)?;
     Ok(match source {
         None => result,

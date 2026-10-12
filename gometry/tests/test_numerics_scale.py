@@ -596,6 +596,107 @@ def test_reciprocal_delaunay_uses_the_source_incircle_sign(
         assert horizontal not in edges
 
 
+def test_geographic_delaunay_uses_the_retained_site_chart() -> None:
+    sites = [(170.0, 0.0), (-170.0, 0.0), (-170.0, 10.0), (170.0, 8.0)]
+    source_vertices = set(sites)
+    expected_faces = {
+        frozenset((sites[0], sites[1], sites[3])),
+        frozenset((sites[1], sites[2], sites[3])),
+    }
+
+    for source in (
+        gm.MultiPoint(sites, crs=4326),
+        gm.Polygon(sites, crs=4326),
+    ):
+        scalar = source.triangulate(method='delaunay')
+        packed = gm.GeometryArray([source]).triangulate(method='delaunay')[0]
+        for triangles in (scalar, packed):
+            selected_faces = set()
+            chart_area = Fraction(0)
+            for triangle in triangles:
+                coordinates = [
+                    tuple(coordinate[:2]) for coordinate in triangle.exterior.coords
+                ]
+                corners = {
+                    coordinate
+                    for coordinate in coordinates
+                    if coordinate in source_vertices
+                }
+                assert len(corners) == 3
+                selected_faces.add(frozenset(corners))
+                chart_ring = [
+                    (
+                        Fraction(170.0)
+                        + (Fraction(x) - Fraction(170.0)) % Fraction(360.0),
+                        Fraction(y),
+                    )
+                    for x, y in coordinates
+                ]
+                assert all(
+                    abs(right[0] - left[0]) <= 20
+                    for left, right in pairwise(chart_ring)
+                ), f'published ring leaves the 20-degree chart: {chart_ring}'
+                chart_area += (
+                    abs(
+                        sum(
+                            left[0] * right[1] - right[0] * left[1]
+                            for left, right in pairwise(chart_ring)
+                        )
+                    )
+                    / 2
+                )
+                for longitude, latitude in coordinates:
+                    if (longitude, latitude) not in source_vertices:
+                        assert abs(longitude) == 180.0, (
+                            f'non-seam generated leaf {(longitude, latitude)}'
+                        )
+                        assert latitude in {0.0, 4.0, 9.0}
+            assert selected_faces == expected_faces
+            assert chart_area == 180
+
+
+def test_geographic_delaunay_retains_periodic_source_site_identity() -> None:
+    source_sites = [
+        (170.0, 1.0, 7.0, 10.0),
+        (530.0, 1.0, 99.0, 99.0),
+        (-170.0, 1.0, 8.0, 11.0),
+        (-100.0, 1.0, 9.0, 12.0),
+        (0.2, 1.0, 10.0, 13.0),
+        (0.200_000_000_000_000_04, 1.0, 11.0, 14.0),
+        (170.0, 2.0, 12.0, 15.0),
+    ]
+    retained_sites = set(source_sites) - {source_sites[1]}
+    expected_faces = {
+        frozenset((source_sites[0], source_sites[2], source_sites[6])),
+        frozenset((source_sites[2], source_sites[3], source_sites[6])),
+        frozenset((source_sites[3], source_sites[4], source_sites[6])),
+        frozenset((source_sites[4], source_sites[5], source_sites[6])),
+    }
+    source = gm.MultiPoint(source_sites, crs=4326)
+
+    for triangles in (
+        source.triangulate(method='delaunay'),
+        gm.GeometryArray([source]).triangulate(method='delaunay')[0],
+    ):
+        observed_faces = [
+            frozenset(
+                tuple(coordinate[:4])
+                for coordinate in triangle.exterior.coords
+                if tuple(coordinate[:4]) in retained_sites
+            )
+            for triangle in triangles
+        ]
+        published_records = {
+            tuple(coordinate[:4])
+            for triangle in triangles
+            for coordinate in triangle.exterior.coords
+        }
+        assert set(observed_faces) == expected_faces
+        assert len(observed_faces) == len(expected_faces)
+        assert source_sites[0] in published_records
+        assert source_sites[1] not in published_records
+
+
 @pytest.mark.parametrize('swap_axes', [False, True])
 def test_reciprocal_constrained_delaunay_uses_the_source_incircle_sign(
     swap_axes: bool,

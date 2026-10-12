@@ -148,7 +148,7 @@ pub(super) fn finish_array_batch<W: Work>(
     let mut pending_rows = Vec::new();
     let mut present_row = 0_usize;
     for (logical, pending) in batch.logical_rows.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let missing = batch
             .missing
             .as_ref()
@@ -199,7 +199,7 @@ pub(super) fn finish_array_batch<W: Work>(
                 .checked_add(3)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             let mut pending = pending;
-            pending.work.charge(admission_ticks)?;
+            pending.work.charge_into_error(admission_ticks)?;
             row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
             pending_rows.push((logical, pending.checked, pending.work));
         } else {

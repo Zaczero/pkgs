@@ -7,9 +7,9 @@ use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
-    intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
-    rectangle_bounds,
+    ExactSourceInventory, OverlayOp, OverlayPolygonPartWithSources, Strictness,
+    build_certified_overlay_shape, intersect_rectangular_polygonal, merge_chains,
+    overlay_declared_axes, rect_polygon, rectangle_bounds,
 };
 use crate::geometry::segments::crossing_point;
 use crate::geometry::tessellation::exact::ExactDyadic;
@@ -2015,7 +2015,7 @@ pub(in crate::geometry) fn binary_cartesian_difference_without_partition_budget(
 pub(in crate::geometry) fn binary_cartesian_intersection_with_edge_roles(
     generated: &Shape,
     preserved: &Shape,
-) -> Result<Vec<(crate::geometry::Polygon, Vec<Vec<bool>>)>> {
+) -> Result<Vec<OverlayPolygonPartWithSources>> {
     let inputs = [generated, preserved];
     ExactSourceInventory::from_shapes(&inputs)?
         .overlay_polygon_parts_with_preserved_operand(OverlayOp::Intersection, 1)

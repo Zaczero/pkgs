@@ -16,7 +16,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootCatalog, RootId, RootMetricState, SourceArcMetricAccess, resolve_source_root,
 };
-use crate::geometry::segments::try_sort_by;
+use crate::geometry::segments::{try_sort_by, try_sort_by_with_work};
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
@@ -3640,6 +3640,33 @@ impl ExactGeographicQ {
         Ok(node.pole.is_some())
     }
 
+    pub(super) fn for_each_spatial_candidate_with_work<W: Work>(
+        &self,
+        start: &ExactChartPoint,
+        end: &ExactChartPoint,
+        work: &mut W,
+        mut visit: impl FnMut(QSpatialItem, &mut W) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut failure = None;
+        let mut stopped = false;
+        let result =
+            self.spatial_index
+                .for_each_candidate(outward_segment_proxy(start, end)?, |item| {
+                    match visit(item, work) {
+                        Ok(true) => std::ops::ControlFlow::Continue(()),
+                        Ok(false) => {
+                            stopped = true;
+                            std::ops::ControlFlow::Break(())
+                        },
+                        Err(error) => {
+                            failure = Some(error);
+                            std::ops::ControlFlow::Break(())
+                        },
+                    }
+                })?;
+        failure.map_or_else(|| Ok(!stopped && result.is_continue()), Err)
+    }
+
     pub(in crate::geometry) fn for_each_pole_sector(
         &self,
         pole: ChartPole,
@@ -3657,7 +3684,7 @@ impl ExactGeographicQ {
     ) -> Result<()> {
         let mut found_pole_node = false;
         for node in &self.nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if node.pole != Some(pole) {
                 continue;
             }
@@ -3681,7 +3708,7 @@ impl ExactGeographicQ {
                     .ok_or_else(|| {
                         GeometryErrorKind::Invalid("isolated Q pole has no host face".into())
                     })?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 visit(
                     PoleSector::Isolated {
                         pole,
@@ -3696,7 +3723,7 @@ impl ExactGeographicQ {
                 GeometryErrorKind::Invalid("Q pole outgoing fan is incomplete".into())
             })?;
             for (index, &clockwise) in fan.iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let next_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
                 let counterclockwise_index = if next_index == fan.len() {
                     0
@@ -3734,26 +3761,10 @@ impl ExactGeographicQ {
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q pole cut interval has no global host".into())
                 })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             visit(PoleSector::Terminal { pole, face }, work)?;
         }
         Ok(())
-    }
-
-    pub(super) fn for_each_pole_incident_face(
-        &self,
-        pole: ChartPole,
-        mut visit: impl FnMut(GlobalFaceId) -> Result<()>,
-    ) -> Result<()> {
-        let mut work = crate::geometry::Unmetered;
-        let mut visited = BTreeSet::new();
-        self.for_each_pole_sector(pole, &mut work, |sector| {
-            let face = sector.face();
-            if visited.insert(face) {
-                visit(face)?;
-            }
-            Ok(())
-        })
     }
 
     fn locate_point(
@@ -4422,6 +4433,158 @@ impl ExactGeographicTopology {
         self.q.locate_point(self, &point, SourceRowId(0))
     }
 
+    pub(super) fn face_rows_at_chart_point(
+        &self,
+        source_point: &ExactChartPoint,
+        face_rows: &[Vec<usize>],
+        work: &mut impl Work,
+    ) -> Result<Vec<usize>> {
+        if face_rows.len() != self.q.global_face_count {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face row labels do not match its global face table".into(),
+            )
+            .into());
+        }
+        let point = lift_query_point(self.sources.frame, &self.q.cut, source_point)?;
+        let frame = self.sources.frame;
+        let mut adjacent_faces = BTreeSet::new();
+        for pole in [ChartPole::North, ChartPole::South] {
+            let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
+            if point.y.try_cmp_with_work(&latitude, work)?.is_eq() {
+                self.q
+                    .for_each_pole_sector_with_work(pole, work, |sector, _work| {
+                        adjacent_faces.insert(sector.face());
+                        Ok(())
+                    })?;
+            }
+        }
+        if !adjacent_faces.is_empty() {
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        if let Some(node) = q_port_node(&self.q.ports, &point)? {
+            let node_index = node.0 as usize;
+            let (start, end) = q_node_fan(&self.q, node_index)?;
+            let fan = self.q.outgoing.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q point node fan is incomplete".into())
+            })?;
+            for &dart_id in fan {
+                work.charge_into_error(1)?;
+                let local_face = *self.q.dart_faces.get(dart_id.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q point node has an unknown dart".into())
+                })?;
+                let face = *self
+                    .q
+                    .global_face_of_local
+                    .get(local_face.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point node dart has no global face".into())
+                    })?;
+                adjacent_faces.insert(face);
+            }
+            if fan.is_empty()
+                && let Some(face) = self.q.source_node_faces.get(node_index).copied().flatten()
+            {
+                adjacent_faces.insert(face);
+            }
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let point_query =
+            self.q
+                .for_each_spatial_candidate_with_work(&point, &point, work, |item, work| {
+                    let QSpatialItem::Span(span_index) = item else {
+                        return Ok(true);
+                    };
+                    let span = self.q.spans.get(span_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point index has an unknown span".into())
+                    })?;
+                    let [start_port, end_port] = span.ports;
+                    let start = self.q.ports.get(start_port.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point span has no start port".into())
+                    })?;
+                    let end = self.q.ports.get(end_port.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point span has no end port".into())
+                    })?;
+                    if point_on_exact_segment_with_work(&point, &start.point, &end.point, work)? {
+                        if let Some(faces) =
+                            self.q.span_global_faces.get(span_index).copied().flatten()
+                        {
+                            adjacent_faces.extend(faces);
+                        }
+                        return Ok(false);
+                    }
+                    Ok(true)
+                })?;
+        if !point_query {
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let cut_east = self
+            .q
+            .cut
+            .try_add(&ExactRational::from_f64(frame.longitude().period()))?;
+        if point.x.try_cmp(&self.q.cut)?.is_eq() || point.x.try_cmp(&cut_east)?.is_eq() {
+            let interval = self.q.cut_index.interval_at(&point.y, 1)?;
+            let face = *self
+                .q
+                .cut_interval_faces
+                .get(interval.id.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q cut interval has no global face".into())
+                })?;
+            adjacent_faces.insert(face);
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let interval = self.q.cut_index.interval_at(&point.y, 1)?;
+        let start_face = *self
+            .q
+            .cut_interval_faces
+            .get(interval.id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q cut interval has no global face".into())
+            })?;
+        let start_rows = face_rows.get(start_face.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q cut interval face has no row labels".into())
+        })?;
+        let mut rows = start_rows.iter().copied().collect::<BTreeSet<_>>();
+        let cut_point = ExactChartPoint::from_rationals(
+            self.q.cut.try_clone_with_work(work)?,
+            point.y.try_clone_with_work(work)?,
+        );
+        self.q
+            .for_each_spatial_candidate_with_work(&cut_point, &point, work, |item, work| {
+                let QSpatialItem::Span(span_index) = item else {
+                    return Ok(true);
+                };
+                let Some([left, right]) =
+                    span_crossed_by_north_ray(&self.q, span_index, &point, work)?
+                else {
+                    return Ok(true);
+                };
+                let (Some(left_rows), Some(right_rows)) = (
+                    face_rows.get(left.0 as usize),
+                    face_rows.get(right.0 as usize),
+                ) else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Q ray crossing face has no row labels".into(),
+                    )
+                    .into());
+                };
+                for &row in left_rows.iter().chain(right_rows) {
+                    work.charge_into_error(1)?;
+                    let left_has = left_rows.binary_search(&row).is_ok();
+                    let right_has = right_rows.binary_search(&row).is_ok();
+                    if left_has != right_has && !rows.insert(row) {
+                        rows.remove(&row);
+                    }
+                }
+                Ok(true)
+            })?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub(crate) fn classify_rectangle(
         &self,
         bounds: Bounds,
@@ -4688,6 +4851,81 @@ fn span_crosses_north_ray(
     Ok(hit_x.try_cmp(&q.cut)?.is_gt() && hit_x.try_cmp(&point.x)?.is_lt())
 }
 
+fn span_crossed_by_north_ray(
+    q: &ExactGeographicQ,
+    span_index: usize,
+    point: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<Option<[GlobalFaceId; 2]>> {
+    let Some(faces) = q.span_global_faces.get(span_index).copied().flatten() else {
+        return Ok(None);
+    };
+    let span = q
+        .spans
+        .get(span_index)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray references an unknown span".into()))?;
+    let start = q
+        .ports
+        .get(span.ports[0].0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray has no start port".into()))?;
+    let end = q
+        .ports
+        .get(span.ports[1].0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray has no end port".into()))?;
+    let order = start.point.y.try_cmp_with_work(&end.point.y, work)?;
+    if order.is_eq() {
+        return Ok(None);
+    }
+    let (low, high) = if order.is_lt() {
+        (&start.point, &end.point)
+    } else {
+        (&end.point, &start.point)
+    };
+    if point.y.try_cmp_with_work(&low.y, work)?.is_lt()
+        || !point.y.try_cmp_with_work(&high.y, work)?.is_lt()
+    {
+        return Ok(None);
+    }
+    let delta_y = high.y.try_subtract_with_work(&low.y, work)?;
+    let slope = high
+        .x
+        .try_subtract_with_work(&low.x, work)?
+        .try_quotient_with_work(&delta_y, work)?;
+    let hit_x = low.x.try_add_with_work(
+        &point
+            .y
+            .try_subtract_with_work(&low.y, work)?
+            .try_product_with_work(&slope, work)?,
+        work,
+    )?;
+    if hit_x.try_cmp_with_work(&q.cut, work)?.is_gt()
+        && hit_x.try_cmp_with_work(&point.x, work)?.is_lt()
+    {
+        Ok(Some(faces))
+    } else {
+        Ok(None)
+    }
+}
+
+fn face_rows_for_ids(
+    faces: &BTreeSet<GlobalFaceId>,
+    face_rows: &[Vec<usize>],
+    work: &mut impl Work,
+) -> Result<Vec<usize>> {
+    let mut rows = BTreeSet::new();
+    for face in faces {
+        work.charge_into_error(1)?;
+        let occupants = face_rows
+            .get(face.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q face row labels are incomplete".into()))?;
+        for &row in occupants {
+            work.charge_into_error(1)?;
+            rows.insert(row);
+        }
+    }
+    Ok(rows.into_iter().collect())
+}
+
 fn build_span_line_rows(
     sources: &ExactGeographicChartInventory,
     spans: &[ChartSpan],
@@ -4876,7 +5114,7 @@ type GlobalNodeRowSupport = QRowCsr<SourceRowId>;
 type CollapsedPointFaces = QRowCsr<usize>;
 
 #[derive(Clone, Copy, Debug)]
-enum QSpatialItem {
+pub(super) enum QSpatialItem {
     Span(usize),
     Point(QPortId),
 }
@@ -5338,6 +5576,13 @@ pub(super) struct GlobalFaceRowOccupancy {
     face_counts: Box<[usize]>,
     row_offsets: Box<[usize]>,
     intervals: Box<[[usize; 2]]>,
+}
+
+#[derive(Clone, Copy)]
+struct FaceRowIntervalEvent {
+    order: usize,
+    row: usize,
+    starts: bool,
 }
 
 struct GlobalFaceRowProducts {
@@ -5865,6 +6110,140 @@ impl GlobalFaceRowOccupancy {
         self.face_counts[face.0 as usize]
     }
 
+    /// Visit each global face once with its sparse active source-row set.
+    ///
+    /// Row occupancy is stored as preorder intervals by row. This sweep
+    /// inverts those intervals without constructing a face-by-row bitmap.
+    pub(super) fn for_each_face_occupants(
+        &self,
+        work: &mut impl Work,
+        mut visit: impl FnMut(GlobalFaceId, &[SourceRowId]) -> Result<()>,
+    ) -> Result<()> {
+        let face_count = self.face_order.len();
+        let row_count = self
+            .row_offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q face row offsets are empty".into()))?;
+        let event_count = self
+            .intervals
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge_into_error(
+            u64::try_from(
+                face_count
+                    .checked_add(event_count)
+                    .and_then(|count| count.checked_add(row_count))
+                    .ok_or(ResourceError::SizeOverflow)?,
+            )
+            .map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+
+        let mut face_at_order = vec![None; face_count];
+        for (face_index, &order) in self.face_order.iter().enumerate() {
+            let face =
+                GlobalFaceId(u32::try_from(face_index).map_err(|_| ResourceError::SizeOverflow)?);
+            let slot = face_at_order.get_mut(order).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face preorder is out of range".into())
+            })?;
+            if slot.replace(face).is_some() {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q face preorder contains a duplicate order".into(),
+                )
+                .into());
+            }
+        }
+
+        let mut events = Vec::with_capacity(event_count);
+        for (row, offsets) in self.row_offsets.windows(2).enumerate() {
+            let [start, end] = offsets else {
+                unreachable!("row CSR windows contain two offsets");
+            };
+            let intervals = self.intervals.get(*start..*end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face row intervals are out of range".into())
+            })?;
+            for &[low, high] in intervals {
+                work.charge_into_error(1)?;
+                if low > high || high > face_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Q face row interval is outside the preorder".into(),
+                    )
+                    .into());
+                }
+                events.push(FaceRowIntervalEvent {
+                    order: low,
+                    row,
+                    starts: true,
+                });
+                events.push(FaceRowIntervalEvent {
+                    order: high,
+                    row,
+                    starts: false,
+                });
+            }
+        }
+        try_sort_by_with_work(&mut events, work, |left, right, work| {
+            work.charge_into_error(1)?;
+            Ok(left
+                .order
+                .cmp(&right.order)
+                .then(left.starts.cmp(&right.starts))
+                .then(left.row.cmp(&right.row)))
+        })?;
+
+        let mut active_counts = vec![0_usize; row_count];
+        let mut active_set = BTreeSet::new();
+        let mut active_rows = Vec::new();
+        let mut event_cursor = 0_usize;
+        for order in 0..face_count {
+            while events
+                .get(event_cursor)
+                .is_some_and(|event| event.order <= order)
+            {
+                apply_face_row_interval_event(
+                    *events
+                        .get(event_cursor)
+                        .expect("event cursor was checked against the event slice"),
+                    &mut active_counts,
+                    &mut active_set,
+                    work,
+                )?;
+                event_cursor = event_cursor
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+            let face = face_at_order.get(order).copied().flatten().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face preorder has a missing face".into())
+            })?;
+            work.charge_into_error(
+                u64::try_from(
+                    active_set
+                        .len()
+                        .checked_add(1)
+                        .ok_or(ResourceError::SizeOverflow)?,
+                )
+                .map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            active_rows.clear();
+            active_rows.extend(active_set.iter().copied());
+            visit(face, &active_rows)?;
+        }
+        while let Some(&event) = events.get(event_cursor) {
+            apply_face_row_interval_event(event, &mut active_counts, &mut active_set, work)?;
+            event_cursor = event_cursor
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
+        if !active_set.is_empty() || active_counts.iter().any(|&count| count != 0) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face row interval sweep ended with active owners".into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn rows_for(&self, face: GlobalFaceId) -> Vec<SourceRowId> {
         self.row_offsets
@@ -5874,6 +6253,51 @@ impl GlobalFaceRowOccupancy {
             .filter(|&row| self.contains(face, row))
             .collect()
     }
+}
+
+fn apply_face_row_interval_event(
+    event: FaceRowIntervalEvent,
+    active_counts: &mut [usize],
+    active_rows: &mut BTreeSet<SourceRowId>,
+    work: &mut impl Work,
+) -> Result<()> {
+    let tree_steps = active_rows
+        .len()
+        .max(1)
+        .ilog2()
+        .checked_mul(2)
+        .and_then(|steps| steps.checked_add(1))
+        .ok_or(ResourceError::SizeOverflow)?;
+    work.charge_into_error(u64::from(tree_steps) + 1)?;
+    let count = active_counts.get_mut(event.row).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q face interval references an unknown row".into())
+    })?;
+    let row = SourceRowId(u32::try_from(event.row).map_err(|_| ResourceError::SizeOverflow)?);
+    if event.starts {
+        let was_inactive = *count == 0;
+        *count = (*count).checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        if was_inactive && !active_rows.insert(row) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q active face row was inserted more than once".into(),
+            )
+            .into());
+        }
+    } else {
+        if *count == 0 {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face interval ended before it started".into(),
+            )
+            .into());
+        }
+        *count = (*count).checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+        if *count == 0 && !active_rows.remove(&row) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q active face row is missing from its set".into(),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

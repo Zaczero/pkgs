@@ -210,18 +210,18 @@ impl ArrayRows {
         row_map: Vec<Option<T>>,
         work: &mut W,
     ) -> Result<(Self, Vec<Option<T>>)> {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(storage.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
         let mut count = ShapeCountQuery::default();
         let mut coordinates = 0_usize;
         for row_index in 0..storage.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             coordinates = coordinates
                 .checked_add(storage.row(row_index).coordinates(&mut count)?)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
         }
-        work.charge(
+        work.charge_into_error(
             u64::try_from(coordinates).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
         let logical_rows = missing

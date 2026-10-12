@@ -19,7 +19,7 @@ use crate::error::{Error, ErrorKind, ResourceError};
 use crate::geometry::embedding_search::{Unmetered, Work};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
-use crate::geometry::{GeometryErrorKind, Point, Result, XY};
+use crate::geometry::{GeometryErrorKind, Result, XY};
 
 mod dyadic;
 mod predicates;
@@ -112,11 +112,11 @@ fn rational_exponent(value: &ExactRational) -> i128 {
 }
 
 fn slices_equal_with_work<W: Work>(left: &[u64], right: &[u64], work: &mut W) -> Result<bool> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if left.len() != right.len() {
         return Ok(false);
     }
-    work.charge_product(left.len(), 1)?;
+    work.charge_product_into_error(left.len(), 1)?;
     Ok(left == right)
 }
 
@@ -136,7 +136,7 @@ impl ExactRational {
         if denominator.is_zero() {
             return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if numerator.is_zero() {
             return Ok(Self {
                 numerator: ExactDyadic::zero(),
@@ -192,7 +192,7 @@ impl ExactRational {
         other: &Self,
         work: &mut W,
     ) -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let sign = self.numerator.negative ^ self.denominator.negative;
         if sign != (other.numerator.negative ^ other.denominator.negative) {
             return Ok(false);
@@ -211,7 +211,7 @@ impl ExactRational {
         )? {
             return Ok(false);
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(rational_exponent(self) == rational_exponent(other))
     }
 
@@ -471,6 +471,7 @@ impl ExactRational {
         clippy::float_cmp,
         reason = "exact coordinate equality selects the nonzero source axis; tolerance would change the parameter"
     )]
+    #[cfg(test)]
     pub(super) fn from_segment(start: XY, end: XY, point: XY) -> Result<Self> {
         let (start, end, point) = if start.x != end.x {
             (start.x, end.x, point.x)
@@ -740,6 +741,22 @@ pub(in crate::geometry) fn incircle_dyadic_points(
         .try_product(&bcdet)?
         .try_add(blift.try_product(&cadet)?)?
         .try_add(clift.try_product(&abdet)?)
+        .map(|determinant| determinant.sign())
+}
+
+/// Exact orientation over source or generated chart coordinates retained as
+/// dyadics, without first rounding retained native-plus-lift locations to XY.
+pub(in crate::geometry) fn orient2d_dyadic_points(
+    [ax, ay]: [ExactDyadic; 2],
+    [bx, by]: [ExactDyadic; 2],
+    [cx, cy]: [ExactDyadic; 2],
+) -> Result<ExactSign> {
+    let abx = bx.try_subtract(ax.clone())?;
+    let aby = by.try_subtract(ay.clone())?;
+    let acx = cx.try_subtract(ax)?;
+    let acy = cy.try_subtract(ay)?;
+    abx.try_product(&acy)?
+        .try_subtract(aby.try_product(&acx)?)
         .map(|determinant| determinant.sign())
 }
 
@@ -1034,6 +1051,14 @@ impl Recipe {
 }
 
 impl ExactPoint {
+    pub(in crate::geometry) fn from_dyadics(x: ExactDyadic, y: ExactDyadic) -> Self {
+        Self::homogeneous(x, y, ExactDyadic::one())
+    }
+
+    pub(in crate::geometry) fn from_homogeneous_dyadics([x, y, w]: [ExactDyadic; 3]) -> Self {
+        Self::homogeneous(x, y, w)
+    }
+
     /// The ONLY constructor. Every homogeneous triple gets its certified
     /// interval here, so a point can never exist without its filter bound.
     fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Self {
@@ -1647,6 +1672,23 @@ pub(in crate::geometry) fn squared_distance_cmp_point(
     squared_distance_cmp_point_exact(origin, left, right)
 }
 
+pub(super) fn squared_distance_cmp_points(
+    origin: &ExactPoint,
+    left: &ExactPoint,
+    right: &ExactPoint,
+) -> Result<Ordering> {
+    Ok(
+        match signed_line_product(
+            &ExactLine::perpendicular_bisector_points(left, right)?,
+            origin,
+        )? {
+            ExactSign::Negative => Ordering::Less,
+            ExactSign::Zero => Ordering::Equal,
+            ExactSign::Positive => Ordering::Greater,
+        },
+    )
+}
+
 fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) -> Result<Ordering> {
     debug_assert!(origin.is_finite());
     Ok(
@@ -1863,64 +1905,90 @@ pub(super) fn axis_aligned_bounds<'a>(
     ])
 }
 
-pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[ExactPoint; 4]> {
+pub(super) fn rectangular_boundary_for_exact(
+    points: &[&ExactPoint],
+    padded: bool,
+) -> Result<[ExactPoint; 4]> {
     let first = points
         .first()
+        .copied()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty Voronoi site set"))?;
-    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
+    let x_axis = ExactDyadic::one();
+    let y_axis = ExactDyadic::zero();
+    let mut min_x = first.projected_coordinate(&x_axis, &y_axis)?;
+    let mut max_x = min_x.clone();
+    let mut min_y = first.projected_coordinate(&y_axis, &x_axis)?;
+    let mut max_y = min_y.clone();
     for point in points.iter().skip(1) {
-        min_x = min_x.min(point.x);
-        max_x = max_x.max(point.x);
-        min_y = min_y.min(point.y);
-        max_y = max_y.max(point.y);
+        let x = point.projected_coordinate(&x_axis, &y_axis)?;
+        if x.try_cmp(&min_x)?.is_lt() {
+            min_x = x.clone();
+        }
+        if x.try_cmp(&max_x)?.is_gt() {
+            max_x = x;
+        }
+        let y = point.projected_coordinate(&y_axis, &x_axis)?;
+        if y.try_cmp(&min_y)?.is_lt() {
+            min_y = y.clone();
+        }
+        if y.try_cmp(&max_y)?.is_gt() {
+            max_y = y;
+        }
     }
     if padded {
-        // Half the larger span, computed exactly, then each corner rounded
-        // OUTWARD to a double: the padded rectangle is a convenience frame
-        // and a double-valued one keeps every clip side representable, so the
-        // cells partition exactly the rectangle they report.
-        let span_x = try_difference(max_x, min_x)?;
-        let span_y = try_difference(max_y, min_y)?;
-        let span = if span_x.cmp(&span_y).is_gt() {
+        let span_x = max_x.try_subtract(&min_x)?;
+        let span_y = max_y.try_subtract(&min_y)?;
+        let span = if span_x.try_cmp(&span_y)?.is_gt() {
             span_x
         } else {
             span_y
         };
-        if span.is_zero() {
+        if span.numerator.is_zero() {
             return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
         }
-        let half = span.try_product(&ExactDyadic::from_f64(0.5))?;
-        let outward = |base: f64, add: bool| -> Result<f64> {
-            let base = ExactDyadic::from_f64(base);
-            let exact = if add {
-                ExactDyadic::try_add_refs(&base, &half)?
+        let half = span.try_product(&ExactRational::from_f64(0.5))?;
+        min_x = min_x.try_subtract(&half)?;
+        max_x = max_x.try_add(&half)?;
+        min_y = min_y.try_subtract(&half)?;
+        max_y = max_y.try_add(&half)?;
+
+        let outward = |value: &ExactRational, lower: bool| -> Result<ExactRational> {
+            let rounded = round_ratio(&value.numerator, &value.denominator)?;
+            let order = ExactRational::from_f64(rounded).try_cmp(value)?;
+            let rounded = if lower && order.is_gt() {
+                rounded.next_down()
+            } else if !lower && order.is_lt() {
+                rounded.next_up()
             } else {
-                ExactDyadic::try_subtract_refs(&base, &half)?
+                rounded
             };
-            let rounded = round_ratio(&exact, &ExactDyadic::one())?;
-            let overshoot = ExactDyadic::from_f64(rounded).cmp(&exact);
-            Ok(match (add, overshoot) {
-                (true, Ordering::Less) => rounded.next_up(),
-                (false, Ordering::Greater) => rounded.next_down(),
-                _ => rounded,
-            })
+            if !rounded.is_finite() {
+                return Err(
+                    GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
+                );
+            }
+            Ok(ExactRational::from_f64(rounded))
         };
-        min_x = outward(min_x, false)?;
-        max_x = outward(max_x, true)?;
-        min_y = outward(min_y, false)?;
-        max_y = outward(max_y, true)?;
-        if !(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite()) {
-            return Err(
-                GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
-            );
-        }
+        min_x = outward(&min_x, true)?;
+        max_x = outward(&max_x, false)?;
+        min_y = outward(&min_y, true)?;
+        max_y = outward(&max_y, false)?;
     }
     Ok([
-        ExactPoint::from_xy(XY::new(min_x, min_y)),
-        ExactPoint::from_xy(XY::new(max_x, min_y)),
-        ExactPoint::from_xy(XY::new(max_x, max_y)),
-        ExactPoint::from_xy(XY::new(min_x, max_y)),
+        ExactPoint::from_rationals(&min_x, &min_y)?,
+        ExactPoint::from_rationals(&max_x, &min_y)?,
+        ExactPoint::from_rationals(&max_x, &max_y)?,
+        ExactPoint::from_rationals(&min_x, &max_y)?,
     ])
+}
+
+impl ExactPoint {
+    fn from_rationals(x: &ExactRational, y: &ExactRational) -> Result<Self> {
+        let numerator_x = x.numerator.try_product(&y.denominator)?;
+        let numerator_y = y.numerator.try_product(&x.denominator)?;
+        let denominator = x.denominator.try_product(&y.denominator)?;
+        Ok(Self::homogeneous(numerator_x, numerator_y, denominator))
+    }
 }
 
 /// Exact orientation of three finite homogeneous points.  The sign is
@@ -2032,7 +2100,7 @@ pub(in crate::geometry) fn compare_ratios_with_work<W: Work>(
     bd: &ExactDyadic,
     work: &mut W,
 ) -> Result<Ordering> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(order) = ratio_order_filter(an, ad, bn, bd) {
         return Ok(order);
     }
@@ -2187,6 +2255,61 @@ pub(in crate::geometry) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoin
     )
 }
 
+pub(in crate::geometry) fn circumcenter_points(
+    a: &ExactPoint,
+    b: &ExactPoint,
+    c: &ExactPoint,
+) -> Result<ExactPoint> {
+    if orient_points(a, b, c)? == ExactSign::Zero {
+        return Err(GeometryErrorKind::voronoi(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    line_intersection(
+        &ExactLine::perpendicular_bisector_points(a, b)?,
+        &ExactLine::perpendicular_bisector_points(a, c)?,
+    )
+}
+
+pub(super) fn distance_within_points(
+    origin: &ExactPoint,
+    point: &ExactPoint,
+    radius: f64,
+) -> Result<bool> {
+    let x_axis = ExactDyadic::one();
+    let zero = ExactDyadic::zero();
+    let x = |point: &ExactPoint| point.projected_coordinate(&x_axis, &zero);
+    let y = |point: &ExactPoint| point.projected_coordinate(&zero, &x_axis);
+    let dx = x(point)?.try_subtract(&x(origin)?)?;
+    let dy = y(point)?.try_subtract(&y(origin)?)?;
+    let distance_squared = dx.try_product(&dx)?.try_add(&dy.try_product(&dy)?)?;
+    let radius = ExactRational::from_f64(radius);
+    let radius_squared = radius.try_product(&radius)?;
+    Ok(distance_squared.try_cmp(&radius_squared)?.is_lt())
+}
+
+/// Round the exact circumcenter of retained dyadic chart sites to nearest
+/// binary64. `None` means the center does not have a finite representation.
+pub(in crate::geometry) fn circumcenter_dyadic_points(
+    a: &[ExactDyadic; 2],
+    b: &[ExactDyadic; 2],
+    c: &[ExactDyadic; 2],
+) -> Result<Option<XY>> {
+    if orient2d_dyadic_points((*a).clone(), (*b).clone(), (*c).clone())? == ExactSign::Zero {
+        return Err(GeometryErrorKind::triangulation(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    let [ax, ay] = a;
+    let [bx, by] = b;
+    let [cx, cy] = c;
+    let center = line_intersection(
+        &ExactLine::perpendicular_bisector_dyadics([ax, ay], [bx, by])?,
+        &ExactLine::perpendicular_bisector_dyadics([ax, ay], [cx, cy])?,
+    )?;
+    center.finite_rounding()
+}
+
 fn approximate_ratio_components(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
@@ -2280,14 +2403,14 @@ fn exact_ratio_bracket_with_work<W: Work>(
         ))
     };
     let mut bits = proposal.to_bits();
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let (order, product) = compare(bits, work)?;
     match order {
         Ordering::Equal => return Ok(Some((bits, bits, None))),
         Ordering::Less => {
             let mut lower_product = product;
             for _ in 0..MAX_ULP_STEPS {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if bits == max_bits {
                     return Ok(None);
                 }
@@ -2303,7 +2426,7 @@ fn exact_ratio_bracket_with_work<W: Work>(
         },
         Ordering::Greater => {
             for _ in 0..MAX_ULP_STEPS {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if bits == 0 {
                     return Ok(None);
                 }
@@ -2349,7 +2472,7 @@ fn round_ratio_binary_with_work<W: Work>(
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let product =
             ExactDyadic::from_f64(f64::from_bits(mid)).try_product_with_work(&denominator, work)?;
@@ -2424,7 +2547,7 @@ pub(in crate::geometry) fn round_ratio_with_work<W: Work>(
             1.0
         });
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(proposal) = approximate_ratio(numerator, denominator)
         && let Some((low, high, lower_product)) =
             exact_ratio_bracket_with_work(numerator, denominator, proposal, sign, work)?
@@ -2488,7 +2611,7 @@ pub(in crate::geometry) fn outward_ratio_bounds_with_work<W: Work>(
     work: &mut W,
 ) -> Result<(f64, f64)> {
     let rounded = round_ratio_with_work(numerator, denominator, work)?;
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let rounded_exact = ExactDyadic::from_f64(rounded);
     match compare_ratios_with_work(
         numerator,
@@ -2523,7 +2646,7 @@ pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let max = ExactDyadic::from_f64(f64::MAX);
     let overflow_midpoint =
         max.try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?;
@@ -2533,7 +2656,7 @@ pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
     if numerator.cmp_with_work(&overflow_squared, work)? != Ordering::Less {
         return Ok(f64::INFINITY);
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(proposal) = approximate_sqrt_ratio(numerator, denominator)
         && proposal.is_finite()
     {
@@ -2601,14 +2724,14 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
         square.cmp_with_work(numerator, work)
     };
     let bits = proposal.to_bits().min(max_bits);
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let (mut lower, mut upper) = match compare(bits, work)? {
         Ordering::Equal => return Ok(Some((bits, bits))),
         Ordering::Less => {
             let mut lower = bits;
             let mut step = 1_u64;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let distance = max_bits.wrapping_sub(lower);
                 if distance == 0 {
                     return Ok(None);
@@ -2628,7 +2751,7 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
             let mut upper = bits;
             let mut step = 1_u64;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if upper == 0 {
                     return Ok(None);
                 }
@@ -2651,7 +2774,7 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
     // ordering; unlike a fixed ULP walk, this also covers both subnormal and
     // binade boundaries without an arbitrary retry limit.
     while upper.wrapping_sub(lower) > 1 {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let middle = lower.wrapping_add(upper.wrapping_sub(lower) / 2);
         match compare(middle, work)? {
             Ordering::Less => lower = middle,
@@ -2675,7 +2798,7 @@ fn round_sqrt_ratio_binary_with_work<W: Work>(
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let candidate = ExactDyadic::from_f64(f64::from_bits(mid));
         let square = candidate

@@ -20,21 +20,28 @@ use std::ops::ControlFlow;
 
 use crate::collections::try_hash_map_with_capacity;
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
 use crate::geometry::area::{RingWinding, open_xy_cycle_winding};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search, SearchAccount,
     Work, build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::overlay::{
-    NodeId, RayAxis, RayPoints, binary_cartesian_difference_without_partition_budget,
+    NodeId, OverlayNodeReceipt, OverlaySourceEdgeUse, RayAxis, RayPoints,
+    binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, emitted_pair_preserves_incidence,
     segments_within_chebyshev, visit_component_faces,
 };
 use crate::geometry::segment_index::YStabbingIndex;
 use crate::geometry::tessellation::{
-    CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, delaunay_complex, exact,
+    CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, VoronoiAssignmentReceipt,
+    VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt, VoronoiClipSegmentReceipt,
+    VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse,
+    VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse, VoronoiFrameSide, VoronoiProducer,
+    VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
+    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, delaunay_complex, exact,
 };
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
@@ -170,9 +177,9 @@ use assembly::{ExactCellPart, ExactEdgeChain, ExactSimpleRing, assemble_cells, a
 #[cfg(test)]
 use clip::in_rectangle;
 use clip::{
-    SegmentIntersectionExt as _, axis_aligned_rectangle, between, bisector_frame_intersections,
-    clip_hull_ray_to_rectangle, clip_rectangle, clip_segment_to_rectangle, orient_separator,
-    sort_unique_along,
+    SegmentIntersectionExt as _, axis_aligned_rectangle, between, clip_hull_ray_to_rectangle,
+    clip_rectangle, clip_segment_to_rectangle, exact_bisector_frame_intersections,
+    orient_separator, sort_unique_along,
 };
 use scaffold::{
     build_scaffold, emit_clipped_separators, fixed_coordinates, lex_position,
@@ -253,7 +260,10 @@ struct ClippedSeparator {
 struct NormalizedClip<'a> {
     rings: Vec<Vec<exact::ExactPoint>>,
     fixed: Vec<Vec<XY>>,
+    chart_fixed: Vec<Vec<XY>>,
+    source_roots: Vec<Vec<VoronoiClipSourceRoot>>,
     source: Option<&'a Polygon>,
+    geometry: Option<Polygon>,
     polygon_baseline: Option<usize>,
     contacts: Vec<ExactCycleContact>,
 }
@@ -539,6 +549,7 @@ struct ClipCertificateEdge {
 
 #[derive(Clone, Copy)]
 struct ClipSourceSegment<'a> {
+    segment: u32,
     ring: usize,
     start: &'a exact::ExactPoint,
     end: &'a exact::ExactPoint,
@@ -552,10 +563,13 @@ struct ClipSourceRow {
     edges: Vec<EdgeId>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ClipTraceAtom {
     edge: EdgeId,
     reversed: bool,
+    segment: u32,
+    start_parameter: exact::ExactRational,
+    end_parameter: exact::ExactRational,
 }
 
 #[derive(Default)]
@@ -604,6 +618,8 @@ impl ClipTrace {
                 return Err(clip_source_trace_error());
             }
             for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                let segment = u32::try_from(source_segments.len())
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
                 let start_vertex = subdivision
                     .vertex_at(start)?
                     .expect("every normalized clip source endpoint is interned by noding");
@@ -611,6 +627,7 @@ impl ClipTrace {
                     .vertex_at(end)?
                     .expect("every normalized clip source endpoint is interned by noding");
                 source_segments.push(ClipSourceSegment {
+                    segment,
                     ring: ring_index,
                     start,
                     end,
@@ -708,7 +725,26 @@ impl ClipTrace {
                     "a source atom has distinct endpoints along its segment"
                 );
                 let reversed = along == Ordering::Greater;
-                atoms.push(ClipTraceAtom { edge, reversed });
+                let (start, end) = if reversed {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                atoms.push(ClipTraceAtom {
+                    edge,
+                    reversed,
+                    segment: segment.segment,
+                    start_parameter: exact_segment_parameter(
+                        segment.start,
+                        segment.end,
+                        &subdivision.vertex(start).point,
+                    )?,
+                    end_parameter: exact_segment_parameter(
+                        segment.start,
+                        segment.end,
+                        &subdivision.vertex(end).point,
+                    )?,
+                });
             }
             try_sort_by(&mut atoms, |left, right| {
                 let [left_start, left_end] = subdivision.edge(left.edge).endpoints;
@@ -750,7 +786,7 @@ impl ClipTrace {
                     .get_mut(segment.ring)
                     .ok_or_else(clip_source_trace_error)?
                     .atoms
-                    .push(*atom);
+                    .push(atom.clone());
             }
         }
         let atom_count = rings.iter().try_fold(0_usize, |count, ring| {
@@ -927,7 +963,7 @@ pub(super) fn validate_owner_cycle_facts(
     Ok(())
 }
 
-type OpenClipRing = (Vec<exact::ExactPoint>, Vec<XY>, Vec<Option<usize>>);
+type OpenClipRing = (Vec<exact::ExactPoint>, Vec<XY>, Vec<XY>, Vec<Option<usize>>);
 
 fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     GeometryErrorKind::voronoi(message.into())
@@ -1632,20 +1668,64 @@ fn record_generic_exact_touch(
     Ok(())
 }
 
+fn exact_chart_point(chart: Option<&PointSelectionChart>, point: XY) -> Result<exact::ExactPoint> {
+    let Some(chart) = chart else {
+        return Ok(exact::ExactPoint::from_xy(point));
+    };
+    let frame = chart.frame();
+    let longitude = chart.longitude_site(point.x)?;
+    Ok(exact::ExactPoint::from_dyadics(
+        retained_site_longitude(frame.longitude(), longitude)?,
+        exact::ExactDyadic::from_f64(point.y),
+    ))
+}
+
+fn chart_vertex_origins(
+    chart: Option<&PointSelectionChart>,
+    point: &exact::ExactPoint,
+) -> Result<Vec<VoronoiVertexOrigin>> {
+    let mut origins = Vec::new();
+    if let Some(chart) = chart {
+        let frame = chart.frame();
+        let zero = exact::ExactDyadic::zero();
+        let cuts = chart.cut_longitudes()?;
+        for (side, cut) in [
+            (VoronoiChartCutSide::Lower, cuts[0]),
+            (VoronoiChartCutSide::Upper, cuts[1]),
+        ] {
+            let cut_point = exact::ExactPoint::from_dyadics(
+                retained_site_longitude(frame.longitude(), cut)?,
+                zero.clone(),
+            );
+            if point.compare_x(&cut_point)?.is_eq() {
+                origins.push(VoronoiVertexOrigin::ChartCut { side });
+            }
+        }
+        for latitude in [frame.pole(), -frame.pole()] {
+            let pole = exact::ExactPoint::from_xy(XY::new(0.0, latitude));
+            if point.compare_y(&pole)?.is_eq() {
+                origins.push(VoronoiVertexOrigin::Pole { latitude });
+            }
+        }
+    }
+    Ok(origins)
+}
+
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "Ring stores its explicit closing coordinate, so its length is positive and one subtraction opens the cycle"
+    reason = "Ring guarantees at least four closed coordinates, so subtracting its explicit closing point is safe"
 )]
-fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
+fn open_ring(ring: &Ring, chart: Option<&PointSelectionChart>) -> Result<OpenClipRing> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
     let mut fixed = Vec::new();
+    let mut chart_fixed = Vec::new();
     let mut vertex_indices = Vec::with_capacity(open);
     exact_points.reserve(open);
     fixed.reserve(open);
     for point in ring.iter().take(open) {
         let point = point.xy();
-        let exact = exact::ExactPoint::from_xy(point);
+        let exact = exact_chart_point(chart, point)?;
         if let Some(previous) = exact_points.last()
             && exact.same_position(previous)?
         {
@@ -1658,6 +1738,7 @@ fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
             continue;
         }
         vertex_indices.push(exact_points.len());
+        chart_fixed.push(exact.round_nearest_even()?);
         exact_points.push(exact);
         fixed.push(point);
     }
@@ -1673,12 +1754,13 @@ fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
         .take(open)
         .map(|(start, end)| (start != end).then_some(start))
         .collect();
-    Ok((exact_points, fixed, source_edges))
+    Ok((exact_points, fixed, chart_fixed, source_edges))
 }
 
-fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) {
+fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY], chart_fixed: &mut [XY]) {
     points.reverse();
     fixed.reverse();
+    chart_fixed.reverse();
 }
 
 #[expect(
@@ -1686,7 +1768,11 @@ fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) {
     clippy::arithmetic_side_effects,
     reason = "least cyclic rotation compares random offsets modulo this admitted nonempty ring; direct access preserves constant-time candidate steps without a linear nth lookup"
 )]
-fn rotate_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) -> Result<usize> {
+fn rotate_ring(
+    points: &mut [exact::ExactPoint],
+    fixed: &mut [XY],
+    chart_fixed: &mut [XY],
+) -> Result<usize> {
     let count = points.len();
     let mut least = 0;
     for candidate in 1..count {
@@ -1703,6 +1789,7 @@ fn rotate_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) -> Result<usi
     }
     points.rotate_left(least);
     fixed.rotate_left(least);
+    chart_fixed.rotate_left(least);
     Ok(least)
 }
 
@@ -1728,6 +1815,7 @@ fn map_source_polygon_contacts(
     source_rings: &[Option<NormalizedSourceRing>],
     rings: &[Vec<exact::ExactPoint>],
     fixed: &[Vec<XY>],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<(Vec<ExactCycleContact>, Vec<ExactPairTouch>)> {
     let mut contacts = Vec::with_capacity(source_contacts.len());
     let mut pair_touches = Vec::new();
@@ -1766,7 +1854,7 @@ fn map_source_polygon_contacts(
         };
         let ring_pair = [first.ring, second.ring];
         let segments = [first.segment, second.segment];
-        let point = exact::ExactPoint::from_xy(source.point);
+        let point = exact_chart_point(chart, source.point)?;
         contacts.push(ExactCycleContact {
             segments,
             point: point.clone(),
@@ -1900,13 +1988,67 @@ fn exact_source_parameter(parameter: &SegmentParameter) -> Result<exact::ExactRa
     }
 }
 
+fn exact_segment_parameter(
+    start: &exact::ExactPoint,
+    end: &exact::ExactPoint,
+    point: &exact::ExactPoint,
+) -> Result<exact::ExactRational> {
+    let one = exact::ExactDyadic::one();
+    let zero = exact::ExactDyadic::zero();
+    let x = |point: &exact::ExactPoint| point.projected_coordinate(&one, &zero);
+    let y = |point: &exact::ExactPoint| point.projected_coordinate(&zero, &one);
+    let start_x = x(start)?;
+    let end_x = x(end)?;
+    let point_x = x(point)?;
+    let denominator_x = end_x.try_subtract(&start_x)?;
+    if !denominator_x.is_zero() {
+        return point_x.try_subtract(&start_x)?.try_quotient(&denominator_x);
+    }
+    let start_y = y(start)?;
+    let end_y = y(end)?;
+    let point_y = y(point)?;
+    let denominator_y = end_y.try_subtract(&start_y)?;
+    if denominator_y.is_zero() {
+        return Err(clip_source_trace_error());
+    }
+    point_y.try_subtract(&start_y)?.try_quotient(&denominator_y)
+}
+
+fn polygon_from_open_xy_rings(rings: &[Vec<XY>]) -> Result<Polygon> {
+    let mut rings = rings.iter();
+    let make_ring = |open: &[XY]| -> Result<Ring> {
+        let first = *open.first().ok_or_else(exact_cycle_error)?;
+        let mut closed = Vec::with_capacity(open.len().saturating_add(1));
+        closed.extend_from_slice(open);
+        closed.push(first);
+        Ring::try_from_closed(CoordSeq::try_from_xy(&closed)?)
+    };
+    let shell = make_ring(rings.next().ok_or_else(exact_cycle_error)?)?;
+    let holes = rings
+        .map(|ring| make_ring(ring))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Polygon::new(shell, holes))
+}
+
+#[cfg(test)]
 fn normalize_clip<'a>(
     sites: &[Site],
     boundary: VoronoiBoundary<'a>,
     polygon_output: bool,
 ) -> Result<NormalizedClip<'a>> {
+    normalize_clip_with_chart(sites, boundary, polygon_output, None)
+}
+
+fn normalize_clip_with_chart<'a>(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'a>,
+    polygon_output: bool,
+    chart: Option<&PointSelectionChart>,
+) -> Result<NormalizedClip<'a>> {
     let mut rings = Vec::new();
     let mut fixed = Vec::new();
+    let mut chart_fixed = Vec::new();
+    let mut source_roots;
     let mut contacts = Vec::new();
     let mut polygon_baseline = None;
     let source = match boundary {
@@ -1926,12 +2068,17 @@ fn normalize_clip<'a>(
                 .len()
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let source_point_rings: Vec<Vec<Point>> = std::iter::once(&polygon.shell)
+                .chain(polygon.holes.iter())
+                .map(|ring| ring.iter().collect())
+                .collect();
             let mut clip_rings = Vec::with_capacity(clip_ring_count);
             for (ring_index, ring) in std::iter::once(&polygon.shell)
                 .chain(polygon.holes.iter())
                 .enumerate()
             {
-                let (mut points, mut coordinates, mut source_edges) = open_ring(ring)?;
+                let (mut points, mut coordinates, mut chart_coordinates, mut source_edges) =
+                    open_ring(ring, chart)?;
                 let orientation = exact::cycle_orientation(&points)?;
                 let wanted = if ring_index == 0 {
                     ExactSign::Positive
@@ -1940,14 +2087,21 @@ fn normalize_clip<'a>(
                 };
                 let reversed = orientation != wanted;
                 if reversed {
-                    reverse_ring(&mut points, &mut coordinates);
+                    reverse_ring(&mut points, &mut coordinates, &mut chart_coordinates);
                 }
-                let rotation = rotate_ring(&mut points, &mut coordinates)?;
+                let rotation = rotate_ring(&mut points, &mut coordinates, &mut chart_coordinates)?;
                 let count = points.len();
                 for edge in source_edges.iter_mut().flatten() {
                     *edge = normalized_source_edge(*edge, count, rotation, reversed);
                 }
-                clip_rings.push((ring_index, points, coordinates, source_edges, reversed));
+                clip_rings.push((
+                    ring_index,
+                    points,
+                    coordinates,
+                    chart_coordinates,
+                    source_edges,
+                    reversed,
+                ));
             }
             let (_, holes) = clip_rings
                 .split_first_mut()
@@ -1957,10 +2111,12 @@ fn normalize_clip<'a>(
             })?;
             rings.reserve(clip_rings.len());
             fixed.reserve(clip_rings.len());
+            chart_fixed.reserve(clip_rings.len());
             let mut source_edge_map = vec![Vec::new(); clip_rings.len()];
             let mut source_ring_map = vec![None; clip_rings.len()];
             let mut segment_offset = 0_usize;
-            for (source_ring, points, coordinates, edges, reversed) in clip_rings {
+            for (source_ring, points, coordinates, chart_coordinates, edges, reversed) in clip_rings
+            {
                 let normalized_ring = rings.len();
                 *source_edge_map
                     .get_mut(source_ring)
@@ -1977,6 +2133,46 @@ fn normalize_clip<'a>(
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 rings.push(points);
                 fixed.push(coordinates);
+                chart_fixed.push(chart_coordinates);
+            }
+            source_roots = vec![Vec::new(); segment_offset];
+            for (source_ring, edges) in source_edge_map.iter().enumerate() {
+                let normalization = source_ring_map
+                    .get(source_ring)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(exact_cycle_error)?;
+                let source_points = source_point_rings
+                    .get(source_ring)
+                    .ok_or_else(exact_cycle_error)?;
+                for (source_edge, &normalized_edge) in edges.iter().enumerate() {
+                    let Some(normalized_edge) = normalized_edge else {
+                        continue;
+                    };
+                    let source_end = source_edge
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    let start = *source_points
+                        .get(source_edge)
+                        .ok_or_else(exact_cycle_error)?;
+                    let end = *source_points
+                        .get(source_end)
+                        .ok_or_else(exact_cycle_error)?;
+                    let segment = normalization
+                        .segment_offset
+                        .checked_add(normalized_edge)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    source_roots
+                        .get_mut(segment)
+                        .ok_or_else(exact_cycle_error)?
+                        .push(VoronoiClipSourceRoot {
+                            ring: source_ring,
+                            edge: source_edge,
+                            reversed: normalization.reversed,
+                            start,
+                            end,
+                        });
+                }
             }
             let (source_cycle_contacts, pair_touches) = map_source_polygon_contacts(
                 &polygon_contacts,
@@ -1984,18 +2180,20 @@ fn normalize_clip<'a>(
                 &source_ring_map,
                 &rings,
                 &fixed,
+                chart,
             )?;
             let mut open = Vec::with_capacity(rings.len());
             open.extend(rings.iter().map(Vec::as_slice));
             validate_exact_contact_graph(&open, 0, &pair_touches)?;
             contacts = source_cycle_contacts;
-            Some(polygon)
+            Some((polygon, polygon_from_open_xy_rings(&chart_fixed)?))
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            let mut points = Vec::with_capacity(sites.len());
-            points.extend(sites.iter().map(|site| site.point));
-            let rectangle =
-                exact::rectangular_boundary(&points, matches!(boundary, VoronoiBoundary::Padded))?;
+            let points: Vec<_> = sites.iter().map(|site| &site.exact_point).collect();
+            let rectangle = exact::rectangular_boundary_for_exact(
+                &points,
+                matches!(boundary, VoronoiBoundary::Padded),
+            )?;
             let mut corners = Vec::with_capacity(rectangle.len());
             for corner in &rectangle {
                 corners.push(corner.round_nearest_even()?);
@@ -2005,15 +2203,24 @@ fn normalize_clip<'a>(
             ring.extend(rectangle);
             rings.reserve(1);
             fixed.reserve(1);
+            chart_fixed.reserve(1);
+            source_roots = vec![Vec::new(); ring.len()];
             rings.push(ring);
-            fixed.push(corners);
+            fixed.push(corners.clone());
+            chart_fixed.push(corners);
             None
         },
     };
+    let (source, geometry) = source.map_or((None, None), |(source, geometry)| {
+        (Some(source), Some(geometry))
+    });
     Ok(NormalizedClip {
         rings,
         fixed,
+        chart_fixed,
+        source_roots,
         source,
+        geometry,
         polygon_baseline,
         contacts,
     })
@@ -2114,10 +2321,10 @@ fn nearest_site_walk(
         let neighbors = adjacency.neighbors(current);
         let mut best = current;
         let nearer = |candidate: SiteId, known: SiteId| {
-            exact::squared_distance_cmp_point(
+            exact::squared_distance_cmp_points(
                 point,
-                site_by_id(sites, candidate).point.xy(),
-                site_by_id(sites, known).point.xy(),
+                &site_by_id(sites, candidate).exact_point,
+                &site_by_id(sites, known).exact_point,
             )
         };
         for &candidate in neighbors {
@@ -2146,10 +2353,10 @@ fn nearest_site(point: &exact::ExactPoint, sites: &[Site]) -> Result<SiteId> {
     let mut nearest = 0;
     let mut tied = false;
     for candidate in 1..sites.len() {
-        match exact::squared_distance_cmp_point(
+        match exact::squared_distance_cmp_points(
             point,
-            sites[candidate].point.xy(),
-            sites[nearest].point.xy(),
+            &sites[candidate].exact_point,
+            &sites[nearest].exact_point,
         )? {
             Ordering::Less => {
                 nearest = candidate;
@@ -2172,13 +2379,604 @@ fn nearest_site(point: &exact::ExactPoint, sites: &[Site]) -> Result<SiteId> {
 pub(super) struct EmbeddedVoronoi {
     polygons: Vec<EmbeddedPolygon>,
     edges: EmbeddedEdges,
+    receipt: std::sync::Arc<VoronoiDiagramReceipt>,
+}
+
+fn site_receipts(producer: VoronoiProducer, sites: &[Site]) -> Result<VoronoiDiagramReceipt> {
+    let mut receipt = VoronoiDiagramReceipt::empty(producer);
+    receipt.sites.reserve(sites.len());
+    for site in sites {
+        let id = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        receipt.sites.push(VoronoiSiteReceipt {
+            id,
+            source_ordinal: site.source_ordinal,
+            source_record: site.point,
+            exact_xy: exact_xy_coordinates(&site.exact_point)?,
+            retained_chart_site: site.retained_chart_site,
+            quotient_aliases: site.quotient_aliases.clone(),
+            snapped_sources: site.snapped_sources.clone(),
+        });
+        receipt.source_sites.push(VoronoiSourceSiteReceipt {
+            source_ordinal: site.source_ordinal,
+            decision: VoronoiSourceSiteDecision::Selected { site: id },
+        });
+        receipt
+            .source_sites
+            .extend(
+                site.quotient_aliases
+                    .iter()
+                    .map(|&source_ordinal| VoronoiSourceSiteReceipt {
+                        source_ordinal,
+                        decision: VoronoiSourceSiteDecision::QuotientAlias { site: id },
+                    }),
+            );
+        receipt
+            .source_sites
+            .extend(
+                site.snapped_sources
+                    .iter()
+                    .map(|&source_ordinal| VoronoiSourceSiteReceipt {
+                        source_ordinal,
+                        decision: VoronoiSourceSiteDecision::Snapped { site: id },
+                    }),
+            );
+    }
+    receipt
+        .source_sites
+        .sort_unstable_by_key(|source| source.source_ordinal);
+    Ok(receipt)
+}
+
+fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::ExactRational; 2]> {
+    let one = exact::ExactDyadic::one();
+    let zero = exact::ExactDyadic::zero();
+    Ok([
+        point.projected_coordinate(&one, &zero)?,
+        point.projected_coordinate(&zero, &one)?,
+    ])
+}
+
+pub(super) fn empty_polygon_outputs(
+    sites: &[Site],
+) -> Result<crate::geometry::VoronoiPolygonOutputs> {
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites)?);
+    Ok(crate::geometry::VoronoiPolygonOutputs {
+        outputs: Vec::new(),
+        receipt,
+    })
+}
+
+pub(super) fn lone_site_empty_polygon_outputs(
+    sites: &[Site],
+) -> Result<crate::geometry::VoronoiPolygonOutputs> {
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?);
+    Ok(crate::geometry::VoronoiPolygonOutputs {
+        outputs: Vec::new(),
+        receipt,
+    })
+}
+
+pub(super) fn lone_site_empty_edges(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    chart: Option<&PointSelectionChart>,
+) -> Result<EmbeddedEdges> {
+    let receipt = match boundary {
+        VoronoiBoundary::Polygon(polygon) => {
+            lone_site_polygon_outputs(sites, polygon, chart)?.receipt
+        },
+        VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
+            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?)
+        },
+    };
+    empty_edges_with_receipt(receipt)
+}
+
+pub(super) fn lone_site_polygon_outputs(
+    sites: &[Site],
+    polygon: &Polygon,
+    chart: Option<&PointSelectionChart>,
+) -> Result<crate::geometry::VoronoiPolygonOutputs> {
+    let [site] = sites else {
+        return Err(voronoi_error(
+            "lone-site receipt requires one admitted site",
+        ));
+    };
+    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites)?;
+    let owner = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    let mut output_edge_id = 0_u32;
+    let mut vertex_id = 0_u32;
+    let mut edge_roles = Vec::with_capacity(polygon.holes.len().saturating_add(1));
+    for (ring_index, ring) in std::iter::once(&polygon.shell)
+        .chain(polygon.holes.iter())
+        .enumerate()
+    {
+        let open_count = ring
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| voronoi_error("lone-site clip ring is empty"))?;
+        let ring_start = vertex_id;
+        let points: Vec<_> = ring.iter().take(open_count).collect();
+        let exact_points = points
+            .iter()
+            .map(|point| exact_chart_point(chart, point.xy()))
+            .collect::<Result<Vec<_>>>()?;
+        let orientation = exact::cycle_orientation(&exact_points)?;
+        let filled_left = if ring_index == 0 {
+            orientation == ExactSign::Positive
+        } else {
+            orientation == ExactSign::Negative
+        };
+        let owner_transition = if filled_left {
+            [Some(owner), None]
+        } else {
+            [None, Some(owner)]
+        };
+        let mut role_row = Vec::with_capacity(open_count);
+        for (point, exact_point) in points.iter().zip(&exact_points) {
+            let id = vertex_id;
+            vertex_id = vertex_id
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let mut origins = chart_vertex_origins(chart, exact_point)?;
+            if exact_point.same_position(&site.exact_point)? {
+                origins.push(VoronoiVertexOrigin::SourceSite { site: owner });
+            }
+            receipt.vertices.push(VoronoiVertexReceipt {
+                id,
+                exact_xy: exact_xy_coordinates(exact_point)?,
+                origins,
+                assignment: Some(point.xy()),
+            });
+            receipt.assignments.push(VoronoiAssignmentReceipt {
+                vertex: id,
+                embedded: id,
+                point: point.xy(),
+            });
+        }
+        let mut ring_edge_ids = Vec::with_capacity(open_count);
+        for (edge_index, point) in points.iter().enumerate() {
+            let next_index = edge_index
+                .checked_add(1)
+                .filter(|&next| next < open_count)
+                .unwrap_or(0);
+            let next = points
+                .get(next_index)
+                .expect("lone-site ring edge endpoint belongs to its open cycle");
+            let exact_start = exact_points
+                .get(edge_index)
+                .expect("lone-site exact source ring aligns with its coordinates")
+                .clone();
+            let exact_end = exact_points
+                .get(next_index)
+                .expect("lone-site exact source ring aligns with its coordinates")
+                .clone();
+            let source_root = VoronoiClipSourceRoot {
+                ring: ring_index,
+                edge: edge_index,
+                reversed: false,
+                start: *point,
+                end: *next,
+            };
+            receipt.clip_segments.push(VoronoiClipSegmentReceipt {
+                id: output_edge_id,
+                ring: u32::try_from(ring_index)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                edge: u32::try_from(edge_index)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                frame_side: None,
+                exact_start: exact_xy_coordinates(&exact_start)?,
+                exact_end: exact_xy_coordinates(&exact_end)?,
+                source_roots: vec![source_root],
+                atoms: Vec::new(),
+            });
+            receipt.edges.push(VoronoiEdgeReceipt {
+                id: output_edge_id,
+                endpoints: [
+                    ring_start
+                        .checked_add(
+                            u32::try_from(edge_index)
+                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        )
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                    ring_start
+                        .checked_add(
+                            u32::try_from(next_index)
+                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        )
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                ],
+                separator: None,
+                clip_sources: vec![output_edge_id],
+                frame_side: None,
+                owner_transition,
+                origins: vec![VoronoiEdgeOrigin::SourceClip {
+                    segment: output_edge_id,
+                }],
+            });
+            let [edge_start, edge_end] = receipt
+                .edges
+                .last()
+                .ok_or_else(|| voronoi_error("lone-site receipt edge is absent"))?
+                .endpoints;
+            receipt.darts.push(VoronoiDartReceipt {
+                id: output_edge_id,
+                origin: edge_start,
+                target: edge_end,
+                twin: None,
+                edge: output_edge_id,
+                face: None,
+                owner: Some(owner),
+            });
+            let root_origin = VoronoiVertexOrigin::SourceClip {
+                segment: output_edge_id,
+                parameter: exact::ExactRational::zero(),
+                source_ring: Some(ring_index),
+                source_edge: Some(edge_index),
+            };
+            receipt
+                .vertices
+                .get_mut(edge_start as usize)
+                .ok_or_else(|| voronoi_error("lone-site start vertex is absent"))?
+                .origins
+                .push(root_origin);
+            receipt
+                .vertices
+                .get_mut(edge_end as usize)
+                .ok_or_else(|| voronoi_error("lone-site end vertex is absent"))?
+                .origins
+                .push(VoronoiVertexOrigin::SourceClip {
+                    segment: output_edge_id,
+                    parameter: exact::ExactRational::one(),
+                    source_ring: Some(ring_index),
+                    source_edge: Some(edge_index),
+                });
+            role_row.push(VoronoiRingEdgeRole {
+                edge: Some(output_edge_id),
+                forward: true,
+                origins: vec![VoronoiEdgeOrigin::SourceClip {
+                    segment: output_edge_id,
+                }],
+                source_uses: vec![VoronoiEdgeSourceUse {
+                    source_segment: output_edge_id,
+                    source_operand: None,
+                    source_ring: Some(
+                        u32::try_from(ring_index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    ),
+                    source_edge: Some(
+                        u32::try_from(edge_index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    ),
+                    forward: true,
+                    start_parameter: exact::ExactRational::zero(),
+                    end_parameter: exact::ExactRational::one(),
+                }],
+            });
+            ring_edge_ids.push(output_edge_id);
+            output_edge_id = output_edge_id
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+        let ring_uses = ring_edge_ids
+            .into_iter()
+            .map(|edge| VoronoiDirectedEdgeUse {
+                edge,
+                forward: true,
+            })
+            .collect::<Vec<_>>();
+        receipt.cells.push(VoronoiCellReceipt {
+            owner,
+            face: None,
+            shell: if ring_index == 0 {
+                ring_uses.clone()
+            } else {
+                Vec::new()
+            },
+            holes: if ring_index == 0 {
+                Vec::new()
+            } else {
+                vec![ring_uses]
+            },
+        });
+        edge_roles.push(role_row);
+    }
+    let mut cell = receipt
+        .cells
+        .first()
+        .cloned()
+        .ok_or_else(|| voronoi_error("lone-site receipt has no shell"))?;
+    cell.holes = receipt
+        .cells
+        .iter()
+        .skip(1)
+        .flat_map(|cell| cell.holes.iter().cloned())
+        .collect();
+    receipt.cells.clear();
+    receipt.cells.push(cell);
+    Ok(crate::geometry::VoronoiPolygonOutputs {
+        outputs: vec![crate::geometry::VoronoiPolygonOutput {
+            polygon: polygon.clone(),
+            owner: Some(owner),
+            edge_roles,
+        }],
+        receipt: std::sync::Arc::new(receipt),
+    })
+}
+
+fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
+    match side {
+        FrameSide::Bottom => VoronoiFrameSide::Bottom,
+        FrameSide::Right => VoronoiFrameSide::Right,
+        FrameSide::Top => VoronoiFrameSide::Top,
+        FrameSide::Left => VoronoiFrameSide::Left,
+    }
+}
+
+fn clip_segment_receipts(
+    clip: &NormalizedClip<'_>,
+    trace: Option<&ClipTrace>,
+) -> Result<Vec<VoronoiClipSegmentReceipt>> {
+    let mut result = Vec::new();
+    let mut segment_id = 0_usize;
+    for (ring_index, ring) in clip.rings.iter().enumerate() {
+        for (edge_index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
+            let id =
+                u32::try_from(segment_id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+            let atoms = trace
+                .and_then(|trace| trace.rings.get(ring_index))
+                .map_or_default(|ring| {
+                    ring.atoms
+                        .iter()
+                        .filter(|atom| atom.segment == id)
+                        .map(|atom| VoronoiClipAtomReceipt {
+                            edge: atom.edge.0,
+                            reversed: atom.reversed,
+                            start_parameter: atom.start_parameter.clone(),
+                            end_parameter: atom.end_parameter.clone(),
+                        })
+                        .collect()
+                });
+            let source_roots = clip
+                .source_roots
+                .get(segment_id)
+                .cloned()
+                .unwrap_or_default();
+            let frame_side = if clip.source.is_none() && ring_index == 0 {
+                FrameSide::ALL
+                    .get(edge_index)
+                    .copied()
+                    .map(receipt_frame_side)
+            } else {
+                None
+            };
+            result.push(VoronoiClipSegmentReceipt {
+                id,
+                ring: u32::try_from(ring_index)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                edge: u32::try_from(edge_index)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                frame_side,
+                exact_start: exact_xy_coordinates(start)?,
+                exact_end: exact_xy_coordinates(end)?,
+                source_roots,
+                atoms,
+            });
+            segment_id = segment_id
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+    }
+    Ok(result)
+}
+
+fn exact_diagram_receipt(
+    producer: VoronoiProducer,
+    sites: &[Site],
+    subdivision: &ExactSubdivision,
+    parts: &[ExactCellPart],
+    chains: &[ExactEdgeChain],
+    clip: &NormalizedClip<'_>,
+    clip_trace: &ClipTrace,
+    exact_to_embedded: &EmbeddedVertices,
+    points: &[XY],
+    chart: Option<&PointSelectionChart>,
+) -> Result<VoronoiDiagramReceipt> {
+    let mut receipt = site_receipts(producer, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip, Some(clip_trace))?;
+
+    let mut assignments = vec![None; subdivision.vertices.len()];
+    for (vertex, embedded) in exact_to_embedded.0.iter().enumerate() {
+        if let Some(embedded) = embedded {
+            let point = *points.get(embedded.0 as usize).ok_or_else(|| {
+                voronoi_error("receipt assignment is outside the embedded points")
+            })?;
+            *assignments
+                .get_mut(vertex)
+                .ok_or_else(|| voronoi_error("receipt vertex is outside the assignment map"))? =
+                Some(point);
+            receipt.assignments.push(VoronoiAssignmentReceipt {
+                vertex: u32::try_from(vertex)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                embedded: embedded.0,
+                point,
+            });
+        }
+    }
+
+    let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
+        .take(subdivision.vertices.len())
+        .collect();
+    for site in sites {
+        if let Some(vertex) = subdivision.vertex_at(&site.exact_point)? {
+            vertex_origins
+                .get_mut(vertex.0 as usize)
+                .ok_or_else(|| voronoi_error("source-site vertex is absent from the receipt"))?
+                .push(VoronoiVertexOrigin::SourceSite {
+                    site: u32::try_from(site.id)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                });
+        }
+    }
+    for segment in &receipt.clip_segments {
+        let segment_id = ClipSegmentId(segment.id);
+        for atom in &segment.atoms {
+            let edge = subdivision.edge(EdgeId(atom.edge));
+            let [left, right] = edge.endpoints;
+            let [start, end] = if atom.reversed {
+                [right, left]
+            } else {
+                [left, right]
+            };
+            for root in &segment.source_roots {
+                let start_parameter = if root.reversed {
+                    exact::ExactRational::one().try_subtract(&atom.start_parameter)?
+                } else {
+                    atom.start_parameter.clone()
+                };
+                let end_parameter = if root.reversed {
+                    exact::ExactRational::one().try_subtract(&atom.end_parameter)?
+                } else {
+                    atom.end_parameter.clone()
+                };
+                vertex_origins
+                    .get_mut(start.0 as usize)
+                    .ok_or_else(|| voronoi_error("source-clip start vertex is absent"))?
+                    .push(VoronoiVertexOrigin::SourceClip {
+                        segment: segment_id.0,
+                        parameter: start_parameter,
+                        source_ring: Some(root.ring),
+                        source_edge: Some(root.edge),
+                    });
+                vertex_origins
+                    .get_mut(end.0 as usize)
+                    .ok_or_else(|| voronoi_error("source-clip end vertex is absent"))?
+                    .push(VoronoiVertexOrigin::SourceClip {
+                        segment: segment_id.0,
+                        parameter: end_parameter,
+                        source_ring: Some(root.ring),
+                        source_edge: Some(root.edge),
+                    });
+            }
+        }
+    }
+    for edge in &subdivision.edges {
+        let separator = edge.separator.map(|pair| pair.map(|site| site.0));
+        let frame_side = edge.frame_side.map(receipt_frame_side);
+        for vertex in edge.endpoints {
+            let origins = vertex_origins
+                .get_mut(vertex.0 as usize)
+                .ok_or_else(|| voronoi_error("edge vertex is absent from the receipt"))?;
+            if let Some(sites) = separator {
+                origins.push(VoronoiVertexOrigin::Bisector { sites });
+            }
+            if let Some(side) = frame_side {
+                origins.push(VoronoiVertexOrigin::Frame { side });
+            }
+        }
+    }
+    for (vertex, exact_vertex) in subdivision.vertices.iter().enumerate() {
+        vertex_origins
+            .get_mut(vertex)
+            .ok_or_else(|| voronoi_error("diagram vertex is absent from the receipt"))?
+            .extend(chart_vertex_origins(chart, &exact_vertex.point)?);
+    }
+
+    receipt.vertices.reserve(subdivision.vertices.len());
+    for (index, vertex) in subdivision.vertices.iter().enumerate() {
+        let origins = vertex_origins
+            .get_mut(index)
+            .ok_or_else(|| voronoi_error("diagram vertex origins are absent"))?;
+        let assignment = *assignments
+            .get(index)
+            .ok_or_else(|| voronoi_error("diagram vertex assignment is absent"))?;
+        receipt.vertices.push(VoronoiVertexReceipt {
+            id: u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            exact_xy: exact_xy_coordinates(&vertex.point)?,
+            origins: std::mem::take(origins),
+            assignment,
+        });
+    }
+
+    receipt.edges.reserve(subdivision.edges.len());
+    for (index, edge) in subdivision.edges.iter().enumerate() {
+        let separator = edge.separator.map(|pair| pair.map(|site| site.0));
+        let frame_side = edge.frame_side.map(receipt_frame_side);
+        let mut origins = Vec::new();
+        if let Some(sites) = separator {
+            origins.push(VoronoiEdgeOrigin::Bisector { sites });
+        }
+        if let Some(side) = frame_side {
+            origins.push(VoronoiEdgeOrigin::Frame { side });
+        }
+        if clip.source.is_some() {
+            origins.extend(
+                edge.clip_sources
+                    .iter()
+                    .map(|source| VoronoiEdgeOrigin::SourceClip { segment: source.0 }),
+            );
+        }
+        receipt.edges.push(VoronoiEdgeReceipt {
+            id: u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            endpoints: edge.endpoints.map(|vertex| vertex.0),
+            separator,
+            clip_sources: edge.clip_sources.iter().map(|source| source.0).collect(),
+            frame_side,
+            owner_transition: match edge.forward.owner {
+                OwnerTransition::Preserve => [None, None],
+                OwnerTransition::Boundary { left, right } => {
+                    [left.map(|site| site.0), right.map(|site| site.0)]
+                },
+            },
+            origins,
+        });
+    }
+    for (slot, _) in subdivision.edge_of_slot.iter().enumerate() {
+        let dart = subdivision.dart(slot as u32);
+        receipt.darts.push(VoronoiDartReceipt {
+            id: u32::try_from(slot).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            origin: dart.origin.0,
+            target: dart.target.0,
+            twin: Some(dart.twin),
+            edge: dart.edge.0,
+            face: Some(dart.face.0),
+            owner: subdivision.label(dart.face).owner.map(|site| site.0),
+        });
+    }
+    for part in parts {
+        let ring_uses = |ring: &ExactSimpleRing| -> Vec<VoronoiDirectedEdgeUse> {
+            ring.edges
+                .iter()
+                .zip(ring.vertices.array_windows::<2>())
+                .map(|(&edge, &[start, end])| VoronoiDirectedEdgeUse {
+                    edge: edge.0,
+                    forward: subdivision.edge(edge).endpoints == [start, end],
+                })
+                .collect()
+        };
+        receipt.cells.push(VoronoiCellReceipt {
+            owner: part.owner.0,
+            face: Some(part.face.0),
+            shell: ring_uses(&part.shell),
+            holes: part.holes.iter().map(ring_uses).collect(),
+        });
+    }
+    for chain in chains {
+        receipt.separators.push(VoronoiSeparatorReceipt {
+            sites: chain.separator.map(|site| site.0),
+            vertices: chain.vertices.iter().map(|vertex| vertex.0).collect(),
+            edges: chain.edges.iter().map(|edge| edge.0).collect(),
+        });
+    }
+    Ok(receipt)
 }
 
 #[derive(Clone)]
 pub(super) struct EmbeddedPolygon {
     pub(super) polygon: Polygon,
-    /// `true` marks a generated Voronoi/frame edge; `false` marks a source clip fragment.
-    pub(super) computed_edges: Vec<Vec<bool>>,
+    pub(super) owner: Option<u32>,
+    pub(super) edge_roles: Vec<Vec<VoronoiRingEdgeRole>>,
+    pub(super) producer_vertices: Vec<Vec<OverlayNodeReceipt>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2213,7 +3011,7 @@ impl VoronoiProduct {
 /// emit one packed XY column; the dual lane certifies cancellation on raw
 /// segments and packs only when a caller asks for a column or rows.
 #[derive(Clone)]
-pub(super) enum EmbeddedEdges {
+enum EmbeddedEdgeData {
     Packed {
         coords: CoordSeq,
         offsets: CsrOffsetColumn,
@@ -2221,11 +3019,28 @@ pub(super) enum EmbeddedEdges {
     Segments(Vec<[XY; 2]>),
 }
 
+#[derive(Clone)]
+pub(super) struct EmbeddedEdges {
+    data: EmbeddedEdgeData,
+    receipt: std::sync::Arc<VoronoiDiagramReceipt>,
+}
+
 pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
+    empty_edges_with_receipt(std::sync::Arc::new(VoronoiDiagramReceipt::empty(
+        VoronoiProducer::Empty,
+    )))
+}
+
+fn empty_edges_with_receipt(
+    receipt: std::sync::Arc<VoronoiDiagramReceipt>,
+) -> Result<EmbeddedEdges> {
     let ends = vec![0];
-    Ok(EmbeddedEdges::Packed {
-        coords: CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
-        offsets: CsrOffsetColumn::try_new(ends, 0)?,
+    Ok(EmbeddedEdges {
+        data: EmbeddedEdgeData::Packed {
+            coords: CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
+            offsets: CsrOffsetColumn::try_new(ends, 0)?,
+        },
+        receipt,
     })
 }
 
@@ -2233,7 +3048,7 @@ fn pack_separator_chains(
     chains: &[ExactEdgeChain],
     vertices: usize,
     xy_of: impl Fn(VertexId) -> Result<XY>,
-) -> Result<EmbeddedEdges> {
+) -> Result<EmbeddedEdgeData> {
     ensure_coordseq_vertex_capacity(vertices)?;
     let offset_count = chains
         .len()
@@ -2253,7 +3068,7 @@ fn pack_separator_chains(
         }
         ends.push(xs.len());
     }
-    Ok(EmbeddedEdges::Packed {
+    Ok(EmbeddedEdgeData::Packed {
         coords: CoordSeq::try_from_vecs(xs, ys, None, None)?,
         offsets: CsrOffsetColumn::try_new(ends, vertices)?,
     })
@@ -2264,9 +3079,12 @@ impl EmbeddedEdges {
     /// smaller endpoint, and the list is ordered by both endpoints. Packed
     /// chains keep their construction order.
     fn canonical(self) -> Self {
-        match self {
-            Self::Packed { coords, offsets } => Self::Packed { coords, offsets },
-            Self::Segments(mut segments) => {
+        let Self { data, receipt } = self;
+        let data = match data {
+            EmbeddedEdgeData::Packed { coords, offsets } => {
+                EmbeddedEdgeData::Packed { coords, offsets }
+            },
+            EmbeddedEdgeData::Segments(mut segments) => {
                 for segment in &mut segments {
                     if lex_xy(segment[0], segment[1]).is_gt() {
                         segment.swap(0, 1);
@@ -2275,15 +3093,16 @@ impl EmbeddedEdges {
                 segments.sort_unstable_by(|left, right| {
                     lex_xy(left[0], right[0]).then(lex_xy(left[1], right[1]))
                 });
-                Self::Segments(segments)
+                EmbeddedEdgeData::Segments(segments)
             },
-        }
+        };
+        Self { data, receipt }
     }
 
     #[cfg(test)]
     pub(super) fn into_line_seqs(self) -> Result<Vec<LineSeq>> {
-        match self.canonical() {
-            Self::Packed { coords, offsets } => {
+        match self.canonical().data {
+            EmbeddedEdgeData::Packed { coords, offsets } => {
                 let ends = offsets.as_slice();
                 ends.array_windows::<2>()
                     .map(|&[start, end]| {
@@ -2297,7 +3116,7 @@ impl EmbeddedEdges {
                     })
                     .collect::<std::result::Result<Vec<_>, _>>()
             },
-            Self::Segments(segments) => segments
+            EmbeddedEdgeData::Segments(segments) => segments
                 .into_iter()
                 .map(|[a, b]| {
                     LineSeq::try_new(CoordSeq::try_from_vecs(
@@ -2313,10 +3132,23 @@ impl EmbeddedEdges {
 
     /// One packed XY line column with CSR vertex offsets, built directly:
     /// no per-edge geometry, no per-edge allocation.
+    #[cfg(test)]
     pub(super) fn into_line_column(self) -> Result<(CoordSeq, CsrOffsetColumn)> {
-        match self.canonical() {
-            Self::Packed { coords, offsets } => Ok((coords, offsets)),
-            Self::Segments(segments) => {
+        self.into_line_column_with_receipt()
+            .map(|(coords, offsets, _)| (coords, offsets))
+    }
+
+    pub(super) fn into_line_column_with_receipt(
+        self,
+    ) -> Result<(
+        CoordSeq,
+        CsrOffsetColumn,
+        std::sync::Arc<VoronoiDiagramReceipt>,
+    )> {
+        let Self { data, receipt } = self.canonical();
+        match data {
+            EmbeddedEdgeData::Packed { coords, offsets } => Ok((coords, offsets, receipt)),
+            EmbeddedEdgeData::Segments(segments) => {
                 let vertices = segments
                     .len()
                     .checked_mul(2)
@@ -2340,6 +3172,7 @@ impl EmbeddedEdges {
                 Ok((
                     CoordSeq::try_from_vecs(xs, ys, None, None)?,
                     CsrOffsetColumn::try_new(ends, vertices)?,
+                    receipt,
                 ))
             },
         }
@@ -2355,8 +3188,10 @@ impl EmbeddedVoronoi {
             .collect()
     }
 
-    pub(super) fn into_polygon_outputs(self) -> Vec<EmbeddedPolygon> {
-        self.polygons
+    pub(super) fn into_polygon_outputs(
+        self,
+    ) -> (Vec<EmbeddedPolygon>, std::sync::Arc<VoronoiDiagramReceipt>) {
+        (self.polygons, self.receipt)
     }
 
     pub(super) fn into_edges(self) -> EmbeddedEdges {
@@ -3150,9 +3985,13 @@ impl<'a> VoronoiEmbedding<'a> {
             return Ok(true);
         }
         let [start, end] = edge.endpoints;
-        let (start, end) = (xy_of(start)?, xy_of(end)?);
-        let side_of =
-            |site: SiteId| exact::orient2d(start, end, site_by_id(self.sites, site).point.xy());
+        let (start, end) = (
+            exact::ExactPoint::from_xy(xy_of(start)?),
+            exact::ExactPoint::from_xy(xy_of(end)?),
+        );
+        let side_of = |site: SiteId| {
+            exact::orient_points(&start, &end, &site_by_id(self.sites, site).exact_point)
+        };
         let (left, right) = match edge.forward.owner {
             OwnerTransition::Boundary { left, right } if left.is_some() || right.is_some() => {
                 (left, right)
@@ -3161,8 +4000,15 @@ impl<'a> VoronoiEmbedding<'a> {
                 return Err(voronoi_error("live separator has incomplete ownership"));
             },
         };
-        Ok(left.is_none_or(|site| side_of(site) == ExactSign::Positive)
-            && right.is_none_or(|site| side_of(site) == ExactSign::Negative))
+        let left_inside = match left {
+            Some(site) => side_of(site)? == ExactSign::Positive,
+            None => true,
+        };
+        let right_inside = match right {
+            Some(site) => side_of(site)? == ExactSign::Negative,
+            None => true,
+        };
+        Ok(left_inside && right_inside)
     }
 }
 
@@ -3241,7 +4087,7 @@ impl VoronoiEmbedding<'_> {
         }
         let marked_index = BoxIndex::build(&marked_boxes)?;
         for site in self.sites {
-            let query = exact::ExactPoint::from_xy(site.point.xy());
+            let query = &site.exact_point;
             let visit = |separator: usize| -> Result<()> {
                 let [start, end] = *marked
                     .get(separator)
@@ -3249,8 +4095,8 @@ impl VoronoiEmbedding<'_> {
                 if exact::segment_intersection(
                     &exact::ExactPoint::from_xy(start),
                     &exact::ExactPoint::from_xy(end),
-                    &query,
-                    &query,
+                    query,
+                    query,
                 )?
                 .is_point()
                 {
@@ -3262,7 +4108,7 @@ impl VoronoiEmbedding<'_> {
                 }
                 Ok(())
             };
-            marked_index.for_each_containing(Some(site.point.xy()), visit)?;
+            marked_index.for_each_containing(Some(site.rounded_xy()?), visit)?;
         }
 
         for chord in 0..self.live_edges.len() {
@@ -3608,7 +4454,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
 
         let mut sites = Vec::with_capacity(self.embedding.sites.len());
         for site in self.embedding.sites {
-            let point = site.point.xy();
+            let point = site.rounded_xy()?;
             sites.push(Bounds::new_raw(point.x, point.y, point.x, point.y));
         }
         let mut separator_bounds = Vec::new();
@@ -3864,10 +4710,10 @@ impl Problem for VoronoiProblem<'_, '_> {
         _variables: &[Self::Node],
         work: &mut W,
     ) -> Result<Vec<Self::Key>> {
-        work.charge_product(self.embedding.live_nodes.len(), 1)?;
+        work.charge_product_into_error(self.embedding.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.embedding.live_nodes.len());
         for &node in self.embedding.live_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -3875,7 +4721,7 @@ impl Problem for VoronoiProblem<'_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 keys.push(PointKey::new(
                     self.embedding.xy(node, self.embedding.coordinates)?,
                 ));
@@ -3912,7 +4758,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .len()
             .checked_mul(y_values.len())
             .expect("three candidate coordinates per axis fit in usize");
-        work.charge_product(candidate_count, 1)?;
+        work.charge_product_into_error(candidate_count, 1)?;
         candidates.reserve(candidate_count);
         for &x in &x_values {
             for &y in &y_values {
@@ -4321,15 +5167,148 @@ fn polygon_output_baseline(polygon: &Polygon) -> Result<usize> {
     )
 }
 
-fn computed_ring_edges(
+fn exact_ring_edge_roles(
     subdivision: &ExactSubdivision,
     ring: &ExactSimpleRing,
-    preserve_clip_fragments: bool,
-) -> Vec<bool> {
+    clip: &NormalizedClip<'_>,
+    clip_trace: &ClipTrace,
+) -> Result<Vec<VoronoiRingEdgeRole>> {
     ring.edges
         .iter()
-        .map(|edge| !preserve_clip_fragments || subdivision.edge(*edge).clip_sources.is_empty())
+        .zip(ring.vertices.array_windows::<2>())
+        .map(|(&edge_id, &[start, end])| {
+            let edge = subdivision.edge(edge_id);
+            let mut origins = Vec::new();
+            if let Some(pair) = edge.separator {
+                origins.push(VoronoiEdgeOrigin::Bisector {
+                    sites: pair.map(|site| site.0),
+                });
+            }
+            if let Some(side) = edge.frame_side {
+                origins.push(VoronoiEdgeOrigin::Frame {
+                    side: receipt_frame_side(side),
+                });
+            }
+            if clip.source.is_some() && !edge.clip_sources.is_empty() {
+                origins.extend(
+                    edge.clip_sources
+                        .iter()
+                        .map(|source| VoronoiEdgeOrigin::SourceClip { segment: source.0 }),
+                );
+            }
+            let forward = edge.endpoints == [start, end];
+            let mut source_uses = Vec::new();
+            for trace_ring in &clip_trace.rings {
+                for atom in &trace_ring.atoms {
+                    if atom.edge != edge_id {
+                        continue;
+                    }
+                    if clip.source.is_some()
+                        && let Some(roots) = clip.source_roots.get(atom.segment as usize)
+                    {
+                        for root in roots {
+                            let source_start = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&atom.start_parameter)?
+                            } else {
+                                atom.start_parameter.clone()
+                            };
+                            let source_end = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&atom.end_parameter)?
+                            } else {
+                                atom.end_parameter.clone()
+                            };
+                            let source_forward = (forward != atom.reversed) != root.reversed;
+                            source_uses.push(VoronoiEdgeSourceUse {
+                                source_segment: atom.segment,
+                                source_operand: None,
+                                source_ring: Some(
+                                    u32::try_from(root.ring)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                source_edge: Some(
+                                    u32::try_from(root.edge)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                forward: source_forward,
+                                start_parameter: if source_forward {
+                                    source_start.clone()
+                                } else {
+                                    source_end.clone()
+                                },
+                                end_parameter: if source_forward {
+                                    source_end
+                                } else {
+                                    source_start
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(VoronoiRingEdgeRole {
+                edge: Some(edge_id.0),
+                forward,
+                origins,
+                source_uses,
+            })
+        })
         .collect()
+}
+
+fn receipt_ring_uses(roles: &[VoronoiRingEdgeRole]) -> Result<Vec<VoronoiDirectedEdgeUse>> {
+    roles
+        .iter()
+        .map(|role| {
+            Ok(VoronoiDirectedEdgeUse {
+                edge: role
+                    .edge
+                    .ok_or_else(|| voronoi_error("published Voronoi edge has no receipt ID"))?,
+                forward: role.forward,
+            })
+        })
+        .collect()
+}
+
+fn embedded_exact_ring(
+    subdivision: &ExactSubdivision,
+    ring: &ExactSimpleRing,
+    exact_to_embedded: &EmbeddedVertices,
+    points: &[XY],
+    clip: &NormalizedClip<'_>,
+    clip_trace: &ClipTrace,
+) -> Result<(Ring, Vec<VoronoiRingEdgeRole>, Vec<OverlayNodeReceipt>)> {
+    ensure_coordseq_vertex_capacity(ring.vertices.len())?;
+    let (_, open_vertices) = ring
+        .vertices
+        .split_last()
+        .expect("simple Voronoi rings are closed");
+    let mut coordinates = Vec::with_capacity(ring.vertices.len());
+    let mut producer_vertices = Vec::with_capacity(open_vertices.len());
+    for &vertex in open_vertices {
+        let point = exact_to_embedded.point(vertex, points)?;
+        coordinates.push(Point::new_raw_xy(point.x, point.y));
+        producer_vertices.push(OverlayNodeReceipt {
+            id: vertex.0,
+            exact_point: subdivision.vertex(vertex).point.clone(),
+            assignment: point,
+        });
+    }
+    let mut roles = exact_ring_edge_roles(subdivision, ring, clip, clip_trace)?;
+    if open_vertices.len() > 2 {
+        let (start, _) = coordinates
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| lex_xy(left.xy(), right.xy()))
+            .expect("non-empty ring");
+        coordinates.rotate_left(start);
+        roles.rotate_left(start);
+        producer_vertices.rotate_left(start);
+    }
+    let first = *coordinates
+        .first()
+        .expect("an exact boundary ring has at least three open vertices");
+    coordinates.push(first);
+    Ok((Ring::closed(coordinates)?, roles, producer_vertices))
 }
 
 fn embed(
@@ -4340,6 +5319,8 @@ fn embed(
     sites: &[Site],
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
+    producer: VoronoiProducer,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     let mut live = LiveVertices::new(subdivision.vertices.len());
     let mut live_edges = Vec::new();
@@ -4491,39 +5472,23 @@ fn embed(
         0
     };
     budget.add(published.saturating_sub(baseline))?;
-    // A closed ring starts at its lexicographically smallest rounded vertex:
-    // the canonical form both lanes publish.
-    let closed_ring = |vertices: &[VertexId]| -> Result<Ring> {
-        ensure_coordseq_vertex_capacity(vertices.len())?;
-        let (_, open_vertices) = vertices
-            .split_last()
-            .expect("simple Voronoi rings are closed");
-        let open = open_vertices.len();
-        let mut coordinates = Vec::with_capacity(vertices.len());
-        for &vertex in open_vertices {
-            let point = exact_to_embedded.point(vertex, &points)?;
-            coordinates.push(Point::new_raw_xy(point.x, point.y));
-        }
-        if open > 2 {
-            let (start, _) = coordinates
-                .iter()
-                .enumerate()
-                .min_by(|(_, left), (_, right)| lex_xy(left.xy(), right.xy()))
-                .expect("non-empty ring");
-            coordinates.rotate_left(start);
-        }
-        let first = *coordinates
-            .first()
-            .expect("an exact boundary ring has at least three open vertices");
-        coordinates.push(first);
-        Ring::closed(coordinates)
-    };
+    let mut receipt = exact_diagram_receipt(
+        producer,
+        sites,
+        subdivision,
+        parts,
+        chains,
+        clip,
+        &clip_trace,
+        &exact_to_embedded,
+        &points,
+        chart,
+    )?;
     let mut labelled = Vec::with_capacity(if product.includes_polygons() {
         parts.len()
     } else {
         0
     });
-    let preserve_clip_fragments = clip.source.is_some();
     for part in parts {
         if walk_label(subdivision, part.face).owner != Some(part.owner) {
             return Err(voronoi_error("embedded cell lost its exact face owner"));
@@ -4531,31 +5496,75 @@ fn embed(
         if !product.includes_polygons() {
             continue;
         }
-        let shell = closed_ring(&part.shell.vertices)?;
-        let holes = part
+        let (shell, shell_roles, shell_vertices) = embedded_exact_ring(
+            subdivision,
+            &part.shell,
+            &exact_to_embedded,
+            &points,
+            clip,
+            &clip_trace,
+        )?;
+        let holes_with_roles = part
             .holes
             .iter()
-            .map(|hole| closed_ring(&hole.vertices))
+            .map(|hole| {
+                embedded_exact_ring(
+                    subdivision,
+                    hole,
+                    &exact_to_embedded,
+                    &points,
+                    clip,
+                    &clip_trace,
+                )
+            })
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        let holes: Vec<_> = holes_with_roles
+            .iter()
+            .map(|(ring, ..)| ring.clone())
+            .collect();
+        let edge_roles: Vec<_> = std::iter::once(shell_roles)
+            .chain(holes_with_roles.iter().map(|(_, roles, _)| roles.clone()))
+            .collect();
+        let producer_vertices = std::iter::once(shell_vertices)
+            .chain(
+                holes_with_roles
+                    .into_iter()
+                    .map(|(_, _, vertices)| vertices),
+            )
+            .collect();
         let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon)? {
             return Err(exact_embedding_unrepresentable(operation, constructed));
         }
-        let mut computed_edges = Vec::with_capacity(part.holes.len().wrapping_add(1));
-        computed_edges.push(computed_ring_edges(
-            subdivision,
-            &part.shell,
-            preserve_clip_fragments,
-        ));
-        computed_edges.extend(
-            part.holes
-                .iter()
-                .map(|hole| computed_ring_edges(subdivision, hole, preserve_clip_fragments)),
-        );
         labelled.push((part.owner, EmbeddedPolygon {
             polygon,
-            computed_edges,
+            owner: Some(part.owner.0),
+            edge_roles,
+            producer_vertices,
         }));
+    }
+    if product.includes_polygons() {
+        if receipt.cells.len() != labelled.len() {
+            return Err(voronoi_error(
+                "exact cell receipts do not match published polygon parts",
+            ));
+        }
+        for (cell, (owner, output)) in receipt.cells.iter_mut().zip(&labelled) {
+            if cell.owner != owner.0 || output.owner != Some(owner.0) {
+                return Err(voronoi_error(
+                    "exact cell receipt lost its published site owner",
+                ));
+            }
+            let (shell, holes) = output
+                .edge_roles
+                .split_first()
+                .ok_or_else(|| voronoi_error("published exact cell has no shell roles"))?;
+            cell.shell = receipt_ring_uses(shell)?;
+            cell.holes = holes
+                .iter()
+                .map(|ring| receipt_ring_uses(ring))
+                .collect::<Result<Vec<_>>>()?;
+        }
     }
     if product.includes_polygons() {
         let embedded_ring = |ring: &[exact::ExactPoint]| -> Result<Ring> {
@@ -4590,8 +5599,13 @@ fn embed(
         let comparison_polygon = Polygon::new(shell, holes);
         admit_embedded_clip(&comparison_polygon)?;
         let comparison_clip = Shape::Polygon(comparison_polygon);
-        if let Some(source) = clip.source {
-            let source = Shape::Polygon(source.clone());
+        if clip.source.is_some() {
+            let source = Shape::Polygon(
+                clip.geometry
+                    .as_ref()
+                    .expect("source clips retain their normalized chart geometry")
+                    .clone(),
+            );
             let source_gap = binary_cartesian_difference_without_partition_budget(
                 &source,
                 &comparison_clip,
@@ -4626,7 +5640,8 @@ fn embed(
         row_boxes.extend(shape_rows.iter().map(Shape::bounds));
         let row_index = BoxIndex::build(&row_boxes)?;
         for (site_index, site) in sites.iter().enumerate() {
-            let point = Shape::Point(site.point.clone());
+            let rounded_site = site.rounded_xy()?;
+            let point = Shape::Point(Point::new_raw_xy(rounded_site.x, rounded_site.y));
             if !comparison_clip.covers(&point)? {
                 continue;
             }
@@ -4645,7 +5660,7 @@ fn embed(
                 }
                 Ok(())
             };
-            row_index.for_each_containing(Some(site.point.xy()), verify_row)?;
+            row_index.for_each_containing(Some(rounded_site), verify_row)?;
             if !own {
                 return Err(exact_embedding_unrepresentable(operation, constructed));
             }
@@ -4656,15 +5671,24 @@ fn embed(
         // gap between the rounded partition and the source clip.  That numerical
         // equality is deliberately not part of the topological-snap contract.
     }
-    let edges = if product.includes_edges() {
+    let edge_data = if product.includes_edges() {
         pack_separator_chains(chains, edge_positions, |vertex| {
             exact_to_embedded.point(vertex, &points)
         })?
     } else {
-        EmbeddedEdges::Segments(Vec::new())
+        EmbeddedEdgeData::Segments(Vec::new())
     };
     let polygons = labelled.into_iter().map(|(_, output)| output).collect();
-    Ok(EmbeddedVoronoi { polygons, edges })
+    let receipt = std::sync::Arc::new(receipt);
+    let edges = EmbeddedEdges {
+        data: edge_data,
+        receipt: std::sync::Arc::clone(&receipt),
+    };
+    Ok(EmbeddedVoronoi {
+        polygons,
+        edges,
+        receipt,
+    })
 }
 
 #[cfg(test)]
@@ -4685,6 +5709,7 @@ pub(super) fn build(
     )
 }
 
+#[cfg(test)]
 pub(super) fn build_product(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
@@ -4692,6 +5717,26 @@ pub(super) fn build_product(
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
+) -> Result<EmbeddedVoronoi> {
+    build_product_with_chart(
+        sites,
+        boundary,
+        budget,
+        combinatorial_dual,
+        mesh,
+        product,
+        None,
+    )
+}
+
+pub(super) fn build_product_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    combinatorial_dual: bool,
+    mesh: &CertifiedDelaunay,
+    product: VoronoiProduct,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -4703,10 +5748,11 @@ pub(super) fn build_product(
     {
         return Err(voronoi_error("Voronoi sites are not canonically indexed"));
     }
-    let normal_or_zero = sites.iter().all(|site| {
-        let xy = site.point.xy();
-        (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal())
-    });
+    let mut normal_or_zero = true;
+    for site in sites {
+        let xy = site.rounded_xy()?;
+        normal_or_zero &= (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal());
+    }
     if combinatorial_dual
         && sites.len() >= 3
         && normal_or_zero
@@ -4715,9 +5761,9 @@ pub(super) fn build_product(
             VoronoiBoundary::Envelope | VoronoiBoundary::Padded
         )
     {
-        return dual_build_product(sites, boundary, budget, mesh, product);
+        return dual_build_product(sites, boundary, budget, mesh, product, chart);
     }
-    let clip = normalize_clip(sites, boundary, product.includes_polygons())?;
+    let clip = normalize_clip_with_chart(sites, boundary, product.includes_polygons(), chart)?;
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",
@@ -4740,9 +5786,20 @@ pub(super) fn build_product(
     } else {
         Vec::new()
     };
-    embed(&subdivision, &parts, &chains, &clip, sites, product, budget)
+    embed(
+        &subdivision,
+        &parts,
+        &chains,
+        &clip,
+        sites,
+        product,
+        budget,
+        VoronoiProducer::Exact,
+        chart,
+    )
 }
 
+#[cfg(test)]
 pub(super) fn build_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
@@ -4750,13 +5807,25 @@ pub(super) fn build_edges(
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedEdges> {
-    Ok(build_product(
+    build_edges_with_chart(sites, boundary, budget, combinatorial_dual, mesh, None)
+}
+
+pub(super) fn build_edges_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    combinatorial_dual: bool,
+    mesh: &CertifiedDelaunay,
+    chart: Option<&PointSelectionChart>,
+) -> Result<EmbeddedEdges> {
+    Ok(build_product_with_chart(
         sites,
         boundary,
         budget,
         combinatorial_dual,
         mesh,
         VoronoiProduct::Edges,
+        chart,
     )?
     .into_edges())
 }
@@ -5030,49 +6099,49 @@ fn clip_certificate_data<A: SearchAccount>(
 /// two exact half-planes and rounded once; neighbouring cells round the same
 /// exact bisector crossings, so they share their vertices. A polygon clip then
 /// intersects each strip with the polygon.
-pub(super) fn build_collinear_polygons(
+pub(super) fn build_collinear_polygons_with_chart(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
-) -> Result<Vec<EmbeddedPolygon>> {
+    chart: Option<&PointSelectionChart>,
+) -> Result<EmbeddedVoronoi> {
     let order = mesh
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
     if matches!(boundary, VoronoiBoundary::Envelope)
-        && sites.first().is_some_and(|first| {
-            sites.iter().all(|site| site.point.x == first.point.x)
-                || sites.iter().all(|site| site.point.y == first.point.y)
-        })
+        && let Some(first) = sites.first()
     {
-        return Ok(Vec::new());
+        let mut same_x = true;
+        let mut same_y = true;
+        for site in sites.iter().skip(1) {
+            same_x &= site.exact_point.compare_x(&first.exact_point)?.is_eq();
+            same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
+        }
+        if same_x || same_y {
+            let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites)?);
+            return Ok(EmbeddedVoronoi {
+                polygons: Vec::new(),
+                edges: EmbeddedEdges {
+                    data: EmbeddedEdgeData::Segments(Vec::new()),
+                    receipt: std::sync::Arc::clone(&receipt),
+                },
+                receipt,
+            });
+        }
     }
-    let clip = normalize_clip(sites, boundary, true)?;
-    let frame = match clip.source {
-        None => clip
-            .rings
+    let clip = normalize_clip_with_chart(sites, boundary, true, chart)?;
+    let frame = if clip.source.is_none() {
+        clip.rings
             .first()
             .cloned()
-            .expect("generated Voronoi clips contain their frame ring"),
-        Some(polygon) => {
-            let extent = |values: &[f64]| {
-                values
-                    .iter()
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &value| {
-                        (low.min(value), high.max(value))
-                    })
-            };
-            let (min_x, max_x) = extent(polygon.shell.xs());
-            let (min_y, max_y) = extent(polygon.shell.ys());
-            [
-                (min_x, min_y),
-                (max_x, min_y),
-                (max_x, max_y),
-                (min_x, max_y),
-            ]
-            .map(|(x, y)| exact::ExactPoint::from_xy(XY::new(x, y)))
-            .to_vec()
-        },
+            .expect("generated Voronoi clips contain their frame ring")
+    } else {
+        let outer = clip
+            .rings
+            .first()
+            .ok_or_else(|| voronoi_error("Voronoi clip has no outer ring"))?;
+        exact::axis_aligned_bounds(outer.iter())?.to_vec()
     };
     let mut cells = Vec::new();
     let baseline = clip.polygon_baseline.unwrap_or(0);
@@ -5081,26 +6150,37 @@ pub(super) fn build_collinear_polygons(
     let mut previous = None;
     while let Some(site_index) = ordered_sites.next() {
         let next = ordered_sites.peek().copied();
-        let here = site_at(sites, site_index).point.xy();
+        let here = &site_at(sites, site_index).exact_point;
         let mut ring = frame.clone();
+        let mut ring_origins = FrameSide::ALL
+            .into_iter()
+            .map(|side| {
+                vec![VoronoiEdgeOrigin::Frame {
+                    side: receipt_frame_side(side),
+                }]
+            })
+            .collect::<Vec<_>>();
         for neighbor in previous.into_iter().chain(next) {
-            let line = exact::ExactLine::perpendicular_bisector(
+            let line = exact::ExactLine::perpendicular_bisector_points(
                 here,
-                site_at(sites, neighbor).point.xy(),
+                &site_at(sites, neighbor).exact_point,
             )?;
-            let keep = exact::signed_line_product(&line, &exact::ExactPoint::from_xy(here))?;
-            ring = clip_to_half_plane(&ring, &line, keep)?;
+            let keep = exact::signed_line_product(&line, here)?;
+            let [left, right] = [
+                u32::try_from(site_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                u32::try_from(neighbor).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            ];
+            let pair = [left.min(right), left.max(right)];
+            (ring, ring_origins) = clip_to_half_plane_with_origins(
+                &ring,
+                &ring_origins,
+                &line,
+                keep,
+                VoronoiEdgeOrigin::Bisector { sites: pair },
+            )?;
         }
-        let mut vertices: Vec<XY> = Vec::new();
-        for point in &ring {
-            let rounded = point.round_nearest_even()?;
-            if vertices.last() != Some(&rounded) {
-                vertices.push(rounded);
-            }
-        }
-        while vertices.len() > 1 && vertices.first() == vertices.last() {
-            vertices.pop();
-        }
+        let (mut vertices, mut edge_origins, mut exact_vertices) =
+            rounded_ring_with_origins(&ring, &ring_origins)?;
         if vertices.len() < 3 {
             continue;
         }
@@ -5125,6 +6205,8 @@ pub(super) fn build_collinear_polygons(
             })
             .expect("a nondegenerate Voronoi strip has a least vertex");
         vertices.rotate_left(least);
+        edge_origins.rotate_left(least);
+        exact_vertices.rotate_left(least);
         let first = *vertices
             .first()
             .expect("a nondegenerate Voronoi strip has a first vertex");
@@ -5133,61 +6215,681 @@ pub(super) fn build_collinear_polygons(
             Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
             Vec::new(),
         );
-        match clip.source {
-            None => {
-                let computed_edges = vec![vec![true; strip.shell.len().saturating_sub(1)]];
+        if clip.source.is_none() {
+            let edge_roles = vec![
+                edge_origins
+                    .into_iter()
+                    .map(|origins| VoronoiRingEdgeRole {
+                        edge: None,
+                        forward: true,
+                        origins,
+                        source_uses: Vec::new(),
+                    })
+                    .collect::<Vec<_>>(),
+            ];
+            let producer_vertices = exact_vertices
+                .into_iter()
+                .zip(vertices.iter().copied())
+                .enumerate()
+                .map(|(index, (exact_point, assignment))| {
+                    Ok(OverlayNodeReceipt {
+                        id: u32::try_from(index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        exact_point,
+                        assignment,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            cells.push(EmbeddedPolygon {
+                polygon: strip,
+                owner: Some(
+                    u32::try_from(site_index)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                ),
+                edge_roles,
+                producer_vertices: vec![producer_vertices],
+            });
+        } else {
+            let strip = Shape::Polygon(strip);
+            let clip_shape = Shape::Polygon(
+                clip.geometry
+                    .as_ref()
+                    .expect("polygon clips retain their chart-space polygon")
+                    .clone(),
+            );
+            let intersection = binary_cartesian_intersection_with_edge_roles(&strip, &clip_shape)?;
+            for part in intersection {
+                let count = polygon_output_count(
+                    part.polygon.shell.len(),
+                    part.polygon.holes.iter().map(|hole| hole.len()),
+                )?;
+                let next_published = published
+                    .checked_add(count)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                budget.check_additional(next_published.saturating_sub(baseline))?;
+                published = next_published;
+                let edge_roles =
+                    collinear_overlay_edge_roles(part.edge_sources, &edge_origins, &clip)?;
                 cells.push(EmbeddedPolygon {
-                    polygon: strip,
-                    computed_edges,
+                    polygon: part.polygon,
+                    owner: Some(
+                        u32::try_from(site_index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    ),
+                    edge_roles,
+                    producer_vertices: part.vertices,
                 });
-            },
-            Some(polygon) => {
-                let strip = Shape::Polygon(strip);
-                let clip = Shape::Polygon(polygon.clone());
-                for (part, computed_edges) in
-                    binary_cartesian_intersection_with_edge_roles(&strip, &clip)?
-                {
-                    let count = polygon_output_count(
-                        part.shell.len(),
-                        part.holes.iter().map(|hole| hole.len()),
-                    )?;
-                    let next_published = published
-                        .checked_add(count)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    budget.check_additional(next_published.saturating_sub(baseline))?;
-                    published = next_published;
-                    cells.push(EmbeddedPolygon {
-                        polygon: part,
-                        computed_edges,
-                    });
-                }
-            },
+            }
         }
         previous = Some(site_index);
     }
     budget.add(published.saturating_sub(baseline))?;
-    Ok(cells)
+    let receipt = std::sync::Arc::new(collinear_polygon_receipt(sites, &clip, &mut cells, chart)?);
+    Ok(EmbeddedVoronoi {
+        polygons: cells,
+        edges: EmbeddedEdges {
+            data: EmbeddedEdgeData::Segments(Vec::new()),
+            receipt: std::sync::Arc::clone(&receipt),
+        },
+        receipt,
+    })
 }
 
-/// The part of a convex ring on the `keep` side of `line`, closed.
-fn clip_to_half_plane(
+fn clip_to_half_plane_with_origins(
     ring: &[exact::ExactPoint],
+    edge_origins: &[Vec<VoronoiEdgeOrigin>],
     line: &exact::ExactLine,
     keep: ExactSign,
-) -> Result<Vec<exact::ExactPoint>> {
-    let mut kept = Vec::new();
-    for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+    cut_origin: VoronoiEdgeOrigin,
+) -> Result<(Vec<exact::ExactPoint>, Vec<Vec<VoronoiEdgeOrigin>>)> {
+    if ring.len() != edge_origins.len() {
+        return Err(voronoi_error(
+            "collinear strip edge origins do not match the exact ring",
+        ));
+    }
+    struct Piece {
+        start: exact::ExactPoint,
+        end: exact::ExactPoint,
+        origins: Vec<VoronoiEdgeOrigin>,
+    }
+    let mut pieces = Vec::new();
+    for (index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
         let start_side = exact::signed_line_product(line, start)?;
         let end_side = exact::signed_line_product(line, end)?;
-        if start_side == keep || start_side == ExactSign::Zero {
-            kept.push(start.clone());
-        }
-        if start_side != ExactSign::Zero && end_side != ExactSign::Zero && start_side != end_side {
-            let support = exact::ExactLine::through_points(start, end)?;
-            kept.push(exact::line_intersection(line, &support)?);
+        let start_inside = start_side == keep || start_side == ExactSign::Zero;
+        let end_inside = end_side == keep || end_side == ExactSign::Zero;
+        let crossing = if start_inside == end_inside {
+            None
+        } else {
+            Some(if start_side == ExactSign::Zero {
+                start.clone()
+            } else if end_side == ExactSign::Zero {
+                end.clone()
+            } else {
+                let support = exact::ExactLine::through_points(start, end)?;
+                exact::line_intersection(line, &support)?
+            })
+        };
+        let (piece_start, piece_end) = match (start_inside, end_inside) {
+            (true, true) => (Some(start.clone()), Some(end.clone())),
+            (true, false) => (Some(start.clone()), crossing),
+            (false, true) => (crossing, Some(end.clone())),
+            (false, false) => (None, None),
+        };
+        if let (Some(piece_start), Some(piece_end)) = (piece_start, piece_end)
+            && !piece_start.same_position(&piece_end)?
+        {
+            pieces.push(Piece {
+                start: piece_start,
+                end: piece_end,
+                origins: edge_origins
+                    .get(index)
+                    .ok_or_else(|| voronoi_error("collinear strip edge origins are absent"))?
+                    .clone(),
+            });
         }
     }
-    Ok(kept)
+    if pieces.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut edges = Vec::with_capacity(pieces.len().saturating_add(1));
+    for (piece, next) in pieces.iter().zip(pieces.iter().cycle().skip(1)) {
+        edges.push((
+            piece.start.clone(),
+            piece.end.clone(),
+            piece.origins.clone(),
+        ));
+        if !piece.end.same_position(&next.start)? {
+            edges.push((piece.end.clone(), next.start.clone(), vec![
+                cut_origin.clone(),
+            ]));
+        }
+    }
+    let vertices = edges.iter().map(|(start, ..)| start.clone()).collect();
+    let origins = edges.into_iter().map(|(_, _, origins)| origins).collect();
+    Ok((vertices, origins))
+}
+
+type RoundedRingWithOrigins = (Vec<XY>, Vec<Vec<VoronoiEdgeOrigin>>, Vec<exact::ExactPoint>);
+
+fn rounded_ring_with_origins(
+    ring: &[exact::ExactPoint],
+    edge_origins: &[Vec<VoronoiEdgeOrigin>],
+) -> Result<RoundedRingWithOrigins> {
+    if ring.len() != edge_origins.len() {
+        return Err(voronoi_error(
+            "collinear strip edge origins do not match the exact ring",
+        ));
+    }
+    let Some(first) = ring.first() else {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    };
+    let mut points = vec![first.round_nearest_even()?];
+    let mut exact_points = vec![first.clone()];
+    let mut origins = Vec::with_capacity(ring.len());
+    let mut pending = Vec::new();
+    for (index, (edge_origin, next_vertex)) in edge_origins
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .enumerate()
+    {
+        for origin in edge_origin {
+            if !pending.contains(origin) {
+                pending.push(origin.clone());
+            }
+        }
+        let next = next_vertex.round_nearest_even()?;
+        let current = *points
+            .last()
+            .expect("the exact strip ring begins with a point");
+        if next != current {
+            origins.push(std::mem::take(&mut pending));
+            if index.saturating_add(1) < ring.len() {
+                points.push(next);
+                exact_points.push(next_vertex.clone());
+            }
+        }
+    }
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+        exact_points.pop();
+        let last_edge = origins
+            .last_mut()
+            .ok_or_else(|| voronoi_error("rounded collinear strip has no closing edge"))?;
+        for origin in std::mem::take(&mut pending) {
+            if !last_edge.contains(&origin) {
+                last_edge.push(origin);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        return Err(voronoi_error(
+            "rounded collinear strip leaves an unassigned edge origin",
+        ));
+    }
+    if origins.len() != points.len() {
+        return Err(voronoi_error("rounded collinear strip lost an edge origin"));
+    }
+    Ok((points, origins, exact_points))
+}
+
+fn clip_segment_offsets(clip: &NormalizedClip<'_>) -> Result<Vec<usize>> {
+    let offset_count = clip
+        .rings
+        .len()
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut offsets: Vec<usize> = Vec::with_capacity(offset_count);
+    offsets.push(0);
+    for ring in &clip.rings {
+        let current = offsets
+            .last()
+            .copied()
+            .expect("clip segment offsets begin at zero");
+        offsets.push(
+            current
+                .checked_add(ring.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        );
+    }
+    Ok(offsets)
+}
+
+fn collinear_overlay_edge_roles(
+    source_edges: Vec<Vec<Vec<OverlaySourceEdgeUse>>>,
+    strip_origins: &[Vec<VoronoiEdgeOrigin>],
+    clip: &NormalizedClip<'_>,
+) -> Result<Vec<Vec<VoronoiRingEdgeRole>>> {
+    let clip_offsets = clip_segment_offsets(clip)?;
+    let mut rings = Vec::with_capacity(source_edges.len());
+    for ring in source_edges {
+        let mut roles = Vec::with_capacity(ring.len());
+        for edge_sources in ring {
+            let mut origins = Vec::new();
+            let mut source_uses = Vec::with_capacity(edge_sources.len());
+            for source in edge_sources {
+                let location = source.location;
+                match location.operand {
+                    0 => {
+                        if location.ring != 0 {
+                            return Err(voronoi_error(
+                                "collinear strip source has a non-shell ring ID",
+                            ));
+                        }
+                        let strip_edge = usize::try_from(location.edge)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                        let strip_origins = strip_origins
+                            .get(strip_edge)
+                            .ok_or_else(|| voronoi_error("collinear strip edge role is unknown"))?;
+                        for origin in strip_origins {
+                            if !origins.contains(origin) {
+                                origins.push(origin.clone());
+                            }
+                        }
+                        source_uses.push(VoronoiEdgeSourceUse {
+                            source_segment: source.source_id,
+                            source_operand: Some(location.operand),
+                            source_ring: Some(location.ring),
+                            source_edge: Some(location.edge),
+                            forward: source.forward,
+                            start_parameter: source.start_parameter,
+                            end_parameter: source.end_parameter,
+                        });
+                    },
+                    1 => {
+                        let ring = usize::try_from(location.ring)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                        let edge = usize::try_from(location.edge)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                        let segment = clip_offsets
+                            .get(ring)
+                            .copied()
+                            .and_then(|offset| offset.checked_add(edge))
+                            .ok_or_else(|| voronoi_error("clip source edge is unknown"))?;
+                        let segment = u32::try_from(segment)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                        let origin = VoronoiEdgeOrigin::SourceClip { segment };
+                        if !origins.contains(&origin) {
+                            origins.push(origin);
+                        }
+                        let roots = clip
+                            .source_roots
+                            .get(segment as usize)
+                            .ok_or_else(|| voronoi_error("clip source root is unknown"))?;
+                        for root in roots {
+                            let start_parameter = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&source.start_parameter)?
+                            } else {
+                                source.start_parameter.clone()
+                            };
+                            let end_parameter = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&source.end_parameter)?
+                            } else {
+                                source.end_parameter.clone()
+                            };
+                            source_uses.push(VoronoiEdgeSourceUse {
+                                source_segment: segment,
+                                source_operand: Some(location.operand),
+                                source_ring: Some(
+                                    u32::try_from(root.ring)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                source_edge: Some(
+                                    u32::try_from(root.edge)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                forward: source.forward != root.reversed,
+                                start_parameter,
+                                end_parameter,
+                            });
+                        }
+                    },
+                    _ => {
+                        return Err(voronoi_error(
+                            "collinear overlay returned an unknown operand",
+                        ));
+                    },
+                }
+            }
+            if origins.is_empty() {
+                return Err(voronoi_error(
+                    "collinear output edge has no producer origin",
+                ));
+            }
+            roles.push(VoronoiRingEdgeRole {
+                edge: None,
+                forward: true,
+                origins,
+                source_uses,
+            });
+        }
+        rings.push(roles);
+    }
+    Ok(rings)
+}
+
+fn collinear_polygon_receipt(
+    sites: &[Site],
+    clip: &NormalizedClip<'_>,
+    cells: &mut [EmbeddedPolygon],
+    chart: Option<&PointSelectionChart>,
+) -> Result<VoronoiDiagramReceipt> {
+    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip, None)?;
+    let vertex_count = cells
+        .iter()
+        .flat_map(|cell| &cell.producer_vertices)
+        .try_fold(0_usize, |count, ring| {
+            count
+                .checked_add(ring.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)
+        })?;
+    let mut vertex_ids =
+        try_hash_map_with_capacity::<[exact::ExactRational; 2], u32>(vertex_count)?;
+    let mut site_ids = try_hash_map_with_capacity::<[exact::ExactRational; 2], u32>(sites.len())?;
+    for site in sites {
+        let _ = site_ids.insert(exact_xy_coordinates(&site.exact_point)?, site.id as u32);
+    }
+    let mut edge_ids =
+        try_hash_map_with_capacity::<(Vec<VoronoiEdgeOrigin>, u32, u32), u32>(vertex_count)?;
+    let mut first_darts = Vec::new();
+    for cell in cells {
+        let owner = cell
+            .owner
+            .ok_or_else(|| voronoi_error("collinear output cell has no site owner"))?;
+        if cell.producer_vertices.len() != cell.edge_roles.len() {
+            return Err(voronoi_error(
+                "collinear output vertex and edge role rings do not align",
+            ));
+        }
+        let mut ring_ids = Vec::with_capacity(cell.producer_vertices.len());
+        for (ring_index, vertices) in cell.producer_vertices.iter().enumerate() {
+            let mut ids = Vec::with_capacity(vertices.len());
+            for vertex in vertices {
+                let key = exact_xy_coordinates(&vertex.exact_point)?;
+                let id = if let Some(&id) = vertex_ids.get(&key) {
+                    let assignment = receipt
+                        .vertices
+                        .get(id as usize)
+                        .and_then(|receipt| receipt.assignment)
+                        .ok_or_else(|| voronoi_error("collinear vertex assignment is absent"))?;
+                    if PointKey::new(assignment) != PointKey::new(vertex.assignment) {
+                        return Err(voronoi_error(
+                            "one exact collinear vertex has conflicting assignments",
+                        ));
+                    }
+                    let receipt_vertex = receipt
+                        .vertices
+                        .get_mut(id as usize)
+                        .ok_or_else(|| voronoi_error("collinear vertex identity is absent"))?;
+                    if !receipt_vertex
+                        .origins
+                        .iter()
+                        .any(|origin| matches!(origin, VoronoiVertexOrigin::OverlayNode { node } if *node == vertex.id))
+                    {
+                        receipt_vertex
+                            .origins
+                            .push(VoronoiVertexOrigin::OverlayNode { node: vertex.id });
+                    }
+                    id
+                } else {
+                    let id = u32::try_from(receipt.vertices.len())
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                    let mut origins = chart_vertex_origins(chart, &vertex.exact_point)?;
+                    origins.push(VoronoiVertexOrigin::OverlayNode { node: vertex.id });
+                    if let Some(&site) = site_ids.get(&key) {
+                        origins.push(VoronoiVertexOrigin::SourceSite { site });
+                    }
+                    receipt.vertices.push(VoronoiVertexReceipt {
+                        id,
+                        exact_xy: key.clone(),
+                        origins,
+                        assignment: Some(vertex.assignment),
+                    });
+                    receipt.assignments.push(VoronoiAssignmentReceipt {
+                        vertex: id,
+                        embedded: id,
+                        point: vertex.assignment,
+                    });
+                    let _ = vertex_ids.insert(key, id);
+                    id
+                };
+                ids.push(id);
+            }
+            if ids.len()
+                != cell
+                    .edge_roles
+                    .get(ring_index)
+                    .ok_or_else(|| voronoi_error("collinear output edge role ring is absent"))?
+                    .len()
+            {
+                return Err(voronoi_error(
+                    "collinear output ring edges do not match its vertices",
+                ));
+            }
+            ring_ids.push(ids);
+        }
+
+        let mut ring_uses = Vec::with_capacity(ring_ids.len());
+        for (ring_index, (ids, roles)) in ring_ids.iter().zip(&mut cell.edge_roles).enumerate() {
+            let vertices = cell
+                .producer_vertices
+                .get(ring_index)
+                .ok_or_else(|| voronoi_error("collinear output exact vertex ring is absent"))?;
+            let exact_ring: Vec<_> = vertices
+                .iter()
+                .map(|vertex| vertex.exact_point.clone())
+                .collect();
+            let orientation = exact::cycle_orientation(&exact_ring)?;
+            let solid_left = if ring_index == 0 {
+                orientation == ExactSign::Positive
+            } else {
+                orientation == ExactSign::Negative
+            };
+            let mut uses = Vec::with_capacity(roles.len());
+            for ((&start, &end), role) in ids
+                .iter()
+                .zip(ids.iter().cycle().skip(1))
+                .zip(roles.iter_mut())
+            {
+                if start == end {
+                    return Err(voronoi_error("collinear output has a zero-length edge"));
+                }
+                let low = start.min(end);
+                let high = start.max(end);
+                let forward = start == low;
+                let mut origins = role.origins.clone();
+                origins.sort_unstable();
+                origins.dedup();
+                let key = (origins.clone(), low, high);
+                let filled_left_canonical = solid_left == forward;
+                let edge_id = if let Some(&edge) = edge_ids.get(&key) {
+                    let _ = receipt
+                        .edges
+                        .get(edge as usize)
+                        .ok_or_else(|| voronoi_error("collinear edge identity is absent"))?;
+                    edge
+                } else {
+                    let edge = u32::try_from(receipt.edges.len())
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                    let clip_sources: Vec<_> = origins
+                        .iter()
+                        .filter_map(|origin| match origin {
+                            VoronoiEdgeOrigin::SourceClip { segment } => Some(*segment),
+                            VoronoiEdgeOrigin::Bisector { .. }
+                            | VoronoiEdgeOrigin::Frame { .. } => None,
+                        })
+                        .collect();
+                    let frame_side = origins.iter().find_map(|origin| match origin {
+                        VoronoiEdgeOrigin::Frame { side } => Some(*side),
+                        VoronoiEdgeOrigin::SourceClip { .. }
+                        | VoronoiEdgeOrigin::Bisector { .. } => None,
+                    });
+                    receipt.edges.push(VoronoiEdgeReceipt {
+                        id: edge,
+                        endpoints: [low, high],
+                        separator: None,
+                        clip_sources,
+                        frame_side,
+                        owner_transition: [None, None],
+                        origins: origins.clone(),
+                    });
+                    let _ = edge_ids.insert(key, edge);
+                    first_darts.push(None);
+                    edge
+                };
+                role.edge = Some(edge_id);
+                role.forward = forward;
+                let dart_id = u32::try_from(receipt.darts.len())
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                let twin = *first_darts
+                    .get(edge_id as usize)
+                    .ok_or_else(|| voronoi_error("collinear edge has no dart row"))?;
+                let twin_owner = if let Some(twin) = twin {
+                    let previous = receipt
+                        .darts
+                        .get_mut(twin as usize)
+                        .ok_or_else(|| voronoi_error("collinear twin dart is absent"))?;
+                    if previous.origin != end || previous.target != start || previous.twin.is_some()
+                    {
+                        return Err(voronoi_error(
+                            "collinear shared edge has inconsistent directed uses",
+                        ));
+                    }
+                    previous.twin = Some(dart_id);
+                    Some(
+                        previous
+                            .owner
+                            .ok_or_else(|| voronoi_error("collinear twin has no owner"))?,
+                    )
+                } else {
+                    *first_darts
+                        .get_mut(edge_id as usize)
+                        .ok_or_else(|| voronoi_error("collinear edge has no dart row"))? =
+                        Some(dart_id);
+                    None
+                };
+                let separator = {
+                    let edge = receipt
+                        .edges
+                        .get_mut(edge_id as usize)
+                        .ok_or_else(|| voronoi_error("collinear edge identity is absent"))?;
+                    let (side_owner, opposite_owner) = if filled_left_canonical {
+                        let [left, right] = &mut edge.owner_transition;
+                        (left, right)
+                    } else {
+                        let [left, right] = &mut edge.owner_transition;
+                        (right, left)
+                    };
+                    if side_owner.is_some() {
+                        return Err(voronoi_error(
+                            "collinear edge has duplicate directed uses on one owner side",
+                        ));
+                    }
+                    *side_owner = Some(owner);
+                    if let Some(twin_owner) = twin_owner {
+                        if *opposite_owner != Some(twin_owner) {
+                            return Err(voronoi_error(
+                                "collinear opposite dart does not match its recorded owner side",
+                            ));
+                        }
+                        if twin_owner == owner {
+                            None
+                        } else {
+                            let owners = if owner < twin_owner {
+                                [owner, twin_owner]
+                            } else {
+                                [twin_owner, owner]
+                            };
+                            let origin_pair = edge.origins.iter().find_map(|origin| match origin {
+                                VoronoiEdgeOrigin::Bisector { sites } if *sites == owners => {
+                                    Some(*sites)
+                                },
+                                VoronoiEdgeOrigin::SourceClip { .. }
+                                | VoronoiEdgeOrigin::Bisector { .. }
+                                | VoronoiEdgeOrigin::Frame { .. } => None,
+                            });
+                            let separator = origin_pair.ok_or_else(|| {
+                                voronoi_error(
+                                    "collinear shared owners have no matching bisector origin",
+                                )
+                            })?;
+                            edge.separator = Some(separator);
+                            Some(separator)
+                        }
+                    } else {
+                        None
+                    }
+                };
+                receipt.darts.push(VoronoiDartReceipt {
+                    id: dart_id,
+                    origin: start,
+                    target: end,
+                    twin,
+                    edge: edge_id,
+                    face: None,
+                    owner: Some(owner),
+                });
+                if let Some(separator) = separator {
+                    receipt.separators.push(VoronoiSeparatorReceipt {
+                        sites: separator,
+                        vertices: vec![low, high],
+                        edges: vec![edge_id],
+                    });
+                }
+                for source_use in &role.source_uses {
+                    if source_use.source_operand == Some(1) {
+                        let segment = receipt
+                            .clip_segments
+                            .get_mut(source_use.source_segment as usize)
+                            .ok_or_else(|| voronoi_error("collinear clip segment is absent"))?;
+                        segment.atoms.push(VoronoiClipAtomReceipt {
+                            edge: edge_id,
+                            reversed: !source_use.forward,
+                            start_parameter: source_use.start_parameter.clone(),
+                            end_parameter: source_use.end_parameter.clone(),
+                        });
+                        for (vertex, parameter) in [
+                            (start, &source_use.start_parameter),
+                            (end, &source_use.end_parameter),
+                        ] {
+                            if let Some(receipt_vertex) = receipt.vertices.get_mut(vertex as usize)
+                            {
+                                receipt_vertex
+                                    .origins
+                                    .push(VoronoiVertexOrigin::SourceClip {
+                                        segment: source_use.source_segment,
+                                        parameter: parameter.clone(),
+                                        source_ring: source_use
+                                            .source_ring
+                                            .map(|ring| ring as usize),
+                                        source_edge: source_use
+                                            .source_edge
+                                            .map(|edge| edge as usize),
+                                    });
+                            }
+                        }
+                    }
+                }
+                uses.push(VoronoiDirectedEdgeUse {
+                    edge: edge_id,
+                    forward,
+                });
+            }
+            ring_uses.push(uses);
+        }
+        let mut ring_uses = ring_uses.into_iter();
+        let shell = ring_uses
+            .next()
+            .ok_or_else(|| voronoi_error("collinear output cell has no shell"))?;
+        receipt.cells.push(VoronoiCellReceipt {
+            owner,
+            face: None,
+            shell,
+            holes: ring_uses.collect(),
+        });
+    }
+    Ok(receipt)
 }
 
 fn collinear_clip_events(
@@ -5201,25 +6903,30 @@ fn collinear_clip_events(
     let first = sites
         .get(first_site)
         .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-        .point
-        .xy();
+        .exact_point
+        .clone();
     let last = sites
         .get(last_site)
         .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-        .point
-        .xy();
-    let direction_x = exact::try_difference(last.x, first.x)?;
-    let direction_y = exact::try_difference(last.y, first.y)?;
-    let projection = |point: XY| {
-        exact::ExactPoint::from_xy(point).projected_coordinate(&direction_x, &direction_y)
+        .exact_point
+        .clone();
+    let one = exact::ExactDyadic::one();
+    let zero = exact::ExactDyadic::zero();
+    let x = |point: &exact::ExactPoint| point.projected_coordinate(&one, &zero);
+    let y = |point: &exact::ExactPoint| point.projected_coordinate(&zero, &one);
+    let direction_x = x(&last)?.try_subtract(&x(&first)?)?;
+    let direction_y = y(&last)?.try_subtract(&y(&first)?)?;
+    let projection = |point: &exact::ExactPoint| {
+        x(point)?
+            .try_product(&direction_x)?
+            .try_add(&y(point)?.try_product(&direction_y)?)
     };
     let mut site_projections = Vec::with_capacity(order.len());
     for &site in order {
-        let point = sites
+        let point = &sites
             .get(site)
             .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-            .point
-            .xy();
+            .exact_point;
         site_projections.push(projection(point)?);
     }
     let mut bisectors = Vec::with_capacity(order.len().saturating_sub(1));
@@ -5259,12 +6966,8 @@ fn collinear_clip_events(
     let twice = exact::ExactRational::from_f64(2.0);
     for ring in &clip.rings {
         for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-            let start_level = start
-                .projected_coordinate(&direction_x, &direction_y)?
-                .try_product(&twice)?;
-            let end_level = end
-                .projected_coordinate(&direction_x, &direction_y)?
-                .try_product(&twice)?;
+            let start_level = projection(start)?.try_product(&twice)?;
+            let end_level = projection(end)?.try_product(&twice)?;
             let edge_index = edges.len();
             edges.push(CollinearClipEdge { start, end });
             let (low, high) = if start_level.try_cmp(&end_level)?.is_le() {
@@ -5320,17 +7023,15 @@ fn collinear_clip_events(
         }
 
         let [left_site, right_site] = bisector.sites;
-        let line = exact::ExactLine::perpendicular_bisector(
-            sites
+        let line = exact::ExactLine::perpendicular_bisector_points(
+            &sites
                 .get(left_site)
                 .ok_or_else(|| voronoi_error("collinear bisector site is out of range"))?
-                .point
-                .xy(),
-            sites
+                .exact_point,
+            &sites
                 .get(right_site)
                 .ok_or_else(|| voronoi_error("collinear bisector site is out of range"))?
-                .point
-                .xy(),
+                .exact_point,
         )?;
         let mut events = Vec::with_capacity(active.len().saturating_mul(2));
         for &edge_index in &active {
@@ -5466,11 +7167,22 @@ fn collinear_clip_events(
     })
 }
 
+#[cfg(test)]
 pub(super) fn build_collinear_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
+) -> Result<EmbeddedEdges> {
+    build_collinear_edges_with_chart(sites, boundary, budget, mesh, None)
+}
+
+pub(super) fn build_collinear_edges_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    mesh: &CertifiedDelaunay,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedEdges> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -5479,20 +7191,21 @@ pub(super) fn build_collinear_edges(
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
     if matches!(boundary, VoronoiBoundary::Envelope) {
-        let extent = |coordinate: fn(&Site) -> f64| {
-            let values = sites.iter().map(coordinate);
-            (
-                values.clone().reduce(f64::min).unwrap(),
-                values.reduce(f64::max).unwrap(),
-            )
-        };
-        let (min_x, max_x) = extent(|site| site.point.x);
-        let (min_y, max_y) = extent(|site| site.point.y);
-        if min_x == max_x || min_y == max_y {
+        if let Some(first) = sites.first() {
+            let mut same_x = true;
+            let mut same_y = true;
+            for site in sites.iter().skip(1) {
+                same_x &= site.exact_point.compare_x(&first.exact_point)?.is_eq();
+                same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
+            }
+            if same_x || same_y {
+                return empty_packed_edges();
+            }
+        } else {
             return empty_packed_edges();
         }
     }
-    let clip = normalize_clip(sites, boundary, false)?;
+    let clip = normalize_clip_with_chart(sites, boundary, false, chart)?;
     let CollinearClipEvents {
         separators: exact_chains,
         edge_events,
@@ -5520,14 +7233,21 @@ pub(super) fn build_collinear_edges(
     if edge_events.next().is_some() {
         return Err(exact_cycle_error());
     }
-    let mut split_fixed = Vec::with_capacity(clip.fixed.len());
-    for ring in &clip.fixed {
-        split_fixed.push(ring.clone());
+    let mut split_fixed = Vec::with_capacity(split_rings.len());
+    for ring in &split_rings {
+        split_fixed.push(
+            ring.iter()
+                .map(exact::ExactPoint::round_nearest_even)
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
     let split_clip = NormalizedClip {
         rings: split_rings,
-        fixed: split_fixed,
+        fixed: split_fixed.clone(),
+        chart_fixed: split_fixed,
+        source_roots: Vec::new(),
         source: clip.source,
+        geometry: clip.geometry.clone(),
         polygon_baseline: clip.polygon_baseline,
         contacts: Vec::new(),
     };
@@ -5667,6 +7387,8 @@ pub(super) fn build_collinear_edges(
         sites,
         VoronoiProduct::Edges,
         budget,
+        VoronoiProducer::Collinear,
+        chart,
     )?;
     Ok(embedded.into_edges())
 }
@@ -5717,11 +7439,68 @@ enum DualVertex {
 struct DirectedDualEdge {
     low: u32,
     high: u32,
+    endpoints: [u32; 2],
+    from: u32,
+    to: u32,
     forward: bool,
+    owner: u32,
+    origin: VoronoiEdgeOrigin,
+    clip_segment: Option<u32>,
+    dart: u32,
+}
+
+struct DualClipUse {
+    segment: u32,
+    start_parameter: exact::ExactRational,
+    end_parameter: exact::ExactRational,
+}
+
+#[derive(Clone, Copy)]
+struct DualEdgeDraft {
+    endpoints: [u32; 2],
+    coordinates: [XY; 2],
+    first: DirectedDualEdge,
+    second: Option<DirectedDualEdge>,
 }
 
 fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) -> bool {
     left.low == right.low && left.high == right.high
+}
+
+fn dual_clip_segment_for_edge(
+    clip: &NormalizedClip<'_>,
+    start: &exact::ExactPoint,
+    end: &exact::ExactPoint,
+) -> Result<Option<DualClipUse>> {
+    let zero = exact::ExactRational::zero();
+    let one = exact::ExactRational::one();
+    let mut segment = 0_usize;
+    for ring in &clip.rings {
+        for (clip_start, clip_end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+            if exact::orient_points(clip_start, clip_end, start)? == ExactSign::Zero
+                && exact::orient_points(clip_start, clip_end, end)? == ExactSign::Zero
+            {
+                let start_parameter = exact_segment_parameter(clip_start, clip_end, start)?;
+                let end_parameter = exact_segment_parameter(clip_start, clip_end, end)?;
+                let in_range = |parameter: &exact::ExactRational| -> Result<bool> {
+                    Ok(parameter.try_cmp(&zero)? != Ordering::Less
+                        && parameter.try_cmp(&one)? != Ordering::Greater)
+                };
+                if in_range(&start_parameter)? && in_range(&end_parameter)? {
+                    return Ok(Some(DualClipUse {
+                        segment: u32::try_from(segment)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        start_parameter,
+                        end_parameter,
+                    }));
+                }
+            }
+            segment = segment
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+    }
+    Ok(None)
 }
 
 /// The edge leaving a dual ring vertex. Consecutive Voronoi vertices around a
@@ -5732,7 +7511,7 @@ fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) ->
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgeTag {
     Bisector(SiteId),
-    Axis,
+    Frame(FrameSide),
 }
 
 struct Tagged {
@@ -5802,6 +7581,9 @@ fn dedup_tagged(ring: &mut Vec<Tagged>, centers: &[exact::ExactPoint]) -> Result
 struct DualRings {
     rings: Vec<Vec<DualVertex>>,
     centers: Vec<exact::ExactPoint>,
+    center_sites: Vec<[u32; 3]>,
+    owners: Vec<SiteId>,
+    edge_tags: Vec<Vec<EdgeTag>>,
 }
 
 /// The radial walk. `triangles[e]` is the origin of half-edge `e`; the walk
@@ -5829,7 +7611,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
             start_edge[endpoint] = edge;
         }
     }
-    let mut offsets = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
     let mut boundaries = Vec::new();
     offsets.reserve(site_count + 1);
     boundaries.reserve(site_count);
@@ -5960,19 +7742,14 @@ fn dual_ray_hit(
     frame: &[exact::ExactPoint; 4],
 ) -> Result<(FrameSide, exact::ExactPoint)> {
     let [left_site, right_site] = pair;
-    let [left_xy, right_xy] = [
-        site_at(sites, left_site).point.xy(),
-        site_at(sites, right_site).point.xy(),
+    let [left, right] = [
+        &site_at(sites, left_site).exact_point,
+        &site_at(sites, right_site).exact_point,
     ];
-    let left = exact::ExactPoint::from_xy(left_xy);
-    let right = exact::ExactPoint::from_xy(right_xy);
-    let opposite_sign = exact::orient_points(
-        &left,
-        &right,
-        &exact::ExactPoint::from_xy(site_at(sites, opposite).point.xy()),
-    )?;
-    for hit in bisector_frame_intersections([left_xy, right_xy], frame)? {
-        if exact::orient_points(&left, &right, &hit.1)? != opposite_sign {
+    let opposite_sign = exact::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
+    let line = exact::ExactLine::perpendicular_bisector_points(left, right)?;
+    for hit in exact_bisector_frame_intersections([left, right], &line, frame)? {
+        if exact::orient_points(left, right, &hit.1)? != opposite_sign {
             return Ok(hit);
         }
     }
@@ -6011,7 +7788,7 @@ fn dual_close_hull_chain(
                 leaving: EdgeTag::Bisector(neighbor),
             }),
     );
-    ring.push(generated(&exit_ray.1, EdgeTag::Axis)?);
+    ring.push(generated(&exit_ray.1, EdgeTag::Frame(exit_side))?);
     if exterior {
         let steps = match exit_side.steps_clockwise_to(entry_side) {
             0 => FrameSide::ALL.len(),
@@ -6019,7 +7796,10 @@ fn dual_close_hull_chain(
         };
         let mut side = exit_side;
         for _ in 0..steps {
-            ring.push(generated(side.start(frame), EdgeTag::Axis)?);
+            ring.push(generated(
+                side.start(frame),
+                EdgeTag::Frame(side.previous()),
+            )?);
             side = side.previous();
         }
     } else {
@@ -6027,7 +7807,7 @@ fn dual_close_hull_chain(
         let mut side = exit_side;
         for _ in 0..steps {
             side = side.next();
-            ring.push(generated(side.start(frame), EdgeTag::Axis)?);
+            ring.push(generated(side.start(frame), EdgeTag::Frame(side))?);
         }
     }
     dedup_tagged(&mut ring, center_points)?;
@@ -6130,16 +7910,20 @@ fn dual_point_in_cycle(
 /// orientation test.
 fn dual_clip_convex(
     ring: Vec<Tagged>,
-    site: XY,
+    site: &Site,
     sites: &[Site],
     rect: &[exact::ExactPoint; 4],
     axis_aligned: bool,
     centers: &[exact::ExactPoint],
 ) -> Result<Vec<Tagged>> {
     // Certified crossings need the clip sides as doubles.
-    let corners = match rect.each_ref().map(exact::ExactPoint::as_double) {
-        [Some(a), Some(b), Some(c), Some(d)] if axis_aligned => Some([a, b, c, d]),
-        _ => None,
+    let corners = if sites.iter().all(|site| site.retained_chart_site.is_none()) {
+        match rect.each_ref().map(exact::ExactPoint::as_double) {
+            [Some(a), Some(b), Some(c), Some(d)] if axis_aligned => Some([a, b, c, d]),
+            _ => None,
+        }
+    } else {
+        None
     };
     let mut current = ring;
     for side in FrameSide::ALL {
@@ -6170,9 +7954,12 @@ fn dual_clip_convex(
                 let [corner_start, corner_end] = side.endpoints_xy(&corners);
                 match tag {
                     EdgeTag::Bisector(neighbor) => {
-                        let pair = [site, site_by_id(sites, neighbor).point.xy()];
-                        if let exact::FrameHit::Point(hit) =
-                            exact::ExactPoint::certified_bisector_hit(pair, [
+                        let neighbor = site_by_id(sites, neighbor);
+                        if let (Some(site), Some(neighbor)) = (
+                            site.exact_point.as_double(),
+                            neighbor.exact_point.as_double(),
+                        ) && let exact::FrameHit::Point(hit) =
+                            exact::ExactPoint::certified_bisector_hit([site, neighbor], [
                                 corner_start,
                                 corner_end,
                             ])
@@ -6180,7 +7967,7 @@ fn dual_clip_convex(
                             return Ok(Some(hit));
                         }
                     },
-                    EdgeTag::Axis => {
+                    EdgeTag::Frame(_) => {
                         // An edge along a frame or clip side shares one exact
                         // coordinate: a ray hit's side coordinate is exact in
                         // its bounds, a corner is a double. The crossing with
@@ -6229,7 +8016,7 @@ fn dual_clip_convex(
                         vertex: DualVertex::Generated(Box::new(hit)),
                         // Entering: the rest of the original edge follows.
                         // Leaving: the new edge runs along this side.
-                        leaving: if this_in { tag } else { EdgeTag::Axis },
+                        leaving: if this_in { tag } else { EdgeTag::Frame(side) },
                     });
                 }
             }
@@ -6253,11 +8040,7 @@ fn dual_build_rings(
 ) -> Result<DualRings> {
     let centers = &complex.centers;
     let mut site_points = Vec::with_capacity(sites.len());
-    site_points.extend(
-        sites
-            .iter()
-            .map(|site| exact::ExactPoint::from_xy(site.point.xy())),
-    );
+    site_points.extend(sites.iter().map(|site| site.exact_point.clone()));
     let frame_inputs = || {
         site_points
             .iter()
@@ -6306,6 +8089,8 @@ fn dual_build_rings(
     let flat = |edge: usize| dual_site_at_halfedge(triangles, edge);
     let incidence = dual_incident_faces(mesh, sites.len());
     let mut rings = Vec::with_capacity(sites.len());
+    let mut owners = Vec::with_capacity(sites.len());
+    let mut edge_tags = Vec::with_capacity(sites.len());
 
     for (site, incidence_row) in sites.iter().zip(incidence.rows()) {
         let faces = incidence_row.faces;
@@ -6324,7 +8109,7 @@ fn dual_build_rings(
             let entry_ray = dual_ray_hit(sites, entry_pair, entry_opposite, &frame)?;
             let exit_ray = dual_ray_hit(sites, exit_pair, exit_opposite, &frame)?;
             let site_id = SiteId(entry_site as u32);
-            let site_point = exact::ExactPoint::from_xy(site.point.xy());
+            let site_point = &site.exact_point;
             // Positive topology fixes the open center chain. The two frame
             // paths are complementary clipped faces; exact ownership decides
             // only which one contains this site, including the zero-separator
@@ -6333,15 +8118,14 @@ fn dual_build_rings(
             let interior = dual_close_hull_chain(
                 faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame, false,
             )?;
-            if dual_point_in_cycle(&interior, centers, &site_point)? == exact::PointInCycle::Inside
-            {
+            if dual_point_in_cycle(&interior, centers, site_point)? == exact::PointInCycle::Inside {
                 interior
             } else {
                 let exterior = dual_close_hull_chain(
                     faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame,
                     true,
                 )?;
-                if dual_point_in_cycle(&exterior, centers, &site_point)?
+                if dual_point_in_cycle(&exterior, centers, site_point)?
                     != exact::PointInCycle::Inside
                 {
                     return Err(voronoi_error(
@@ -6403,11 +8187,15 @@ fn dual_build_rings(
                     walk_clockwise = Some(clockwise);
                     clockwise
                 };
-                let mut ring = untag(ring);
                 if clockwise {
-                    ring.reverse();
+                    reverse_tagged(&mut ring);
                 }
-                rings.push(ring);
+                edge_tags.push(ring.iter().map(|tagged| tagged.leaving).collect());
+                rings.push(untag(ring));
+                owners.push(SiteId(
+                    u32::try_from(site.id)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                ));
                 continue;
             }
             dedup_tagged(&mut ring, centers)?;
@@ -6416,17 +8204,24 @@ fn dual_build_rings(
             }
             ring
         };
-        let clipped = dual_clip_convex(ring, site.point.xy(), sites, &rect, axis_aligned, centers)?;
+        let clipped = dual_clip_convex(ring, site, sites, &rect, axis_aligned, centers)?;
         if clipped.len() < 3 {
             return Err(voronoi_error(
                 "dual Voronoi cell degenerated under the clip",
             ));
         }
+        edge_tags.push(clipped.iter().map(|tagged| tagged.leaving).collect());
         rings.push(untag(clipped));
+        owners.push(SiteId(
+            u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        ));
     }
     Ok(DualRings {
         rings,
         centers: complex.centers,
+        center_sites: complex.center_sites,
+        owners,
+        edge_tags,
     })
 }
 
@@ -6502,6 +8297,7 @@ fn dual_embed(
     sites: &[Site],
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
+    chart: Option<&PointSelectionChart>,
 ) -> std::result::Result<EmbeddedVoronoi, DualEmbeddingError> {
     if rings.rings.len() != sites.len() {
         return Err(DualEmbeddingError::Unrepresentable);
@@ -6516,14 +8312,9 @@ fn dual_embed(
     // verdict the sort produced -- rounding is a function, so equal exact points
     // always land in the same bucket -- reached in O(V) instead of O(V log V)
     // exact comparisons.
-    // Every distinct vertex also gets one dense id: a center's component id,
-    // or the next id after the components for a generated vertex. With the
-    // rounding proven injective, ids and rounded points are in bijection, so
-    // the cancellation certificate below can run on packed integer pairs.
-    // A center memoises its rounding AND its id: a clip hit interned earlier
-    // at the same position owns the vertex, and every later reference to the
-    // center must carry that id, or the cancellation certificate sees one
-    // edge under two names.
+    // Every distinct exact vertex gets one dense id. Center component IDs
+    // remain separate producer identities and map to these interned vertices;
+    // a clip hit may be the first occurrence of a center's exact position.
     if let Some(last) = rings.centers.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     }
@@ -6534,11 +8325,11 @@ fn dual_embed(
     })?;
     let mut center_rounded: Vec<Option<(XY, u32)>> = Vec::with_capacity(rings.centers.len());
     center_rounded.resize(rings.centers.len(), None);
+    let mut exact_by_id = Vec::new();
     // Distinct vertices are the centers plus a boundary's worth of generated
     // points; sizing for every ring reference would triple the table.
     let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
     let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
-    vertex_xy.resize(rings.centers.len(), XY::new(0.0, 0.0));
     #[expect(
         clippy::collapsible_if,
         reason = "keep the center-only memo lookup on its measured base instruction path"
@@ -6551,6 +8342,7 @@ fn dual_embed(
         vertex: &'r DualVertex,
         centers: &'r [exact::ExactPoint],
         center_rounded: &mut [Option<(XY, u32)>],
+        exact_by_id: &mut Vec<exact::ExactPoint>,
         interned: &mut crate::collections::HashMap<PointKey, (&'r exact::ExactPoint, u32)>,
         vertex_xy: &mut Vec<XY>,
     ) -> std::result::Result<(XY, u32), DualEmbeddingError> {
@@ -6575,14 +8367,10 @@ fn dual_embed(
                 id
             },
             std::collections::hash_map::Entry::Vacant(slot) => {
-                let id = if let DualVertex::Center(component) = *vertex {
-                    component as u32
-                } else {
-                    let id = u32::try_from(vertex_xy.len())
-                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-                    vertex_xy.push(xy);
-                    id
-                };
+                let id = u32::try_from(vertex_xy.len())
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                vertex_xy.push(xy);
+                exact_by_id.push(point.clone());
                 slot.insert((point, id));
                 id
             },
@@ -6590,12 +8378,12 @@ fn dual_embed(
         if let DualVertex::Center(component) = *vertex {
             center_rounded[component] = Some((xy, id));
         }
-        vertex_xy[id as usize] = xy;
         Ok((xy, id))
     }
     let mut offsets = Vec::new();
     let mut rounded_all: Vec<XY> = Vec::new();
     let mut ids_all: Vec<u32> = Vec::new();
+    let mut edge_tags = rings.edge_tags.clone();
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "the offset column has one terminal sentinel in addition to one row per existing non-zero-sized ring"
@@ -6610,6 +8398,7 @@ fn dual_embed(
                 vertex,
                 &rings.centers,
                 &mut center_rounded,
+                &mut exact_by_id,
                 &mut interned,
                 &mut vertex_xy,
             )?;
@@ -6618,23 +8407,32 @@ fn dual_embed(
         }
         offsets.push(rounded_all.len());
     }
-    for (window, site) in offsets.array_windows::<2>().zip(sites) {
-        let [start, end] = *window;
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "each row offset was pushed around appending this same ring's rounded vertices"
-        )]
-        let rounded = &mut rounded_all[start..end];
+    for (ring_index, (window, site)) in offsets.array_windows::<2>().zip(sites).enumerate() {
+        let [row_start, row_end] = *window;
+        let rounded = rounded_all
+            .get_mut(row_start..row_end)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
         // The ring starts at its lexicographically smallest rounded vertex,
         // the canonical form both lanes publish; rounding is injective here,
         // so the minimum is unique.
-        let start = rounded
+        let rotation = rounded
             .iter()
             .enumerate()
             .min_by(|(_, left), (_, right)| lex_xy(**left, **right))
             .map_or(0, |(index, _)| index);
-        rounded.rotate_left(start);
-        let site_xy = site.point.xy();
+        rounded.rotate_left(rotation);
+        ids_all
+            .get_mut(row_start..row_end)
+            .ok_or(DualEmbeddingError::Unrepresentable)?
+            .rotate_left(rotation);
+        let tags = edge_tags
+            .get_mut(ring_index)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
+        if tags.len() != rounded.len() {
+            return Err(DualEmbeddingError::Unrepresentable);
+        }
+        tags.rotate_left(rotation);
+        let site_xy = site.rounded_xy()?;
         let first = rounded
             .first()
             .expect("dual_build_rings admits only cells with at least three vertices");
@@ -6655,8 +8453,9 @@ fn dual_embed(
             if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
-            let site = exact::ExactPoint::from_xy(site_xy);
-            if exact::point_in_cycle(&rounded_ring, &site)? == exact::PointInCycle::Outside {
+            if exact::point_in_cycle(&rounded_ring, &site.exact_point)?
+                == exact::PointInCycle::Outside
+            {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
         }
@@ -6678,24 +8477,93 @@ fn dual_embed(
     // Sort by the undirected endpoint pair, then direction, so the two owners
     // of each interior edge become an adjacent pair.
     let mut directed: Vec<DirectedDualEdge> = Vec::with_capacity(total);
-    for window in offsets.array_windows::<2>() {
+    let mut by_dart: Vec<Option<DirectedDualEdge>> = Vec::with_capacity(total);
+    by_dart.resize(total, None);
+    let mut clip_uses_by_dart = Vec::with_capacity(total);
+    let mut next_dart = 0_u32;
+    for (ring_index, window) in offsets.array_windows::<2>().enumerate() {
         let [start, end] = *window;
         #[expect(
             clippy::indexing_slicing,
             reason = "each row offset was pushed around appending this same ring's dense vertex IDs"
         )]
         let ids = &ids_all[start..end];
+        let tags = edge_tags
+            .get(ring_index)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
+        let owner = rings
+            .owners
+            .get(ring_index)
+            .ok_or(DualEmbeddingError::Unrepresentable)?
+            .0;
+        if ids.len() != tags.len() {
+            return Err(DualEmbeddingError::Unrepresentable);
+        }
         if ids.is_empty() {
             return Err(DualEmbeddingError::Unrepresentable);
         }
-        for (&from, &to) in ids.iter().zip(ids.iter().cycle().skip(1)) {
-            let (low, high, forward) = if from <= to {
-                (from, to, true)
+        for (edge_index, (&from, &to)) in ids.iter().zip(ids.iter().cycle().skip(1)).enumerate() {
+            let from_xy = *vertex_xy
+                .get(from as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let to_xy = *vertex_xy
+                .get(to as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let (endpoints, forward) = if lex_xy(from_xy, to_xy).is_lt() {
+                ([from, to], true)
             } else {
-                (to, from, false)
+                ([to, from], false)
             };
-            directed.push(DirectedDualEdge { low, high, forward });
+            let (low, high) = if from <= to { (from, to) } else { (to, from) };
+            let exact_from = exact_by_id
+                .get(from as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let exact_to = exact_by_id
+                .get(to as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let clip_use = dual_clip_segment_for_edge(clip, exact_from, exact_to)?;
+            let clip_segment = clip_use.as_ref().map(|use_| use_.segment);
+            let tag = *tags
+                .get(edge_index)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let origin = match tag {
+                EdgeTag::Bisector(neighbor) => {
+                    let mut pair = [owner, neighbor.0];
+                    pair.sort_unstable();
+                    VoronoiEdgeOrigin::Bisector { sites: pair }
+                },
+                EdgeTag::Frame(_) if clip.source.is_some() => {
+                    let segment = clip_segment.ok_or(DualEmbeddingError::Unrepresentable)?;
+                    VoronoiEdgeOrigin::SourceClip { segment }
+                },
+                EdgeTag::Frame(side) => VoronoiEdgeOrigin::Frame {
+                    side: receipt_frame_side(side),
+                },
+            };
+            let edge = DirectedDualEdge {
+                low,
+                high,
+                endpoints,
+                from,
+                to,
+                forward,
+                owner,
+                origin,
+                clip_segment,
+                dart: next_dart,
+            };
+            next_dart = next_dart
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            *by_dart
+                .get_mut(edge.dart as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)? = Some(edge);
+            clip_uses_by_dart.push(clip_use);
+            directed.push(edge);
         }
+    }
+    if next_dart as usize != total {
+        return Err(DualEmbeddingError::Unrepresentable);
     }
     directed.sort_unstable();
     let [min_x, max_x, min_y, max_y] = clip.frame_bounds();
@@ -6703,31 +8571,44 @@ fn dual_embed(
     let [bottom, right, top, left] = &mut sides;
     // Each interior edge takes two directed entries.
     let mut internal_edge_count = 0_usize;
+    let mut edge_drafts = Vec::with_capacity(directed.len());
     for run in directed.chunk_by(|left, right| same_undirected_dual_edge(*left, *right)) {
-        let key = match run {
+        let (first, second) = match run {
             [left, right] => {
-                if left.forward == right.forward {
+                if left.forward == right.forward
+                    || left.owner == right.owner
+                    || left.origin != right.origin
+                    || left.clip_segment != right.clip_segment
+                {
                     return Err(DualEmbeddingError::Unrepresentable);
                 }
                 internal_edge_count = internal_edge_count
                     .checked_add(1)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                continue;
+                (*left, Some(*right))
             },
-            [key] => key,
+            [edge] => (*edge, None),
             _ => return Err(DualEmbeddingError::Unrepresentable),
         };
-        let forward = key.forward;
-        let (low, high) = (key.low as usize, key.high as usize);
-        let (a, b) = (
+        let coordinates = [
             *vertex_xy
-                .get(low)
-                .expect("directed dual edge IDs come from the resolved vertex column"),
+                .get(first.endpoints[0] as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?,
             *vertex_xy
-                .get(high)
-                .expect("directed dual edge IDs come from the resolved vertex column"),
-        );
-        let (a, b) = if forward { (a, b) } else { (b, a) };
+                .get(first.endpoints[1] as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?,
+        ];
+        edge_drafts.push(DualEdgeDraft {
+            endpoints: first.endpoints,
+            coordinates,
+            first,
+            second,
+        });
+        if second.is_some() {
+            continue;
+        }
+        let [a, b] = coordinates;
+        let (a, b) = if first.forward { (a, b) } else { (b, a) };
         let side = if a.y == min_y && b.y == min_y {
             FrameSide::Bottom
         } else if a.x == max_x && b.x == max_x {
@@ -6777,6 +8658,20 @@ fn dual_embed(
             return Err(DualEmbeddingError::Unrepresentable);
         }
     }
+    edge_drafts.sort_unstable_by(|left, right| {
+        lex_xy(left.coordinates[0], right.coordinates[0])
+            .then(lex_xy(left.coordinates[1], right.coordinates[1]))
+    });
+    let mut edge_id_by_pair = try_hash_map_with_capacity(edge_drafts.len())?;
+    for (index, draft) in edge_drafts.iter().enumerate() {
+        let edge = u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        if edge_id_by_pair
+            .insert((draft.first.low, draft.first.high), edge)
+            .is_some()
+        {
+            return Err(DualEmbeddingError::Unrepresentable);
+        }
+    }
     let mut published = 0_usize;
     if product.includes_polygons() {
         for ring in &rings.rings {
@@ -6806,37 +8701,319 @@ fn dual_embed(
     };
     budget.add(published.saturating_sub(baseline))?;
 
-    let mut internal_edges = if product.includes_edges() {
-        Vec::with_capacity(internal_edge_count)
+    let mut receipt = site_receipts(VoronoiProducer::Dual, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip, None)?;
+    let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
+        .take(vertex_xy.len())
+        .collect();
+    for (component, rounded) in center_rounded.iter().enumerate() {
+        if let Some((_, id)) = rounded {
+            let sites = *rings
+                .center_sites
+                .get(component)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            vertex_origins
+                .get_mut(*id as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?
+                .push(VoronoiVertexOrigin::Circumcenter {
+                    component: u32::try_from(component)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    sites,
+                });
+        }
+    }
+    let mut twin_by_dart = Vec::with_capacity(directed.len());
+    twin_by_dart.resize(directed.len(), None);
+    let mut internal_edges = Vec::with_capacity(if product.includes_edges() {
+        internal_edge_count
     } else {
-        Vec::new()
-    };
-    if product.includes_edges() {
-        for pair in directed.array_windows::<2>() {
-            let [left, right] = *pair;
-            if same_undirected_dual_edge(left, right) {
-                let low = left.low as usize;
-                let high = left.high as usize;
-                internal_edges.push([
-                    *vertex_xy
-                        .get(low)
-                        .expect("directed dual edge IDs come from the resolved vertex column"),
-                    *vertex_xy
-                        .get(high)
-                        .expect("directed dual edge IDs come from the resolved vertex column"),
-                ]);
+        0
+    });
+    for (index, draft) in edge_drafts.iter().enumerate() {
+        let edge_id =
+            u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        if let Some(second) = draft.second {
+            *twin_by_dart
+                .get_mut(draft.first.dart as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)? = Some(second.dart);
+            *twin_by_dart
+                .get_mut(second.dart as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)? = Some(draft.first.dart);
+        }
+        let [start_id, end_id] = draft.endpoints;
+        let [start, end] = draft.coordinates;
+        let mut origins = vec![draft.first.origin];
+        let source_segment = if clip.source.is_some() {
+            draft.first.clip_segment
+        } else {
+            None
+        };
+        if let Some(segment) = source_segment {
+            let source_origin = VoronoiEdgeOrigin::SourceClip { segment };
+            if !origins.contains(&source_origin) {
+                origins.push(source_origin);
+            }
+        }
+        let separator = match draft.first.origin {
+            VoronoiEdgeOrigin::Bisector { sites } => Some(sites),
+            VoronoiEdgeOrigin::SourceClip { .. } | VoronoiEdgeOrigin::Frame { .. } => None,
+        };
+        let frame_side = match draft.first.origin {
+            VoronoiEdgeOrigin::Frame { side } => Some(side),
+            VoronoiEdgeOrigin::SourceClip { .. } | VoronoiEdgeOrigin::Bisector { .. } => None,
+        };
+        let mut owner_transition = [None, None];
+        for use_edge in [Some(draft.first), draft.second].into_iter().flatten() {
+            let [left_owner, right_owner] = &mut owner_transition;
+            if use_edge.forward {
+                *left_owner = Some(use_edge.owner);
+            } else {
+                *right_owner = Some(use_edge.owner);
+            }
+        }
+        receipt.edges.push(VoronoiEdgeReceipt {
+            id: edge_id,
+            endpoints: [start_id, end_id],
+            separator,
+            clip_sources: source_segment.into_iter().collect(),
+            frame_side,
+            owner_transition,
+            origins,
+        });
+        if let Some(sites) = separator {
+            receipt.separators.push(VoronoiSeparatorReceipt {
+                sites,
+                vertices: [start_id, end_id].to_vec(),
+                edges: vec![edge_id],
+            });
+            if product.includes_edges() {
+                internal_edges.push([start, end]);
+            }
+        }
+        if let Some(segment) = draft.first.clip_segment {
+            let clip_use = clip_uses_by_dart
+                .get(draft.first.dart as usize)
+                .and_then(Option::as_ref)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            if clip_use.segment != segment {
+                return Err(DualEmbeddingError::Unrepresentable);
+            }
+            let (start_parameter, end_parameter) = if draft.first.forward {
+                (
+                    clip_use.start_parameter.clone(),
+                    clip_use.end_parameter.clone(),
+                )
+            } else {
+                (
+                    clip_use.end_parameter.clone(),
+                    clip_use.start_parameter.clone(),
+                )
+            };
+            let reversed = start_parameter.try_cmp(&end_parameter)? == Ordering::Greater;
+            let (low_parameter, high_parameter) = if reversed {
+                (end_parameter.clone(), start_parameter.clone())
+            } else {
+                (start_parameter.clone(), end_parameter.clone())
+            };
+            let clip_segment = receipt
+                .clip_segments
+                .get_mut(segment as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            clip_segment.atoms.push(VoronoiClipAtomReceipt {
+                edge: edge_id,
+                reversed,
+                start_parameter: low_parameter,
+                end_parameter: high_parameter,
+            });
+            if clip.source.is_some() {
+                for (vertex_id, parameter) in
+                    [(start_id, &start_parameter), (end_id, &end_parameter)]
+                {
+                    for root in &clip_segment.source_roots {
+                        let source_parameter = if root.reversed {
+                            exact::ExactRational::one().try_subtract(parameter)?
+                        } else {
+                            parameter.clone()
+                        };
+                        vertex_origins
+                            .get_mut(vertex_id as usize)
+                            .ok_or(DualEmbeddingError::Unrepresentable)?
+                            .push(VoronoiVertexOrigin::SourceClip {
+                                segment,
+                                parameter: source_parameter,
+                                source_ring: Some(root.ring),
+                                source_edge: Some(root.edge),
+                            });
+                    }
+                }
+            }
+        }
+        for vertex_id in [start_id, end_id] {
+            if let Some(sites) = separator {
+                vertex_origins
+                    .get_mut(vertex_id as usize)
+                    .ok_or(DualEmbeddingError::Unrepresentable)?
+                    .push(VoronoiVertexOrigin::Bisector { sites });
+            }
+            if let Some(side) = frame_side {
+                vertex_origins
+                    .get_mut(vertex_id as usize)
+                    .ok_or(DualEmbeddingError::Unrepresentable)?
+                    .push(VoronoiVertexOrigin::Frame { side });
             }
         }
     }
-    let edges = if product.includes_edges() {
-        EmbeddedEdges::Segments(internal_edges)
-    } else {
-        EmbeddedEdges::Segments(Vec::new())
-    };
+    for site in sites {
+        let site_id =
+            u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let key = PointKey::new(site.rounded_xy()?);
+        if let Some((representative, vertex_id)) = interned.get(&key)
+            && representative.same_position(&site.exact_point)?
+        {
+            vertex_origins
+                .get_mut(*vertex_id as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?
+                .push(VoronoiVertexOrigin::SourceSite { site: site_id });
+        }
+    }
+    for (id, exact_point) in exact_by_id.iter().enumerate() {
+        vertex_origins
+            .get_mut(id)
+            .ok_or(DualEmbeddingError::Unrepresentable)?
+            .extend(chart_vertex_origins(chart, exact_point)?);
+        let embedded = *vertex_xy
+            .get(id)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
+        let origins = std::mem::take(
+            vertex_origins
+                .get_mut(id)
+                .ok_or(DualEmbeddingError::Unrepresentable)?,
+        );
+        receipt.vertices.push(VoronoiVertexReceipt {
+            id: u32::try_from(id).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            exact_xy: exact_xy_coordinates(exact_point)?,
+            origins,
+            assignment: Some(embedded),
+        });
+        receipt.assignments.push(VoronoiAssignmentReceipt {
+            vertex: u32::try_from(id).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            embedded: u32::try_from(id).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            point: embedded,
+        });
+    }
+    let mut edge_roles_by_ring = Vec::with_capacity(rings.rings.len());
+    let mut dart_receipts = Vec::with_capacity(directed.len());
+    for (ring_index, window) in offsets.array_windows::<2>().enumerate() {
+        let [start, end] = *window;
+        let ids = ids_all
+            .get(start..end)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
+        let owner = rings
+            .owners
+            .get(ring_index)
+            .ok_or(DualEmbeddingError::Unrepresentable)?
+            .0;
+        let mut cell_uses = Vec::with_capacity(ids.len());
+        let mut role_row = Vec::with_capacity(ids.len());
+        for (&from, &to) in ids.iter().zip(ids.iter().cycle().skip(1)) {
+            let (low, high) = if from <= to { (from, to) } else { (to, from) };
+            let edge_id = *edge_id_by_pair
+                .get(&(low, high))
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let dart_id = u32::try_from(dart_receipts.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+            let directed_edge = by_dart
+                .get(dart_id as usize)
+                .and_then(|edge| *edge)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            if directed_edge.from != from || directed_edge.to != to || directed_edge.owner != owner
+            {
+                return Err(DualEmbeddingError::Unrepresentable);
+            }
+            let forward = directed_edge.forward;
+            let edge_record = receipt
+                .edges
+                .get(edge_id as usize)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let mut source_uses = Vec::new();
+            if let Some(segment) = directed_edge.clip_segment
+                && clip.source.is_some()
+            {
+                let clip_use = clip_uses_by_dart
+                    .get(dart_id as usize)
+                    .and_then(Option::as_ref)
+                    .ok_or(DualEmbeddingError::Unrepresentable)?;
+                if clip_use.segment != segment {
+                    return Err(DualEmbeddingError::Unrepresentable);
+                }
+                let start_parameter = &clip_use.start_parameter;
+                let end_parameter = &clip_use.end_parameter;
+                let clip_segment = receipt
+                    .clip_segments
+                    .get(segment as usize)
+                    .ok_or(DualEmbeddingError::Unrepresentable)?;
+                for root in &clip_segment.source_roots {
+                    let source_start = if root.reversed {
+                        exact::ExactRational::one().try_subtract(start_parameter)?
+                    } else {
+                        start_parameter.clone()
+                    };
+                    let source_end = if root.reversed {
+                        exact::ExactRational::one().try_subtract(end_parameter)?
+                    } else {
+                        end_parameter.clone()
+                    };
+                    source_uses.push(VoronoiEdgeSourceUse {
+                        source_segment: segment,
+                        source_operand: None,
+                        source_ring: Some(
+                            u32::try_from(root.ring)
+                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        ),
+                        source_edge: Some(
+                            u32::try_from(root.edge)
+                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        ),
+                        forward: source_start.try_cmp(&source_end)? != Ordering::Greater,
+                        start_parameter: source_start,
+                        end_parameter: source_end,
+                    });
+                }
+            }
+            role_row.push(VoronoiRingEdgeRole {
+                edge: Some(edge_id),
+                forward,
+                origins: edge_record.origins.clone(),
+                source_uses,
+            });
+            cell_uses.push(VoronoiDirectedEdgeUse {
+                edge: edge_id,
+                forward,
+            });
+            dart_receipts.push(VoronoiDartReceipt {
+                id: dart_id,
+                origin: from,
+                target: to,
+                twin: twin_by_dart.get(dart_id as usize).copied().flatten(),
+                edge: edge_id,
+                face: None,
+                owner: Some(owner),
+            });
+        }
+        receipt.cells.push(VoronoiCellReceipt {
+            owner,
+            face: None,
+            shell: cell_uses,
+            holes: Vec::new(),
+        });
+        edge_roles_by_ring.push(role_row);
+    }
+    receipt.darts = dart_receipts;
+    let edge_data = EmbeddedEdgeData::Segments(internal_edges);
     let mut polygons = Vec::new();
     if product.includes_polygons() {
         polygons.reserve(rings.rings.len());
-        for window in offsets.array_windows::<2>() {
+        for (ring_index, window) in offsets.array_windows::<2>().enumerate() {
             let [start, end] = *window;
             let rounded = rounded_all
                 .get(start..end)
@@ -6856,14 +9033,54 @@ fn dual_embed(
             xs.push(first.x);
             ys.push(first.y);
             let ring = Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
-            let computed_edges = vec![vec![true; ring.len().saturating_sub(1)]];
+            let edge_roles = vec![
+                edge_roles_by_ring
+                    .get(ring_index)
+                    .cloned()
+                    .ok_or(DualEmbeddingError::Unrepresentable)?,
+            ];
+            let producer_ids = ids_all
+                .get(start..end)
+                .ok_or(DualEmbeddingError::Unrepresentable)?;
+            let producer_vertices = vec![
+                producer_ids
+                    .iter()
+                    .map(|&id| {
+                        Ok(OverlayNodeReceipt {
+                            id,
+                            exact_point: exact_by_id
+                                .get(id as usize)
+                                .ok_or(DualEmbeddingError::Unrepresentable)?
+                                .clone(),
+                            assignment: *vertex_xy
+                                .get(id as usize)
+                                .ok_or(DualEmbeddingError::Unrepresentable)?,
+                        })
+                    })
+                    .collect::<std::result::Result<Vec<_>, DualEmbeddingError>>()?,
+            ];
+            let owner = rings
+                .owners
+                .get(ring_index)
+                .ok_or(DualEmbeddingError::Unrepresentable)?
+                .0;
             polygons.push(EmbeddedPolygon {
                 polygon: Polygon::new(ring, Vec::new()),
-                computed_edges,
+                owner: Some(owner),
+                edge_roles,
+                producer_vertices,
             });
         }
     }
-    Ok(EmbeddedVoronoi { polygons, edges })
+    let receipt = std::sync::Arc::new(receipt);
+    Ok(EmbeddedVoronoi {
+        polygons,
+        edges: EmbeddedEdges {
+            data: edge_data,
+            receipt: std::sync::Arc::clone(&receipt),
+        },
+        receipt,
+    })
 }
 
 #[cfg(test)]
@@ -6873,7 +9090,7 @@ pub(super) fn dual_build(
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedVoronoi> {
-    dual_build_product(sites, boundary, budget, mesh, VoronoiProduct::Both)
+    dual_build_product(sites, boundary, budget, mesh, VoronoiProduct::Both, None)
 }
 
 fn dual_build_product(
@@ -6882,8 +9099,9 @@ fn dual_build_product(
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
-    let clip = normalize_clip(sites, boundary, product.includes_polygons())?;
+    let clip = normalize_clip_with_chart(sites, boundary, product.includes_polygons(), chart)?;
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",
@@ -6891,14 +9109,14 @@ fn dual_build_product(
     }
     let complex = delaunay_complex(mesh, sites)?;
     let rings = dual_build_rings(sites, mesh, complex, &clip)?;
-    match dual_embed(&rings, &clip, sites, product, budget) {
+    match dual_embed(&rings, &clip, sites, product, budget, chart) {
         Ok(result) => Ok(result),
         Err(DualEmbeddingError::Unrepresentable) => {
             // The optimized lane remains byte-identical when its nearest
             // embedding passes. Only a binary64 certificate failure uses the
             // general DCEL lane, where constructed vertices can move to
             // adjacent floats under the complete cell/face certificate.
-            build_product(sites, boundary, budget, false, mesh, product)
+            build_product_with_chart(sites, boundary, budget, false, mesh, product, chart)
         },
         Err(DualEmbeddingError::Other(error)) => Err(error),
     }

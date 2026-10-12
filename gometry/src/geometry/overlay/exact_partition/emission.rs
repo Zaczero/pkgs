@@ -18,6 +18,7 @@ use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
+use crate::geometry::tessellation::exact::{ExactPoint, ExactRational};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Unmetered, Work, XY, same_point,
 };
@@ -41,6 +42,41 @@ pub(super) struct PlannedChord {
     pub(super) sources: Range<usize>,
     pub(super) sides: [u32; 2],
 }
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::geometry) struct OverlaySourceLocation {
+    pub(in crate::geometry) operand: u32,
+    pub(in crate::geometry) ring: u32,
+    pub(in crate::geometry) edge: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::geometry) struct OverlaySourceEdgeUse {
+    pub(in crate::geometry) source_id: u32,
+    pub(in crate::geometry) location: OverlaySourceLocation,
+    pub(in crate::geometry) forward: bool,
+    pub(in crate::geometry) start_parameter: ExactRational,
+    pub(in crate::geometry) end_parameter: ExactRational,
+}
+
+pub(in crate::geometry) struct OverlayPolygonPartWithSources {
+    pub(in crate::geometry) polygon: Polygon,
+    pub(in crate::geometry) edge_sources: Vec<Vec<Vec<OverlaySourceEdgeUse>>>,
+    pub(in crate::geometry) vertices: Vec<Vec<OverlayNodeReceipt>>,
+}
+
+#[derive(Clone)]
+pub(in crate::geometry) struct OverlayNodeReceipt {
+    pub(in crate::geometry) id: u32,
+    pub(in crate::geometry) exact_point: ExactPoint,
+    pub(in crate::geometry) assignment: XY,
+}
+
+type EmittedRing = Option<(
+    Ring,
+    Vec<Vec<OverlaySourceEdgeUse>>,
+    Vec<OverlayNodeReceipt>,
+)>;
 
 pub(super) struct BoundaryPlan {
     pub(super) source_darts: Vec<u32>,
@@ -175,6 +211,56 @@ impl BoundaryPlan {
         role.ok_or_else(|| {
             GeometryErrorKind::Invalid("an emitted chord has no source spans".into()).into()
         })
+    }
+
+    fn chord_source_uses(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edge_of_slot: &[u32],
+        chord: &PlannedChord,
+        source_locations: &[OverlaySourceLocation],
+        source_segments: &[crate::geometry::Segment],
+    ) -> Result<Vec<OverlaySourceEdgeUse>> {
+        let mut result = Vec::new();
+        for source_index in chord.sources.clone() {
+            let slot = self
+                .source_darts
+                .get(source_index)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source edge-use dart is unknown".into())
+                })? as usize;
+            let span = *edge_of_slot.get(slot).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source edge-use span is unknown".into())
+            })?;
+            let output_start = NodeId(*topology.owners.get(slot).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source edge-use start is unknown".into())
+            })?);
+            let output_end = NodeId(*topology.targets.get(slot).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source edge-use end is unknown".into())
+            })?);
+            for &(source_id, _) in partition.provenance.owners(span as usize) {
+                let segment = *source_segments.get(source_id as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source edge-use segment is unknown".into())
+                })?;
+                let start_parameter =
+                    partition.parameter_on_source_segment(segment, output_start)?;
+                let end_parameter = partition.parameter_on_source_segment(segment, output_end)?;
+                let forward = start_parameter.try_cmp(&end_parameter)?.is_lt();
+                let location = *source_locations.get(source_id as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source edge-use origin is unknown".into())
+                })?;
+                result.push(OverlaySourceEdgeUse {
+                    source_id,
+                    location,
+                    forward,
+                    start_parameter,
+                    end_parameter,
+                });
+            }
+        }
+        Ok(result)
     }
 
     pub(super) fn polygonize_emission(
@@ -421,7 +507,9 @@ impl BoundaryPlan {
         edge_of_slot: &[u32],
         operation: &'static str,
         preserved_spans: &[bool],
-    ) -> Result<Vec<(Polygon, Vec<Vec<bool>>)>> {
+        source_locations: &[OverlaySourceLocation],
+        source_segments: &[crate::geometry::Segment],
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         if preserved_spans.len() != partition.spans.len() {
             return Err(GeometryErrorKind::Invalid(
                 "source edge roles do not match the exact partition".into(),
@@ -433,47 +521,83 @@ impl BoundaryPlan {
         let embedding = partition.embed(&[&emission], operation)?;
         let coordinates = embedding.coordinates();
         let mut remaining = emission.items.as_slice();
-        let mut rings: Vec<Option<(Ring, Vec<bool>)>> = Vec::with_capacity(self.walks.len());
+        let mut rings: Vec<EmittedRing> = Vec::with_capacity(self.walks.len());
         rings.resize_with(self.walks.len(), || None);
         for (ring_index, walk) in self.walks.iter().enumerate() {
             let (chords, rest) = remaining.split_at(walk.len());
             remaining = rest;
-            let ring = closed_ring(
-                chords
-                    .iter()
-                    .map(|chord| Embedding::xy_at(coordinates, chord[0])),
-            )?;
-            let mut computed_edges = Vec::with_capacity(walk.len());
+            let mut nodes: Vec<_> = chords.iter().map(|chord| chord[0]).collect();
+            let mut points: Vec<_> = nodes
+                .iter()
+                .map(|&node| Embedding::xy_at(coordinates, node))
+                .collect();
+            let mut edge_sources = Vec::with_capacity(walk.len());
             for chord in walk {
-                let preserved = self.chord_is_preserved(chord, edge_of_slot, preserved_spans)?;
-                computed_edges.push(!preserved);
+                edge_sources.push(self.chord_source_uses(
+                    partition,
+                    topology,
+                    edge_of_slot,
+                    chord,
+                    source_locations,
+                    source_segments,
+                )?);
             }
-            rings[ring_index] = Some((ring, computed_edges));
+            let start = points
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| {
+                    left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
+                })
+                .map_or(0, |(index, _)| index);
+            points.rotate_left(start);
+            nodes.rotate_left(start);
+            edge_sources.rotate_left(start);
+            let vertices = nodes
+                .iter()
+                .map(|&node| {
+                    let point = partition.exact(node)?.into_owned();
+                    Ok(OverlayNodeReceipt {
+                        id: node.0,
+                        exact_point: ExactPoint::from_homogeneous_dyadics(point),
+                        assignment: Embedding::xy_at(coordinates, node),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let ring = closed_ring(points.into_iter())?;
+            rings[ring_index] = Some((ring, edge_sources, vertices));
         }
         let mut polygons = Vec::with_capacity(groups.len());
         for group in groups {
             let mut indices = group.into_iter();
-            let (shell, shell_edges) = rings[indices.next().expect("polygon has a shell")]
-                .take()
-                .expect("each ring has one polygon owner");
+            let (shell, shell_sources, shell_vertices) = rings
+                [indices.next().expect("polygon has a shell")]
+            .take()
+            .expect("each ring has one polygon owner");
             let mut holes_with_roles = Vec::with_capacity(indices.len());
-            let mut edge_roles = Vec::with_capacity(indices.len().wrapping_add(1));
-            edge_roles.push(shell_edges);
+            let mut edge_sources = Vec::with_capacity(indices.len().wrapping_add(1));
+            let mut edge_vertices = Vec::with_capacity(indices.len().wrapping_add(1));
+            edge_sources.push(shell_sources);
+            edge_vertices.push(shell_vertices);
             for index in indices {
-                let (hole, computed_edges) = rings[index]
+                let (hole, source_uses, vertices) = rings[index]
                     .take()
                     .expect("each ring has one polygon owner");
-                holes_with_roles.push((hole, computed_edges));
+                holes_with_roles.push((hole, source_uses, vertices));
             }
-            holes_with_roles.sort_unstable_by(|(left, _), (right, _)| {
+            holes_with_roles.sort_unstable_by(|(left, ..), (right, ..)| {
                 crate::geometry::compare_point_slices(left.coords(), right.coords())
             });
             let mut holes = Vec::with_capacity(holes_with_roles.len());
-            for (hole, computed_edges) in holes_with_roles {
+            for (hole, source_uses, vertices) in holes_with_roles {
                 holes.push(hole);
-                edge_roles.push(computed_edges);
+                edge_sources.push(source_uses);
+                edge_vertices.push(vertices);
             }
-            polygons.push((Polygon::new(shell, holes), edge_roles));
+            polygons.push(OverlayPolygonPartWithSources {
+                polygon: Polygon::new(shell, holes),
+                edge_sources,
+                vertices: edge_vertices,
+            });
         }
         Ok(polygons)
     }
@@ -924,13 +1048,13 @@ pub(in crate::geometry) fn walk_is_shell_with_work<R: RayPoints + ?Sized, W: Wor
 ) -> Result<bool> {
     let mut minimum = 0;
     for candidate in 1..steps {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let candidate_node = topology.owners[first(candidate) as usize];
         let minimum_node = topology.owners[first(minimum) as usize];
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let x_order = points.compare_axis(candidate_node, minimum_node, Axis::X)?;
         let order = if x_order.is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             points.compare_axis(candidate_node, minimum_node, Axis::Y)?
         } else {
             x_order
@@ -948,7 +1072,7 @@ pub(in crate::geometry) fn walk_is_shell_with_work<R: RayPoints + ?Sized, W: Wor
     let incoming = topology.twins[last(prior) as usize];
     let root = topology.owners[outgoing as usize];
     let mut upper = |slot: u32| -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(points.compare_axis(topology.targets[slot as usize], root, Axis::Y)? != Ordering::Less)
     };
     let outgoing_upper = upper(outgoing)?;
@@ -1372,11 +1496,10 @@ impl GlobalFaces {
             )
             .into());
         }
-        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
-
+        work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let other = topology.face_of[topology.twins[slot] as usize];
             state.push(
                 if bounds(
@@ -1389,25 +1512,25 @@ impl GlobalFaces {
                 },
             );
         }
-        work.charge(
+        work.charge_into_error(
             u64::try_from(topology.component_of.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut positions = Vec::with_capacity(topology.component_of.len());
         positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
         for start in 0..state.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if state[start] != DartState::Pending {
                 continue;
             }
             let mut walk = Vec::new();
             let mut slot = start;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 debug_assert_eq!(state[slot], DartState::Pending);
                 state[slot] = DartState::Walked;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
                 // A tangent hole can share a boundary walk with its shell.
@@ -1418,16 +1541,16 @@ impl GlobalFaces {
                             "graph boundary cycle starts after its current walk".into(),
                         )
                     })?;
-                    work.charge(
+                    work.charge_into_error(
                         u64::try_from(cycle_len).map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
                     let mut cycle = Vec::with_capacity(cycle_len);
                     for dart in walk.drain(begin..) {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         positions[topology.owners[dart as usize] as usize] = None;
                         cycle.push(dart);
                     }
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     walks.push(cycle);
                 }
                 let first = topology.starts[target] as usize;
@@ -1436,7 +1559,7 @@ impl GlobalFaces {
                 // Skip omitted wedges clockwise from the incoming twin.
                 slot = twin;
                 loop {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     slot = if slot == first {
                         end.wrapping_sub(1)
                     } else {

@@ -112,6 +112,10 @@ impl ExactRationalArea {
             Err(error) => Err(error),
         }
     }
+
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
+        self.numerator.sign()
+    }
 }
 
 /// One polynomial integral with a shared factorial denominator.

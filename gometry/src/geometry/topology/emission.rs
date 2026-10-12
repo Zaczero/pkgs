@@ -102,7 +102,7 @@ impl EmissionNodeRegistry {
         live_nodes: &[QNodeId],
         work: &mut impl Work,
     ) -> Result<Self> {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(topology.q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut registry = Self {
@@ -111,7 +111,7 @@ impl EmissionNodeRegistry {
             by_exact_key: FallibleAvl::with_capacity(live_nodes.len()),
         };
         for &source in live_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let key = match topology.canonical_node_key(source)? {
                 CanonicalQNodeKey::Chart(key) => key.clone(),
                 CanonicalQNodeKey::Cut {
@@ -153,7 +153,7 @@ impl EmissionNodeRegistry {
         point: &ExactChartPoint,
         work: &mut impl Work,
     ) -> Result<EmissionNodeId> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let key = quotient_key_for_chart_position(frame, point)?;
         self.intern(key.clone(), NodeAuthority::Computed(key), work)
     }
@@ -173,7 +173,7 @@ impl EmissionNodeRegistry {
             node: EmissionNodeId(0),
         };
         if let Some(previous) = self.by_exact_key.get(&probe, &mut |left, right| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             compare_quotient_keys(&left.key, &right.key)
         })? {
             return Ok(previous.node);
@@ -184,7 +184,7 @@ impl EmissionNodeRegistry {
         self.nodes.push(EmissionNode { authority });
         self.by_exact_key
             .insert(IndexedEmissionNode { key, node }, &mut |left, right| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 compare_quotient_keys(&left.key, &right.key)
             })?;
         Ok(node)
@@ -242,7 +242,7 @@ pub(super) struct NativePortData {
 
 impl NativePortData {
     pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(self.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let point = self.point.try_clone_with_work(work)?;
@@ -596,7 +596,9 @@ pub(super) fn merge_native_port_data(
         .len()
         .checked_add(right.occurrences.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(occurrence_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(occurrence_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut occurrences = Vec::with_capacity(occurrence_count);
     for occurrence in &left.occurrences {
         occurrences.push(occurrence.try_clone_with_work(work)?);
@@ -768,7 +770,7 @@ pub(super) fn native_seam_edges(
         .len()
         .checked_add(band_work)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(work).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(u64::try_from(work).map_err(|_| ResourceError::SizeOverflow)?)?;
     for pair in events.array_windows::<2>() {
         let [low, high] = pair;
         if !low
@@ -843,7 +845,7 @@ fn native_pole_presentation_occurrence(
     half: &ExactRational,
     budget: &mut EvaluationBudget,
 ) -> Result<Option<NativePortData>> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     if source.node != node
         || !matches!(&source.spelling, PortSpelling::Pole { .. })
         || !source.point.y.try_cmp_with_work(latitude, budget)?.is_eq()
@@ -864,7 +866,7 @@ fn native_pole_presentation_occurrence(
         )
         .into());
     }
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     Ok(Some(NativePortData {
         node: source.node,
         point: source.point.try_clone_with_work(budget)?,
@@ -895,7 +897,9 @@ pub(super) fn native_pole_edges(
     if closures.is_empty() {
         return Ok(Vec::new());
     }
-    budget.charge(u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut edges = Vec::new();
     let half = ExactRational::from_f64(frame.longitude().half_period());
     let west = ExactRational::zero().try_subtract_with_work(&half, budget)?;
@@ -906,7 +910,9 @@ pub(super) fn native_pole_edges(
         Vec<NativePortData>,
     )>::new();
     for pole in [ChartPole::South, ChartPole::North] {
-        budget.charge(u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         if !closures
             .iter()
             .any(|(_, closure_pole)| *closure_pole == pole)
@@ -930,7 +936,7 @@ pub(super) fn native_pole_edges(
         known_poles.push((pole, event.east.node, latitude, Vec::new()));
     }
     for edge in area_edges.iter().chain(line_edges) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !matches!(&edge.kind, NativeAreaEdgeKind::Producer { .. }) {
             continue;
         }
@@ -955,14 +961,16 @@ pub(super) fn native_pole_edges(
     }
     for (_, _, _, known) in &mut known_poles {
         try_sort_by_with_work(known, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             left.point.x.try_cmp_with_work(&right.point.x, budget)
         })?;
         let known_count = known.len();
-        budget.charge(u64::try_from(known_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(known_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut unique = Vec::<NativePortData>::with_capacity(known_count);
         for port in std::mem::take(known) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if let Some(previous) = unique.last()
                 && previous
                     .point
@@ -1019,7 +1027,8 @@ pub(super) fn native_pole_edges(
             .len()
             .checked_add(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(path_len).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget
+            .charge_into_error(u64::try_from(path_len).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut path = Vec::with_capacity(path_len);
         let east = NativePortData {
             node: event.east.node,
@@ -1027,7 +1036,7 @@ pub(super) fn native_pole_edges(
             spelling: PortSpelling::Seam(ChartSide::East),
             source_record: None,
             occurrences: {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 vec![OccurrenceSource {
                     origin: VertexOrigin::Presentation,
                     source_trace: None,
@@ -1040,7 +1049,7 @@ pub(super) fn native_pole_edges(
             spelling: PortSpelling::Seam(ChartSide::West),
             source_record: None,
             occurrences: {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 vec![OccurrenceSource {
                     origin: VertexOrigin::Presentation,
                     source_trace: None,
@@ -1067,10 +1076,12 @@ pub(super) fn native_pole_edges(
             .len()
             .checked_sub(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(segment_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(segment_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         edges.reserve(segment_count);
         for pair in path.array_windows::<2>() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let mut endpoints = pair.iter();
             let start = endpoints.next().ok_or_else(|| {
                 GeometryErrorKind::Invalid("native pole arc has no start port".into())
@@ -1202,7 +1213,7 @@ impl<'topology> EmissionBuilder<'topology> {
     ) -> Result<Vec<EmissionNodeId>> {
         let mut nodes = Vec::with_capacity(samples.len());
         for sample in samples {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let point = sample.exact_point.try_clone_with_work(work)?;
             nodes.push(
                 self.nodes
@@ -1444,7 +1455,7 @@ impl NativeMaterializedParts {
             .into());
         }
         for index in 0..self.points.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let point = self.points.get(index).expect("point row count was checked");
             let uses = self
                 .literal_uses
@@ -1459,7 +1470,7 @@ impl NativeMaterializedParts {
             }
         }
         for index in 0..self.lines.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let line = self.lines.get(index).expect("line row count was checked");
             let uses = self
                 .literal_uses
@@ -1474,7 +1485,7 @@ impl NativeMaterializedParts {
             }
         }
         for index in 0..self.polygons.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let polygon = self
                 .polygons
                 .get(index)
@@ -1495,7 +1506,7 @@ impl NativeMaterializedParts {
                 .into());
             }
             for hole_index in 0..polygon.holes.len() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let hole = polygon
                     .holes
                     .get(hole_index)
@@ -1535,18 +1546,24 @@ pub(super) fn materialize_native_parts(
         )
         .into());
     }
-    budget.charge(u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut cloned_line_traces = Vec::with_capacity(line_traces.len());
     for line in line_traces {
         cloned_line_traces.push(line.try_clone_with_work(budget)?);
     }
     let line_traces = cloned_line_traces;
-    budget.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut points = Vec::with_capacity(plan.points.len());
-    budget.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut point_uses = Vec::with_capacity(plan.points.len());
     for (index, &port) in plan.points.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         points.push(native_port_point(plan, sites, ordinates, port, axes)?);
         point_uses.push(LiteralPoint {
             output: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
@@ -1554,14 +1571,19 @@ pub(super) fn materialize_native_parts(
             image: port,
         });
     }
-    budget.charge(u64::try_from(plan.lines.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.lines.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut lines = Vec::with_capacity(plan.lines.len());
-    budget.charge(u64::try_from(plan.lines.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.lines.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut line_uses = Vec::with_capacity(plan.lines.len());
     for (index, chords) in plan.lines.iter().enumerate() {
         let walk = native_chord_points(plan, sites, ordinates, chords, axes, false, budget)?;
-        budget
-            .charge(u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         lines.push(CoordSeq::try_from_points_with_work(&walk.points, budget)?);
         line_uses.push(LiteralSequence {
             output: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
@@ -1569,28 +1591,36 @@ pub(super) fn materialize_native_parts(
             images: walk.ports,
         });
     }
-    budget.charge(u64::try_from(plan.parts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.parts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut polygons = Vec::with_capacity(plan.parts.len());
-    budget.charge(u64::try_from(plan.parts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(plan.parts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut polygon_uses = Vec::with_capacity(plan.parts.len());
     for (part_index, part) in plan.parts.iter().enumerate() {
         let output = u32::try_from(part_index).map_err(|_| ResourceError::SizeOverflow)?;
         let shell_walk =
             native_chord_points(plan, sites, ordinates, &part.shell, axes, true, budget)?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(shell_walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let shell = Ring::try_from_closed(CoordSeq::try_from_points_with_work(
             &shell_walk.points,
             budget,
         )?)?;
-        budget.charge(u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut holes = Vec::with_capacity(part.holes.len());
-        budget.charge(u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut hole_uses = Vec::with_capacity(part.holes.len());
         for hole in &part.holes {
             let walk = native_chord_points(plan, sites, ordinates, hole, axes, true, budget)?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             holes.push(Ring::try_from_closed(CoordSeq::try_from_points_with_work(
@@ -1657,16 +1687,20 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
     work: &mut impl Work,
 ) -> Result<(Vec<NodeOrdinates>, CoordinateAxes)> {
     if !declared_axes.has_z() && !declared_axes.has_m() {
-        work.charge(u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         return Ok((
             vec![NodeOrdinates::default(); plan.ports.len()],
             CoordinateAxes::XY,
         ));
     }
-    work.charge(u64::try_from(plan.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(plan.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut request_rows = Vec::with_capacity(plan.occurrences.len());
     for occurrence in &plan.occurrences {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let requests = match &occurrence.source_trace {
             Some(location) => source_requests_at_location(publication, location, work)?,
             None => Vec::new(),
@@ -1678,16 +1712,18 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
     }
     let resolved_requests = resolve_request_rows(&request_rows, roots, metric_access, work)?;
 
-    work.charge(u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut output = Vec::with_capacity(plan.ports.len());
     let mut has_z = declared_axes.has_z();
     let mut has_m = declared_axes.has_m();
     for port in &plan.ports {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut ordinates = NodeOrdinates::default();
         let mut has_live_presentation = false;
         for occurrence_index in port.occurrence_range.clone() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let occurrence = plan.occurrences.get(occurrence_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native port occurrence row is unknown".into())
             })?;
@@ -1736,7 +1772,7 @@ fn source_requests_at_location(
 ) -> Result<Vec<RootRequest>> {
     match location {
         TraceRequestLocation::Root { root, parameter } => {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(vec![RootRequest::new_with_work(
                 *root,
                 parameter.try_clone_with_work(work)?,
@@ -1794,7 +1830,7 @@ fn native_chord_points(
         .len()
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             point_count
                 .checked_mul(2)
@@ -1804,12 +1840,12 @@ fn native_chord_points(
     )?;
     let mut points = Vec::with_capacity(point_count);
     let mut ports = Vec::with_capacity(point_count);
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     points.push(native_port_point(plan, sites, ordinates, first_port, axes)?);
     ports.push(first_port);
     let mut previous = first_port;
     for &chord_id in chords {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let chord = plan.chords.get(chord_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native emission walk references an unknown chord".into())
         })?;
@@ -1831,7 +1867,7 @@ fn native_chord_points(
             )
             .into());
         }
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let first = *points.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("native polygon part has no first record".into())
         })?;
@@ -1953,7 +1989,7 @@ fn pending_source_ranges(
 ) -> Result<Vec<PendingSourceRange>> {
     let mut output = Vec::with_capacity(span.owners.len());
     for (owner_index, owner) in span.owners.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let forward = (directed.from == span.ports[0]) != owner.reversed;
         let range = if forward {
             ExactSourceRange {
@@ -2001,7 +2037,7 @@ fn producer_mapping_is_affine(
         let displacement_order = displacement.try_cmp_with_work(&zero, work)?;
         let mut supported = true;
         for range in ranges {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let longitude_step = range
                 .longitude_end
                 .try_subtract_with_work(&range.longitude_start, work)?;
@@ -2044,7 +2080,7 @@ fn producer_step_extends_run(
     point_support: bool,
     work: &mut impl Work,
 ) -> Result<bool> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if !support_allowed
         || point_support
         || (longitude_displacement.is_zero() && latitude_displacement.is_zero())
@@ -2097,7 +2133,7 @@ fn producer_ranges(
     }
     let mut output = Vec::with_capacity(ranges.len());
     for range in ranges {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let (producer_start, producer_end) = if endpoint_only {
             (ExactRational::zero(), ExactRational::one())
         } else if !longitude_displacement.is_zero() {
@@ -2405,10 +2441,12 @@ impl SourceTrace {
         let input_vertex_count = edge_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut new_samples_by_edge = vec![0_usize; edge_count];
         for sample in samples {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let count = new_samples_by_edge
                 .get_mut(sample.edge_index)
                 .ok_or_else(|| {
@@ -2418,10 +2456,12 @@ impl SourceTrace {
                 })?;
             *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
-        work.charge(u64::try_from(input_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(input_vertex_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut new_samples_before_vertex = vec![0_usize; input_vertex_count];
         for vertex in 1..input_vertex_count {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let previous_vertex = vertex.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
             let previous = *new_samples_before_vertex
                 .get(previous_vertex)
@@ -2446,11 +2486,13 @@ impl SourceTrace {
             .checked_add(samples.len())
             .ok_or(ResourceError::SizeOverflow)?;
         let mut output_rows = TraceRowsBuilder::new(work)?;
-        work.charge(u64::try_from(output_sample_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(output_sample_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut output_samples = Vec::with_capacity(output_sample_count);
         let mut request_row_index = 0_usize;
         for sample in &self.samples {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if sample.written_vertex > edge_count {
                 return Err(GeometryErrorKind::Invalid(
                     "previous source sample is outside the input vertex sequence".into(),
@@ -2475,7 +2517,9 @@ impl SourceTrace {
             let requests = self
                 .rows
                 .sample_requests_at(sample.request_row.index(), work)?;
-            work.charge(u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let point_ranges = requests
                 .iter()
                 .map(|request| {
@@ -2505,7 +2549,7 @@ impl SourceTrace {
         let mut sample_index = 0_usize;
         let mut previous_new_written_vertex = None;
         for edge_index in 0..edge_count {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let boundary_capacity = new_samples_by_edge
                 .get(edge_index)
                 .copied()
@@ -2514,7 +2558,7 @@ impl SourceTrace {
                 })?
                 .checked_add(2)
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(
+            work.charge_into_error(
                 u64::try_from(boundary_capacity).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut boundaries = Vec::with_capacity(boundary_capacity);
@@ -2523,7 +2567,7 @@ impl SourceTrace {
             while let Some(sample) = samples.get(sample_index)
                 && sample.edge_index == edge_index
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if sample
                     .local_parameter
                     .try_cmp_with_work(&previous_parameter, work)?
@@ -2546,7 +2590,7 @@ impl SourceTrace {
                     work,
                 )?;
                 let has_source = !requests.is_empty();
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 let point_ranges = requests
@@ -2583,7 +2627,7 @@ impl SourceTrace {
 
             for pair in boundaries.array_windows::<2>() {
                 let [from, to] = pair;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 output_rows.push_composed_row(self.rows.row(edge_index)?, from, to, work)?;
             }
         }
@@ -2598,7 +2642,7 @@ impl SourceTrace {
         })?;
         for pair in output_samples.array_windows::<2>() {
             let [left, right] = pair;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if left.written_vertex >= right.written_vertex {
                 return Err(GeometryErrorKind::Invalid(
                     "written source sample vertices are not strictly ordered".into(),
@@ -2640,10 +2684,10 @@ pub(super) fn index_recipe_walks<'walks>(
     walks: &'walks [RecipeWalk],
     work: &mut impl Work,
 ) -> Result<RecipeWalkIndex<'walks>> {
-    work.charge(u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut index = BTreeMap::new();
     for walk in walks {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         index.entry(walk.owner).or_insert_with(Vec::new).push(walk);
     }
     Ok(index)
@@ -2655,7 +2699,7 @@ pub(super) fn next_recipe_walk<'walk>(
     owner: RecipeWalkOwner,
     work: &mut impl Work,
 ) -> Result<&'walk RecipeWalk> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let cursor = cursors.entry(owner).or_default();
     let walk = index
         .get(&owner)
@@ -2675,7 +2719,9 @@ pub(in crate::geometry) struct SourceTrace {
 
 impl SourceTrace {
     pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        work.charge(u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let rows = self.rows.try_clone_with_work(work)?;
         let mut samples = Vec::with_capacity(self.samples.len());
         for sample in &self.samples {
@@ -2726,7 +2772,7 @@ impl SourceTrace {
     ) -> Result<Self> {
         let mut rows = TraceRowsBuilder::new(work)?;
         for row in edge_rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             rows.push_row(row, work)?;
         }
         Ok(Self {
@@ -2757,10 +2803,12 @@ impl SourceTrace {
         let vertex_count = edge_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(vertex_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut requests_by_vertex = vec![Vec::<RootRequest>::new(); vertex_count];
         for sample in &self.samples {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let requests = self
                 .rows
                 .sample_requests_at(sample.request_row.index(), work)?;
@@ -2771,7 +2819,9 @@ impl SourceTrace {
                         "source sample is outside its retained line trace".into(),
                     )
                 })?;
-            work.charge(u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             vertex_requests.extend(requests);
         }
 
@@ -2779,7 +2829,7 @@ impl SourceTrace {
         let one = ExactRational::one();
         let mut rows = TraceRowsBuilder::new(work)?;
         for (edge, start, end) in slices {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if *edge >= edge_count {
                 return Err(GeometryErrorKind::Invalid(
                     "source trace slice references an unknown edge".into(),
@@ -2799,17 +2849,19 @@ impl SourceTrace {
                 .checked_add(start_requests.len())
                 .and_then(|capacity| capacity.checked_add(end_requests.len()))
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut row = Vec::with_capacity(row_capacity);
             for parent in parents {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if let Some(child) = parent.compose_with_work(start, end, work)? {
                     row.push(child);
                 }
             }
             if start.try_cmp_with_work(&zero, work)?.is_eq() {
                 for request in start_requests {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
                         request.parameter().try_clone_with_work(work)?,
@@ -2820,7 +2872,7 @@ impl SourceTrace {
             }
             if end.try_cmp_with_work(&one, work)?.is_eq() {
                 for request in end_requests {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
                         request.parameter().try_clone_with_work(work)?,
@@ -2888,17 +2940,17 @@ pub(super) fn native_source_sample_occurrences(
         .len()
         .checked_add(usize::from(source_trace.is_some()))
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut occurrences = Vec::with_capacity(capacity);
     if let Some(source_trace) = source_trace {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         occurrences.push(OccurrenceSource {
             origin: VertexOrigin::SourceSample,
             source_trace: Some(source_trace),
         });
     }
     for request in source_requests {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         occurrences.push(OccurrenceSource {
             origin: VertexOrigin::SourceSample,
             source_trace: Some(TraceRequestLocation::Root {
@@ -2908,7 +2960,7 @@ pub(super) fn native_source_sample_occurrences(
         });
     }
     if occurrences.is_empty() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         occurrences.push(OccurrenceSource {
             origin: VertexOrigin::Presentation,
             source_trace: None,
@@ -2966,12 +3018,12 @@ pub(super) fn resolve_publication_ordinates<M: ChartMetric>(
         return Ok(Vec::new());
     }
     if !axes.has_z() && !axes.has_m() {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(publication.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         return Ok(vec![NodeOrdinates::default(); publication.samples.len()]);
     }
-    work.charge(
+    work.charge_into_error(
         u64::try_from(publication.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut request_rows = Vec::with_capacity(publication.samples.len());
@@ -2983,7 +3035,7 @@ pub(super) fn resolve_publication_ordinates<M: ChartMetric>(
             .into());
         }
         for (offset, trace_sample) in fragment.trace.samples.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let sample_index = fragment
                 .sample_range
                 .start
@@ -3115,7 +3167,7 @@ pub(super) fn native_cut_features(
     if start_site.periods() < end_site.periods() {
         let mut period_index = start_site.periods();
         while period_index < end_site.periods() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             append_native_cut_feature(
                 topology,
                 recipe,
@@ -3135,7 +3187,7 @@ pub(super) fn native_cut_features(
     } else {
         let mut period_index = start_site.periods();
         while period_index > end_site.periods() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             period_index = period_index
                 .checked_sub(1)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -3168,7 +3220,7 @@ fn append_native_cut_feature(
     output: &mut Vec<NativeCutFeature>,
     work: &mut impl Work,
 ) -> Result<()> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let axis = topology.sources.frame.longitude();
     let period = ExactRational::from_f64(axis.period());
     let half = ExactRational::from_f64(axis.half_period());
@@ -3272,10 +3324,12 @@ impl FeatureFamilyBounds {
             )
             .into());
         }
-        work.charge(u64::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut bounds = Vec::with_capacity(recipes.len());
         for (recipe_index, recipe) in recipes.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let fragment = publication.fragments.get(recipe_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native family publication fragment is unknown".into())
             })?;
@@ -3302,9 +3356,11 @@ impl FeatureFamilyBounds {
             }
             let mut native_cut_ranges = Vec::with_capacity(ranges.len());
             let mut native_cuts = 0_usize;
-            work.charge(u64::try_from(ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             for possible_intervals in ranges {
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(possible_intervals.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
@@ -3312,7 +3368,7 @@ impl FeatureFamilyBounds {
                 try_sort_by_with_work(&mut sorted, work, |left, right, _work| Ok(left.cmp(right)))?;
                 let mut merged = Vec::<(i64, i64)>::new();
                 for (low, high) in sorted {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if low > high {
                         return Err(GeometryErrorKind::Invalid(
                             "native family period range is reversed".into(),
@@ -3328,10 +3384,12 @@ impl FeatureFamilyBounds {
                     }
                     merged.push((low, high));
                 }
-                work.charge(u64::try_from(merged.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+                work.charge_into_error(
+                    u64::try_from(merged.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
                 let mut intervals = Vec::with_capacity(merged.len());
                 for (low_period, high_period) in merged {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let width = usize::try_from(
                         high_period
                             .checked_sub(low_period)
@@ -3361,7 +3419,7 @@ impl FeatureFamilyBounds {
         try_sort_by_with_work(&mut region_families, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(
+        work.charge_into_error(
             u64::try_from(region_families.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         region_families.dedup();
@@ -3389,11 +3447,11 @@ impl FeatureFamilyRegistry {
         seam_period_index: i64,
         work: &mut impl Work,
     ) -> Result<u32> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let bound = self.bounds.get(parent.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cut family parent is unknown".into())
         })?;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let range = bound.native_cut_ranges.get(trace_edge).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cut family leaf is unknown".into())
         })?;
@@ -3401,7 +3459,7 @@ impl FeatureFamilyRegistry {
         let mut high = range.intervals.len();
         let mut found = None;
         while low < high {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let middle = low
                 .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -3435,7 +3493,7 @@ impl FeatureFamilyRegistry {
     }
 
     pub(super) fn register(&mut self, family: FeatureFamily, work: &mut impl Work) -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let bound = match family.parent {
             FeatureFamilyParent::Fragment(recipe) => {
                 self.bounds.get(recipe.0 as usize).ok_or_else(|| {
@@ -3488,7 +3546,7 @@ impl FeatureFamilyRegistry {
         let mut high = self.region_families.len();
         let mut found = false;
         while low < high {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let middle = low
                 .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -3521,7 +3579,7 @@ impl FeatureFamilyRegistry {
     }
 
     pub(super) fn synchronize_budget(&self, budget: &mut impl SearchAccount) -> Result<()> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let constructed = self
             .source_base
             .checked_add(self.additional_constructed())
@@ -3567,7 +3625,7 @@ impl FragmentRecipes {
     ) -> Result<SourceTrace> {
         let mut rows = TraceRowsBuilder::new(work)?;
         for &fragment_id in fragments {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let fragment = self.values.get(fragment_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source trace fragment is unknown".into())
             })?;
@@ -3576,7 +3634,7 @@ impl FragmentRecipes {
                     .ranges
                     .iter()
                     .try_fold(0_usize, |count, range| -> Result<usize> {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         let range_slots = 1_usize
                             .checked_add(usize::from(range.endpoint_only))
                             .ok_or(ResourceError::SizeOverflow)?;
@@ -3584,10 +3642,12 @@ impl FragmentRecipes {
                             .checked_add(range_slots)
                             .ok_or_else(|| ResourceError::SizeOverflow.into())
                     })?;
-            work.charge(u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut row = Vec::with_capacity(row_capacity);
             for range in &fragment.ranges {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let root = RootId::from_index(range.source_edge.0);
                 if range.endpoint_only {
                     row.push(RootRange::point_with_work(
@@ -3644,7 +3704,7 @@ impl FragmentRecipes {
         let mut samples = Vec::new();
         let mut counts = vec![0_usize; self.values.len()];
         for recipe in &self.values {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let exact_endpoints = recipe.reference_endpoints(topology, work)?;
             let source_start_record =
                 recipe.source_endpoint_record(topology, EndpointSide::Start, work)?;
@@ -3717,7 +3777,7 @@ impl FragmentRecipes {
                 .into());
             }
             let original_trace = self.source_trace_fragment(recipe.id, work)?;
-            work.charge(
+            work.charge_into_error(
                 u64::try_from(publication_samples.len())
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -3758,7 +3818,7 @@ impl FragmentRecipes {
             for (occurrence, (edge_index, parameter, point)) in
                 publication_samples.into_iter().enumerate()
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let trace_sample = trace.samples.get(occurrence).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "publication trace lost an accepted sample row".into(),
@@ -3846,7 +3906,7 @@ impl FragmentRecipes {
         use_kind: SelectedUse,
         work: &mut impl Work,
     ) -> Result<FragmentRecipeId> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let id = FragmentRecipeId(
             u32::try_from(self.values.len()).map_err(|_| ResourceError::SizeOverflow)?,
         );
@@ -3886,7 +3946,7 @@ impl FragmentRecipes {
         let mut previous_to: Option<QPortId> = None;
 
         for directed in spans {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = topology
                 .q
                 .spans
@@ -4175,7 +4235,7 @@ impl FragmentRecipes {
         emitted: &mut Vec<FragmentRecipeId>,
         work: &mut impl Work,
     ) -> Result<()> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let ranges = producer_ranges(
             ranges,
             &longitude_displacement,
@@ -4228,6 +4288,8 @@ mod tests {
     }
 
     impl Work for RecordedWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let spent_before = self.spent;
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
@@ -4353,11 +4415,17 @@ mod tests {
     }
 
     impl Work for RecordingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             self.attempted.push(ticks);
             self.budget.charge(ticks)?;
             self.accepted.push(ticks);
             Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 
@@ -6520,7 +6588,7 @@ mod tests {
         assert_eq!(registry.additional_constructed(), 1);
 
         let mut budget = EvaluationBudget::new("native completion", 2).unwrap();
-        budget.charge(7).unwrap();
+        budget.charge_into_error(7).unwrap();
         registry.synchronize_budget(&mut budget).unwrap();
         for _ in 0..100 {
             registry.register(family, &mut budget).unwrap();

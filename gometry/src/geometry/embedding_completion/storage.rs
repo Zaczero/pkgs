@@ -127,7 +127,9 @@ impl<I> FrozenLiteralBuffers<I> {
         row_map: Vec<Option<LiteralRowBinding<I>>>,
         work: &mut W,
     ) -> Result<Self> {
-        work.charge(u64::try_from(row_map.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(row_map.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let (rows, row_map) =
             ArrayRows::admit_with_row_map(storage, missing, layout, row_map, work)?;
         Ok(Self {
@@ -179,7 +181,9 @@ impl<I> FrozenLiteralBuffers<I> {
         missing: Option<ValidityMask>,
         work: &mut W,
     ) -> Result<Self> {
-        work.charge(u64::try_from(value_map.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(value_map.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let (values, value_map) =
             ArrayRows::admit_with_row_map(storage, value_missing, value_layout, value_map, work)?;
         Ok(Self {

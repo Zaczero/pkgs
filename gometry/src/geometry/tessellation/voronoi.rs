@@ -20,20 +20,20 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let mut active: VecDeque<usize> = VecDeque::new();
     let mut y_index: BTreeSet<(u64, usize)> = BTreeSet::new();
     let mut candidates: Vec<usize> = Vec::new();
+    let mut survivor_for_site = vec![None; sites.len()];
     for (ordinal, site) in sites.iter().enumerate() {
-        let point = site.point.xy();
-        let min_x = ordered(exact::Interval::exact(point.x).sub(radius_bounds).lo);
-        let y_bounds = exact::Interval::exact(point.y);
-        let min_y = ordered(y_bounds.sub(radius_bounds).lo);
-        let max_y = ordered(y_bounds.add(radius_bounds).hi);
+        let [x_bounds, y_bounds] = site.exact_point.bounds();
+        let min_x = x_bounds.sub(radius_bounds).lo;
+        let min_y = ordered(y_bounds.sub(radius_bounds).lo.next_down().next_down());
+        let max_y = ordered(y_bounds.add(radius_bounds).hi.next_up().next_up());
         while let Some(&oldest) = active.front() {
-            if ordered(
-                sites
-                    .get(oldest)
-                    .expect("active ordinals come from the source site enumeration")
-                    .point
-                    .x,
-            ) >= min_x
+            if sites
+                .get(oldest)
+                .expect("active ordinals come from the source site enumeration")
+                .exact_point
+                .bounds()[0]
+                .hi
+                >= min_x
             {
                 break;
             }
@@ -45,7 +45,8 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
                     sites
                         .get(expired)
                         .expect("expired ordinals come from the active site queue")
-                        .point
+                        .exact_point
+                        .round_nearest_even()?
                         .y,
                 ),
                 expired,
@@ -63,25 +64,54 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
                 .map(|&(_, candidate)| candidate),
         );
         candidates.sort_unstable();
-        let mut snapped = false;
+        let mut snapped_to = None;
         for &candidate in &candidates {
-            if exact::distance_within(
-                sites
-                    .get(candidate)
-                    .expect("candidate ordinals come from the source site enumeration")
-                    .point
-                    .xy(),
-                point,
-                radius,
-            )? {
-                snapped = true;
+            let candidate_site = sites
+                .get(candidate)
+                .expect("candidate ordinals come from the source site enumeration");
+            let within = if candidate_site.retained_chart_site.is_none()
+                && site.retained_chart_site.is_none()
+            {
+                exact::distance_within(candidate_site.point.xy(), site.point.xy(), radius)?
+            } else {
+                exact::distance_within_points(
+                    &candidate_site.exact_point,
+                    &site.exact_point,
+                    radius,
+                )?
+            };
+            if within {
+                snapped_to = Some(candidate);
                 break;
             }
         }
-        if !snapped {
-            survivors.push(*site);
+        if let Some(candidate) = snapped_to {
+            let survivor = survivor_for_site
+                .get(candidate)
+                .copied()
+                .flatten()
+                .expect("snapping candidates are admitted survivors");
+            let target: &mut Site = survivors
+                .get_mut(survivor)
+                .expect("survivor indices belong to the retained site table");
+            target.snapped_sources.push(site.source_ordinal);
+            target
+                .snapped_sources
+                .extend_from_slice(&site.quotient_aliases);
+            target
+                .snapped_sources
+                .extend_from_slice(&site.snapped_sources);
+            *survivor_for_site
+                .get_mut(ordinal)
+                .expect("site ordinal comes from the source enumeration") = Some(survivor);
+        } else {
+            let survivor = survivors.len();
+            survivors.push(site.clone());
+            *survivor_for_site
+                .get_mut(ordinal)
+                .expect("site ordinal comes from the source enumeration") = Some(survivor);
             active.push_back(ordinal);
-            y_index.insert((ordered(point.y), ordinal));
+            y_index.insert((ordered(site.exact_point.round_nearest_even()?.y), ordinal));
         }
     }
     Ok(survivors)
@@ -97,6 +127,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
 pub(super) struct DelaunayComplex {
     pub(super) face_component: Vec<usize>,
     pub(super) centers: Vec<exact::ExactPoint>,
+    pub(super) center_sites: Vec<[u32; 3]>,
 }
 
 impl DelaunayComplex {
@@ -170,6 +201,7 @@ pub(super) fn delaunay_complex(
     // defines the exact circumcenter, since all of them are cocircular.
     let mut component_of_root = vec![usize::MAX; triangles.len()];
     let mut centers = Vec::with_capacity(remaining_roots);
+    let mut center_sites = Vec::with_capacity(remaining_roots);
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         let component = component_of_root
@@ -177,23 +209,36 @@ pub(super) fn delaunay_complex(
             .expect("face root comes from the Delaunay parent column");
         if *component == usize::MAX {
             *component = centers.len();
-            centers.push(exact::circumcenter(
+            let [a_site, b_site, c_site] = [
                 sites
                     .get(a)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
+                    .expect("triangle site comes from the canonical site set"),
                 sites
                     .get(b)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
+                    .expect("triangle site comes from the canonical site set"),
                 sites
                     .get(c)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
-            )?);
+                    .expect("triangle site comes from the canonical site set"),
+            ];
+            centers.push(
+                if a_site.retained_chart_site.is_none()
+                    && b_site.retained_chart_site.is_none()
+                    && c_site.retained_chart_site.is_none()
+                {
+                    exact::circumcenter(a_site.point.xy(), b_site.point.xy(), c_site.point.xy())?
+                } else {
+                    exact::circumcenter_points(
+                        &a_site.exact_point,
+                        &b_site.exact_point,
+                        &c_site.exact_point,
+                    )?
+                },
+            );
+            center_sites.push([
+                u32::try_from(a).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                u32::try_from(b).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                u32::try_from(c).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            ]);
         }
     }
     // The union-find storage has the same length and lifetime as the final
@@ -214,5 +259,6 @@ pub(super) fn delaunay_complex(
     Ok(DelaunayComplex {
         face_component: parents,
         centers,
+        center_sites,
     })
 }

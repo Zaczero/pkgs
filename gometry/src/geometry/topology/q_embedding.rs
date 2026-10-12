@@ -23,8 +23,7 @@ use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, ExactSourceRing,
     FallibleAvl, SourceEdgeId, SourceEdgeKind, SourceRowId, compare_quotient_keys,
     compare_quotient_keys_with_work, point_on_exact_segment_with_work,
-    quotient_key_for_chart_position_with_work, vector_cross, vector_cross_with_work,
-    vector_difference, vector_difference_with_work,
+    quotient_key_for_chart_position_with_work, vector_cross_with_work, vector_difference_with_work,
 };
 use super::overlay::{
     DrawnAreaOrigin, DrawnPolygons, PlannedAreaRing, PolygonPlan, QEmissionDrawing, QEmissionPlan,
@@ -63,9 +62,9 @@ use crate::geometry::ordinates::{
     NodeOrdinates, RootId, RootRange, RootRequest, SourceArcMetricAccess,
 };
 use crate::geometry::overlay::{
-    EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
-    graph_global_faces_with_work, segments_within_chebyshev, shoot_left_with_work,
-    walk_is_shell_with_work,
+    EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
+    compare_departures_with_work, graph_global_faces_with_work, segments_within_chebyshev,
+    shoot_left_with_work, walk_is_shell_with_work,
 };
 use crate::geometry::publication::{
     ChartRestriction, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
@@ -289,7 +288,7 @@ fn build_native_producer_use_table(
     budget: &mut impl Work,
 ) -> Result<NativeProducerUseTable> {
     try_sort_by_with_work(&mut rows, budget, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let key_order = left.key.cmp(&right.key);
         if !key_order.is_eq() {
             return Ok(key_order);
@@ -309,14 +308,14 @@ fn build_native_producer_use_table(
         .len()
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut keys = Vec::with_capacity(rows.len());
     let mut offsets = Vec::with_capacity(capacity);
     let mut atom_uses = Vec::with_capacity(rows.len());
     offsets.push(0);
     let mut row_index = 0_usize;
     while row_index < rows.len() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let row = rows.get(row_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native producer-use row is unknown".into())
         })?;
@@ -326,7 +325,7 @@ fn build_native_producer_use_table(
         while let Some(row) = rows.get(row_index)
             && row.key == key
         {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !row
                 .producer_range
                 .start
@@ -388,7 +387,9 @@ fn native_graph_sewing(
         )
         .into());
     }
-    budget.charge(u64::try_from(vertex_keys.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(vertex_keys.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut bank_vertices = BTreeMap::<EmissionNodeId, (Option<u32>, Option<u32>)>::new();
     let mut pole_vertices = BTreeMap::<(EmissionNodeId, u8), u32>::new();
     let mut sewing = Vec::new();
@@ -397,7 +398,7 @@ fn native_graph_sewing(
     let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
     let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
     for (vertex_index, key) in vertex_keys.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let vertex = u32::try_from(vertex_index).map_err(|_| ResourceError::SizeOverflow)?;
         let point = exact_points.get(vertex_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native chart sewing point is unknown".into())
@@ -525,7 +526,9 @@ fn native_graph_sewing_matches(
         .len()
         .checked_add(recorded.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(comparison_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(comparison_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     Ok(expected.as_slice() == recorded)
 }
 
@@ -542,7 +545,7 @@ fn native_graph_writer_faces(
         .into_iter()
         .enumerate()
     {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let slot = native_graph_slot(graph, written.atom, forward, budget)?;
         let local_face = *graph.topology.face_of.get(slot).ok_or_else(|| {
             GeometryErrorKind::Invalid("native source germ slot has no local face".into())
@@ -570,12 +573,12 @@ fn native_graph_face_source_table(
     let mut all_edges = area_edges.iter().chain(line_edges);
     let mut capacity = 0_usize;
     for edge in all_edges.by_ref() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NativeAreaEdgeKind::Producer { known_spans, .. } = &edge.kind else {
             continue;
         };
         for source in known_spans {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let side_order = source
                 .span_range
                 .start
@@ -585,16 +588,16 @@ fn native_graph_face_source_table(
             }
         }
     }
-    budget.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut pending = Vec::with_capacity(capacity);
     for (written_edge, edge) in area_edges.iter().chain(line_edges).enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NativeAreaEdgeKind::Producer { known_spans, .. } = &edge.kind else {
             continue;
         };
         let writer_faces = native_graph_writer_faces(graph, written_edge, budget)?;
         for (source_span, source) in known_spans.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if source.face_germs.is_none() {
                 continue;
             }
@@ -608,7 +611,7 @@ fn native_graph_face_source_table(
             let increasing = side_order.is_lt();
             let native_side_for_q_side = if increasing { [0, 1] } else { [1, 0] };
             for (source_side, &native_side) in native_side_for_q_side.iter().enumerate() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let face = *writer_faces.get(native_side).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native source germ has no directed face".into())
                 })?;
@@ -631,7 +634,7 @@ fn native_graph_face_source_table(
         }
     }
     try_sort_by_with_work(&mut pending, budget, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left
             .0
             .cmp(&right.0)
@@ -643,7 +646,7 @@ fn native_graph_face_source_table(
     let offset_count = face_count
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             offset_count
                 .checked_add(pending.len())
@@ -752,6 +755,22 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
     }
 
     fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
+        self.compare_axis_with_work(left, right, axis, &mut Unmetered)
+    }
+
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        self.orientation_with_work(a, b, c, &mut Unmetered)
+    }
+}
+
+impl RayPointsWithWork for NativeReferenceRayPoints<'_> {
+    fn compare_axis_with_work<W: Work>(
+        &self,
+        left: u32,
+        right: u32,
+        axis: RayAxis,
+        work: &mut W,
+    ) -> Result<Ordering> {
         let left = self.exact_point(left)?;
         let right = self.exact_point(right)?;
         let source_axis = match (self.transform, axis) {
@@ -760,8 +779,8 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
             (NativeRayTransform::Identity | NativeRayTransform::ReflectX, axis) => axis,
         };
         let order = match source_axis {
-            RayAxis::X => left.compare_x(right)?,
-            RayAxis::Y => left.compare_y(right)?,
+            RayAxis::X => left.x.try_cmp_with_work(&right.x, work)?,
+            RayAxis::Y => left.y.try_cmp_with_work(&right.y, work)?,
         };
         Ok(
             if matches!(
@@ -775,11 +794,19 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
         )
     }
 
-    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+    fn orientation_with_work<W: Work>(
+        &self,
+        a: u32,
+        b: u32,
+        c: u32,
+        work: &mut W,
+    ) -> Result<ExactSign> {
         let a = self.exact_point(a)?;
         let b = self.exact_point(b)?;
         let c = self.exact_point(c)?;
-        let sign = vector_cross(&vector_difference(a, b)?, &vector_difference(a, c)?)?.sign();
+        let left = vector_difference_with_work(a, b, work)?;
+        let right = vector_difference_with_work(a, c, work)?;
+        let sign = vector_cross_with_work(&left, &right, work)?.sign();
         Ok(
             if matches!(
                 self.transform,
@@ -833,16 +860,18 @@ fn logical_layout_for_plan(
             .and_then(|count| count.checked_add(part.holes.len()))
             .ok_or(ResourceError::SizeOverflow)
     })?;
-    work.charge(u64::try_from(walk_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(walk_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut areal_walks = Vec::with_capacity(walk_count);
     for (output, part) in plan.parts.iter().enumerate() {
         for (walk, chords) in std::iter::once(&part.shell).chain(&part.holes).enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let expected_count = chords
                 .len()
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(u64::try_from(expected_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(expected_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut vertices = Vec::with_capacity(expected_count);
             for &chord_id in chords {
                 let chord = plan.chords.get(chord_id.0 as usize).ok_or_else(|| {
@@ -889,10 +918,12 @@ fn native_point_contact_vertices(
     port_vertices: &[u32],
     work: &mut impl Work,
 ) -> Result<Vec<u32>> {
-    work.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut vertices = Vec::with_capacity(plan.points.len());
     for &port in &plan.points {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         vertices.push(*port_vertices.get(port.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native output point has no graph vertex".into())
         })?);
@@ -905,7 +936,7 @@ impl NativeReferenceGraph {
         let probe = NativeChartVertexIndex { key, index: 0 };
         self.vertices
             .get_with_work(&probe, budget, &mut |left, right, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 Ok(left.key.cmp(&right.key))
             })?
             .map(|vertex| vertex.index)
@@ -955,7 +986,7 @@ fn normalize_native_chart_lift(
     frame: GeographicFrame,
     budget: &mut impl Work,
 ) -> Result<()> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let PortSpelling::Interior { periods } = &port.spelling else {
         return Ok(());
     };
@@ -1012,11 +1043,11 @@ fn intern_native_chart_vertex(
     index: &mut FallibleAvl<NativeChartVertexIndex>,
     budget: &mut impl Work,
 ) -> Result<u32> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let key = native_chart_vertex_key(data);
     let probe = NativeChartVertexIndex { key, index: 0 };
     if let Some(previous) = index.get_with_work(&probe, budget, &mut |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         Ok(left.key.cmp(&right.key))
     })? {
         let point = points.get(previous.index as usize).ok_or_else(|| {
@@ -1036,7 +1067,7 @@ fn intern_native_chart_vertex(
         }
         return Ok(previous.index);
     }
-    budget.charge(3)?;
+    budget.charge_into_error(3)?;
     let vertex = u32::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?;
     points.push(data.point.try_clone_with_work(budget)?);
     vertex_keys.push(key);
@@ -1044,7 +1075,7 @@ fn intern_native_chart_vertex(
         NativeChartVertexIndex { key, index: vertex },
         budget,
         &mut |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left.key.cmp(&right.key))
         },
     )?;
@@ -1080,12 +1111,12 @@ fn native_chart_atom(
     };
     let atom = if let Some(previous) =
         index.get_with_work(&probe, budget, &mut |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left.endpoints.cmp(&right.endpoints))
         })? {
         previous.index
     } else {
-        budget.charge(2)?;
+        budget.charge_into_error(2)?;
         let atom = u32::try_from(atoms.len()).map_err(|_| ResourceError::SizeOverflow)?;
         atoms.push(NativeChartAtom {
             contributors: Vec::new(),
@@ -1098,13 +1129,13 @@ fn native_chart_atom(
             },
             budget,
             &mut |left, right, budget| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 Ok(left.endpoints.cmp(&right.endpoints))
             },
         )?;
         atom
     };
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     atoms
         .get_mut(atom as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("native chart atom is unknown".into()))?
@@ -1155,7 +1186,7 @@ impl NativeReferenceGraphBuilder {
             let Some(vertex) =
                 self.vertices
                     .get_with_work(&probe, budget, &mut |left, right, work| {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         Ok(left.key.cmp(&right.key))
                     })?
             else {
@@ -1193,7 +1224,7 @@ impl NativeReferenceGraphBuilder {
         let Some(atom) =
             self.atom_index
                 .get_with_work(&probe, budget, &mut |left, right, work| {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     Ok(left.endpoints.cmp(&right.endpoints))
                 })?
         else {
@@ -1205,7 +1236,7 @@ impl NativeReferenceGraphBuilder {
         let mut same_direction = false;
         let mut opposite_direction = false;
         for contributor in &atom.contributors {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if contributor.region != Some(region) {
                 continue;
             }
@@ -1244,22 +1275,33 @@ impl NativeReferenceGraphBuilder {
         let additional_vertices = additional_edges
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.points.exact.reserve(additional_vertices);
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.points.rounded.reserve(additional_vertices);
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.vertex_keys.reserve(additional_vertices);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.atoms.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.edge_nodes.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.written_edges.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.producer_edges.reserve(additional_edges);
         for (written_edge, edge) in area_edges.iter().enumerate().skip(first_edge) {
             if !matches!(edge.owner, NativeGraphEdgeOwner::Area { .. }) {
@@ -1299,22 +1341,33 @@ impl NativeReferenceGraphBuilder {
         let additional_vertices = additional_edges
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.points.exact.reserve(additional_vertices);
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.points.rounded.reserve(additional_vertices);
-        budget
-            .charge(u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_vertices).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.vertex_keys.reserve(additional_vertices);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.atoms.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.edge_nodes.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.written_edges.reserve(additional_edges);
-        budget.charge(u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(additional_edges).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.producer_edges.reserve(additional_edges);
         for (line_index, edge) in line_edges.iter().enumerate().skip(existing_lines) {
             if !matches!(edge.owner, NativeGraphEdgeOwner::Line) {
@@ -1346,7 +1399,7 @@ impl NativeReferenceGraphBuilder {
             )
             .into());
         }
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let [start, end] = &edge.vertices;
         let start = intern_native_chart_vertex(
             start,
@@ -1430,10 +1483,10 @@ impl NativeReferenceGraphBuilder {
                 "native graph rounded-point table exceeds its exact-point table".into(),
             )
         })?;
-        budget.charge(u64::try_from(added).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(u64::try_from(added).map_err(|_| ResourceError::SizeOverflow)?)?;
         self.points.rounded.reserve(added);
         for point in self.points.exact.iter().skip(first) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             self.points.rounded.push(XY::new(
                 point.x.round_with_work(budget)?,
                 point.y.round_with_work(budget)?,
@@ -1465,7 +1518,7 @@ impl NativeReferenceGraphBuilder {
         budget: &mut impl Work,
     ) -> Result<NativeReferenceGraph> {
         self.refresh_rounded(budget)?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(self.vertex_keys.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let point_identities = self
@@ -1476,14 +1529,20 @@ impl NativeReferenceGraphBuilder {
         let common = admit_known_graph(self.points, self.edge_nodes, point_identities, budget)?;
         let faces = Self::planar_faces(&common, budget)?;
         let face_count = usize::try_from(faces.count).map_err(|_| ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        budget.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        budget.charge_into_error(
+            u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut face_groups = Vec::with_capacity(face_count);
         for face in 0..face_count {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             face_groups.push(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?);
         }
-        budget.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let sewing = native_graph_sewing(&self.vertex_keys, &common.points.exact, frame, budget)?;
         let producer_uses = build_native_producer_use_table(self.producer_edges, budget)?;
         Ok(NativeReferenceGraph {
@@ -1525,7 +1584,7 @@ fn native_region_at_bank(
     })?;
     let mut selected = None;
     for contributor in &atom.contributors {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let Some(region) = contributor.region else {
             continue;
         };
@@ -1585,7 +1644,7 @@ fn native_seam_wall_crosses_latitude(
     let east = ExactRational::from_f64(frame.longitude().half_period());
     let west = ExactRational::zero().try_subtract_with_work(&east, budget)?;
     for edge in area_edges {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !matches!(&edge.kind, NativeAreaEdgeKind::Producer { .. }) {
             continue;
         }
@@ -1629,7 +1688,7 @@ fn native_seam_bands_from_assigned_graph(
     events: &mut Vec<NativeSeamEvent>,
     budget: &mut impl Work,
 ) -> Result<Vec<SelectedNativeSeamBand>> {
-    budget.charge(2)?;
+    budget.charge_into_error(2)?;
     events.extend([
         NativeSeamEvent {
             latitude: ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South)),
@@ -1641,13 +1700,14 @@ fn native_seam_bands_from_assigned_graph(
         },
     ]);
     try_sort_by_with_work(events, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         left.latitude.try_cmp_with_work(&right.latitude, budget)
     })?;
-    budget.charge(u64::try_from(events.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(events.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut unique: Vec<NativeSeamEvent> = Vec::with_capacity(events.len());
     for event in events.drain(..) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if let Some(previous) = unique.last_mut()
             && previous
                 .latitude
@@ -1665,14 +1725,16 @@ fn native_seam_bands_from_assigned_graph(
     let double_band_count = band_count
         .checked_mul(2)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(double_band_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(double_band_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut bounds = Vec::with_capacity(band_count);
     let mut east_queries = Vec::with_capacity(band_count);
     let mut west_queries = Vec::with_capacity(band_count);
     let half = ExactRational::from_f64(frame.longitude().half_period());
     let negative_half = ExactRational::zero().try_subtract_with_work(&half, budget)?;
     for pair in events.array_windows::<2>() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let [low, high] = pair;
         if !low
             .latitude
@@ -1704,7 +1766,7 @@ fn native_seam_bands_from_assigned_graph(
         .ok_or(ResourceError::SizeOverflow)?;
     u32::try_from(query_end).map_err(|_| ResourceError::SizeOverflow)?;
     let query_capacity = u64::try_from(bounds.len()).map_err(|_| ResourceError::SizeOverflow)?;
-    budget.charge(
+    budget.charge_into_error(
         query_capacity
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?,
@@ -1714,7 +1776,7 @@ fn native_seam_bands_from_assigned_graph(
     let mut east_ids = Vec::with_capacity(bounds.len());
     let mut west_ids = Vec::with_capacity(bounds.len());
     for (index, (east, west)) in east_queries.iter().zip(&west_queries).enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         east_rounded.push(XY::new(
             east.x.round_with_work(budget)?,
             east.y.round_with_work(budget)?,
@@ -1772,11 +1834,13 @@ fn native_seam_bands_from_assigned_graph(
         .len()
         .checked_mul(4)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(missing_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(missing_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut missing_east = Vec::with_capacity(bounds.len());
     let mut missing_west = Vec::with_capacity(bounds.len());
     for index in 0..bounds.len() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if east_hits.get(index).is_some_and(Option::is_none) {
             missing_east.push((
                 index,
@@ -1813,10 +1877,12 @@ fn native_seam_bands_from_assigned_graph(
         if missing.is_empty() {
             continue;
         }
-        budget.charge(u64::try_from(missing.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(missing.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut query_ids = Vec::with_capacity(missing.len());
         for &(_, query_id) in &missing {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             query_ids.push(query_id);
         }
         let vertical_hits = shoot_left_with_work(
@@ -1833,17 +1899,17 @@ fn native_seam_bands_from_assigned_graph(
             .into());
         }
         for ((index, _), hit) in missing.into_iter().zip(vertical_hits) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = hits.get_mut(index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native seam ray result row is unknown".into())
             })?;
             *slot = hit;
         }
     }
-    budget.charge(query_capacity)?;
+    budget.charge_into_error(query_capacity)?;
     let mut output: Vec<SelectedNativeSeamBand> = Vec::with_capacity(bounds.len());
     for (index, (low, high, output_vertex)) in bounds.into_iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let west_hit = *west_hits.get(index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native west seam ray result is unknown".into())
         })?;
@@ -1920,7 +1986,7 @@ fn native_graph_slot(
     forward: bool,
     work: &mut impl Work,
 ) -> Result<usize> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let slots = graph.edge_slots.get(atom as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("native chart atom has no indexed slot pair".into())
     })?;
@@ -1938,7 +2004,7 @@ fn assign_native_face_region(
     region: Option<usize>,
     budget: &mut impl Work,
 ) -> Result<()> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let face_index = face as usize;
     let is_known = known.get_mut(face_index).ok_or_else(|| {
         GeometryErrorKind::Invalid("native face-region known bit is unknown".into())
@@ -1974,10 +2040,11 @@ fn validate_native_boundary_walks(
         )
         .into());
     }
-    budget.charge(u64::try_from(dart_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(dart_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut visited = vec![false; dart_count];
     for walk in walks {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if walk.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "native selected boundary contains an empty walk".into(),
@@ -1985,7 +2052,7 @@ fn validate_native_boundary_walks(
             .into());
         }
         for index in 0..walk.len() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = *walk.get(index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native selected boundary slot is unknown".into())
             })? as usize;
@@ -2021,7 +2088,7 @@ fn validate_native_boundary_walks(
         }
     }
     for (slot, &is_selected) in selected.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if visited.get(slot).copied() != Some(is_selected) {
             return Err(GeometryErrorKind::Invalid(
                 "native selected boundary darts are not covered exactly once".into(),
@@ -2041,7 +2108,7 @@ fn native_reference_cycles_and_parts(
     budget: &mut impl Work,
 ) -> Result<NativeReferenceGraphResult> {
     let face_count = usize::try_from(graph.faces.count).map_err(|_| ResourceError::SizeOverflow)?;
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(face_count)
             .map_err(|_| ResourceError::SizeOverflow)?
             .checked_mul(4)
@@ -2110,9 +2177,9 @@ fn native_reference_cycles_and_parts(
         }
     }
     for (atom_index, atom) in graph.atoms.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for contributor in &atom.contributors {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let Some(region) = contributor.region else {
                 continue;
             };
@@ -2181,7 +2248,7 @@ fn native_reference_cycles_and_parts(
             }
         }
     }
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(face_count)
             .map_err(|_| ResourceError::SizeOverflow)?
             .checked_mul(2)
@@ -2191,7 +2258,7 @@ fn native_reference_cycles_and_parts(
     for (atom_index, atom) in graph.atoms.iter().enumerate() {
         let mut area_boundary = false;
         for contributor in &atom.contributors {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             area_boundary |= contributor.region.is_some();
         }
         if area_boundary {
@@ -2200,7 +2267,7 @@ fn native_reference_cycles_and_parts(
         let atom_id = u32::try_from(atom_index).map_err(|_| ResourceError::SizeOverflow)?;
         let mut global_faces = [0_usize; 2];
         for (direction, face_slot) in global_faces.iter_mut().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = native_graph_slot(graph, atom_id, direction == 0, budget)?;
             let local_face = *graph.topology.face_of.get(slot).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native line support slot has no local face".into())
@@ -2248,7 +2315,7 @@ fn native_reference_cycles_and_parts(
             face_union.union_with_work(left_face, right_face, budget)?;
         }
     }
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(face_count)
             .map_err(|_| ResourceError::SizeOverflow)?
             .checked_mul(6)
@@ -2319,7 +2386,7 @@ fn native_reference_cycles_and_parts(
         }
     }
     for face in 0..face_count {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let group = *face_groups.get(face).ok_or_else(|| {
             GeometryErrorKind::Invalid("native global face has no area-group mapping".into())
         })? as usize;
@@ -2385,10 +2452,11 @@ fn native_reference_cycles_and_parts(
         selected && (!adjacent_selected || (!same_area_face && (!whole_sphere || different_cell)))
     };
     let dart_count = graph.topology.targets.len();
-    budget.charge(u64::try_from(dart_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(dart_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut selected_boundary = Vec::with_capacity(dart_count);
     for (slot, &local_face) in graph.topology.face_of.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let face = *graph
             .faces
             .walk_faces
@@ -2416,10 +2484,11 @@ fn native_reference_cycles_and_parts(
         .faces
         .boundary_walks_with_work(&graph.topology, boundary_selects, budget)?;
     validate_native_boundary_walks(graph, &selected_boundary, &walks, budget)?;
-    budget.charge(u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut cycles = Vec::new();
     for slots in walks {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let first_slot = *slots.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("native graph boundary walk is empty".into())
         })?;
@@ -2455,10 +2524,12 @@ fn native_reference_cycles_and_parts(
             )
             .into());
         }
-        budget.charge(u64::try_from(slots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(slots.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut edges = Vec::with_capacity(slots.len());
         for &slot in &slots {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot_index = slot as usize;
             let from = *graph.topology.owners.get(slot_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native graph walk slot has no origin".into())
@@ -2503,7 +2574,7 @@ fn native_reference_cycles_and_parts(
             })?;
             let mut contributors = Vec::new();
             for contributor in &atom_data.contributors {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if contributor.region == Some(region) && contributor.reversed != slot_forward {
                     contributors.push(contributor.written_edge);
                 }
@@ -2542,10 +2613,11 @@ fn native_reference_cycles_and_parts(
         });
     }
 
-    budget.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut cycles_by_face = vec![Vec::<usize>::new(); face_count];
     for (cycle_index, cycle) in cycles.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         cycles_by_face
             .get_mut(cycle.face as usize)
             .ok_or_else(|| {
@@ -2555,7 +2627,7 @@ fn native_reference_cycles_and_parts(
     }
     let mut parts = Vec::new();
     for face in 1..face_count {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if face_groups.get(face).copied()
             != Some(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?)
         {
@@ -2576,7 +2648,7 @@ fn native_reference_cycles_and_parts(
         let mut shell = None;
         let mut holes = Vec::new();
         for &cycle_index in cycle_indices {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let cycle = cycles.get(cycle_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native selected face cycle is unknown".into())
             })?;
@@ -2607,11 +2679,12 @@ fn native_reference_cycles_and_parts(
             holes,
         });
     }
-    budget.charge(u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut cycle_membership = vec![false; cycles.len()];
     for part in &parts {
         for &cycle_index in std::iter::once(&part.shell).chain(&part.holes) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let seen = cycle_membership.get_mut(cycle_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native area part references an unknown cycle".into())
             })?;
@@ -2624,7 +2697,7 @@ fn native_reference_cycles_and_parts(
         }
     }
     for &seen in &cycle_membership {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !seen {
             return Err(GeometryErrorKind::Invalid(
                 "native selected boundary cycle has no area part".into(),
@@ -2652,7 +2725,7 @@ fn native_cycle_start_vertex_index(
     let mut node_match = None;
     let mut node_match_count = 0_usize;
     for (edge_index, edge) in cycle.edges.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let endpoints = graph.edge_nodes.get(edge.atom as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cycle start edge has no graph endpoints".into())
         })?;
@@ -2729,7 +2802,7 @@ fn align_native_cycle_starts(
     }
     let mut rotations = vec![None; cycles.len()];
     for (ring_index, ring) in rings.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let Some(port_id) = ring.native_start_port else {
             continue;
         };
@@ -2754,7 +2827,7 @@ fn align_native_cycle_starts(
         let mut matching_cycle = None;
         let mut ambiguous = false;
         for (cycle_index, cycle) in cycles.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if cycle.region != ring.region || cycle.shell == is_hole {
                 continue;
             }
@@ -2786,7 +2859,7 @@ fn align_native_cycle_starts(
     }
     for (cycle, rotation) in cycles.iter_mut().zip(rotations) {
         if let Some(rotation) = rotation {
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(cycle.edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             cycle.edges.rotate_left(rotation);
@@ -2825,7 +2898,7 @@ fn native_graph_cycle_vertex(
         .ok_or_else(|| GeometryErrorKind::Invalid("native graph cycle endpoint is unknown".into()))?
         .try_clone_with_work(budget)?;
     for &written_edge in cycle_edge.contributors.iter().skip(1) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if graph
             .written_edges
             .get(written_edge)
@@ -2965,13 +3038,13 @@ fn validate_native_whole_sphere_cover(
         )
         .into());
     }
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(graph.points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut area_vertices = vec![false; graph.points.exact.len()];
     for endpoints in &graph.edge_nodes {
         for &vertex in endpoints {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = area_vertices.get_mut(vertex as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid(
                     "whole-sphere edge endpoint is outside its chart-vertex table".into(),
@@ -2982,7 +3055,7 @@ fn validate_native_whole_sphere_cover(
     }
     let mut area_vertex_count = 0_usize;
     for &used in &area_vertices {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         area_vertex_count = area_vertex_count
             .checked_add(usize::from(used))
             .ok_or(ResourceError::SizeOverflow)?;
@@ -2993,13 +3066,13 @@ fn validate_native_whole_sphere_cover(
         )
         .into());
     }
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(reference.area_edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut cell_edge_counts = [0_usize; 2];
     let mut region = None;
     for edge in &reference.area_edges {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NativeAreaEdgeKind::WholeSphereCover { cell } = &edge.kind else {
             return Err(GeometryErrorKind::Invalid(
                 "native whole-sphere chart cover contains a non-cover edge".into(),
@@ -3064,7 +3137,7 @@ fn validate_native_whole_sphere_cover(
     let mut pole_sewing = UnionFind::new(graph.points.exact.len());
     for alias in &graph.sewing {
         if alias.kind == NativeGraphSewingKind::PoleLongitude {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             pole_sewing.union_with_work(
                 alias.vertices[0] as usize,
                 alias.vertices[1] as usize,
@@ -3075,7 +3148,7 @@ fn validate_native_whole_sphere_cover(
     let mut seam_bank_edges: [Option<[u32; 2]>; 2] = std::array::from_fn(|_| None);
     let mut shared_edge = None;
     for (atom_index, atom) in graph.atoms.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         match atom.contributors.as_slice() {
             [_, _] => {
                 if shared_edge.is_some() {
@@ -3135,7 +3208,7 @@ fn validate_native_whole_sphere_cover(
                     GeometryErrorKind::Invalid("shared whole-sphere edge has no endpoints".into())
                 })?;
                 for &vertex in endpoints {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let point = graph.points.exact.get(vertex as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "shared whole-sphere edge endpoint is unknown".into(),
@@ -3168,7 +3241,7 @@ fn validate_native_whole_sphere_cover(
 
     let mut part_cells = [false; 2];
     for part in &graph.parts {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !part.holes.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "whole-sphere chart cell unexpectedly has a hole".into(),
@@ -3186,9 +3259,9 @@ fn validate_native_whole_sphere_cover(
         }
         let mut cell = None;
         for edge in &cycle.edges {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &written_edge in &edge.contributors {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let written = reference.area_edges.get(written_edge).ok_or_else(|| {
                     GeometryErrorKind::Invalid("whole-sphere shell contributor is unknown".into())
                 })?;
@@ -3214,7 +3287,7 @@ fn validate_native_whole_sphere_cover(
             native_whole_sphere_cell_points(reference.plan.topology.sources.frame, cell, budget)?;
         let mut expected_edges = [false; 6];
         for cycle_edge in &cycle.edges {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let start = native_graph_cycle_vertex(
                 reference.plan.topology.sources.frame,
                 graph,
@@ -3233,7 +3306,7 @@ fn validate_native_whole_sphere_cover(
             )?;
             let mut expected_index = None;
             for start_index in 0..expected_vertices.len() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let end_index = start_index
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?
@@ -3319,7 +3392,7 @@ fn validate_native_whole_sphere_cover(
         .into());
     };
     for (west_vertex, east_vertex) in [(west_seam[0], east_seam[1]), (west_seam[1], east_seam[0])] {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let west_key = graph.vertex_keys.get(west_vertex as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("whole-sphere west seam vertex is unknown".into())
         })?;
@@ -3364,7 +3437,7 @@ fn validate_native_whole_sphere_cover(
         }
     }
     for part in &reference.plan.parts {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if part.shell.len() != 6 || !part.holes.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "literal whole-sphere part differs from its fixed six-edge cell".into(),
@@ -3445,7 +3518,7 @@ fn validate_native_graph_face_source_table(
             })?;
         let mut previous = None;
         for use_row in rows {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let key = (use_row.written_edge, use_row.source_span, use_row.side);
             if previous.is_some_and(|previous| previous >= key) {
                 return Err(GeometryErrorKind::Invalid(
@@ -3511,12 +3584,12 @@ fn validate_native_graph_face_source_table(
         .chain(&reference.line_graph_edges)
         .enumerate()
     {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NativeAreaEdgeKind::Producer { known_spans, .. } = &edge.kind else {
             continue;
         };
         for (source_span, source) in known_spans.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if source.face_germs.is_none() {
                 continue;
             }
@@ -3532,7 +3605,7 @@ fn validate_native_graph_face_source_table(
                 NativeSourceGermSide::ForwardLeft,
                 NativeSourceGermSide::ReverseLeft,
             ] {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if !seen.contains(&(written_edge, source_span, side)) {
                     return Err(GeometryErrorKind::Invalid(
                         "native producer span is missing a directed graph-face germ".into(),
@@ -3580,7 +3653,7 @@ fn native_producer_atom_uses<'a>(
     let mut high = graph.producer_uses.keys.len();
     let mut key_index = None;
     while low < high {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let middle = low
             .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
             .ok_or(ResourceError::SizeOverflow)?;
@@ -3676,12 +3749,14 @@ fn validate_native_line_root_transport(
         .try_quotient_with_work(&width, budget)?;
     let mut expected = Vec::new();
     for parent in parent_ranges {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if let Some(child) = parent.compose_with_work(&local_start, &local_end, budget)? {
             expected.push(child);
         }
     }
-    budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     if expected.len() != trace_ranges.len()
         || expected
             .iter()
@@ -3702,7 +3777,7 @@ fn validate_native_written_chord_transport(
 ) -> Result<()> {
     let graph = &reference.graph;
     for (chord_index, use_row) in reference.literal_chord_uses.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if use_row.chord.0 as usize != chord_index {
             return Err(GeometryErrorKind::Invalid(
                 "native literal chord-use rows changed their stable chord IDs".into(),
@@ -3751,7 +3826,7 @@ fn validate_native_written_chord_transport(
                     .into());
                 }
                 for &writer in writer_edges {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let written = graph.written_edges.get(writer).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "native area chord references an unknown writer edge".into(),
@@ -3808,7 +3883,7 @@ fn validate_native_written_chord_transport(
                 let mut previous_end = None;
                 let mut covered = false;
                 for offset in 0..atom_uses.len() {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let atom_use = atom_uses.get(offset).ok_or_else(|| {
                         GeometryErrorKind::Invalid("native line atom-use row is unknown".into())
                     })?;
@@ -3904,7 +3979,7 @@ fn validate_native_materialized_port(
     candidate_points: &[ExactChartPoint],
     budget: &mut impl Work,
 ) -> Result<bool> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     if !record.x.is_finite() || !record.y.is_finite() {
         return Ok(false);
     }
@@ -4134,7 +4209,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 if let Some([expected_x, expected_y]) =
                     q_source_image_xy_bits(self.topology, image)?
                 {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if record.x.to_bits() != expected_x || record.y.to_bits() != expected_y {
                         return Ok(None);
                     }
@@ -4221,7 +4296,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                     self.source_ordinates,
                     stored_axes,
                 )?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if expected_record != record {
                     return Ok(None);
                 }
@@ -4246,7 +4321,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 }
                 let expected =
                     super::overlay::with_publication_axes(point, ordinates, stored_axes)?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if expected != record {
                     return Ok(None);
                 }
@@ -4358,7 +4433,7 @@ fn validate_native_materialized_chord_row(
         return Ok(false);
     }
     for (index, &chord_id) in chords.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let chord = reference
             .plan
             .chords
@@ -4492,7 +4567,7 @@ fn validate_native_materialized_chord_row(
                 let mut first_fraction = None;
                 let mut found = false;
                 for atom_use in atom_uses {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let low = if atom_use
                         .producer_range
                         .start
@@ -4628,7 +4703,7 @@ fn validate_native_sealed_layout(
         return Ok(false);
     }
     for point in &layout.points {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if reference.plan.points.get(point.output as usize) != Some(&point.image)
             || port_records
                 .get(point.image.0 as usize)
@@ -4640,7 +4715,7 @@ fn validate_native_sealed_layout(
         }
     }
     for line in &layout.lines {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let chords = reference
             .plan
             .lines
@@ -4666,7 +4741,7 @@ fn validate_native_sealed_layout(
         }
     }
     for polygon in &layout.polygons {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let part = reference
             .plan
             .parts
@@ -4758,15 +4833,19 @@ fn validate_native_materialized_candidate<'reference, 'topology>(
         return Ok(None);
     }
     let graph_vertex_count = reference.graph.points.exact.len();
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(reference.plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut port_records = vec![None; reference.plan.ports.len()];
-    budget.charge(u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-    budget.charge(u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    budget.charge_into_error(
+        u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut exact_points = reference.graph.points.exact.clone();
     for (vertex, key) in reference.graph.vertex_keys.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let node_index = key.node.0 as usize;
         let assigned = sites.get(node_index).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("native graph vertex has no assigned node site".into())
@@ -4882,7 +4961,9 @@ fn validate_native_materialized_candidate<'reference, 'topology>(
             }
         }
     }
-    budget.charge(u64::try_from(exact_points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(exact_points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let rounded = exact_points
         .iter()
         .map(|point| {
@@ -5054,7 +5135,7 @@ fn validate_native_reference(
         .into());
     }
     for (port_index, port) in reference.plan.ports.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let vertex = *reference.port_vertices.get(port_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native literal port has no reference vertex".into())
         })?;
@@ -5067,7 +5148,7 @@ fn validate_native_reference(
     }
     validate_native_written_chord_transport(reference, budget)?;
     for (face, &area_group) in graph.face_groups.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let group = area_group as usize;
         if group >= face_count
             || graph.face_groups.get(group).copied() != Some(area_group)
@@ -5083,10 +5164,12 @@ fn validate_native_reference(
     validate_native_graph_face_source_table(reference, budget)?;
     let frame = reference.plan.topology.sources.frame;
     validate_native_graph_sewing(graph, frame, budget)?;
-    budget.charge(u64::try_from(written_edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(written_edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut producer_written = vec![false; written_edge_count];
     for pair in graph.producer_uses.keys.array_windows::<2>() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if pair[0] >= pair[1] {
             return Err(GeometryErrorKind::Invalid(
                 "native producer-use keys are not unique and ordered".into(),
@@ -5095,7 +5178,7 @@ fn validate_native_reference(
         }
     }
     for (use_index, &key) in graph.producer_uses.keys.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let start = *graph.producer_uses.offsets.get(use_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native producer-use offset is unknown".into())
         })? as usize;
@@ -5125,7 +5208,7 @@ fn validate_native_reference(
                 GeometryErrorKind::Invalid("native producer-use atom range is incomplete".into())
             })?
         {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let edge = native_reference_written_edge(reference, use_row.written_edge)?;
             let NativeAreaEdgeKind::Producer {
                 recipe,
@@ -5191,7 +5274,7 @@ fn validate_native_reference(
         }
     }
     for written_edge in 0..written_edge_count {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let edge = native_reference_written_edge(reference, written_edge)?;
         let mapped = producer_written.get(written_edge).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("native producer-use coverage row is unknown".into())
@@ -5204,10 +5287,11 @@ fn validate_native_reference(
         }
     }
     let provider_nodes = reference.plan.node_registry.nodes();
-    budget
-        .charge(u64::try_from(graph.vertex_keys.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(graph.vertex_keys.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     for (vertex_index, key) in graph.vertex_keys.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if graph.local_vertex(*key, budget)?
             != u32::try_from(vertex_index).map_err(|_| ResourceError::SizeOverflow)?
         {
@@ -5239,11 +5323,11 @@ fn validate_native_reference(
             .into());
         }
     }
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(reference.pole_sectors.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     for selected in &reference.pole_sectors {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let face = selected.sector.face();
         if reference
             .plan
@@ -5258,11 +5342,13 @@ fn validate_native_reference(
             .into());
         }
     }
-    budget.charge(u64::try_from(written_edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(written_edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut contributor_seen = vec![false; written_edge_count];
     for (atom_index, atom) in graph.atoms.iter().enumerate() {
         for contributor in &atom.contributors {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let seen = contributor_seen
                 .get_mut(contributor.written_edge)
                 .ok_or_else(|| {
@@ -5309,7 +5395,7 @@ fn validate_native_reference(
         }
     }
     for (written_index, &seen) in contributor_seen.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !seen {
             return Err(GeometryErrorKind::Invalid(
                 "native written edge is absent from its graph atom contributors".into(),
@@ -5324,7 +5410,7 @@ fn validate_native_reference(
         validate_native_whole_sphere_cover(reference, budget)?;
     }
     for (part, reference_part) in reference.plan.parts.iter().zip(&graph.parts) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if part.face != reference_part.face || part.region != reference_part.region {
             return Err(GeometryErrorKind::Invalid(
                 "native literal part changed its frozen face or selected region".into(),
@@ -5341,7 +5427,7 @@ fn validate_native_reference(
             .into());
         }
         for (hole, &cycle_index) in part.holes.iter().zip(&reference_part.holes) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let cycle = graph.cycles.get(cycle_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native reference hole cycle is unknown".into())
             })?;
@@ -5366,9 +5452,10 @@ fn normalize_native_seam_events(
     mut events: Vec<NativeSeamEventData>,
     budget: &mut impl Work,
 ) -> Result<Vec<NativeSeamEventData>> {
-    budget.charge(u64::try_from(events.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(events.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     try_sort_by_with_work(&mut events, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         left.event
             .latitude
             .try_cmp_with_work(&right.event.latitude, budget)
@@ -5420,7 +5507,7 @@ fn append_native_line_edge(
     line_graph_edges: &mut Vec<NativeAreaEdge>,
     budget: &mut impl Work,
 ) -> Result<()> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let NativeAreaEdge {
         vertices: [start, end],
         owner,
@@ -5446,12 +5533,14 @@ fn append_native_line_edge(
         )
         .into());
     };
-    budget.charge(2)?;
+    budget.charge_into_error(2)?;
     let literal_producer_range = ExactSourceRange {
         start: producer_start.as_ref().try_clone_with_work(budget)?,
         end: producer_end.try_clone_with_work(budget)?,
     };
-    budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut trace_range_copy = Vec::with_capacity(trace_ranges.len());
     for (edge, range) in &trace_ranges {
         trace_range_copy.push((*edge, range.try_clone_with_work(budget)?));
@@ -5477,7 +5566,9 @@ fn append_native_line_edge(
         run.vertices.push(start);
     }
     run.vertices.push(end);
-    budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     run.chords.push(NativeLineChordSource {
         recipe,
         trace_edge,
@@ -5501,12 +5592,16 @@ fn finish_native_line_run(
         )
         .into());
     }
-    budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     reference_ports.reserve(run.vertices.len());
     for vertex in &run.vertices {
         reference_ports.push(vertex.try_clone_with_work(budget)?);
     }
-    budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let ports = run
         .vertices
         .into_iter()
@@ -5516,11 +5611,11 @@ fn finish_native_line_run(
         .map_err(|_| ResourceError::SizeOverflow)?
         .checked_mul(2)
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(reservation_units)?;
+    budget.charge_into_error(reservation_units)?;
     let mut chords = Vec::with_capacity(run.chords.len());
     let mut trace_rows = Vec::with_capacity(run.chords.len());
     for (index, use_row) in run.chords.into_iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let start = *ports.get(index).ok_or_else(|| {
             GeometryErrorKind::Invalid("native line start port is unknown".into())
         })?;
@@ -5636,14 +5731,14 @@ fn native_selected_pole_sectors(
             let Some(region) = region else {
                 return Ok(());
             };
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             sectors.push(NativeSelectedPoleSector { region, sector });
             let closure = (region, pole);
             if closure_index.insert_with_work(closure, work, &mut |left, right, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 Ok(left.cmp(right))
             })? {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 closures.push(closure);
             }
             Ok(())
@@ -5658,10 +5753,12 @@ fn native_pole_closure_regions(
 ) -> Result<BTreeSet<NativePoleClosure>> {
     // A repeated fan dart is a full-turn boundary; a multi-ray fan already
     // bounds a local pole sector and must not receive the complementary arc.
-    budget.charge(u64::try_from(sectors.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(sectors.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut closures = BTreeSet::new();
     for selected in sectors {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let pole = match selected.sector {
             super::q::PoleSector::Terminal { pole, .. }
             | super::q::PoleSector::Isolated { pole, .. } => Some(pole),
@@ -5674,7 +5771,7 @@ fn native_pole_closure_regions(
             super::q::PoleSector::Fan { .. } => None,
         };
         if let Some(pole) = pole {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             closures.insert((selected.region, pole));
         }
     }
@@ -5715,7 +5812,7 @@ fn native_whole_sphere_cell_edges(
         quarter.try_clone_with_work(budget)?,
         half,
     ];
-    budget.charge(10)?;
+    budget.charge_into_error(10)?;
     let mut poles = Vec::with_capacity(10);
     for (pole_index, pole) in [ChartPole::South, ChartPole::North].into_iter().enumerate() {
         let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
@@ -5724,7 +5821,7 @@ fn native_whole_sphere_cell_edges(
             periods: 0,
         };
         for (longitude_index, native_longitude) in longitudes.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let point = ExactChartPoint::from_rationals(
                 native_longitude.try_clone_with_work(budget)?,
                 latitude.try_clone_with_work(budget)?,
@@ -5738,7 +5835,7 @@ fn native_whole_sphere_cell_edges(
                 .into());
             }
             if node_index == presentation_candidates.len() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 presentation_candidates.push(Some(candidate));
             } else {
                 let slot = presentation_candidates.get_mut(node_index).ok_or_else(|| {
@@ -5754,7 +5851,7 @@ fn native_whole_sphere_cell_edges(
                 }
                 *slot = Some(candidate);
             }
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             poles.push(NativePortData {
                 node,
                 point,
@@ -5784,7 +5881,9 @@ fn native_whole_sphere_cell_edges(
     }
     families.synchronize_budget(budget)?;
 
-    budget.charge(u64::try_from(CELL_EDGES.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(CELL_EDGES.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut edges = Vec::with_capacity(CELL_EDGES.len());
     for (cell, start, end) in CELL_EDGES {
         let vertices = [
@@ -5823,7 +5922,7 @@ impl QCoordinates {
     ) -> Result<Self> {
         let frame = topology.sources.frame;
         let q = &topology.q;
-        work.charge(
+        work.charge_into_error(
             u64::try_from(
                 q.ports
                     .len()
@@ -5837,7 +5936,7 @@ impl QCoordinates {
         let mut pole_port_longitude = vec![None; q.ports.len()];
         let mut pole_port_periods = vec![None; q.ports.len()];
         for (node_index, q_node) in q.nodes.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if q_node.id.0 as usize != node_index {
                 return Err(GeometryErrorKind::Invalid(
                     "Q node coordinates are not indexed by QNodeId".into(),
@@ -5907,7 +6006,7 @@ impl QCoordinates {
                 for &port_id in q.node_ports.get(q_node.ports.clone()).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q node ports are incomplete".into())
                 })? {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q pole port is unknown".into())
                     })?;
@@ -5993,7 +6092,7 @@ impl QCoordinates {
         work: &mut impl Work,
     ) -> Result<bool> {
         for node in nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let nearest = self.xy(node)?;
             let key = match topology.canonical_node_key(node)? {
                 super::q::CanonicalQNodeKey::Chart(key) => key,
@@ -6086,7 +6185,7 @@ pub(super) fn canonicalize_ring_vertices(
     let mut previous = first_vertex.point.x;
     let mut has_circle = false;
     for (vertex, point) in vertices.iter().zip(chart_points.iter_mut()).skip(1) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if (vertex.point.x - previous).abs() >= axis.period() {
             has_circle |= axis
                 .chart_step(previous, vertex.point.x)
@@ -6175,9 +6274,11 @@ where
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
 {
     let exact_ports = exact_ports.into_iter();
-    work.charge(u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let exact_is_hole = exact_q_ring_role_with_work(frame, exact_ports, work)?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             emitted_chart
                 .coords()
@@ -6360,7 +6461,9 @@ where
         .into());
     }
 
-    work.charge(u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     if let Some(proof) = exact_q_ring_winding_filter(frame, exact_ports.clone())
         && !proof.quotient_closure
     {
@@ -6369,7 +6472,7 @@ where
 
     let mut owned_ports = Vec::with_capacity(exact_ports.len());
     for point in exact_ports {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         owned_ports.push(point.try_clone_with_work(work)?);
     }
     let exact_ports = owned_ports;
@@ -6382,7 +6485,7 @@ where
     match winding {
         RingWinding::CounterClockwise => {
             for point in &lifted {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
@@ -6390,7 +6493,7 @@ where
         },
         RingWinding::Clockwise => {
             for point in &lifted {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
@@ -6401,6 +6504,21 @@ where
             ring_role_from_winding(frame, winding, &exact_ring, true)
         },
     }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
+    )
+)]
+pub(super) fn exact_q_ring_role_for_linework(
+    frame: GeographicFrame,
+    exact_ports: &[ExactChartPoint],
+    work: &mut impl Work,
+) -> Result<bool> {
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
 }
 
 pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<Option<bool>> {
@@ -6476,11 +6594,11 @@ fn rounded_canonical_exact_ring_with_work(
     points: &[ExactChartPoint],
     work: &mut impl Work,
 ) -> Result<Ring> {
-    work.charge(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let points = points
         .iter()
         .map(|point| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(Point::new_raw_xy(
                 round_canonical_longitude_with_work(frame, &point.x, work)?,
                 point.y.round_with_work(work)?,
@@ -6523,12 +6641,14 @@ fn continuously_lift_exact_ring_with_work(
         .into());
     }
 
-    work.charge(u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut lifted = Vec::with_capacity(exact_ports.len());
     let mut reference = first.x.try_clone_with_work(work)?;
     lifted.push(first.try_clone_with_work(work)?);
     for point in interior {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let longitude = nearest_exact_longitude_alias_with_work(frame, &point.x, &reference, work)?;
         reference = longitude.try_clone_with_work(work)?;
         lifted.push(ExactChartPoint::from_rationals(
@@ -6556,7 +6676,7 @@ fn exact_ring_winding_with_work(
         .ok_or_else(|| GeometryErrorKind::Invalid("Q lifted ring has no points".into()))?;
     let mut twice_area = ExactRational::zero();
     for pair in points.windows(2) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [start, end] = pair else {
             unreachable!("windows(2) contains two exact ring points");
         };
@@ -6585,11 +6705,11 @@ fn rounded_exact_ring(points: &[ExactChartPoint]) -> Result<Ring> {
 }
 
 fn rounded_exact_ring_with_work(points: &[ExactChartPoint], work: &mut impl Work) -> Result<Ring> {
-    work.charge(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let points = points
         .iter()
         .map(|point| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(Point::new_raw_xy(
                 point.x.round_with_work(work)?,
                 point.y.round_with_work(work)?,
@@ -6658,7 +6778,7 @@ fn nearest_exact_longitude_alias_with_work(
     ];
     let mut nearest = None;
     for candidate in candidates {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let distance = exact_distance_with_work(&candidate, reference, work)?;
         let replace = if let Some((previous, previous_distance)) = &nearest {
             match distance.try_cmp_with_work(previous_distance, work)? {
@@ -6723,11 +6843,11 @@ pub(super) fn node_injectivity_collisions_with_work(
     work: &mut impl Work,
 ) -> Result<Vec<QNodeId>> {
     try_sort_by_with_work(live, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left.1.cmp(&right.1).then(left.0.cmp(&right.0)))
     })?;
     for pair in live.windows(2) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [(left_key, left_node), (right_key, right_node)] = pair else {
             unreachable!("windows(2) yields adjacent emitted nodes");
         };
@@ -6740,12 +6860,12 @@ pub(super) fn node_injectivity_collisions_with_work(
         }
     }
     try_sort_by_with_work(live, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left.cmp(right))
     })?;
     let mut collisions = Vec::new();
     for pair in live.windows(2) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [(left_key, left_node), (right_key, right_node)] = pair else {
             unreachable!("windows(2) yields adjacent emitted nodes");
         };
@@ -6754,13 +6874,17 @@ pub(super) fn node_injectivity_collisions_with_work(
         }
     }
     try_sort_by_with_work(&mut collisions, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left.cmp(right))
     })?;
-    work.charge(u64::try_from(collisions.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(collisions.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     collisions.dedup();
     if collisions.is_empty() {
-        work.charge(u64::try_from(live.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(live.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         live.dedup();
     }
     Ok(collisions)
@@ -7026,12 +7150,12 @@ fn deduplicate_cut_owner_halves(
     work: &mut impl Work,
 ) -> Result<()> {
     try_sort_by_with_work(halves, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         compare_cut_owner_half(left, right, work)
     })?;
     let mut unique: Vec<CutOwnerHalf> = Vec::with_capacity(halves.len());
     for half in halves.drain(..) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if let Some(previous) = unique.last()
             && previous.same_key(&half, work)?
             && previous.far_port == half.far_port
@@ -7053,7 +7177,7 @@ pub(super) fn build_cut_node_ports(
     let q = &topology.q;
     let period = ExactRational::from_f64(topology.sources.frame.longitude().period());
     let cut_east = q.cut.try_add_with_work(&period, work)?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             q.nodes
                 .len()
@@ -7066,13 +7190,13 @@ pub(super) fn build_cut_node_ports(
     cuts.resize_with(q.nodes.len(), Option::<CutSides>::default);
     let mut selected_port = vec![false; q.ports.len()];
     for &(_, port_id) in selected_ports {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         *selected_port
             .get_mut(port_id.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q selected port is unknown".into()))? = true;
     }
     for &span_index in spans {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let span = q.spans.get(span_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q cut reconstruction has an unknown span".into())
         })?;
@@ -7081,7 +7205,7 @@ pub(super) fn build_cut_node_ports(
             (true, first_port, second_port),
             (false, second_port, first_port),
         ] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cut reconstruction has an unknown port".into())
             })?;
@@ -7123,7 +7247,7 @@ pub(super) fn build_cut_node_ports(
                 .into());
             };
             for owner in &span.owners {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let at_source_start = at_first_endpoint != owner.reversed;
                 let parameter = if at_source_start {
                     owner.source_range.start.try_clone_with_work(work)?
@@ -7141,7 +7265,7 @@ pub(super) fn build_cut_node_ports(
 
     let mut output = Vec::new();
     for (node_index, sides) in cuts.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some(mut sides) = sides else {
             continue;
         };
@@ -7167,7 +7291,7 @@ pub(super) fn build_cut_node_ports(
         let mut west_index = 0_usize;
         let mut east_index = 0_usize;
         while west_index < sides.west_halves.len() && east_index < sides.east_halves.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let west_half = sides
                 .west_halves
                 .get(west_index)
@@ -7192,7 +7316,7 @@ pub(super) fn build_cut_node_ports(
                         .checked_add(1)
                         .ok_or(ResourceError::SizeOverflow)?;
                     while let Some(next) = sides.west_halves.get(west_end) {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         if !west_half.same_key(next, work)? {
                             break;
                         }
@@ -7202,7 +7326,7 @@ pub(super) fn build_cut_node_ports(
                         .checked_add(1)
                         .ok_or(ResourceError::SizeOverflow)?;
                     while let Some(next) = sides.east_halves.get(east_end) {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         if !east_half.same_key(next, work)? {
                             break;
                         }
@@ -7226,7 +7350,9 @@ pub(super) fn build_cut_node_ports(
             }
         }
         try_sort_by_with_work(&mut chords, work, |left, right, _work| Ok(left.cmp(right)))?;
-        work.charge(u64::try_from(chords.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(chords.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         chords.dedup();
         if chords.is_empty() {
             return Err(GeometryErrorKind::Invalid(
@@ -7278,7 +7404,7 @@ pub(super) fn for_each_q_cycle_vertex<W: Work>(
     let q = &topology.q;
     let mut pivot = 0;
     for (index, &dart_id) in darts.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = q
             .darts
             .get(dart_id.0 as usize)
@@ -7297,13 +7423,13 @@ pub(super) fn for_each_q_cycle_vertex<W: Work>(
     let mut previous: Option<QCycleVertex> = None;
     let mut count = 0_usize;
     for &dart_id in from_pivot.iter().chain(before_pivot) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = q
             .darts
             .get(dart_id.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary dart is unknown".into()))?;
         for port_id in [dart.from_port, dart.to_port] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let port = q
                 .ports
                 .get(port_id.0 as usize)
@@ -7328,7 +7454,7 @@ pub(super) fn for_each_q_cycle_vertex<W: Work>(
     }
     let first = first.expect("the boundary has vertices");
     if previous.is_some_and(|last| last.port != first.port) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         visit(first, work)?;
     }
     Ok(())
@@ -7340,7 +7466,7 @@ pub(super) fn source_ring_emitted_vertices<'topology>(
     reverse: bool,
     work: &mut impl Work,
 ) -> Result<Vec<EmittedVertex<'topology>>> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(source_ring.source_edges.len().saturating_add(1))
             .map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -7488,7 +7614,7 @@ fn published_domains(
         .into());
     }
     let node_count = nodes.nodes().len();
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             node_count
                 .checked_mul(4)
@@ -7498,7 +7624,7 @@ fn published_domains(
     )?;
     let mut representative_sample_for_node = vec![None; node_count];
     for (sample_index, &node_id) in sample_nodes.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let node = nodes.nodes().get(node_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q publication node ID is outside its registry".into())
         })?;
@@ -7520,7 +7646,7 @@ fn published_domains(
     let mut domains = vec![Vec::new(); node_count];
     let mut variables = Vec::new();
     for (node_index, node) in nodes.nodes().iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NodeAuthority::Computed(key) = &node.authority else {
             continue;
         };
@@ -7605,7 +7731,7 @@ fn published_domains(
         let mut domain = Vec::with_capacity(domain_capacity);
         for longitude in longitude_candidates.iter().take(longitude_count) {
             for &latitude in latitude_candidates.iter().take(latitude_count) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if crate::geographic::Latitude::try_new(frame, latitude).is_err() {
                     continue;
                 }
@@ -7622,7 +7748,7 @@ fn published_domains(
         let mut contains_nearest = false;
         let mut has_choice = false;
         for &candidate in &domain {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             contains_nearest |= candidate == nearest_candidate;
             has_choice |= candidate != nearest_candidate;
         }
@@ -7662,11 +7788,13 @@ fn candidate_domains(
     let cut_east = q
         .cut
         .try_add_with_work(&ExactRational::from_f64(frame.longitude().period()), budget)?;
-    budget.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut domains = Vec::with_capacity(q.nodes.len());
     let mut selected_port_index = 0;
     for (node_index, node) in q.nodes.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let node_id = node.id;
         let nearest_xy = nearest.xy(node_id)?;
         let axes = movable_axes
@@ -7708,7 +7836,7 @@ fn candidate_domains(
             .get(selected_port_index)
             .is_some_and(|(selected_node, _)| *selected_node == node_id)
         {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             selected_port_index = selected_port_index.wrapping_add(1);
         }
         let selected_ports = emission
@@ -7727,7 +7855,7 @@ fn candidate_domains(
                 .get(..y_count)
                 .expect("y candidate count is one or three")
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let candidate = QCandidate {
                     native: XY::new(x.native, y),
                     periods: x.periods,
@@ -7737,7 +7865,7 @@ fn candidate_domains(
                 }
                 let mut admitted = true;
                 for &(_, port_id) in selected_ports {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q candidate port is unknown".into())
                     })?;
@@ -7806,7 +7934,7 @@ fn native_cut_candidate_domain(
     let mut domain = Vec::with_capacity(if fixed_y { 1 } else { 3 });
     let latitude_count = if fixed_y { 1 } else { 3 };
     for &latitude in latitudes.iter().take(latitude_count) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if Latitude::try_new(frame, latitude).is_err() {
             continue;
         }
@@ -7820,7 +7948,7 @@ fn native_cut_candidate_domain(
     }
     let mut contains_nearest = false;
     for &candidate in &domain {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         contains_nearest |= candidate == nearest;
     }
     if !contains_nearest {
@@ -7858,7 +7986,7 @@ fn q_graph_variable_domain<'a>(
     variable_index: &BTreeMap<QVariableNode, usize>,
     budget: &mut impl Work,
 ) -> Result<Option<(usize, &'a [QCandidate])>> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let (variable, domain, movable) = match node {
         QGraphNode::Source(node) => {
             let index = node.0 as usize;
@@ -7875,7 +8003,7 @@ fn q_graph_variable_domain<'a>(
             )
         },
         QGraphNode::Published(node) => {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let index = node.0 as usize;
             let domain = publication_domains.get(index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q graph publication node has no domain".into())
@@ -7890,7 +8018,7 @@ fn q_graph_variable_domain<'a>(
     if !movable {
         return Ok(None);
     }
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let index = *variable_index.get(&variable).ok_or_else(|| {
         GeometryErrorKind::Invalid(
             "movable Q graph endpoint is absent from its prepared variable inventory".into(),
@@ -8203,7 +8331,7 @@ fn strict_native_bank_event(
     if direction.is_eq() {
         return Ok(false);
     }
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let start_site = retained_exact_native_site_with_work(axis, start, budget)?;
     let period = ExactRational::from_f64(axis.period());
     let half = ExactRational::from_f64(axis.half_period());
@@ -8297,7 +8425,7 @@ pub(super) fn source_line_reuse_is_complete(
         return Ok(false);
     };
     for (index, &recipe_id) in walk.fragments.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let recipe = recipes.get(recipe_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("source line reuse references an unknown recipe".into())
         })?;
@@ -8367,7 +8495,7 @@ pub(super) fn source_line_reuse_is_complete(
                 })?;
             let mut samples_have_source = true;
             for sample_index in fragment.sample_range.clone() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let sample = publication.samples.get(sample_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("source line sample row is unknown".into())
                 })?;
@@ -8413,7 +8541,7 @@ fn add_source_reused_recipe_walk(
         return Ok(false);
     }
     for &recipe_id in &walk.fragments {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let _recipe = recipes.get(recipe_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("source-reuse walk references an unknown recipe".into())
         })?;
@@ -8430,7 +8558,7 @@ fn add_source_reused_recipe_walk(
             .into());
         }
         for sample_index in fragment.sample_range.clone() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let sample = publication.samples.get(sample_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source-reuse sample row is unknown".into())
             })?;
@@ -8439,7 +8567,9 @@ fn add_source_reused_recipe_walk(
             }
         }
     }
-    budget.charge(u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     reused.extend(walk.fragments.iter().copied());
     Ok(true)
 }
@@ -8540,7 +8670,7 @@ fn exact_departures_share_forward_ray(
     right: &ExactChartPoint,
     work: &mut impl Work,
 ) -> Result<bool> {
-    work.charge(4)?;
+    work.charge_into_error(4)?;
     let left = vector_difference_with_work(origin, left, work)?;
     let right = vector_difference_with_work(origin, right, work)?;
     if !vector_cross_with_work(&left, &right, work)?.is_zero() {
@@ -8569,14 +8699,14 @@ fn assigned_producer_fan_order_matches(
         }
     })?;
     for pair in rays.array_windows::<2>() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if pair[0].0 != pair[1].0
             && exact_departures_share_forward_ray(origin, &pair[0].2, &pair[1].2, work)?
         {
             return Ok(false);
         }
     }
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             rays.len()
                 .checked_add(expected.len())
@@ -8590,21 +8720,23 @@ fn assigned_producer_fan_order_matches(
 
 impl PreparedProducerWitness {
     fn validate_live_nodes(&self, live_nodes: &[QNodeId], budget: &mut impl Work) -> Result<()> {
-        budget.charge(u64::try_from(live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut sorted_live_nodes = Vec::with_capacity(live_nodes.len());
         for &node in live_nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             sorted_live_nodes.push(node);
         }
         try_sort_by_with_work(&mut sorted_live_nodes, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(sorted_live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         sorted_live_nodes.dedup();
         for junction in &self.junctions {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if junction.producer_germs.is_empty() {
                 continue;
             }
@@ -8616,7 +8748,7 @@ impl PreparedProducerWitness {
             }
         }
         for point in &self.points {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if sorted_live_nodes.binary_search(&point.node).is_err() {
                 return Err(GeometryErrorKind::Invalid(
                     "producer point is absent from its retained source drawing".into(),
@@ -8640,9 +8772,9 @@ impl PreparedProducerWitness {
     ) -> Result<()> {
         let q = &topology.q;
         for chord in chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for range in &chord.source_ranges {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if range.root.index() != range.source_edge.0 as usize
                     || topology
                         .sources
@@ -8747,14 +8879,16 @@ impl PreparedProducerWitness {
             }
         }
         for junction in &self.junctions {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let node = q.nodes.get(junction.node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer witness node is unknown".into())
             })?;
             let ports = q.node_ports.get(node.ports.clone()).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer witness port range is invalid".into())
             })?;
-            budget.charge(u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             if ports != junction.ports {
                 return Err(GeometryErrorKind::Invalid(
                     "producer witness changed its source port row".into(),
@@ -8776,7 +8910,9 @@ impl PreparedProducerWitness {
             let darts = q.outgoing.get(fan_start..fan_end).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer witness fan range is invalid".into())
             })?;
-            budget.charge(u64::try_from(darts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             if darts.len() != junction.face_germs.len() {
                 return Err(GeometryErrorKind::Invalid(
                     "producer witness omitted a source fan sector".into(),
@@ -8784,7 +8920,7 @@ impl PreparedProducerWitness {
                 .into());
             }
             for (&dart, germ) in darts.iter().zip(&junction.face_germs) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if dart != germ.dart {
                     return Err(GeometryErrorKind::Invalid(
                         "producer witness reordered a source fan sector".into(),
@@ -8830,7 +8966,7 @@ impl PreparedProducerWitness {
                 .into());
             }
             for germ in &junction.producer_germs {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let chord = chords.get(germ.chord).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer witness chord is unknown".into())
                 })?;
@@ -8855,7 +8991,7 @@ impl PreparedProducerWitness {
                     .into());
                 }
                 for &range_index in &germ.source_ranges {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let range = chord.source_ranges.get(range_index).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "producer witness source-range back-map is unknown".into(),
@@ -8877,7 +9013,7 @@ impl PreparedProducerWitness {
         }
 
         for linework in &self.linework {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let chord = chords.get(linework.chord).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer witness line chord is unknown".into())
             })?;
@@ -8893,7 +9029,7 @@ impl PreparedProducerWitness {
                 )
                 .into());
             }
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(linework.source_ranges.len())
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -8912,7 +9048,7 @@ impl PreparedProducerWitness {
         }
 
         for point in &self.points {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let node = q.nodes.get(point.node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer witness point node is unknown".into())
             })?;
@@ -8934,7 +9070,9 @@ impl PreparedProducerWitness {
                 .copied()
                 .flatten();
             let rows = q.point_rows_for_node(point.node.0 as usize)?;
-            budget.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             if (start == end) != point.host.is_some()
                 || host != point.host
                 || rows != point.point_rows.as_slice()
@@ -8967,7 +9105,7 @@ impl PreparedProducerWitness {
             )
         {
             for &dependency in row {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let QVariableNode::Source(node) = dependency {
                     dependencies.push(node);
                 }
@@ -8976,8 +9114,9 @@ impl PreparedProducerWitness {
         try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         dependencies.dedup();
         Ok(dependencies)
     }
@@ -8989,15 +9128,17 @@ impl PreparedProducerWitness {
         budget: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        budget.charge(u64::try_from(q.spans.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(q.spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut selected_spans = vec![false; q.spans.len()];
         for &span_index in &emission.spans {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             *selected_spans.get_mut(span_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer selection references an unknown span".into())
             })? = true;
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(
                 q.global_face_count
                     .checked_add(q.span_global_faces.len())
@@ -9007,7 +9148,7 @@ impl PreparedProducerWitness {
         )?;
         let mut host_boundary_nodes = vec![Vec::<QNodeId>::new(); q.global_face_count];
         for (span_index, faces) in q.span_global_faces.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let Some([left, right]) = faces else {
                 continue;
             };
@@ -9015,7 +9156,7 @@ impl PreparedProducerWitness {
                 GeometryErrorKind::Invalid("producer host span is unknown".into())
             })?;
             for face in [*left, *right] {
-                budget.charge(2)?;
+                budget.charge_into_error(2)?;
                 let nodes = host_boundary_nodes
                     .get_mut(face.0 as usize)
                     .ok_or_else(|| {
@@ -9026,10 +9167,12 @@ impl PreparedProducerWitness {
         }
         for nodes in &mut host_boundary_nodes {
             try_sort_by_with_work(nodes, budget, |left, right, _work| Ok(left.cmp(right)))?;
-            budget.charge(u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             nodes.dedup();
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(
                 emission
                     .selected_nodes
@@ -9044,13 +9187,15 @@ impl PreparedProducerWitness {
             )
             .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        budget.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut producer_germs_by_node = vec![Vec::<QProducerGerm>::new(); q.nodes.len()];
         let mut source_nodes = emission.selected_nodes.clone();
         for (chord_index, chord) in chords.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for endpoint in 0..2 {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let graph_node = *chord.nodes.get(endpoint).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer chord endpoint is unknown".into())
                 })?;
@@ -9063,7 +9208,7 @@ impl PreparedProducerWitness {
                     };
                     let mut source_ranges = Vec::new();
                     for (range_index, range) in chord.source_ranges.iter().enumerate() {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         if producer_range_touches_node(range, &endpoint_parameter, node, budget)? {
                             source_ranges.push(range_index);
                         }
@@ -9089,28 +9234,31 @@ impl PreparedProducerWitness {
                 }
             }
             for range in &chord.source_ranges {
-                budget.charge(1)?;
-                budget.charge(2)?;
+                budget.charge_into_error(1)?;
+                budget.charge_into_error(2)?;
                 source_nodes.extend(range.nodes);
             }
         }
         try_sort_by_with_work(&mut source_nodes, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(source_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(source_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         source_nodes.dedup();
 
         let mut junctions = Vec::with_capacity(source_nodes.len());
         for node_id in source_nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let node = q.nodes.get(node_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer junction references an unknown Q node".into())
             })?;
             let ports = q.node_ports.get(node.ports.clone()).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer junction has an incomplete port row".into())
             })?;
-            budget.charge(u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
 
             let fan_start = *q.outgoing_offsets.get(node_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer junction has no fan start".into())
@@ -9124,10 +9272,12 @@ impl PreparedProducerWitness {
             let darts = q.outgoing.get(fan_start..fan_end).ok_or_else(|| {
                 GeometryErrorKind::Invalid("producer junction has an invalid fan range".into())
             })?;
-            budget.charge(u64::try_from(darts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut face_germs = Vec::with_capacity(darts.len());
             for &dart in darts {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let local = *q.dart_faces.get(dart.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer fan dart has no local face".into())
                 })?;
@@ -9165,7 +9315,7 @@ impl PreparedProducerWitness {
                     })?,
             );
             try_sort_by_with_work(&mut producer_germs, budget, |left, right, budget| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 Ok(left
                     .chord
                     .cmp(&right.chord)
@@ -9188,7 +9338,7 @@ impl PreparedProducerWitness {
             };
             let mut dependencies = vec![QVariableNode::Source(node_id)];
             for &dart_id in darts {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer junction dart is unknown".into())
                 })?;
@@ -9200,28 +9350,28 @@ impl PreparedProducerWitness {
                     .copied()
                     .unwrap_or(false)
                 {
-                    budget.charge(2)?;
+                    budget.charge_into_error(2)?;
                     dependencies.extend(span.nodes.map(QVariableNode::Source));
                 }
             }
             for germ in &producer_germs {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let chord = chords.get(germ.chord).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer junction chord is unknown".into())
                 })?;
                 for node in chord.nodes {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     dependencies.push(match node {
                         QGraphNode::Source(node) => QVariableNode::Source(node),
                         QGraphNode::Published(node) => QVariableNode::Published(node),
                     });
                 }
                 for &range_index in &germ.source_ranges {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let range = chord.source_ranges.get(range_index).ok_or_else(|| {
                         GeometryErrorKind::Invalid("producer junction root range is unknown".into())
                     })?;
-                    budget.charge(2)?;
+                    budget.charge_into_error(2)?;
                     dependencies.extend(range.nodes.map(QVariableNode::Source));
                 }
             }
@@ -9229,16 +9379,16 @@ impl PreparedProducerWitness {
                 let host_nodes = host_boundary_nodes.get(host.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer junction host is unknown".into())
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(host_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 dependencies.extend(host_nodes.iter().copied().map(QVariableNode::Source));
             }
             try_sort_by_with_work(&mut dependencies, budget, |left, right, budget| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 Ok(left.cmp(right))
             })?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             dependencies.dedup();
@@ -9254,7 +9404,7 @@ impl PreparedProducerWitness {
 
         let mut linework = Vec::new();
         for (chord_index, chord) in chords.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let recipe = emission
                 .fragment_recipes
                 .get(chord.recipe.0 as usize)
@@ -9274,14 +9424,14 @@ impl PreparedProducerWitness {
                 let mut source_ranges = Vec::with_capacity(chord.source_ranges.len());
                 let mut dependencies = Vec::new();
                 for node in chord.nodes {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     dependencies.push(match node {
                         QGraphNode::Source(node) => QVariableNode::Source(node),
                         QGraphNode::Published(node) => QVariableNode::Published(node),
                     });
                 }
                 for (range_index, range) in chord.source_ranges.iter().enumerate() {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let edge = topology
                         .sources
                         .edges
@@ -9309,14 +9459,14 @@ impl PreparedProducerWitness {
                         .into());
                     }
                     source_ranges.push(range_index);
-                    budget.charge(2)?;
+                    budget.charge_into_error(2)?;
                     dependencies.extend(range.nodes.map(QVariableNode::Source));
                 }
                 try_sort_by_with_work(&mut dependencies, budget, |left, right, budget| {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     Ok(left.cmp(right))
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 dependencies.dedup();
@@ -9332,7 +9482,7 @@ impl PreparedProducerWitness {
 
         let mut points = Vec::new();
         for &node in emission.point_nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let fan_offsets = q
                 .outgoing_offsets
                 .get(node.0 as usize..node.0 as usize + 2)
@@ -9354,7 +9504,7 @@ impl PreparedProducerWitness {
                 .into());
             }
             let point_rows = q.point_rows_for_node(node.0 as usize)?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(point_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut dependencies = vec![QVariableNode::Source(node)];
@@ -9362,16 +9512,16 @@ impl PreparedProducerWitness {
                 let host_nodes = host_boundary_nodes.get(host.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("producer point host is unknown".into())
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(host_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 dependencies.extend(host_nodes.iter().copied().map(QVariableNode::Source));
             }
             try_sort_by_with_work(&mut dependencies, budget, |left, right, budget| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 Ok(left.cmp(right))
             })?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             dependencies.dedup();
@@ -9396,14 +9546,14 @@ fn source_span_range_index(
     topology: &ExactGeographicTopology,
     budget: &mut impl Work,
 ) -> Result<Vec<Vec<QSourceSpanRange>>> {
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(topology.sources.edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut by_source = vec![Vec::new(); topology.sources.edges.len()];
     for (span_index, span) in topology.q.spans.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for (owner_index, owner) in span.owners.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let row = by_source
                 .get_mut(owner.source_edge.0 as usize)
                 .ok_or_else(|| {
@@ -9442,9 +9592,9 @@ fn source_span_range_index(
         }
     }
     for row in &mut by_source {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         try_sort_by_with_work(row, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left
                 .start
                 .try_cmp_with_work(&right.start, budget)?
@@ -9453,7 +9603,7 @@ fn source_span_range_index(
                 .then(left.owner.cmp(&right.owner)))
         })?;
         for adjacent in row.windows(2) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let [left, right] = adjacent else {
                 unreachable!("windows(2) contains two Q source ranges");
             };
@@ -9535,7 +9685,7 @@ fn trace_source_nodes(
     let mut nodes = Vec::new();
     let mut source_ranges = Vec::new();
     for root_range in trace.owners_for_edge(trace_edge)? {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let source_index = root_range.root().index();
         let source = topology.sources.edges.get(source_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("publication trace references an unknown source edge".into())
@@ -9562,7 +9712,7 @@ fn trace_source_nodes(
         let mut low = 0_usize;
         let mut high = row.len();
         while low < high {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let middle = low
                 .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -9586,7 +9736,7 @@ fn trace_source_nodes(
             .is_le();
         let mut cursor = low;
         while let Some(range) = row.get(cursor) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if range
                 .start
                 .try_cmp_with_work(requested_high, budget)?
@@ -9631,7 +9781,7 @@ fn trace_source_nodes(
                 } else {
                     (overlap_high, overlap_low)
                 };
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let producer_range = ExactSourceRange {
                     start: producer_parameter_at_source(root_range, &source_start, budget)?,
                     end: producer_parameter_at_source(root_range, &source_end, budget)?,
@@ -9659,7 +9809,7 @@ fn trace_source_nodes(
                 let span = topology.q.spans.get(range.span).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source-span index is stale".into())
                 })?;
-                budget.charge(2)?;
+                budget.charge_into_error(2)?;
                 nodes.extend(span.nodes);
             }
             cursor = cursor.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
@@ -9671,7 +9821,7 @@ fn trace_source_nodes(
             .into());
         }
         try_sort_by_with_work(&mut covered, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left
                 .0
                 .try_cmp_with_work(&right.0, budget)?
@@ -9679,7 +9829,7 @@ fn trace_source_nodes(
         })?;
         let mut covered_to = requested_low.try_clone_with_work(budget)?;
         for (start, end) in covered {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if start.try_cmp_with_work(&covered_to, budget)?.is_gt() {
                 return Err(GeometryErrorKind::Invalid(
                     "publication root interval has a gap in its Q source spans".into(),
@@ -9707,10 +9857,11 @@ fn trace_source_nodes(
         }
     }
     try_sort_by_with_work(&mut nodes, budget, |left, right, _work| Ok(left.cmp(right)))?;
-    budget.charge(u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     nodes.dedup();
     try_sort_by_with_work(&mut source_ranges, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         Ok(left
             .root
             .cmp(&right.root)
@@ -9876,10 +10027,10 @@ fn chord_dependencies(
     ports: [QPortId; 2],
     budget: &mut impl Work,
 ) -> Result<Vec<QNodeId>> {
-    budget.charge(2)?;
+    budget.charge_into_error(2)?;
     let mut dependencies = nodes.to_vec();
     for port_id in ports {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let Some(port) = topology.q.ports.get(port_id.0 as usize) else {
             continue;
         };
@@ -9889,7 +10040,7 @@ fn chord_dependencies(
         let mut low = 0_usize;
         let mut high = emission.cut_nodes.len();
         while low < high {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let middle = low
                 .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -9903,9 +10054,9 @@ fn chord_dependencies(
                 Ordering::Greater => high = middle,
                 Ordering::Equal => {
                     for chord in &cut.chords {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         for far_port in [chord.west_far_port, chord.east_far_port] {
-                            budget.charge(1)?;
+                            budget.charge_into_error(1)?;
                             if let Some(far) = topology.q.ports.get(far_port.0 as usize) {
                                 dependencies.push(far.node);
                             }
@@ -9919,7 +10070,9 @@ fn chord_dependencies(
     try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
         Ok(left.cmp(right))
     })?;
-    budget.charge(u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     dependencies.dedup();
     Ok(dependencies)
 }
@@ -9984,7 +10137,7 @@ fn port_swept_radius(
         let mut high = emission.cut_nodes.len();
         let mut cut = None;
         while low < high {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let middle = low
                 .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -10011,7 +10164,7 @@ fn port_swept_radius(
         )?;
         let mut had_candidate_cut = false;
         for chord in &cut.chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let west_port = q.ports.get(chord.west_far_port.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q west cut endpoint is unknown".into())
             })?;
@@ -10027,7 +10180,7 @@ fn port_swept_radius(
                 GeometryErrorKind::Invalid("Q east cut endpoint has no candidate domain".into())
             })?;
             for &west_candidate in west_domain {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let west_longitude = nearest
                     .pole_port_longitude
                     .get(chord.west_far_port.0 as usize)
@@ -10053,7 +10206,7 @@ fn port_swept_radius(
                     continue;
                 };
                 for &east_candidate in east_domain {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let east_longitude = nearest
                         .pole_port_longitude
                         .get(chord.east_far_port.0 as usize)
@@ -10101,7 +10254,7 @@ fn port_swept_radius(
         .get(port.node.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q swept node has no candidate domain".into()))?;
     for &candidate in domain {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let pole_longitude = nearest
             .pole_port_longitude
             .get(port_id.0 as usize)
@@ -10227,7 +10380,9 @@ fn build_q_chords(
         .len()
         .checked_add(emission.point_nodes.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(chord_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(chord_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut chords = Vec::with_capacity(chord_capacity);
     for &span_index in &emission.spans {
         if collapsed_pole_span(topology, span_index, budget)? {
@@ -10249,7 +10404,7 @@ fn build_q_chords(
         })?;
         let mut selected_port = None;
         for &port_id in ports {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if q.ports
                 .get(port_id.0 as usize)
                 .is_some_and(|port| !port.cut)
@@ -10386,7 +10541,7 @@ fn source_port_for_exact_point(
         .get(q_node.ports.clone())
         .ok_or_else(|| GeometryErrorKind::Invalid("Q exact node ports are incomplete".into()))?
     {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let port = topology
             .q
             .ports
@@ -10450,7 +10605,7 @@ fn build_q_publication_chords(
     budget: &mut impl Work,
 ) -> Result<BuiltQPublication> {
     let frame = topology.sources.frame;
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             emission
                 .publication
@@ -10466,23 +10621,27 @@ fn build_q_publication_chords(
         .len()
         .checked_add(emission.selected_nodes.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(source_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(source_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut source_inventory = Vec::with_capacity(source_capacity);
     source_inventory.extend_from_slice(&emission.live_nodes);
     source_inventory.extend_from_slice(&emission.selected_nodes);
     let mut producer_traces = Vec::with_capacity(emission.publication.fragments.len());
     for published in &emission.publication.fragments {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let edge_count = published.points.len().checked_sub(1).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q publication fragment has no written endpoints".into())
         })?;
-        budget.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut fragment_traces = Vec::with_capacity(edge_count);
         for trace_edge in 0..edge_count {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let trace =
                 trace_source_nodes(topology, &published.trace, trace_edge, source_spans, budget)?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(trace.dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             source_inventory.extend_from_slice(&trace.dependencies);
@@ -10493,19 +10652,20 @@ fn build_q_publication_chords(
     try_sort_by_with_work(&mut source_inventory, budget, |left, right, _work| {
         Ok(left.cmp(right))
     })?;
-    budget
-        .charge(u64::try_from(source_inventory.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(source_inventory.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     source_inventory.dedup();
 
     let mut nodes = EmissionNodeRegistry::with_sources(topology, &source_inventory, budget)?;
     let mut sample_nodes = Vec::with_capacity(emission.publication.samples.len());
     for sample in &emission.publication.samples {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         sample_nodes.push(nodes.intern_computed(frame, &sample.exact_point, budget)?);
     }
     let mut sample_source_ports = Vec::with_capacity(sample_nodes.len());
     for (sample_index, &node) in sample_nodes.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let authority = &nodes
             .nodes()
             .get(node.0 as usize)
@@ -10541,12 +10701,13 @@ fn build_q_publication_chords(
     )?;
 
     let mut chords = Vec::new();
-    budget
-        .charge(u64::try_from(topology.q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(topology.q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut nearest_source_ports = vec![None; topology.q.ports.len()];
     let period = frame.longitude().period();
     for (published, fragment_traces) in emission.publication.fragments.iter().zip(producer_traces) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let recipe = emission
             .fragment_recipes
             .get(published.recipe.0 as usize)
@@ -10570,7 +10731,7 @@ fn build_q_publication_chords(
         let mut start_endpoint_only = false;
         let mut end_endpoint_only = false;
         for range in &recipe.ranges {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             start_endpoint_only |= range.endpoint_only
                 && (range.producer_start.is_zero() || range.producer_end.is_zero());
             end_endpoint_only |= range.endpoint_only
@@ -10596,13 +10757,13 @@ fn build_q_publication_chords(
                 GeometryErrorKind::Invalid("Q published sample range is invalid".into())
             })?;
         let generated = !samples.is_empty();
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(published.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut endpoints = Vec::with_capacity(published.points.len());
         endpoints.resize_with(published.points.len(), || None);
         for (sample_index, sample) in samples.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let written = sample.written_vertex;
             let publication_sample = published
                 .sample_range
@@ -10682,7 +10843,7 @@ fn build_q_publication_chords(
 
         let exact_start = published.exact_endpoints[0].clone();
         let exact_end = published.exact_endpoints[1].clone();
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(published.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut exact_points = vec![None; published.points.len()];
@@ -10694,7 +10855,7 @@ fn build_q_publication_chords(
             .ok_or_else(|| GeometryErrorKind::Invalid("Q publication has no exact end".into()))? =
             Some(exact_end);
         for sample in samples {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             *exact_points.get_mut(sample.written_vertex).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q exact publication sample is unknown".into())
             })? = Some(sample.exact_point.clone());
@@ -10704,7 +10865,7 @@ fn build_q_publication_chords(
         let mut graph_nodes = Vec::with_capacity(published.points.len());
         let mut reference_offsets = Vec::with_capacity(endpoints.len());
         for (vertex_index, endpoint) in endpoints.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let endpoint = endpoint.as_ref().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q publication vertex is missing".into())
             })?;
@@ -10790,7 +10951,7 @@ fn build_q_publication_chords(
             reference_offsets.push(reference_offset);
         }
         for (index, producer_trace) in fragment_traces.into_iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let from = endpoints
                 .get(index)
                 .and_then(Option::as_ref)
@@ -10825,7 +10986,7 @@ fn build_q_publication_chords(
             let mut dependencies = Vec::with_capacity(2);
             let mut radius = 0.0_f64;
             for endpoint in [from, to] {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let PublishedEndpoint::Source { port, .. } = endpoint {
                     let q_port = topology.q.ports.get(port.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
@@ -10842,7 +11003,7 @@ fn build_q_publication_chords(
             try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
                 Ok(left.cmp(right))
             })?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             dependencies.dedup();
@@ -10911,7 +11072,7 @@ fn build_q_publication_pairs(
     let mut pairs = Vec::new();
     let mut source_bounds = Vec::with_capacity(source.len());
     for chord in source {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         source_bounds.push(*chord.boxes.get(1).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q source chord has no central bound".into())
         })?);
@@ -10919,12 +11080,12 @@ fn build_q_publication_pairs(
     let mut published_images = Vec::with_capacity(published.len().saturating_mul(3));
     let mut published_bounds = Vec::with_capacity(published.len().saturating_mul(3));
     for (chord_index, chord) in published.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !chord.generated {
             continue;
         }
         for (shift_index, shift) in [-1_i8, 0, 1].into_iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             published_images.push((chord_index, shift, shift_index));
             published_bounds.push(*chord.boxes.get(shift_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q publication chord has no periodic bound".into())
@@ -10969,7 +11130,7 @@ fn build_q_publication_pairs(
     let mut published_center_indices = Vec::new();
     let mut published_centers = Vec::with_capacity(published.len());
     for (index, chord) in published.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !chord.generated {
             continue;
         }
@@ -11029,7 +11190,8 @@ fn build_q_publication_pairs(
         },
     )?;
     try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
-    budget.charge(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
     Ok(pairs)
 }
@@ -11094,14 +11256,14 @@ fn publication_pair_variables(
 ) -> Result<Vec<QVariableNode>> {
     let mut variables = Vec::new();
     for chord_id in [pair.left, pair.right] {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         match chord_id {
             QPublicationChordId::Source(index) => {
                 let chord = source_chords.get(index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q publication source chord is unknown".into())
                 })?;
                 for &node in &chord.dependencies {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     variables.push(QVariableNode::Source(node));
                 }
             },
@@ -11110,11 +11272,11 @@ fn publication_pair_variables(
                     GeometryErrorKind::Invalid("Q publication chord is unknown".into())
                 })?;
                 for &node in &chord.dependencies {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     variables.push(QVariableNode::Source(node));
                 }
                 for node in chord.nodes {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     variables.push(match node {
                         QGraphNode::Source(node) => QVariableNode::Source(node),
                         QGraphNode::Published(node) => QVariableNode::Published(node),
@@ -11126,7 +11288,9 @@ fn publication_pair_variables(
     try_sort_by_with_work(&mut variables, budget, |left, right, _work| {
         Ok(left.cmp(right))
     })?;
-    budget.charge(u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     variables.dedup();
     Ok(variables)
 }
@@ -11156,7 +11320,7 @@ fn prepared_variable_location(
             Ok(location)
         },
         QVariableNode::Published(node) => {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let location = publication_location
                 .get(node.0 as usize)
                 .copied()
@@ -11187,7 +11351,7 @@ fn variable_class_rank(
 ) -> Result<Option<QNodeLocation>> {
     let mut location: Option<QNodeLocation> = None;
     for variable in variables {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let candidate = prepared_variable_location(
             variable,
             node_location,
@@ -11224,7 +11388,7 @@ fn union_prepared_dependencies(
 ) -> Result<()> {
     let mut indices = Vec::new();
     for &dependency in dependencies {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if let Some(&index) = variable_index.get(&dependency) {
             indices.push(index);
             continue;
@@ -11264,11 +11428,13 @@ fn union_prepared_dependencies(
     try_sort_by_with_work(&mut indices, budget, |left, right, _work| {
         Ok(left.cmp(right))
     })?;
-    budget.charge(u64::try_from(indices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(indices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     indices.dedup();
     if let Some(&first) = indices.first() {
         for &index in indices.iter().skip(1) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             union.union_with_work(first, index, budget)?;
         }
     }
@@ -11315,7 +11481,7 @@ fn build_unified_q_classes(
     } = *inputs;
     let mut source_variable_count = 0_usize;
     for class in source_classes {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         source_variable_count = source_variable_count
             .checked_add(class.len())
             .ok_or(ResourceError::SizeOverflow)?;
@@ -11323,28 +11489,32 @@ fn build_unified_q_classes(
     let variable_count = source_variable_count
         .checked_add(publication_variables.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    budget.charge(u64::try_from(variable_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(variable_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut variables = Vec::with_capacity(variable_count);
     for class in source_classes {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for &node in class {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             variables.push(QVariableNode::Source(node));
         }
     }
     for &node in publication_variables {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         variables.push(QVariableNode::Published(node));
     }
     let mut variable_index = BTreeMap::new();
     for (index, &variable) in variables.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         variable_index.insert(variable, index);
     }
-    budget.charge(u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut union = UnionFind::new(variables.len());
     for class in source_classes {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let Some(&first) = class.first() else {
             continue;
         };
@@ -11354,7 +11524,7 @@ fn build_unified_q_classes(
                 GeometryErrorKind::Invalid("Q source variable has no unified index".into())
             })?;
         for &node in class.iter().skip(1) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let index = *variable_index
                 .get(&QVariableNode::Source(node))
                 .ok_or_else(|| {
@@ -11365,13 +11535,13 @@ fn build_unified_q_classes(
     }
     let frame = topology.sources.frame;
     for chord in publication_chords {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !chord.generated {
             continue;
         }
         let mut dependencies = Vec::new();
         for &node in &chord.dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if let Some((index, _)) = q_graph_variable_domain(
                 QGraphNode::Source(node),
                 source_domains,
@@ -11385,7 +11555,7 @@ fn build_unified_q_classes(
             }
         }
         for node in chord.nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if let Some((index, _)) = q_graph_variable_domain(
                 node,
                 source_domains,
@@ -11399,15 +11569,16 @@ fn build_unified_q_classes(
             }
         }
         try_sort_by_with_work(&mut dependencies, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         dependencies.dedup();
         if let Some(&first) = dependencies.first() {
             for &index in dependencies.iter().skip(1) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 union.union_with_work(first, index, budget)?;
             }
         }
@@ -11440,12 +11611,12 @@ fn build_unified_q_classes(
         }
     }
     for &pair in publication_pairs {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let dependencies =
             publication_pair_variables(pair, source_chords, publication_chords, budget)?;
         let mut indices = Vec::with_capacity(dependencies.len());
         for &dependency in &dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if let Some(&index) = variable_index.get(&dependency) {
                 indices.push(index);
                 continue;
@@ -11460,7 +11631,7 @@ fn build_unified_q_classes(
                     axes.iter().any(|&movable| movable)
                 },
                 QVariableNode::Published(node) => {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     if publication_domains.get(node.0 as usize).is_none() {
                         return Err(GeometryErrorKind::Invalid(
                             "publication dependency node has no admitted domain".into(),
@@ -11479,20 +11650,22 @@ fn build_unified_q_classes(
             }
         }
         try_sort_by_with_work(&mut indices, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             Ok(left.cmp(right))
         })?;
-        budget.charge(u64::try_from(indices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(indices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         indices.dedup();
         if let Some(&first) = indices.first() {
             for &index in indices.iter().skip(1) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 union.union_with_work(first, index, budget)?;
             }
         }
     }
     for junction in &producer_witness.junctions {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         union_prepared_dependencies(
             &junction.dependencies,
             &variable_index,
@@ -11505,7 +11678,7 @@ fn build_unified_q_classes(
         )?;
     }
     for linework in &producer_witness.linework {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         union_prepared_dependencies(
             &linework.dependencies,
             &variable_index,
@@ -11518,7 +11691,7 @@ fn build_unified_q_classes(
         )?;
     }
     for point in &producer_witness.points {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         union_prepared_dependencies(
             &point.dependencies,
             &variable_index,
@@ -11533,19 +11706,19 @@ fn build_unified_q_classes(
 
     let mut groups = BTreeMap::<usize, Vec<QVariableNode>>::new();
     for (index, &variable) in variables.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let root = union.find_with_work(index, budget)?;
         groups.entry(root).or_default().push(variable);
     }
     let mut classes = groups.into_values().collect::<Vec<_>>();
     for class in &mut classes {
         try_sort_by_with_work(class, budget, |left, right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             compare_variable_nodes(topology, publication_nodes, *left, *right)
         })?;
     }
     try_sort_by_with_work(&mut classes, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let left = *left
             .first()
             .ok_or_else(|| GeometryErrorKind::Invalid("unified Q class is empty".into()))?;
@@ -11555,7 +11728,7 @@ fn build_unified_q_classes(
         compare_variable_nodes(topology, publication_nodes, left, right)
     })?;
 
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             topology
                 .q
@@ -11569,9 +11742,9 @@ fn build_unified_q_classes(
     let mut node_location = vec![None; topology.q.nodes.len()];
     let mut publication_location = vec![None; publication_nodes.nodes().len()];
     for (class, variables) in classes.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for (rank, &variable) in variables.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = match variable {
                 QVariableNode::Source(node) => node_location.get_mut(node.0 as usize),
                 QVariableNode::Published(node) => publication_location.get_mut(node.0 as usize),
@@ -11583,8 +11756,8 @@ fn build_unified_q_classes(
 
     let mut states = Vec::with_capacity(classes.len());
     for class in &classes {
-        budget.charge(1)?;
-        budget.charge(
+        budget.charge_into_error(1)?;
+        budget.charge_into_error(
             u64::try_from(class.len())
                 .map_err(|_| ResourceError::SizeOverflow)?
                 .checked_mul(4)
@@ -11598,7 +11771,7 @@ fn build_unified_q_classes(
         });
     }
     for (pair_index, pair) in proximity_pairs.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let left = source_chords.get(pair.left).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q proximity left chord is unknown".into())
         })?;
@@ -11629,7 +11802,7 @@ fn build_unified_q_classes(
         }
     }
     for (pair_index, &pair) in publication_pairs.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let dependencies =
             publication_pair_variables(pair, source_chords, publication_chords, budget)?;
         if let Some((class, rank)) = variable_class_rank(
@@ -11652,7 +11825,7 @@ fn build_unified_q_classes(
         }
     }
     for (cut_index, cut) in cut_rows.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let dependencies = cut.dependencies.iter().copied().map(QVariableNode::Source);
         if let Some((class, rank)) = variable_class_rank(
             dependencies,
@@ -11672,7 +11845,7 @@ fn build_unified_q_classes(
         }
     }
     for (fan_index, fan) in fan_rows.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let dependencies = fan.dependencies.iter().copied().map(QVariableNode::Source);
         if let Some((class, rank)) = variable_class_rank(
             dependencies,
@@ -11706,15 +11879,17 @@ fn build_q_fan_rows(
     budget: &mut impl Work,
 ) -> Result<Vec<QFanRow>> {
     let q = &topology.q;
-    budget.charge(u64::try_from(q.darts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(q.darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut selected_darts = vec![false; q.darts.len()];
     for &span_index in &emission.spans {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let Some(forward) = q.span_darts.get(span_index).copied().flatten() else {
             continue;
         };
         for dart in [forward, QDartId(forward.0 ^ 1)] {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             *selected_darts
                 .get_mut(dart.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q selected dart is unknown".into()))? =
@@ -11723,7 +11898,7 @@ fn build_q_fan_rows(
     }
     let mut rows = Vec::new();
     for &node in &emission.selected_nodes {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let start = *q
             .outgoing_offsets
             .get(node.0 as usize)
@@ -11737,7 +11912,7 @@ fn build_q_fan_rows(
         })?;
         let mut darts = Vec::new();
         for &dart in exact_row {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if selected_darts
                 .get(dart.0 as usize)
                 .copied()
@@ -11751,7 +11926,7 @@ fn build_q_fan_rows(
         }
         let mut dependencies = vec![node];
         for &dart_id in &darts {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q selected fan dart is unknown".into())
             })?;
@@ -11766,8 +11941,9 @@ fn build_q_fan_rows(
         try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         dependencies.dedup();
         rows.push(QFanRow {
             darts,
@@ -11785,13 +11961,13 @@ fn build_q_cut_rows(
     let q = &topology.q;
     let mut rows = Vec::with_capacity(emission.cut_nodes.len());
     for cut in &emission.cut_nodes {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let mut dependencies = Vec::with_capacity(cut.chords.len().saturating_mul(2));
         dependencies.push(cut.node);
         for chord in &cut.chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for port_id in [chord.west_far_port, chord.east_far_port] {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q cut dependency port is unknown".into())
                 })?;
@@ -11801,8 +11977,9 @@ fn build_q_cut_rows(
         try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         dependencies.dedup();
         rows.push(QCutRow {
             node: cut.node,
@@ -11831,7 +12008,7 @@ fn include_closure_variables(
 ) -> Result<()> {
     let mut variables = Vec::new();
     for node in dependencies {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if node_is_movable(node, movable_axes)? {
             variables.push(node);
         }
@@ -11839,16 +12016,18 @@ fn include_closure_variables(
     try_sort_by_with_work(&mut variables, budget, |left, right, _work| {
         Ok(left.cmp(right))
     })?;
-    budget.charge(u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     variables.dedup();
     if let Some(&first) = variables.first() {
         for &node in variables.iter().skip(1) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             union.union_with_work(first.0 as usize, node.0 as usize, budget)?;
         }
     }
     for node in variables {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let reached = closure.get_mut(node.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q closure dependency node is unknown".into())
         })?;
@@ -11867,7 +12046,7 @@ fn build_q_classes(
 ) -> Result<Vec<QSourceClass>> {
     let mut roots = Vec::new();
     for (node, &included) in closure.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if included {
             roots.push((
                 union.find_with_work(node, budget)?,
@@ -11876,7 +12055,7 @@ fn build_q_classes(
         }
     }
     try_sort_by_with_work(&mut roots, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let root = left.0.cmp(&right.0);
         Ok(if root.is_eq() {
             let left_key = &topology
@@ -11899,7 +12078,7 @@ fn build_q_classes(
     let mut classes = Vec::<QSourceClass>::new();
     let mut previous_root = None;
     for (root, node) in roots {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if previous_root != Some(root) {
             classes.push(Vec::new());
             previous_root = Some(root);
@@ -11910,7 +12089,7 @@ fn build_q_classes(
             .push(node);
     }
     try_sort_by_with_work(&mut classes, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let left = *left.first().expect("Q variable classes are nonempty");
         let right = *right.first().expect("Q variable classes are nonempty");
         let left_key = &topology
@@ -11942,10 +12121,12 @@ fn q_proximity_pairs(
     period: f64,
     budget: &mut impl SearchAccount,
 ) -> Result<Vec<QProximityPair>> {
-    budget.charge(u64::try_from(frontier.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(frontier.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut left_bounds = Vec::with_capacity(frontier.len());
     for &chord in frontier {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         left_bounds.push(
             chords
                 .get(chord)
@@ -11959,9 +12140,9 @@ fn q_proximity_pairs(
     let mut right_images = Vec::with_capacity(chords.len().saturating_mul(3));
     let mut right_bounds = Vec::with_capacity(chords.len().saturating_mul(3));
     for (chord_index, chord) in chords.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for (shift_index, shift) in [-1_i8, 0, 1].into_iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             right_images.push((chord_index, shift, shift_index));
             right_bounds.push(
                 *chord
@@ -12022,7 +12203,8 @@ fn q_proximity_pairs(
         },
     )?;
     try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
-    budget.charge(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
     Ok(pairs)
 }
@@ -12040,10 +12222,10 @@ fn candidate_domains_share_emitted_key(
         .into());
     }
     for &left_candidate in left {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let left_key = emitted_node_key(frame, left_candidate.native)?;
         for &right_candidate in right {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if left_key == emitted_node_key(frame, right_candidate.native)? {
                 return Ok(true);
             }
@@ -12063,7 +12245,7 @@ fn build_q_proximity_closure(
     budget: &mut impl SearchAccount,
 ) -> Result<QClosure> {
     let node_count = topology.q.nodes.len();
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             node_count
                 .checked_mul(5)
@@ -12074,9 +12256,9 @@ fn build_q_proximity_closure(
     let mut incident_chords = Vec::new();
     incident_chords.resize_with(node_count, Vec::<usize>::new);
     for (chord_index, chord) in chords.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for &node in &chord.dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             incident_chords
                 .get_mut(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q chord dependency is unknown".into()))?
@@ -12086,9 +12268,9 @@ fn build_q_proximity_closure(
     let mut incident_cuts = Vec::new();
     incident_cuts.resize_with(node_count, Vec::<usize>::new);
     for (cut_index, cut) in cut_rows.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for &node in &cut.dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             incident_cuts
                 .get_mut(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q cut dependency is unknown".into()))?
@@ -12098,9 +12280,9 @@ fn build_q_proximity_closure(
     let mut incident_fans = Vec::new();
     incident_fans.resize_with(node_count, Vec::<usize>::new);
     for (fan_index, fan) in fan_rows.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         for &node in &fan.dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             incident_fans
                 .get_mut(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q fan dependency is unknown".into()))?
@@ -12112,7 +12294,7 @@ fn build_q_proximity_closure(
     let mut frontier = Vec::new();
     let mut union = UnionFind::new(node_count);
     for &seed in seeds {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if !node_is_movable(seed, movable_axes)? {
             continue;
         }
@@ -12125,7 +12307,7 @@ fn build_q_proximity_closure(
     }
     let frame = topology.sources.frame;
     for chord in chords {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let [left, right] = chord.nodes;
         if left == right
             || !node_is_movable(left, movable_axes)?
@@ -12135,7 +12317,7 @@ fn build_q_proximity_closure(
         }
         let mut ordinary_ports = true;
         for port in chord.ports {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             ordinary_ports &= topology
                 .q
                 .ports
@@ -12164,7 +12346,7 @@ fn build_q_proximity_closure(
     }
 
     let mut pairs = Vec::new();
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(
             cut_rows
                 .len()
@@ -12177,34 +12359,34 @@ fn build_q_proximity_closure(
     let mut seen_fans = vec![false; fan_rows.len()];
     let period = frame.longitude().period();
     while !frontier.is_empty() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let mut frontier_chords = Vec::new();
         for node in &frontier {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &chord in incident_chords
                 .get(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q frontier node is unknown".into()))?
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 frontier_chords.push(chord);
             }
         }
         try_sort_by_with_work(&mut frontier_chords, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(frontier_chords.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         frontier_chords.dedup();
 
         let mut newly_reached = Vec::new();
         for node in &frontier {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &cut_index in incident_cuts
                 .get(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q frontier cut row is unknown".into()))?
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let seen = seen_cuts.get_mut(cut_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q cut activation index is unknown".into())
                 })?;
@@ -12227,7 +12409,7 @@ fn build_q_proximity_closure(
                 .get(node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q frontier fan row is unknown".into()))?
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let seen = seen_fans.get_mut(fan_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q fan activation index is unknown".into())
                 })?;
@@ -12251,7 +12433,7 @@ fn build_q_proximity_closure(
         if !frontier_chords.is_empty() {
             let reached_pairs = q_proximity_pairs(chords, &frontier_chords, period, budget)?;
             for pair in reached_pairs {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let left = chords.get(pair.left).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q proximity left chord is unknown".into())
                 })?;
@@ -12272,20 +12454,23 @@ fn build_q_proximity_closure(
         try_sort_by_with_work(&mut newly_reached, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(newly_reached.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(newly_reached.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         newly_reached.dedup();
         frontier = newly_reached;
     }
     try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
-    budget.charge(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
 
     let mut incident_pairs = Vec::new();
-    budget.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget
+        .charge_into_error(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     incident_pairs.resize_with(node_count, Vec::<usize>::new);
     for (pair_index, pair) in pairs.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let left = chords.get(pair.left).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q proximity left chord is unknown".into())
         })?;
@@ -12293,7 +12478,7 @@ fn build_q_proximity_closure(
             GeometryErrorKind::Invalid("Q proximity right chord is unknown".into())
         })?;
         for &node in left.dependencies.iter().chain(&right.dependencies) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             incident_pairs
                 .get_mut(node.0 as usize)
                 .ok_or_else(|| {
@@ -12304,7 +12489,9 @@ fn build_q_proximity_closure(
     }
     for row in &mut incident_pairs {
         try_sort_by_with_work(row, budget, |left, right, _work| Ok(left.cmp(right)))?;
-        budget.charge(u64::try_from(row.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(row.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         row.dedup();
     }
     let classes = build_q_classes(topology, &closure, &mut union, budget)?;
@@ -12731,7 +12918,7 @@ pub(super) fn subgraph_chart(
     };
 
     try_sort_by_with_work(&mut port_nodes, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left_point = port_points
             .get(left.1.0 as usize)
             .and_then(Option::as_ref)
@@ -12852,7 +13039,7 @@ pub(super) fn subgraph_chart(
             })?,
             work,
             |left, right, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 Ok(left.cmp(right))
             },
         )?;
@@ -12928,10 +13115,10 @@ fn reconstruct_cut_ports(
     work: &mut impl Work,
 ) -> Result<Vec<Option<ExactRational>>> {
     let period = ExactRational::from_f64(frame.longitude().period());
-    work.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut cut_latitudes = vec![None; q.nodes.len()];
     for cut in cut_nodes {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let node = q
             .nodes
             .get(cut.node.0 as usize)
@@ -12939,7 +13126,7 @@ fn reconstruct_cut_ports(
 
         let mut latitude: Option<ExactRational> = None;
         for chord in &cut.chords {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let west_point = port_points
                 .get(chord.west_far_port.0 as usize)
                 .and_then(Option::as_ref)
@@ -13012,7 +13199,7 @@ fn reconstruct_cut_ports(
             }
         }
         for (port_id, x) in [(cut.west, &q.cut), (cut.east, cut_east)] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             *port_points.get_mut(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cut port ordinal is invalid".into())
             })? = Some(ExactChartPoint::from_rationals(x.clone(), latitude.clone()));
@@ -13434,7 +13621,7 @@ fn native_q_port_data(
     source_requests: &[RootRequest],
     budget: &mut impl Work,
 ) -> Result<NativePortData> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("native source-span endpoint port is unknown".into())
     })?;
@@ -13474,7 +13661,7 @@ fn native_q_port_data(
     let occurrences = if port.cut {
         native_source_sample_occurrences(None, source_requests, budget)?
     } else {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         vec![OccurrenceSource {
             origin: super::emission::VertexOrigin::SourceNode(port.node),
             source_trace: None,
@@ -13519,7 +13706,7 @@ fn published_candidate_radius(
     let mut radius = 0.0_f64;
     let period = ExactRational::from_f64(frame.longitude().period());
     for candidate in candidates {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
         let longitude = ExactRational::from_f64(candidate.native.x)
             .try_add_with_work(&period.try_product_with_work(&lift, budget)?, budget)?;
@@ -13703,7 +13890,7 @@ fn trace_ranges_for_slice(
     let parent_ranges = trace.rows.row(edge)?;
     let mut output = Vec::with_capacity(parent_ranges.len());
     for (owner, parent) in parent_ranges.iter().enumerate() {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if let Some(range) = parent.compose_with_work(local_start, local_end, budget)? {
             output.push((owner, range));
         }
@@ -13768,14 +13955,14 @@ fn native_source_face_germs(
         (forward, left_face, first_port, second_port),
         (reverse, right_face, second_port, first_port),
     ];
-    budget.charge(2)?;
+    budget.charge_into_error(2)?;
     let mut germs = entries.map(|(dart, face, ..)| NativeSourceFaceGerm {
         dart,
         face,
         selected_root: None,
     });
     for (germ, (dart_id, expected_face, from_port, to_port)) in germs.iter_mut().zip(entries) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native source-face germ has an unknown Q dart".into())
         })?;
@@ -13828,13 +14015,13 @@ fn native_known_source_spans_for_slice(
     local_end: &ExactRational,
     budget: &mut impl Work,
 ) -> Result<NativeKnownSourceSpanSlice> {
-    budget.charge(
+    budget.charge_into_error(
         u64::try_from(chord.source_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut output = Vec::with_capacity(chord.source_ranges.len());
     let mut selected_left_region = None;
     for source in &chord.source_ranges {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let (producer_low, producer_high) = if source
             .producer_range
             .start
@@ -13987,16 +14174,16 @@ fn native_known_span_boundaries(
             )
             .ok_or(ResourceError::SizeOverflow)
     })?;
-    budget.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut boundaries = Vec::with_capacity(capacity);
     for edge in all_edges {
         let NativeAreaEdgeKind::Producer { known_spans, .. } = &edge.kind else {
             continue;
         };
         for known in known_spans {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for parameter in [&known.span_range.start, &known.span_range.end] {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let endpoint = if parameter.is_zero() {
                     Some((
                         ExactRational::zero(),
@@ -14052,14 +14239,16 @@ fn native_known_span_boundaries(
         }
     }
     try_sort_by_with_work(&mut boundaries, budget, |left, right, budget| {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let span = left.span.cmp(&right.span);
         if !span.is_eq() {
             return Ok(span);
         }
         left.parameter.try_cmp_with_work(&right.parameter, budget)
     })?;
-    budget.charge(u64::try_from(boundaries.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(boundaries.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut unique: Vec<NativeKnownSpanBoundary> = Vec::with_capacity(boundaries.len());
     for boundary in boundaries {
         append_native_known_span_boundary(&mut unique, boundary, topology.sources.frame, budget)?;
@@ -14073,7 +14262,7 @@ fn append_native_known_span_boundary(
     frame: GeographicFrame,
     budget: &mut impl Work,
 ) -> Result<()> {
-    budget.charge(1)?;
+    budget.charge_into_error(1)?;
     if let Some(previous) = unique.last_mut()
         && previous.span == boundary.span
         && previous
@@ -14136,7 +14325,7 @@ fn native_events_for_span(
     let mut low = 0_usize;
     let mut high = events.len();
     while low < high {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
@@ -14150,7 +14339,7 @@ fn native_events_for_span(
     let start = low;
     high = events.len();
     while low < high {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
@@ -14383,10 +14572,12 @@ fn common_refine_native_edges(
     frame: GeographicFrame,
     budget: &mut impl Work,
 ) -> Result<Vec<NativeAreaEdge>> {
-    budget.charge(u64::try_from(area_edges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(area_edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut refined = Vec::with_capacity(area_edges.len());
     for edge in area_edges {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let NativeAreaEdge {
             vertices,
             owner,
@@ -14401,7 +14592,7 @@ fn common_refine_native_edges(
             known_spans,
         } = kind
         else {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             refined.push(NativeAreaEdge {
                 vertices,
                 owner,
@@ -14418,7 +14609,7 @@ fn common_refine_native_edges(
             )
             .into());
         }
-        budget.charge(2)?;
+        budget.charge_into_error(2)?;
         let mut split_points = Vec::with_capacity(2);
         split_points.push(NativeSplitPoint {
             parameter: producer_start.try_clone_with_work(budget)?,
@@ -14441,7 +14632,7 @@ fn common_refine_native_edges(
                 (&source.span_range.end, &source.span_range.start)
             };
             for event_index in event_start..event_end {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let event = boundaries.get(event_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native span event is unknown".into())
                 })?;
@@ -14517,19 +14708,20 @@ fn common_refine_native_edges(
                 if !point.try_eq_with_work(&data.point, budget)? {
                     return Err(GeometryErrorKind::NativeRefinementMismatch.into());
                 }
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 split_points.push(NativeSplitPoint { parameter, data });
             }
         }
         try_sort_by_with_work(&mut split_points, budget, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             left.parameter.try_cmp_with_work(&right.parameter, work)
         })?;
-        budget
-            .charge(u64::try_from(split_points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(split_points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut unique: Vec<NativeSplitPoint> = Vec::with_capacity(split_points.len());
         for point in split_points {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if let Some(previous) = unique.last_mut()
                 && previous
                     .parameter
@@ -14550,7 +14742,7 @@ fn common_refine_native_edges(
             unique.push(point);
         }
         if unique.len() == 2 {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             refined.push(NativeAreaEdge {
                 vertices,
                 owner,
@@ -14591,29 +14783,29 @@ fn common_refine_native_edges(
                     &producer_end.try_subtract_with_work(&producer_start, budget)?,
                     budget,
                 )?;
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut child_ranges = Vec::with_capacity(trace_ranges.len());
             for (owner, range) in &trace_ranges {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let Some(range) = range.compose_with_work(&local_start, &local_end, budget)? {
                     child_ranges.push((*owner, range));
                 }
             }
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(known_spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut child_spans = Vec::with_capacity(known_spans.len());
             for known in &known_spans {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let Some(known) =
                     clip_native_source_span_use(known, &start.parameter, &end.parameter, budget)?
                 {
                     child_spans.push(known);
                 }
             }
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             refined.push(NativeAreaEdge {
                 vertices: [
                     start.data.try_clone_with_work(budget)?,
@@ -14647,8 +14839,9 @@ fn validate_native_source_ranges(
     selected_area: bool,
     budget: &mut impl Work,
 ) -> Result<()> {
-    budget
-        .charge(u64::try_from(expected_leaves.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    budget.charge_into_error(
+        u64::try_from(expected_leaves.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut edge_cursor = 0_usize;
     for &(recipe, trace_edge) in expected_leaves {
         let trace = expanded_traces.get(recipe.0 as usize).ok_or_else(|| {
@@ -14682,7 +14875,7 @@ fn validate_native_source_ranges(
                 .into());
             }
             found = true;
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !producer_start
                 .try_cmp_with_work(&interval_cursor, budget)?
                 .is_eq()
@@ -14695,10 +14888,12 @@ fn validate_native_source_ranges(
                 )
                 .into());
             }
-            budget.charge(u64::try_from(owners.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(owners.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut expected_ranges = Vec::with_capacity(owners.len());
             for (owner_index, owner) in owners.iter().enumerate() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let Some(range) =
                     owner.compose_with_work(producer_start, producer_end, budget)?
                 {
@@ -14714,7 +14909,7 @@ fn validate_native_source_ranges(
             for ((expected_owner, expected_range), (actual_owner, actual_range)) in
                 expected_ranges.iter().zip(trace_ranges)
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if expected_owner != actual_owner
                     || !expected_range.try_eq_with_work(actual_range, budget)?
                 {
@@ -14724,11 +14919,11 @@ fn validate_native_source_ranges(
                     .into());
                 }
             }
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(known_spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             for known in known_spans {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if !super::exact::in_unit_interval_with_work(&known.source_range.start, budget)?
                     || !super::exact::in_unit_interval_with_work(&known.source_range.end, budget)?
                     || !super::exact::in_unit_interval_with_work(
@@ -14896,7 +15091,7 @@ fn validate_native_source_ranges(
         }
     }
     for edge in producer_edges.iter().skip(edge_cursor) {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         if matches!(&edge.kind, NativeAreaEdgeKind::Producer { .. }) {
             return Err(GeometryErrorKind::Invalid(
                 "native producer graph contains an unassigned leaf".into(),
@@ -14932,7 +15127,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(emission.fragment_recipes.len())
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -14946,7 +15141,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         );
         publication_chord_offsets.push(0);
         for (index, fragment) in emission.publication.fragments.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if fragment.recipe.0 as usize != index
                 || fragment.trace.rows.edge_count().checked_add(1) != Some(fragment.points.len())
             {
@@ -14970,7 +15165,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     .ok_or(ResourceError::SizeOverflow)?,
             );
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(publication_counts.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         if publication_counts != emission.publication.counts {
@@ -14979,12 +15174,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(publication_counts.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut family_occurrences = vec![0_u32; publication_counts.len()];
         for sample in &emission.publication.samples {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let family_recipe = sample.family.fragment_recipe().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q publication sample has no fragment family".into())
             })?;
@@ -15034,7 +15229,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .ok_or(ResourceError::SizeOverflow)?;
         }
         for (&occurrences, &count) in family_occurrences.iter().zip(&publication_counts) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if usize::try_from(occurrences).map_err(|_| ResourceError::SizeOverflow)? != count {
                 return Err(GeometryErrorKind::Invalid(
                     "Q publication families do not cover their materialized samples".into(),
@@ -15042,13 +15237,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(emission.fragment_recipes.len())
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut seen_fragments = vec![false; emission.fragment_recipes.len()];
         for walk in emission.fragment_walks {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             match walk.owner {
                 RecipeWalkOwner::Cycle(cycle) => {
                     emission.plan.cycles.get(cycle).ok_or_else(|| {
@@ -15073,7 +15268,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 },
             }
             for &recipe_id in &walk.fragments {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let seen = seen_fragments
                     .get_mut(recipe_id.0 as usize)
                     .ok_or_else(|| {
@@ -15088,7 +15283,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for &seen in &seen_fragments {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !seen {
                 return Err(GeometryErrorKind::Invalid(
                     "Q fragment is missing its publication walk".into(),
@@ -15097,7 +15292,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for (index, recipe) in emission.fragment_recipes.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if recipe.id.0 as usize != index {
                 return Err(GeometryErrorKind::Invalid(
                     "Q fragment recipes are not indexed by FragmentRecipeId".into(),
@@ -15132,7 +15327,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let mut has_areal_owner = false;
             for range in &recipe.ranges {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let edge = topology
                     .sources
                     .edges
@@ -15153,7 +15348,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     .into());
                 }
                 for producer_parameter in [&range.producer_start, &range.producer_end] {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     if !super::exact::in_unit_interval_with_work(producer_parameter, budget)? {
                         return Err(GeometryErrorKind::Invalid(
                             "Q source range has an invalid affine producer parameter".into(),
@@ -15175,7 +15370,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for planned in planned_area_rings(emission.plan) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let region = match *planned {
                 PlannedAreaRing::Source { region, .. } | PlannedAreaRing::Cycle { region, .. } => {
                     region
@@ -15185,7 +15380,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut high = emission.selected_regions.len();
             let mut found = false;
             while low < high {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let middle = low
                     .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
                     .ok_or(ResourceError::SizeOverflow)?;
@@ -15210,7 +15405,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(
                 q.nodes
                     .len()
@@ -15228,7 +15423,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .flatten()
             .chain(&q.source_point_ports)
         {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q stored-node port is unknown".into())
             })?;
@@ -15238,7 +15433,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 true;
         }
         for node in &q.nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let nearest_xy = nearest.xy(node.id)?;
             let is_stored = stored_nodes
                 .get(node.id.0 as usize)
@@ -15276,10 +15471,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let fan_rows = build_q_fan_rows(topology, emission, budget)?;
         let period = ExactRational::from_f64(frame.longitude().period());
         let cut_east = q.cut.try_add_with_work(&period, budget)?;
-        budget.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut cut_index_by_node = vec![None; q.nodes.len()];
         for (cut_index, cut) in emission.cut_nodes.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = cut_index_by_node
                 .get_mut(cut.node.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q cut node is unknown".into()))?;
@@ -15324,10 +15521,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(u64::try_from(ordinates.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(ordinates.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut merged_ordinates = ordinates.to_vec();
         for (sample_index, &node_id) in publication_sample_nodes.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let node = publication_nodes
                 .nodes()
                 .get(node_id.0 as usize)
@@ -15354,9 +15553,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for chord in &mut publication_chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for endpoint in &chord.endpoints {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let PublishedEndpoint::Published { node, .. } = endpoint else {
                     continue;
                 };
@@ -15394,46 +15593,46 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let prepared_producer =
             PreparedProducerWitness::build(topology, emission, &publication_chords, budget)?;
         let producer_source_dependencies = prepared_producer.source_dependencies(budget)?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(emission.live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut source_seeds = emission.live_nodes.clone();
         for chord in &chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &node in &chord.dependencies {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 source_seeds.push(node);
             }
         }
         for cut in &cut_rows {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &node in &cut.dependencies {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 source_seeds.push(node);
             }
         }
         for &node in &producer_source_dependencies {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             source_seeds.push(node);
         }
         for fan in &fan_rows {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for &node in &fan.dependencies {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 source_seeds.push(node);
             }
         }
         for chord in &publication_chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !chord.generated {
                 continue;
             }
             for &node in &chord.dependencies {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 source_seeds.push(node);
             }
             for node in chord.nodes {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if let QGraphNode::Source(node) = node {
                     source_seeds.push(node);
                 }
@@ -15442,12 +15641,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         try_sort_by_with_work(&mut source_seeds, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget
-            .charge(u64::try_from(source_seeds.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(source_seeds.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         source_seeds.dedup();
         let mut source_constructed = 0_usize;
         for &node in &source_seeds {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let axes = movable_axes.get(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("prepared Q source node has no movability row".into())
             })?;
@@ -15547,8 +15747,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         drawing: QEmissionDrawing<'topology>,
         budget: &mut impl SearchAccount,
     ) -> Result<NearestQCertificate> {
-        budget
-            .charge(u64::try_from(self.classes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(self.classes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut failed_classes = vec![false; self.classes.len()];
         let mut unrepresentable = false;
         let (publication_conflicts, publication_unrepresentable) = self
@@ -15560,7 +15761,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )?;
         unrepresentable |= publication_unrepresentable;
         for node in publication_conflicts {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let location = match node {
                 QVariableNode::Source(node) => {
                     self.node_location.get(node.0 as usize).copied().flatten()
@@ -15581,7 +15782,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         let mut group_start = 0_usize;
         while group_start < live_keys.len() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let key = live_keys
                 .get(group_start)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q live-key group is unknown".into()))?
@@ -15590,7 +15791,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
             while let Some((candidate, _)) = live_keys.get(group_end) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if *candidate != key {
                     break;
                 }
@@ -15604,7 +15805,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .iter()
                 .map(|(_, node)| *node)
                 .collect::<Vec<_>>();
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(group_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             try_sort_by_with_work(&mut group_nodes, budget, |left, right, _work| {
@@ -15614,7 +15815,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if group_nodes.len() > 1 {
                 let mut movable = false;
                 for node in group_nodes {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     if let Some((class, _)) =
                         self.node_location.get(node.0 as usize).copied().flatten()
                     {
@@ -15631,14 +15832,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             group_start = group_end;
         }
         for &node in &self.emission.live_nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let nearest_candidate = self.nearest.candidate(node)?;
             let domain = self.domains.get(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q live node has no candidate domain".into())
             })?;
             let mut contains_nearest = false;
             for &candidate in domain {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if candidate == nearest_candidate {
                     contains_nearest = true;
                     break;
@@ -15656,7 +15857,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for (node_index, node) in self.publication_nodes.nodes().iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !matches!(&node.authority, NodeAuthority::Computed(_)) {
                 continue;
             }
@@ -15673,7 +15874,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             })?;
             let mut contains_nearest = false;
             for &candidate in domain {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if candidate == nearest_candidate {
                     contains_nearest = true;
                     break;
@@ -15695,8 +15896,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
 
         for (class_index, variables) in self.classes.iter().enumerate() {
-            budget
-                .charge(u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let values = variables
                 .iter()
                 .map(|&node| self.nearest_candidate(node))
@@ -15709,7 +15911,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let state = self.class_states.get(class_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q nearest class state is unknown".into())
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 let assigned = values.iter().copied().map(Some).collect::<Vec<_>>();
@@ -15738,7 +15940,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
         let mut repair_needed = false;
         for failed in failed_classes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if failed {
                 repair_needed = true;
             }
@@ -15761,7 +15963,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .checked_add(entries)
                 .ok_or(ResourceError::SizeOverflow)
         })?;
-        budget.charge(u64::try_from(clone_entries).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(clone_entries).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let nearest = self.nearest.clone();
         let publication_nearest = self.publication_nearest.clone();
         match self.check_global_candidate(&nearest, &publication_nearest, drawing, budget)? {
@@ -15828,14 +16032,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .len()
             .checked_add(self.emission.publication.samples.len())
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(live_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(live_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut live = Vec::with_capacity(live_count);
         for &(key, node) in live_keys {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             live.push((key, nodes.source_node(node)?));
         }
         for sample_index in 0..self.emission.publication.samples.len() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let node = *self
                 .publication_sample_nodes
                 .get(sample_index)
@@ -15875,7 +16081,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             Ok(left.1.cmp(&right.1).then(left.0.cmp(&right.0)))
         })?;
         for pair in live.windows(2) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let [(left_key, left_node), (right_key, right_node)] = pair else {
                 unreachable!("windows(2) contains two publication node rows");
             };
@@ -15902,14 +16108,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         try_sort_by_with_work(&mut live, budget, |left, right, _work| Ok(left.cmp(right)))?;
         let mut start = 0_usize;
         while start < live.len() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let key = live
                 .get(start)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q publication key is unknown".into()))?
                 .0;
             let mut end = start.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
             while let Some((candidate, _)) = live.get(end) {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if *candidate != key {
                     break;
                 }
@@ -15918,19 +16124,22 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let group = live.get(start..end).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q publication key group is invalid".into())
             })?;
-            budget.charge(u64::try_from(group.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(group.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut distinct = group.iter().map(|(_, node)| *node).collect::<Vec<_>>();
             try_sort_by_with_work(&mut distinct, budget, |left, right, _work| {
                 Ok(left.cmp(right))
             })?;
-            budget
-                .charge(u64::try_from(distinct.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(distinct.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             distinct.dedup();
             if distinct.len() > 1 {
                 let mut has_source = false;
                 let mut computed_count = 0_usize;
                 for node in distinct {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     match &nodes
                         .nodes()
                         .get(node.0 as usize)
@@ -15962,7 +16171,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         try_sort_by_with_work(&mut conflicting_nodes, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(conflicting_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         conflicting_nodes.dedup();
@@ -16038,10 +16247,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<Vec<Option<ExactChartPoint>>> {
         let q = &self.topology.q;
-        budget.charge(u64::try_from(q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut port_points = vec![None; q.ports.len()];
         for &(_, port_id) in &self.emission.selected_ports {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let port = q
                 .ports
                 .get(port_id.0 as usize)
@@ -16087,7 +16298,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         publication_coordinates: &[Option<QCandidate>],
         budget: &mut impl Work,
     ) -> Result<ExactChartPoint> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let assigned = match endpoint {
             PublishedEndpoint::Source { port, sample, .. } => {
                 if let Some(sample) = sample
@@ -16188,13 +16399,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let period = ExactRational::from_f64(self.topology.sources.frame.longitude().period());
         let mut rejected = Vec::<QVariableNode>::new();
         for pair in &self.publication_pairs {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let (left_nodes, left_exact, left_candidate, left_dependencies) = match pair.left {
                 QPublicationChordId::Source(index) => {
                     let chord = self.chords.get(index).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q publication source chord is unknown".into())
                     })?;
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(chord.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16257,7 +16468,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     }
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(chord.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16274,7 +16485,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     let chord = self.chords.get(index).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q publication source chord is unknown".into())
                     })?;
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(chord.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16337,7 +16548,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     }
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(chord.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16386,7 +16597,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 &right_candidate,
                 budget,
             )? {
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(
                         left_dependencies
                             .len()
@@ -16412,7 +16623,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         try_sort_by_with_work(&mut rejected, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(u64::try_from(rejected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(rejected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         rejected.dedup();
         Ok(rejected)
     }
@@ -16425,7 +16638,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
         let q = &self.topology.q;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(self.publication_chords.len())
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -16433,7 +16646,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut leaves = Vec::with_capacity(self.publication_chords.len());
         let mut rejected = Vec::new();
         for chord in &self.publication_chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let points = [
                 self.publication_candidate_point(
                     &chord.endpoints[0],
@@ -16453,7 +16666,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 )?,
             ];
             if (points[0] == points[1]) != (chord.exact[0] == chord.exact[1]) {
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(
                         chord
                             .dependencies
@@ -16484,13 +16697,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             });
         }
         if let Some(source_faces) = source_faces {
-            budget.charge(
+            budget.charge_into_error(
                 u64::try_from(source_faces.outgoing_nodes.len())
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut local_by_node = BTreeMap::new();
             for (local, &node) in source_faces.outgoing_nodes.iter().enumerate() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if local_by_node.insert(node, local).is_some() {
                     return Err(GeometryErrorKind::Invalid(
                         "assigned producer face projection repeats a source node".into(),
@@ -16499,10 +16712,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
             for point in &self.prepared_producer.points {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let Some(&local) = local_by_node.get(&point.node) else {
                     if point.host.is_some() {
-                        budget.charge(
+                        budget.charge_into_error(
                             u64::try_from(point.dependencies.len())
                                 .map_err(|_| ResourceError::SizeOverflow)?,
                         )?;
@@ -16517,7 +16730,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     .copied()
                     .flatten();
                 if point.host.is_some() && assigned_host.is_none() {
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(point.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16528,14 +16741,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let Some(_host) = junction.isolated_host else {
                     continue;
                 };
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let assigned_host = local_by_node
                     .get(&junction.node)
                     .and_then(|local| source_faces.global.source_node_faces.get(*local))
                     .copied()
                     .flatten();
                 if assigned_host.is_none() {
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(junction.dependencies.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -16544,7 +16757,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         } else {
             for linework in &self.prepared_producer.linework {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if linework.use_kind == SelectedUse::ArealBoundaryLine {
                     return Err(GeometryErrorKind::Invalid(
                         "assigned areal-line producer has no source-face projection".into(),
@@ -16554,7 +16767,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for junction in &self.prepared_producer.junctions {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if junction.producer_germs.is_empty() {
                 continue;
             }
@@ -16562,7 +16775,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 BTreeMap::<QPortId, BTreeMap<QDartId, AssignedProducerFanRayBuilder>>::new();
             let mut candidate_mismatch = false;
             for germ in &junction.producer_germs {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let chord = self.publication_chords.get(germ.chord).ok_or_else(|| {
                     GeometryErrorKind::Invalid("assigned producer fan chord is unknown".into())
                 })?;
@@ -16614,7 +16827,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     ExactRational::one()
                 };
                 for &range_index in &germ.source_ranges {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let range = chord.source_ranges.get(range_index).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "assigned producer fan source range is unknown".into(),
@@ -16710,7 +16923,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     aligned_target.x = aligned_target
                         .x
                         .try_add_with_work(&longitude_shift, budget)?;
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let ray = rays_by_port
                         .entry(port)
                         .or_default()
@@ -16732,7 +16945,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
             if candidate_mismatch {
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(junction.dependencies.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
@@ -16741,7 +16954,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
 
             for (port, darts) in rays_by_port {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let origin = port_points
                     .get(port.0 as usize)
                     .and_then(Option::as_ref)
@@ -16751,7 +16964,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                     })?;
                 let represented_darts = darts.keys().copied().collect::<BTreeSet<_>>();
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(
                         represented_darts
                             .len()
@@ -16781,7 +16994,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 ));
                 let mut candidate_rays = Vec::with_capacity(represented_darts.len());
                 for (dart, ray) in darts {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let target = ray.targets.first().ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "assigned producer fan dart has no written leaf".into(),
@@ -16792,7 +17005,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         break;
                     }
                     for other in ray.targets.iter().skip(1) {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         if !exact_departures_share_forward_ray(origin, target, other, budget)? {
                             candidate_mismatch = true;
                             break;
@@ -16815,7 +17028,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
                 let mut expected_darts = Vec::new();
                 for germ in &junction.face_germs {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let dart = q.darts.get(germ.dart.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "assigned producer fan has an unknown source dart".into(),
@@ -16844,7 +17057,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
             if candidate_mismatch {
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(junction.dependencies.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
@@ -16852,10 +17065,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         try_sort_by_with_work(&mut rejected, budget, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(left.cmp(right))
         })?;
-        budget.charge(u64::try_from(rejected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(rejected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         rejected.dedup();
         Ok(AssignedProducerProjection {
             source_ports: port_points,
@@ -16879,7 +17094,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             DrawnPolygons::WholeSphere(polygons) => {
                 for polygon in polygons {
                     for ring in polygon {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         let walk = super::emission::next_recipe_walk(
                             &walks,
                             &mut cursors,
@@ -16935,7 +17150,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
             DrawnPolygons::Regions { rings, .. } => {
                 for (ring_index, ring) in rings.iter().enumerate() {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let walk = super::emission::next_recipe_walk(
                         &walks,
                         &mut cursors,
@@ -17018,7 +17233,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
         }
         for line in &drawing.lines {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let walk =
                 super::emission::next_recipe_walk(&walks, &mut cursors, line.recipe_walk, budget)?;
             if source_line_reuse_is_complete(
@@ -17036,14 +17251,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     budget,
                 )?
             {
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 reused.extend(walk.fragments.iter().copied());
             }
         }
         for (owner, owner_walks) in &walks {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if cursors.get(owner).copied().unwrap_or_default() != owner_walks.len() {
                 return Err(GeometryErrorKind::Invalid(
                     "certified drawing did not consume each recipe walk exactly once".into(),
@@ -17061,7 +17276,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<bool> {
         for vertex in vertices {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if coordinates.candidate(vertex.port.node)?
                 != self.nearest.candidate(vertex.port.node)?
             {
@@ -17090,7 +17305,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     )
                 })?;
             for sample_index in fragment.sample_range.clone() {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let node_id =
                     *self
                         .publication_sample_nodes
@@ -17158,7 +17373,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         producer: &AssignedProducerProjection,
         budget: &mut impl Work,
     ) -> Result<bool> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let port = self
             .topology
             .q
@@ -17220,7 +17435,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .and_then(|count| count.checked_add(q.source_point_ports.len()))
             .and_then(|count| count.checked_add(q.nodes.len()))
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(source_endpoint_count).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut source_nodes = vec![false; q.nodes.len()];
@@ -17305,7 +17520,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for chord in &self.publication_chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             for endpoint in &chord.endpoints {
                 let port_id = match endpoint {
                     PublishedEndpoint::Source { port, .. } => *port,
@@ -17404,7 +17619,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let axis = self.topology.sources.frame.longitude();
         for leaf in &producer.leaves {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if source_reused.contains(&leaf.recipe) {
                 continue;
             }
@@ -17415,7 +17630,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         if let DrawnPolygons::Regions { rings, .. } = &drawing.polygons {
             for ring in rings {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if !matches!(ring.origin, DrawnAreaOrigin::Cycle) {
                     continue;
                 }
@@ -17423,7 +17638,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let mut low = 0_usize;
                 let mut high = selected_regions.len();
                 while low < high {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let middle = low.midpoint(high);
                     let candidate = selected_regions.get(middle).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
@@ -17450,7 +17665,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     return self.native_demand_after_input_port_check(drawing, producer, budget);
                 }
                 for vertex in &ring.vertices {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     if vertex.port.cut
                         || axis
                             .canonicalize(vertex.point.x)
@@ -17480,7 +17695,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         let mut output = Vec::new();
         for (chord_index, chord) in self.publication_chords.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let leaf = producer.leaves.get(chord_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native cut producer leaf is unknown".into())
             })?;
@@ -17526,7 +17741,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into());
         };
         for feature in &mut output {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let parent = feature.family.fragment_recipe().ok_or_else(|| {
                 GeometryErrorKind::Invalid("native cut has no fragment family".into())
             })?;
@@ -17548,7 +17763,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .checked_add(class.len())
                 .ok_or(ResourceError::SizeOverflow)
         })?;
-        budget.charge(u64::try_from(variable_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(variable_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut variables = Vec::with_capacity(variable_count);
         for class in &self.classes {
             variables.extend_from_slice(class);
@@ -17580,22 +17797,23 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(reference.sites.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut fixed_sites = Vec::with_capacity(reference.sites.len());
         for site in &reference.sites {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             fixed_sites.push(
                 site.as_ref()
                     .map(|site| candidate_from_emission_site(*site)),
             );
         }
-        budget
-            .charge(u64::try_from(nodes.nodes().len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(nodes.nodes().len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut has_publication_sample_by_node = vec![false; nodes.nodes().len()];
         for &node in &reference.publication_sample_nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if matches!(
                 nodes
                     .nodes()
@@ -17665,7 +17883,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         } else {
                             let variable = points.len();
                             let point = feature.point.clone();
-                            budget.charge(3)?;
+                            budget.charge_into_error(3)?;
                             let domain = native_cut_candidate_domain(frame, &point, budget)?;
                             if domain.is_empty() {
                                 return Ok(NativeCutSearchOutcome::Reject(
@@ -17688,10 +17906,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
 
         let mut event_order = (0..features.len()).collect::<Vec<_>>();
-        budget
-            .charge(u64::try_from(event_order.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(event_order.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         try_sort_by_with_work(&mut event_order, budget, |&left, &right, budget| {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let left = features.get(left).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native cut ordering has an unknown feature".into())
             })?;
@@ -17757,7 +17976,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if let (NativeCutOrderSite::Fixed(before), NativeCutOrderSite::Fixed(after)) =
                 (before_site, after_site)
             {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 if !native_cut_order_holds(ascending, before, after) {
                     return Ok(NativeCutSearchOutcome::Reject(
                         self.all_outer_repair_classes(budget)?,
@@ -17773,8 +17992,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             previous_event = Some(event);
         }
 
-        budget
-            .charge(u64::try_from(nodes.nodes().len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(nodes.nodes().len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut fixed_keys = Vec::new();
         for node_index in 0..nodes.nodes().len() {
             if variable_for_node
@@ -17811,7 +18031,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let mut feature_candidates = Vec::with_capacity(feature_sites.len());
             for &site in &feature_sites {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let candidate = match site {
                     NativeCutOrderSite::Variable(variable) => {
                         *candidates.get(variable).ok_or_else(|| {
@@ -17918,7 +18138,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             budget,
                         )?
                     } else {
-                        budget.charge(2)?;
+                        budget.charge_into_error(2)?;
                         let mut occurrences = Vec::with_capacity(2);
                         if sample.trace.is_some() && !sample.endpoint_only {
                             occurrences.push(OccurrenceSource {
@@ -18080,7 +18300,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         sites: &[Option<AssignedSite>],
         budget: &mut impl Work,
     ) -> Result<NativeChordPieces> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let recipe = chord.recipe;
         let graph_owner = region.map_or(NativeGraphEdgeOwner::Line, |region| {
             NativeGraphEdgeOwner::Area { region }
@@ -18243,7 +18463,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ),
             (end_is_seam, &end_chart, &chord.endpoints[1], &end_requests),
         ] {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if !is_seam {
                 continue;
             }
@@ -18279,7 +18499,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         let mut previous_parameter = ExactRational::zero();
         for &feature_index in feature_indices {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let feature = features.get(feature_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native chord references an unknown cut feature".into())
             })?;
@@ -18418,11 +18638,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         if pole_closures.is_empty() {
             return Ok(());
         }
-        budget
-            .charge(u64::try_from(pole_closures.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(pole_closures.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut families = Vec::with_capacity(pole_closures.len());
         for &(region, pole) in pole_closures {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             families.push(super::emission::FeatureFamily {
                 parent: super::emission::FeatureFamilyParent::Region(region),
                 producer: super::emission::SampleProducerKind::PolePresentation(pole),
@@ -18462,7 +18683,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(self.emission.selected_regions.len())
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -18480,11 +18701,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let capacity = possible_poles
             .checked_add(cover_families)
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget
+            .charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut families = Vec::with_capacity(capacity);
         if let Some(region) = whole_sphere_region {
             for occurrence in 0..10_u32 {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 families.push(super::emission::FeatureFamily {
                     parent: super::emission::FeatureFamilyParent::Region(region),
                     producer: super::emission::SampleProducerKind::WholeSphereCover,
@@ -18494,7 +18716,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             for region in self.emission.selected_regions {
                 for pole in [ChartPole::South, ChartPole::North] {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     if region.poles.includes(pole) {
                         families.push(super::emission::FeatureFamily {
                             parent: super::emission::FeatureFamilyParent::Region(region.root),
@@ -18576,7 +18798,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 })?;
                 let nearest = self.nearest.candidate(q_port.node)?;
                 if q_port.cut {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     output.push((
                         nearest,
                         self.assigned_publication_endpoint_point(
@@ -18591,12 +18813,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     let candidates = self.domains.get(q_port.node.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("native family source domain is unknown".into())
                     })?;
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(candidates.len()).map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
                     output.reserve(candidates.len());
                     for &candidate in candidates {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         if let Some(point) = assigned_port_point(
                             self.topology.sources.frame,
                             &self.topology.q,
@@ -18641,12 +18863,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let candidates = self.publication_domains.get(node_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native family publication domain is unknown".into())
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(candidates.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 output.reserve(candidates.len());
                 for &candidate in candidates {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     output.push((
                         candidate,
                         self.assigned_publication_endpoint_point(
@@ -18685,10 +18907,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(u64::try_from(recipe_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(recipe_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut recipe_ranges: NativeCutFamilyDomains = Vec::with_capacity(recipe_count);
         for recipe_index in 0..recipe_count {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let start = *self
                 .publication_chord_offsets
                 .get(recipe_index)
@@ -18707,10 +18931,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let leaf_count = end.checked_sub(start).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native family chord offsets are reversed".into())
             })?;
-            budget.charge(u64::try_from(leaf_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(leaf_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut leaf_ranges: NativeRecipeCutRanges = Vec::with_capacity(leaf_count);
             for chord_index in start..end {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let chord = self.publication_chords.get(chord_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native family chord is unknown".into())
                 })?;
@@ -18719,7 +18945,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let mut ranges: NativeChordCutRanges = Vec::new();
                 for (left_candidate, left_point) in &left {
                     for (right_candidate, right_point) in &right {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         if chord.nodes[0] == chord.nodes[1] && left_candidate != right_candidate {
                             continue;
                         }
@@ -18810,7 +19036,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut pole_closures = Vec::new();
         if has_area {
             for closure in selected_poles.closures {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let (region, _) = closure;
                 // A source fan already supplies its pole port and sector bounds;
                 // terminal and isolated sectors need a synthetic closure.
@@ -18819,14 +19045,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
                 let mut area_region = whole_sphere;
                 for &(candidate, _) in area_facts.values() {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     area_region |= candidate == region;
                     if area_region {
                         break;
                     }
                 }
                 if area_region && !pole_closures.contains(&closure) {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     pole_closures.push(closure);
                 }
             }
@@ -18848,13 +19074,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         let mut cut_nodes = Vec::with_capacity(features.len());
         for feature in features {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             cut_nodes.push(builder.intern_point(&feature.point, budget)?);
         }
 
         let mut presentation_candidates = {
             let node_count = builder.nodes().nodes().len();
-            budget.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            budget.charge_into_error(
+                u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             vec![None; node_count]
         };
         let whole_sphere_edges = if let Some(region) = whole_sphere_region {
@@ -18984,7 +19212,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         for indices in cuts_by_leaf.values_mut() {
             try_sort_by_with_work(indices, budget, |left, right, budget| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 features
                     .get(*left)
                     .ok_or_else(|| {
@@ -19009,7 +19237,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let zero = ExactRational::zero();
         let one = ExactRational::one();
         for (recipe_index, fragment) in self.emission.publication.fragments.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if fragment.recipe.0 as usize != recipe_index {
                 return Err(GeometryErrorKind::Invalid(
                     "native source traces are not recipe-aligned".into(),
@@ -19019,7 +19247,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let edge_count = fragment.trace.rows.edge_count();
             let mut slices = Vec::with_capacity(edge_count);
             for edge in 0..edge_count {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 slices.push((edge, zero.clone(), one.clone()));
             }
             expanded_traces.push(fragment.trace.compose_edges(&slices, budget)?);
@@ -19124,10 +19352,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         .into());
                     }
                     if area_region.is_some() {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         expected_area_leaves.push((recipe_id, trace_edge));
                     } else {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         expected_line_leaves.push((recipe_id, trace_edge));
                     }
                     let no_cuts = Vec::new();
@@ -19226,7 +19454,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             } else {
                 None
             };
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let port_data = native_port_data(
                 frame,
                 node,
@@ -19450,13 +19678,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
                 let normalized_events =
                     normalize_native_seam_events(self.topology.sources.frame, seam_events, budget)?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(normalized_events.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 let mut native_seam_vertices = Vec::with_capacity(normalized_events.len());
                 for event in &normalized_events {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     native_seam_vertices.push(NativeSeamVertices {
                         latitude: event.vertices.latitude.try_clone_with_work(budget)?,
                         east: event.vertices.east.try_clone_with_work(budget)?,
@@ -19485,12 +19713,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     },
                     budget,
                 )?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(pole_edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 let mut materialized_poles = Vec::with_capacity(pole_edges.len());
                 for edge in &pole_edges {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind else {
                         return Err(GeometryErrorKind::Invalid(
                             "native pole constructor returned a non-pole edge".into(),
@@ -19512,10 +19740,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     materialized_poles.push((region, pole));
                 }
                 try_sort_by_with_work(&mut materialized_poles, budget, |left, right, budget| {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     Ok(left.cmp(right))
                 })?;
-                budget.charge(
+                budget.charge_into_error(
                     u64::try_from(materialized_poles.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
@@ -19623,7 +19851,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     }
-                    budget.charge(
+                    budget.charge_into_error(
                         u64::try_from(cycle_edge.contributors.len())
                             .map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
@@ -19691,7 +19919,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into());
         }
         for (index, use_row) in literal_chord_uses.iter().enumerate() {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             if use_row.chord.0 as usize != index {
                 return Err(GeometryErrorKind::Invalid(
                     "native literal chord-use rows are not chord-indexed".into(),
@@ -19699,10 +19927,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
-        budget.charge(u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut port_vertices = Vec::with_capacity(plan.ports.len());
         for port in &plan.ports {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             port_vertices.push(graph.local_vertex(native_emission_port_key(port), budget)?);
         }
         let point_contact_vertices = native_point_contact_vertices(&plan, &port_vertices, budget)?;
@@ -19745,13 +19975,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(reference.sites.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut sites = reference.sites.clone();
         let mut assigned_by_node = vec![None; reference.sites.len()];
         for (&node, &candidate) in reference.feature_nodes.iter().zip(feature_candidates) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let slot = assigned_by_node.get_mut(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native cut node is outside its reference".into())
             })?;
@@ -19783,7 +20013,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         let mut assigned_sites = Vec::with_capacity(sites.len());
         for site in sites {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             assigned_sites.push(site.ok_or_else(|| {
                 GeometryErrorKind::Invalid("native reference node has no assigned site".into())
             })?);
@@ -19880,10 +20110,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        work.charge(u64::try_from(sample_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(sample_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut images = vec![None; sample_count];
         for (chord, leaf) in self.publication_chords.iter().zip(&producer.leaves) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if chord.recipe != leaf.recipe || chord.trace_edge != leaf.trace_edge {
                 return Err(GeometryErrorKind::Invalid(
                     "publication leaf projection lost its recipe/trace-edge identity".into(),
@@ -19891,7 +20123,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
             for side in 0..2 {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let endpoint = chord.endpoints.get(side).ok_or_else(|| {
                     GeometryErrorKind::Invalid("checked publication endpoint is unknown".into())
                 })?;
@@ -19939,7 +20171,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut quotient_images = BTreeMap::<EmissionNodeId, ExactQuotientKey>::new();
         let mut checked = Vec::with_capacity(sample_count);
         for (sample_index, image) in images.into_iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let image = image.ok_or_else(|| {
                 GeometryErrorKind::Invalid(
                     "publication sample has no checked source-port or leaf image".into(),
@@ -20142,7 +20374,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
                             let mut variables = Vec::with_capacity(images.len());
                             for image in images {
-                                budget.charge(1)?;
+                                budget.charge_into_error(1)?;
                                 variables.push(match image {
                                     image @ (QSourceImage::Port(_)
                                     | QSourceImage::SourcePoint(_)
@@ -20264,7 +20496,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let period = ExactRational::from_f64(frame.longitude().period());
         let mut latitude: Option<ExactRational> = None;
         for chord in &cut.chords {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let west_port = q.ports.get(chord.west_far_port.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q west cut endpoint is unknown".into())
             })?;
@@ -20370,7 +20602,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
     ) -> Result<Option<ExactChartPoint>> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let frame = self.topology.sources.frame;
         let q = &self.topology.q;
         let port = q
@@ -20437,7 +20669,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
     ) -> Result<Option<ExactChartPoint>> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let assigned_point = match endpoint {
             PublishedEndpoint::Source { port, .. } => {
                 self.candidate_port_point(*port, class, assigned, cut_cache, budget)?
@@ -20501,7 +20733,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
     ) -> Result<Option<LocalPublicationChord>> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         match chord_id {
             QPublicationChordId::Source(index) => {
                 let chord = self.chords.get(index).ok_or_else(|| {
@@ -20567,7 +20799,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
     ) -> Result<bool> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let (Some(left), Some(right)) = (
             self.local_publication_chord(pair.left, class, assigned, cut_cache, budget)?,
             self.local_publication_chord(pair.right, class, assigned, cut_cache, budget)?,
@@ -20622,7 +20854,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<bool> {
         let q = &self.topology.q;
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(fan.darts.len())
                 .map_err(|_| ResourceError::SizeOverflow)?
                 .checked_mul(2)
@@ -20630,18 +20862,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let mut ports = Vec::with_capacity(fan.darts.len().saturating_mul(2));
         for &dart_id in &fan.darts {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q fan certificate dart is unknown".into())
             })?;
             ports.extend([dart.from_port, dart.to_port]);
         }
         try_sort_by_with_work(&mut ports, budget, |left, right, _work| Ok(left.cmp(right)))?;
-        budget.charge(u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         ports.dedup();
         let mut points = Vec::<(QPortId, ExactChartPoint)>::with_capacity(ports.len());
         for port_id in ports {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let Some(point) =
                 self.candidate_port_point(port_id, class, assigned, cut_cache, budget)?
             else {
@@ -20655,12 +20889,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ports: &q.ports,
             nodes: &q.nodes,
         };
-        budget.charge(u64::try_from(fan.darts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(fan.darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut candidate_order = fan.darts.clone();
         try_sort_by_with_work(&mut candidate_order, budget, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             compare_q_darts_with_points(chart, &q.darts, *left, *right, |port| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let index = points
                     .binary_search_by_key(&port, |(candidate, _)| *candidate)
                     .map_err(|_| {
@@ -20672,12 +20908,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             })
         })?;
         for adjacent in candidate_order.windows(2) {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let [left, right] = adjacent else {
                 unreachable!("windows(2) contains two Q fan darts");
             };
             if compare_q_darts_with_points(chart, &q.darts, *left, *right, |port| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let index = points
                     .binary_search_by_key(&port, |(candidate, _)| *candidate)
                     .map_err(|_| {
@@ -20694,7 +20930,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         if let (Some(&first), Some(&last)) = (candidate_order.first(), candidate_order.last())
             && compare_q_darts_with_points(chart, &q.darts, last, first, |port| {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let index = points
                     .binary_search_by_key(&port, |(candidate, _)| *candidate)
                     .map_err(|_| {
@@ -20708,7 +20944,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         {
             return Ok(false);
         }
-        budget.charge(u64::try_from(fan.darts.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(fan.darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         Ok(rotation_row_matches(&fan.darts, &candidate_order))
     }
 
@@ -20717,7 +20955,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         node: QNodeId,
         budget: &mut impl Work,
     ) -> Result<Option<QNodeLocation>> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let index = node.0 as usize;
         let location = self
             .node_location
@@ -20748,7 +20986,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         node: EmissionNodeId,
         budget: &mut impl Work,
     ) -> Result<Option<QNodeLocation>> {
-        budget.charge(1)?;
+        budget.charge_into_error(1)?;
         let index = node.0 as usize;
         let location = self
             .publication_location
@@ -20792,7 +21030,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut movable = false;
             let mut contains_nearest = false;
             for &candidate in domain {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 contains_nearest |= candidate == nearest;
                 movable |= candidate != nearest;
             }
@@ -20826,20 +21064,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         nodes: impl IntoIterator<Item = QNodeId>,
         budget: &mut impl Work,
     ) -> Result<Vec<usize>> {
-        budget.charge(
+        budget.charge_into_error(
             u64::try_from(self.node_location.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut seen = vec![false; self.node_location.len()];
         let mut pending = Vec::new();
         for node in nodes {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             pending.push(node);
         }
         let mut classes = Vec::new();
         let mut next = 0;
         while let Some(node) = pending.get(next).copied() {
             next = next.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             let seen_node = seen.get_mut(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q rejection references an unknown node".into())
             })?;
@@ -20847,7 +21085,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 continue;
             }
             if let Some((class, _)) = self.source_variable_location(node, budget)? {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 classes.push(class);
             }
             let cuts = self
@@ -20858,12 +21096,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     GeometryErrorKind::Invalid("Q rejection node has no cut dependency row".into())
                 })?;
             for &cut_index in cuts {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let cut = self.cut_rows.get(cut_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q cut dependency row is unknown".into())
                 })?;
                 for &dependency in &cut.dependencies {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     pending.push(dependency);
                 }
             }
@@ -20875,12 +21113,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     GeometryErrorKind::Invalid("Q rejection node has no fan dependency row".into())
                 })?;
             for &fan_index in fans {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let fan = self.fan_rows.get(fan_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q fan dependency row is unknown".into())
                 })?;
                 for &dependency in &fan.dependencies {
-                    budget.charge(1)?;
+                    budget.charge_into_error(1)?;
                     pending.push(dependency);
                 }
             }
@@ -20892,7 +21130,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     GeometryErrorKind::Invalid("Q rejection node has no pair dependency row".into())
                 })?;
             for &pair_index in pairs {
-                budget.charge(1)?;
+                budget.charge_into_error(1)?;
                 let pair = self.proximity_pairs.get(pair_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q proximity dependency pair is unknown".into())
                 })?;
@@ -20901,7 +21139,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         GeometryErrorKind::Invalid("Q proximity dependency chord is unknown".into())
                     })?;
                     for &dependency in &chord.dependencies {
-                        budget.charge(1)?;
+                        budget.charge_into_error(1)?;
                         pending.push(dependency);
                     }
                 }
@@ -20910,7 +21148,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         try_sort_by_with_work(&mut classes, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         classes.dedup();
         Ok(classes)
     }
@@ -20923,7 +21163,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut source_nodes = Vec::new();
         let mut classes = Vec::new();
         for variable in variables {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             match variable {
                 QVariableNode::Source(node) => source_nodes.push(node),
                 QVariableNode::Published(node) => {
@@ -20934,13 +21174,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         for class in self.classes_for_nodes(source_nodes, budget)? {
-            budget.charge(1)?;
+            budget.charge_into_error(1)?;
             classes.push(class);
         }
         try_sort_by_with_work(&mut classes, budget, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        budget.charge(u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(
+            u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         classes.dedup();
         Ok(classes)
     }
@@ -20951,7 +21193,9 @@ fn assigned_emitted_ring(
     vertices: &[EmittedVertex<'_>],
     work: &mut impl Work,
 ) -> Result<(Ring, Ring, bool)> {
-    work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut chart_points = vertices
         .iter()
         .map(|vertex| vertex.point)
@@ -20959,7 +21203,9 @@ fn assigned_emitted_ring(
     let quotient_closure =
         canonicalize_ring_vertices(topology.sources.frame, vertices, &mut chart_points, work)?;
     let chart_ring = Ring::try_from_closed(CoordSeq::try_from_points(&chart_points)?)?;
-    work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut published_points = vertices
         .iter()
         .map(|vertex| vertex.point)
@@ -21011,7 +21257,7 @@ fn check_q_ring_roles(
     };
     let mut roles = Vec::with_capacity(area_rings.len());
     for ring in area_rings {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let nodes = || {
             ring.vertices
                 .iter()
@@ -21153,7 +21399,7 @@ where
         _variables: &[Self::Node],
         work: &mut W,
     ) -> Result<Vec<Self::Key>> {
-        work.charge_product(self.fixed_keys.len(), 1)?;
+        work.charge_product_into_error(self.fixed_keys.len(), 1)?;
         Ok(self.fixed_keys.clone())
     }
 
@@ -21163,7 +21409,7 @@ where
         right: Self::Node,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left_point = self.points.get(left).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cut search node is unknown".into())
         })?;
@@ -21188,7 +21434,7 @@ where
         let domain = self.domains.get(node).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cut search node has no candidate domain".into())
         })?;
-        work.charge_product(domain.len(), 1)?;
+        work.charge_product_into_error(domain.len(), 1)?;
         candidates.reserve(domain.len());
         candidates.extend(domain.iter().copied());
         Ok(())
@@ -21201,7 +21447,7 @@ where
         right: Self::Candidate,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let point = self.points.get(node).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cut search node is unknown".into())
         })?;
@@ -21239,7 +21485,7 @@ where
             .len()
             .checked_add(self.orders.len())
             .ok_or(ResourceError::SizeOverflow)?;
-        budget.charge(u64::try_from(work).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge_into_error(u64::try_from(work).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut rank_by_variable = vec![None; self.points.len()];
         for (rank, &variable) in variables.iter().enumerate() {
             let slot = rank_by_variable.get_mut(variable).ok_or_else(|| {
@@ -21374,10 +21620,10 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
             .len()
             .checked_add(self.publication_nodes.nodes().len())
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut keys = Vec::with_capacity(capacity);
         for &node in self.live_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -21385,7 +21631,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 keys.push(emitted_node_key(
                     self.topology.sources.frame,
                     self.nearest.xy(node)?,
@@ -21393,7 +21639,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
             }
         }
         for (index, node) in self.publication_nodes.nodes().iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let NodeAuthority::Computed(_) = &node.authority else {
                 continue;
             };
@@ -21404,7 +21650,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let candidate = self
                     .publication_nearest
                     .get(index)
@@ -21430,7 +21676,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
         right: Self::Node,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(match (left, right) {
             (QVariableNode::Source(left), QVariableNode::Source(right)) => {
                 let left_key = &self
@@ -21467,7 +21713,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
             QVariableNode::Published(node) => self.publication_domains.get(node.0 as usize),
         }
         .ok_or_else(|| GeometryErrorKind::Invalid("Q variable has no candidate domain".into()))?;
-        work.charge_product(domain.len(), 1)?;
+        work.charge_product_into_error(domain.len(), 1)?;
         candidates.reserve(domain.len());
         candidates.extend(domain.iter().copied());
         Ok(())
@@ -21480,7 +21726,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
         right: Self::Candidate,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let exact = match node {
             QVariableNode::Source(node) => self
                 .exact_positions
@@ -22081,7 +22327,7 @@ mod canonical_coordinate_tests {
             _variables: &[Self::Node],
             work: &mut W,
         ) -> Result<Vec<Self::Key>> {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(Vec::new())
         }
 
@@ -22091,7 +22337,7 @@ mod canonical_coordinate_tests {
             right: Self::Node,
             work: &mut W,
         ) -> Result<std::cmp::Ordering> {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(left.cmp(&right))
         }
 
@@ -22101,7 +22347,7 @@ mod canonical_coordinate_tests {
             candidates: &mut Vec<Self::Candidate>,
             work: &mut W,
         ) -> Result<()> {
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             candidates.extend([0, 1]);
             Ok(())
         }
@@ -22113,7 +22359,7 @@ mod canonical_coordinate_tests {
             right: Self::Candidate,
             work: &mut W,
         ) -> Result<std::cmp::Ordering> {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(left.cmp(&right))
         }
 
@@ -24652,6 +24898,507 @@ mod ring_filter_tests {
         assert_eq!(exact_q_ring_winding_filter(frame, &clockwise), None);
         let lifted = continuously_lift_exact_ring(frame, &clockwise)?;
         assert_eq!(exact_ring_winding(&lifted)?, RingWinding::Clockwise);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_ray_work_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "ray Work controls assert observed refusal and exact predicate results"
+    )]
+
+    use std::cmp::Ordering;
+
+    use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints, RayAxis};
+    use crate::error::{ErrorKind, Result};
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::exact_arith::ExactSign;
+    use crate::geometry::overlay::RayPointsWithWork;
+    use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+    use crate::geometry::topology::ExactChartPoint;
+    use crate::geometry::{GeometryErrorKind, Unmetered, Work, XY};
+
+    #[derive(Clone, Copy)]
+    struct ChargeEvent {
+        spent_before: u128,
+        ticks: u128,
+    }
+
+    struct RecordingWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        spent: u128,
+        charges: Vec<ChargeEvent>,
+        refused: Option<ChargeEvent>,
+    }
+
+    impl<'a> RecordingWork<'a> {
+        fn new(budget: &'a mut EvaluationBudget) -> Self {
+            Self {
+                budget,
+                spent: 0,
+                charges: Vec::new(),
+                refused: None,
+            }
+        }
+
+        fn record(&mut self, ticks: u128, result: &Result<()>) {
+            let event = ChargeEvent {
+                spent_before: self.spent,
+                ticks,
+            };
+            if result.is_ok() {
+                self.charges.push(event);
+                self.spent = self.spent.wrapping_add(ticks);
+            } else {
+                self.refused = Some(event);
+            }
+        }
+    }
+
+    impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.record(u128::from(ticks), &result);
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = (count as u128).wrapping_mul(ticks_per_item as u128);
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.record(ticks, &result);
+            result
+        }
+    }
+
+    fn budget_refusing_before(
+        operation: &'static str,
+        event: ChargeEvent,
+    ) -> Result<EvaluationBudget> {
+        let remaining = event
+            .spent_before
+            .checked_add(event.ticks)
+            .and_then(|ticks| ticks.checked_sub(1))
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("invalid native-ray charge calibration".into())
+            })?;
+        EvaluationBudget::with_remaining_ticks_for_test(operation, 1, remaining)
+    }
+
+    fn assert_limit_error(error: &crate::error::Error, operation: &'static str) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: actual,
+                ..
+            }) if *actual == operation
+        ));
+    }
+
+    fn nudge_one(offset: f64) -> Result<ExactRational> {
+        let numerator = ExactDyadic::from_f64(1.0)
+            .try_add_with_work(ExactDyadic::from_f64(offset), &mut Unmetered)?;
+        Ok(ExactRational::from_dyadic(numerator))
+    }
+
+    fn chart_point(x: ExactRational, y: ExactRational) -> ExactChartPoint {
+        ExactChartPoint::from_rationals(x, y)
+    }
+
+    fn native_reference_points(points: Vec<ExactChartPoint>) -> Result<NativeReferencePoints> {
+        NativeReferencePoints::from_exact(points, &mut Unmetered)
+    }
+
+    fn compare_axis<W: Work>(
+        points: &NativeReferenceRayPoints<'_>,
+        work: &mut W,
+    ) -> Result<Ordering> {
+        work.charge_into_error(1)?;
+        RayPointsWithWork::compare_axis_with_work(points, 0, 1, RayAxis::X, work)
+    }
+
+    fn orientation<W: Work>(
+        points: &NativeReferenceRayPoints<'_>,
+        work: &mut W,
+    ) -> Result<ExactSign> {
+        work.charge_into_error(1)?;
+        RayPointsWithWork::orientation_with_work(points, 0, 1, 2, work)
+    }
+
+    #[test]
+    fn native_reference_ray_axis_refuses_inside_exact_comparison() -> Result<()> {
+        const OPERATION: &str = "native_reference_ray_axis";
+        let base = native_reference_points(vec![chart_point(
+            ExactRational::from_f64(1.0),
+            ExactRational::from_f64(1.0),
+        )])?;
+        let exact_queries = [chart_point(
+            nudge_one(2.0_f64.powi(-256))?,
+            ExactRational::from_f64(1.0),
+        )];
+        let rounded_queries = [XY::new(1.0, 1.0)];
+        let points = NativeReferenceRayPoints {
+            base: &base,
+            exact_queries: &exact_queries,
+            rounded_queries: &rounded_queries,
+            transform: NativeRayTransform::Identity,
+        };
+        let (order, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = RecordingWork::new(&mut budget);
+            let order = compare_axis(&points, &mut work)?;
+            (order, work.charges)
+        };
+        assert_eq!(order, Ordering::Less);
+        let target = charges
+            .iter()
+            .copied()
+            .find(|event| event.spent_before > 0 && event.ticks > 0)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Native ray axis comparison did not charge Work".into())
+            })?;
+
+        let mut budget = budget_refusing_before(OPERATION, target)?;
+        let error = {
+            let mut work = RecordingWork::new(&mut budget);
+            let error = compare_axis(&points, &mut work)
+                .expect_err("native ray refuses before returning exact axis order");
+            assert_eq!(
+                work.refused.map(|event| event.spent_before),
+                Some(target.spent_before)
+            );
+            error
+        };
+        assert_limit_error(&error, OPERATION);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(
+            RayPointsWithWork::compare_axis_with_work(&points, 0, 1, RayAxis::X, &mut unmetered,)?,
+            order
+        );
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert_eq!(
+                RayPointsWithWork::compare_axis_with_work(&points, 0, 1, RayAxis::X, &mut work,)?,
+                order
+            );
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+
+    #[test]
+    fn native_reference_ray_orientation_refuses_inside_exact_determinant() -> Result<()> {
+        const OPERATION: &str = "native_reference_ray_orientation";
+        let base = native_reference_points(vec![
+            chart_point(ExactRational::from_f64(1.0), ExactRational::from_f64(1.0)),
+            chart_point(
+                nudge_one(2.0_f64.powi(-256))?,
+                nudge_one(2.0_f64.powi(-256))?,
+            ),
+            chart_point(
+                nudge_one(2.0_f64.powi(-255))?,
+                nudge_one(2.0_f64.powi(-256))?,
+            ),
+        ])?;
+        let points = NativeReferenceRayPoints {
+            base: &base,
+            exact_queries: &[],
+            rounded_queries: &[],
+            transform: NativeRayTransform::Identity,
+        };
+        let (sign, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = RecordingWork::new(&mut budget);
+            let sign = orientation(&points, &mut work)?;
+            (sign, work.charges)
+        };
+        assert_eq!(sign, ExactSign::Negative);
+        let target = charges
+            .iter()
+            .copied()
+            .find(|event| event.spent_before > 0 && event.ticks > 0)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Native ray orientation did not charge Work".into())
+            })?;
+
+        let mut budget = budget_refusing_before(OPERATION, target)?;
+        let error = {
+            let mut work = RecordingWork::new(&mut budget);
+            let error = orientation(&points, &mut work)
+                .expect_err("native ray refuses before returning determinant sign");
+            assert_eq!(
+                work.refused.map(|event| event.spent_before),
+                Some(target.spent_before)
+            );
+            error
+        };
+        assert_limit_error(&error, OPERATION);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(
+            RayPointsWithWork::orientation_with_work(&points, 0, 1, 2, &mut unmetered)?,
+            sign
+        );
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert_eq!(
+                RayPointsWithWork::orientation_with_work(&points, 0, 1, 2, &mut work)?,
+                sign
+            );
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_ray_transform_work_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "ray Work controls assert transformed refusal and exact predicate results"
+    )]
+
+    use std::cmp::Ordering;
+
+    use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints, RayAxis};
+    use crate::error::{ErrorKind, Result};
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::exact_arith::ExactSign;
+    use crate::geometry::overlay::RayPointsWithWork;
+    use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+    use crate::geometry::topology::ExactChartPoint;
+    use crate::geometry::{Unmetered, Work, XY};
+
+    #[derive(Clone, Copy)]
+    struct ChargeEvent {
+        spent_before: u128,
+        ticks: u128,
+    }
+
+    struct RecordingWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        spent: u128,
+        charges: Vec<ChargeEvent>,
+        refused: Option<ChargeEvent>,
+    }
+
+    impl<'a> RecordingWork<'a> {
+        fn new(budget: &'a mut EvaluationBudget) -> Self {
+            Self {
+                budget,
+                spent: 0,
+                charges: Vec::new(),
+                refused: None,
+            }
+        }
+
+        fn record(&mut self, ticks: u128, result: &Result<()>) {
+            let event = ChargeEvent {
+                spent_before: self.spent,
+                ticks,
+            };
+            if result.is_ok() {
+                self.charges.push(event);
+                self.spent = self.spent.wrapping_add(ticks);
+            } else {
+                self.refused = Some(event);
+            }
+        }
+    }
+
+    impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.record(u128::from(ticks), &result);
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = (count as u128).wrapping_mul(ticks_per_item as u128);
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.record(ticks, &result);
+            result
+        }
+    }
+
+    fn budget_refusing_before(operation: &'static str, event: ChargeEvent) -> EvaluationBudget {
+        let remaining = event
+            .spent_before
+            .checked_add(event.ticks)
+            .and_then(|ticks| ticks.checked_sub(1))
+            .expect("the target native-ray charge is positive");
+        EvaluationBudget::with_remaining_ticks_for_test(operation, 1, remaining)
+            .expect("calibrated native-ray budget is representable")
+    }
+
+    fn assert_limit_error(error: &crate::error::Error, operation: &'static str) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: actual,
+                ..
+            }) if *actual == operation
+        ));
+    }
+
+    fn nudge_one(offset: f64) -> ExactRational {
+        let numerator = ExactDyadic::from_f64(1.0)
+            .try_add_with_work(ExactDyadic::from_f64(offset), &mut Unmetered)
+            .expect("test dyadic is representable");
+        ExactRational::from_dyadic(numerator)
+    }
+
+    fn chart_point(x: ExactRational, y: ExactRational) -> ExactChartPoint {
+        ExactChartPoint::from_rationals(x, y)
+    }
+
+    fn native_reference_points(points: Vec<ExactChartPoint>) -> Result<NativeReferencePoints> {
+        NativeReferencePoints::from_exact(points, &mut Unmetered)
+    }
+
+    fn compare_axis<W: Work>(
+        points: &NativeReferenceRayPoints<'_>,
+        work: &mut W,
+    ) -> Result<Ordering> {
+        work.charge_into_error(1)?;
+        RayPointsWithWork::compare_axis_with_work(points, 0, 1, RayAxis::X, work)
+    }
+
+    fn orientation<W: Work>(
+        points: &NativeReferenceRayPoints<'_>,
+        work: &mut W,
+    ) -> Result<ExactSign> {
+        work.charge_into_error(1)?;
+        RayPointsWithWork::orientation_with_work(points, 0, 1, 2, work)
+    }
+
+    #[test]
+    fn native_reference_ray_reflect_x_axis_funds_exact_comparison() -> Result<()> {
+        const OPERATION: &str = "native_reference_ray_axis";
+        let base = native_reference_points(vec![chart_point(
+            ExactRational::from_f64(1.0),
+            ExactRational::from_f64(1.0),
+        )])?;
+        let exact_queries = [chart_point(
+            nudge_one(2.0_f64.powi(-256)),
+            ExactRational::from_f64(1.0),
+        )];
+        let rounded_queries = [XY::new(1.0, 1.0)];
+        let points = NativeReferenceRayPoints {
+            base: &base,
+            exact_queries: &exact_queries,
+            rounded_queries: &rounded_queries,
+            transform: NativeRayTransform::ReflectX,
+        };
+        let (order, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = RecordingWork::new(&mut budget);
+            let order = compare_axis(&points, &mut work)?;
+            (order, work.charges)
+        };
+        assert_eq!(order, Ordering::Greater);
+        let target = *charges
+            .iter()
+            .find(|event| event.spent_before > 0 && event.ticks > 0)
+            .expect("NativeReferenceRayPoints forwards exact-axis Work");
+
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = RecordingWork::new(&mut budget);
+            let error = compare_axis(&points, &mut work)
+                .expect_err("native ray refuses before returning exact axis order");
+            assert_eq!(
+                work.refused.map(|event| event.spent_before),
+                Some(target.spent_before)
+            );
+            error
+        };
+        assert_limit_error(&error, OPERATION);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(
+            RayPointsWithWork::compare_axis_with_work(&points, 0, 1, RayAxis::X, &mut unmetered,)?,
+            order
+        );
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert_eq!(
+                RayPointsWithWork::compare_axis_with_work(&points, 0, 1, RayAxis::X, &mut work,)?,
+                order
+            );
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+
+    #[test]
+    fn native_reference_ray_swap_axes_funds_exact_determinant() -> Result<()> {
+        const OPERATION: &str = "native_reference_ray_orientation";
+        let base = native_reference_points(vec![
+            chart_point(ExactRational::from_f64(1.0), ExactRational::from_f64(1.0)),
+            chart_point(nudge_one(2.0_f64.powi(-256)), nudge_one(2.0_f64.powi(-256))),
+            chart_point(nudge_one(2.0_f64.powi(-255)), nudge_one(2.0_f64.powi(-256))),
+        ])?;
+        let points = NativeReferenceRayPoints {
+            base: &base,
+            exact_queries: &[],
+            rounded_queries: &[],
+            transform: NativeRayTransform::SwapAxes,
+        };
+        let (sign, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = RecordingWork::new(&mut budget);
+            let sign = orientation(&points, &mut work)?;
+            (sign, work.charges)
+        };
+        assert_eq!(sign, ExactSign::Positive);
+        let target = *charges
+            .iter()
+            .find(|event| event.spent_before > 0 && event.ticks > 0)
+            .expect("NativeReferenceRayPoints forwards determinant Work");
+
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = RecordingWork::new(&mut budget);
+            let error = orientation(&points, &mut work)
+                .expect_err("native ray refuses before returning determinant sign");
+            assert_eq!(
+                work.refused.map(|event| event.spent_before),
+                Some(target.spent_before)
+            );
+            error
+        };
+        assert_limit_error(&error, OPERATION);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(
+            RayPointsWithWork::orientation_with_work(&points, 0, 1, 2, &mut unmetered)?,
+            sign
+        );
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert_eq!(
+                RayPointsWithWork::orientation_with_work(&points, 0, 1, 2, &mut work)?,
+                sign
+            );
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
         Ok(())
     }
 }

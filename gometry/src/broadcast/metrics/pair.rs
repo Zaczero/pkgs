@@ -901,6 +901,15 @@ pub(crate) fn metric_minimum_clearance_line(
     crs: Option<&str>,
     shape: &Shape,
 ) -> crate::error::Result<Shape> {
+    metric_minimum_clearance_line_impl(model, crs, shape, true)
+}
+
+fn metric_minimum_clearance_line_impl(
+    model: &crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    resolve_source_ordinates: bool,
+) -> crate::error::Result<Shape> {
     dispatch_metric_model(
         model,
         |_| shape.minimum_clearance_line(),
@@ -912,22 +921,59 @@ pub(crate) fn metric_minimum_clearance_line(
                 crs,
                 state,
                 &mut budget,
-                LocalInputPurpose::BoundarySupport,
+                if resolve_source_ordinates {
+                    LocalInputPurpose::ClearanceWitness
+                } else {
+                    LocalInputPurpose::BoundarySupport
+                },
                 |sites, support, refined_chains| {
-                    let Some(witness) =
-                        sites.minimum_clearance_plan_with_support(support, refined_chains)?
+                    let Some(witness) = sites.minimum_clearance_plan_with_support(
+                        support,
+                        refined_chains,
+                        resolve_source_ordinates,
+                    )?
                     else {
                         return Ok((
                             Vec::new(),
                             Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
                         ));
                     };
-                    let plan = witness.plan.to_vec();
+                    let plan = witness.plan;
                     let projected_points = emit_from_original(&witness.points, &plan)?;
                     let [a, b] = projected_points.as_slice() else {
                         unreachable!("minimum-clearance witness plan has two vertices");
                     };
-                    Ok((plan, Shape::LineString(LineSeq::segment(*a, *b)?)))
+                    Ok((
+                        Vec::from(plan),
+                        Shape::LineString(LineSeq::segment(*a, *b)?),
+                    ))
+                },
+                |source_points, original_roots, plan, axes, source_frame| {
+                    if !resolve_source_ordinates
+                        || (!axes.has_z() && !axes.has_m())
+                        || !plan.iter().any(|vertex| {
+                            matches!(vertex, crate::geometry::VertexProvenance::OnSegment {
+                                root_request: Some(_),
+                                ..
+                            })
+                        })
+                    {
+                        return emit_from_original(source_points, plan);
+                    }
+                    let source_metric = std::cell::OnceCell::new();
+                    let metric_access = || {
+                        source_metric
+                            .get_or_try_init(|| crate::crs::GeodesicMetric::from_model(model))
+                    };
+                    crate::geometry::emit_from_original_with_source_roots(
+                        source_points,
+                        original_roots,
+                        plan,
+                        axes,
+                        source_frame,
+                        Some(&metric_access),
+                        &mut crate::geometry::Unmetered,
+                    )
                 },
                 |points| {
                     if points.is_empty() {
@@ -959,7 +1005,7 @@ pub(crate) fn metric_minimum_clearance(
         model,
         |to_metre| Ok(shape.minimum_clearance()? * to_metre),
         |geodesic_crs, _, state| {
-            let line = metric_minimum_clearance_line(model, crs, shape)?;
+            let line = metric_minimum_clearance_line_impl(model, crs, shape, false)?;
             crs::geodesic_witness_distance_at(geodesic_crs, &line, state)
         },
     )
@@ -1332,6 +1378,8 @@ mod lonlat_shape_under_tests {
 
 #[cfg(test)]
 mod minimum_clearance_computed_edge_tests {
+    use geographiclib_rs::InverseGeodesic as _;
+
     use super::{metric_minimum_clearance_line, metric_shortest_line_resolved};
     use crate::geographic::GeographicFrame;
     use crate::geometry::{
@@ -1370,6 +1418,80 @@ mod minimum_clearance_computed_edge_tests {
             .unwrap()
             .delta(axis);
         assert!(step.abs() < 1.0, "seam connector step is {step}");
+    }
+
+    #[test]
+    fn minimum_clearance_line_refined_support_uses_original_root_ordinates() {
+        fn chart_length(
+            geodesic: &geographiclib_rs::Geodesic,
+            start: Point,
+            end: Point,
+            stop: f64,
+        ) -> f64 {
+            let pieces = 4096_u32;
+            let mut length = 0.0;
+            let mut previous = start;
+            for step in 1..=pieces {
+                let parameter = stop * f64::from(step) / f64::from(pieces);
+                let next = Point::new_raw_xy(
+                    start.x + parameter * (end.x - start.x),
+                    start.y + parameter * (end.y - start.y),
+                );
+                let segment_length: f64 = geodesic.inverse(previous.y, previous.x, next.y, next.x);
+                length += segment_length;
+                previous = next;
+            }
+            length
+        }
+
+        let root_start = Point::new_raw_axes(
+            0.0,
+            0.0,
+            crate::geometry::ZOrdinate(Some(10.0)),
+            crate::geometry::MOrdinate(Some(100.0)),
+        );
+        let root_end = Point::new_raw_axes(
+            1.0,
+            1.0,
+            crate::geometry::ZOrdinate(Some(210.0)),
+            crate::geometry::MOrdinate(Some(500.0)),
+        );
+        let near_start = Point::new_raw_axes(
+            0.5,
+            0.5001,
+            crate::geometry::ZOrdinate(Some(110.0)),
+            crate::geometry::MOrdinate(Some(300.0)),
+        );
+        let near_end = Point::new_raw_axes(
+            0.5002,
+            0.5003,
+            crate::geometry::ZOrdinate(Some(111.0)),
+            crate::geometry::MOrdinate(Some(301.0)),
+        );
+        let line = |points: [Point; 2]| {
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            )
+        };
+        let shape = Shape::geometry_collection(vec![
+            line([root_start, root_end]),
+            line([near_start, near_end]),
+        ])
+        .unwrap();
+        let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+        let output = metric_minimum_clearance_line(&model, Some("OGC:CRS84"), &shape).unwrap();
+        let Shape::LineString(witness) = output else {
+            panic!("minimum clearance publishes a line");
+        };
+        let coordinates = witness.as_coords().iter().collect::<Vec<_>>();
+        let foot = coordinates[1];
+        let parameter = (foot.x - root_start.x) / (root_end.x - root_start.x);
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let fraction = chart_length(&geodesic, root_start, root_end, parameter)
+            / chart_length(&geodesic, root_start, root_end, 1.0);
+
+        assert!((foot.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-8);
+        assert!((foot.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-8);
     }
 
     #[test]
