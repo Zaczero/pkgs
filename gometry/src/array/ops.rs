@@ -580,6 +580,47 @@ impl PyGeometryArray {
         } else {
             crate::geometry::topology_domain(&self.frame)?
         };
+        if domain.is_geographic() {
+            let built = (|| -> Result<Vec<Option<crate::geometry::PreparedSampling>>, (Error, Option<usize>)> {
+                let mut rows = Vec::with_capacity(len);
+                for logical_row in self.row_operation().rows_with_missing(|| ()) {
+                    match logical_row {
+                        crate::array::ArrayRow::Missing { .. } => rows.push(None),
+                        crate::array::ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            let count =
+                                usize::try_from(count.get(logical)).expect("validated non-negative");
+                            let seed = match &seed {
+                                I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
+                                I64Param::PerElement(_) => {
+                                    row_sample_seed(seed.get(logical) as u64, 0)
+                                },
+                            };
+                            let prepared = row
+                                .row()
+                                .try_with_shape(|shape| {
+                                    shape.sample_point_receipts_in_domain(
+                                        count, seed, logical, domain,
+                                    )
+                                })
+                                .map_err(|error| (error, None))?;
+                            rows.push(Some(prepared));
+                        },
+                    }
+                }
+                Ok(rows)
+            })();
+            let rows = match built {
+                Ok(rows) => rows,
+                Err((error, None)) => return Err(error.into()),
+                Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
+            };
+            return Ok(geometry::publish_sampling_groups(
+                rows,
+                self.frame.clone(),
+                self.missing().cloned(),
+            )?);
+        }
         let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
             let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len);
             for logical_row in self.row_operation().rows_with_missing(|| ()) {

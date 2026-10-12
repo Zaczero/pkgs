@@ -20103,7 +20103,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             })),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
-                PublicationRejection::SourceOnly(_) | PublicationRejection::Batch(_),
+                PublicationRejection::SourceOnly(_)
+                | PublicationRejection::Batch(_)
+                | PublicationRejection::ProducerDrawing(_),
             ) => Err(GeometryErrorKind::Invalid(
                 "native Q finisher returned a non-native rejection".into(),
             )
@@ -20449,6 +20451,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
                             return Err(GeometryErrorKind::Invalid(
                                 "source-only Q finisher returned array batch rejection".into(),
+                            )
+                            .into());
+                        },
+                        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                            return Err(GeometryErrorKind::Invalid(
+                                "source-only Q finisher returned producer-drawn rejection".into(),
                             )
                             .into());
                         },
@@ -22922,6 +22930,12 @@ mod canonical_coordinate_tests {
                 PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
                     return Err(GeometryErrorKind::Invalid(
                         "scalar source-only receipt returned a batch rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "scalar source-only receipt returned a producer-drawn rejection".into(),
                     )
                     .into());
                 },
