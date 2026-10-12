@@ -1052,29 +1052,46 @@ trait PointBinaryGeometryKernel: Copy + Send + Sync {
 
     /// Geodesic array path writing lon/lat (+Z/M) into a `CoordSeq` with the
     /// ellipsoid resolved once. Default keeps per-row `eval` (rhumb).
-    fn coords_rows_geodesic(
+    fn coords_rows_geodesic<const HAS_MISSING: bool>(
         self,
         metric: &crs::GeodesicMetric,
         len: usize,
         axes: CoordinateAxes,
         missing: Option<&ValidityMask>,
-        mut points: impl FnMut(usize) -> (Point, Point),
+        points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<CoordSeq> {
-        let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-        for row in distance_rows(self.distances(), len) {
-            let logical = row.logical.get();
-            if missing.is_some_and(|mask| mask.is_missing(logical)) {
-                builder.push(point_nav_missing_point_with_axes(axes));
-                continue;
-            }
+        point_binary_geometry_coords::<HAS_MISSING, _>(
+            self,
+            len,
+            axes,
+            missing,
+            points,
+            |kernel, row, left, right| kernel.eval_geodesic(metric, row, left, right),
+        )
+    }
+}
+
+fn point_binary_geometry_coords<const HAS_MISSING: bool, K: PointBinaryGeometryKernel>(
+    kernel: K,
+    len: usize,
+    axes: CoordinateAxes,
+    missing: Option<&ValidityMask>,
+    mut points: impl FnMut(usize) -> (Point, Point),
+    mut evaluate: impl FnMut(K, DistanceRow, Point, Point) -> PyResult<Shape>,
+) -> PyResult<CoordSeq> {
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
+    for row in distance_rows(kernel.distances(), len) {
+        let logical = row.logical.get();
+        if row_missing::<HAS_MISSING>(missing, logical) {
+            builder.push(point_nav_missing_point_with_axes(axes));
+        } else {
             let (left, right) = points(logical);
-            let shape = self
-                .eval_geodesic(metric, row, left, right)
+            let shape = evaluate(kernel, row, left, right)
                 .map_err(|err| crate::note_array_row(err, logical))?;
             builder.push(point_from_point_nav_shape(&shape));
         }
-        finish_point_nav_coords(builder, missing)
     }
+    finish_point_nav_coords(builder, missing)
 }
 
 #[derive(Clone, Copy)]
@@ -1175,7 +1192,7 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
         )
     }
 
-    fn coords_rows_geodesic(
+    fn coords_rows_geodesic<const HAS_MISSING: bool>(
         self,
         metric: &crs::GeodesicMetric,
         len: usize,
@@ -1186,7 +1203,7 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
         let mut builder = CoordSeqBuilder::with_capacity(axes, len);
         for row in distance_rows(self.distance, len) {
             let logical = row.logical.get();
-            if missing.is_some_and(|mask| mask.is_missing(logical)) {
+            if row_missing::<HAS_MISSING>(missing, logical) {
                 builder.push(point_nav_missing_point_with_axes(axes));
                 continue;
             }
@@ -1225,30 +1242,6 @@ fn point_binary_geometry_eval<K: PointBinaryGeometryKernel>(
     }
 }
 
-fn point_binary_geometry_coords_planar<const HAS_MISSING: bool, K: PointBinaryGeometryKernel>(
-    kernel: K,
-    to_metre: f64,
-    len: usize,
-    axes: CoordinateAxes,
-    missing: Option<&ValidityMask>,
-    mut points: impl FnMut(usize) -> (Point, Point),
-) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    for row in distance_rows(kernel.distances(), len) {
-        let logical = row.logical.get();
-        if row_missing::<HAS_MISSING>(missing, logical) {
-            builder.push(point_nav_missing_point_with_axes(axes));
-        } else {
-            let (left, right) = points(logical);
-            let shape = kernel
-                .eval_planar(to_metre, row, left, right)
-                .map_err(|err| crate::note_array_row(err, logical))?;
-            builder.push(point_from_point_nav_shape(&shape));
-        }
-    }
-    finish_point_nav_coords(builder, missing)
-}
-
 fn point_binary_geometry_coords_dispatch<K: PointBinaryGeometryKernel>(
     kernel: K,
     model: &crs::MetricModel,
@@ -1260,24 +1253,29 @@ fn point_binary_geometry_coords_dispatch<K: PointBinaryGeometryKernel>(
     match model {
         crs::MetricModel::Geodesic { .. } => {
             let metric = crs::GeodesicMetric::from_model(model)?;
-            kernel.coords_rows_geodesic(&metric, len, axes, missing, points)
+            match missing {
+                Some(mask) => {
+                    kernel.coords_rows_geodesic::<true>(&metric, len, axes, Some(mask), points)
+                },
+                None => kernel.coords_rows_geodesic::<false>(&metric, len, axes, None, points),
+            }
         },
         crs::MetricModel::Planar { to_metre } => match missing {
-            Some(mask) => point_binary_geometry_coords_planar::<true, _>(
+            Some(mask) => point_binary_geometry_coords::<true, _>(
                 kernel,
-                to_metre.get(),
                 len,
                 axes,
                 Some(mask),
                 points,
+                |kernel, row, left, right| kernel.eval_planar(to_metre.get(), row, left, right),
             ),
-            None => point_binary_geometry_coords_planar::<false, _>(
+            None => point_binary_geometry_coords::<false, _>(
                 kernel,
-                to_metre.get(),
                 len,
                 axes,
                 None,
                 points,
+                |kernel, row, left, right| kernel.eval_planar(to_metre.get(), row, left, right),
             ),
         },
     }
