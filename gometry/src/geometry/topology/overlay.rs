@@ -32,9 +32,9 @@ use super::q_embedding::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, SeamIdentity};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout,
-};
+#[cfg(test)]
+use crate::geometry::embedding_completion::LiteralCheck;
+use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
 };
@@ -46,12 +46,15 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, OverlayOp, build_certified_overlay_shape_with_axes,
     build_certified_overlay_shape_with_axes_and_order,
 };
+use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
 };
+
+mod publication;
 
 #[derive(Clone, Copy)]
 pub(super) struct LineStep {
@@ -346,23 +349,26 @@ struct WrittenDrawingParts {
     layout: ShapeLiteralLayout<QSourceImage>,
 }
 
-fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing {
-    let family_state = embedding.family_state;
-    match embedding.sealed {
-        SealedQDrawing::Source(source) => WrittenQDrawing {
-            shape: source.sealed.into_shape(),
-            line_traces: source.line_traces,
-            family_state,
-        },
+fn finish_certified_q_emission(
+    embedding: CertifiedQEmission,
+) -> (SealedQDrawing, Option<FeatureFamilyRegistry>) {
+    (embedding.sealed, embedding.family_state)
+}
+
+fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
+    let (sealed, family_state) = finish_certified_q_emission(embedding);
+    let (shape, line_traces) = match sealed {
+        SealedQDrawing::Source(source) => (source.sealed.into_scalar()?.0, source.line_traces),
         SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native);
-            WrittenQDrawing {
-                shape: written.shape,
-                line_traces: written.line_traces,
-                family_state,
-            }
+            let written = write_completed_native(native)?;
+            (written.shape, written.line_traces)
         },
-    }
+    };
+    Ok(WrittenQDrawing {
+        shape,
+        line_traces,
+        family_state,
+    })
 }
 
 fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
@@ -459,7 +465,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             operation,
             preparation_work,
         )?;
-        let sealed = match super::q_embedding::bind_source_only(
+        let receipt = super::q_embedding::publication::SourceOnlyPublication::new(
             source,
             topology,
             None,
@@ -468,12 +474,45 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             &[],
             &[],
             &[],
-            preparation_work,
+        );
+        let sealed = match finish_geographic(
+            super::super::publication::PublicationCall::new(
+                super::super::publication::ProducerReceipt::QSourceOnly(receipt),
+                topology.publication_frame().clone(),
+                preparation_work,
+            ),
+            super::super::publication::StorageTarget::Scalar,
         )? {
-            LiteralCheck::Pass(sealed) => sealed,
-            LiteralCheck::Reject(_) => {
+            super::super::publication::PublicationOutcome::Pass(finished) => finished,
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::SourceOnly(_),
+            ) => {
                 return Err(GeometryErrorKind::Invalid(
                     "unchanged Q source output failed its literal binding".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::Native,
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned native rejection".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::Batch(_),
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned array batch rejection".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::ProducerDrawing(_),
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned producer-drawn rejection".into(),
                 )
                 .into());
             },
@@ -505,25 +544,25 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
     strict: bool,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
-    let mut budget = EvaluationBudget::new(operation.name(), 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new(operation.name(), "computed edges");
-    let plan = QEmissionPlan::build(topology, operation, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let source_points = source_point_coordinates_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
+    publication::exact_geographic_overlay(topology, operation, declared_axes, strict, metric_access)
+}
+
+pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    operation: OverlayOp,
+    declared_axes: CoordinateAxes,
+    strict: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    publication::exact_geographic_overlay_pending_row(
         topology,
-        &plan,
-        &source_points,
-        &nearest,
+        operation,
         declared_axes,
         strict,
-        operation.name(),
         metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    Ok(publish_q_overlay(embedding))
+        logical_row,
+    )
 }
 
 pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
@@ -569,7 +608,7 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
         expansion_budget,
         budget,
     )?;
-    let written = write_certified_q_emission(embedding);
+    let written = write_certified_q_emission(embedding)?;
     let line_count = match &written.shape {
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
@@ -600,8 +639,8 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
     })
 }
 
-fn publish_q_overlay(embedding: CertifiedQEmission) -> Shape {
-    write_certified_q_emission(embedding).shape
+fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
+    Ok(write_certified_q_emission(embedding)?.shape)
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -617,24 +656,26 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
     }
     let row = SourceRowId(0);
     let mut budget = EvaluationBudget::new("geographic boundary", 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
-    let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
-    let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        false,
-        "geographic boundary",
-        metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    Ok(write_certified_q_emission(embedding).shape)
+    let embedding = {
+        let mut preparation_work = EvaluationOnly::new(&mut budget);
+        let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
+        let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
+        let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
+        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
+        resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            false,
+            "geographic boundary",
+            metric_access,
+            &mut expansion_budget,
+            &mut preparation_work,
+        )?
+    };
+    publish_q_overlay(embedding)
 }
 
 fn boundary_cycle_line_paths(
@@ -6771,8 +6812,8 @@ mod tests {
             },
         };
         let expected = match output.sealed {
-            SealedQDrawing::Source(source) => source.sealed.into_shape(),
-            SealedQDrawing::Native(native) => native.sealed.into_shape(),
+            SealedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
+            SealedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
         };
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -6866,7 +6907,7 @@ mod tests {
             assert_eq!(certified_coordinates.xy(*node)?, nearest.xy(*node)?);
         }
 
-        let written = write_certified_q_emission(certified);
+        let written = write_certified_q_emission(certified)?;
         let expected = written.shape;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -7509,7 +7550,7 @@ mod tests {
         let embedding =
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding)?;
         assert_eq!(
             crate::io::to_wkb(&result, None, false)?,
             crate::io::to_wkb(&source, None, false)?,
@@ -7560,7 +7601,7 @@ mod tests {
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())
                 .expect("source axis-band ring is representable");
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding).expect("publish the source axis band");
         assert_eq!(
             crate::io::to_wkb(&result, None, false).expect("serialize Q result"),
             crate::io::to_wkb(&source, None, false).expect("serialize source band")
@@ -7628,7 +7669,7 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, (before, after))| (before != after).then_some(index))
                 .collect::<Vec<_>>();
-            let result = publish_q_overlay(embedding);
+            let result = publish_q_overlay(embedding)?;
             let issue = crate::geometry::validate_shape_in_frame(
                 &result,
                 crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
@@ -7672,7 +7713,7 @@ mod tests {
             OverlayOp::Union.name(),
         )?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding)?;
         assert!(
             crate::geometry::validate_shape_in_frame(
                 &result,
@@ -8323,7 +8364,7 @@ mod tests {
                 .is_none(),
             "the searched boundary drawing must restore the exact area face/host structure"
         );
-        let written = write_certified_q_emission(embedding);
+        let written = write_certified_q_emission(embedding)?;
         let mut line_members = 0_usize;
         let mut polygon_members = 0_usize;
         written
