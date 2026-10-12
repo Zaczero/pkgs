@@ -823,12 +823,26 @@ fn row_missing<const HAS_MISSING: bool>(missing: Option<&ValidityMask>, row: usi
     }
 }
 
-fn merge_uniform_axes(current: &mut Option<CoordinateAxes>, axes: CoordinateAxes) -> bool {
-    if let Some(seen) = *current {
-        return seen == axes;
+fn uniform_axes<const HAS_MISSING: bool>(
+    len: usize,
+    missing: Option<&ValidityMask>,
+    mut axes_at: impl FnMut(usize) -> CoordinateAxes,
+) -> Option<CoordinateAxes> {
+    let mut axes = None;
+    for row in 0..len {
+        if row_missing::<HAS_MISSING>(missing, row) {
+            continue;
+        }
+        let row_axes = axes_at(row);
+        if let Some(seen) = axes {
+            if seen != row_axes {
+                return None;
+            }
+        } else {
+            axes = Some(row_axes);
+        }
     }
-    *current = Some(axes);
-    true
+    Some(axes.unwrap_or(CoordinateAxes::XY))
 }
 
 fn uniform_point_axes<const HAS_MISSING: bool>(
@@ -836,16 +850,9 @@ fn uniform_point_axes<const HAS_MISSING: bool>(
     len: usize,
     missing: Option<&ValidityMask>,
 ) -> Option<CoordinateAxes> {
-    let mut axes = None;
-    for row in 0..len {
-        if row_missing::<HAS_MISSING>(missing, row) {
-            continue;
-        }
-        if !merge_uniform_axes(&mut axes, CoordinateAxes::from_point(points.get(row))) {
-            return None;
-        }
-    }
-    Some(axes.unwrap_or(CoordinateAxes::XY))
+    uniform_axes::<HAS_MISSING>(len, missing, |row| {
+        CoordinateAxes::from_point(points.get(row))
+    })
 }
 
 fn uniform_point_axes_dispatch(
@@ -1287,17 +1294,10 @@ fn uniform_point_binary_geometry_axes<const HAS_MISSING: bool, K: PointBinaryGeo
     missing: Option<&ValidityMask>,
     mut points: impl FnMut(usize) -> (Point, Point),
 ) -> Option<CoordinateAxes> {
-    let mut axes = None;
-    for row in 0..len {
-        if row_missing::<HAS_MISSING>(missing, row) {
-            continue;
-        }
+    uniform_axes::<HAS_MISSING>(len, missing, |row| {
         let (left, right) = points(row);
-        if !merge_uniform_axes(&mut axes, kernel.output_axes(left, right)) {
-            return None;
-        }
-    }
-    Some(axes.unwrap_or(CoordinateAxes::XY))
+        kernel.output_axes(left, right)
+    })
 }
 
 fn uniform_point_binary_geometry_axes_dispatch<K: PointBinaryGeometryKernel>(
