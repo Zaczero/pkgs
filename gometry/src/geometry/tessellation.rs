@@ -156,8 +156,8 @@ pub(crate) use earcut::{
 };
 pub(crate) use sampling::{
     GeographicSampleSegment, PreparedSampling, SampleDraw, SampleOccurrenceId, SampleRecipe,
-    SampleSupport, collect_sample_atoms, collect_sample_triangles, row_sample_seed,
-    sample_weighted, uniform_f64, weight_scale,
+    SampleSupport, collect_sample_atoms, collect_sample_triangles, publish_sampling_array,
+    publish_sampling_groups, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
 };
 use voronoi::{DelaunayComplex, delaunay_complex, snap_sites};
 

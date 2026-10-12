@@ -1,6 +1,10 @@
 use super::{EarcutCornerId, EarcutTriangle, earcut_polygon_with_ids};
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
+use crate::geometry::publication::{FinishedGeometry, ProducerDrawingReceipt, StorageTarget};
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
+use crate::py::vectors::Groups;
+use crate::{Frame, PyGeometryArray};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SampleOccurrenceId {
@@ -83,13 +87,6 @@ pub(crate) enum SampleRecipe {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The common sampling sink consumes draw order, selection, and placement authority"
-    )
-)]
 pub(crate) struct SampleDraw {
     pub(crate) draw_ordinal: usize,
     pub(crate) selected_element: usize,
@@ -140,6 +137,236 @@ impl PreparedSampling {
     pub(crate) fn into_points(self) -> Vec<Point> {
         self.draws.into_iter().map(|draw| draw.point).collect()
     }
+}
+
+fn validate_prepared_sampling(prepared: &PreparedSampling, logical_row: usize) -> Result<()> {
+    if prepared.logical_row != logical_row {
+        return Err(crate::geometry::GeometryErrorKind::Invalid(
+            "prepared sampling receipt changed its logical source row".into(),
+        )
+        .into());
+    }
+    for (ordinal, draw) in prepared.draws.iter().enumerate() {
+        let Some(support) = prepared.support_elements.get(draw.selected_element) else {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "prepared sampling draw has no selected support element".into(),
+            )
+            .into());
+        };
+        let matching_recipe = matches!(
+            (support, draw.recipe),
+            (
+                SampleSupport::AreaTriangle { .. },
+                SampleRecipe::Triangle { .. }
+            ) | (SampleSupport::Segment { .. }, SampleRecipe::Segment { .. })
+                | (
+                    SampleSupport::GeographicSegment { .. },
+                    SampleRecipe::Segment { .. }
+                )
+                | (SampleSupport::PointAtom { .. }, SampleRecipe::Atom)
+        );
+        if draw.draw_ordinal != ordinal || !matching_recipe {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "prepared sampling draw lost its selected placement identity".into(),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn finish_sampling_drawing(
+    receipt: ProducerDrawingReceipt,
+    frame: Frame,
+    target: StorageTarget,
+) -> Result<FinishedGeometry> {
+    use crate::geometry::Unmetered;
+    use crate::geometry::publication::{
+        ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+        finish_geographic,
+    };
+
+    let mut work = Unmetered;
+    match finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        target,
+    )? {
+        PublicationOutcome::Pass(finished) => Ok(finished),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(crate::geometry::GeometryErrorKind::Invalid(
+                format!(
+                    "final sampling storage changed {} checked output records",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(crate::geometry::GeometryErrorKind::Invalid(
+            "sampling finisher returned a different producer rejection family".into(),
+        )
+        .into()),
+    }
+}
+
+pub(crate) fn publish_sampling_array(
+    prepared: PreparedSampling,
+    frame: Frame,
+) -> Result<PyGeometryArray> {
+    use std::sync::Arc;
+
+    use crate::array::StreamingShapes;
+    use crate::geometry::Unmetered;
+    use crate::geometry::embedding_completion::{
+        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    };
+    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
+
+    validate_prepared_sampling(&prepared, prepared.logical_row)?;
+    let output_count = prepared.draws.len();
+    let mut writer = StreamingShapes::with_capacity(0, output_count);
+    let mut row_map = Vec::with_capacity(output_count);
+    let mut literals = Vec::with_capacity(output_count);
+    for (logical_row, draw) in prepared.draws.into_iter().enumerate() {
+        let image = ProducerImageId::new(logical_row);
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            output: 0,
+        };
+        writer.try_push(Shape::Point(draw.point))?;
+        row_map.push(Some(LiteralRowLayout {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            layout: ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::from_point(draw.point),
+                    image,
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        }));
+        literals.push(ProducerLiteral::from_point(address, image, draw.point));
+    }
+    let (storage, missing, layout) = writer.finish_parts()?;
+    let mut work = Unmetered;
+    let buffers =
+        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
+    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    PyGeometryArray::from_finished(finish_sampling_drawing(
+        receipt,
+        frame,
+        StorageTarget::Array,
+    )?)
+}
+
+pub(crate) fn publish_sampling_groups(
+    rows: Vec<Option<PreparedSampling>>,
+    frame: Frame,
+    missing: Option<ValidityMask>,
+) -> Result<Groups> {
+    use std::sync::Arc;
+
+    use crate::array::StreamingShapes;
+    use crate::geometry::Unmetered;
+    use crate::geometry::embedding_completion::{
+        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    };
+    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
+
+    let output_count = rows.iter().try_fold(0_usize, |total, row| {
+        total
+            .checked_add(row.as_ref().map_or(0, |row| row.draws.len()))
+            .ok_or(ResourceError::SizeOverflow)
+    })?;
+    if missing
+        .as_ref()
+        .is_some_and(|missing| missing.len() != rows.len())
+    {
+        return Err(crate::geometry::GeometryErrorKind::Invalid(
+            "sampling group validity does not match its logical rows".into(),
+        )
+        .into());
+    }
+
+    let mut writer = StreamingShapes::with_capacity(0, output_count);
+    let offset_count = rows
+        .len()
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut offsets = Vec::with_capacity(offset_count);
+    offsets.push(0_i64);
+    let mut value_map = Vec::with_capacity(output_count);
+    let mut literals = Vec::with_capacity(output_count);
+    let mut value_row = 0_usize;
+    for (logical_row, prepared) in rows.into_iter().enumerate() {
+        let is_missing = missing
+            .as_ref()
+            .is_some_and(|missing| missing.is_missing(logical_row));
+        if is_missing != prepared.is_none() {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "sampling group receipt does not match its source-row validity".into(),
+            )
+            .into());
+        }
+        if let Some(prepared) = prepared {
+            validate_prepared_sampling(&prepared, logical_row)?;
+            for draw in prepared.draws {
+                let image = ProducerImageId::new(value_row);
+                let address = LiteralAddress {
+                    operation: 0,
+                    logical_row,
+                    group_row: Some(logical_row),
+                    value_row: Some(value_row),
+                    output: 0,
+                };
+                writer.try_push(Shape::Point(draw.point))?;
+                value_map.push(Some(LiteralRowLayout {
+                    operation: 0,
+                    logical_row,
+                    group_row: Some(logical_row),
+                    value_row: Some(value_row),
+                    layout: ShapeLiteralLayout {
+                        points: vec![LiteralPoint {
+                            output: 0,
+                            axes: crate::geometry::CoordinateAxes::from_point(draw.point),
+                            image,
+                        }],
+                        lines: Vec::new(),
+                        polygons: Vec::new(),
+                    },
+                }));
+                literals.push(ProducerLiteral::from_point(address, image, draw.point));
+                value_row = value_row
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+        }
+        offsets.push(i64::try_from(value_row).map_err(|_| ResourceError::SizeOverflow)?);
+    }
+    let (storage, value_missing, layout) = writer.finish_parts()?;
+    let mut work = Unmetered;
+    let buffers = FrozenLiteralBuffers::groups(
+        Arc::new(storage),
+        value_missing,
+        layout,
+        value_map,
+        offsets,
+        missing,
+        &mut work,
+    )?;
+    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    Groups::from_finished(finish_sampling_drawing(
+        receipt,
+        frame,
+        StorageTarget::Groups,
+    )?)
 }
 
 /// A common power-of-two factor that keeps weight products finite for
