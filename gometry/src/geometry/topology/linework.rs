@@ -414,7 +414,7 @@ fn walk_minimal_face_boundaries(
                     cycles.push(FaceBoundaryCycle { face, darts: cycle });
                 }
             }
-            current = next_face_boundary_dart(q, &boundary, current, face, work)?;
+            current = next_face_boundary_dart(q, boundary, current, face, work)?;
             if current == start {
                 break;
             }
