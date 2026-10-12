@@ -21,11 +21,11 @@ mod voronoi_receipt;
 
 #[expect(
     unused_imports,
-    reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
+    reason = "the parent-owned final writer consumes the prepared CDT face, side, source, restriction and origin receipts"
 )]
 pub(crate) use delaunay::{
-    CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
-    RefinementConstruction, SourceConstraint, SourcePiece,
+    CdtFaceUse, CdtSideBoundaryUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
+    RefinementConstruction, RestrictionConstraint, RestrictionPiece, SourceConstraint, SourcePiece,
 };
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,

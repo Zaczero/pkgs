@@ -56,7 +56,10 @@ fn retained_cdt_keeps_zero_turn_world_band_as_source_chart() {
         .face_uses
         .iter()
         .flat_map(|face| &face.sides)
-        .filter_map(|side| side.source.as_ref())
+        .filter_map(|side| match side.boundary.as_ref() {
+            Some(CdtSideBoundaryUse::Source(source)) => plan.source_uses.get(*source),
+            Some(CdtSideBoundaryUse::Restriction(_)) | None => None,
+        })
         .collect::<Vec<_>>();
     assert_eq!(source_uses.len(), 8);
     let zero = exact::ExactRational::zero();

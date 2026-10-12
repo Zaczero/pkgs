@@ -10,10 +10,13 @@
 use std::cmp::Ordering;
 
 use crate::geographic::{
-    ChartPointSite, GeographicFrame, GeographicRing, PointSelectionChart, RingDomain, RingSummary,
-    SeamIdentity,
+    ChartPointSite, ChartPole, GeographicFrame, GeographicRing, PointSelectionChart, RingDomain,
+    RingSummary, SeamIdentity,
 };
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
+use crate::geometry::publication::{
+    ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
+};
 use crate::geometry::tessellation::{
     EMPTY, MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite, RingOwner, Triangulation, exact,
@@ -48,9 +51,12 @@ pub(super) fn take_delaunay_output_reserves() -> usize {
 #[path = "cdt.rs"]
 mod cdt;
 pub(crate) use cdt::{
-    CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
-    RefinementConstruction, SourceConstraint, SourcePiece,
+    CdtFaceUse, CdtSideBoundaryUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
+    RefinementConstruction, RestrictionConstraint, RestrictionPiece, SourceConstraint, SourcePiece,
 };
+#[cfg(test)]
+#[path = "delaunay/chart_restriction_tests.rs"]
+mod chart_restriction_tests;
 #[path = "exact_delaunay.rs"]
 pub(super) mod exact_delaunay;
 #[cfg(test)]
@@ -962,6 +968,7 @@ pub(crate) fn prepare_constrained_triangle_plan<'a>(
     let ConstrainedSourcePlan {
         mut vertices,
         sources,
+        restrictions,
         source_rings,
         coordinates,
         chart_area,
@@ -969,8 +976,13 @@ pub(crate) fn prepare_constrained_triangle_plan<'a>(
     let exact_chart_area = chart_area.as_ref();
     let refinement = effective_refinement(area, exact_chart_area, refinement);
     validate_refinement_request(area, exact_chart_area, refinement)?;
-    let Some(mut cdt) =
-        cdt::ConstrainedMesh::build_with_sources(&vertices, &sources, source_rings, coordinates)?
+    let Some(mut cdt) = cdt::ConstrainedMesh::build_with_restrictions(
+        &vertices,
+        &sources,
+        &restrictions,
+        source_rings,
+        coordinates,
+    )?
     else {
         return Err(GeometryErrorKind::triangulation(
             "constrained triangulation needs three non-collinear vertices",
@@ -1090,6 +1102,7 @@ fn selected_source_sites(points: &[Point]) -> Result<Vec<Point>> {
 struct ConstrainedSourcePlan {
     vertices: Vec<Point>,
     sources: Vec<cdt::SourceConstraint>,
+    restrictions: Vec<cdt::RestrictionConstraint>,
     source_rings: Vec<cdt::SourceRingStart>,
     coordinates: cdt::CdtCoordinates,
     chart_area: Option<exact::ExactDyadic>,
@@ -1213,9 +1226,18 @@ fn retained_point_in_cycle(
     })
 }
 
+#[derive(Clone, Copy)]
+struct RetainedPolarClosure {
+    owner: RingOwner,
+    pole: ChartPole,
+    first: ChartPointSite,
+    last: ChartPointSite,
+}
+
 fn retained_chart_area(
     frame: GeographicFrame,
     rings: &[(RingOwner, Vec<ChartPointSite>)],
+    polar_closures: &[RetainedPolarClosure],
 ) -> Result<exact::ExactDyadic> {
     let mut total = exact::ExactDyadic::zero();
     let mut at = 0;
@@ -1239,6 +1261,27 @@ fn retained_chart_area(
                     .try_product(&right_y)?
                     .try_subtract(left_y.try_product(&right_x)?)?;
                 twice_area = twice_area.try_add(cross)?;
+            }
+            if let Some(closure) = polar_closures.iter().find(|item| item.owner == *owner) {
+                let pole_y = exact::ExactDyadic::from_f64(frame.chart_pole_latitude(closure.pole));
+                let start_x =
+                    retained_site_longitude(frame.longitude(), closure.first.longitude())?;
+                let end_x = retained_site_longitude(frame.longitude(), closure.last.longitude())?;
+                let start_y = exact::ExactDyadic::from_f64(closure.first.source_y());
+                let end_y = exact::ExactDyadic::from_f64(closure.last.source_y());
+                let first_cap = end_x
+                    .try_product(&pole_y)?
+                    .try_subtract(end_y.try_product(&end_x)?)?;
+                let pole_edge = end_x
+                    .try_product(&pole_y)?
+                    .try_subtract(pole_y.try_product(&start_x)?)?;
+                let last_cap = start_x
+                    .try_product(&start_y)?
+                    .try_subtract(pole_y.try_product(&start_x)?)?;
+                twice_area = twice_area
+                    .try_add(first_cap)?
+                    .try_add(pole_edge)?
+                    .try_add(last_cap)?;
             }
             let area = twice_area.abs();
             if owner.ring() == 0 {
@@ -1267,13 +1310,24 @@ fn retained_constrained_source_plan(
     })?;
     let mut source_points = Vec::with_capacity(capacity);
     let mut retained_rings = Vec::with_capacity(rings.len());
+    let mut polar_closures = Vec::new();
     for &(owner, ring) in rings {
         let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         let reaches_pole = summary.south.identity(frame) == SeamIdentity::Pole
             || summary.north.identity(frame) == SeamIdentity::Pole;
         let planar_full_longitude_band = summary.chart_turn == 0 && summary.exact_axis_band;
-        if (summary.domain != RingDomain::Ordinary && !planar_full_longitude_band) || reaches_pole {
+        let polar_pole = if summary.chart_turn == 1 || summary.chart_turn == -1 {
+            summary.bounded_pole()
+        } else {
+            None
+        };
+        let bounded_full_turn = polar_pole.is_some() && !reaches_pole && owner.ring() == 0;
+        if (summary.domain != RingDomain::Ordinary
+            && !planar_full_longitude_band
+            && !bounded_full_turn)
+            || reaches_pole
+        {
             return Ok(None);
         }
         let coords = ring.coords();
@@ -1315,10 +1369,41 @@ fn retained_constrained_source_plan(
             )
             .into());
         }
-        if summary.chart_turn != 0 {
-            return Ok(None);
+        if let Some(pole) = polar_pole {
+            let (Some(&first), Some(&last)) = (sites.first(), sites.last()) else {
+                return Ok(None);
+            };
+            let (west, east) = if compare_retained_x(first, last).is_lt() {
+                (first, last)
+            } else {
+                (last, first)
+            };
+            if sites
+                .iter()
+                .skip(1)
+                .take(sites.len().saturating_sub(2))
+                .any(|site| {
+                    !compare_retained_x(west, *site).is_lt()
+                        || !compare_retained_x(*site, east).is_lt()
+                })
+            {
+                return Ok(None);
+            }
+            polar_closures.push(RetainedPolarClosure {
+                owner,
+                pole,
+                first,
+                last,
+            });
         }
         retained_rings.push((owner, sites));
+    }
+    if polar_closures.iter().any(|closure| {
+        rings
+            .iter()
+            .any(|(owner, _)| owner.polygon() == closure.owner.polygon() && owner.ring() != 0)
+    }) {
+        return Ok(None);
     }
 
     // Each polygon hole is translated by an integral period into its shell's
@@ -1384,7 +1469,15 @@ fn retained_constrained_source_plan(
             .compare_chart_xy(right.2)
             .then_with(|| left.1.cmp(&right.1))
     });
-    let mut vertices = Vec::with_capacity(selected_sites.len());
+    let generated_count = polar_closures
+        .len()
+        .checked_mul(2)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let vertex_capacity = selected_sites
+        .len()
+        .checked_add(generated_count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut vertices = Vec::with_capacity(vertex_capacity);
     let mut site_locations = Vec::with_capacity(selected_sites.len());
     let mut site_indices = crate::collections::try_hash_map_with_capacity(selected_sites.len())?;
     for (site, (key, source_ordinal, location)) in selected_sites.into_iter().enumerate() {
@@ -1410,6 +1503,115 @@ fn retained_constrained_source_plan(
                 )
             },
         )?);
+    }
+
+    let mut generated_sites = Vec::new();
+    let mut restrictions = Vec::new();
+    for closure in polar_closures.iter().copied() {
+        let Some(&first_site) = site_indices.get(&retained_site_key(closure.first)) else {
+            return Err(GeometryErrorKind::triangulation(
+                "polar chart start has no admitted mesh site",
+            ));
+        };
+        let Some(&last_site) = site_indices.get(&retained_site_key(closure.last)) else {
+            return Err(GeometryErrorKind::triangulation(
+                "polar chart end has no admitted mesh site",
+            ));
+        };
+        if first_site == last_site {
+            return Ok(None);
+        }
+        let (first_side, last_side) = if compare_retained_x(closure.first, closure.last).is_lt() {
+            (ChartCutSide::West, ChartCutSide::East)
+        } else {
+            (ChartCutSide::East, ChartCutSide::West)
+        };
+        let pole_latitude = frame.chart_pole_latitude(closure.pole);
+        let pole_node =
+            u32::try_from(vertices.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let cut_node = u32::try_from(first_site.min(last_site))
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let first_pole_site = vertices.len();
+        let last_pole_site = first_pole_site
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let chart_longitude = |site: ChartPointSite| {
+            site.longitude().native().get()
+                + frame.longitude().period() * site.longitude().periods() as f64
+        };
+        let first_pole = Point::new_raw_xy(chart_longitude(closure.first), pole_latitude);
+        let last_pole = Point::new_raw_xy(chart_longitude(closure.last), pole_latitude);
+        if !first_pole.x.is_finite() || !last_pole.x.is_finite() {
+            return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
+        }
+        vertices.extend([first_pole, last_pole]);
+        generated_sites.extend([
+            (closure.first.longitude(), pole_latitude),
+            (closure.last.longitude(), pole_latitude),
+        ]);
+
+        let first_cut = SyntheticChartVertex::Cut {
+            node: cut_node,
+            side: first_side,
+        };
+        let last_cut = SyntheticChartVertex::Cut {
+            node: cut_node,
+            side: last_side,
+        };
+        let first_pole_cut = SyntheticChartVertex::Cut {
+            node: pole_node,
+            side: first_side,
+        };
+        let last_pole_cut = SyntheticChartVertex::Cut {
+            node: pole_node,
+            side: last_side,
+        };
+        let pole_vertex = |native_longitude: f64| SyntheticChartVertex::Pole {
+            node: pole_node,
+            pole: closure.pole,
+            native_longitude_bits: native_longitude.to_bits(),
+        };
+        restrictions.extend([
+            cdt::RestrictionConstraint {
+                id: restrictions.len(),
+                owner: closure.owner,
+                start_site: last_site,
+                end_site: last_pole_site,
+                use_: DirectedChartRestrictionUse {
+                    restriction: ChartRestriction::CutChord,
+                    start: last_cut,
+                    end: last_pole_cut,
+                },
+            },
+            cdt::RestrictionConstraint {
+                id: restrictions
+                    .len()
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                owner: closure.owner,
+                start_site: last_pole_site,
+                end_site: first_pole_site,
+                use_: DirectedChartRestrictionUse {
+                    restriction: ChartRestriction::PolarCap { pole: closure.pole },
+                    start: pole_vertex(last_pole.x),
+                    end: pole_vertex(first_pole.x),
+                },
+            },
+            cdt::RestrictionConstraint {
+                id: restrictions
+                    .len()
+                    .checked_add(2)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                owner: closure.owner,
+                start_site: first_pole_site,
+                end_site: first_site,
+                use_: DirectedChartRestrictionUse {
+                    restriction: ChartRestriction::CutChord,
+                    start: first_pole_cut,
+                    end: first_cut,
+                },
+            },
+        ]);
     }
 
     let mut sources: Vec<cdt::SourceConstraint> = Vec::with_capacity(capacity);
@@ -1471,11 +1673,17 @@ fn retained_constrained_source_plan(
             .checked_add(coords.coord_count())
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
-    let coordinates = cdt::CdtCoordinates::retained(frame, &site_locations, &occurrence_locations)?;
-    let chart_area = retained_chart_area(frame, &retained_rings)?;
+    let coordinates = cdt::CdtCoordinates::retained_with_generated(
+        frame,
+        &site_locations,
+        &occurrence_locations,
+        &generated_sites,
+    )?;
+    let chart_area = retained_chart_area(frame, &retained_rings, &polar_closures)?;
     Ok(Some(ConstrainedSourcePlan {
         vertices,
         sources,
+        restrictions,
         source_rings,
         coordinates,
         chart_area: Some(chart_area),
@@ -1558,6 +1766,7 @@ fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<Constrain
     Ok(ConstrainedSourcePlan {
         vertices,
         sources,
+        restrictions: Vec::new(),
         source_rings,
         coordinates,
         chart_area: None,
@@ -1803,11 +2012,11 @@ mod tests {
             plan.face_uses
                 .iter()
                 .flat_map(|face| &face.sides)
-                .filter(|side| {
-                    side.source
-                        .as_ref()
-                        .is_some_and(|source| source.owner.ring() == 1)
+                .filter_map(|side| match side.boundary.as_ref() {
+                    Some(CdtSideBoundaryUse::Source(source)) => plan.source_uses.get(*source),
+                    Some(CdtSideBoundaryUse::Restriction(_)) | None => None,
                 })
+                .filter(|source| source.owner.ring() == 1)
                 .count(),
             4
         );
@@ -1815,7 +2024,7 @@ mod tests {
             plan.face_uses
                 .iter()
                 .flat_map(|face| &face.sides)
-                .filter(|side| side.constrained)
+                .filter(|side| side.boundary.is_some())
                 .all(|side| !side.twin_selected)
         );
         let selected_sides = plan
