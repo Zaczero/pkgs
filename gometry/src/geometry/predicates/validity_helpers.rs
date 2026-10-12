@@ -469,13 +469,17 @@ fn root_request_for_support_segment(
         &mut work,
     )?;
     let parameter = projection.exact_fraction()?;
-    match range.request_at_with_work(&parameter, &mut work)? {
-        Some(request) => Ok(Some(request)),
-        None => Err(crate::geometry::GeometryErrorKind::Invalid(
-            "clearance support projection is outside its exact source interval".into(),
+    range
+        .request_at_with_work(&parameter, &mut work)?
+        .map_or_else(
+            || {
+                Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "clearance support projection is outside its exact source interval".into(),
+                )
+                .into())
+            },
+            |request| Ok(Some(request)),
         )
-        .into()),
-    }
 }
 
 fn minimum_clearance_candidates(
