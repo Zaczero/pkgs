@@ -223,7 +223,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
             frame_side(side);
         }
         for root in &segment.source_roots {
-            let _root_identity = (root.ring, root.edge, root.reversed);
             assert!(root.start.xy().x.is_finite() && root.start.xy().y.is_finite());
             assert!(root.end.xy().x.is_finite() && root.end.xy().y.is_finite());
             assert_ne!(
@@ -241,7 +240,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
             } else if !segment.source_roots.is_empty() {
                 assert!(edge.clip_sources.contains(&segment.id));
             }
-            let _reversed = atom.reversed;
         }
     }
 
@@ -256,14 +254,11 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
                 VoronoiVertexOrigin::SourceSite { site: id } => {
                     let _ = receipt_site(receipt, *id);
                 },
-                VoronoiVertexOrigin::OverlayNode { node } => {
-                    let _node = node;
-                },
+                VoronoiVertexOrigin::OverlayNode { .. } => {},
                 VoronoiVertexOrigin::Circumcenter {
-                    component,
                     sites: defining_sites,
+                    ..
                 } => {
-                    let _component = component;
                     for &id in defining_sites {
                         let _ = receipt_site(receipt, id);
                     }
