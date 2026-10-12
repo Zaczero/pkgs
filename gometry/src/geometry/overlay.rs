@@ -125,8 +125,9 @@ pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
     AreaLocationStrategy, ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport,
-    ExactPartition, ExactPointForest, ExactSourceInventory, GlobalFaces, NodeId, RayAxis,
-    RayPoints, RayPointsWithWork, StagedExactSources, StagedRelationItem, StagedSourceComponent,
+    ExactPartition, ExactPointForest, ExactSourceInventory, GlobalFaces, NodeId,
+    OverlayNodeReceipt, OverlayPolygonPartWithSources, OverlaySourceEdgeUse, RayAxis, RayPoints,
+    RayPointsWithWork, StagedExactSources, StagedRelationItem, StagedSourceComponent,
     SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest, clip_polygonal_rectangle,
     compare_departures_with_work, emitted_pair_preserves_incidence, graph_global_faces_with_work,
     homogeneous_midpoint, segments_within_chebyshev, shoot_left, shoot_left_with_work,

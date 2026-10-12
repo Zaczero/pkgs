@@ -1,7 +1,8 @@
 use crate::error::Result;
 use crate::geometry::coverage::{
-    HashMap, coverage_rows, valid_coverage_rows, visit_invalid_segments,
+    HashMap, coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };
+use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, OverlayOp, Shape, SourceArcContext, carry_overlay_ordinates,
@@ -58,15 +59,46 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     } else {
         snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
-    let prepared = coverage_rows(&snapped, gap_width)?;
+    let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
     // Cleaning an already-valid coverage is an identity operation. Besides
     // avoiding needless partition work, this preserves coordinate bits, ring
     // presentation, and makes repeated cleaning exactly idempotent.
     // Finish validation so errors from later rows precede partition construction.
-    if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
+    let already_valid = match context.domain() {
+        crate::geometry::TopologyDomain::Cartesian => {
+            let prepared = coverage_rows(&snapped, gap_width)?;
+            !visit_invalid_segments(&prepared, gap_width, |_, _| true)?
+        },
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            validate_polygonal_rows(&snapped)?;
+            let mut evaluation_budget = EvaluationBudget::new("coverage_clean", 0)?;
+            let analysis = crate::geometry::analyze_geographic_coverage_with_work(
+                &snapped,
+                frame,
+                gap_width,
+                "coverage_clean",
+                &mut evaluation_budget,
+            )?;
+            let selection = analysis.assign_cleaning_faces(
+                &row_areas,
+                gap_width,
+                overlaps,
+                &mut evaluation_budget,
+            )?;
+            let labels_preserve_sources =
+                analysis.face_rows.iter().zip(&selection.owners).all(
+                    |(source_rows, selected_row)| match source_rows.as_slice() {
+                        [] => selected_row.is_none(),
+                        [source_row] => selected_row == &Some(*source_row),
+                        _ => false,
+                    },
+                ) && selection.gap_assignments.iter().all(|&assigned| !assigned);
+            analysis.is_valid() && labels_preserve_sources
+        },
+    };
+    if already_valid {
         return Ok(snapped);
     }
-    drop(prepared);
 
     #[cfg(test)]
     drop(admission_phase);
@@ -79,7 +111,6 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     let mut partition = inventory.partition(&mut budget)?;
     #[cfg(test)]
     drop(source_staging_phase);
-    let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
     let declared_axes = snapped
         .iter()
         .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {

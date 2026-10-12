@@ -18,13 +18,20 @@ pub(crate) use crate::collections::{HashMap, HashMapExt};
 use crate::error::Result;
 
 mod clean;
+mod rank;
 mod simplify;
 mod validate;
 
 pub(crate) use clean::{CoverageOverlapRule, coverage_clean, coverage_union_topo};
+pub(crate) use rank::{
+    BorderTieBreak, ScaledLength, ScaledLengthSum, longest_border_owner,
+    longest_border_ranked_owner, scaled_point_distance,
+};
 pub(in crate::geometry) use simplify::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use simplify::{vw_area_tolerance, *};
+#[cfg(test)]
+pub(crate) use validate::coverage_invalid_edges;
 pub(crate) use validate::{
-    coverage_invalid_edges, coverage_is_valid, coverage_rows, valid_coverage_rows,
-    visit_invalid_segments,
+    coverage_invalid_edges_with_domain, coverage_is_valid, coverage_is_valid_with_domain,
+    coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };

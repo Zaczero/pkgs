@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::crs::TransformMetricScratch;
 use crate::error::Result;
 use crate::geographic::{
@@ -6,6 +8,9 @@ use crate::geographic::{
     publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::exact_arith::select_transformed_chart_displacement;
+use crate::geometry::tessellation::{
+    VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin, VoronoiPolygonOutputs,
+};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder,
     CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, LineSeq, Polygon, Ring, RootMetricState,
@@ -13,6 +18,33 @@ use crate::geometry::{
 };
 
 pub(crate) type PolygonPartEdgeRoles = Vec<Vec<Vec<bool>>>;
+
+pub(crate) struct VoronoiReceiptHold {
+    _diagram: Arc<VoronoiDiagramReceipt>,
+}
+
+pub(crate) struct PublishedVoronoiPolygonOutputs {
+    pub(crate) shapes: Vec<Shape>,
+    receipt: VoronoiReceiptHold,
+}
+
+impl PublishedVoronoiPolygonOutputs {
+    pub(crate) fn into_parts(self) -> (Vec<Shape>, VoronoiReceiptHold) {
+        (self.shapes, self.receipt)
+    }
+}
+
+pub(crate) struct PublishedVoronoiEdgeColumn {
+    pub(crate) coordinates: CoordSeq,
+    pub(crate) offsets: CsrOffsetColumn,
+    receipt: VoronoiReceiptHold,
+}
+
+impl PublishedVoronoiEdgeColumn {
+    pub(crate) fn into_parts(self) -> (CoordSeq, CsrOffsetColumn, VoronoiReceiptHold) {
+        (self.coordinates, self.offsets, self.receipt)
+    }
+}
 
 /// Rebuild shape structure while mapping each line or ring coordinate chain.
 ///
@@ -380,17 +412,41 @@ pub(crate) fn publish_raw_computed_shapes_with_budget_and_context(
 }
 
 pub(crate) fn publish_voronoi_polygon_outputs(
-    outputs: Vec<crate::geometry::VoronoiPolygonOutput>,
+    outputs: VoronoiPolygonOutputs,
     frame: Option<GeographicFrame>,
     budget: &mut ExpansionBudget,
-) -> Result<Vec<Shape>> {
-    outputs
+) -> Result<PublishedVoronoiPolygonOutputs> {
+    let receipt = outputs.receipt;
+    let shapes = outputs
+        .outputs
         .into_iter()
         .map(|output| {
+            let owner = output.owner.ok_or_else(|| {
+                GeometryErrorKind::Invalid("Voronoi output has no admitted site owner".into())
+            })?;
+            if !receipt.has_site(owner) {
+                return Err(GeometryErrorKind::Invalid(
+                    "Voronoi output owner is outside its diagram receipt".into(),
+                )
+                .into());
+            }
+            let computed_edges: Vec<Vec<bool>> = output
+                .edge_roles
+                .iter()
+                .map(|ring| {
+                    ring.iter()
+                        .map(|role| {
+                            !role.origins.iter().any(|origin| {
+                                matches!(origin, VoronoiEdgeOrigin::SourceClip { .. })
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
             let polygon = match frame {
                 Some(frame) => publish_polygon_with_edge_roles(
                     &output.polygon,
-                    &output.computed_edges,
+                    &computed_edges,
                     frame,
                     budget,
                 )?,
@@ -398,7 +454,34 @@ pub(crate) fn publish_voronoi_polygon_outputs(
             };
             Ok(Shape::Polygon(polygon))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PublishedVoronoiPolygonOutputs {
+        shapes,
+        receipt: VoronoiReceiptHold { _diagram: receipt },
+    })
+}
+
+pub(crate) fn publish_voronoi_edge_column_with_budget(
+    output: VoronoiEdgeColumn,
+    frame: Option<GeographicFrame>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedVoronoiEdgeColumn> {
+    let (coordinates, offsets) = match frame {
+        Some(frame) => publish_computed_line_column_with_budget(
+            &output.coordinates,
+            &output.offsets,
+            frame,
+            budget,
+        )?,
+        None => (output.coordinates, output.offsets),
+    };
+    Ok(PublishedVoronoiEdgeColumn {
+        coordinates,
+        offsets,
+        receipt: VoronoiReceiptHold {
+            _diagram: output.receipt,
+        },
+    })
 }
 
 pub(crate) fn publish_computed_line_column_with_budget(
@@ -434,6 +517,7 @@ pub(crate) fn publish_computed_line_column_with_budget(
 pub(crate) struct PublishedTriangleVertices {
     pub(crate) points: Vec<crate::geometry::Point>,
     pub(crate) ring_ends: Vec<usize>,
+    pub(crate) mesh_publication: Option<crate::geometry::PreparedMeshPublication>,
 }
 
 impl PublishedTriangleVertices {
@@ -447,7 +531,19 @@ impl PublishedTriangleVertices {
         let ring_ends = (1..=points.len() / 4)
             .map(|index| index.wrapping_mul(4))
             .collect();
-        Ok(Self { points, ring_ends })
+        Ok(Self {
+            points,
+            ring_ends,
+            mesh_publication: None,
+        })
+    }
+
+    pub(crate) fn uniform_mesh(
+        mut publication: crate::geometry::PreparedMeshPublication,
+    ) -> Result<Self> {
+        let mut published = Self::uniform(publication.take_points())?;
+        published.mesh_publication = Some(publication);
+        Ok(published)
     }
 }
 
@@ -483,7 +579,116 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
         }
         ring_ends.push(points.len());
     }
-    Ok(PublishedTriangleVertices { points, ring_ends })
+    Ok(PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    })
+}
+
+pub(crate) fn publish_mesh_triangle_vertex_stream_budgeted(
+    mut publication: crate::geometry::PreparedMeshPublication,
+    frame: GeographicFrame,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    use crate::geometry::tessellation::MeshSiteLocation;
+
+    let source_points = publication.take_points();
+    if !source_points.len().is_multiple_of(4) || publication.faces.len() != source_points.len() / 4
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "prepared mesh face map does not match the triangle vertex stream".into(),
+        )
+        .into());
+    }
+
+    let mut points = Vec::with_capacity(source_points.len());
+    let mut ring_ends = Vec::with_capacity(publication.faces.len());
+    for (face_index, (face, ring)) in publication
+        .faces
+        .iter()
+        .zip(source_points.as_chunks::<4>().0)
+        .enumerate()
+    {
+        let start = face_index
+            .checked_mul(4)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let end = start
+            .checked_add(4)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if face.output_vertices != (start..end) {
+            return Err(GeometryErrorKind::Invalid(
+                "prepared mesh face range does not match its triangle ring".into(),
+            )
+            .into());
+        }
+        match publish_native_computed_chain(
+            frame,
+            ring.as_slice(),
+            true,
+            budget,
+            source_context,
+            |output_side, _, _| {
+                let boundary = face.boundary_uses.get(output_side).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh face is missing a directed side use".into(),
+                    )
+                })?;
+                let start = publication.sites.get(boundary.start_site).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh side start is outside the site table".into(),
+                    )
+                })?;
+                let end = publication.sites.get(boundary.end_site).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh side end is outside the site table".into(),
+                    )
+                })?;
+                let (
+                    MeshSiteLocation::Retained(start_chart),
+                    MeshSiteLocation::Retained(end_chart),
+                ) = (start.location, end.location)
+                else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "geographic mesh side lacks retained chart endpoints".into(),
+                    )
+                    .into());
+                };
+                Ok(ComputedEdgeIntent::retained_native(
+                    start_chart.displacement_to(end_chart),
+                ))
+            },
+            |_, _| ComputedVertexIntent::Canonical,
+        )? {
+            Some(published) => points.extend(published),
+            None => points.extend_from_slice(ring),
+        }
+        ring_ends.push(points.len());
+    }
+    let mut published = PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    };
+    published.mesh_publication = Some(publication);
+    Ok(published)
+}
+
+pub(crate) fn publish_mesh_publication_for_domain(
+    publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => {
+            PublishedTriangleVertices::uniform_mesh(publication)
+        },
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            publish_mesh_triangle_vertex_stream_budgeted(publication, frame, source_context, budget)
+        },
+    }
 }
 
 pub(crate) fn publish_stored_computed_shape(
