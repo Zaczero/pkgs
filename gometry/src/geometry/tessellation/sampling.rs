@@ -113,7 +113,7 @@ pub(crate) struct PreparedSampling {
 }
 
 impl PreparedSampling {
-    pub(in crate::geometry::tessellation) fn from_draws(
+    pub(in crate::geometry::tessellation) const fn from_draws(
         logical_row: usize,
         resolved_seed: u64,
         domain: TopologyDomain,
@@ -129,7 +129,7 @@ impl PreparedSampling {
         }
     }
 
-    pub(in crate::geometry::tessellation) fn empty(
+    pub(in crate::geometry::tessellation) const fn empty(
         logical_row: usize,
         resolved_seed: u64,
         domain: TopologyDomain,
