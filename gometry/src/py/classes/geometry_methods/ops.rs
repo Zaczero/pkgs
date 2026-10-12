@@ -326,11 +326,19 @@ impl PyGeometry {
         frame: Frame,
         tolerance: f64,
     ) -> PyResult<PyGeometryArray> {
-        let shapes = if shape.axes().has_z() || shape.axes().has_m() {
-            let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let axes = shape.axes();
+        let mut metric_scratch = None;
+        let source_context = if axes.has_z() || axes.has_m() {
+            let scratch =
+                metric_scratch.get_or_insert_with(crate::dispatch::MetricScratch::default);
             let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
-                .resolve_topology_ctx(&frame, &mut metric_scratch)?;
-            py.detach(move || {
+                .resolve_topology_ctx(&frame, scratch)?;
+            domain.is_geographic().then_some((domain, metric))
+        } else {
+            None
+        };
+        let shapes = py.detach(move || match source_context {
+            Some((domain, metric)) => {
                 let metric_access = || {
                     metric.geographic_chart_metric()?.ok_or_else(|| {
                         crate::crs::CrsError::invalid(
@@ -340,10 +348,9 @@ impl PyGeometry {
                 };
                 let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
                 shape.split_at_points_with_context(&splitters, tolerance, &context)
-            })?
-        } else {
-            py.detach(move || shape.split_at_points(&splitters, tolerance))?
-        };
+            },
+            None => shape.split_at_points(&splitters, tolerance),
+        })?;
         Ok(PyGeometryArray::from_shapes(shapes, frame)?)
     }
 
