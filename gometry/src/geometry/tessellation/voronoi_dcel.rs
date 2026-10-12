@@ -1668,10 +1668,6 @@ fn record_generic_exact_touch(
     Ok(())
 }
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "Ring stores its explicit closing coordinate, so its length is positive and one subtraction opens the cycle"
-)]
 fn exact_chart_point(chart: Option<&PointSelectionChart>, point: XY) -> Result<exact::ExactPoint> {
     let Some(chart) = chart else {
         return Ok(exact::ExactPoint::from_xy(point));
@@ -1715,6 +1711,10 @@ fn chart_vertex_origins(
     Ok(origins)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Ring guarantees at least four closed coordinates, so subtracting its explicit closing point is safe"
+)]
 fn open_ring(ring: &Ring, chart: Option<&PointSelectionChart>) -> Result<OpenClipRing> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
@@ -2536,7 +2536,10 @@ pub(super) fn lone_site_polygon_outputs(
         }
         let mut ring_edge_ids = Vec::with_capacity(open_count);
         for (edge_index, point) in points.iter().enumerate() {
-            let next_index = (edge_index + 1) % open_count;
+            let next_index = edge_index
+                .checked_add(1)
+                .filter(|&next| next < open_count)
+                .unwrap_or(0);
             let next = points
                 .get(next_index)
                 .expect("lone-site ring edge endpoint belongs to its open cycle");
@@ -6350,13 +6353,7 @@ fn clip_to_half_plane_with_origins(
         return Ok((Vec::new(), Vec::new()));
     }
     let mut edges = Vec::with_capacity(pieces.len().saturating_add(1));
-    for index in 0..pieces.len() {
-        let piece = pieces
-            .get(index)
-            .ok_or_else(|| voronoi_error("collinear strip piece is missing"))?;
-        let next = pieces
-            .get((index + 1) % pieces.len())
-            .ok_or_else(|| voronoi_error("collinear strip successor is missing"))?;
+    for (piece, next) in pieces.iter().zip(pieces.iter().cycle().skip(1)) {
         edges.push((
             piece.start.clone(),
             piece.end.clone(),
@@ -6391,31 +6388,25 @@ fn rounded_ring_with_origins(
     let mut exact_points = vec![first.clone()];
     let mut origins = Vec::with_capacity(ring.len());
     let mut pending = Vec::new();
-    for index in 0..ring.len() {
-        let edge_origin = edge_origins
-            .get(index)
-            .ok_or_else(|| voronoi_error("collinear strip edge origin is missing"))?;
+    for (index, (edge_origin, next_vertex)) in edge_origins
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .enumerate()
+    {
         for origin in edge_origin {
             if !pending.contains(origin) {
                 pending.push(origin.clone());
             }
         }
-        let next = ring
-            .get((index + 1) % ring.len())
-            .ok_or_else(|| voronoi_error("collinear strip vertex is missing"))?
-            .round_nearest_even()?;
+        let next = next_vertex.round_nearest_even()?;
         let current = *points
             .last()
             .expect("the exact strip ring begins with a point");
         if next != current {
             origins.push(std::mem::take(&mut pending));
-            if index + 1 < ring.len() {
+            if index.saturating_add(1) < ring.len() {
                 points.push(next);
-                exact_points.push(
-                    ring.get(index + 1)
-                        .ok_or_else(|| voronoi_error("collinear strip vertex is missing"))?
-                        .clone(),
-                );
+                exact_points.push(next_vertex.clone());
             }
         }
     }
@@ -6696,13 +6687,11 @@ fn collinear_polygon_receipt(
                 orientation == ExactSign::Negative
             };
             let mut uses = Vec::with_capacity(roles.len());
-            for (index, role) in roles.iter_mut().enumerate() {
-                let start = *ids
-                    .get(index)
-                    .ok_or_else(|| voronoi_error("collinear output edge start is absent"))?;
-                let end = *ids
-                    .get((index + 1) % ids.len())
-                    .ok_or_else(|| voronoi_error("collinear output edge end is absent"))?;
+            for ((&start, &end), role) in ids
+                .iter()
+                .zip(ids.iter().cycle().skip(1))
+                .zip(roles.iter_mut())
+            {
                 if start == end {
                     return Err(voronoi_error("collinear output has a zero-length edge"));
                 }

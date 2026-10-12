@@ -387,7 +387,14 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
         for &site_id in &separator.sites {
             let _ = receipt_site(receipt, site_id);
         }
-        assert_eq!(separator.vertices.len(), separator.edges.len() + 1);
+        assert_eq!(
+            separator.vertices.len(),
+            separator
+                .edges
+                .len()
+                .checked_add(1)
+                .expect("separator edge count fits its vertex count")
+        );
         for vertex_id in &separator.vertices {
             let _ = receipt_vertex(receipt, *vertex_id);
         }
@@ -400,7 +407,11 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
                 .expect("separator start exists");
             let right = *separator
                 .vertices
-                .get(index + 1)
+                .get(
+                    index
+                        .checked_add(1)
+                        .expect("separator edge index fits its following vertex"),
+                )
                 .expect("separator end exists");
             assert!(
                 edge_receipt.endpoints == [left, right] || edge_receipt.endpoints == [right, left]
@@ -464,9 +475,11 @@ fn assert_polygon_receipt_alignment(outputs: &crate::geometry::VoronoiPolygonOut
                     (edge_end, edge_start)
                 };
                 let actual_start = *points.get(index).expect("ring edge start exists");
-                let actual_end = *points
-                    .get((index + 1) % open_count)
-                    .expect("ring edge end exists");
+                let next_index = index
+                    .checked_add(1)
+                    .filter(|&next| next < open_count)
+                    .unwrap_or(0);
+                let actual_end = *points.get(next_index).expect("ring edge end exists");
                 assert_eq!(PointKey::new(actual_start), PointKey::new(expected_start));
                 assert_eq!(PointKey::new(actual_end), PointKey::new(expected_end));
                 for source_use in &role.source_uses {
@@ -539,13 +552,25 @@ fn assert_edge_column_receipt_alignment(
     for (separator, &[start, end]) in receipt.separators.iter().zip(line_ranges) {
         let start = start as usize;
         let end = end as usize;
-        assert_eq!(end - start, separator.vertices.len());
+        assert_eq!(
+            end.checked_sub(start)
+                .expect("separator coordinate offsets are ordered"),
+            separator.vertices.len()
+        );
         for (index, &vertex_id) in separator.vertices.iter().enumerate() {
             let assigned = receipt_vertex(receipt, vertex_id)
                 .assignment
                 .expect("published separator vertices have assignments");
             assert_eq!(
-                PointKey::new(coordinates.point_at(start + index).xy()),
+                PointKey::new(
+                    coordinates
+                        .point_at(
+                            start
+                                .checked_add(index)
+                                .expect("separator coordinate offset fits its row"),
+                        )
+                        .xy(),
+                ),
                 PointKey::new(assigned)
             );
         }

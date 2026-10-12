@@ -2220,8 +2220,10 @@ impl ExactSourceInventory {
         let mut ring_local = vec![0_u32; self.ring_count];
         for range in &self.polygon_ring_ranges {
             for ring in range.clone() {
-                let local =
-                    u32::try_from(ring - range.start).map_err(|_| ResourceError::SizeOverflow)?;
+                let local_index = ring.checked_sub(range.start).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon ring range starts after its ring".into())
+                })?;
+                let local = u32::try_from(local_index).map_err(|_| ResourceError::SizeOverflow)?;
                 *ring_local.get_mut(ring).ok_or_else(|| {
                     GeometryErrorKind::Invalid("polygon source ring ordinal is unknown".into())
                 })? = local;
