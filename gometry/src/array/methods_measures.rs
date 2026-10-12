@@ -6,6 +6,7 @@ use crate::array::{
     PyTypeMethods as _, Python, Shape, SpatialCurve, crs, crs_label, pymethods, resolve_metric,
 };
 use crate::dispatch::{MetricOp, kernels};
+use crate::geometry::publication::PublicationArrayRows;
 use crate::geometry::storage;
 use crate::geometry::storage::kernels::{
     bounds_values_from_columns_masked, geodesic_line_measure, geodesic_polygon_measure,
@@ -389,32 +390,55 @@ impl PyGeometryArray {
             .resolve_topology_ctx(&frame, &mut metric_scratch)?;
         // One detach around the whole loop: the union of every group needs no
         // Python, and a GIL round-trip per group was the loop's fixed cost.
-        let shapes: Vec<Shape> = py.detach(move || {
-            let metric_access = || {
-                metric.geographic_chart_metric()?.ok_or_else(|| {
-                    crate::crs::CrsError::invalid(
-                        "geographic dissolve source ordinates require the operation's CRS metric",
-                    )
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic dissolve source ordinates require the operation's CRS metric",
+                )
+            })
+        };
+        let output = match domain {
+            crate::geometry::TopologyDomain::Cartesian => {
+                let shapes = py.detach(move || {
+                    group_shapes
+                        .into_iter()
+                        .map(|group| {
+                            crate::geometry::overlay_all_with_metric(
+                                &group,
+                                domain,
+                                crate::geometry::OverlayOp::Union,
+                                strictness,
+                                &metric_access,
+                            )
+                        })
+                        .collect::<Result<_, _>>()
+                })?;
+                Self::from_shapes(shapes, frame.clone())?
+            },
+            crate::geometry::TopologyDomain::Geographic(geographic_frame) => {
+                let output_frame = frame.clone();
+                py.detach(move || {
+                    let mut output = PublicationArrayRows::with_capacity(group_shapes.len());
+                    for (row, group) in group_shapes.into_iter().enumerate() {
+                        output.try_push(
+                            crate::geometry::overlay_all_geographic_output_with_metric_and_frame(
+                                &group,
+                                geographic_frame,
+                                &output_frame,
+                                crate::geometry::OverlayOp::Union,
+                                strictness,
+                                &metric_access,
+                                row,
+                            )?,
+                        )?;
+                    }
+                    output.finish(output_frame)
                 })
-            };
-            group_shapes
-                .into_iter()
-                .map(|group| {
-                    crate::geometry::overlay_all_with_metric(
-                        &group,
-                        domain,
-                        crate::geometry::OverlayOp::Union,
-                        strictness,
-                        &metric_access,
-                    )
-                })
-                .collect::<Result<_, _>>()
-        })?;
+                .map_err(PyErr::from)?
+            },
+        };
         drop(metric_scratch);
-        Ok((Self::from_shapes(shapes, frame)?, groups)
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
+        Ok((output, groups).into_pyobject(py)?.into_any().unbind())
     }
 
     /// Number of rows (including missing rows).
