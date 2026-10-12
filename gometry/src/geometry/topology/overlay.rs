@@ -1,6 +1,7 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use super::emission::{
     DirectedSpan, EmissionNodeRegistry, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint,
@@ -122,7 +123,7 @@ impl SpanEndpoint {
 
 pub(super) struct BoundaryCycle {
     pub(super) darts: Vec<QDartId>,
-    region: usize,
+    pub(super) region: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2496,7 +2497,7 @@ fn select_faces(
     Ok(selected)
 }
 
-struct FaceUnion {
+pub(super) struct FaceUnion {
     parents: Vec<usize>,
     selected: Vec<bool>,
 }
@@ -2563,9 +2564,42 @@ fn face_regions(
     selected: &[bool],
     work: &mut impl Work,
 ) -> Result<FaceUnion> {
+    face_regions_with_owner_labels(q, selected, None, work)
+}
+
+pub(super) fn coverage_face_regions(
+    q: &super::q::ExactGeographicQ,
+    face_owners: &[Option<usize>],
+    work: &mut impl Work,
+) -> Result<FaceUnion> {
+    if face_owners.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage face owners do not match Q's global face table".into(),
+        )
+        .into());
+    }
+    work.charge_into_error(
+        u64::try_from(face_owners.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    let selected = face_owners.iter().map(Option::is_some).collect::<Vec<_>>();
+    face_regions_with_owner_labels(q, &selected, Some(face_owners), work)
+}
+
+fn face_regions_with_owner_labels(
+    q: &super::q::ExactGeographicQ,
+    selected: &[bool],
+    owner_labels: Option<&[Option<usize>]>,
+    work: &mut impl Work,
+) -> Result<FaceUnion> {
     if selected.len() != q.global_face_count {
         return Err(GeometryErrorKind::Invalid(
             "Q face selection does not match its global face table".into(),
+        )
+        .into());
+    }
+    if owner_labels.is_some_and(|owners| owners.len() != selected.len()) {
+        return Err(GeometryErrorKind::Invalid(
+            "Q face owner labels do not match its global face table".into(),
         )
         .into());
     }
@@ -2583,14 +2617,25 @@ fn face_regions(
         let right_selected = selected.get(right).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q span references an unknown global face".into())
         })?;
-        if left_selected && right_selected {
+        let same_owner = if let Some(owners) = owner_labels {
+            let left_owner = owners.get(left).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q span has no left face owner label".into())
+            })?;
+            let right_owner = owners.get(right).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q span has no right face owner label".into())
+            })?;
+            left_owner.is_some() && left_owner == right_owner
+        } else {
+            true
+        };
+        if left_selected && right_selected && same_owner {
             regions.join(left, right, work)?;
         }
     }
     Ok(regions)
 }
 
-fn selected_region_facts(
+pub(super) fn selected_region_facts(
     q: &super::q::ExactGeographicQ,
     selected: &[bool],
     regions: &mut FaceUnion,
@@ -2632,8 +2677,9 @@ fn selected_region_facts(
     }
 
     for pole in [ChartPole::North, ChartPole::South] {
-        q.for_each_pole_incident_face(pole, |face| {
+        q.for_each_pole_sector_with_work(pole, work, |sector, work| {
             work.charge_into_error(1)?;
+            let face = sector.face();
             if !selected.get(face.0 as usize).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q pole sector references an unknown face".into())
             })? {
@@ -2662,7 +2708,7 @@ fn selected_region_facts(
     Ok(facts)
 }
 
-fn selected_face_roots(
+pub(super) fn selected_face_roots(
     q: &super::q::ExactGeographicQ,
     selected: &[bool],
     regions: &mut FaceUnion,
@@ -2846,6 +2892,12 @@ fn selected_area_boundaries(
     regions: &mut FaceUnion,
     work: &mut impl Work,
 ) -> Result<Vec<BoundaryCycle>> {
+    if selected_faces.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "Q face selection does not match its global face table".into(),
+        )
+        .into());
+    }
     work.charge_into_error(
         u64::try_from(
             q.darts
@@ -2892,18 +2944,141 @@ fn selected_area_boundaries(
         *slot = true;
     }
 
+    Ok(boundary_cycles_by_owner(
+        q,
+        |dart| {
+            boundary
+                .get(dart.0 as usize)
+                .copied()
+                .map(|selected| selected.then_some(0))
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q overlay boundary dart is unknown".into()).into()
+                })
+        },
+        regions,
+        work,
+    )?
+    .into_iter()
+    .map(|(_, cycle)| cycle)
+    .collect())
+}
+
+pub(super) fn coverage_area_boundaries(
+    q: &super::q::ExactGeographicQ,
+    face_owners: &[Option<usize>],
+    regions: &mut FaceUnion,
+    work: &mut impl Work,
+) -> Result<Vec<(usize, BoundaryCycle)>> {
+    if face_owners.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage face owners do not match Q's global face table".into(),
+        )
+        .into());
+    }
+    let mut boundary = vec![None; q.darts.len()];
+    for (span_index, faces) in q.span_global_faces.iter().enumerate() {
+        work.charge_into_error(1)?;
+        let Some([left, right]) = faces else {
+            continue;
+        };
+        let left_owner = face_owners.get(left.0 as usize).copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q span has an unknown left coverage owner".into())
+        })?;
+        let right_owner = face_owners.get(right.0 as usize).copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q span has an unknown right coverage owner".into())
+        })?;
+        if left_owner == right_owner {
+            continue;
+        }
+        let forward = q
+            .span_darts
+            .get(span_index)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("a coverage Q boundary has no dart".into())
+            })?;
+        if let Some(row) = left_owner {
+            set_coverage_boundary_owner(&mut boundary, forward, row)?;
+        }
+        if let Some(row) = right_owner {
+            set_coverage_boundary_owner(&mut boundary, QDartId(forward.0 ^ 1), row)?;
+        }
+    }
+
+    boundary_cycles_by_owner(
+        q,
+        |dart| {
+            let owner = boundary.get(dart.0 as usize).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage Q boundary dart is unknown".into())
+            })?;
+            let owner = owner
+                .map(|owner| {
+                    owner
+                        .get()
+                        .checked_sub(1)
+                        .ok_or(ResourceError::SizeOverflow)
+                })
+                .transpose()?;
+            Ok(owner)
+        },
+        regions,
+        work,
+    )
+}
+
+fn set_coverage_boundary_owner(
+    boundary: &mut [Option<NonZeroUsize>],
+    dart: QDartId,
+    row: usize,
+) -> Result<()> {
+    let encoded_row = row
+        .checked_add(1)
+        .and_then(NonZeroUsize::new)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let slot = boundary
+        .get_mut(dart.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("coverage Q boundary dart is unknown".into()))?;
+    if slot.replace(encoded_row).is_some() {
+        return Err(GeometryErrorKind::Invalid(
+            "a coverage Q boundary dart was selected more than once".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn boundary_cycles_by_owner(
+    q: &super::q::ExactGeographicQ,
+    mut owner_of: impl FnMut(QDartId) -> Result<Option<usize>>,
+    regions: &mut FaceUnion,
+    work: &mut impl Work,
+) -> Result<Vec<(usize, BoundaryCycle)>> {
+    work.charge_into_error(
+        u64::try_from(
+            q.darts
+                .len()
+                .checked_mul(2)
+                .and_then(|darts| darts.checked_add(q.nodes.len()))
+                .ok_or(ResourceError::SizeOverflow)?,
+        )
+        .map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut visited = vec![false; q.darts.len()];
     let mut positions = vec![None; q.nodes.len()];
     let mut walks = Vec::new();
-    for (seed, &is_boundary) in boundary.iter().enumerate() {
+    for seed in 0..q.darts.len() {
         work.charge_into_error(1)?;
+        let start = QDartId(u32::try_from(seed).map_err(|_| ResourceError::SizeOverflow)?);
+        let Some(owner) = owner_of(start)? else {
+            continue;
+        };
         let was_visited = visited.get(seed).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q overlay boundary has no visited state".into())
         })?;
-        if !is_boundary || was_visited {
+        if was_visited {
             continue;
         }
-        let start = QDartId(u32::try_from(seed).map_err(|_| ResourceError::SizeOverflow)?);
         let mut current = start;
         let mut walk = Vec::new();
         loop {
@@ -2950,10 +3125,10 @@ fn selected_area_boundaries(
                     cycle.push(dart);
                 }
                 if !cycle.is_empty() {
-                    walks.push(cycle);
+                    walks.push((owner, cycle));
                 }
             }
-            current = next_boundary_dart(q, &boundary, current, work)?;
+            current = next_boundary_dart_by_owner(q, current, owner, &mut owner_of, work)?;
             if current == start {
                 break;
             }
@@ -2965,9 +3140,10 @@ fn selected_area_boundaries(
             .into());
         }
     }
-    for (&selected, was_visited) in boundary.iter().zip(visited) {
+    for (index, was_visited) in visited.into_iter().enumerate() {
         work.charge_into_error(1)?;
-        if selected && !was_visited {
+        let dart = QDartId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?);
+        if owner_of(dart)?.is_some() && !was_visited {
             return Err(GeometryErrorKind::Invalid(
                 "Q overlay left a selected boundary dart unvisited".into(),
             )
@@ -2976,7 +3152,7 @@ fn selected_area_boundaries(
     }
 
     let mut cycles = Vec::with_capacity(walks.len());
-    for darts in walks {
+    for (owner, darts) in walks {
         work.charge_into_error(1)?;
         let first = *darts.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q overlay emitted an empty boundary cycle".into())
@@ -2991,15 +3167,16 @@ fn selected_area_boundaries(
                 GeometryErrorKind::Invalid("Q boundary cycle left face has no global ID".into())
             })?;
         let region = regions.selected_root(face, work)?;
-        cycles.push(BoundaryCycle { darts, region });
+        cycles.push((owner, BoundaryCycle { darts, region }));
     }
     Ok(cycles)
 }
 
-fn next_boundary_dart(
+fn next_boundary_dart_by_owner(
     q: &super::q::ExactGeographicQ,
-    selected: &[bool],
     dart_id: QDartId,
+    owner: usize,
+    owner_of: &mut impl FnMut(QDartId) -> Result<Option<usize>>,
     work: &mut impl Work,
 ) -> Result<QDartId> {
     let dart = q
@@ -3040,9 +3217,7 @@ fn next_boundary_dart(
         .chain(after_twin.iter().rev())
     {
         work.charge_into_error(1)?;
-        if selected.get(candidate.0 as usize).copied().ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q boundary fan has an unknown dart".into())
-        })? {
+        if owner_of(candidate)? == Some(owner) {
             return Ok(candidate);
         }
     }
