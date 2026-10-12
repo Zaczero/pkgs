@@ -8,6 +8,7 @@ use super::capture::{native_arrow_batch_from_capsules, native_arrow_batch_from_r
 use super::decode::NativeDecodedStorage;
 use super::layout::{ArrowFormat, NullCount};
 use super::*;
+use crate::py::arrow_c::ArrowReleaseSlot as _;
 
 include!("tests/support.rs");
 include!("tests/layout.rs");

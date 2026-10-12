@@ -16,8 +16,8 @@ use crate::py::arrow_c::admitted::{
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted, arc_from_str,
-    arc_from_vec, arc_new, array_capsule_name, capsule_pointer, schema_capsule_name,
+    ArrowArray, ArrowSchema, ClassifiedGeometrySchema, admitted, arc_from_str, arc_from_vec,
+    arc_new, array_capsule_name, capsule_pointer, schema_capsule_name,
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::{arrow, arrow_c, errors};

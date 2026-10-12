@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    ArrowArray, CaptureLayout, MovedArrowShell, PyResult, PyTypeError, c_void, errors, ptr,
+};
 
 /// Arrow C Data Interface `null_count`: `-1` means unknown; known counts must
 /// not exceed the logical length.
