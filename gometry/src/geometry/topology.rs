@@ -47,8 +47,13 @@ pub(in crate::geometry) use exact::{
     vector_difference_with_work,
 };
 mod emission;
-pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
+pub(in crate::geometry) use emission::{
+    EmissionPortId, FeatureFamilyRegistry, PreparedNativeSource, QSourceImage, SourceTrace,
+};
+mod coverage;
+pub(in crate::geometry) mod linework;
 pub(in crate::geometry) mod overlay;
+pub(crate) use coverage::{analyze_geographic_coverage, analyze_geographic_coverage_with_work};
 mod q;
 pub(in crate::geometry) use q::exact_segments_intersect_with_work;
 pub(in crate::geometry) mod q_embedding;

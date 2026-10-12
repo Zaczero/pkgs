@@ -155,8 +155,14 @@ impl Shape {
         &self,
         support: &Self,
         refined_chains: &[RefinedChainProvenance],
+        resolve_source_ordinates: bool,
     ) -> Result<Option<MinimumClearanceWitness>> {
-        minimum_clearance_witness_with_support(self, support, refined_chains)
+        minimum_clearance_witness_with_support(
+            self,
+            support,
+            refined_chains,
+            resolve_source_ordinates,
+        )
     }
 
     /// The two-point `LineString` realizing `minimum_clearance` —

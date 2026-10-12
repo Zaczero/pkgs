@@ -350,7 +350,7 @@ impl CdtCoordinates {
             return exact::circumcenter(a, b, c)?.finite_rounding();
         }
         let [a, b, c] = triangle.map(|site| self.exact_xy(self.site_query(site)));
-        exact::circumcenter_dyadic_points(a, b, c)
+        exact::circumcenter_dyadic_points(&a, &b, &c)
     }
 
     fn axis_bounds(&self, query: CdtQuery) -> Result<[(f64, f64); 2]> {

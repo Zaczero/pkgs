@@ -106,15 +106,16 @@ pub(crate) use antimeridian::{
 pub(crate) use boundary::boundary_with_metric;
 mod computed_shape;
 pub(crate) use computed_shape::{
-    PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
-    publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
-    publish_computed_point_or_raw_shape, publish_mesh_publication_for_domain,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
-    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
-    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
-    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
-    publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
+    PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
+    PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
+    publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
+    publish_mesh_publication_for_domain, publish_polygon_parts_with_edge_roles,
+    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
+    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
+    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
+    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
+    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
+    publish_voronoi_edge_column_with_budget, publish_voronoi_polygon_outputs,
 };
 mod arrangement;
 mod bvh_code;
@@ -138,6 +139,7 @@ pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch}
 pub(crate) use types::coordinate_columns_eq;
 pub(crate) mod embedding_completion;
 mod embedding_search;
+pub(crate) mod publication;
 #[cfg(test)]
 pub(crate) use embedding_search::work_product_ticks;
 pub(crate) use embedding_search::{Unmetered, Work, WorkResult};
@@ -156,13 +158,17 @@ pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_pol
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
-    overlay_all_with_metric,
+    overlay_all_geographic_output_with_metric_and_frame,
+    overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
 mod provenance;
-pub(crate) use provenance::{RefinedChainProvenance, VertexProvenance, emit_from_original};
+pub(crate) use provenance::{
+    RefinedChainProvenance, VertexProvenance, emit_from_original,
+    emit_from_original_with_source_roots,
+};
 mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
@@ -180,6 +186,7 @@ mod tessellation;
 mod topology;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
+    analyze_geographic_coverage, analyze_geographic_coverage_with_work,
 };
 mod util;
 use std::borrow::Borrow;
@@ -195,20 +202,26 @@ use access::{
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use chart_bvh::ChartEdgeBvh;
 pub(crate) use constructive::{
-    AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, OriginSpec,
-    PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
-    densify_points_budgeted_with_placement, rdp_keep_with_edge_guard, segmentize_points_budgeted,
+    AffineLinear, ChartSourceParameters, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine,
+    OriginSpec, PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
+    densify_points_budgeted_with_placement, rdp_keep_with_edge_guard,
+    segmentize_chart_points_with_piece_counts_budgeted, segmentize_points_budgeted,
     segmentize_points_with_piece_counts_budgeted, stable_affine_xy, stable_snap_ordinate, vw_keep,
     vw_keep_geographic,
 };
 use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
 };
+#[cfg(test)]
+pub(crate) use coverage::coverage_invalid_edges;
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
-    coverage_simplify_with_context, coverage_union_topo,
+    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_with_domain,
+    coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
+    coverage_union_topo,
 };
-pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
+pub(in crate::geometry) use coverage::{
+    TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
+};
 use distance::line_length_3d;
 pub(crate) use distance::{
     ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
@@ -381,7 +394,8 @@ pub(crate) use segments::{
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
-    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiPolygonOutput, row_sample_seed,
+    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, row_sample_seed,
 };
 #[expect(
     unused_imports,

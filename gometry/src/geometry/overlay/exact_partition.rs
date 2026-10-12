@@ -84,11 +84,12 @@ use construction::{
 };
 pub(in crate::geometry) use embedding::{EmbeddingDomain, segments_within_chebyshev};
 use emission::{
-    BoundaryPlan, CellFacts, CoverageFaceState, NodeParts, polygonize_emission,
-    polygonize_full_emission,
+    BoundaryPlan, CellFacts, CoverageFaceState, NodeParts, OverlaySourceLocation,
+    polygonize_emission, polygonize_full_emission,
 };
 pub(in crate::geometry) use emission::{
-    GlobalFaces, emitted_pair_preserves_incidence, walk_is_shell_with_work,
+    GlobalFaces, OverlayNodeReceipt, OverlayPolygonPartWithSources, OverlaySourceEdgeUse,
+    emitted_pair_preserves_incidence, walk_is_shell_with_work,
 };
 use location::AreaLocationCells;
 pub(in crate::geometry) use location::AreaLocationStrategy;
@@ -2200,7 +2201,7 @@ impl ExactSourceInventory {
         &self,
         operation: crate::geometry::OverlayOp,
         preserved_operand: u32,
-    ) -> Result<Vec<(Polygon, Vec<Vec<bool>>)>> {
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let partition = self.partition_without_budget()?;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -2216,6 +2217,44 @@ impl ExactSourceInventory {
                 });
             preserved_spans.push(preserved);
         }
+        let mut ring_local = vec![0_u32; self.ring_count];
+        for range in &self.polygon_ring_ranges {
+            for ring in range.clone() {
+                let local_index = ring.checked_sub(range.start).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon ring range starts after its ring".into())
+                })?;
+                let local = u32::try_from(local_index).map_err(|_| ResourceError::SizeOverflow)?;
+                *ring_local.get_mut(ring).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon source ring ordinal is unknown".into())
+                })? = local;
+            }
+        }
+        let mut ring_next_edge = vec![0_u32; self.ring_count];
+        let mut source_locations = Vec::with_capacity(self.source_segments.len());
+        for (source, maybe_ring) in self.source_rings.iter().copied().enumerate() {
+            let ring = maybe_ring.ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "polygon edge provenance contains a non-ring source".into(),
+                )
+            })? as usize;
+            let edge = *ring_next_edge.get(ring).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon source ring is unknown".into())
+            })?;
+            let next = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            *ring_next_edge.get_mut(ring).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon source ring is unknown".into())
+            })? = next;
+            let operand = *self.source_operands.get(source).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon source operand is unknown".into())
+            })?;
+            source_locations.push(OverlaySourceLocation {
+                operand,
+                ring: *ring_local.get(ring).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon source ring ordinal is unknown".into())
+                })?,
+                edge,
+            });
+        }
         let plan = cells.emission_plan_with_protected(
             &partition,
             &topology,
@@ -2230,6 +2269,8 @@ impl ExactSourceInventory {
             &edges,
             operation.name(),
             &preserved_spans,
+            &source_locations,
+            &self.source_segments,
         )
     }
 
@@ -5319,6 +5360,16 @@ impl ExactPartition<'_> {
     /// constructed once and kept for a crossing.
     pub(in crate::geometry) fn exact(&self, node: NodeId) -> Result<Cow<'_, [ExactDyadic; 3]>> {
         self.points.exact(node.0)
+    }
+
+    pub(in crate::geometry) fn parameter_on_source_segment(
+        &self,
+        segment: Segment,
+        node: NodeId,
+    ) -> Result<ExactRational> {
+        let point = self.exact(node)?;
+        let [numerator, denominator] = parameter_along(segment, &point)?;
+        ExactRational::new(numerator, denominator)
     }
 
     fn exact_owned(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {

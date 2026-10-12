@@ -15,13 +15,6 @@ permissions:
   actions: write
   contents: read
 
-# CI has no fleet configuration layer; these are the defaults developer
-# machines receive from it, so a hung test is cut off and failures carry
-# their skip reasons and slowest tests.
-env:
-  PYTEST_ADDOPTS: -ra --durations=25 --durations-min=0.25
-  PYTEST_TIMEOUT: "60"
-
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -177,7 +170,6 @@ jobs:
               GOMETRY_NATIVE_TEST_RECEIPT="$evidence/binary.json" \
               GOMETRY_NATIVE_TEST_RUN_ID="$run_id" \
               cargo nextest run --locked -p "$PACKAGE" --no-tests fail \
-                --no-fail-fast \
                 --profile default \
                 --tool-config-file "gometry:$evidence/nextest.toml"
             python3 tools/wheel_smoke.py --write-native-test-receipt \
@@ -185,7 +177,7 @@ jobs:
               "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
               --profile debug --run-id "$run_id"
           elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
-            cargo nextest run --locked -p "$PACKAGE" --no-fail-fast
+            cargo nextest run --locked -p "$PACKAGE"
           else
             cargo nextest run --no-tests pass
           fi
@@ -208,7 +200,6 @@ jobs:
               GOMETRY_NATIVE_TEST_RUN_ID="$run_id" \
               cargo nextest run --locked -p "$PACKAGE" --release \
                 --no-tests fail \
-                --no-fail-fast \
                 --profile default \
                 --tool-config-file "gometry:$evidence/nextest.toml"
             python3 tools/wheel_smoke.py --write-native-test-receipt \
@@ -216,7 +207,7 @@ jobs:
               "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
               --profile release --run-id "$run_id"
           elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
-            cargo nextest run --locked -p "$PACKAGE" --release --no-fail-fast
+            cargo nextest run --locked -p "$PACKAGE" --release
             cargo clippy --locked -p "$PACKAGE" --all-targets -- -D warnings
           else
             cargo nextest run --no-tests pass --release

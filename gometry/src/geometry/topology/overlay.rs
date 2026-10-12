@@ -1,6 +1,7 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use super::emission::{
     DirectedSpan, EmissionNodeRegistry, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint,
@@ -12,6 +13,10 @@ use super::emission::{
 use super::exact::{
     ExactChartPoint, ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId,
     SourceEdgeKind, SourceRingId, SourceRowId,
+};
+use super::linework::{
+    DiagnosticKind, DiagnosticSpan, even_odd_face_selection, face_cycle_hole_roles,
+    minimal_face_boundaries, minimal_face_selection, noded_spans,
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use super::q_embedding::{
@@ -27,9 +32,9 @@ use super::q_embedding::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, SeamIdentity};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout,
-};
+#[cfg(test)]
+use crate::geometry::embedding_completion::LiteralCheck;
+use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
 };
@@ -41,12 +46,15 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, OverlayOp, build_certified_overlay_shape_with_axes,
     build_certified_overlay_shape_with_axes_and_order,
 };
+use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
 };
+
+mod publication;
 
 #[derive(Clone, Copy)]
 pub(super) struct LineStep {
@@ -68,15 +76,26 @@ struct SourceLineSpan {
     reversed: bool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "diagnostic and noded line plans await the shared F4 receiver routing"
+    )
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum QLineOrigin {
+pub(super) enum QLineOrigin {
     Curve,
     ArealBoundary,
+    Noded,
+    Diagnostic(DiagnosticKind),
 }
 
 pub(super) struct QLinePrimitive<T> {
-    origin: QLineOrigin,
+    pub(super) origin: QLineOrigin,
     pub(super) recipe_walk: RecipeWalkOwner,
+    pub(super) source_row: Option<SourceRowId>,
+    pub(super) close: bool,
     pub(super) path: T,
 }
 
@@ -107,7 +126,7 @@ impl SpanEndpoint {
 
 pub(super) struct BoundaryCycle {
     pub(super) darts: Vec<QDartId>,
-    region: usize,
+    pub(super) region: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -131,10 +150,35 @@ impl SelectedRegionPoles {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "producer-specific selection is consumed when F4 receiver routing lands"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QProducer {
+    Overlay,
+    Boundary,
+    SourceLines,
+    Node,
+    Polygonize,
+    BuildArea,
+}
+
 pub(super) struct QEmissionPlan {
     whole_sphere: bool,
     force_native: bool,
     boundary_support: Option<BoundarySupport>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the final producer sink consumes this selection tag after F4 lands"
+        )
+    )]
+    pub(super) producer: QProducer,
     pub(super) polygons: PolygonPlan,
     pub(super) cycles: Vec<BoundaryCycle>,
     pub(super) selected_regions: Vec<SelectedRegionFact>,
@@ -305,23 +349,26 @@ struct WrittenDrawingParts {
     layout: ShapeLiteralLayout<QSourceImage>,
 }
 
-fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing {
-    let family_state = embedding.family_state;
-    match embedding.sealed {
-        SealedQDrawing::Source(source) => WrittenQDrawing {
-            shape: source.sealed.into_shape(),
-            line_traces: source.line_traces,
-            family_state,
-        },
+fn finish_certified_q_emission(
+    embedding: CertifiedQEmission,
+) -> (SealedQDrawing, Option<FeatureFamilyRegistry>) {
+    (embedding.sealed, embedding.family_state)
+}
+
+fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
+    let (sealed, family_state) = finish_certified_q_emission(embedding);
+    let (shape, line_traces) = match sealed {
+        SealedQDrawing::Source(source) => (source.sealed.into_scalar()?.0, source.line_traces),
         SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native);
-            WrittenQDrawing {
-                shape: written.shape,
-                line_traces: written.line_traces,
-                family_state,
-            }
+            let written = write_completed_native(native)?;
+            (written.shape, written.line_traces)
         },
-    }
+    };
+    Ok(WrittenQDrawing {
+        shape,
+        line_traces,
+        family_state,
+    })
 }
 
 fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
@@ -418,7 +465,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             operation,
             preparation_work,
         )?;
-        let sealed = match super::q_embedding::bind_source_only(
+        let receipt = super::q_embedding::publication::SourceOnlyPublication::new(
             source,
             topology,
             None,
@@ -427,12 +474,37 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             &[],
             &[],
             &[],
-            preparation_work,
+        );
+        let sealed = match finish_geographic(
+            super::super::publication::PublicationCall::new(
+                super::super::publication::ProducerReceipt::QSourceOnly(receipt),
+                topology.publication_frame().clone(),
+                preparation_work,
+            ),
+            super::super::publication::StorageTarget::Scalar,
         )? {
-            LiteralCheck::Pass(sealed) => sealed,
-            LiteralCheck::Reject(_) => {
+            super::super::publication::PublicationOutcome::Pass(finished) => finished,
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::SourceOnly(_),
+            ) => {
                 return Err(GeometryErrorKind::Invalid(
                     "unchanged Q source output failed its literal binding".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::Native,
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned native rejection".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::Batch(_),
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned array batch rejection".into(),
                 )
                 .into());
             },
@@ -464,25 +536,25 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
     strict: bool,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
-    let mut budget = EvaluationBudget::new(operation.name(), 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new(operation.name(), "computed edges");
-    let plan = QEmissionPlan::build(topology, operation, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let source_points = source_point_coordinates_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
+    publication::exact_geographic_overlay(topology, operation, declared_axes, strict, metric_access)
+}
+
+pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    operation: OverlayOp,
+    declared_axes: CoordinateAxes,
+    strict: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    publication::exact_geographic_overlay_pending_row(
         topology,
-        &plan,
-        &source_points,
-        &nearest,
+        operation,
         declared_axes,
         strict,
-        operation.name(),
         metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    Ok(publish_q_overlay(embedding))
+        logical_row,
+    )
 }
 
 pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
@@ -528,7 +600,7 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
         expansion_budget,
         budget,
     )?;
-    let written = write_certified_q_emission(embedding);
+    let written = write_certified_q_emission(embedding)?;
     let line_count = match &written.shape {
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
@@ -559,8 +631,8 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
     })
 }
 
-fn publish_q_overlay(embedding: CertifiedQEmission) -> Shape {
-    write_certified_q_emission(embedding).shape
+fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
+    Ok(write_certified_q_emission(embedding)?.shape)
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -576,24 +648,26 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
     }
     let row = SourceRowId(0);
     let mut budget = EvaluationBudget::new("geographic boundary", 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
-    let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
-    let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        false,
-        "geographic boundary",
-        metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    Ok(write_certified_q_emission(embedding).shape)
+    let embedding = {
+        let mut preparation_work = EvaluationOnly::new(&mut budget);
+        let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
+        let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
+        let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
+        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
+        resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            false,
+            "geographic boundary",
+            metric_access,
+            &mut expansion_budget,
+            &mut preparation_work,
+        )?
+    };
+    publish_q_overlay(embedding)
 }
 
 fn boundary_cycle_line_paths(
@@ -654,12 +728,14 @@ fn boundary_cycle_line_paths(
             path.push(LineStep {
                 span: span_index,
                 from_endpoint,
-                owner: area_owner_index(topology, span_index, work)?,
+                owner: boundary_owner_index(topology, span_index, work)?,
             });
         }
         paths.push(QLinePrimitive {
             origin: QLineOrigin::ArealBoundary,
             recipe_walk: RecipeWalkOwner::Line(paths.len()),
+            source_row: None,
+            close: false,
             path,
         });
     }
@@ -771,6 +847,13 @@ pub(super) fn source_ring_reuse_matches(
     Ok(true)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "producer builders are exercised before F4 and routed after its receiver lands"
+    )
+)]
 impl QEmissionPlan {
     pub(super) const fn is_whole_sphere(&self) -> bool {
         self.whole_sphere
@@ -821,6 +904,7 @@ impl QEmissionPlan {
             whole_sphere,
             force_native: false,
             boundary_support: None,
+            producer: QProducer::Overlay,
             polygons,
             cycles,
             selected_regions,
@@ -916,6 +1000,7 @@ impl QEmissionPlan {
                 whole_sphere: false,
                 force_native: false,
                 boundary_support: Some(support),
+                producer: QProducer::Boundary,
                 polygons,
                 cycles: Vec::new(),
                 selected_regions,
@@ -1049,6 +1134,8 @@ impl QEmissionPlan {
             line_paths.push(QLinePrimitive {
                 origin: QLineOrigin::Curve,
                 recipe_walk: RecipeWalkOwner::Line(member),
+                source_row: None,
+                close: false,
                 path,
             });
         }
@@ -1064,12 +1151,165 @@ impl QEmissionPlan {
             whole_sphere: false,
             force_native: true,
             boundary_support: None,
+            producer: QProducer::SourceLines,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
             selected_face_roots: vec![None; q.global_face_count],
             fragment_recipes,
             line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_node(
+        topology: &ExactGeographicTopology,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let selected = noded_spans(topology, work)?;
+        work.charge_into_error(
+            u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut line_paths = Vec::with_capacity(selected.len());
+        for (index, selected) in selected.into_iter().enumerate() {
+            work.charge_into_error(1)?;
+            line_paths.push(QLinePrimitive {
+                origin: QLineOrigin::Noded,
+                recipe_walk: RecipeWalkOwner::Line(index),
+                source_row: None,
+                close: false,
+                path: vec![LineStep {
+                    span: selected.span,
+                    from_endpoint: SpanEndpoint::Start,
+                    owner: selected.owner,
+                }],
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings: Vec::new(),
+            region_count: q.global_face_count,
+        };
+        let fragment_recipes = build_fragment_recipes(topology, &polygons, &[], &line_paths, work)?;
+        work.charge_into_error(
+            u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::Node,
+            polygons,
+            cycles: Vec::new(),
+            selected_regions: Vec::new(),
+            selected_face_roots: vec![None; q.global_face_count],
+            fragment_recipes,
+            line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_polygonize(
+        topology: &ExactGeographicTopology,
+        diagnostics: bool,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let selected_faces = minimal_face_selection(topology, work)?;
+        let mut regions = FaceUnion::new(&selected_faces, work)?;
+        let cycles = minimal_face_boundaries(topology, &selected_faces, work)?
+            .into_iter()
+            .map(|cycle| BoundaryCycle {
+                darts: cycle.darts,
+                region: cycle.face.0 as usize,
+            })
+            .collect::<Vec<_>>();
+        let mut roots = Vec::new();
+        for (face, &selected) in selected_faces.iter().enumerate() {
+            work.charge_into_error(1)?;
+            if selected {
+                roots.push(face);
+            }
+        }
+        let selected_regions =
+            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+        let mut rings = Vec::with_capacity(cycles.len());
+        for (cycle, boundary) in cycles.iter().enumerate() {
+            work.charge_into_error(1)?;
+            rings.push(PlannedAreaRing::Cycle {
+                cycle,
+                region: boundary.region,
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings,
+            region_count: q.global_face_count,
+        };
+        let line_paths = if diagnostics {
+            diagnostic_line_paths(topology, work)?
+        } else {
+            Vec::new()
+        };
+        let fragment_recipes =
+            build_fragment_recipes(topology, &polygons, &cycles, &line_paths, work)?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::Polygonize,
+            polygons,
+            cycles,
+            selected_regions,
+            selected_face_roots,
+            fragment_recipes,
+            line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_area(
+        topology: &ExactGeographicTopology,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let minimal_faces = minimal_face_selection(topology, work)?;
+        let face_cycles = minimal_face_boundaries(topology, &minimal_faces, work)?;
+        let hole_roles = face_cycle_hole_roles(topology, &face_cycles, work)?;
+        let selected_faces = even_odd_face_selection(topology, &face_cycles, &hole_roles, work)?;
+        let mut regions = face_regions(q, &selected_faces, work)?;
+        let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
+        work.charge_into_error(
+            u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let roots = cycles.iter().map(|cycle| cycle.region).collect::<Vec<_>>();
+        let selected_regions =
+            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+        let mut rings = Vec::with_capacity(cycles.len());
+        for (cycle, boundary) in cycles.iter().enumerate() {
+            work.charge_into_error(1)?;
+            rings.push(PlannedAreaRing::Cycle {
+                cycle,
+                region: boundary.region,
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings,
+            region_count: q.global_face_count,
+        };
+        let fragment_recipes = build_fragment_recipes(topology, &polygons, &cycles, &[], work)?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::BuildArea,
+            polygons,
+            cycles,
+            selected_regions,
+            selected_face_roots,
+            fragment_recipes,
+            line_paths: Vec::new(),
             point_nodes: Vec::new(),
         })
     }
@@ -1799,7 +2039,7 @@ fn build_fragment_recipes(
                                 span: span.id,
                                 from: dart.from_port,
                                 to: dart.to_port,
-                                owner_index: area_owner_index(
+                                owner_index: boundary_owner_index(
                                     topology,
                                     dart.span.0 as usize,
                                     work,
@@ -1870,27 +2110,68 @@ fn build_fragment_recipes(
         if let Some(pivot) = pivot {
             spans.rotate_left(pivot);
         }
-        let closed = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
-            work.charge_into_error(1)?;
-            let first = topology.q.ports.get(first.from.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q line recipe start is unknown".into())
-            })?;
-            let last =
-                topology.q.ports.get(last.to.0 as usize).ok_or_else(|| {
+        let closed = line.close
+            || if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+                work.charge_into_error(1)?;
+                let first = topology.q.ports.get(first.from.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q line recipe start is unknown".into())
+                })?;
+                let last = topology.q.ports.get(last.to.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q line recipe end is unknown".into())
                 })?;
-            first.node == last.node
-        } else {
-            false
-        };
+                first.node == last.node
+            } else {
+                false
+            };
         let use_kind = match line.origin {
-            QLineOrigin::Curve => SelectedUse::Curve,
+            QLineOrigin::Curve | QLineOrigin::Noded | QLineOrigin::Diagnostic(_) => {
+                SelectedUse::Curve
+            },
             QLineOrigin::ArealBoundary => SelectedUse::ArealBoundaryLine,
         };
         let fragments = recipes.push_walk(topology, &spans, closed, use_kind, work)?;
         recipes.record_walk(line.recipe_walk, fragments);
     }
     Ok(recipes)
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "polygonize diagnostic paths are consumed by the F4 row receiver"
+    )
+)]
+fn diagnostic_line_paths(
+    topology: &ExactGeographicTopology,
+    work: &mut impl Work,
+) -> Result<Vec<PlannedQLine>> {
+    let selected = super::linework::diagnostic_spans(topology, work)?;
+    work.charge_into_error(
+        u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    let mut paths = Vec::with_capacity(selected.len());
+    for DiagnosticSpan {
+        span,
+        owner,
+        row,
+        kind,
+    } in selected
+    {
+        work.charge_into_error(1)?;
+        paths.push(QLinePrimitive {
+            origin: QLineOrigin::Diagnostic(kind),
+            recipe_walk: RecipeWalkOwner::Line(paths.len()),
+            source_row: Some(row),
+            close: kind == DiagnosticKind::InvalidRing,
+            path: vec![LineStep {
+                span,
+                from_endpoint: SpanEndpoint::Start,
+                owner,
+            }],
+        });
+    }
+    Ok(paths)
 }
 
 fn push_source_ring_recipes(
@@ -2249,7 +2530,7 @@ fn select_faces(
     Ok(selected)
 }
 
-struct FaceUnion {
+pub(super) struct FaceUnion {
     parents: Vec<usize>,
     selected: Vec<bool>,
 }
@@ -2316,9 +2597,42 @@ fn face_regions(
     selected: &[bool],
     work: &mut impl Work,
 ) -> Result<FaceUnion> {
+    face_regions_with_owner_labels(q, selected, None, work)
+}
+
+pub(super) fn coverage_face_regions(
+    q: &super::q::ExactGeographicQ,
+    face_owners: &[Option<usize>],
+    work: &mut impl Work,
+) -> Result<FaceUnion> {
+    if face_owners.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage face owners do not match Q's global face table".into(),
+        )
+        .into());
+    }
+    work.charge_into_error(
+        u64::try_from(face_owners.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    let selected = face_owners.iter().map(Option::is_some).collect::<Vec<_>>();
+    face_regions_with_owner_labels(q, &selected, Some(face_owners), work)
+}
+
+fn face_regions_with_owner_labels(
+    q: &super::q::ExactGeographicQ,
+    selected: &[bool],
+    owner_labels: Option<&[Option<usize>]>,
+    work: &mut impl Work,
+) -> Result<FaceUnion> {
     if selected.len() != q.global_face_count {
         return Err(GeometryErrorKind::Invalid(
             "Q face selection does not match its global face table".into(),
+        )
+        .into());
+    }
+    if owner_labels.is_some_and(|owners| owners.len() != selected.len()) {
+        return Err(GeometryErrorKind::Invalid(
+            "Q face owner labels do not match its global face table".into(),
         )
         .into());
     }
@@ -2336,14 +2650,25 @@ fn face_regions(
         let right_selected = selected.get(right).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q span references an unknown global face".into())
         })?;
-        if left_selected && right_selected {
+        let same_owner = if let Some(owners) = owner_labels {
+            let left_owner = owners.get(left).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q span has no left face owner label".into())
+            })?;
+            let right_owner = owners.get(right).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q span has no right face owner label".into())
+            })?;
+            left_owner.is_some() && left_owner == right_owner
+        } else {
+            true
+        };
+        if left_selected && right_selected && same_owner {
             regions.join(left, right, work)?;
         }
     }
     Ok(regions)
 }
 
-fn selected_region_facts(
+pub(super) fn selected_region_facts(
     q: &super::q::ExactGeographicQ,
     selected: &[bool],
     regions: &mut FaceUnion,
@@ -2385,8 +2710,9 @@ fn selected_region_facts(
     }
 
     for pole in [ChartPole::North, ChartPole::South] {
-        q.for_each_pole_incident_face(pole, |face| {
+        q.for_each_pole_sector_with_work(pole, work, |sector, work| {
             work.charge_into_error(1)?;
+            let face = sector.face();
             if !selected.get(face.0 as usize).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q pole sector references an unknown face".into())
             })? {
@@ -2415,7 +2741,7 @@ fn selected_region_facts(
     Ok(facts)
 }
 
-fn selected_face_roots(
+pub(super) fn selected_face_roots(
     q: &super::q::ExactGeographicQ,
     selected: &[bool],
     regions: &mut FaceUnion,
@@ -2599,6 +2925,12 @@ fn selected_area_boundaries(
     regions: &mut FaceUnion,
     work: &mut impl Work,
 ) -> Result<Vec<BoundaryCycle>> {
+    if selected_faces.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "Q face selection does not match its global face table".into(),
+        )
+        .into());
+    }
     work.charge_into_error(
         u64::try_from(
             q.darts
@@ -2645,18 +2977,141 @@ fn selected_area_boundaries(
         *slot = true;
     }
 
+    Ok(boundary_cycles_by_owner(
+        q,
+        |dart| {
+            boundary
+                .get(dart.0 as usize)
+                .copied()
+                .map(|selected| selected.then_some(0))
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q overlay boundary dart is unknown".into()).into()
+                })
+        },
+        regions,
+        work,
+    )?
+    .into_iter()
+    .map(|(_, cycle)| cycle)
+    .collect())
+}
+
+pub(super) fn coverage_area_boundaries(
+    q: &super::q::ExactGeographicQ,
+    face_owners: &[Option<usize>],
+    regions: &mut FaceUnion,
+    work: &mut impl Work,
+) -> Result<Vec<(usize, BoundaryCycle)>> {
+    if face_owners.len() != q.global_face_count {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage face owners do not match Q's global face table".into(),
+        )
+        .into());
+    }
+    let mut boundary = vec![None; q.darts.len()];
+    for (span_index, faces) in q.span_global_faces.iter().enumerate() {
+        work.charge_into_error(1)?;
+        let Some([left, right]) = faces else {
+            continue;
+        };
+        let left_owner = face_owners.get(left.0 as usize).copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q span has an unknown left coverage owner".into())
+        })?;
+        let right_owner = face_owners.get(right.0 as usize).copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q span has an unknown right coverage owner".into())
+        })?;
+        if left_owner == right_owner {
+            continue;
+        }
+        let forward = q
+            .span_darts
+            .get(span_index)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("a coverage Q boundary has no dart".into())
+            })?;
+        if let Some(row) = left_owner {
+            set_coverage_boundary_owner(&mut boundary, forward, row)?;
+        }
+        if let Some(row) = right_owner {
+            set_coverage_boundary_owner(&mut boundary, QDartId(forward.0 ^ 1), row)?;
+        }
+    }
+
+    boundary_cycles_by_owner(
+        q,
+        |dart| {
+            let owner = boundary.get(dart.0 as usize).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage Q boundary dart is unknown".into())
+            })?;
+            let owner = owner
+                .map(|owner| {
+                    owner
+                        .get()
+                        .checked_sub(1)
+                        .ok_or(ResourceError::SizeOverflow)
+                })
+                .transpose()?;
+            Ok(owner)
+        },
+        regions,
+        work,
+    )
+}
+
+fn set_coverage_boundary_owner(
+    boundary: &mut [Option<NonZeroUsize>],
+    dart: QDartId,
+    row: usize,
+) -> Result<()> {
+    let encoded_row = row
+        .checked_add(1)
+        .and_then(NonZeroUsize::new)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let slot = boundary
+        .get_mut(dart.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("coverage Q boundary dart is unknown".into()))?;
+    if slot.replace(encoded_row).is_some() {
+        return Err(GeometryErrorKind::Invalid(
+            "a coverage Q boundary dart was selected more than once".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn boundary_cycles_by_owner(
+    q: &super::q::ExactGeographicQ,
+    mut owner_of: impl FnMut(QDartId) -> Result<Option<usize>>,
+    regions: &mut FaceUnion,
+    work: &mut impl Work,
+) -> Result<Vec<(usize, BoundaryCycle)>> {
+    work.charge_into_error(
+        u64::try_from(
+            q.darts
+                .len()
+                .checked_mul(2)
+                .and_then(|darts| darts.checked_add(q.nodes.len()))
+                .ok_or(ResourceError::SizeOverflow)?,
+        )
+        .map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut visited = vec![false; q.darts.len()];
     let mut positions = vec![None; q.nodes.len()];
     let mut walks = Vec::new();
-    for (seed, &is_boundary) in boundary.iter().enumerate() {
+    for seed in 0..q.darts.len() {
         work.charge_into_error(1)?;
+        let start = QDartId(u32::try_from(seed).map_err(|_| ResourceError::SizeOverflow)?);
+        let Some(owner) = owner_of(start)? else {
+            continue;
+        };
         let was_visited = visited.get(seed).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q overlay boundary has no visited state".into())
         })?;
-        if !is_boundary || was_visited {
+        if was_visited {
             continue;
         }
-        let start = QDartId(u32::try_from(seed).map_err(|_| ResourceError::SizeOverflow)?);
         let mut current = start;
         let mut walk = Vec::new();
         loop {
@@ -2703,10 +3158,10 @@ fn selected_area_boundaries(
                     cycle.push(dart);
                 }
                 if !cycle.is_empty() {
-                    walks.push(cycle);
+                    walks.push((owner, cycle));
                 }
             }
-            current = next_boundary_dart(q, &boundary, current, work)?;
+            current = next_boundary_dart_by_owner(q, current, owner, &mut owner_of, work)?;
             if current == start {
                 break;
             }
@@ -2718,9 +3173,10 @@ fn selected_area_boundaries(
             .into());
         }
     }
-    for (&selected, was_visited) in boundary.iter().zip(visited) {
+    for (index, was_visited) in visited.into_iter().enumerate() {
         work.charge_into_error(1)?;
-        if selected && !was_visited {
+        let dart = QDartId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?);
+        if owner_of(dart)?.is_some() && !was_visited {
             return Err(GeometryErrorKind::Invalid(
                 "Q overlay left a selected boundary dart unvisited".into(),
             )
@@ -2729,7 +3185,7 @@ fn selected_area_boundaries(
     }
 
     let mut cycles = Vec::with_capacity(walks.len());
-    for darts in walks {
+    for (owner, darts) in walks {
         work.charge_into_error(1)?;
         let first = *darts.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q overlay emitted an empty boundary cycle".into())
@@ -2744,15 +3200,16 @@ fn selected_area_boundaries(
                 GeometryErrorKind::Invalid("Q boundary cycle left face has no global ID".into())
             })?;
         let region = regions.selected_root(face, work)?;
-        cycles.push(BoundaryCycle { darts, region });
+        cycles.push((owner, BoundaryCycle { darts, region }));
     }
     Ok(cycles)
 }
 
-fn next_boundary_dart(
+fn next_boundary_dart_by_owner(
     q: &super::q::ExactGeographicQ,
-    selected: &[bool],
     dart_id: QDartId,
+    owner: usize,
+    owner_of: &mut impl FnMut(QDartId) -> Result<Option<usize>>,
     work: &mut impl Work,
 ) -> Result<QDartId> {
     let dart = q
@@ -2793,9 +3250,7 @@ fn next_boundary_dart(
         .chain(after_twin.iter().rev())
     {
         work.charge_into_error(1)?;
-        if selected.get(candidate.0 as usize).copied().ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q boundary fan has an unknown dart".into())
-        })? {
+        if owner_of(candidate)? == Some(owner) {
             return Ok(candidate);
         }
     }
@@ -2862,7 +3317,7 @@ fn line_owner_index(
     )
 }
 
-fn area_owner_index(
+fn boundary_owner_index(
     topology: &ExactGeographicTopology,
     span_index: usize,
     work: &mut impl Work,
@@ -2881,7 +3336,13 @@ fn area_owner_index(
             return Ok(owner_index);
         }
     }
-    Err(GeometryErrorKind::Invalid("selected Q area boundary has no ring owner".into()).into())
+    if !span.owners.is_empty() {
+        return Ok(0);
+    }
+    Err(
+        GeometryErrorKind::Invalid("selected Q boundary has no source interval owner".into())
+            .into(),
+    )
 }
 
 fn line_steps(
@@ -3053,6 +3514,8 @@ fn planned_line_paths(
                 output.push(QLinePrimitive {
                     origin: previous,
                     recipe_walk: RecipeWalkOwner::Line(index),
+                    source_row: None,
+                    close: false,
                     path: std::mem::take(&mut current_steps),
                 });
             }
@@ -3064,6 +3527,8 @@ fn planned_line_paths(
             output.push(QLinePrimitive {
                 origin,
                 recipe_walk: RecipeWalkOwner::Line(index),
+                source_row: None,
+                close: false,
                 path: current_steps,
             });
         }
@@ -3307,12 +3772,16 @@ fn push_line_part<'topology>(
     output: &mut Vec<DrawnQLine<'topology>>,
     origin: QLineOrigin,
     recipe_walk: RecipeWalkOwner,
+    source_row: Option<SourceRowId>,
+    close: bool,
     vertices: &mut Vec<EmittedVertex<'topology>>,
 ) {
     if vertices.len() >= 2 {
         output.push(QLinePrimitive {
             origin,
             recipe_walk,
+            source_row,
+            close,
             path: std::mem::take(vertices),
         });
     } else {
@@ -4496,7 +4965,7 @@ fn draw_cycle_vertices<'topology>(
         topology,
         &cycle.darts,
         |vertex, work| {
-            let owner_index = area_owner_index(topology, vertex.span, work)?;
+            let owner_index = boundary_owner_index(topology, vertex.span, work)?;
             vertices.push(emitted_point(
                 topology,
                 coordinates,
@@ -4522,6 +4991,8 @@ fn draw_lines<'topology>(
     for line in paths {
         work.charge_into_error(1)?;
         let recipe_walk = line.recipe_walk;
+        let source_row = line.source_row;
+        let close = line.close;
         let path = &line.path;
         let mut start = None;
         for (index, step) in path.iter().enumerate() {
@@ -4607,7 +5078,14 @@ fn draw_lines<'topology>(
                             EmittedNodeKey::NorthPole | EmittedNodeKey::SouthPole
                         );
                         if is_seam || is_pole {
-                            push_line_part(&mut output, line.origin, recipe_walk, &mut points);
+                            push_line_part(
+                                &mut output,
+                                line.origin,
+                                recipe_walk,
+                                source_row,
+                                false,
+                                &mut points,
+                            );
                         } else if points
                             .last()
                             .is_some_and(|last: &EmittedVertex<'_>| last.point != previous.point)
@@ -4632,7 +5110,17 @@ fn draw_lines<'topology>(
             }
             previous = Some(to);
         }
-        push_line_part(&mut output, line.origin, recipe_walk, &mut points);
+        if close && let Some(&first) = points.first() {
+            points.push(first);
+        }
+        push_line_part(
+            &mut output,
+            line.origin,
+            recipe_walk,
+            source_row,
+            close,
+            &mut points,
+        );
     }
     Ok(output)
 }
@@ -6316,8 +6804,8 @@ mod tests {
             },
         };
         let expected = match output.sealed {
-            SealedQDrawing::Source(source) => source.sealed.into_shape(),
-            SealedQDrawing::Native(native) => native.sealed.into_shape(),
+            SealedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
+            SealedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
         };
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -6411,7 +6899,7 @@ mod tests {
             assert_eq!(certified_coordinates.xy(*node)?, nearest.xy(*node)?);
         }
 
-        let written = write_certified_q_emission(certified);
+        let written = write_certified_q_emission(certified)?;
         let expected = written.shape;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -7054,7 +7542,7 @@ mod tests {
         let embedding =
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding)?;
         assert_eq!(
             crate::io::to_wkb(&result, None, false)?,
             crate::io::to_wkb(&source, None, false)?,
@@ -7105,7 +7593,7 @@ mod tests {
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())
                 .expect("source axis-band ring is representable");
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding).expect("publish the source axis band");
         assert_eq!(
             crate::io::to_wkb(&result, None, false).expect("serialize Q result"),
             crate::io::to_wkb(&source, None, false).expect("serialize source band")
@@ -7173,7 +7661,7 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, (before, after))| (before != after).then_some(index))
                 .collect::<Vec<_>>();
-            let result = publish_q_overlay(embedding);
+            let result = publish_q_overlay(embedding)?;
             let issue = crate::geometry::validate_shape_in_frame(
                 &result,
                 crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
@@ -7217,7 +7705,7 @@ mod tests {
             OverlayOp::Union.name(),
         )?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding);
+        let result = publish_q_overlay(embedding)?;
         assert!(
             crate::geometry::validate_shape_in_frame(
                 &result,
@@ -7868,7 +8356,7 @@ mod tests {
                 .is_none(),
             "the searched boundary drawing must restore the exact area face/host structure"
         );
-        let written = write_certified_q_emission(embedding);
+        let written = write_certified_q_emission(embedding)?;
         let mut line_members = 0_usize;
         let mut polygon_members = 0_usize;
         written

@@ -315,7 +315,7 @@ impl PyGeometry {
             tolerance,
             clip,
             "voronoi_cells",
-            Shape::voronoi_polygon_outputs_budgeted,
+            Shape::voronoi_polygon_outputs_in_frame_budgeted,
         )
     }
 
