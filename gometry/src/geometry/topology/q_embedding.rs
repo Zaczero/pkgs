@@ -13409,8 +13409,7 @@ fn native_q_port_data(
         None
     };
     let occurrences = if port.cut {
-        let source_requests: &[RootRequest] =
-            source_request.as_ref().map_or(&[], std::slice::from_ref);
+        let source_requests: &[RootRequest] = source_request.as_slice();
         native_source_sample_occurrences(None, source_requests, budget)?
     } else {
         budget.charge(1)?;
