@@ -1145,6 +1145,10 @@ mod work_funded_constructor_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate-column allocation"
+    )]
     fn column_reservation_refuses_before_allocating() -> crate::error::Result<()> {
         let mut work = RecordingWork::with_remaining(0)?;
 
@@ -1162,6 +1166,10 @@ mod work_funded_constructor_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before point reads or output writes"
+    )]
     fn column_copy_refuses_before_reading_or_writing_points() -> crate::error::Result<()> {
         let points = [Point::new_raw_xy(1.0, 2.0), Point::new_raw_xy(3.0, 4.0)];
         let mut output = vec![99.0];
@@ -1195,18 +1203,19 @@ mod work_funded_constructor_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate-value inspection"
+    )]
     fn column_finiteness_pass_refuses_before_inspecting_values() -> crate::error::Result<()> {
         let values = [1.0, f64::NAN];
         let mut work = RecordingWork::with_remaining(0)?;
 
-        let error = match point_column_all_finite(&values, &mut work) {
-            Ok(_) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "coordinate column was scanned without work allowance".into(),
-                )
-                .into());
-            },
-            Err(error) => error,
+        let Err(error) = point_column_all_finite(&values, &mut work) else {
+            return Err(GeometryErrorKind::Invalid(
+                "coordinate column was scanned without work allowance".into(),
+            )
+            .into());
         };
 
         assert!(search_limit(&error));
@@ -1216,6 +1225,10 @@ mod work_funded_constructor_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin coordinate bits and funded column-phase counts"
+    )]
     fn xyzm_column_phases_are_billed_and_ordinary_policies_erase_them() -> crate::error::Result<()>
     {
         let points = [

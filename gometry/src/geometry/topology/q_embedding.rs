@@ -3948,7 +3948,7 @@ impl<'reference, 'topology> NativeCandidateAssignment<'reference, 'topology> {
         Ok(Self { reference, checked })
     }
 
-    fn points(&self) -> &NativeReferencePoints {
+    const fn points(&self) -> &NativeReferencePoints {
         self.checked.points()
     }
 }
@@ -18151,28 +18151,28 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let start_bank = if let Some(bank) = seam_wall_bank {
-            Some(bank)
-        } else if !start_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::West)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::East)
-        } else {
-            None
-        };
-        let end_bank = if let Some(bank) = seam_wall_bank {
-            Some(bank)
-        } else if !end_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::East)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::West)
-        } else {
-            None
-        };
+        let start_bank = seam_wall_bank.or_else(|| {
+            if !start_is_seam {
+                None
+            } else if direction.is_gt() {
+                Some(super::emission::ChartSide::West)
+            } else if direction.is_lt() {
+                Some(super::emission::ChartSide::East)
+            } else {
+                None
+            }
+        });
+        let end_bank = seam_wall_bank.or_else(|| {
+            if !end_is_seam {
+                None
+            } else if direction.is_gt() {
+                Some(super::emission::ChartSide::East)
+            } else if direction.is_lt() {
+                Some(super::emission::ChartSide::West)
+            } else {
+                None
+            }
+        });
         let start_requests = self.native_endpoint_root_requests(
             &chord.endpoints[0],
             source_trace,
@@ -21742,6 +21742,7 @@ mod canonical_coordinate_tests {
 
     use super::*;
     use crate::geometry::OverlayOp;
+    use crate::geometry::embedding_completion::LiteralPoint;
 
     fn topology(shapes: &[crate::geometry::Shape]) -> Result<ExactGeographicTopology> {
         let frame = GeographicFrame::crs84();
@@ -22427,7 +22428,6 @@ mod canonical_coordinate_tests {
             PublishedSample, SampleProducerKind,
         };
         use crate::geometry::Shape;
-        use crate::geometry::embedding_completion::LiteralPoint;
 
         let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
         let point = Point::new_raw_xy(7.0, 6.0);
@@ -23772,9 +23772,7 @@ mod canonical_coordinate_tests {
                 crate::geometry::CoordinateAxes::XY,
             ),
             ShapeLiteralLayout {
-                points:
-                    Vec::<crate::geometry::embedding_completion::LiteralPoint<EmissionPortId>>::new(
-                    ),
+                points: Vec::<LiteralPoint<EmissionPortId>>::new(),
                 lines: Vec::new(),
                 polygons: Vec::new(),
             },

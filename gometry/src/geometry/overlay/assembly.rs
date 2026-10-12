@@ -405,6 +405,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin overlay sort order and prefix-comparison work"
+    )]
     fn certified_overlay_sort_funds_long_line_and_hole_prefixes() -> crate::error::Result<()> {
         let long_line_low = line(&[
             (0.0, 0.0),

@@ -1911,7 +1911,7 @@ mod tests {
                     self.successful_charges = self
                         .successful_charges
                         .checked_add(1)
-                        .ok_or_else(|| crate::error::ResourceError::SizeOverflow)?;
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
                     Ok(())
                 },
                 Err(error) => {
@@ -2466,7 +2466,7 @@ mod tests {
             }],
         };
         let mut receiver = TestLiteralReceiver {
-            images: ImageRows(repaired.exact.clone()),
+            images: ImageRows(repaired.exact),
             chart: IdentityLiteralChart,
         };
         assert!(matches!(
@@ -2594,7 +2594,7 @@ mod tests {
             }],
         };
         let mut receiver = TestLiteralReceiver {
-            images: ImageRows(repaired.exact.clone()),
+            images: ImageRows(repaired.exact),
             chart: IdentityLiteralChart,
         };
         assert!(matches!(
@@ -2928,6 +2928,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertion is the exact degree-zero point-contact admission regression"
+    )]
     fn candidate_admission_keeps_degree_zero_point_contacts_with_the_reference() -> Result<()> {
         let half_ulp =
             ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
@@ -2952,6 +2956,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin query refusal before any later progress"
+    )]
     fn output_point_query_refusal_stops_before_progress() -> Result<()> {
         let mut setup_work = Unmetered;
         let graph = admit_known_graph(
@@ -2987,6 +2995,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertion pins the contact decision under EvaluationOnly work erasure"
+    )]
     fn evaluation_only_erases_point_contact_work() -> Result<()> {
         let half_ulp =
             ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();

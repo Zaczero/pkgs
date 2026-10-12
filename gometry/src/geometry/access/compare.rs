@@ -204,6 +204,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate comparison and its work record"
+    )]
     fn point_prefix_refusal_precedes_coordinate_access() -> crate::error::Result<()> {
         let left = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),
@@ -231,6 +235,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before nested row comparison and its work record"
+    )]
     fn hole_prefix_refusal_precedes_nested_row_access() -> crate::error::Result<()> {
         let left = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
         let right = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
@@ -252,6 +260,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin comparison order and EvaluationOnly work erasure"
+    )]
     fn evaluation_only_comparison_keeps_order_and_erases_raw_work() -> crate::error::Result<()> {
         let left = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),

@@ -17,7 +17,7 @@ use crate::geographic::{
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout,
+    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout, reorder_rows,
 };
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
@@ -1306,8 +1306,7 @@ pub(super) fn native_literal_uses_in_output_order(
         )
         .into());
     }
-    let line_traces =
-        crate::geometry::embedding_completion::reorder_rows(line_traces, &order.lines, work)?;
+    let line_traces = reorder_rows(line_traces, &order.lines, work)?;
     let literal_uses = literal_uses.in_output_order(order, work)?;
     Ok((literal_uses, line_traces))
 }
@@ -5937,6 +5936,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before active-column reservation"
+    )]
     fn native_materialization_refuses_before_active_column_reservation() -> Result<()> {
         let mut work = RecordingWork::with_remaining("native columns", 11)?;
         let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
@@ -5960,6 +5963,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal at each unfunded active-column phase"
+    )]
     fn native_materialization_refuses_before_each_active_column_phase() -> Result<()> {
         for remaining_ticks in [11, 19, 27] {
             let mut work = RecordingWork::with_remaining("native columns", remaining_ticks)?;
@@ -5985,6 +5992,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin XYZM coordinate values and active-column work counts"
+    )]
     fn native_materialization_charges_only_the_active_columns() -> Result<()> {
         let mut xy_work = RecordingWork::with_remaining("native columns", 128)?;
         let xy = materialize_test_line(CoordinateAxes::XY, &mut xy_work)?;
@@ -6061,6 +6072,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin full closing-record funding and coordinate identity"
+    )]
     fn native_materialization_funds_the_complete_closing_xyzm_record() -> Result<()> {
         let mut limited = RecordingWork::with_remaining("native columns", 17)?;
         let result = materialize_test_ring(CoordinateAxes::XYZM, &mut limited);
@@ -6113,6 +6128,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin literal-metadata work refusal before row inspection"
+    )]
     fn native_literal_validation_charges_each_metadata_row_before_inspection() -> Result<()> {
         let mut all_rows = point_literal_test_parts();
         let mut line_rows = line_literal_test_parts()?;
