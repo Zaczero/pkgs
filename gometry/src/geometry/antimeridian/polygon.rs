@@ -447,7 +447,7 @@ fn seam_event(
             let numerator = seam.try_subtract(start)?;
             let parameter = ExactRational::new(numerator, delta)?;
             Ok(ChartEdgeEvent {
-                source: [source[1], source[0]],
+                source: *source,
                 longitude,
                 parameter,
                 seam_longitude: Some(native_side * frame.longitude_orientation_sign()),
