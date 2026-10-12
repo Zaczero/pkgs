@@ -60,6 +60,7 @@ pub(crate) mod coverer;
 pub(crate) mod geohash;
 pub(crate) mod h3_coverer;
 pub(crate) mod s2;
+pub(in crate::grid) mod spatial_index;
 pub(crate) mod spherical_arc;
 pub(crate) mod tile;
 
