@@ -1,5 +1,3 @@
-cargo-features = ["trim-paths"]
-
 [workspace]
 resolver = "3"
 members = [

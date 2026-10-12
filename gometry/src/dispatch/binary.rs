@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{ArrayRow, ArrayRowOperation, StreamingShapes};
+use crate::array::{ArrayRow, ArrayRowOperation};
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
     validate_paired_arrays,
@@ -17,8 +17,9 @@ use crate::dispatch::metric::{
     CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricScratch,
 };
 use crate::error::Result;
+use crate::geometry::publication::{GeometryOutput, PublicationArrayRows};
 use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
-use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
+use crate::geometry::{GeometryErrorKind, PreparedPlan, Shape, ShapeData, TopologyDomain};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
 use crate::{PyGeometry, PyGeometryArray, Typed};
@@ -227,28 +228,30 @@ where
     })
 }
 
-fn run_array_shape_rows<K>(
+fn run_array_shape_rows<R, K>(
     py: Python<'_>,
     array: &PyGeometryArray,
     frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<StreamingShapes, (usize, crate::error::Error)>
+) -> PyResult<PyGeometryArray>
 where
+    R: Into<GeometryOutput>,
     K: for<'row, 'ctx> Fn(
             usize,
             ShapeRow<'row>,
             &CachelessRowContext<'ctx>,
             &mut ArrayRowOperation<'row>,
-        ) -> Result<Shape>
+        ) -> Result<R>
         + Send
         + Sync,
 {
     let array = array.clone();
-    py.detach(move || {
+    let output_frame = frame.clone();
+    let result = py.detach(move || {
         let mut rows = array.row_operation();
-        let mut output = StreamingShapes::with_capacity(0, array.len());
+        let mut output = PublicationArrayRows::with_capacity(array.len());
         for row in rows.rows_with_missing(Shape::empty_point) {
             let (logical, result) = match row {
                 ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
@@ -262,17 +265,18 @@ where
                         lane: Lane::Array(row_index),
                     };
                     let result = kernel(row_index, shape_row, &ctx, &mut rows)
-                        .and_then(|shape| output.try_push(shape));
+                        .and_then(|output_row| output.try_push(output_row.into()));
                     (row_index, result)
                 },
             };
-            result.map_err(|error| (logical, error))?;
+            result.map_err(|error| (Some(logical), error))?;
         }
-        Ok(output)
-    })
+        output.finish(output_frame).map_err(|error| (None, error))
+    });
+    result.map_err(map_array_row_error)
 }
 
-fn run_paired_shape_rows<K>(
+fn run_paired_shape_rows<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
@@ -280,8 +284,9 @@ fn run_paired_shape_rows<K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<StreamingShapes, (usize, crate::error::Error)>
+) -> PyResult<PyGeometryArray>
 where
+    R: Into<GeometryOutput>,
     K: for<'left, 'right, 'ctx> Fn(
             usize,
             ShapeRow<'left>,
@@ -289,16 +294,17 @@ where
             &CachelessRowContext<'ctx>,
             &mut ArrayRowOperation<'left>,
             &mut ArrayRowOperation<'right>,
-        ) -> Result<Shape>
+        ) -> Result<R>
         + Send
         + Sync,
 {
     let left_array = left.clone();
     let right_array = right.clone();
-    py.detach(move || {
+    let output_frame = frame.clone();
+    let result = py.detach(move || {
         let mut left_rows = left_array.row_operation();
         let mut right_rows = right_array.row_operation();
-        let mut output = StreamingShapes::with_capacity(0, left_array.len());
+        let mut output = PublicationArrayRows::with_capacity(left_array.len());
         let left_iter = left_rows.rows_with_missing(Shape::empty_point);
         let right_iter = right_rows.rows_with_missing(Shape::empty_point);
         for (left, right) in left_iter.zip(right_iter) {
@@ -321,17 +327,25 @@ where
                         &mut left_rows,
                         &mut right_rows,
                     )
-                    .and_then(|shape| output.try_push(shape));
+                    .and_then(|output_row| output.try_push(output_row.into()));
                     (row_index, result)
                 },
                 (ArrayRow::Missing { logical, .. }, _) | (_, ArrayRow::Missing { logical, .. }) => {
                     (logical, output.try_push_missing())
                 },
             };
-            result.map_err(|error| (logical, error))?;
+            result.map_err(|error| (Some(logical), error))?;
         }
-        Ok(output)
-    })
+        output.finish(output_frame).map_err(|error| (None, error))
+    });
+    result.map_err(map_array_row_error)
+}
+
+fn map_array_row_error((row, error): (Option<usize>, crate::error::Error)) -> PyErr {
+    match row {
+        Some(row) => rows_err((row, error)),
+        None => PyErr::from(error),
+    }
 }
 
 fn run_binary_fixed_array_rows<R, K>(
@@ -867,15 +881,15 @@ fn split_operand_arc_for_topology(
 }
 
 /// The shared antimeridian gate for geometry-returning binary lanes.
-fn invoke_topology_geometry_kernel<K>(
+fn invoke_topology_geometry_kernel<R, K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     left: &PreparedPlan,
     right: &PreparedPlan,
     kernel: &K,
-) -> Result<Shape>
+) -> Result<R>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape>,
+    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<R>,
 {
     let (left_crosses, right_crosses) = match domain {
         TopologyDomain::Cartesian => (false, false),
@@ -928,16 +942,24 @@ where
     }
 }
 
+fn geometry_output_shape(output: GeometryOutput) -> Result<Shape> {
+    match output {
+        GeometryOutput::Shape(shape) => Ok(shape),
+        GeometryOutput::Pending(_) => Err(GeometryErrorKind::Invalid(
+            "a pending array publication cannot enter a scalar geometry result".into(),
+        )
+        .into()),
+    }
+}
+
 /// Geometry-returning binary dispatch with topology split.
-pub(crate) fn dispatch_binary_geometry(
+pub(crate) fn dispatch_binary_geometry<R: Into<GeometryOutput>>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
-    + Send
-    + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let left = crate::normalize_geometry_batch(py, left)?;
     let right = crate::normalize_geometry_batch(py, right)?;
@@ -945,13 +967,11 @@ pub(crate) fn dispatch_binary_geometry(
     dispatch_binary_geometry_admitted_with_resolver(py, &admission, resolver, kernel)
 }
 
-pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
+pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOutput>>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     resolver: MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
-    + Send
-    + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
 
@@ -983,6 +1003,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
                     &right_shape,
                     &|l, r| kernel(l, r, &ctx),
                 )
+                .and_then(|output| geometry_output_shape(output.into()))
             };
             drop(metric_scratch);
             let shape = result?;
@@ -992,7 +1013,6 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
         },
         (One(left), Many(right)) => {
             let frame = admission.frame.clone();
-            let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let result = {
                 let (domain, metric) =
@@ -1032,8 +1052,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
                 )
             };
             drop(metric_scratch);
-            let rows = result.map_err(rows_err)?;
-            let output = rows.finish(output_frame)?;
+            let output = result?;
             Ok(output.into_pyobject(py)?.unbind().into())
         },
         (Many(left), right_in) => {
@@ -1052,7 +1071,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
     }
 }
 
-fn geometry_kernel_over_array_admitted<K>(
+fn geometry_kernel_over_array_admitted<R: Into<GeometryOutput>, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: GeometryInput<'_>,
@@ -1062,7 +1081,7 @@ fn geometry_kernel_over_array_admitted<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     use GeometryInput::{Many, One};
     let row_box = |bounds: &Option<crate::array::ElementBounds>,
@@ -1074,7 +1093,8 @@ where
     // a pure overlay of two packed point arrays must not retain multi-MiB
     // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.
     let left_bounds = left.existing_element_bounds();
-    let result = match right {
+
+    match right {
         One(right) => {
             let right_shape = match split_operand_arc_for_topology(domain, right, metric) {
                 Ok(right_shape) => right_shape,
@@ -1126,9 +1146,7 @@ where
                 },
             )
         },
-    };
-    let rows = result.map_err(rows_err)?;
-    rows.finish(frame.clone()).map_err(PyErr::from)
+    }
 }
 
 pub(crate) fn geometry_kernel_over_array<K>(
