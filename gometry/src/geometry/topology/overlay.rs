@@ -15,8 +15,7 @@ use super::exact::{
     SourceEdgeKind, SourceRingId, SourceRowId,
 };
 use super::linework::{
-    DiagnosticKind, DiagnosticSpan, even_odd_face_selection, face_cycle_hole_roles,
-    minimal_face_boundaries, minimal_face_selection, noded_spans,
+    DiagnosticKind, DiagnosticSpan, even_odd_face_selection, minimal_face_selection, noded_spans,
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use super::q_embedding::{
@@ -1182,9 +1181,9 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let selected_faces = minimal_face_selection(topology, work)?;
+        let (selected_faces, cycles, _) = minimal_face_selection(topology, work)?;
         let mut regions = FaceUnion::new(&selected_faces, work)?;
-        let cycles = minimal_face_boundaries(topology, &selected_faces, work)?
+        let cycles = cycles
             .into_iter()
             .map(|cycle| BoundaryCycle {
                 darts: cycle.darts,
@@ -1240,10 +1239,8 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let minimal_faces = minimal_face_selection(topology, work)?;
-        let face_cycles = minimal_face_boundaries(topology, &minimal_faces, work)?;
-        let hole_roles = face_cycle_hole_roles(topology, &face_cycles, work)?;
-        let selected_faces = even_odd_face_selection(topology, &face_cycles, &hole_roles, work)?;
+        let (_, face_cycles, cycle_roles) = minimal_face_selection(topology, work)?;
+        let selected_faces = even_odd_face_selection(topology, &face_cycles, &cycle_roles, work)?;
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
         work.charge_into_error(
@@ -5318,6 +5315,9 @@ pub(super) fn with_vertex_axes(
         .ok_or_else(|| GeometryErrorKind::Invalid("Q output node has no ordinates".into()))?;
     with_axes(vertex.point, *source, axes)
 }
+
+#[cfg(test)]
+mod pooled_linework_tests;
 
 #[cfg(test)]
 mod tests {

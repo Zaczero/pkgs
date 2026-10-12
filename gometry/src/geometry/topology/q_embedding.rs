@@ -6351,7 +6351,7 @@ where
     work.charge_into_error(
         u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let exact_is_hole = exact_q_ring_role_with_work(frame, exact_ports, work)?;
+    let (exact_is_hole, _) = exact_q_ring_role_with_work(frame, exact_ports, work)?;
     work.charge_into_error(
         u64::try_from(
             emitted_chart
@@ -6506,14 +6506,14 @@ where
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
 {
     let mut work = Unmetered;
-    exact_q_ring_role_with_work(frame, exact_ports, &mut work)
+    exact_q_ring_role_with_work(frame, exact_ports, &mut work).map(|(is_hole, _)| is_hole)
 }
 
 fn exact_q_ring_role_with_work<'a, I>(
     frame: GeographicFrame,
     exact_ports: I,
     work: &mut impl Work,
-) -> Result<bool>
+) -> Result<(bool, Option<ChartPole>)>
 where
     I: IntoIterator<Item = &'a ExactChartPoint>,
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
@@ -6541,7 +6541,7 @@ where
     if let Some(proof) = exact_q_ring_winding_filter(frame, exact_ports.clone())
         && !proof.quotient_closure
     {
-        return Ok(proof.winding == RingWinding::Clockwise);
+        return Ok((proof.winding == RingWinding::Clockwise, None));
     }
 
     let mut owned_ports = Vec::with_capacity(exact_ports.len());
@@ -6552,8 +6552,8 @@ where
     let exact_ports = owned_ports;
     let lifted = continuously_lift_exact_ring_with_work(frame, &exact_ports, work)?;
     let exact_published = rounded_canonical_exact_ring_with_work(frame, &exact_ports, work)?;
-    if let Some(role) = quotient_ring_role(frame, &exact_published)? {
-        return Ok(role);
+    if let Some(is_hole) = quotient_ring_role(frame, &exact_published)? {
+        return Ok((is_hole, exact_ring_bounded_pole(&exact_ports, work)?));
     }
     let winding = exact_ring_winding_with_work(&lifted, work)?;
     match winding {
@@ -6563,7 +6563,7 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(false)
+            Ok((false, None))
         },
         RingWinding::Clockwise => {
             for point in &lifted {
@@ -6571,11 +6571,11 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(true)
+            Ok((true, None))
         },
         RingWinding::Degenerate => {
             let exact_ring = rounded_exact_ring_with_work(&lifted, work)?;
-            ring_role_from_winding(frame, winding, &exact_ring, true)
+            ring_role_from_winding(frame, winding, &exact_ring, true).map(|is_hole| (is_hole, None))
         },
     }
 }
@@ -6591,8 +6591,32 @@ pub(super) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
-) -> Result<bool> {
+) -> Result<(bool, Option<ChartPole>)> {
     exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
+}
+
+fn exact_ring_bounded_pole(
+    points: &[ExactChartPoint],
+    work: &mut impl Work,
+) -> Result<Option<ChartPole>> {
+    // Name the cap from exact Q ordinates rather than the rounded role ring.
+    let zero = ExactRational::zero();
+    let mut north = false;
+    let mut south = false;
+    work.charge_into_error(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    for point in points {
+        work.charge_into_error(1)?;
+        match point.y.try_cmp_with_work(&zero, work)? {
+            Ordering::Less => south = true,
+            Ordering::Equal => {},
+            Ordering::Greater => north = true,
+        }
+    }
+    Ok(match (north, south) {
+        (true, false) => Some(ChartPole::North),
+        (false, true) => Some(ChartPole::South),
+        (false, false) | (true, true) => None,
+    })
 }
 
 pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<Option<bool>> {
