@@ -5474,6 +5474,25 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
     )
     .unwrap();
     let mesh = certified_delaunay(&dual_sites).unwrap();
+    let complex = delaunay_complex(&mesh, &dual_sites).unwrap();
+    for vertex in &dual_outputs.receipt.vertices {
+        for origin in &vertex.origins {
+            if let VoronoiVertexOrigin::Circumcenter { component, sites } = origin {
+                let component = usize::try_from(*component).unwrap();
+                assert_eq!(
+                    complex.center_sites.get(component),
+                    Some(sites),
+                    "dual receipt preserves each center's defining Delaunay face"
+                );
+                let center = complex.center(component);
+                assert_eq!(vertex.exact_xy, exact_xy_coordinates(center).unwrap());
+                assert_eq!(
+                    vertex.assignment,
+                    Some(center.round_nearest_even().unwrap())
+                );
+            }
+        }
+    }
     let mut rectangle_budget = ExpansionBudget::new("test", "retained dual source clip receipt");
     let dual_rectangle = dual_build_product(
         &dual_sites,
