@@ -6239,13 +6239,11 @@ fn apply_face_row_interval_event(
     if event.starts {
         let was_inactive = *count == 0;
         *count = (*count).checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-        if was_inactive {
-            if !active_rows.insert(row) {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q active face row was inserted more than once".into(),
-                )
-                .into());
-            }
+        if was_inactive && !active_rows.insert(row) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q active face row was inserted more than once".into(),
+            )
+            .into());
         }
     } else {
         if *count == 0 {
@@ -6255,13 +6253,11 @@ fn apply_face_row_interval_event(
             .into());
         }
         *count = (*count).checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
-        if *count == 0 {
-            if !active_rows.remove(&row) {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q active face row is missing from its set".into(),
-                )
-                .into());
-            }
+        if *count == 0 && !active_rows.remove(&row) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q active face row is missing from its set".into(),
+            )
+            .into());
         }
     }
     Ok(())
