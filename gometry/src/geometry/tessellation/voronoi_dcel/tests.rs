@@ -5323,15 +5323,15 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
             .position(|output| Shape::Polygon(output.polygon.clone()).covers(site).unwrap())
             .expect("each retained seam site lies in one output cell");
         assert_eq!(owner, site_index);
-        assert!(
+        assert_eq!(
             outputs
                 .iter()
                 .enumerate()
                 .filter(|(_, output)| {
                     Shape::Polygon(output.polygon.clone()).covers(site).unwrap()
                 })
-                .count()
-                == 1
+                .count(),
+            1
         );
     }
 
