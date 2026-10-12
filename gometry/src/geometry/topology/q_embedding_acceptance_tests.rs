@@ -26,6 +26,14 @@ fn published_sample_contact_fixture() -> Result<[crate::geometry::Shape; 2]> {
     Ok([input, clip])
 }
 
+fn assigned_leaf_interval_fixture() -> Result<[crate::geometry::Shape; 3]> {
+    Ok([
+        crate::io::parse_wkt("LINESTRING (0 0, 1 0)")?,
+        crate::io::parse_wkt("LINESTRING (0 1, 1 -2)")?,
+        crate::io::parse_wkt("POINT (0.3333333333333333 0)")?,
+    ])
+}
+
 fn sealed_shape(output: QEmbeddingOutput) -> Result<crate::geometry::Shape> {
     let finished = match output.sealed {
         super::super::emission::SealedQDrawing::Source(source) => source.sealed,
@@ -181,6 +189,222 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
             point.x.to_bits() == 90.0_f64.to_bits() && point.y.to_bits() == 1.0_f64.to_bits()
         }),
         "repair must preserve the selected nonincident source point record"
+    );
+    Ok(())
+}
+
+#[test]
+fn assigned_leaf_uses_the_repaired_one_third_endpoint_and_keeps_its_inventory() -> Result<()> {
+    let shapes = assigned_leaf_interval_fixture()?;
+    let topology = topology(&shapes)?;
+    let mut budget = EvaluationBudget::new(OverlayOp::Union.name(), 0)?;
+    let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+    let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+    let publication =
+        plan.fragment_recipes
+            .publish(&topology, &nearest, OverlayOp::Union.name(), &mut budget)?;
+
+    let exact_third = ExactRational::from_f64(1.0).try_quotient(&ExactRational::from_f64(3.0))?;
+    let written_third = 1.0_f64 / 3.0;
+    let fragment_index = publication
+        .fragments
+        .iter()
+        .position(|fragment| {
+            fragment
+                .exact_endpoints
+                .iter()
+                .any(|point| point.x == exact_third && point.y.is_zero())
+        })
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "the exact one-third crossing has no published producer leaf".into(),
+            )
+        })?;
+    let fragment = publication.fragments.get(fragment_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("the one-third producer leaf index is unknown".into())
+    })?;
+    let frozen_points = fragment.points.clone();
+    let frozen_exact_endpoints = fragment.exact_endpoints.clone();
+    assert!(
+        frozen_points
+            .iter()
+            .any(|point| point.x.to_bits() == written_third.to_bits()
+                && point.y.to_bits() == 0.0_f64.to_bits()),
+        "the frozen producer leaf keeps the original nearest endpoint"
+    );
+
+    let source_points = vec![None; topology.q.nodes.len()];
+    let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+    let live_keys = drawing.live_node_keys(topology.sources.frame, &mut budget)?;
+    let emission = plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+    let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+    let certification = QEmbeddingCertification::<crate::crs::GeodesicMetric> {
+        topology: &topology,
+        emission: &emission,
+        nearest: &nearest,
+        ordinates: &ordinates,
+        declared_axes: crate::geometry::CoordinateAxes::XY,
+        strict_axes: false,
+        operation: OverlayOp::Union.name(),
+        metric_access: None,
+    };
+    let problem = certification.build_problem(&mut budget)?;
+    let target = problem
+        .exact_positions
+        .iter()
+        .position(|exact| {
+            exact
+                .as_ref()
+                .is_some_and(|exact| exact.longitude == exact_third && exact.latitude.is_zero())
+        })
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("the one-third crossing has no Q source node".into())
+        })?;
+    let target = super::QNodeId(
+        u32::try_from(target).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    );
+    assert_eq!(nearest.xy(target)?.x.to_bits(), written_third.to_bits());
+
+    let pass =
+        match certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget)? {
+            SearchOutcome::Pass(pass) => pass,
+            SearchOutcome::Exhausted => {
+                return Err(GeometryErrorKind::unrepresentable_output(
+                    OverlayOp::Union.name(),
+                ));
+            },
+        };
+    assert!(
+        pass.searched,
+        "the nearest crossing collides with its fixed source vertex"
+    );
+    assert_eq!(
+        pass.coordinates.xy(target)?.x.to_bits(),
+        written_third.next_up().to_bits(),
+        "the assigned producer chooses the admitted next-up crossing"
+    );
+    let publication_coordinates = problem.publication_nearest.clone();
+    let assigned_projection = problem.certify_assigned_producer(
+        &pass.coordinates,
+        &publication_coordinates,
+        None,
+        &mut budget,
+    )?;
+    assert!(
+        assigned_projection.rejections.is_empty(),
+        "the accepted assignment must preserve producer-leaf correspondence"
+    );
+    let chord_index = problem
+        .publication_chords
+        .iter()
+        .position(|chord| {
+            chord.recipe == fragment.recipe
+                && chord
+                    .exact
+                    .iter()
+                    .any(|point| point.x == exact_third && point.y.is_zero())
+        })
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("the assigned one-third chord is missing".into())
+        })?;
+    let chord = problem.publication_chords.get(chord_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("the assigned one-third chord index is unknown".into())
+    })?;
+    let endpoint_index = chord
+        .exact
+        .iter()
+        .position(|point| point.x == exact_third && point.y.is_zero())
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("the assigned one-third endpoint is missing".into())
+        })?;
+    let assigned_leaf = assigned_projection.leaves.get(chord_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("the assigned one-third leaf is missing".into())
+    })?;
+    let assigned_endpoint = assigned_leaf.points.get(endpoint_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("the assigned one-third leaf endpoint is missing".into())
+    })?;
+    assert_eq!(
+        assigned_endpoint.x,
+        ExactRational::from_f64(written_third.next_up()),
+        "the producer leaf must follow the assigned endpoint"
+    );
+
+    // Counterfactual publisher-rerun control: the original nearest authority
+    // leaves B at 1/3 and cannot satisfy the assigned-leaf assertion above.
+    let stale_projection =
+        problem.certify_assigned_producer(&nearest, &publication_coordinates, None, &mut budget)?;
+    let stale_leaf = stale_projection
+        .leaves
+        .get(chord_index)
+        .ok_or_else(|| GeometryErrorKind::Invalid("the stale one-third leaf is missing".into()))?;
+    let stale_endpoint = stale_leaf.points.get(endpoint_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("the stale one-third leaf endpoint is missing".into())
+    })?;
+    assert_eq!(stale_endpoint.x, ExactRational::from_f64(written_third));
+    assert_ne!(stale_endpoint.x, assigned_endpoint.x);
+
+    let republished = plan.fragment_recipes.publish(
+        &topology,
+        &pass.coordinates,
+        OverlayOp::Union.name(),
+        &mut budget,
+    )?;
+    let republished_fragment = republished
+        .fragments
+        .iter()
+        .find(|candidate| candidate.recipe == fragment.recipe)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("candidate-specific publisher lost the producer leaf".into())
+        })?;
+    assert_eq!(
+        republished_fragment.exact_endpoints, frozen_exact_endpoints,
+        "candidate-specific publication still names the frozen exact interval"
+    );
+    assert_eq!(
+        republished_fragment.points, frozen_points,
+        "rerunning the publisher against the frozen interval omits the assigned leaf"
+    );
+    assert!(
+        !republished_fragment
+            .points
+            .iter()
+            .any(|point| point.x.to_bits() == written_third.next_up().to_bits()),
+        "candidate-specific republishing must not stand in for assigned leaf projection"
+    );
+
+    let result = sealed_shape(pass.output)?;
+    assert!(
+        crate::geometry::validate_shape_in_frame(
+            &result,
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+        )?
+        .is_none(),
+        "the complete union must retain its assigned embedding"
+    );
+    let mut line_vertices = Vec::new();
+    result.try_for_each_component(&mut |component| -> Result<()> {
+        if let crate::geometry::Component::LineString(line) = component {
+            line_vertices.extend(line.points());
+        }
+        Ok(())
+    })?;
+    assert!(
+        line_vertices.iter().any(
+            |point| point.x.to_bits() == written_third.next_up().to_bits()
+                && point.y.to_bits() == 0.0_f64.to_bits()
+        ),
+        "final producer leaves must follow the assigned next-up crossing"
+    );
+    assert!(
+        line_vertices
+            .iter()
+            .any(|point| point.x.to_bits() == written_third.to_bits()
+                && point.y.to_bits() == 0.0_f64.to_bits()),
+        "the frozen source vertex at the nearest one-third image must remain"
+    );
+    assert_eq!(
+        fragment.exact_endpoints, frozen_exact_endpoints,
+        "candidate repair must not replace the frozen publication interval"
     );
     Ok(())
 }
