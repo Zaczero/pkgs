@@ -9,10 +9,12 @@ use crate::grid::h3_coverer::{
     classify_h3_overlap, classify_h3_overlap_parts, emit_bbox_leaf, emit_overlap_leaf,
     fan_retains_point, h3_cover, h3_cover_shape,
 };
-use crate::grid::spherical_arc::{
-    ArcContact, Bound, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
+use crate::grid::spherical_arc::contact::classify_h3_arc_contact;
+use crate::grid::spherical_arc::h3_boundary::exact_h3_bbox_for_cell;
+use crate::grid::spherical_arc::h3_fan::{
     h3_cell_plan, h3_fan_plan_construction_count, reset_h3_fan_plan_construction_count,
 };
+use crate::grid::spherical_arc::{ArcContact, Bound, H3FanPlan, H3FanPointClass};
 use crate::py::cells::GridCoverError;
 
 const CELL: u64 = 0x0827_54FF_FFFF_FFFF;

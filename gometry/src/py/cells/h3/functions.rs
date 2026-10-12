@@ -1,4 +1,5 @@
-use crate::grid::spherical_arc::{H3BoundingWindow, h3_cell_contains_windows};
+use crate::grid::spherical_arc::H3BoundingWindow;
+use crate::grid::spherical_arc::h3_boundary::h3_cell_contains_windows;
 use crate::py::cells::coverage_ops::{SortedCells, collect_cover_ids};
 use crate::py::cells::h3::register::build_coverage;
 use crate::py::cells::h3::{

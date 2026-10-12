@@ -51,10 +51,11 @@ use crate::geometry::{
 };
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
+use crate::grid::spherical_arc::contact::degree_bound_to_radians;
 use crate::grid::spherical_arc::{
     AffineEndpointIdentity, AffineParentMap, AffineSourceArc, AffineStructure, AxisLatitude,
     AxisMeridian, Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
-    PhysicalEndpointKey, SourceEndpointRole, degree_bound_to_radians,
+    PhysicalEndpointKey, SourceEndpointRole,
 };
 
 const FULL_TURN_DEGREES: f64 = 360.0;
@@ -1713,7 +1714,7 @@ impl AuthorityAffinePiece {
         self.carrier.polygon
     }
 
-    pub(crate) const fn arc(&self) -> AffineSourceArc {
+    pub(in crate::grid) const fn arc(&self) -> AffineSourceArc {
         self.carrier.arc
     }
 }
@@ -1723,7 +1724,7 @@ impl SelectionAffinePiece {
         self.carrier.polygon
     }
 
-    pub(crate) const fn arc(&self) -> AffineSourceArc {
+    pub(in crate::grid) const fn arc(&self) -> AffineSourceArc {
         self.carrier.arc
     }
 
@@ -2851,7 +2852,9 @@ impl GeographicCoverageSource {
     }
 
     #[cfg(test)]
-    pub(crate) fn selection_arcs(&self) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
+    pub(in crate::grid) fn selection_arcs(
+        &self,
+    ) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
         (!self.unknown).then(|| self.selection.edges.iter().map(|piece| &piece.carrier.arc))
     }
 
