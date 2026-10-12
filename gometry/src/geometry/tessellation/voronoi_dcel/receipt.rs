@@ -1,17 +1,17 @@
 //! Provenance receipts for Voronoi producer outputs.
 
 use super::{
-    ClipTrace, EmbeddedEdges, EmbeddedPolygon, EmbeddedVertices, ExactCellPart, ExactEdgeChain,
-    ExactSign, ExactSimpleRing, ExactSubdivision, FrameSide, NormalizedClip, OverlayNodeReceipt,
-    OwnerTransition, Point, PointKey, PointSelectionChart, Polygon, Result, Ring, Site,
-    VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt, VoronoiChartCutSide,
-    VoronoiClipAtomReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt,
-    VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt,
-    VoronoiEdgeSourceUse, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
-    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
-    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, clip,
+    ClipSegmentId, ClipTrace, EdgeId, EmbeddedEdges, EmbeddedPolygon, EmbeddedVertices,
+    ExactCellPart, ExactEdgeChain, ExactSign, ExactSimpleRing, ExactSubdivision, FrameSide,
+    NormalizedClip, OverlayNodeReceipt, OwnerTransition, Point, PointKey, PointSelectionChart,
+    Polygon, Result, Ring, Site, VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt,
+    VoronoiChartCutSide, VoronoiClipAtomReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot,
+    VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin,
+    VoronoiEdgeReceipt, VoronoiEdgeSourceUse, VoronoiFrameSide, VoronoiProducer,
+    VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
+    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY,
     empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact, exact_chart_point, lex_xy,
-    receipt, retained_site_longitude, subdivision, try_hash_map_with_capacity, voronoi_error,
+    retained_site_longitude, try_hash_map_with_capacity, voronoi_error,
 };
 
 pub(super) fn chart_vertex_origins(
@@ -102,7 +102,7 @@ pub(super) fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::
     ])
 }
 
-pub(super) fn empty_polygon_outputs(
+pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
     sites: &[Site],
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
     let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites)?);
@@ -112,7 +112,7 @@ pub(super) fn empty_polygon_outputs(
     })
 }
 
-pub(super) fn lone_site_empty_polygon_outputs(
+pub(in crate::geometry::tessellation) fn lone_site_empty_polygon_outputs(
     sites: &[Site],
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
     let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?);
@@ -122,7 +122,7 @@ pub(super) fn lone_site_empty_polygon_outputs(
     })
 }
 
-pub(super) fn lone_site_empty_edges(
+pub(in crate::geometry::tessellation) fn lone_site_empty_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     chart: Option<&PointSelectionChart>,
@@ -138,7 +138,7 @@ pub(super) fn lone_site_empty_edges(
     empty_edges_with_receipt(receipt)
 }
 
-pub(super) fn lone_site_polygon_outputs(
+pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
     sites: &[Site],
     polygon: &Polygon,
     chart: Option<&PointSelectionChart>,

@@ -5,14 +5,14 @@ use super::ValidatedExactCycles;
 use super::{
     Bounds, ClipBoundaryFailure, ClipCertificate, ClipCertificateEdge, ClipRingParity,
     ClipSourceRow, ClipSourceSegment, ClipTrace, ClipTraceAtom, ClipTraceRing, ControlFlow,
-    CoordSeq, EvaluationBudget, ExactCycleContact, ExactPairTouch, ExactSign, ExactVertexSegment,
-    NodedExactCycle, NodedSegmentIndex, NormalizedClip, NormalizedSourceRing, OpenClipRing,
-    Ordering, OwnerCycleContainment, OwnerCycleFailure, OwnerShellPosition, Point, PointKey,
-    PointSelectionChart, Polygon, PolygonPointIndex, Result, Ring, SearchAccount, Segment,
-    SegmentParameter, Site, VoronoiBoundary, VoronoiClipSourceRoot, XY, YStabbingIndex, clip,
-    ensure_coordseq_vertex_capacity, exact, polygon_is_valid, polygon_output_baseline,
-    retained_site_longitude, subdivision, try_dedup_by, try_hash_map_with_capacity, try_sort_by,
-    voronoi_error,
+    CoordSeq, EdgeId, EvaluationBudget, ExactCycleContact, ExactPairTouch, ExactSign,
+    ExactSubdivision, ExactVertexSegment, NodedExactCycle, NodedSegmentIndex, NormalizedClip,
+    NormalizedSourceRing, OpenClipRing, Ordering, OwnerCycleContainment, OwnerCycleFailure,
+    OwnerShellPosition, Point, PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result,
+    Ring, SearchAccount, Segment, SegmentParameter, Site, VertexId, VoronoiBoundary,
+    VoronoiClipSourceRoot, XY, YStabbingIndex, ensure_coordseq_vertex_capacity, exact,
+    polygon_is_valid, polygon_output_baseline, retained_site_longitude, sort_unique_along,
+    try_dedup_by, try_hash_map_with_capacity, try_sort_by, uf_union, voronoi_error,
 };
 
 struct ExactTouchForest {
