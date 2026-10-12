@@ -147,7 +147,7 @@ mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
     ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
-    computed_native_sample_ordinates, interpolate_source_projection,
+    computed_native_sample_ordinates, interpolate_source_projection, source_arc_ordinates_eligible,
     source_ordinate_values_at_fraction,
 };
 mod perimeter;

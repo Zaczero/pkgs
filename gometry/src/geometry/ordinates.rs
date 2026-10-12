@@ -61,6 +61,13 @@ impl<'access, 'metric, M: ChartMetric> SourceArcContext<'access, 'metric, M> {
     }
 }
 
+pub(crate) const fn source_arc_ordinates_eligible(
+    axes: CoordinateAxes,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
+    (axes.has_z() || axes.has_m()) && domain.is_geographic()
+}
+
 impl SourceArcContext<'static, 'static, crate::crs::GeodesicMetric> {
     pub(crate) const fn cartesian() -> Self {
         Self::new(crate::geometry::TopologyDomain::Cartesian, None)

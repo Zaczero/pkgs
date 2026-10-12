@@ -10,7 +10,7 @@ use crate::geometry::{
     SourceArcContext, TopologyDomain, XY, bounds_distance_squared, dedup_consecutive_points,
     interpolate_source_projection, point_distance, point_segment_distance_and_projection,
     points_dwithin, push_distinct_xy_position, repair_shape_in_frame, same_point,
-    same_topological_coordinate, validate_shape_in_frame,
+    same_topological_coordinate, source_arc_ordinates_eligible, validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -273,15 +273,11 @@ impl SnapReference {
     }
 }
 
-fn has_shared_ordinate(start: Point, end: Point) -> bool {
-    (start.z().is_some() && end.z().is_some()) || (start.m().is_some() && end.m().is_some())
-}
-
 fn source_context_for_axes<'context, 'access, 'metric, M: ChartMetric>(
     context: Option<&'context SourceArcContext<'access, 'metric, M>>,
     axes: CoordinateAxes,
 ) -> Option<&'context SourceArcContext<'access, 'metric, M>> {
-    context.filter(|context| (axes.has_z() || axes.has_m()) && context.domain().is_geographic())
+    context.filter(|context| source_arc_ordinates_eligible(axes, context.domain()))
 }
 
 fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
@@ -332,8 +328,7 @@ pub(crate) fn snap_line_to_reference_with_context<C: Coordinates + ?Sized, M: Ch
 ) -> crate::error::Result<Vec<Point>> {
     if !points
         .first_coord()
-        .is_some_and(|point| has_shared_ordinate(point, point))
-        || !context.domain().is_geographic()
+        .is_some_and(|point| source_arc_ordinates_eligible(point.axes(), context.domain()))
     {
         return snap_line_to_reference(points, reference);
     }
@@ -382,8 +377,7 @@ pub(crate) fn snap_ring_to_reference_with_context<C: Coordinates + ?Sized, M: Ch
 ) -> crate::error::Result<Vec<Point>> {
     if !points
         .first_coord()
-        .is_some_and(|point| has_shared_ordinate(point, point))
-        || !context.domain().is_geographic()
+        .is_some_and(|point| source_arc_ordinates_eligible(point.axes(), context.domain()))
     {
         return snap_ring_to_reference(points, reference);
     }

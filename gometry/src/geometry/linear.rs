@@ -17,7 +17,7 @@ use crate::geometry::{
     SegmentMetric, SegmentProjection, Shape, SharedSlice, SourceArcContext, distance_3d_with_parts,
     interpolate_fraction, interpolate_source_projection, point_distance, point_segment_selection,
     push_distinct_active_position, same_point, segment_projection, shape_axes_all_z,
-    squared_norm_is_trustworthy,
+    source_arc_ordinates_eligible, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -92,15 +92,6 @@ impl Shape {
         self.split_at_points(&splitter.splitter_points()?, tolerance)
     }
 
-    pub(crate) fn split_with_context<M: ChartMetric>(
-        &self,
-        splitter: &Self,
-        tolerance: f64,
-        context: &SourceArcContext<'_, '_, M>,
-    ) -> Result<Vec<Self>> {
-        self.split_at_points_with_context(&splitter.splitter_points()?, tolerance, context)
-    }
-
     /// [`Self::split`] against split locations the caller already holds.
     pub(crate) fn split_at_points(&self, splitters: &[Point], tolerance: f64) -> Result<Vec<Self>> {
         self.split_at_points_impl(splitters, tolerance, |start, end, projection, _state| {
@@ -108,16 +99,28 @@ impl Shape {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn split_at_points_with_context<M: ChartMetric>(
         &self,
         splitters: &[Point],
         tolerance: f64,
         context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Self>> {
-        let axes = self.axes();
-        if (!axes.has_z() && !axes.has_m()) || !context.domain().is_geographic() {
+        if !source_arc_ordinates_eligible(self.axes(), context.domain()) {
             return self.split_at_points(splitters, tolerance);
         }
+        self.split_at_points_with_source_arcs(splitters, tolerance, context)
+    }
+
+    /// Split after the caller selected source-arc interpolation for a
+    /// geographic shape with shared Z or M ordinates.
+    pub(crate) fn split_at_points_with_source_arcs<M: ChartMetric>(
+        &self,
+        splitters: &[Point],
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Vec<Self>> {
+        debug_assert!(source_arc_ordinates_eligible(self.axes(), context.domain()));
         self.split_at_points_impl(
             splitters,
             tolerance,
@@ -125,6 +128,15 @@ impl Shape {
                 interpolate_source_projection(context, start, end, projection, root_state)
             },
         )
+    }
+
+    pub(crate) fn split_with_source_arcs<M: ChartMetric>(
+        &self,
+        splitter: &Self,
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Vec<Self>> {
+        self.split_at_points_with_source_arcs(&splitter.splitter_points()?, tolerance, context)
     }
 
     fn split_at_points_impl(

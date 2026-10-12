@@ -333,7 +333,7 @@ impl PyGeometry {
                 metric_scratch.get_or_insert_with(crate::dispatch::MetricScratch::default);
             let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
                 .resolve_topology_ctx(&frame, scratch)?;
-            domain.is_geographic().then_some((domain, metric))
+            crate::geometry::source_arc_ordinates_eligible(axes, domain).then_some((domain, metric))
         } else {
             None
         };
@@ -347,7 +347,7 @@ impl PyGeometry {
                     })
                 };
                 let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-                shape.split_at_points_with_context(&splitters, tolerance, &context)
+                shape.split_at_points_with_source_arcs(&splitters, tolerance, &context)
             })?,
             None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
         };

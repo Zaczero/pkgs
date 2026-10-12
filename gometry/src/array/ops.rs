@@ -831,17 +831,24 @@ impl PyGeometryArray {
                 let mut metric_scratch = crate::dispatch::MetricScratch::default();
                 let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
                     .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-                return self.flat_map_shapes_groups(py, move |line| {
-                    let metric_access = || {
-                        metric.geographic_chart_metric()?.ok_or_else(|| {
-                            crate::crs::CrsError::invalid(
-                                "geographic split source ordinates require the operation's CRS metric",
-                            )
-                        })
-                    };
-                    let context = geometry::SourceArcContext::new(domain, Some(&metric_access));
-                    line.split_with_context(&splitter_shape, tolerance, &context)
-                });
+                if domain.is_geographic() {
+                    return self.flat_map_shapes_groups(py, move |line| {
+                        let metric_access = || {
+                            metric.geographic_chart_metric()?.ok_or_else(|| {
+                                crate::crs::CrsError::invalid(
+                                    "geographic split source ordinates require the operation's CRS metric",
+                                )
+                            })
+                        };
+                        let context =
+                            geometry::SourceArcContext::new(domain, Some(&metric_access));
+                        if geometry::source_arc_ordinates_eligible(line.axes(), domain) {
+                            line.split_with_source_arcs(&splitter_shape, tolerance, &context)
+                        } else {
+                            line.split(&splitter_shape, tolerance)
+                        }
+                    });
+                }
             }
             return self
                 .flat_map_shapes_groups(py, move |line| line.split(&splitter_shape, tolerance));
@@ -859,20 +866,34 @@ impl PyGeometryArray {
                 let mut metric_scratch = crate::dispatch::MetricScratch::default();
                 let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
                     .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-                py.detach(move || {
-                    let metric_access = || {
-                        metric.geographic_chart_metric()?.ok_or_else(|| {
-                            crate::crs::CrsError::invalid(
-                                "geographic split source ordinates require the operation's CRS metric",
-                            )
+                if domain.is_geographic() {
+                    py.detach(move || {
+                        let metric_access = || {
+                            metric.geographic_chart_metric()?.ok_or_else(|| {
+                                crate::crs::CrsError::invalid(
+                                    "geographic split source ordinates require the operation's CRS metric",
+                                )
+                            })
+                        };
+                        let context =
+                            geometry::SourceArcContext::new(domain, Some(&metric_access));
+                        split_paired_rows(&lines, &cutters, |line, cutter| {
+                            if geometry::source_arc_ordinates_eligible(line.axes(), domain) {
+                                line.split_with_source_arcs(cutter, tolerance, &context)
+                            } else {
+                                line.split(cutter, tolerance)
+                            }
                         })
-                    };
-                    let context = geometry::SourceArcContext::new(domain, Some(&metric_access));
-                    split_paired_rows(&lines, &cutters, |line, cutter| {
-                        line.split_with_context(cutter, tolerance, &context)
                     })
-                })
-                .map_err(rows_err)?
+                    .map_err(rows_err)?
+                } else {
+                    py.detach(move || {
+                        split_paired_rows(&lines, &cutters, |line, cutter| {
+                            line.split(cutter, tolerance)
+                        })
+                    })
+                    .map_err(rows_err)?
+                }
             } else {
                 py.detach(move || {
                     split_paired_rows(&lines, &cutters, |line, cutter| {
