@@ -1917,9 +1917,28 @@ fn source_clip_contacts_keep_parameters_through_ring_normalization() {
             .into(),
     );
     let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
-    let cells = source
-        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+    let outputs = source
+        .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
         .unwrap();
+    assert_eq!(outputs.receipt.producer(), VoronoiProducer::Collinear);
+    assert_receipt_graph(&outputs.receipt);
+    assert_polygon_receipt_alignment(&outputs);
+    assert!(
+        outputs
+            .iter()
+            .flat_map(|output| &output.edge_roles)
+            .flatten()
+            .flat_map(|role| &role.source_uses)
+            .filter(|source_use| source_use.source_operand == Some(1))
+            .any(|source_use| {
+                source_use.start_parameter != exact::ExactRational::zero()
+                    || source_use.end_parameter != exact::ExactRational::one()
+            })
+    );
+    let cells: Vec<_> = outputs
+        .iter()
+        .map(|output| Shape::Polygon(output.polygon.clone()))
+        .collect();
     assert_eq!(cells.len(), 1);
     assert!(
         cells.iter().all(
