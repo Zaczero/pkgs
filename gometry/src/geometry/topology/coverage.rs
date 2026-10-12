@@ -1289,13 +1289,13 @@ mod tests {
 
     fn topology(rows: &[Shape]) -> ExactGeographicTopology {
         let frame = GeographicFrame::crs84();
-        let views: Vec<_> = rows
-            .iter()
-            .map(|shape| {
+        ExactGeographicTopology::from_views(
+            frame,
+            rows.iter().map(|shape| {
                 ScalarGeographicView::try_new(frame, shape).expect("geographic fixture admits")
-            })
-            .collect();
-        ExactGeographicTopology::from_views(frame, views.into_iter()).expect("Q topology builds")
+            }),
+        )
+        .expect("Q topology builds")
     }
 
     fn face_rows(topology: &ExactGeographicTopology) -> Vec<Vec<usize>> {
