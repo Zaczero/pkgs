@@ -870,7 +870,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
     }
 
     fn q_spans_allow_chord(
-        &mut self,
+        &self,
         chain_index: usize,
         before: usize,
         after: usize,
@@ -983,7 +983,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
     }
 
     fn q_vertices_allow_triangle(
-        &mut self,
+        &self,
         chain_index: usize,
         before: usize,
         after: usize,
