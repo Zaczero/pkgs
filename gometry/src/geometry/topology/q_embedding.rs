@@ -11181,6 +11181,11 @@ fn build_q_publication_pairs(
             let published_chord = published
                 .get(published_index)
                 .expect("publication sweep ordinal belongs to the publication chord table");
+            // The emitted leaf replaces this rooted source span; it is not an
+            // independent edge whose contact with its own source constrains rounding.
+            if publication_leaf_replaces_source_span(source_chord, published_chord, work)? {
+                return Ok(ControlFlow::<std::convert::Infallible>::Continue(()));
+            }
             let translated = shifted_segment(published_chord.nearest, shift, period);
             let radius = *published_chord
                 .image_radii
@@ -11268,6 +11273,20 @@ fn build_q_publication_pairs(
         .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
     Ok(pairs)
+}
+
+fn publication_leaf_replaces_source_span(
+    source: &QChord,
+    published: &QPublishedChord,
+    work: &mut impl Work,
+) -> Result<bool> {
+    for range in &published.source_ranges {
+        work.charge_into_error(1)?;
+        if range.ports == source.ports || range.ports == [source.ports[1], source.ports[0]] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn compare_variable_nodes(
@@ -25527,3 +25546,7 @@ mod native_ordinate_provenance_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "q_embedding_acceptance_tests.rs"]
+mod acceptance_tests;
