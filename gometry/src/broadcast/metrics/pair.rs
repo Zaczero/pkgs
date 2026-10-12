@@ -828,9 +828,11 @@ pub(crate) fn metric_nearest_points_resolved(
     }
     dispatch_resolved_metric(
         metric,
-        |_| match source_context {
-            Some(source_context) => a.nearest_points_with_source_context(b, source_context),
-            None => a.nearest_points(b),
+        |_| {
+            source_context.map_or_else(
+                || a.nearest_points(b),
+                |source_context| a.nearest_points_with_source_context(b, source_context),
+            )
         },
         |metric| {
             let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
@@ -864,7 +866,7 @@ pub(crate) fn metric_shortest_line_resolved(
     source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
 ) -> crate::error::Result<Shape> {
     let common = crate::geometry::common_axes(a.shape(), b.shape());
-    let source_capture = SourceArcCapture::for_output_axes(common, *source_context);
+    let source_capture = SourceArcCapture::for_output_axes(common, source_context);
     match metric {
         crs::ResolvedMetric::Planar { .. } => {
             let pair = metric_nearest_points_resolved(
@@ -884,7 +886,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
                             start.x, end.x,
                         ])?,
-                        source_capture,
+                        &source_capture,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -923,7 +925,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         [start.x, end.x],
                         intent,
                     )?,
-                    source_capture,
+                    &source_capture,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }
@@ -1614,17 +1616,18 @@ mod planar_nearest_source_ordinate_tests {
     use super::{metric_nearest_points_resolved, metric_shortest_line_resolved};
     use crate::crs::{GeodesicMetric, MetricModel, ResolvedMetric};
     use crate::geometry::{
-        ChartMetric, FrameDependentCaches, LineSeq, Point, PreparedPlan, RootWorkCounters, Shape,
-        SourceArcContext, TopologyDomain, reset_root_work_counters, root_work_counters,
+        ChartMetric as _, FrameDependentCaches, LineSeq, Point, PreparedPlan, RootWorkCounters,
+        Shape, SourceArcContext, TopologyDomain, reset_root_work_counters, root_work_counters,
     };
 
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
 
     fn segmented_length(metric: &GeodesicMetric, start: Point, end: Point) -> f64 {
         (0..8)
-            .map(|index| {
-                let start_parameter = index as f64 / 8.0;
-                let end_parameter = (index + 1) as f64 / 8.0;
+            .zip(1..=8)
+            .map(|(start_index, end_index)| {
+                let start_parameter = f64::from(start_index) / 8.0;
+                let end_parameter = f64::from(end_index) / 8.0;
                 let start_point = Point::new_raw_xy(
                     start.x + (end.x - start.x) * start_parameter,
                     start.y + (end.y - start.y) * start_parameter,
@@ -1766,7 +1769,10 @@ mod planar_nearest_source_ordinate_tests {
             let sample = line
                 .as_coords()
                 .iter()
-                .find(|point| point.x.abs() == 90.0 && point.y == 30.0)
+                .find(|point| {
+                    point.x.abs().to_bits() == 90.0_f64.to_bits()
+                        && point.y.to_bits() == 30.0_f64.to_bits()
+                })
                 .expect("the half-turn producer chord has a midpoint");
             let producer_midpoint = Point::new_raw_xy(90.0, 30.0);
             let fraction = segmented_length(&metric, origin, producer_midpoint) / half_turn_total;

@@ -339,7 +339,7 @@ impl CachelessRowContext<'_> {
     ) -> crate::error::Result<T> {
         if self.domain.is_geographic() && (output_axes.has_z() || output_axes.has_m()) {
             self.with_source_arc_context(|source_context| {
-                let capture = crate::geometry::SourceArcCapture::with_context(*source_context);
+                let capture = crate::geometry::SourceArcCapture::with_context(source_context);
                 publish(&capture)
             })
         } else {
@@ -365,7 +365,6 @@ impl CachelessRowContext<'_> {
                     crate::crs::CrsError::invalid(
                         "geographic source-ordinate samples require the operation's CRS metric",
                     )
-                    .into()
                 })
         };
         let source_context =

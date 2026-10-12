@@ -514,12 +514,11 @@ impl PyGeometryArray {
             let metric_access = || {
                 metric
                     .source_chart_metric(source_crs.as_deref())?
-                    .ok_or_else(|| {
-                        crate::crs::CrsError::invalid(
-                            "geographic computed-edge source ordinates require the operation's CRS metric",
-                        )
-                        .into()
-                    })
+                        .ok_or_else(|| {
+                            crate::crs::CrsError::invalid(
+                                "geographic computed-edge source ordinates require the operation's CRS metric",
+                            )
+                        })
             };
             let source_axes = shape.axes();
             let source_capture = if domain.is_geographic()
@@ -527,9 +526,9 @@ impl PyGeometryArray {
             {
                 #[cfg(test)]
                 crate::geometry::record_root_work(crate::geometry::RootWorkEvent::SourceContextSetup);
-                crate::geometry::SourceArcCapture::with_context(
-                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
-                )
+                let source_context =
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                crate::geometry::SourceArcCapture::with_context(&source_context)
             } else {
                 crate::geometry::SourceArcCapture::none()
             };
@@ -559,13 +558,14 @@ impl PyGeometryArray {
 #[cfg(test)]
 mod root_capture_tests {
     use super::*;
+    use crate::crs::frame::crs_arc_static;
     use crate::geometry::Ring;
 
     #[test]
     fn geographic_xy_hull_and_mrr_skip_source_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         Python::initialize();
-        let frame = Frame::Crs(crate::crs::frame::crs_arc_static("OGC:CRS84"));
+        let frame = Frame::Crs(crs_arc_static("OGC:CRS84"));
         let line = Shape::LineString(
             LineSeq::try_new(
                 CoordSeq::try_from_points(&[

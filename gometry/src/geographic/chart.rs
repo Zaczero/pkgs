@@ -540,7 +540,7 @@ mod tests {
     };
     use crate::geographic::{AngularFactor, ChartPole, GeographicFrame};
     use crate::geometry::{
-        Bounds, ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point,
+        Bounds, ChartMetric as _, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point,
         PointSetCenter, Polygon, Ring, Shape, SourceArcCapture, SourceArcContext, TopologyDomain,
         ZOrdinate,
     };
@@ -954,10 +954,9 @@ mod tests {
             CoordinateAxes::XYZM,
         );
         let metric_access = || Ok(&metric);
-        let source_capture = SourceArcCapture::with_context(SourceArcContext::new(
-            TopologyDomain::Geographic(frame),
-            Some(&metric_access),
-        ));
+        let source_context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
+        let source_capture = SourceArcCapture::with_context(&source_context);
         let output = point_set_convex_hull_shape(&shape, frame, shape.bounds(), &source_capture)
             .unwrap()
             .unwrap();
@@ -968,7 +967,9 @@ mod tests {
             .shell
             .coords()
             .iter()
-            .find(|point| point.x == 0.0 && point.y == 35.0)
+            .find(|point| {
+                point.x.to_bits() == 0.0_f64.to_bits() && point.y.to_bits() == 35.0_f64.to_bits()
+            })
             .expect("the retained -240-degree closing chord has a midpoint");
 
         let chord = |parameter: usize| {

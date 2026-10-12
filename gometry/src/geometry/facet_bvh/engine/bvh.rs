@@ -109,15 +109,12 @@ impl NearestCandidate {
                     let has_source_ordinates =
                         (source_axes.has_z() && start.z().is_some() && end.z().is_some())
                             || (source_axes.has_m() && start.m().is_some() && end.m().is_some());
-                    if has_source_ordinates && !projection.is_start() && !projection.is_end() {
-                        Some(NearestSourceProjection {
+                    (has_source_ordinates && !projection.is_start() && !projection.is_end())
+                        .then_some(NearestSourceProjection {
                             start,
                             end,
                             projection,
                         })
-                    } else {
-                        None
-                    }
                 } else {
                     None
                 };

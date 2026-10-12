@@ -254,7 +254,7 @@ fn snap_metric_resolver(
 ) -> MetricResolver {
     let has_ordinates = geometry_array.map_or_else(
         || {
-            crate::exact_geometry(geometry).map_or(true, |geometry| {
+            crate::exact_geometry(geometry).is_none_or(|geometry| {
                 let axes = geometry.shape.axes();
                 axes.has_z() || axes.has_m()
             })
@@ -291,8 +291,7 @@ fn snap_prepared(
         MetricCtx::None => source.snap(right.shape(), tolerance),
         MetricCtx::Antimeridian | MetricCtx::Metric { .. } => Err(crate::crs::CrsError::invalid(
             "internal dispatch error: snap requires no metric or geographic carry",
-        )
-        .into()),
+        )),
     }
 }
 

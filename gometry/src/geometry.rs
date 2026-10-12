@@ -454,7 +454,7 @@ pub(crate) fn nearest_line_with_intent<M: ChartMetric>(
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
     intent: crate::geographic::ComputedEdgeIntent<'_>,
-    source_capture: SourceArcCapture<'_, '_, M>,
+    source_capture: &SourceArcCapture<'_, '_, M>,
 ) -> Result<Shape> {
     let Some(pair) = pair else {
         return nearest_line(None, common);

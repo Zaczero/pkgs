@@ -7,6 +7,7 @@ use std::cell::Cell;
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
+use crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
@@ -85,15 +86,15 @@ impl<'access, 'metric, M: ChartMetric> SourceArcCapture<'access, 'metric, M> {
         Self { context: None }
     }
 
-    pub(crate) const fn with_context(context: SourceArcContext<'access, 'metric, M>) -> Self {
+    pub(crate) const fn with_context(context: &SourceArcContext<'access, 'metric, M>) -> Self {
         Self {
-            context: Some(context),
+            context: Some(*context),
         }
     }
 
     pub(crate) const fn for_output_axes(
         output_axes: CoordinateAxes,
-        context: SourceArcContext<'access, 'metric, M>,
+        context: &SourceArcContext<'access, 'metric, M>,
     ) -> Self {
         if output_axes.has_z() || output_axes.has_m() {
             Self::with_context(context)
@@ -551,35 +552,35 @@ pub(crate) fn take_source_arc_activity() -> SourceArcActivity {
 #[cfg(test)]
 pub(crate) fn record_source_arc_projection() {
     update_source_arc_activity(|activity| {
-        activity.projection_interpolations += 1;
+        activity.projection_interpolations = activity.projection_interpolations.wrapping_add(1);
     });
 }
 
 #[cfg(test)]
 pub(crate) fn record_source_arc_request() {
     update_source_arc_activity(|activity| {
-        activity.request_constructions += 1;
+        activity.request_constructions = activity.request_constructions.wrapping_add(1);
     });
 }
 
 #[cfg(test)]
 pub(crate) fn record_source_root_resolution() {
     update_source_arc_activity(|activity| {
-        activity.root_resolutions += 1;
+        activity.root_resolutions = activity.root_resolutions.wrapping_add(1);
     });
 }
 
 #[cfg(test)]
 pub(crate) fn record_source_root_request_table() {
     update_source_arc_activity(|activity| {
-        activity.root_request_tables += 1;
+        activity.root_request_tables = activity.root_request_tables.wrapping_add(1);
     });
 }
 
 #[cfg(test)]
 pub(crate) fn record_source_trace_row_table() {
     update_source_arc_activity(|activity| {
-        activity.trace_row_tables += 1;
+        activity.trace_row_tables = activity.trace_row_tables.wrapping_add(1);
     });
 }
 
@@ -798,10 +799,7 @@ pub(crate) fn interpolate_source_projection<M: ChartMetric>(
     };
     let source = [start, end];
     let parameter = projection.exact_fraction()?;
-    let longitude = crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair(
-        frame.longitude(),
-        [start.x, end.x],
-    )?;
+    let longitude = retained_edge_from_lifted_binary64_pair(frame.longitude(), [start.x, end.x])?;
     let mut fraction = None;
     let mut work = Unmetered;
     let state = root_state.get_or_insert_with(RootMetricState::default);
@@ -1089,7 +1087,7 @@ fn carry_or_degrade(
 mod tests {
     use super::*;
     use crate::geometry::embedding_search::EvaluationBudget;
-    use crate::geometry::{Coordinates, LineSeq};
+    use crate::geometry::{Coordinates as _, LineSeq};
 
     fn xy_source_line() -> Shape {
         Shape::LineString(

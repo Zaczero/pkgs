@@ -5,6 +5,7 @@ use crate::geometry::distance::{
     nearest_probe_to_parts, parts_boundary_witness, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::facet_bvh::NearestSourceProjection;
+use crate::geometry::ordinates::source_arc_ordinates_unmetered;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, FrameDependentCaches, GeodesicMetric, MOrdinate, Point,
     PreparedPlan, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
@@ -78,17 +79,16 @@ impl PreparedPlan {
                 },
                 source_axes,
             )?;
-            if SOURCE_CONTEXT {
-                if let (Some(source_projection), Some(source_context)) =
+            if SOURCE_CONTEXT
+                && let (Some(source_projection), Some(source_context)) =
                     (source_projection, source_context)
-                {
-                    target = resolve_nearest_source_projection(
-                        target,
-                        source_projection,
-                        source_axes,
-                        source_context,
-                    )?;
-                }
+            {
+                target = resolve_nearest_source_projection(
+                    target,
+                    &source_projection,
+                    source_axes,
+                    source_context,
+                )?;
             }
             Ok(if oriented.swapped {
                 (target, candidate.probe)
@@ -171,7 +171,7 @@ impl PreparedPlan {
 
 fn resolve_nearest_source_projection(
     point: Point,
-    source_projection: NearestSourceProjection,
+    source_projection: &NearestSourceProjection,
     axes: CoordinateAxes,
     source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Point> {
@@ -200,8 +200,7 @@ fn resolve_nearest_source_projection(
             "geographic nearest-witness ordinates require the operation's CRS metric",
         )
     })?;
-    let ordinates =
-        crate::geometry::ordinates::source_arc_ordinates_unmetered(&request, || metric_access())?;
+    let ordinates = source_arc_ordinates_unmetered(&request, metric_access)?;
     Ok(Point::new_axes(
         point.x,
         point.y,

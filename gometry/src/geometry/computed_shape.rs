@@ -283,7 +283,7 @@ pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
             ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
         };
         let capture =
-            crate::geometry::SourceArcCapture::for_output_axes(coords.axes(), *source_context);
+            crate::geometry::SourceArcCapture::for_output_axes(coords.axes(), source_context);
         publish_computed_chain_with_capture(frame, coords, closed, budget, &capture, intent)
     })
 }
