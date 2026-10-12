@@ -434,6 +434,7 @@ pub(crate) fn publish_computed_line_column_with_budget(
 pub(crate) struct PublishedTriangleVertices {
     pub(crate) points: Vec<crate::geometry::Point>,
     pub(crate) ring_ends: Vec<usize>,
+    pub(crate) mesh_publication: Option<crate::geometry::PreparedMeshPublication>,
 }
 
 impl PublishedTriangleVertices {
@@ -447,7 +448,19 @@ impl PublishedTriangleVertices {
         let ring_ends = (1..=points.len() / 4)
             .map(|index| index.wrapping_mul(4))
             .collect();
-        Ok(Self { points, ring_ends })
+        Ok(Self {
+            points,
+            ring_ends,
+            mesh_publication: None,
+        })
+    }
+
+    pub(crate) fn uniform_mesh(
+        mut publication: crate::geometry::PreparedMeshPublication,
+    ) -> Result<Self> {
+        let mut published = Self::uniform(publication.take_points())?;
+        published.mesh_publication = Some(publication);
+        Ok(published)
     }
 }
 
@@ -483,7 +496,116 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
         }
         ring_ends.push(points.len());
     }
-    Ok(PublishedTriangleVertices { points, ring_ends })
+    Ok(PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    })
+}
+
+pub(crate) fn publish_mesh_triangle_vertex_stream_budgeted(
+    mut publication: crate::geometry::PreparedMeshPublication,
+    frame: GeographicFrame,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    use crate::geometry::tessellation::MeshSiteLocation;
+
+    let source_points = publication.take_points();
+    if !source_points.len().is_multiple_of(4) || publication.faces.len() != source_points.len() / 4
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "prepared mesh face map does not match the triangle vertex stream".into(),
+        )
+        .into());
+    }
+
+    let mut points = Vec::with_capacity(source_points.len());
+    let mut ring_ends = Vec::with_capacity(publication.faces.len());
+    for (face_index, (face, ring)) in publication
+        .faces
+        .iter()
+        .zip(source_points.as_chunks::<4>().0)
+        .enumerate()
+    {
+        let start = face_index
+            .checked_mul(4)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let end = start
+            .checked_add(4)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if face.output_vertices != (start..end) {
+            return Err(GeometryErrorKind::Invalid(
+                "prepared mesh face range does not match its triangle ring".into(),
+            )
+            .into());
+        }
+        match publish_native_computed_chain(
+            frame,
+            ring.as_slice(),
+            true,
+            budget,
+            source_context,
+            |output_side, _, _| {
+                let boundary = face.boundary_uses.get(output_side).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh face is missing a directed side use".into(),
+                    )
+                })?;
+                let start = publication.sites.get(boundary.start_site).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh side start is outside the site table".into(),
+                    )
+                })?;
+                let end = publication.sites.get(boundary.end_site).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "prepared mesh side end is outside the site table".into(),
+                    )
+                })?;
+                let (
+                    MeshSiteLocation::Retained(start_chart),
+                    MeshSiteLocation::Retained(end_chart),
+                ) = (start.location, end.location)
+                else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "geographic mesh side lacks retained chart endpoints".into(),
+                    )
+                    .into());
+                };
+                Ok(ComputedEdgeIntent::retained_native(
+                    start_chart.displacement_to(end_chart),
+                ))
+            },
+            |_, _| ComputedVertexIntent::Canonical,
+        )? {
+            Some(published) => points.extend(published),
+            None => points.extend_from_slice(ring),
+        }
+        ring_ends.push(points.len());
+    }
+    let mut published = PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    };
+    published.mesh_publication = Some(publication);
+    Ok(published)
+}
+
+pub(crate) fn publish_mesh_publication_for_domain(
+    publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => {
+            PublishedTriangleVertices::uniform_mesh(publication)
+        },
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            publish_mesh_triangle_vertex_stream_budgeted(publication, frame, source_context, budget)
+        },
+    }
 }
 
 pub(crate) fn publish_stored_computed_shape(

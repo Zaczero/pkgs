@@ -2,13 +2,13 @@ use std::borrow::Borrow;
 
 use crate::NonNegative;
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, GeographicSampleSegment, PreparedSampling, RingOwner,
     SampleOccurrenceId, SampleRecipe, SampleSupport, Site, certified_delaunay,
-    collect_sample_atoms, collect_sample_triangles, constrained_triangle_vertices,
-    earcut_polygon_with, sample_weighted, selected_triangle_points, snap_sites, try_triangle_shape,
-    uniform_f64, voronoi_dcel, weight_scale,
+    collect_sample_atoms, collect_sample_triangles, earcut_polygon_with, sample_weighted,
+    snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, CsrOffsetColumn, Dimension,
@@ -22,29 +22,6 @@ use crate::geometry::{
 pub(super) struct BudgetedTriangleSink<'budget> {
     budget: &'budget mut ExpansionBudget,
     shapes: Vec<Shape>,
-}
-
-// The cap must be admitted before this local output vector is reserved. Keep
-// the ordering observable in a test build; it is compiled out of production.
-#[cfg(test)]
-thread_local! {
-    static DELAUNAY_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn note_delaunay_output_reserve() {
-    DELAUNAY_OUTPUT_RESERVES.with(|count| {
-        let reserves = count
-            .get()
-            .checked_add(1)
-            .expect("Delaunay output reserve test counter overflow");
-        count.set(reserves);
-    });
-}
-
-#[cfg(test)]
-pub(super) fn take_delaunay_output_reserves() -> usize {
-    DELAUNAY_OUTPUT_RESERVES.with(|count| count.replace(0))
 }
 
 impl<'budget> BudgetedTriangleSink<'budget> {
@@ -275,91 +252,107 @@ impl Shape {
         }
         let mut shapes = Vec::with_capacity(vertices.len() / 4);
         for ring in vertices.as_chunks::<4>().0 {
-            shapes.push(Self::Polygon(Polygon::new(
-                Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
-                Vec::new(),
-            )));
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
         }
         Ok(shapes)
     }
 
-    /// The Delaunay triangulation as one flat CLOSED-ring vertex stream — four
-    /// points `[a, c, b, a]` per triangle, CCW (gometry's shell canon). Lets the
-    /// array surface build a packed `Polygons` layout in ONE pass instead of a
-    /// `Polygon`/`CoordSeq` per triangle that is then re-packed.
-    pub(crate) fn delaunay_triangle_vertices(&self) -> Result<Vec<Point>> {
-        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
-        self.delaunay_triangle_vertices_budgeted(&mut budget)
+    pub(crate) fn triangle_shapes_from_published_rings(
+        vertices: &[Point],
+        ring_ends: &[usize],
+    ) -> Result<Vec<Self>> {
+        let mut shapes = Vec::with_capacity(ring_ends.len());
+        let mut start = 0;
+        for &end in ring_ends {
+            if end > vertices.len() || end.checked_sub(start).is_none_or(|len| len < 4) {
+                return Err(GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+                .into());
+            }
+            let ring = vertices.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+            })?;
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
+            start = end;
+        }
+        if start != vertices.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "triangle ring offsets do not match the vertex stream".into(),
+            )
+            .into());
+        }
+        Ok(shapes)
     }
 
-    fn delaunay_points(&self) -> Result<Vec<Point>> {
-        // Sites are an XY set, but each one carries the first full source Point
-        // so triangle corners retain its Z/M without a post-hoc lookup.
-        let mut points = self.first_seen_xy_vertices()?;
-        points.sort_unstable_by(|left, right| {
-            left.x
-                .total_cmp(&right.x)
-                .then_with(|| left.y.total_cmp(&right.y))
-        });
-        if points.len() < 3 {
-            return Ok(Vec::new());
-        }
-        // The exact engine takes the unique vertices as they are: no
-        // conversion, no proposal path, no repair afterwards.
-        Ok(points)
+    fn triangle_shape_from_ring(vertices: &[Point]) -> Result<Self> {
+        Ok(Self::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(vertices)?)?,
+            Vec::new(),
+        )))
     }
 
     pub(crate) fn delaunay_triangle_vertices_budgeted(
         &self,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        let points = self.delaunay_points()?;
-        if points.len() < 3 {
-            return Ok(Vec::new());
-        }
-        // The triangulation's indexed faces are input-sized working state; the
-        // closed-ring vertices below are the generated output. Charge their
-        // exact count before reserving or emitting any of them.
-        let mut sites = Vec::with_capacity(points.len());
-        for (id, &point) in points.iter().enumerate() {
-            sites.push(Site { id, point });
-        }
-        let triangulation = certified_delaunay(&sites)?;
-        let capacity = triangulation
-            .triangles()
-            .len()
-            .checked_mul(4)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        budget.check_additional(capacity)?;
-        #[cfg(test)]
-        note_delaunay_output_reserve();
-        let mut vertices = Vec::with_capacity(capacity);
-        let mut triangles = triangulation.triangles().to_vec();
-        let xy = |site| super::delaunay::exact_delaunay::site_xy(&points, site);
-        super::delaunay::exact_delaunay::canonicalize_triangles(&xy, &mut triangles);
-        for triangle in triangles {
-            vertices.extend_from_slice(&selected_triangle_points(&points, triangle, false));
-        }
-        budget.add(capacity)?;
-        Ok(vertices)
+        Ok(self
+            .delaunay_mesh_publication_in_domain_budgeted(
+                crate::geometry::TopologyDomain::Cartesian,
+                budget,
+            )?
+            .into_points())
     }
 
-    pub(crate) fn constrained_delaunay_triangles(
+    #[cfg(test)]
+    pub(crate) fn delaunay_mesh_publication_in_domain(
+        &self,
+        domain: crate::geometry::TopologyDomain,
+    ) -> Result<super::PreparedMeshPublication> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+        self.delaunay_mesh_publication_in_domain_budgeted(domain, &mut budget)
+    }
+
+    pub(crate) fn delaunay_mesh_publication_in_domain_budgeted(
+        &self,
+        domain: crate::geometry::TopologyDomain,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<super::PreparedMeshPublication> {
+        let source_points = self.first_seen_xy_vertices()?;
+        let publication = match domain {
+            crate::geometry::TopologyDomain::Cartesian => {
+                super::delaunay::prepare_raw_delaunay_publication(&source_points, budget)?
+            },
+            crate::geometry::TopologyDomain::Geographic(frame) => {
+                super::delaunay::prepare_retained_delaunay_publication(
+                    frame,
+                    &source_points,
+                    budget,
+                )?
+            },
+        };
+        Ok(publication)
+    }
+
+    pub(crate) fn constrained_delaunay_triangles_in_domain(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
     ) -> Result<Vec<Self>> {
         let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-        self.constrained_delaunay_triangles_budgeted(refinement, &mut budget)
+        self.constrained_delaunay_triangles_in_domain_budgeted(refinement, domain, &mut budget)
     }
 
-    pub(crate) fn constrained_delaunay_triangles_budgeted(
+    pub(crate) fn constrained_delaunay_triangles_in_domain_budgeted(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        // Build and publish one constrained mesh plan; packed and per-shape
-        // callers consume the same selected source sites and face IDs.
-        let vertices = self.constrained_delaunay_vertices_budgeted(refinement, budget)?;
+        let vertices =
+            self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, budget)?;
         Self::triangle_shapes_from_vertices(&vertices)
     }
 
@@ -367,6 +360,7 @@ impl Shape {
     /// vertex stream. Each ring is emitted from the shared mesh plan: inactive
     /// refinement preserves selected source-site axes, while active refinement
     /// emits uniform XY.
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices(
         &self,
         refinement: CdtRefinement,
@@ -375,33 +369,81 @@ impl Shape {
         self.constrained_delaunay_vertices_budgeted(refinement, &mut budget)
     }
 
+    pub(crate) fn constrained_delaunay_vertices_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Vec<Point>> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+        self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, &mut budget)
+    }
+
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices_budgeted(
         &self,
         refinement: CdtRefinement,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
-            Polygonal::Polygon(polygon) => constrained_triangle_vertices(
-                polygon
-                    .rings()
-                    .enumerate()
-                    .map(|(ring, value)| (RingOwner::new(0, ring), value.coords())),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::MultiPolygon(polygons) => constrained_triangle_vertices(
-                polygons.iter().enumerate().flat_map(|(polygon, value)| {
-                    value
+        self.constrained_delaunay_vertices_in_domain_budgeted(
+            refinement,
+            TopologyDomain::Cartesian,
+            budget,
+        )
+    }
+
+    pub(crate) fn constrained_delaunay_vertices_in_domain_budgeted(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Vec<Point>> {
+        let Some(plan) = self.prepare_constrained_delaunay_plan_in_domain(refinement, domain)?
+        else {
+            return Ok(Vec::new());
+        };
+        super::delaunay::publish_constrained_plan(&plan, budget)
+    }
+
+    pub(crate) fn prepare_constrained_delaunay_plan_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Option<super::delaunay::ConstrainedMeshPlan>> {
+        let polygonal = self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        let chart = match domain {
+            TopologyDomain::Cartesian => None,
+            TopologyDomain::Geographic(frame) => {
+                PointSelectionChart::try_from_shape(frame, self, self.bounds())?
+            },
+        };
+        match polygonal {
+            Polygonal::Polygon(polygon) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygon
                         .rings()
                         .enumerate()
-                        .map(move |(ring, value)| (RingOwner::new(polygon, ring), value.coords()))
-                }),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::Empty => Ok(Vec::new()),
+                        .map(|(ring, value)| (RingOwner::new(0, ring), value)),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::MultiPolygon(polygons) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygons.iter().enumerate().flat_map(|(polygon, value)| {
+                        value
+                            .rings()
+                            .enumerate()
+                            .map(move |(ring, value)| (RingOwner::new(polygon, ring), value))
+                    }),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::Empty => Ok(None),
         }
     }
 
