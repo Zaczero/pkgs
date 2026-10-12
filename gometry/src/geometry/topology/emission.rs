@@ -2760,7 +2760,7 @@ impl SourceTrace {
         if self.samples.is_empty() {
             let mut rows = TraceRowsBuilder::new(work)?;
             for (edge, start, end) in slices {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if *edge >= edge_count {
                     return Err(GeometryErrorKind::Invalid(
                         "source trace slice references an unknown edge".into(),

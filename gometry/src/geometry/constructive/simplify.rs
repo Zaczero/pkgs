@@ -374,7 +374,7 @@ fn source_median_cut<W: Work>(
     };
     let mut best: Option<(usize, usize, f64)> = None;
     for (lower_index, pair) in ordinates.windows(2).enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let upper_index = lower_index.wrapping_add(1);
         let lower = *pair.first().expect("median window has a lower ordinate");
         let upper = *pair.last().expect("median window has an upper ordinate");
@@ -407,7 +407,7 @@ fn source_vertex_cut<W: Work>(
     };
     let mut best: Option<(usize, usize, f64)> = None;
     for (index, &ordinate) in ordinates.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if low < ordinate && ordinate < high {
             let candidate = (index.abs_diff(middle), index, ordinate);
             if best.is_none_or(|(distance, best_index, _)| {
@@ -488,8 +488,8 @@ fn source_ordinates<W: Work>(
     work: &mut W,
 ) -> Result<Vec<f64>> {
     let count = u64::try_from(owner_coordinate_count).map_err(|_| ResourceError::SizeOverflow)?;
-    work.charge(count)?;
-    work.charge(count)?;
+    work.charge_into_error(count)?;
+    work.charge_into_error(count)?;
     #[cfg(test)]
     SOURCE_ORDINATE_AXIS_SCANS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut ordinates = Vec::with_capacity(owner_coordinate_count);
@@ -507,7 +507,7 @@ fn source_ordinates<W: Work>(
     })?;
     let mut unique = 0_usize;
     for index in 0..ordinates.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let ordinate = *ordinates.get(index).ok_or(ResourceError::SizeOverflow)?;
         #[expect(
             clippy::float_cmp,
@@ -3389,12 +3389,18 @@ mod subdivision_tests {
     }
 
     impl Work for CountingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, units: u64) -> Result<()> {
             self.charged = self
                 .charged
                 .checked_add(units)
                 .ok_or(ResourceError::SizeOverflow)?;
             Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 
@@ -3404,6 +3410,8 @@ mod subdivision_tests {
     }
 
     impl Work for RemainingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, units: u64) -> Result<()> {
             if units > self.remaining {
                 self.refused = Some(units);
@@ -3414,6 +3422,10 @@ mod subdivision_tests {
             }
             self.remaining = self.remaining.wrapping_sub(units);
             Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 
