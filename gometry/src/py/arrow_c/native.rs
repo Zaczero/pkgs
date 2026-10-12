@@ -123,5 +123,4 @@ pub(crate) struct NativeArrowBatch {
     clippy::undocumented_unsafe_blocks,
     reason = "test shells are stack-owned; each CaptureLayout::new is live only for the assertion"
 )]
-#[path = "native/tests.rs"]
 mod layout_validation_tests;

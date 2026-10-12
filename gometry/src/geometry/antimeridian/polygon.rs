@@ -336,5 +336,4 @@ enum HoleOverlayMode {
 }
 
 #[cfg(test)]
-#[path = "polygon/tests.rs"]
 mod tests;
