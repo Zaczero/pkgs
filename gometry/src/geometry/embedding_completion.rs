@@ -14,6 +14,7 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
     IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
 };
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
     CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
     compare_departures_with_work, graph_global_faces_with_work,
@@ -143,12 +144,7 @@ impl RayPoints for ExactPoints {
         self.compare_axis_with_work(left, right, axis, &mut Unmetered)
     }
 
-    fn orientation(
-        &self,
-        a: u32,
-        b: u32,
-        c: u32,
-    ) -> Result<crate::geometry::exact_arith::ExactSign> {
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
         self.orientation_with_work(a, b, c, &mut Unmetered)
     }
 }
@@ -181,7 +177,7 @@ impl RayPointsWithWork for ExactPoints {
         b: u32,
         c: u32,
         work: &mut W,
-    ) -> Result<crate::geometry::exact_arith::ExactSign> {
+    ) -> Result<ExactSign> {
         let a = self
             .exact
             .get(a as usize)
@@ -1811,7 +1807,7 @@ fn point_edge_contacts_preserved(
                 Ok(ControlFlow::<()>::Continue(()))
             },
         )?;
-        let _ = completion;
+        let _completion = completion;
         Ok(result)
     }
 
@@ -1945,7 +1941,7 @@ fn edges_have_only_vertex_contacts(
             }
         },
     )?;
-    let _ = completion;
+    let _completion = completion;
     Ok(!new_contact)
 }
 
@@ -2029,7 +2025,7 @@ mod tests {
         }
     }
 
-    fn budget_refusing_before(operation: &'static str, event: SweepCharge) -> EvaluationBudget {
+    fn budget_refusing_before(operation: &'static str, event: &SweepCharge) -> EvaluationBudget {
         let remaining = event
             .spent_before
             .checked_add(event.ticks)
@@ -3182,6 +3178,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin point-contact progress and refusal before the next probe"
+    )]
     fn native_point_contact_sweep_pays_no_survivor_probes() -> Result<()> {
         const OPERATION: &str = "native_point_contact_sweep";
         reset_cross_pair_probe_progress();
@@ -3208,7 +3208,7 @@ mod tests {
             .expect("the paid sweep charges a rejected point-edge probe");
 
         reset_cross_pair_probe_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = SweepRecordingWork::new(&mut budget);
             let error = isolated_contact_result(&mut work)
@@ -3235,6 +3235,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin edge-contact progress and refusal before the next probe"
+    )]
     fn native_edge_contact_sweep_pays_no_survivor_probes() -> Result<()> {
         const OPERATION: &str = "native_edge_contact_sweep";
         let coordinates = [(0.0, 0.0), (1.0, 0.0), (10.0, 0.0), (11.0, 0.0)];
@@ -3263,7 +3267,7 @@ mod tests {
             .expect("the paid self-sweep charges a rejected edge pair");
 
         reset_cross_pair_probe_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = SweepRecordingWork::new(&mut budget);
             let error = edge_contact_result(&coordinates, &edges, &mut work)
@@ -3290,6 +3294,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin exact shared-contact work before a later-pair refusal"
+    )]
     fn native_edge_contact_sweep_preserves_exact_charges_before_refusal() -> Result<()> {
         const OPERATION: &str = "native_edge_contact_exact";
         let coordinates = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
@@ -3324,7 +3332,7 @@ mod tests {
             .expect("the paid sweep charges the later rejected edge pair");
 
         reset_cross_pair_probe_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = SweepRecordingWork::new(&mut budget);
             let error = edge_contact_result(&coordinates, &edges, &mut work)
@@ -3341,6 +3349,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin rational bounds work and refuse before bounds publication"
+    )]
     fn native_contact_bounds_refuse_before_returning_bounds() -> Result<()> {
         const OPERATION: &str = "native_contact_bounds";
         let point = near_one_exact_chart_point();
@@ -3364,7 +3376,7 @@ mod tests {
             .expect("contact bounds forward rational rounding work");
 
         super::reset_contact_check_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = SweepRecordingWork::new(&mut budget);
             let error = super::outward_bounds(&point, &mut work)
@@ -3406,13 +3418,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin endpoint identity work before returning the degenerate-edge result"
+    )]
     fn native_contact_endpoint_identity_refuses_inside_exact_equality() -> Result<()> {
         const OPERATION: &str = "native_contact_identity";
         let point = near_one_exact_chart_point();
-        let exact = exact_points(&[
-            (point.x.clone(), point.y.clone()),
-            (point.x.clone(), point.y.clone()),
-        ]);
+        let exact = exact_points(&[(point.x.clone(), point.y.clone()), (point.x, point.y)]);
         let edges = [[0, 1]];
         super::reset_contact_check_progress();
         let (result, charges) = {
@@ -3431,7 +3444,7 @@ mod tests {
             .expect("degenerate endpoint identity uses metered rational equality");
 
         super::reset_contact_check_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = SweepRecordingWork::new(&mut budget);
             let error = edges_have_only_vertex_contacts(&exact, &edges, &mut work)
