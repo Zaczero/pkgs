@@ -40,6 +40,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     array: &PyGeometryArray,
     fixed_is_left: bool,
     model: crate::crs::MetricModel,
+    domain: crate::geometry::TopologyDomain,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
@@ -95,38 +96,49 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
         return nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned());
     }
     let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+    let source_frame = fixed.frame.clone();
     let pairs = py
         .detach(move || {
-            let mut rows = array_owned.row_operation();
-            rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
-                .map(|logical_row| {
-                    let ArrayRow::Present(row) = logical_row else {
-                        return Ok((None, CoordinateAxes::XY));
-                    };
-                    let element = rows.prepared(row)?;
-                    let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
-                    let fixed_cache = crate::geometry::FrameDependentCaches::default();
-                    let element_cache = crate::geometry::FrameDependentCaches::default();
-                    if fixed_is_left {
-                        metric_nearest_points_resolved(
-                            &resolved,
-                            &fixed_plan,
-                            &fixed_cache,
-                            &element,
-                            &element_cache,
-                        )
-                    } else {
-                        metric_nearest_points_resolved(
-                            &resolved,
-                            &element,
-                            &element_cache,
-                            &fixed_plan,
-                            &fixed_cache,
-                        )
-                    }
-                    .map(|pair| (pair, common))
-                })
-                .collect_rows()
+            crate::broadcast::with_source_arc_context(
+                &resolved,
+                &source_frame,
+                domain,
+                |source_context| {
+                    let mut rows = array_owned.row_operation();
+                    rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
+                        .map(|logical_row| {
+                            let ArrayRow::Present(row) = logical_row else {
+                                return Ok((None, CoordinateAxes::XY));
+                            };
+                            let element = rows.prepared(row)?;
+                            let common =
+                                crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                            let fixed_cache = crate::geometry::FrameDependentCaches::default();
+                            let element_cache = crate::geometry::FrameDependentCaches::default();
+                            if fixed_is_left {
+                                metric_nearest_points_resolved(
+                                    &resolved,
+                                    &fixed_plan,
+                                    &fixed_cache,
+                                    &element,
+                                    &element_cache,
+                                    (common.has_z() || common.has_m()).then_some(source_context),
+                                )
+                            } else {
+                                metric_nearest_points_resolved(
+                                    &resolved,
+                                    &element,
+                                    &element_cache,
+                                    &fixed_plan,
+                                    &fixed_cache,
+                                    (common.has_z() || common.has_m()).then_some(source_context),
+                                )
+                            }
+                            .map(|pair| (pair, common))
+                        })
+                        .collect_rows()
+                },
+            )
         })
         .map_err(crate::broadcast::rows_err)?;
     nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned())
@@ -163,6 +175,12 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
             state,
             |crs, metric| {
                 let (semi_major, flattening) = metric.ellipsoid_parameters();
+                let frame = crate::geometry::ChartMetric::chart_frame(metric);
+                let metric_access = || Ok(metric);
+                let source_context = crate::geometry::SourceArcContext::new(
+                    crate::geometry::TopologyDomain::Geographic(frame),
+                    Some(&metric_access),
+                );
                 let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
                     let mut shapes = Vec::with_capacity(present_count);
                     for row in array_rows.present_rows() {
@@ -196,21 +214,23 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         };
                         let common =
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                        let source_capture = crate::geometry::SourceArcCapture::for_output_axes(
+                            common,
+                            source_context,
+                        );
                         let line = match witness {
-                            Some((start, end, step)) => {
-                                let frame = crate::geometry::ChartMetric::chart_frame(metric);
-                                crate::geometry::nearest_line_with_intent(
-                                    Some(&(start, end)),
-                                    common,
+                            Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
+                                Some(&(start, end)),
+                                common,
+                                frame,
+                                crate::geographic::ComputedEdgeIntent::retained_chart_witness(
                                     frame,
-                                    crate::geographic::ComputedEdgeIntent::retained_chart_witness(
-                                        frame,
-                                        [start.x, end.x],
-                                        step,
-                                    )
-                                    .map_err(|error| (logical, error))?,
+                                    [start.x, end.x],
+                                    step,
                                 )
-                            },
+                                .map_err(|error| (logical, error))?,
+                                source_capture,
+                            ),
                             None => crate::geometry::nearest_line(None, common),
                         }
                         .map_err(|error| (logical, error))?;

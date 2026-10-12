@@ -310,7 +310,9 @@ pub(crate) fn try_unary_packed_array(
     }
     // param-less lanes: the operation alone says everything
     match op {
-        Operation::ConvexHull => return Some(array.convex_hull_unary_packed(py)),
+        Operation::ConvexHull => {
+            return Some(array.convex_hull_unary_packed(py, resolver));
+        },
         Operation::Boundary => return array.boundary_unary_packed(),
         Operation::Reverse => return Some(array.reverse_unary_packed()),
         Operation::Normalize => return Some(array.normalize_unary_packed(py)),

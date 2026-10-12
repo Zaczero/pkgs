@@ -329,6 +329,51 @@ pub(crate) struct CachelessRowContext<'a> {
     pub lane: Lane,
 }
 
+impl CachelessRowContext<'_> {
+    pub(crate) fn with_source_arc_capture_for_axes<T>(
+        &self,
+        output_axes: crate::geometry::CoordinateAxes,
+        publish: impl FnOnce(
+            &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
+        ) -> crate::error::Result<T>,
+    ) -> crate::error::Result<T> {
+        if self.domain.is_geographic() && (output_axes.has_z() || output_axes.has_m()) {
+            self.with_source_arc_context(|source_context| {
+                let capture = crate::geometry::SourceArcCapture::with_context(*source_context);
+                publish(&capture)
+            })
+        } else {
+            publish(&crate::geometry::SourceArcCapture::none())
+        }
+    }
+
+    pub(crate) fn with_source_arc_context<T>(
+        &self,
+        publish: impl FnOnce(
+            &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+        ) -> crate::error::Result<T>,
+    ) -> crate::error::Result<T> {
+        #[cfg(test)]
+        crate::geometry::record_root_work(crate::geometry::RootWorkEvent::SourceContextSetup);
+        if !self.domain.is_geographic() {
+            return publish(&crate::geometry::SourceArcContext::cartesian());
+        }
+        let metric_access = || {
+            self.metric
+                .source_chart_metric(self.frame.crs_str())?
+                .ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic source-ordinate samples require the operation's CRS metric",
+                    )
+                    .into()
+                })
+        };
+        let source_context =
+            crate::geometry::SourceArcContext::new(self.domain, Some(&metric_access));
+        publish(&source_context)
+    }
+}
+
 pub(crate) struct LinearReferenceRow<'a> {
     pub lane: Lane,
     pub metric: &'a ResolvedMetric,

@@ -6,10 +6,11 @@ use crate::geometry::facet_bvh::{
     aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale, clearance_aabb_filter,
-    clearance_strip_exceeds, point_on_segment, point_pair_distance_key,
-    point_segment_distance_squared, point_segment_exact_distance_key, point_segment_selection,
-    scaled_residual, segment_projection, segments_intersect, source_dot_cmp,
+    BvhCode, BvhNode, CoordinateAxes, Point, Segment, SegmentProjection, SquaredDistanceKey,
+    axis_pow2_scale, clearance_aabb_filter, clearance_strip_exceeds, point_on_segment,
+    point_pair_distance_key, point_segment_distance_squared, point_segment_exact_distance_key,
+    point_segment_selection, scaled_residual, segment_projection, segments_intersect,
+    source_dot_cmp,
 };
 
 #[cfg(test)]
@@ -34,6 +35,14 @@ pub(crate) struct NearestCandidate {
     pub(in crate::geometry) probe: Point,
     pub(in crate::geometry) target: NearestTarget,
     pub(in crate::geometry) distance_key: SquaredDistanceKey,
+}
+
+/// The exact selected projection and its directed source edge, retained until
+/// the witness ordinates are resolved.
+pub(crate) struct NearestSourceProjection {
+    pub(crate) start: Point,
+    pub(crate) end: Point,
+    pub(crate) projection: SegmentProjection,
 }
 
 pub(crate) enum NearestTarget {
@@ -81,16 +90,38 @@ impl NearestCandidate {
         }
     }
 
-    pub(crate) fn target_point(&self, linework: &PreparedLinework) -> crate::error::Result<Point> {
+    pub(crate) fn target_point<const SOURCE_CONTEXT: bool>(
+        &self,
+        linework: &PreparedLinework,
+        source_axes: CoordinateAxes,
+    ) -> crate::error::Result<(Point, Option<NearestSourceProjection>)> {
         match self.target {
-            NearestTarget::Point(point) => Ok(point),
+            NearestTarget::Point(point) => Ok((point, None)),
             NearestTarget::Segment(ordinal) => {
                 let (start, end) = linework.vertex_pair_at_segment(ordinal);
                 let segment = Segment {
                     start: start.xy(),
                     end: end.xy(),
                 };
-                segment_projection(self.probe, segment)?.interpolate_point(start, end)
+                let projection = segment_projection(self.probe, segment)?;
+                let point = projection.interpolate_point(start, end)?;
+                let source = if SOURCE_CONTEXT {
+                    let has_source_ordinates =
+                        (source_axes.has_z() && start.z().is_some() && end.z().is_some())
+                            || (source_axes.has_m() && start.m().is_some() && end.m().is_some());
+                    if has_source_ordinates && !projection.is_start() && !projection.is_end() {
+                        Some(NearestSourceProjection {
+                            start,
+                            end,
+                            projection,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Ok((point, source))
             },
         }
     }

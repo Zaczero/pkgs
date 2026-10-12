@@ -499,26 +499,129 @@ impl PyGeometryArray {
         self.map_shapes(|shape| Ok(shape.envelope()?))
     }
 
-    pub(crate) fn convex_hull_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
+    pub(crate) fn convex_hull_unary_packed(
+        &self,
+        py: Python<'_>,
+        resolver: crate::dispatch::MetricResolver,
+    ) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        self.map_shapes_detached(py, |shape| {
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = resolver.resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let source_crs = self.frame.crs_owned();
+        self.map_shapes_detached(py, move |shape| {
+            let metric_access = || {
+                metric
+                    .source_chart_metric(source_crs.as_deref())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                        .into()
+                    })
+            };
+            let source_axes = shape.axes();
+            let source_capture = if domain.is_geographic()
+                && (source_axes.has_z() || source_axes.has_m())
+            {
+                #[cfg(test)]
+                crate::geometry::record_root_work(crate::geometry::RootWorkEvent::SourceContextSetup);
+                crate::geometry::SourceArcCapture::with_context(
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                )
+            } else {
+                crate::geometry::SourceArcCapture::none()
+            };
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain
                 && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
                 && PointSelectionChart::accepts_point_set(shape)
-                && let Some(hull) = point_set_convex_hull_shape(shape, frame, shape.bounds())?
+                && let Some(hull) =
+                    point_set_convex_hull_shape(shape, frame, shape.bounds(), &source_capture)?
             {
                 return Ok(hull);
             }
             let hull = shape.convex_hull()?;
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),
-                crate::geometry::TopologyDomain::Geographic(frame) => {
-                    crate::geometry::publish_raw_computed_shape(&hull, frame, "convex_hull")
-                },
+                crate::geometry::TopologyDomain::Geographic(frame) =>
+                    crate::geometry::publish_raw_computed_shape_with_capture(
+                        &hull,
+                        frame,
+                        "convex_hull",
+                        &source_capture,
+                    ),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod root_capture_tests {
+    use super::*;
+    use crate::geometry::Ring;
+
+    #[test]
+    fn geographic_xy_hull_and_mrr_skip_source_root_capture() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        let frame = Frame::Crs(crate::crs::frame::crs_arc_static("OGC:CRS84"));
+        let line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(120.0, 60.0),
+                    Point::new_raw_xy(360.0, 20.0),
+                ])
+                .expect("line coordinates"),
+            )
+            .expect("valid line"),
+        );
+        let polygon = Shape::Polygon(crate::geometry::Polygon::new(
+            Ring::try_from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-10.0, -5.0),
+                    Point::new_raw_xy(10.0, -5.0),
+                    Point::new_raw_xy(10.0, 5.0),
+                    Point::new_raw_xy(-10.0, 5.0),
+                    Point::new_raw_xy(-10.0, -5.0),
+                ])
+                .expect("polygon coordinates"),
+            )
+            .expect("closed ring"),
+            Vec::new(),
+        ));
+        let chart_points = Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(170.0, 0.0),
+                Point::new_raw_xy(-170.0, 0.0),
+                Point::new_raw_xy(180.0, 10.0),
+            ])
+            .expect("chart multipoint coordinates"),
+        );
+        let array = PyGeometryArray::from_shapes(vec![line, polygon, chart_points], frame).unwrap();
+
+        crate::geometry::reset_root_work_counters();
+        let hulls = Python::attach(|py| {
+            array.convex_hull_unary_packed(py, crate::dispatch::MetricResolver::GeographicCarry)
+        })
+        .unwrap();
+
+        assert_eq!(hulls.len(), 3);
+        assert_eq!(hulls.uniform_axes(), Some(CoordinateAxes::XY));
+        assert_eq!(
+            crate::geometry::root_work_counters(),
+            crate::geometry::RootWorkCounters::default()
+        );
+
+        crate::geometry::reset_root_work_counters();
+        let rectangles = Python::attach(|py| array.minimum_rotated_rectangle(py)).unwrap();
+        assert_eq!(rectangles.len(), 3);
+        assert_eq!(rectangles.uniform_axes(), Some(CoordinateAxes::XY));
+        assert_eq!(
+            crate::geometry::root_work_counters(),
+            crate::geometry::RootWorkCounters::default()
+        );
     }
 }

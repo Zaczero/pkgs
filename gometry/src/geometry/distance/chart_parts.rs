@@ -1242,6 +1242,7 @@ mod tests {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
         let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
         let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let source_context = crate::geometry::SourceArcContext::cartesian();
         let left = PreparedPlan::new(
             crate::io::parse_wkt("LINESTRING (-70 30, -68 31, -66 30, -64 31)").unwrap(),
         );
@@ -1259,6 +1260,7 @@ mod tests {
             &left_cache,
             &right,
             &right_cache,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1278,6 +1280,7 @@ mod tests {
             &left,
             &right,
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            &source_context,
         )
         .unwrap();
         let Shape::LineString(line) = shortest else {

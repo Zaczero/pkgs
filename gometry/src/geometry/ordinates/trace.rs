@@ -178,6 +178,8 @@ impl RootRange {
         producer_end: ExactRational,
         work: &mut impl Work,
     ) -> Result<Self> {
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::RootRange);
         for parameter in [&source_start, &source_end, &producer_start, &producer_end] {
             check_unit_parameter_with_work(parameter, work)?;
         }
@@ -232,6 +234,8 @@ impl RootRange {
         producer_parameter: ExactRational,
         work: &mut impl Work,
     ) -> Result<Self> {
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::RootRange);
         check_unit_parameter_with_work(&source_parameter, work)?;
         check_unit_parameter_with_work(&producer_parameter, work)?;
         Ok(Self {
@@ -462,6 +466,8 @@ impl RootRange {
         producer_parameter: &ExactRational,
         work: &mut impl Work,
     ) -> Result<Option<RootRequest>> {
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::RootRequest);
         let Some(parameter) = self.parameter_at_with_work(producer_parameter, work)? else {
             return Ok(None);
         };
@@ -515,6 +521,8 @@ impl RootRequest {
         parameter: ExactRational,
         work: &mut impl Work,
     ) -> Result<Self> {
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::RootRequest);
         check_unit_parameter_with_work(&parameter, work)?;
         Ok(Self { root, parameter })
     }
@@ -604,6 +612,8 @@ impl RootRequestTable {
     pub(crate) fn from_rows(rows: &[RequestRowInput], work: &mut impl Work) -> Result<Self> {
         #[cfg(test)]
         ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::RequestTable);
         work.charge_into_error(
             u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -795,6 +805,8 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
             })?;
             work.charge_into_error(1)?;
             let record = table.record_mut(request_id)?;
+            #[cfg(test)]
+            super::record_root_work(super::RootWorkEvent::RootCatalogResolution);
             ordinates.merge(roots.resolve(
                 record.root,
                 &record.parameter,
@@ -1149,6 +1161,8 @@ pub(crate) struct TraceRowsBuilder {
 
 impl TraceRowsBuilder {
     pub(crate) fn new(work: &mut impl Work) -> Result<Self> {
+        #[cfg(test)]
+        super::record_root_work(super::RootWorkEvent::TraceRowsBuilder);
         prepay_slots(1, work)?;
         prepay_slots(1, work)?;
         let offsets = vec![0];

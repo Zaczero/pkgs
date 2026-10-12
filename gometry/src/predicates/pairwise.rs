@@ -97,7 +97,15 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
-                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                        ctx.with_source_arc_context(|source_context| {
+                            metric_shortest_line_resolved(
+                                &resolved,
+                                left,
+                                right,
+                                ctx.domain,
+                                source_context,
+                            )
+                        })
                     },
                 )
             },
@@ -114,7 +122,15 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
-                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                        ctx.with_source_arc_context(|source_context| {
+                            metric_shortest_line_resolved(
+                                &resolved,
+                                left,
+                                right,
+                                ctx.domain,
+                                source_context,
+                            )
+                        })
                     },
                 )
             },
@@ -123,8 +139,22 @@ pub(crate) fn shortest_line(
                 let left_plan = left.prepared_plan();
                 let right_plan = right.prepared_plan();
                 let domain = admission.domain;
+                let source_frame = admission.frame.clone();
                 let shape = py.detach(move || {
-                    metric_shortest_line_resolved(&resolved, &left_plan, &right_plan, domain)
+                    crate::broadcast::with_source_arc_context(
+                        &resolved,
+                        &source_frame,
+                        domain,
+                        |source_context| {
+                            metric_shortest_line_resolved(
+                                &resolved,
+                                &left_plan,
+                                &right_plan,
+                                domain,
+                                source_context,
+                            )
+                        },
+                    )
                 })?;
                 crate::Typed(PyGeometry::with_frame(shape, admission.frame)).into_py_any(py)
             },
@@ -135,7 +165,15 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
-                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                        ctx.with_source_arc_context(|source_context| {
+                            metric_shortest_line_resolved(
+                                &resolved,
+                                left,
+                                right,
+                                ctx.domain,
+                                source_context,
+                            )
+                        })
                     },
                 )
             },
@@ -490,15 +528,38 @@ pub(crate) fn nearest_points(
             let left_cache = left.frame_cache();
             let right_cache = right.frame_cache();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
-            let pair = py.detach(move || {
-                metric_nearest_points_resolved(
-                    &resolved,
-                    &left_plan,
-                    &left_cache,
-                    &right_plan,
-                    &right_cache,
-                )
-            })?;
+            let pair = if common.has_z() || common.has_m() {
+                let source_frame = admission.frame.clone();
+                let domain = admission.domain;
+                py.detach(move || {
+                    crate::broadcast::with_source_arc_context(
+                        &resolved,
+                        &source_frame,
+                        domain,
+                        |source_context| {
+                            metric_nearest_points_resolved(
+                                &resolved,
+                                &left_plan,
+                                &left_cache,
+                                &right_plan,
+                                &right_cache,
+                                Some(source_context),
+                            )
+                        },
+                    )
+                })?
+            } else {
+                py.detach(move || {
+                    metric_nearest_points_resolved(
+                        &resolved,
+                        &left_plan,
+                        &left_cache,
+                        &right_plan,
+                        &right_cache,
+                        None,
+                    )
+                })?
+            };
             let (left_shape, right_shape) =
                 crate::geometry::nearest_point_pair(pair.as_ref(), common);
             (
@@ -512,59 +573,85 @@ pub(crate) fn nearest_points(
                 .into_py_any(py)
         },
         (GeometryInput::One(fixed), GeometryInput::Many(array)) => {
-            fixed_geometry_array_nearest_points_admitted(py, fixed, array, true, model)?
-                .into_py_any(py)
+            fixed_geometry_array_nearest_points_admitted(
+                py,
+                fixed,
+                array,
+                true,
+                model,
+                admission.domain,
+            )?
+            .into_py_any(py)
         },
         (GeometryInput::Many(array), GeometryInput::One(fixed)) => {
-            fixed_geometry_array_nearest_points_admitted(py, fixed, array, false, model)?
-                .into_py_any(py)
+            fixed_geometry_array_nearest_points_admitted(
+                py,
+                fixed,
+                array,
+                false,
+                model,
+                admission.domain,
+            )?
+            .into_py_any(py)
         },
         (GeometryInput::Many(left), GeometryInput::Many(right)) => {
             let missing = union_many([left.missing(), right.missing()]);
             let left = left.clone();
             let right = right.clone();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+            let source_frame = admission.frame.clone();
+            let domain = admission.domain;
             let pairs = py
                 .detach(move || {
-                    let mut left_rows = left.row_operation();
-                    let mut right_rows = right.row_operation();
-                    left_rows
-                        .rows_with_missing(|| {
-                            (
-                                None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                crate::geometry::CoordinateAxes::XY,
-                            )
-                        })
-                        .zip(right_rows.rows_with_missing(|| {
-                            (
-                                None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                crate::geometry::CoordinateAxes::XY,
-                            )
-                        }))
-                        .map(|(left, right)| {
-                            let (
-                                crate::array::ArrayRow::Present(left),
-                                crate::array::ArrayRow::Present(right),
-                            ) = (left, right)
-                            else {
-                                return Ok((None, crate::geometry::CoordinateAxes::XY));
-                            };
-                            let row = left.logical();
-                            let left = left_rows.prepared(left)?;
-                            let right = right_rows.prepared(right)?;
-                            let left_cache = left_rows.frame_cache(row);
-                            let right_cache = right_rows.frame_cache(row);
-                            let common = crate::geometry::common_axes(left.shape(), right.shape());
-                            metric_nearest_points_resolved(
-                                &resolved,
-                                &left,
-                                &left_cache,
-                                &right,
-                                &right_cache,
-                            )
-                            .map(|pair| (pair, common))
-                        })
-                        .collect_rows()
+                    crate::broadcast::with_source_arc_context(
+                        &resolved,
+                        &source_frame,
+                        domain,
+                        |source_context| {
+                            let mut left_rows = left.row_operation();
+                            let mut right_rows = right.row_operation();
+                            left_rows
+                                .rows_with_missing(|| {
+                                    (
+                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                        crate::geometry::CoordinateAxes::XY,
+                                    )
+                                })
+                                .zip(right_rows.rows_with_missing(|| {
+                                    (
+                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                        crate::geometry::CoordinateAxes::XY,
+                                    )
+                                }))
+                                .map(|(left, right)| {
+                                    let (
+                                        crate::array::ArrayRow::Present(left),
+                                        crate::array::ArrayRow::Present(right),
+                                    ) = (left, right)
+                                    else {
+                                        return Ok((None, crate::geometry::CoordinateAxes::XY));
+                                    };
+                                    let row = left.logical();
+                                    let left = left_rows.prepared(left)?;
+                                    let right = right_rows.prepared(right)?;
+                                    let left_cache = left_rows.frame_cache(row);
+                                    let right_cache = right_rows.frame_cache(row);
+                                    let common =
+                                        crate::geometry::common_axes(left.shape(), right.shape());
+                                    metric_nearest_points_resolved(
+                                        &resolved,
+                                        &left,
+                                        &left_cache,
+                                        &right,
+                                        &right_cache,
+                                        (common.has_z() || common.has_m())
+                                            .then_some(source_context),
+                                    )
+                                    .map(|pair| (pair, common))
+                                })
+                                .collect_rows()
+                        },
+                    )
                 })
                 .map_err(crate::broadcast::rows_err)?;
             nearest_point_columns_masked(pairs, admission.frame, missing)

@@ -4,9 +4,12 @@ use crate::geometry::distance::{
     Result, cached_chart_nearest_points, cached_chart_nearest_points_with_intent,
     nearest_probe_to_parts, parts_boundary_witness, quick_area_overlap, squared_space_safe,
 };
+use crate::geometry::facet_bvh::NearestSourceProjection;
 use crate::geometry::{
-    ChartMetric, FrameDependentCaches, GeodesicMetric, Point, PreparedPlan, Shape,
+    ChartMetric, CoordinateAxes, FrameDependentCaches, GeodesicMetric, MOrdinate, Point,
+    PreparedPlan, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
 };
+
 impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
     /// (the disjoint-pair minimum is always a vertex projection; see
@@ -15,6 +18,24 @@ impl PreparedPlan {
     /// presence when reconstructing projected witnesses. `None` only when an operand is
     /// empty (the surfaces map it to the output-type EMPTY sentinel).
     pub(crate) fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
+        self.nearest_points_inner::<false>(other, None)
+    }
+
+    pub(crate) fn nearest_points_with_source_context(
+        &self,
+        other: &Self,
+        source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    ) -> Result<Option<(Point, Point)>> {
+        #[cfg(test)]
+        crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NearestSourceContext);
+        self.nearest_points_inner::<true>(other, Some(source_context))
+    }
+
+    fn nearest_points_inner<const SOURCE_CONTEXT: bool>(
+        &self,
+        other: &Self,
+        source_context: Option<&SourceArcContext<'_, '_, crate::crs::GeodesicMetric>>,
+    ) -> Result<Option<(Point, Point)>> {
         // Disjoint boxes cannot intersect: the witness scans only run when
         // the bounds overlap (see `distance`). The pre-parts containment
         // probe answers the common area-overlap case before any staging.
@@ -40,13 +61,35 @@ impl PreparedPlan {
             let best = nearest_probe_to_parts::<false>(self_parts, other_parts, None, false)?;
             nearest_probe_to_parts::<false>(other_parts, self_parts, best, true)?
         };
+        let source_axes = if SOURCE_CONTEXT
+            && source_context.is_some_and(|context| context.domain().is_geographic())
+        {
+            crate::geometry::common_axes(self.shape(), other.shape())
+        } else {
+            CoordinateAxes::XY
+        };
         best.map(|oriented| {
             let candidate = oriented.candidate;
-            let target = candidate.target_point(if oriented.swapped {
-                &self_parts.linework
-            } else {
-                &other_parts.linework
-            })?;
+            let (mut target, source_projection) = candidate.target_point::<SOURCE_CONTEXT>(
+                if oriented.swapped {
+                    &self_parts.linework
+                } else {
+                    &other_parts.linework
+                },
+                source_axes,
+            )?;
+            if SOURCE_CONTEXT {
+                if let (Some(source_projection), Some(source_context)) =
+                    (source_projection, source_context)
+                {
+                    target = resolve_nearest_source_projection(
+                        target,
+                        source_projection,
+                        source_axes,
+                        source_context,
+                    )?;
+                }
+            }
             Ok(if oriented.swapped {
                 (target, candidate.probe)
             } else {
@@ -124,4 +167,46 @@ impl PreparedPlan {
         )?
         .map(|minimum| (minimum.first, minimum.second, minimum.intent)))
     }
+}
+
+fn resolve_nearest_source_projection(
+    point: Point,
+    source_projection: NearestSourceProjection,
+    axes: CoordinateAxes,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+) -> Result<Point> {
+    let TopologyDomain::Geographic(source_frame) = source_context.domain() else {
+        return Ok(point);
+    };
+    let source = [source_projection.start, source_projection.end];
+    let parameter = source_projection.projection.exact_fraction()?;
+    let request = crate::geometry::ordinates::SourceArcRequest::new(
+        source_frame,
+        &source,
+        axes,
+        &parameter,
+        || {
+            source_frame
+                .longitude()
+                .chart_connection(source[0].x, source[1].x)
+                .map(|connection| connection.retained())
+                .map_err(|error| {
+                    crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()).into()
+                })
+        },
+    )?;
+    let metric_access = source_context.metric_access().ok_or_else(|| {
+        crate::crs::CrsError::invalid(
+            "geographic nearest-witness ordinates require the operation's CRS metric",
+        )
+    })?;
+    let ordinates =
+        crate::geometry::ordinates::source_arc_ordinates_unmetered(&request, || metric_access())?;
+    Ok(Point::new_axes(
+        point.x,
+        point.y,
+        ZOrdinate(ordinates.z.value()),
+        MOrdinate(ordinates.m.value()),
+    )
+    .unwrap_or(point))
 }

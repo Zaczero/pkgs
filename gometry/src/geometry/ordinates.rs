@@ -66,10 +66,149 @@ impl<'access, 'metric, M: ChartMetric> SourceArcContext<'access, 'metric, M> {
     }
 }
 
+/// Optional authority to resolve source-root ordinates for one operation's
+/// output axes. XY output has no root-capture capability.
+pub(crate) struct SourceArcCapture<'access, 'metric, M: ChartMetric = crate::crs::GeodesicMetric> {
+    context: Option<SourceArcContext<'access, 'metric, M>>,
+}
+
+impl<M: ChartMetric> Copy for SourceArcCapture<'_, '_, M> {}
+
+impl<M: ChartMetric> Clone for SourceArcCapture<'_, '_, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'access, 'metric, M: ChartMetric> SourceArcCapture<'access, 'metric, M> {
+    pub(crate) const fn none() -> Self {
+        Self { context: None }
+    }
+
+    pub(crate) const fn with_context(context: SourceArcContext<'access, 'metric, M>) -> Self {
+        Self {
+            context: Some(context),
+        }
+    }
+
+    pub(crate) const fn for_output_axes(
+        output_axes: CoordinateAxes,
+        context: SourceArcContext<'access, 'metric, M>,
+    ) -> Self {
+        if output_axes.has_z() || output_axes.has_m() {
+            Self::with_context(context)
+        } else {
+            Self::none()
+        }
+    }
+
+    pub(crate) const fn context(&self) -> Option<&SourceArcContext<'access, 'metric, M>> {
+        self.context.as_ref()
+    }
+}
+
 impl SourceArcContext<'static, 'static, crate::crs::GeodesicMetric> {
     pub(crate) const fn cartesian() -> Self {
         Self::new(crate::geometry::TopologyDomain::Cartesian, None)
     }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RootWorkCounters {
+    pub(crate) native_chain_entries: usize,
+    pub(crate) nearest_source_context_calls: usize,
+    pub(crate) source_context_setups: usize,
+    pub(crate) source_arc_requests: usize,
+    pub(crate) source_arc_resolutions: usize,
+    pub(crate) root_requests: usize,
+    pub(crate) root_ranges: usize,
+    pub(crate) trace_rows_builders: usize,
+    pub(crate) request_tables: usize,
+    pub(crate) root_catalog_resolutions: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum RootWorkEvent {
+    NativeChainEntry,
+    NearestSourceContext,
+    SourceContextSetup,
+    SourceArcRequest,
+    SourceArcResolution,
+    RootRequest,
+    RootRange,
+    TraceRowsBuilder,
+    RequestTable,
+    RootCatalogResolution,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ROOT_WORK_COUNTERS: Cell<RootWorkCounters> =
+        const { Cell::new(RootWorkCounters {
+            native_chain_entries: 0,
+            nearest_source_context_calls: 0,
+            source_context_setups: 0,
+            source_arc_requests: 0,
+            source_arc_resolutions: 0,
+            root_requests: 0,
+            root_ranges: 0,
+            trace_rows_builders: 0,
+            request_tables: 0,
+            root_catalog_resolutions: 0,
+        }) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_root_work_counters() {
+    ROOT_WORK_COUNTERS.with(|counters| counters.set(RootWorkCounters::default()));
+}
+
+#[cfg(test)]
+pub(crate) fn root_work_counters() -> RootWorkCounters {
+    ROOT_WORK_COUNTERS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn record_root_work(event: RootWorkEvent) {
+    ROOT_WORK_COUNTERS.with(|counters| {
+        let mut current = counters.get();
+        match event {
+            RootWorkEvent::NativeChainEntry => {
+                current.native_chain_entries = current.native_chain_entries.wrapping_add(1);
+            },
+            RootWorkEvent::NearestSourceContext => {
+                current.nearest_source_context_calls =
+                    current.nearest_source_context_calls.wrapping_add(1);
+            },
+            RootWorkEvent::SourceContextSetup => {
+                current.source_context_setups = current.source_context_setups.wrapping_add(1);
+            },
+            RootWorkEvent::SourceArcRequest => {
+                current.source_arc_requests = current.source_arc_requests.wrapping_add(1);
+            },
+            RootWorkEvent::SourceArcResolution => {
+                current.source_arc_resolutions = current.source_arc_resolutions.wrapping_add(1);
+            },
+            RootWorkEvent::RootRequest => {
+                current.root_requests = current.root_requests.wrapping_add(1);
+            },
+            RootWorkEvent::RootRange => {
+                current.root_ranges = current.root_ranges.wrapping_add(1);
+            },
+            RootWorkEvent::TraceRowsBuilder => {
+                current.trace_rows_builders = current.trace_rows_builders.wrapping_add(1);
+            },
+            RootWorkEvent::RequestTable => {
+                current.request_tables = current.request_tables.wrapping_add(1);
+            },
+            RootWorkEvent::RootCatalogResolution => {
+                current.root_catalog_resolutions = current.root_catalog_resolutions.wrapping_add(1);
+            },
+        }
+        counters.set(current);
+    });
 }
 
 /// Z/M lookup table for source-preserving operations that have no exact source
@@ -395,6 +534,8 @@ impl<'a> SourceArcRequest<'a> {
         chart_parameter: &'a ExactRational,
         longitude: impl FnOnce() -> crate::error::Result<RetainedChartDisplacement>,
     ) -> crate::error::Result<Self> {
+        #[cfg(test)]
+        record_root_work(RootWorkEvent::SourceArcRequest);
         if !axes.has_z() && !axes.has_m() {
             return Ok(Self::NoOrdinates);
         }
@@ -447,6 +588,8 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
     fraction: &mut Option<f64>,
     work: &mut impl Work,
 ) -> crate::error::Result<NodeOrdinates> {
+    #[cfg(test)]
+    record_root_work(RootWorkEvent::SourceArcResolution);
     match request {
         SourceArcRequest::NoOrdinates => Ok(NodeOrdinates::default()),
         SourceArcRequest::Endpoint { point, axes } => Ok(node_ordinates_at(*point, *axes)),

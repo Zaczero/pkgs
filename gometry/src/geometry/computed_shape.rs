@@ -279,17 +279,12 @@ pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     map_computed_shape_chains(shape, shape, |_, coords, closed| {
-        publish_native_computed_chain(
-            frame,
-            coords,
-            closed,
-            budget,
-            source_context,
-            |_, start, end| {
-                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
-            },
-            |_, _| ComputedVertexIntent::Canonical,
-        )
+        let intent = |_, start: crate::geometry::Point, end: crate::geometry::Point| {
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+        };
+        let capture =
+            crate::geometry::SourceArcCapture::for_output_axes(coords.axes(), *source_context);
+        publish_computed_chain_with_capture(frame, coords, closed, budget, &capture, intent)
     })
 }
 
@@ -302,6 +297,55 @@ pub(crate) fn publish_raw_computed_shape_with_context(
     let mut budget = ExpansionBudget::new(operation, "computed edges");
     budget.add(ShapeCountQuery::default().coordinates(shape)?)?;
     publish_raw_computed_shape_with_budget_and_context(shape, frame, source_context, &mut budget)
+}
+
+pub(crate) fn publish_raw_computed_shape_with_capture(
+    shape: &Shape,
+    frame: GeographicFrame,
+    operation: &'static str,
+    source_capture: &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
+) -> Result<Shape> {
+    let mut budget = ExpansionBudget::new(operation, "computed edges");
+    budget.add(ShapeCountQuery::default().coordinates(shape)?)?;
+    map_computed_shape_chains(shape, shape, |_, coords, closed| {
+        let intent = |_, start: crate::geometry::Point, end: crate::geometry::Point| {
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+        };
+        publish_computed_chain_with_capture(
+            frame,
+            coords,
+            closed,
+            &mut budget,
+            source_capture,
+            intent,
+        )
+    })
+}
+
+fn publish_computed_chain_with_capture<'intent>(
+    frame: GeographicFrame,
+    coordinates: &CoordSeq,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    source_capture: &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
+    edge_intent: impl Fn(
+        usize,
+        crate::geometry::Point,
+        crate::geometry::Point,
+    ) -> Result<ComputedEdgeIntent<'intent>>,
+) -> Result<Option<Vec<crate::geometry::Point>>> {
+    match source_capture.context() {
+        Some(source_context) => publish_native_computed_chain(
+            frame,
+            coordinates,
+            closed_ring,
+            budget,
+            source_context,
+            edge_intent,
+            |_, _| ComputedVertexIntent::Canonical,
+        ),
+        None => publish_computed_chain(frame, coordinates, closed_ring, budget, edge_intent),
+    }
 }
 
 pub(crate) fn publish_transformed_shape(
@@ -896,7 +940,7 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
     Ok(published)
 }
 
-fn publish_native_computed_chain<'intent, 'metric, P, M>(
+pub(crate) fn publish_native_computed_chain<'intent, 'metric, P, M>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,
@@ -913,6 +957,8 @@ where
     P: crate::geometry::Coordinates + ?Sized,
     M: ChartMetric + 'metric,
 {
+    #[cfg(test)]
+    crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NativeChainEntry);
     let metric_access = source_context.metric_access();
     let axes = points
         .first_coord()
