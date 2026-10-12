@@ -6708,12 +6708,14 @@ fn collinear_polygon_receipt(
                         .iter()
                         .filter_map(|origin| match origin {
                             VoronoiEdgeOrigin::SourceClip { segment } => Some(*segment),
-                            _ => None,
+                            VoronoiEdgeOrigin::Bisector { .. }
+                            | VoronoiEdgeOrigin::Frame { .. } => None,
                         })
                         .collect();
                     let frame_side = origins.iter().find_map(|origin| match origin {
                         VoronoiEdgeOrigin::Frame { side } => Some(*side),
-                        _ => None,
+                        VoronoiEdgeOrigin::SourceClip { .. }
+                        | VoronoiEdgeOrigin::Bisector { .. } => None,
                     });
                     receipt.edges.push(VoronoiEdgeReceipt {
                         id: edge,
@@ -6795,7 +6797,9 @@ fn collinear_polygon_receipt(
                                 VoronoiEdgeOrigin::Bisector { sites } if *sites == owners => {
                                     Some(*sites)
                                 },
-                                _ => None,
+                                VoronoiEdgeOrigin::SourceClip { .. }
+                                | VoronoiEdgeOrigin::Bisector { .. }
+                                | VoronoiEdgeOrigin::Frame { .. } => None,
                             });
                             let separator = origin_pair.ok_or_else(|| {
                                 voronoi_error(
@@ -8747,11 +8751,11 @@ fn dual_embed(
         }
         let separator = match draft.first.origin {
             VoronoiEdgeOrigin::Bisector { sites } => Some(sites),
-            _ => None,
+            VoronoiEdgeOrigin::SourceClip { .. } | VoronoiEdgeOrigin::Frame { .. } => None,
         };
         let frame_side = match draft.first.origin {
             VoronoiEdgeOrigin::Frame { side } => Some(side),
-            _ => None,
+            VoronoiEdgeOrigin::SourceClip { .. } | VoronoiEdgeOrigin::Bisector { .. } => None,
         };
         let mut owner_transition = [None, None];
         for use_edge in [Some(draft.first), draft.second].into_iter().flatten() {
