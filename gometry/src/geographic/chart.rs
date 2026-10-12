@@ -20,6 +20,34 @@ pub(crate) struct ChartPointSite {
 }
 
 impl ChartPointSite {
+    pub(crate) fn from_lifted_source(
+        frame: GeographicFrame,
+        source: Point,
+        source_ordinal: usize,
+        periods: i64,
+    ) -> crate::error::Result<Self> {
+        let native = frame.longitude().canonicalize(source.x).map_err(|error| {
+            crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
+        })?;
+        Ok(Self {
+            longitude: RetainedLongitudeSite::new(native, periods),
+            source_y: source.y,
+            source_ordinal,
+        })
+    }
+
+    pub(crate) fn shifted(self, periods: i64) -> crate::error::Result<Self> {
+        let periods = self
+            .longitude
+            .periods()
+            .checked_add(periods)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        Ok(Self {
+            longitude: RetainedLongitudeSite::new(*self.longitude.native(), periods),
+            ..self
+        })
+    }
+
     pub(crate) const fn longitude(self) -> RetainedLongitudeSite {
         self.longitude
     }
@@ -127,6 +155,10 @@ impl PointSelectionChart {
 
     pub(crate) const fn frame(&self) -> GeographicFrame {
         self.frame
+    }
+
+    pub(crate) const fn has_full_longitude_support(&self) -> bool {
+        matches!(self.cut, SelectionCut::CanonicalSeam)
     }
 
     pub(crate) fn site(&self, source: Point, source_ordinal: usize) -> Result<ChartPointSite> {

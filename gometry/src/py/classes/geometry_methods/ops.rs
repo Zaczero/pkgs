@@ -221,12 +221,17 @@ impl PyGeometry {
         max_area: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyGeometryArray> {
         let refinement = parse_cdt_refinement(min_angle, max_area)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Refinement inserts Steiner vertices, so output is XY-only. The
         // source-site mesh plan supplies the same selected points and axes to
         // both the packed and per-shape publication paths.
         if refinement.active() || (!self.shape.has_z() && !self.shape.has_m()) {
             let shape = Arc::clone(&self.shape);
-            let vertices = py.detach(move || shape.constrained_delaunay_vertices(refinement))?;
+            let vertices = py.detach(move || {
+                shape.constrained_delaunay_vertices_in_domain(refinement, domain)
+            })?;
             return if vertices.is_empty() {
                 Ok(PyGeometryArray::from_shapes(
                     Vec::new(),
@@ -237,10 +242,8 @@ impl PyGeometry {
             };
         }
         let shape = Arc::clone(&self.shape);
-        let triangles = py.detach(move || shape.constrained_delaunay_triangles(refinement))?;
-        let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
-            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let triangles =
+            py.detach(move || shape.constrained_delaunay_triangles_in_domain(refinement, domain))?;
         self.parts_to_array(publish_triangle_shapes_for_domain(
             triangles, domain, metric,
         )?)

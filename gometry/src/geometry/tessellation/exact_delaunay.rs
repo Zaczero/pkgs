@@ -47,7 +47,7 @@ pub(crate) const fn prev_halfedge(edge: usize) -> usize {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct FaceId(usize);
 
 impl FaceId {
@@ -60,7 +60,7 @@ impl FaceId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct HalfedgeId(usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -309,16 +309,6 @@ fn canonical_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
             .expect("the tie predicate receives only its four admitted sites")
     };
     Ok(canonical_incircle!(&xy, a, b, c, d))
-}
-
-pub(in crate::geometry::tessellation) fn canonicalize_triangles<C: MeshCoordinates>(
-    coordinates: &C,
-    triangles: &mut [[usize; 3]],
-) {
-    let canonical_faces = canonical_triangle_order(coordinates, triangles);
-    for (triangle, canonical) in triangles.iter_mut().zip(canonical_faces) {
-        *triangle = canonical.output_sites;
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

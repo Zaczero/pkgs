@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
 use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
@@ -65,6 +66,14 @@ impl PartialEq for CompactLimbs {
 }
 
 impl Eq for CompactLimbs {}
+
+impl Hash for ExactDyadic {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.negative.hash(state);
+        self.limbs.as_slice().hash(state);
+        self.exponent.hash(state);
+    }
+}
 
 impl CompactLimbs {
     pub(in crate::geometry) const fn zero() -> Self {
@@ -277,6 +286,13 @@ impl ExactLine {
         let ay = ExactDyadic::from_f64(a.y);
         let bx = ExactDyadic::from_f64(b.x);
         let by = ExactDyadic::from_f64(b.y);
+        Self::perpendicular_bisector_dyadics([ax, ay], [bx, by])
+    }
+
+    pub(in crate::geometry) fn perpendicular_bisector_dyadics(
+        [ax, ay]: [ExactDyadic; 2],
+        [bx, by]: [ExactDyadic; 2],
+    ) -> Result<Self> {
         let two = ExactDyadic::from_f64(2.0);
         Ok(Self([
             ExactDyadic::try_subtract_refs(&bx, &ax)?.try_product(&two)?,

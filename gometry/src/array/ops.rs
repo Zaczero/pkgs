@@ -480,10 +480,11 @@ impl PyGeometryArray {
                 "triangulate",
                 "min_angle/max_area",
                 move |row, shape, budget| {
-                    let triangles = shape.constrained_delaunay_triangles_budgeted(
+                    let triangles = shape.constrained_delaunay_triangles_in_domain_budgeted(
                         *refinements
                             .get(row)
                             .expect("refinement values match the admitted array rows"),
+                        domain,
                         budget,
                     )?;
                     publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
@@ -495,10 +496,11 @@ impl PyGeometryArray {
             "triangulate",
             "min_angle/max_area",
             move |row, shape, budget| {
-                let vertices = shape.constrained_delaunay_vertices_budgeted(
+                let vertices = shape.constrained_delaunay_vertices_in_domain_budgeted(
                     *refinements
                         .get(row)
                         .expect("refinement values match the admitted array rows"),
+                    domain,
                     budget,
                 )?;
                 publish_triangle_vertices_for_domain(vertices, domain, metric, budget)

@@ -2,11 +2,12 @@ use std::borrow::Borrow;
 
 use crate::NonNegative;
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, RingOwner, Site, certified_delaunay,
-    collect_sample_triangles, constrained_triangle_vertices, earcut_polygon_with, sample_weighted,
-    snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    collect_sample_triangles, earcut_polygon_with, sample_weighted, snap_sites, try_triangle_shape,
+    uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, CsrOffsetColumn, Dimension,
@@ -343,22 +344,23 @@ impl Shape {
         Ok(publication)
     }
 
-    pub(crate) fn constrained_delaunay_triangles(
+    pub(crate) fn constrained_delaunay_triangles_in_domain(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
     ) -> Result<Vec<Self>> {
         let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-        self.constrained_delaunay_triangles_budgeted(refinement, &mut budget)
+        self.constrained_delaunay_triangles_in_domain_budgeted(refinement, domain, &mut budget)
     }
 
-    pub(crate) fn constrained_delaunay_triangles_budgeted(
+    pub(crate) fn constrained_delaunay_triangles_in_domain_budgeted(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        // Build and publish one constrained mesh plan; packed and per-shape
-        // callers consume the same selected source sites and face IDs.
-        let vertices = self.constrained_delaunay_vertices_budgeted(refinement, budget)?;
+        let vertices =
+            self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, budget)?;
         Self::triangle_shapes_from_vertices(&vertices)
     }
 
@@ -366,6 +368,7 @@ impl Shape {
     /// vertex stream. Each ring is emitted from the shared mesh plan: inactive
     /// refinement preserves selected source-site axes, while active refinement
     /// emits uniform XY.
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices(
         &self,
         refinement: CdtRefinement,
@@ -374,33 +377,81 @@ impl Shape {
         self.constrained_delaunay_vertices_budgeted(refinement, &mut budget)
     }
 
+    pub(crate) fn constrained_delaunay_vertices_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Vec<Point>> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+        self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, &mut budget)
+    }
+
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices_budgeted(
         &self,
         refinement: CdtRefinement,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
-            Polygonal::Polygon(polygon) => constrained_triangle_vertices(
-                polygon
-                    .rings()
-                    .enumerate()
-                    .map(|(ring, value)| (RingOwner::new(0, ring), value.coords())),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::MultiPolygon(polygons) => constrained_triangle_vertices(
-                polygons.iter().enumerate().flat_map(|(polygon, value)| {
-                    value
+        self.constrained_delaunay_vertices_in_domain_budgeted(
+            refinement,
+            TopologyDomain::Cartesian,
+            budget,
+        )
+    }
+
+    pub(crate) fn constrained_delaunay_vertices_in_domain_budgeted(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Vec<Point>> {
+        let Some(plan) = self.prepare_constrained_delaunay_plan_in_domain(refinement, domain)?
+        else {
+            return Ok(Vec::new());
+        };
+        super::delaunay::publish_constrained_plan(&plan, budget)
+    }
+
+    pub(crate) fn prepare_constrained_delaunay_plan_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Option<super::delaunay::ConstrainedMeshPlan>> {
+        let polygonal = self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        let chart = match domain {
+            TopologyDomain::Cartesian => None,
+            TopologyDomain::Geographic(frame) => {
+                PointSelectionChart::try_from_shape(frame, self, self.bounds())?
+            },
+        };
+        match polygonal {
+            Polygonal::Polygon(polygon) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygon
                         .rings()
                         .enumerate()
-                        .map(move |(ring, value)| (RingOwner::new(polygon, ring), value.coords()))
-                }),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::Empty => Ok(Vec::new()),
+                        .map(|(ring, value)| (RingOwner::new(0, ring), value)),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::MultiPolygon(polygons) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygons.iter().enumerate().flat_map(|(polygon, value)| {
+                        value
+                            .rings()
+                            .enumerate()
+                            .map(move |(ring, value)| (RingOwner::new(polygon, ring), value))
+                    }),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::Empty => Ok(None),
         }
     }
 
