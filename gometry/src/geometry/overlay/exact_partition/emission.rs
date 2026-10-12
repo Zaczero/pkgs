@@ -72,6 +72,12 @@ pub(in crate::geometry) struct OverlayNodeReceipt {
     pub(in crate::geometry) assignment: XY,
 }
 
+type EmittedRing = Option<(
+    Ring,
+    Vec<Vec<OverlaySourceEdgeUse>>,
+    Vec<OverlayNodeReceipt>,
+)>;
+
 pub(super) struct BoundaryPlan {
     pub(super) source_darts: Vec<u32>,
     /// Chords on the boundary between an occupied and an unoccupied areal
@@ -515,11 +521,6 @@ impl BoundaryPlan {
         let embedding = partition.embed(&[&emission], operation)?;
         let coordinates = embedding.coordinates();
         let mut remaining = emission.items.as_slice();
-        type EmittedRing = Option<(
-            Ring,
-            Vec<Vec<OverlaySourceEdgeUse>>,
-            Vec<OverlayNodeReceipt>,
-        )>;
         let mut rings: Vec<EmittedRing> = Vec::with_capacity(self.walks.len());
         rings.resize_with(self.walks.len(), || None);
         for (ring_index, walk) in self.walks.iter().enumerate() {
