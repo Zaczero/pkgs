@@ -356,7 +356,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
                     root1_start,
                     zero.clone(),
                     zero.clone(),
-                    one.clone(),
+                    one,
                     &mut trace_work,
                 )?,
                 RootRange::from_mapped_with_work(
