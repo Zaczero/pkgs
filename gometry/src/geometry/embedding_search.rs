@@ -14,6 +14,8 @@ use crate::geometry::{
 
 const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
+/// Two times the largest measured residual rate: ceil(2 * 548,837 / 5,472).
+const EVALUATIONS_PER_PUBLISHED_LEAF: u64 = 201;
 const WORK_TICKS_PER_EVALUATION: u128 = 16;
 const PROXIMITY_RELATIVE_SLACK: f64 = 9.094_947_017_729_282e-13;
 
@@ -656,22 +658,37 @@ pub(in crate::geometry) trait Problem {
 pub(in crate::geometry) struct EvaluationBudget {
     operation: &'static str,
     constructed: usize,
+    published_leaves: usize,
     limit: u64,
     spent_ticks: u128,
 }
 
 impl EvaluationBudget {
     pub(in crate::geometry) fn new(operation: &'static str, constructed: usize) -> Result<Self> {
+        let limit = Self::limit_for(constructed, 0)?;
+        Ok(Self {
+            operation,
+            constructed,
+            published_leaves: 0,
+            limit,
+            spent_ticks: 0,
+        })
+    }
+
+    fn limit_for(constructed: usize, published_leaves: usize) -> Result<u64> {
         let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        let published_leaves =
+            u64::try_from(published_leaves).map_err(|_| ResourceError::SizeOverflow)?;
         let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
             .checked_mul(constructed)
             .ok_or(ResourceError::SizeOverflow)?;
-        Ok(Self {
-            operation,
-            constructed: usize::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?,
-            limit: BASE_EVALUATION_LIMIT.max(per_node),
-            spent_ticks: 0,
-        })
+        let per_leaf = EVALUATIONS_PER_PUBLISHED_LEAF
+            .checked_mul(published_leaves)
+            .ok_or(ResourceError::SizeOverflow)?;
+        BASE_EVALUATION_LIMIT
+            .checked_add(per_node)
+            .and_then(|limit| limit.checked_add(per_leaf))
+            .ok_or(ResourceError::SizeOverflow.into())
     }
 
     #[cfg(test)]
@@ -695,13 +712,27 @@ impl EvaluationBudget {
             )
             .into());
         }
-        let constructed_u64 =
-            u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
-        let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
-            .checked_mul(constructed_u64)
-            .ok_or(ResourceError::SizeOverflow)?;
+        let limit = Self::limit_for(constructed, self.published_leaves)?;
         self.constructed = constructed;
-        self.limit = BASE_EVALUATION_LIMIT.max(per_node);
+        self.limit = limit;
+        if self.spent_ticks > self.limit_ticks() {
+            return Err(self.limit_error());
+        }
+        Ok(())
+    }
+
+    pub(in crate::geometry) fn set_published_leaves(
+        &mut self,
+        published_leaves: usize,
+    ) -> Result<()> {
+        if published_leaves < self.published_leaves {
+            return Err(
+                GeometryErrorKind::Invalid("published-leaf budget cannot decrease".into()).into(),
+            );
+        }
+        let limit = Self::limit_for(self.constructed, published_leaves)?;
+        self.published_leaves = published_leaves;
+        self.limit = limit;
         if self.spent_ticks > self.limit_ticks() {
             return Err(self.limit_error());
         }
@@ -2348,7 +2379,7 @@ mod tests {
     #[test]
     fn borrowed_search_does_not_import_the_problem_legacy_evaluation_tally() {
         let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![7]]);
-        problem.initial_evaluations = BASE_EVALUATION_LIMIT + 7;
+        problem.initial_evaluations = BASE_EVALUATION_LIMIT + EVALUATIONS_PER_CONSTRUCTED_NODE + 7;
         let mut budget = EvaluationBudget::new("search_test", 1).unwrap();
 
         let SearchOutcome::Pass(assignment) = run_with_budget(&mut problem, &mut budget).unwrap()
@@ -3072,7 +3103,8 @@ mod tests {
     #[test]
     fn one_budget_covers_candidate_admission_and_all_classes() {
         let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![7], vec![8]]);
-        problem.initial_evaluations = BASE_EVALUATION_LIMIT - 2;
+        let limit = BASE_EVALUATION_LIMIT + EVALUATIONS_PER_CONSTRUCTED_NODE;
+        problem.initial_evaluations = limit - 2;
         let error = search_fixture(problem, 1).unwrap_err();
 
         assert!(matches!(
@@ -3081,7 +3113,7 @@ mod tests {
                 operation: "search_test",
                 constructed: 1,
                 evaluations
-            }) if *evaluations == BASE_EVALUATION_LIMIT
+            }) if *evaluations == limit
         ));
     }
 
@@ -3113,7 +3145,8 @@ mod tests {
     #[test]
     fn over_budget_closure_reports_its_completed_work() {
         let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![7]]);
-        problem.initial_evaluations = BASE_EVALUATION_LIMIT + 7;
+        let limit = BASE_EVALUATION_LIMIT + EVALUATIONS_PER_CONSTRUCTED_NODE;
+        problem.initial_evaluations = limit + 7;
         let error = search_fixture(problem, 1).unwrap_err();
 
         assert!(matches!(
@@ -3122,14 +3155,14 @@ mod tests {
                 operation: "search_test",
                 constructed: 1,
                 evaluations
-            }) if *evaluations == BASE_EVALUATION_LIMIT + 7
+            }) if *evaluations == limit + 7
         ));
     }
 
     #[test]
     fn budget_grows_with_the_number_of_constructed_nodes() {
         let mut budget = EvaluationBudget::new("search_test", 17).unwrap();
-        let limit = 17 * EVALUATIONS_PER_CONSTRUCTED_NODE;
+        let limit = BASE_EVALUATION_LIMIT + 17 * EVALUATIONS_PER_CONSTRUCTED_NODE;
         budget.charge_evaluations(limit).unwrap();
         let error = budget.charge_evaluations(1).unwrap_err();
         assert!(matches!(
@@ -3139,6 +3172,29 @@ mod tests {
                 constructed: 17,
                 evaluations
             }) if *evaluations == limit
+        ));
+    }
+
+    #[test]
+    fn published_leaf_budget_has_half_at_and_above_boundary_controls() {
+        let mut budget = EvaluationBudget::new("union", 0).unwrap();
+        budget.set_published_leaves(5_472).unwrap();
+        budget.set_constructed(149).unwrap();
+        let limit = 1_775_712;
+        assert_eq!(budget.limit, limit);
+
+        budget.record_completed_evaluations(limit / 2).unwrap();
+        budget
+            .record_completed_evaluations(limit - limit / 2)
+            .unwrap();
+        let error = budget.record_completed_evaluations(1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "union",
+                constructed: 149,
+                evaluations
+            }) if *evaluations == limit + 1
         ));
     }
 
