@@ -1,16 +1,16 @@
 //! Analytic Voronoi construction for collinear sites.
 
 use super::{
-    AtomicEdge, BTreeSet, CertifiedDelaunay, CoordSeq, EmbeddedEdgeData, EmbeddedEdges,
-    EmbeddedPolygon, EmbeddedVoronoi, ExactEdgeChain, ExactSign, ExactSubdivision, ExactVertex,
-    ExpansionBudget, FrameSide, IndexedTopology, NormalizedClip, Ordering, OverlayNodeReceipt,
-    OverlaySourceEdgeUse, OwnerTransition, Point, PointSelectionChart, Polygon, Result, Ring,
-    Shape, Site, Transition, VoronoiBoundary, VoronoiEdgeOrigin, VoronoiEdgeSourceUse,
-    VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole, XY,
-    binary_cartesian_intersection_with_edge_roles, clip, collinear_polygon_receipt, embed,
+    AtomicEdge, BTreeSet, CertifiedDelaunay, ClipSegmentId, CoordSeq, EdgeId, EmbeddedEdgeData,
+    EmbeddedEdges, EmbeddedPolygon, EmbeddedVoronoi, ExactEdgeChain, ExactSign, ExactSubdivision,
+    ExactVertex, ExpansionBudget, FrameSide, IndexedTopology, NormalizedClip, Ordering,
+    OverlayNodeReceipt, OverlaySourceEdgeUse, OwnerTransition, PointSelectionChart, Polygon,
+    Result, Ring, Shape, Site, SiteId, Transition, VertexId, VoronoiBoundary, VoronoiEdgeOrigin,
+    VoronoiEdgeSourceUse, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole, XY,
+    binary_cartesian_intersection_with_edge_roles, collinear_polygon_receipt, embed,
     empty_packed_edges, exact, exact_cycle_error, fixed_coordinates, lex_position,
     normalize_clip_with_chart, orient_separator, polygon_output_count, receipt_frame_side, site_at,
-    site_receipts, sort_unique_along, subdivision, try_dedup_by, try_sort_by, voronoi_error,
+    site_receipts, sort_unique_along, try_dedup_by, try_sort_by, voronoi_error,
 };
 
 struct CollinearClipEdge<'a> {
@@ -45,7 +45,7 @@ struct CollinearClipEvents {
 /// two exact half-planes and rounded once; neighbouring cells round the same
 /// exact bisector crossings, so they share their vertices. A polygon clip then
 /// intersects each strip with the polygon.
-pub(super) fn build_collinear_polygons_with_chart(
+pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
@@ -799,7 +799,7 @@ pub(super) fn build_collinear_edges(
     build_collinear_edges_with_chart(sites, boundary, budget, mesh, None)
 }
 
-pub(super) fn build_collinear_edges_with_chart(
+pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
