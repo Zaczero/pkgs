@@ -109,10 +109,10 @@ pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
     PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
-    publish_mesh_publication_for_domain, publish_polygon_parts_with_edge_roles,
-    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
-    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
-    publish_native_computed_chain, publish_raw_computed_shape_with_capture,
+    publish_mesh_publication_for_domain, publish_native_computed_chain,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
+    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
+    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_capture,
     publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
     publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
     publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
@@ -151,7 +151,8 @@ mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
     ParallelSourceArcMetricAccess, RootMetricState, SourceArcCapture, SourceArcContext,
-    SourceArcMetricAccess, computed_native_sample_ordinates, source_ordinate_values_at_fraction,
+    SourceArcMetricAccess, computed_native_sample_ordinates, interpolate_source_projection,
+    source_arc_ordinates_eligible, source_ordinate_values_at_fraction,
 };
 #[cfg(test)]
 pub(crate) use ordinates::{
@@ -214,6 +215,7 @@ pub(crate) use constructive::{
 };
 use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
+    snap_ring_to_reference_with_context,
 };
 #[cfg(test)]
 pub(crate) use coverage::coverage_invalid_edges;
@@ -957,9 +959,17 @@ impl Polygon {
     }
 
     /// Snap every ring onto the reference; `None` when the shell collapses.
-    fn snap_to_reference(&self, reference: &SnapReference) -> Result<Option<Self>> {
+    fn snap_to_reference<M: ChartMetric>(
+        &self,
+        reference: &SnapReference,
+        context: Option<&SourceArcContext<'_, '_, M>>,
+    ) -> Result<Option<Self>> {
         self.map_rings_collapsing(|ring| {
-            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?).map(Some)
+            let points = match context {
+                Some(context) => snap_ring_to_reference_with_context(ring, reference, context)?,
+                None => snap_ring_to_reference(ring, reference)?,
+            };
+            CoordSeq::try_from_points(&points).map(Some)
         })
     }
 }

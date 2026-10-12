@@ -54,7 +54,8 @@ pub(crate) fn shared_paths(
 /// Split lineal geometry by point splitter(s).
 ///
 /// Each piece retains source vertices, including consecutive equal-X/Y
-/// vertices whose active Z/M ordinates differ.
+/// vertices whose active Z/M ordinates differ. Inserted geographic Z/M
+/// ordinates follow the original source edge's ellipsoidal arclength.
 ///
 /// Parameters
 /// ----------

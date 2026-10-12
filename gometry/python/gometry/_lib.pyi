@@ -17288,8 +17288,10 @@ def snap(
     whose distance from both endpoints is greater than ``tolerance`` is
     inserted at its reference X/Y. Insertions follow segment order; equal
     projections are ordered by reference X/Y. Snapped source vertices retain
-    their own Z/M, while inserted vertices interpolate Z/M from the source
-    segment. Consecutive line coordinates with identical X/Y are emitted once,
+    their own Z/M. Inserted geographic vertices keep the reference X/Y and use
+    the source edge's ellipsoidal arclength at the exact projection parameter;
+    Cartesian vertices interpolate along the source segment. Consecutive line
+    coordinates with identical X/Y are emitted once,
     keeping the first. If that leaves only one coordinate, the snapped start
     and end are retained as two endpoints, which may share X/Y. Closed rings
     are reclosed.
@@ -19399,7 +19401,8 @@ def split(
     """Split lineal geometry by point splitter(s).
 
     Each piece retains source vertices, including consecutive equal-X/Y
-    vertices whose active Z/M ordinates differ.
+    vertices whose active Z/M ordinates differ. Inserted geographic Z/M
+    ordinates follow the original source edge's ellipsoidal arclength.
 
     Parameters
     ----------

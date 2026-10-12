@@ -354,7 +354,31 @@ impl PyGeometry {
         frame: Frame,
         tolerance: f64,
     ) -> PyResult<PyGeometryArray> {
-        let shapes = py.detach(move || shape.split_at_points(&splitters, tolerance))?;
+        let axes = shape.axes();
+        let mut metric_scratch = None;
+        let source_context = if axes.has_z() || axes.has_m() {
+            let scratch =
+                metric_scratch.get_or_insert_with(crate::dispatch::MetricScratch::default);
+            let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+                .resolve_topology_ctx(&frame, scratch)?;
+            crate::geometry::source_arc_ordinates_eligible(axes, domain).then_some((domain, metric))
+        } else {
+            None
+        };
+        let shapes = match source_context {
+            Some((domain, metric)) => py.detach(move || {
+                let metric_access = || {
+                    metric.geographic_chart_metric()?.ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic split source ordinates require the operation's CRS metric",
+                        )
+                    })
+                };
+                let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                shape.split_at_points_with_source_arcs(&splitters, tolerance, &context)
+            })?,
+            None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
+        };
         Ok(PyGeometryArray::from_shapes(shapes, frame)?)
     }
 

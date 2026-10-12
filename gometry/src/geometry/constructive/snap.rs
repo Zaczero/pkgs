@@ -4,17 +4,75 @@ use std::ops::ControlFlow;
 use crate::NonNegative;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, Coordinates, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, RepairMethod, Ring, RunIdentity,
-    Segment, SegmentProjection, Shape, SourceArcContext, TopologyDomain, XY,
-    bounds_distance_squared, dedup_consecutive_points, point_distance,
-    point_segment_distance_and_projection, points_dwithin, push_distinct_xy_position,
-    repair_shape_in_frame, same_point, same_topological_coordinate, validate_shape_in_frame,
+    Bounds, BulkRTree, ChartMetric, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind,
+    GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
+    RepairMethod, Ring, RootMetricState, RunIdentity, Segment, SegmentProjection, Shape,
+    SourceArcContext, TopologyDomain, XY, bounds_distance_squared, dedup_consecutive_points,
+    interpolate_source_projection, point_distance, point_segment_distance_and_projection,
+    points_dwithin, push_distinct_xy_position, repair_shape_in_frame, same_point,
+    same_topological_coordinate, source_arc_ordinates_eligible, validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
 
 type SnapTree = BulkRTree<[f64; 2]>;
+
+/// Interpolation mode for one snap operation. Its state lives only for one
+/// source segment, so linear XY work carries no root-metric state.
+trait SnapProjectionInterpolation {
+    type State: Default;
+
+    fn interpolate(
+        &mut self,
+        start: Point,
+        end: Point,
+        projection: &SegmentProjection,
+        state: &mut Self::State,
+    ) -> crate::error::Result<Point>;
+}
+
+#[derive(Clone, Copy, Default)]
+struct LinearSnapInterpolation;
+
+impl SnapProjectionInterpolation for LinearSnapInterpolation {
+    type State = ();
+
+    fn interpolate(
+        &mut self,
+        start: Point,
+        end: Point,
+        projection: &SegmentProjection,
+        _state: &mut Self::State,
+    ) -> crate::error::Result<Point> {
+        projection.interpolate_point(start, end)
+    }
+}
+
+struct SourceArcSnapInterpolation<'context, 'access, 'metric, M: ChartMetric> {
+    context: &'context SourceArcContext<'access, 'metric, M>,
+}
+
+impl<'context, 'access, 'metric, M: ChartMetric>
+    SourceArcSnapInterpolation<'context, 'access, 'metric, M>
+{
+    const fn new(context: &'context SourceArcContext<'access, 'metric, M>) -> Self {
+        Self { context }
+    }
+}
+
+impl<M: ChartMetric> SnapProjectionInterpolation for SourceArcSnapInterpolation<'_, '_, '_, M> {
+    type State = Option<RootMetricState>;
+
+    fn interpolate(
+        &mut self,
+        start: Point,
+        end: Point,
+        projection: &SegmentProjection,
+        state: &mut Self::State,
+    ) -> crate::error::Result<Point> {
+        interpolate_source_projection(self.context, start, end, projection, state)
+    }
+}
 
 enum SnapReferenceStorage {
     Linear(Vec<XY>),
@@ -120,9 +178,20 @@ impl SnapReference {
     /// Reference vertices to drop into the open segment `start -> end`, in
     /// ascending order along it: every reference within tolerance of the
     /// segment but of neither endpoint, placed at its projection (XY from
-    /// the reference, Z/M interpolated), with only references at an
-    /// identical projected position deduplicated.
-    pub(crate) fn insertions(&self, start: Point, end: Point) -> crate::error::Result<Vec<Point>> {
+    /// the reference), with only references at an identical projected position
+    /// deduplicated.
+    #[cfg(test)]
+    fn insertions(&self, start: Point, end: Point) -> crate::error::Result<Vec<Point>> {
+        let mut interpolation = LinearSnapInterpolation;
+        self.insertions_with(start, end, &mut interpolation)
+    }
+
+    fn insertions_with<I: SnapProjectionInterpolation>(
+        &self,
+        start: Point,
+        end: Point,
+        interpolate: &mut I,
+    ) -> crate::error::Result<Vec<Point>> {
         if same_point(start, end) {
             return Ok(Vec::new());
         }
@@ -135,7 +204,7 @@ impl SnapReference {
         // Grow to the surviving candidates rather than the reference count:
         // this runs once per source segment, and a tolerance window admits a
         // handful of references out of the whole set.
-        let mut candidates: Vec<(SegmentProjection, Point)> = Vec::new();
+        let mut candidates: Vec<(SegmentProjection, XY)> = Vec::new();
         let mut consider = |reference: XY| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
@@ -149,10 +218,7 @@ impl SnapReference {
                 return Ok(());
             }
             if !projection.is_start() && !projection.is_end() {
-                let mut point = projection.interpolate_point(start, end)?;
-                point.x = reference.x;
-                point.y = reference.y;
-                candidates.push((projection, point));
+                candidates.push((projection, reference));
             }
             Ok(())
         };
@@ -188,21 +254,30 @@ impl SnapReference {
         }
         // Equal projections use the reference XY set rather than its input order.
         crate::geometry::try_sort_by(&mut candidates, |a, b| {
-            Ok(a.0
-                .cmp_along(&b.0)?
-                .then_with(|| compare_xy(XY::new(a.1.x, a.1.y), XY::new(b.1.x, b.1.y))))
+            Ok(a.0.cmp_along(&b.0)?.then_with(|| compare_xy(a.1, b.1)))
         })?;
         // Collapse only genuine duplicates — references at an identical
         // projected position. A fixed parametric epsilon would merge distinct
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
         candidates.dedup_by(|right, left| right.1.x == left.1.x && right.1.y == left.1.y);
+        let mut state = I::State::default();
         let mut output = Vec::with_capacity(candidates.len());
-        for (_, point) in candidates {
+        for (projection, reference) in candidates {
+            let mut point = interpolate.interpolate(start, end, &projection, &mut state)?;
+            point.x = reference.x;
+            point.y = reference.y;
             output.push(point);
         }
         Ok(output)
     }
+}
+
+fn source_context_for_axes<'context, 'access, 'metric, M: ChartMetric>(
+    context: Option<&'context SourceArcContext<'access, 'metric, M>>,
+    axes: CoordinateAxes,
+) -> Option<&'context SourceArcContext<'access, 'metric, M>> {
+    context.filter(|context| source_arc_ordinates_eligible(axes, context.domain()))
 }
 
 fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
@@ -243,6 +318,28 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
+    snap_line_to_reference_with(points, reference, LinearSnapInterpolation)
+}
+
+pub(crate) fn snap_line_to_reference_with_context<C: Coordinates + ?Sized, M: ChartMetric>(
+    points: &C,
+    reference: &SnapReference,
+    context: &SourceArcContext<'_, '_, M>,
+) -> crate::error::Result<Vec<Point>> {
+    if !points
+        .first_coord()
+        .is_some_and(|point| source_arc_ordinates_eligible(point.axes(), context.domain()))
+    {
+        return snap_line_to_reference(points, reference);
+    }
+    snap_line_to_reference_with(points, reference, SourceArcSnapInterpolation::new(context))
+}
+
+fn snap_line_to_reference_with<C: Coordinates + ?Sized, I: SnapProjectionInterpolation>(
+    points: &C,
+    reference: &SnapReference,
+    mut interpolation: I,
+) -> crate::error::Result<Vec<Point>> {
     if points.coord_count() < 2 {
         return Ok(snap_points_to_reference(points, reference));
     }
@@ -251,7 +348,7 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     push_distinct_xy_position(&mut result, reference.snap_point(points.nth_coord(0)));
 
     for [start, end] in points.segment_pairs() {
-        for point in reference.insertions(start, end)? {
+        for point in reference.insertions_with(start, end, &mut interpolation)? {
             push_distinct_xy_position(&mut result, point);
         }
         push_distinct_xy_position(&mut result, reference.snap_point(end));
@@ -270,8 +367,30 @@ pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
+    snap_ring_to_reference_with(points, reference, LinearSnapInterpolation)
+}
+
+pub(crate) fn snap_ring_to_reference_with_context<C: Coordinates + ?Sized, M: ChartMetric>(
+    points: &C,
+    reference: &SnapReference,
+    context: &SourceArcContext<'_, '_, M>,
+) -> crate::error::Result<Vec<Point>> {
+    if !points
+        .first_coord()
+        .is_some_and(|point| source_arc_ordinates_eligible(point.axes(), context.domain()))
+    {
+        return snap_ring_to_reference(points, reference);
+    }
+    snap_ring_to_reference_with(points, reference, SourceArcSnapInterpolation::new(context))
+}
+
+fn snap_ring_to_reference_with<C: Coordinates + ?Sized, I: SnapProjectionInterpolation>(
+    points: &C,
+    reference: &SnapReference,
+    interpolation: I,
+) -> crate::error::Result<Vec<Point>> {
     let len = points.coord_count();
-    let mut result = snap_line_to_reference(points, reference)?;
+    let mut result = snap_line_to_reference_with(points, reference, interpolation)?;
     if result.len() > 1
         && len > 1
         && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)))
@@ -382,6 +501,31 @@ pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> 
 
 impl Shape {
     pub fn snap(&self, reference: &Self, tolerance: f64) -> Result<Self> {
+        self.snap_impl::<crate::crs::GeodesicMetric>(
+            reference,
+            tolerance,
+            None::<&SourceArcContext<'static, 'static>>,
+        )
+    }
+
+    pub(crate) fn snap_with_context<M: ChartMetric>(
+        &self,
+        reference: &Self,
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Self> {
+        if source_context_for_axes(Some(context), self.axes()).is_none() {
+            return self.snap(reference, tolerance);
+        }
+        self.snap_impl(reference, tolerance, Some(context))
+    }
+
+    fn snap_impl<M: ChartMetric>(
+        &self,
+        reference: &Self,
+        tolerance: f64,
+        context: Option<&SourceArcContext<'_, '_, M>>,
+    ) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let reference_bounds = reference.bounds();
         // Boxes farther apart than the tolerance snap to the identity: no
@@ -404,7 +548,7 @@ impl Shape {
         }
         let engine = SnapReference::build(&reference_points, tolerance);
         drop(reference_points);
-        self.snap_using_reference(reference_bounds, &engine)
+        self.snap_using_reference(reference_bounds, &engine, context)
     }
 
     fn outside_snap_range(&self, reference_bounds: Option<Bounds>, tolerance: f64) -> bool {
@@ -415,37 +559,52 @@ impl Shape {
             })
     }
 
-    fn snap_using_reference(
+    fn snap_using_reference<M: ChartMetric>(
         &self,
         reference_bounds: Option<Bounds>,
         engine: &SnapReference,
+        context: Option<&SourceArcContext<'_, '_, M>>,
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
             Self::MultiPoint(points) => {
                 Self::MultiPoint(points.map_values(|point| engine.snap_point(point))?)
             },
-            Self::LineString(points) => Self::LineString(LineSeq::try_new(
-                CoordSeq::try_from_points(&snap_line_to_reference(points, engine)?)?,
-            )?),
+            Self::LineString(points) => {
+                let context = source_context_for_axes(context, points.axes());
+                let points = match context {
+                    Some(context) => snap_line_to_reference_with_context(points, engine, context)?,
+                    None => snap_line_to_reference(points, engine)?,
+                };
+                Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points)?)?)
+            },
             Self::MultiLineString(lines) => {
+                let context = source_context_for_axes(context, lines.axes());
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    LineSeq::try_new(CoordSeq::try_from_points(&snap_line_to_reference(
-                        line, engine,
-                    )?)?)
+                    let points = match context {
+                        Some(context) => {
+                            snap_line_to_reference_with_context(line, engine, context)?
+                        },
+                        None => snap_line_to_reference(line, engine)?,
+                    };
+                    LineSeq::try_new(CoordSeq::try_from_points(&points)?)
                 })?)
             },
-            Self::Polygon(polygon) => polygon.snap_to_reference(engine)?.map_or_else(
-                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-                Self::Polygon,
-            ),
+            Self::Polygon(polygon) => {
+                let context = source_context_for_axes(context, polygon.axes());
+                polygon.snap_to_reference(engine, context)?.map_or_else(
+                    || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                    Self::Polygon,
+                )
+            },
             Self::MultiPolygon(polygons) => {
+                let context = source_context_for_axes(context, polygons.axes());
                 let members = polygons
                     .members_with_values()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(polygon) => Ok(polygon
-                            .snap_to_reference(engine)?
+                            .snap_to_reference(engine, context)?
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -456,7 +615,7 @@ impl Shape {
                     if geometry.outside_snap_range(reference_bounds, engine.tolerance) {
                         Ok(geometry.clone())
                     } else {
-                        geometry.snap_using_reference(reference_bounds, engine)
+                        geometry.snap_using_reference(reference_bounds, engine, context)
                     }
                 })?)
             },
@@ -721,7 +880,26 @@ impl Shape {
 #[cfg(test)]
 mod snap_reference_tests {
     use super::*;
+    use crate::geometry::ordinates::{SourceArcActivity, take_source_arc_activity};
     use crate::geometry::{MOrdinate, ZOrdinate};
+
+    #[test]
+    fn xy_line_context_skips_source_arc_resolution() {
+        let _ = take_source_arc_activity();
+        let points = vec![Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 0.0)];
+        let reference = SnapReference::build(&[XY::new(5.0, 1.0)], 1.0);
+        let context: SourceArcContext<'static, 'static> = SourceArcContext::new(
+            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            None,
+        );
+        let result = snap_line_to_reference_with_context(&points, &reference, &context);
+        let activity = take_source_arc_activity();
+
+        assert_eq!(activity, SourceArcActivity::default());
+        let snapped = result.expect("XY snap does not need a geographic metric");
+        assert_eq!(snapped.len(), 3);
+        assert_eq!(snapped[1].xy(), XY::new(5.0, 1.0));
+    }
 
     #[test]
     fn collection_children_share_reference_without_moving_disjoint_members() {

@@ -10,10 +10,10 @@ use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
-    OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, Unmetered, VertexKey, Work, XY,
-    ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate, interpolate_subdivision_ordinate,
-    overlay, point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
-    scaled_residual, segment_projection,
+    OverlayOp, Point, PointKey, RunIdentity, Segment, SegmentProjection, Shape, TopologyDomain,
+    Unmetered, VertexKey, Work, XY, ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate,
+    interpolate_subdivision_ordinate, overlay, point_distance, point_on_segment,
+    point_segment_distance_and_projection, same_point, scaled_residual, segment_projection,
 };
 
 mod trace;
@@ -105,6 +105,13 @@ impl<'access, 'metric, M: ChartMetric> SourceArcCapture<'access, 'metric, M> {
     pub(crate) const fn context(&self) -> Option<&SourceArcContext<'access, 'metric, M>> {
         self.context.as_ref()
     }
+}
+
+pub(crate) const fn source_arc_ordinates_eligible(
+    axes: CoordinateAxes,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
+    (axes.has_z() || axes.has_m()) && domain.is_geographic()
 }
 
 impl SourceArcContext<'static, 'static, crate::crs::GeodesicMetric> {
@@ -506,6 +513,77 @@ pub(crate) struct RootMetricState {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SourceArcActivity {
+    pub(crate) projection_interpolations: usize,
+    pub(crate) request_constructions: usize,
+    pub(crate) root_resolutions: usize,
+    pub(crate) root_request_tables: usize,
+    pub(crate) trace_row_tables: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_ARC_ACTIVITY: Cell<SourceArcActivity> =
+        const { Cell::new(SourceArcActivity {
+            projection_interpolations: 0,
+            request_constructions: 0,
+            root_resolutions: 0,
+            root_request_tables: 0,
+            trace_row_tables: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn update_source_arc_activity(update: impl FnOnce(&mut SourceArcActivity)) {
+    SOURCE_ARC_ACTIVITY.with(|activity| {
+        let mut current = activity.get();
+        update(&mut current);
+        activity.set(current);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_source_arc_activity() -> SourceArcActivity {
+    SOURCE_ARC_ACTIVITY.with(|activity| activity.replace(SourceArcActivity::default()))
+}
+
+#[cfg(test)]
+pub(crate) fn record_source_arc_projection() {
+    update_source_arc_activity(|activity| {
+        activity.projection_interpolations += 1;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn record_source_arc_request() {
+    update_source_arc_activity(|activity| {
+        activity.request_constructions += 1;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn record_source_root_resolution() {
+    update_source_arc_activity(|activity| {
+        activity.root_resolutions += 1;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn record_source_root_request_table() {
+    update_source_arc_activity(|activity| {
+        activity.root_request_tables += 1;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn record_source_trace_row_table() {
+    update_source_arc_activity(|activity| {
+        activity.trace_row_tables += 1;
+    });
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SourceArcObservation {
     pub(crate) source: [Point; 2],
@@ -536,6 +614,8 @@ impl<'a> SourceArcRequest<'a> {
     ) -> crate::error::Result<Self> {
         #[cfg(test)]
         record_root_work(RootWorkEvent::SourceArcRequest);
+        #[cfg(test)]
+        record_source_arc_request();
         if !axes.has_z() && !axes.has_m() {
             return Ok(Self::NoOrdinates);
         }
@@ -691,6 +771,57 @@ pub(in crate::geometry) fn source_arc_ordinates_unmetered<'m, M: ChartMetric + '
     let mut fraction = None;
     let mut work = Unmetered;
     source_arc_ordinates(request, metric, &mut state, &mut fraction, &mut work)
+}
+
+/// Interpolate the producer's XY projection and resolve eligible geographic
+/// ordinates on the original directed source edge at its exact parameter.
+pub(crate) fn interpolate_source_projection<M: ChartMetric>(
+    context: &SourceArcContext<'_, '_, M>,
+    start: Point,
+    end: Point,
+    projection: &SegmentProjection,
+    root_state: &mut Option<RootMetricState>,
+) -> crate::error::Result<Point> {
+    #[cfg(test)]
+    record_source_arc_projection();
+
+    let point = projection.interpolate_point(start, end)?;
+    let axes = CoordinateAxes::new(
+        HasZ(start.z().is_some() && end.z().is_some()),
+        HasM(start.m().is_some() && end.m().is_some()),
+    );
+    if !axes.has_z() && !axes.has_m() {
+        return Ok(point);
+    }
+    let TopologyDomain::Geographic(frame) = context.domain() else {
+        return Ok(point);
+    };
+    let source = [start, end];
+    let parameter = projection.exact_fraction()?;
+    let longitude = crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair(
+        frame.longitude(),
+        [start.x, end.x],
+    )?;
+    let mut fraction = None;
+    let mut work = Unmetered;
+    let state = root_state.get_or_insert_with(RootMetricState::default);
+    let ordinates = resolve_source_root(
+        frame,
+        &source,
+        longitude,
+        &parameter,
+        axes,
+        context.metric_access(),
+        state,
+        &mut fraction,
+        &mut work,
+    )?;
+    Point::new_axes(
+        point.x,
+        point.y,
+        ZOrdinate(ordinates.z.value().or_else(|| point.z())),
+        MOrdinate(ordinates.m.value().or_else(|| point.m())),
+    )
 }
 
 fn node_ordinates_at(point: Point, axes: CoordinateAxes) -> NodeOrdinates {
@@ -958,6 +1089,63 @@ fn carry_or_degrade(
 mod tests {
     use super::*;
     use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::{Coordinates, LineSeq};
+
+    fn xy_source_line() -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(10.0, 0.0),
+                ])
+                .expect("XY source coordinates are valid"),
+            )
+            .expect("two coordinates form a line"),
+        )
+    }
+
+    fn geographic_xy_context() -> SourceArcContext<'static, 'static> {
+        SourceArcContext::new(
+            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            None,
+        )
+    }
+
+    #[test]
+    fn xy_split_context_skips_source_arc_resolution() {
+        let _ = take_source_arc_activity();
+        let source = xy_source_line();
+        let splitter = [Point::new_raw_xy(5.0, 0.0)];
+        let result = source.split_at_points_with_context(&splitter, 0.0, &geographic_xy_context());
+        let activity = take_source_arc_activity();
+
+        assert_eq!(activity, SourceArcActivity::default());
+        let pieces = result.expect("XY split does not need a geographic metric");
+        assert_eq!(pieces.len(), 2);
+        assert!(
+            pieces
+                .iter()
+                .all(|piece| matches!(piece, Shape::LineString(line) if line.coord_count() == 2))
+        );
+    }
+
+    #[test]
+    fn xy_snap_context_skips_source_arc_resolution() {
+        let _ = take_source_arc_activity();
+        let source = xy_source_line();
+        let reference = Shape::Point(Point::new_raw_xy(5.0, 1.0));
+        let result = source.snap_with_context(&reference, 1.0, &geographic_xy_context());
+        let activity = take_source_arc_activity();
+
+        assert_eq!(activity, SourceArcActivity::default());
+        let Shape::LineString(snapped) = result.expect("XY snap does not need a geographic metric")
+        else {
+            panic!("snapping a line preserves its geometry kind");
+        };
+        let points = snapped.iter_coords().collect::<Vec<_>>();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[1].xy(), XY::new(5.0, 1.0));
+    }
 
     #[derive(Default)]
     struct CountingWork {

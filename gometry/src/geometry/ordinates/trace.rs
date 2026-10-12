@@ -103,6 +103,9 @@ pub(crate) fn resolve_source_root<M: ChartMetric>(
     fraction: &mut Option<f64>,
     work: &mut impl Work,
 ) -> Result<NodeOrdinates> {
+    #[cfg(test)]
+    super::record_source_root_resolution();
+
     let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
     source_arc_ordinates(
         &request,
@@ -614,6 +617,8 @@ impl RootRequestTable {
         ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
         #[cfg(test)]
         super::record_root_work(super::RootWorkEvent::RequestTable);
+        #[cfg(test)]
+        super::record_source_root_request_table();
         work.charge_into_error(
             u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -1163,6 +1168,8 @@ impl TraceRowsBuilder {
     pub(crate) fn new(work: &mut impl Work) -> Result<Self> {
         #[cfg(test)]
         super::record_root_work(super::RootWorkEvent::TraceRowsBuilder);
+        #[cfg(test)]
+        super::record_source_trace_row_table();
         prepay_slots(1, work)?;
         prepay_slots(1, work)?;
         let offsets = vec![0];
