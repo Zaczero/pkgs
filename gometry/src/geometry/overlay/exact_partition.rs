@@ -65,6 +65,8 @@ mod relate;
 thread_local! {
     static SOURCE_LINE_RUNS_CALLS: Cell<usize> = const { Cell::new(0) };
     static SUBDIVISION_ROOT_XY_POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
+    static SUBDIVISION_RESOLUTION_BATCHES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -85,6 +87,16 @@ pub(crate) fn reset_subdivision_root_xy_position_calls() {
 #[cfg(test)]
 pub(crate) fn subdivision_root_xy_position_calls() -> usize {
     SUBDIVISION_ROOT_XY_POSITION_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_subdivision_resolution_batches() {
+    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| batches.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_subdivision_resolution_batches() -> Vec<(usize, usize, usize)> {
+    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| std::mem::take(&mut *batches.borrow_mut()))
 }
 
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
@@ -228,19 +240,23 @@ impl<'e, 'p> ResolvedNodePoints<'e, 'p> {
     }
 }
 
-fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>(
+fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, W: Work, F>(
     partition: &'p ExactPartition<'_>,
     embedding: &'e embedding::Embedding<'p>,
     nodes: &[NodeId],
     mut requests_by_node: Vec<Vec<RootRequest>>,
     axes: CoordinateAxes,
-    roots: &C,
     root_positions: Option<&SubdivisionRootCatalog>,
     root_xy_nodes: Option<&[bool]>,
     fallback_inventory: Option<&ExactSourceInventory>,
+    reuse_existing_source_vertices: bool,
     context: &SourceArcContext<'_, '_, M>,
     work: &mut W,
-) -> Result<ResolvedNodePoints<'e, 'p>> {
+    resolve_rows: &mut F,
+) -> Result<ResolvedNodePoints<'e, 'p>>
+where
+    F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
+{
     if root_positions.is_some() != root_xy_nodes.is_some() {
         return Err(GeometryErrorKind::Invalid(
             "subdivision root positions and node selection disagree".into(),
@@ -326,39 +342,53 @@ fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>
             None => ResolvedNodePoints::from_embedding(embedding, None),
         });
     }
-    let fallback_nodes = if fallback_inventory.is_some() {
-        nodes
-            .iter()
-            .copied()
-            .filter(|node| {
-                requests_by_node
-                    .get(node.0 as usize)
-                    .is_some_and(Vec::is_empty)
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let mut by_node = vec![None; partition.node_count()];
+    let mut fallback_nodes = Vec::new();
     let mut request_rows = Vec::with_capacity(nodes.len());
+    let mut request_row_nodes = Vec::with_capacity(nodes.len());
     for &node in nodes {
         work.charge(1)?;
+        if reuse_existing_source_vertices
+            && let Some(fallback_inventory) = fallback_inventory
+            && let Some(ordinates) =
+                fallback_inventory.existing_source_vertex_ordinates(partition, node, axes, 0)?
+            && (!axes.has_z() || ordinates.z.value().is_some())
+            && (!axes.has_m() || ordinates.m.value().is_some())
+        {
+            let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "existing subdivision vertex is outside the partition".into(),
+                )
+            })?;
+            *slot = Some((
+                ZOrdinate(ordinates.z.value()),
+                MOrdinate(ordinates.m.value()),
+            ));
+            continue;
+        }
         let requests = requests_by_node.get_mut(node.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("subdivision emission node is unknown".into())
         })?;
+        if requests.is_empty() {
+            if fallback_inventory.is_some() {
+                fallback_nodes.push(node);
+            }
+            continue;
+        }
         request_rows.push(RequestRowInput {
             axes,
             requests: std::mem::take(requests),
         });
+        request_row_nodes.push(node);
     }
-    let ordinates = resolve_request_rows(&request_rows, roots, context.metric_access(), work)?;
-    if ordinates.len() != nodes.len() {
+    let ordinates = resolve_rows(&request_rows, work)?;
+    if ordinates.len() != request_rows.len() {
         return Err(GeometryErrorKind::Invalid(
-            "original-root resolution returned incomplete subdivision ordinates".into(),
+            "original-root resolution returned incomplete traced-node ordinates".into(),
         )
         .into());
     }
-    let mut by_node = vec![None; partition.node_count()];
-    for (&node, ordinate) in nodes.iter().zip(ordinates) {
+    for (node, ordinate) in request_row_nodes.into_iter().zip(ordinates) {
         let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("subdivision output node is outside its partition".into())
         })?;
@@ -1068,6 +1098,67 @@ impl SubdivisionRootCatalog {
 
     pub(in crate::geometry) const fn root_xy_positions_needed(&self) -> bool {
         self.root_xy_positions_needed
+    }
+
+    pub(in crate::geometry) fn resolve_output_requests<M: ChartMetric>(
+        &self,
+        rows: &[RequestRowInput],
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        work: &mut impl Work,
+    ) -> Result<Vec<NodeOrdinates>> {
+        let mut output = Vec::with_capacity(rows.len());
+        #[cfg(test)]
+        let mut request_count = 0_usize;
+        #[cfg(test)]
+        let mut resolved_count = 0_usize;
+        for row in rows {
+            work.charge(1)?;
+            let mut ordinates = NodeOrdinates::default();
+            let mut state = RootMetricState::default();
+            let mut previous: Option<&RootRequest> = None;
+            for request in &row.requests {
+                work.charge(1)?;
+                #[cfg(test)]
+                {
+                    request_count = request_count.saturating_add(1);
+                }
+                let duplicate = if let Some(previous) = previous {
+                    previous.root() == request.root()
+                        && previous
+                            .parameter()
+                            .try_cmp_with_work(request.parameter(), work)?
+                            .is_eq()
+                } else {
+                    false
+                };
+                previous = Some(request);
+                if duplicate {
+                    continue;
+                }
+                let mut fraction = None;
+                ordinates.merge(self.resolve(
+                    request.root(),
+                    request.parameter(),
+                    row.axes,
+                    metric_access,
+                    &mut state,
+                    &mut fraction,
+                    work,
+                )?);
+                #[cfg(test)]
+                {
+                    resolved_count = resolved_count.saturating_add(1);
+                }
+            }
+            output.push(ordinates);
+        }
+        #[cfg(test)]
+        SUBDIVISION_RESOLUTION_BATCHES.with(|batches| {
+            batches
+                .borrow_mut()
+                .push((rows.len(), request_count, resolved_count));
+        });
+        Ok(output)
     }
 
     fn source_pair(&self, root: RootId) -> Result<[Point; 2]> {
@@ -2302,6 +2393,97 @@ impl ExactSourceInventory {
         Ok((ZOrdinate(z.value()), MOrdinate(m.value())))
     }
 
+    fn existing_source_vertex_ordinates(
+        &self,
+        partition: &ExactPartition<'_>,
+        node: NodeId,
+        axes: CoordinateAxes,
+        source_scope: u32,
+    ) -> Result<Option<NodeOrdinates>> {
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(None);
+        }
+        let Some(node_key) = partition.points.stored_key(node.0) else {
+            return Ok(None);
+        };
+        let mut ordinates = NodeOrdinates::default();
+        let mut found = false;
+        for &unique in self.node_bindings(node, partition) {
+            for &(source, _) in self.provenance.owners(unique as usize) {
+                if self.source_operands.get(source as usize).copied() != Some(source_scope) {
+                    continue;
+                }
+                let Some(points) = self.source_ordinate_points(source)? else {
+                    continue;
+                };
+                let [first, _] = points;
+                if axes.has_z() && !first.axes().has_z()
+                    || axes.has_m() && !first.axes().has_m()
+                {
+                    continue;
+                }
+                for point in points {
+                    if PointKey::new(*point) != node_key {
+                        continue;
+                    }
+                    found = true;
+                    if axes.has_z() {
+                        ordinates.z.observe(point.z());
+                    }
+                    if axes.has_m() {
+                        ordinates.m.observe(point.m());
+                    }
+                }
+            }
+        }
+        for &(bound, source) in &partition.point_sources {
+            if bound != node
+                || self.source_operands.get(source as usize).copied() != Some(source_scope)
+            {
+                continue;
+            }
+            let Some(points) = self.source_ordinate_points(source)? else {
+                continue;
+            };
+            let [first, _] = points;
+            if axes.has_z() && !first.axes().has_z()
+                || axes.has_m() && !first.axes().has_m()
+            {
+                continue;
+            }
+            for point in points {
+                if PointKey::new(*point) != node_key {
+                    continue;
+                }
+                found = true;
+                if axes.has_z() {
+                    ordinates.z.observe(point.z());
+                }
+                if axes.has_m() {
+                    ordinates.m.observe(point.m());
+                }
+            }
+        }
+        for (bound, point, operand) in self.isolated_point_occurrences(partition) {
+            if bound != node
+                || operand != source_scope
+                || PointKey::new(point) != node_key
+                || axes.has_z() && !point.axes().has_z()
+                || axes.has_m() && !point.axes().has_m()
+            {
+                continue;
+            }
+            found = true;
+            if axes.has_z() {
+                ordinates.z.observe(point.z());
+            }
+            if axes.has_m() {
+                ordinates.m.observe(point.m());
+            }
+        }
+        Ok(found.then_some(ordinates))
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "the binding-start windows and node-aligned output are built from the same ExactPartition"
@@ -3107,6 +3289,11 @@ impl ExactSourceInventory {
         context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut crate::geometry::embedding_search::EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
+        let mut resolve_rows =
+            |rows: &[RequestRowInput],
+             work: &mut crate::geometry::embedding_search::EvaluationBudget| {
+                resolve_request_rows(rows, roots, context.metric_access(), work)
+            };
         self.subdivision_parts_traced(
             partition,
             source_shape,
@@ -3119,6 +3306,8 @@ impl ExactSourceInventory {
             budget,
             context,
             trace_work,
+            false,
+            &mut resolve_rows,
         )
     }
 
@@ -3136,6 +3325,9 @@ impl ExactSourceInventory {
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
         let root_positions = roots.root_xy_positions_needed().then_some(roots);
+        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
+            roots.resolve_output_requests(rows, context.metric_access(), work)
+        };
         match source_traces {
             None => self.subdivision_parts_traced(
                 partition,
@@ -3149,6 +3341,8 @@ impl ExactSourceInventory {
                 budget,
                 context,
                 trace_work,
+                false,
+                &mut resolve_rows,
             ),
             Some(source_traces) => {
                 if LineSource::from_shape(source_shape).is_some() {
@@ -3164,6 +3358,8 @@ impl ExactSourceInventory {
                         budget,
                         context,
                         trace_work,
+                        true,
+                        &mut resolve_rows,
                     );
                 }
                 self.subdivision_polygon_parts_with_roots(
@@ -3316,18 +3512,22 @@ impl ExactSourceInventory {
                 trace_work,
             )?);
         }
+        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
+            roots.resolve_output_requests(rows, context.metric_access(), work)
+        };
         let by_node = resolve_traced_node_requests(
             partition,
             &embedding,
             &nodes,
             requests_by_node,
             declared_axes,
-            roots,
             root_positions,
             root_xy_nodes.as_deref(),
             Some(self),
+            true,
             context,
             trace_work,
+            &mut resolve_rows,
         )?;
         let old_polygon_xy = node_parts
             .iter()
@@ -3399,7 +3599,12 @@ impl ExactSourceInventory {
         ])
     }
 
-    fn subdivision_parts_traced<M: ChartMetric, C: RootCatalog, W: SubdivisionTraceWork>(
+    fn subdivision_parts_traced<
+        M: ChartMetric,
+        C: RootCatalog,
+        W: SubdivisionTraceWork,
+        F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
+    >(
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
@@ -3412,6 +3617,8 @@ impl ExactSourceInventory {
         budget: &mut ExpansionBudget,
         context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut W,
+        reuse_existing_source_vertices: bool,
+        resolve_rows: &mut F,
     ) -> Result<[SubdivisionPart; 2]> {
         let Some(source_traces) = source_traces else {
             let [left, right] = self.subdivision_parts(
@@ -3526,10 +3733,12 @@ impl ExactSourceInventory {
             &run_plans,
             source_traces,
             declared_axes,
-            roots,
             root_positions,
+            reuse_existing_source_vertices.then_some(self),
+            reuse_existing_source_vertices,
             context,
             trace_work,
+            resolve_rows,
         )?;
         let mut parts = Vec::with_capacity(run_plans.len());
         for runs in run_plans {
@@ -3951,7 +4160,13 @@ impl ExactSourceInventory {
         Ok(traces)
     }
 
-    fn resolve_traced_source_line_points<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>(
+    fn resolve_traced_source_line_points<
+        'e,
+        'p,
+        M: ChartMetric,
+        W: Work,
+        F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
+    >(
         &self,
         partition: &'p ExactPartition<'_>,
         embedding: &'e embedding::Embedding<'p>,
@@ -3959,10 +4174,12 @@ impl ExactSourceInventory {
         run_plans: &[Vec<SourceLineRun>],
         source_traces: &[crate::geometry::topology::SourceTrace],
         axes: CoordinateAxes,
-        roots: &C,
         root_positions: Option<&SubdivisionRootCatalog>,
+        fallback_inventory: Option<&ExactSourceInventory>,
+        reuse_existing_source_vertices: bool,
         context: &SourceArcContext<'_, '_, M>,
         work: &mut W,
+        resolve_rows: &mut F,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
         if !axes.has_z() && !axes.has_m() && root_positions.is_none() {
             return Ok(ResolvedNodePoints::from_embedding(embedding, None));
@@ -4031,12 +4248,13 @@ impl ExactSourceInventory {
             nodes,
             requests_by_node,
             axes,
-            roots,
             root_positions,
             root_xy_nodes.as_deref(),
-            None,
+            fallback_inventory,
+            reuse_existing_source_vertices,
             context,
             work,
+            resolve_rows,
         )
     }
 

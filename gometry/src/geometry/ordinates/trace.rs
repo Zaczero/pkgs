@@ -14,12 +14,14 @@ use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Wor
 thread_local! {
     static ROOT_RANGE_ENDPOINT_REQUESTS: Cell<usize> = const { Cell::new(0) };
     static ROOT_RANGE_INTERIOR_MAPPINGS: Cell<usize> = const { Cell::new(0) };
+    static ROOT_REQUEST_TABLE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn reset_root_range_mapping_counts() {
     ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| count.set(0));
     ROOT_RANGE_INTERIOR_MAPPINGS.with(|count| count.set(0));
+    ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(0));
 }
 
 #[cfg(test)]
@@ -28,6 +30,11 @@ pub(crate) fn root_range_mapping_counts() -> (usize, usize) {
         ROOT_RANGE_ENDPOINT_REQUESTS.with(Cell::get),
         ROOT_RANGE_INTERIOR_MAPPINGS.with(Cell::get),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn root_request_table_builds() -> usize {
+    ROOT_REQUEST_TABLE_BUILDS.with(Cell::get)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -529,6 +536,8 @@ pub(crate) struct RootRequestTable {
 
 impl RootRequestTable {
     pub(crate) fn from_rows(rows: &[RequestRowInput], work: &mut impl Work) -> Result<Self> {
+        #[cfg(test)]
+        ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
         work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut request_count = 0_usize;
         for row in rows {

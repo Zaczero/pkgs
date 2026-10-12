@@ -143,7 +143,8 @@ pub(in crate::geometry) use exact_partition::{
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
 #[cfg(test)]
 pub(crate) use exact_partition::{
-    reset_subdivision_root_xy_position_calls, subdivision_root_xy_position_calls,
+    reset_subdivision_resolution_batches, reset_subdivision_root_xy_position_calls,
+    subdivision_root_xy_position_calls, take_subdivision_resolution_batches,
 };
 pub(in crate::geometry) use nary::{
     binary_cartesian_difference_without_partition_budget,

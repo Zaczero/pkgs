@@ -495,9 +495,11 @@ fn source_ordinates<W: Work>(
         )
         .into());
     }
-    crate::geometry::segments::try_sort_by_with_work(&mut ordinates, work, |left, right, _work| {
-        Ok(left.total_cmp(right))
-    })?;
+    crate::geometry::segments::try_sort_by_with_work(
+        &mut ordinates,
+        work,
+        |left, right, _work| Ok(left.total_cmp(right)),
+    )?;
     let mut unique = 0_usize;
     for index in 0..ordinates.len() {
         work.charge(1)?;
@@ -972,6 +974,47 @@ struct TracedLineReconstruction {
     declared_axes: crate::geometry::CoordinateAxes,
 }
 
+fn traced_output_axes(
+    declared_axes: crate::geometry::CoordinateAxes,
+    row_ranges: &[std::ops::Range<usize>],
+    ordinates: &[crate::geometry::ordinates::NodeOrdinates],
+    strict: bool,
+) -> Result<crate::geometry::CoordinateAxes> {
+    let mut has_z = declared_axes.has_z();
+    let mut has_m = declared_axes.has_m();
+    for range in row_ranges {
+        for row in ordinates.get(range.clone()).ok_or_else(|| {
+            GeometryErrorKind::Invalid("traced output ordinate rows are incomplete".into())
+        })? {
+            let z = row.z.value().is_some();
+            let m = row.m.value().is_some();
+            has_z &= z;
+            has_m &= m;
+        }
+    }
+    let axes = crate::geometry::CoordinateAxes::new(
+        crate::geometry::HasZ(has_z),
+        crate::geometry::HasM(has_m),
+    );
+    if strict && axes != declared_axes {
+        return Err(GeometryErrorKind::ordinate_dropped("subdivide"));
+    }
+    Ok(axes)
+}
+
+fn point_with_traced_ordinates(
+    point: Point,
+    ordinate: crate::geometry::ordinates::NodeOrdinates,
+    axes: crate::geometry::CoordinateAxes,
+) -> Point {
+    Point::new_raw_axes(
+        point.x,
+        point.y,
+        crate::geometry::ZOrdinate(axes.has_z().then(|| ordinate.z.value()).flatten()),
+        crate::geometry::MOrdinate(axes.has_m().then(|| ordinate.m.value()).flatten()),
+    )
+}
+
 #[derive(Clone, Copy)]
 enum SubdivisionPath {
     Ordinary,
@@ -1340,23 +1383,12 @@ impl<'a> NativeSubdivisionContext<'a> {
             .into());
         }
         for reconstruction in reconstructions {
-            let mut has_z = reconstruction.declared_axes.has_z();
-            let mut has_m = reconstruction.declared_axes.has_m();
-            for range in &reconstruction.row_ranges {
-                for row in ordinates.get(range.clone()).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("native line ordinate rows are incomplete".into())
-                })? {
-                    has_z &= row.z.value().is_some();
-                    has_m &= row.m.value().is_some();
-                }
-            }
-            let axes = crate::geometry::CoordinateAxes::new(
-                crate::geometry::HasZ(has_z),
-                crate::geometry::HasM(has_m),
-            );
-            if strict && axes != reconstruction.declared_axes {
-                return Err(GeometryErrorKind::ordinate_dropped("subdivide"));
-            }
+            let axes = traced_output_axes(
+                reconstruction.declared_axes,
+                &reconstruction.row_ranges,
+                &ordinates,
+                strict,
+            )?;
             let item = staged.get_mut(reconstruction.item).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native output item is unknown".into())
             })?;
@@ -1373,16 +1405,7 @@ impl<'a> NativeSubdivisionContext<'a> {
                     let ordinate = *ordinates.get(ordinate_index).ok_or_else(|| {
                         GeometryErrorKind::Invalid("native line ordinate row is unknown".into())
                     })?;
-                    points.push(Point::new_raw_axes(
-                        point.x,
-                        point.y,
-                        crate::geometry::ZOrdinate(
-                            axes.has_z().then(|| ordinate.z.value()).flatten(),
-                        ),
-                        crate::geometry::MOrdinate(
-                            axes.has_m().then(|| ordinate.m.value()).flatten(),
-                        ),
-                    ));
+                    points.push(point_with_traced_ordinates(point, ordinate, axes));
                 }
                 output_lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
             }
@@ -1651,22 +1674,12 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
             continue;
         }
         if matches!(&item.shape, Shape::MultiPolygon(_))
-            && push_subdivision_members(
-                &mut item,
-                max_vertices,
-                &mut work,
-                line_member_counts,
-            )?
+            && push_subdivision_members(&mut item, max_vertices, &mut work, line_member_counts)?
         {
             continue;
         }
         let Some(bounds) = item.bounds else {
-            if push_subdivision_members(
-                &mut item,
-                max_vertices,
-                &mut work,
-                line_member_counts,
-            )? {
+            if push_subdivision_members(&mut item, max_vertices, &mut work, line_member_counts)? {
                 continue;
             }
             if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
@@ -1701,12 +1714,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 });
                 continue;
             }
-            if push_subdivision_members(
-                &mut item,
-                max_vertices,
-                &mut work,
-                line_member_counts,
-            )? {
+            if push_subdivision_members(&mut item, max_vertices, &mut work, line_member_counts)? {
                 continue;
             }
             if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
@@ -1726,6 +1734,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
         let polygon_rooted = item.polygon_traces.is_some() && native.ordinary_roots.is_some();
         let trace_rooted =
             item.traces.is_some() && (native.topology.is_some() || native.ordinary_roots.is_some());
+        let declared_axes = item.trace_axes.unwrap_or_else(|| item.shape.axes());
         let children = {
             if polygon_rooted {
                 let roots = native.ordinary_roots.as_ref().ok_or_else(|| {
@@ -1744,7 +1753,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     &item.shape,
                     polygon_traces,
                     roots,
-                    item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+                    declared_axes,
                     drop,
                     [1, 2],
                     budget,
@@ -1782,7 +1791,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                         &item.shape,
                         item.traces.as_deref(),
                         roots,
-                        item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+                        declared_axes,
                         drop,
                         [1, 2],
                         budget,
@@ -1827,12 +1836,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
             if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
                 continue;
             }
-            if push_subdivision_members(
-                &mut item,
-                max_vertices,
-                &mut work,
-                line_member_counts,
-            )? {
+            if push_subdivision_members(&mut item, max_vertices, &mut work, line_member_counts)? {
                 continue;
             }
             return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
@@ -3801,6 +3805,89 @@ mod subdivision_tests {
             crate::geometry::overlay::subdivision_root_xy_position_calls(),
             0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> {
+        let (frame, metric) = wgs84_geodesic_metric()?;
+        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        );
+        for kind in ["line", "polygon"] {
+            for input_vertices in [32, 64, 128, 256] {
+                let mut points = (0..input_vertices)
+                    .map(|index| {
+                        let fraction = index as f64 / (input_vertices - 1) as f64;
+                        let (x, y) = if kind == "polygon" {
+                            let angle =
+                                std::f64::consts::TAU * index as f64 / input_vertices as f64;
+                            (8.0 * angle.cos(), 8.0 * angle.sin())
+                        } else {
+                            (
+                                -9.0 + 18.0 * fraction,
+                                2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
+                            )
+                        };
+                        Point::new_raw_axes(
+                            x,
+                            y,
+                            crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
+                            crate::geometry::MOrdinate(Some(index as f64 + 1000.0)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let shape = if kind == "polygon" {
+                    points.push(points[0]);
+                    ring_shape(&points)
+                } else {
+                    line_shape(&points)
+                };
+                let mut parts = Vec::new();
+                let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+                crate::geometry::ordinates::reset_root_range_mapping_counts();
+                crate::geometry::overlay::reset_subdivision_resolution_batches();
+                drop(crate::geometry::ordinates::take_source_arc_observations());
+                split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+                let table_builds = crate::geometry::ordinates::root_request_table_builds();
+                let resolution_batches =
+                    crate::geometry::overlay::take_subdivision_resolution_batches();
+                let root_observations = crate::geometry::ordinates::take_source_arc_observations();
+                assert!(
+                    parts
+                        .iter()
+                        .all(|part| part.axes().has_z() && part.axes().has_m())
+                );
+                let emitted_vertices = subdivision_output_vertices(&parts);
+                let cuts = parts.len().saturating_sub(1);
+                let (resolved_rows, root_requests, unique_root_requests) =
+                    resolution_batches.iter().copied().fold(
+                        (0_usize, 0_usize, 0_usize),
+                        |(rows, requests, unique), batch| {
+                            (
+                                rows.saturating_add(batch.0),
+                                requests.saturating_add(batch.1),
+                                unique.saturating_add(batch.2),
+                            )
+                        },
+                    );
+                assert_eq!(table_builds, 0);
+                assert_eq!(resolution_batches.len(), cuts);
+                assert!(resolution_batches.iter().all(|&(rows, requests, unique)| {
+                    rows <= 2 && requests <= rows.saturating_mul(2) && unique == rows
+                }));
+                assert!(resolved_rows <= emitted_vertices);
+                assert!(resolved_rows <= cuts.saturating_add(1));
+                assert!(root_requests <= resolved_rows.saturating_mul(2));
+                assert!(unique_root_requests <= root_requests);
+                assert_eq!(unique_root_requests, resolved_rows);
+                assert!(root_observations.len() <= cuts.saturating_add(1) * 2);
+            }
+        }
         Ok(())
     }
 
