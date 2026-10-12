@@ -125,8 +125,7 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
             SearchOutcome::Exhausted => {
                 return Err(GeometryErrorKind::unrepresentable_output(
                     OverlayOp::Intersection.name(),
-                )
-                .into());
+                ));
             },
         };
     assert!(
@@ -162,7 +161,7 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
                 line_points.extend(points);
             },
             crate::geometry::Component::Point(point) => point_records.push(point),
-            _ => {},
+            crate::geometry::Component::Polygon(_) => {},
         }
         Ok(())
     })?;
