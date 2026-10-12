@@ -972,10 +972,8 @@ impl TraceRowsBuilder {
     pub(crate) fn new(work: &mut impl Work) -> Result<Self> {
         prepay_slots(1, work)?;
         prepay_slots(1, work)?;
-        let mut offsets = Vec::with_capacity(1);
-        offsets.push(0);
-        let mut sample_offsets = Vec::with_capacity(1);
-        sample_offsets.push(0);
+        let offsets = vec![0];
+        let sample_offsets = vec![0];
         Ok(Self {
             offsets,
             ranges: Vec::new(),
