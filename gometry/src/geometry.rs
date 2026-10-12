@@ -173,7 +173,7 @@ pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 pub(in crate::geometry) use segment_index::{OrderTree, PersistentOrder};
-mod segments;
+pub(crate) mod segments;
 pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
@@ -359,10 +359,10 @@ pub(in crate::geometry) use segment_index::{
 use segments::point_segment_distance_key;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, clearance_aabb_filter,
-    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
-    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, undirected_segment_edge_key,
+    orientation_xy, point_pair_distance_key, point_segment_distance_squared,
+    point_segment_exact_distance_key, ray_crossing_is_right, segment_contact_exact,
+    segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segments_intersect,
+    shared_segment_part, undirected_segment_edge_key,
 };
 #[cfg(test)]
 pub(crate) use segments::{
@@ -380,9 +380,7 @@ pub(crate) use segments::{
     line_segments, point_distance, point_distance_squared, point_on_segment, points_dwithin,
     segment_vs_rect, source_dot_cmp, squared_norm_is_trustworthy,
 };
-pub(crate) use segments::{
-    SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
-};
+pub(crate) use segments::{SegmentProjection, point_segment_distance, point_segment_selection};
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{

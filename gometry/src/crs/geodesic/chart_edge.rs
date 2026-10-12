@@ -21,12 +21,13 @@ use crate::geometry::exact_arith::{
 use crate::geometry::interval::{
     HALF_PI_LOWER, HALF_PI_UPPER, Interval as CertifiedInterval, PI_LOWER, PI_UPPER,
 };
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
     CoordinateAxes, GeodesicNumericalPolicy, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ,
     MAX_AUTHALIC_HARMONICS, MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, Segment,
-    SegmentProjection, Unmetered, Work, XY, ZOrdinate, segment_projection,
+    SegmentProjection, Unmetered, Work, XY, ZOrdinate,
 };
 
 const GL4_NODES: [f64; 4] = [
