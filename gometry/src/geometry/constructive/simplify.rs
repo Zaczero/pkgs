@@ -3348,7 +3348,7 @@ mod subdivision_tests {
     fn wgs84_geodesic_metric() -> Result<(GeographicFrame, GeodesicMetric)> {
         let model = crs::metric_model(Some("EPSG:4326"))?;
         let crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crs::CrsError::invalid("WGS84 test CRS is not geographic").into());
+            return Err(crs::CrsError::invalid("WGS84 test CRS is not geographic"));
         };
         Ok((*frame, crs::GeodesicMetric::from_model(&model)?))
     }
@@ -3899,7 +3899,7 @@ mod subdivision_tests {
         );
         let model = crs::metric_model(Some(crs))?;
         let crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crs::CrsError::invalid("custom test CRS is not geographic").into());
+            return Err(crs::CrsError::invalid("custom test CRS is not geographic"));
         };
         let metric = crs::GeodesicMetric::from_model(&model)?;
         let metric_access_calls = std::cell::Cell::new(0_usize);
@@ -4018,7 +4018,7 @@ mod subdivision_tests {
         );
         let model = crs::metric_model(Some(crs))?;
         let crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crs::CrsError::invalid("custom test CRS is not geographic").into());
+            return Err(crs::CrsError::invalid("custom test CRS is not geographic"));
         };
         let metric = crs::GeodesicMetric::from_model(&model)?;
         let metric_access_calls = std::cell::Cell::new(0_usize);

@@ -300,7 +300,9 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
     );
     let model = crate::crs::metric_model(Some(crs))?;
     let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
-        return Err(crate::crs::CrsError::invalid("custom test CRS is not geographic").into());
+        return Err(crate::crs::CrsError::invalid(
+            "custom test CRS is not geographic",
+        ));
     };
     let frame = *frame;
     let axes = CoordinateAxes::new(crate::geometry::HasZ(true), crate::geometry::HasM(true));
