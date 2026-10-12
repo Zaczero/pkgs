@@ -3855,6 +3855,7 @@ mod subdivision_tests {
                 split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
                 let table_builds = crate::geometry::ordinates::root_request_table_builds();
+                let local_root_row_sorts = crate::geometry::ordinates::root_request_row_sorts();
                 let resolution_batches =
                     crate::geometry::overlay::take_subdivision_resolution_batches();
                 let (source_span_sorts, ordered_source_span_views) =
@@ -3888,6 +3889,7 @@ mod subdivision_tests {
                 }));
                 assert!(resolved_rows <= emitted_vertices);
                 assert!(resolved_rows <= cuts.saturating_add(1));
+                assert!(local_root_row_sorts <= emitted_vertices);
                 assert!(root_requests <= resolved_rows.saturating_mul(2));
                 assert!(unique_root_requests <= root_requests);
                 assert_eq!(unique_root_requests, resolved_rows);

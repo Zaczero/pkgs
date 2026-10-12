@@ -23,7 +23,8 @@ pub(crate) use trace::{
 };
 #[cfg(test)]
 pub(crate) use trace::{
-    reset_root_range_mapping_counts, root_range_mapping_counts, root_request_table_builds,
+    reset_root_range_mapping_counts, root_range_mapping_counts, root_request_row_sorts,
+    root_request_table_builds,
 };
 
 pub(crate) type SourceArcMetricAccess<'access, 'metric, M = crate::crs::GeodesicMetric> =
