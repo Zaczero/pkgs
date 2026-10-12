@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::geometry::overlay::{OverlayOp, Strictness, overlay_all};
+pub(super) use crate::geometry::test_support::line;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, LineSeq, MOrdinate, MultiLineString, MultiMember, Point, Polygon,
     Ring, Shape, ZOrdinate,
@@ -161,10 +162,6 @@ pub(super) fn line_seq(points: &[(f64, f64)]) -> LineSeq {
         .unwrap(),
     )
     .expect("test line is valid")
-}
-
-pub(super) fn line(points: &[(f64, f64)]) -> Shape {
-    Shape::LineString(line_seq(points))
 }
 
 pub(super) fn multiline(lines: &[&[(f64, f64)]]) -> Shape {
