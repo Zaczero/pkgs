@@ -2291,18 +2291,18 @@ pub(super) fn distance_within_points(
 /// Round the exact circumcenter of retained dyadic chart sites to nearest
 /// binary64. `None` means the center does not have a finite representation.
 pub(in crate::geometry) fn circumcenter_dyadic_points(
-    a: [ExactDyadic; 2],
-    b: [ExactDyadic; 2],
-    c: [ExactDyadic; 2],
+    a: &[ExactDyadic; 2],
+    b: &[ExactDyadic; 2],
+    c: &[ExactDyadic; 2],
 ) -> Result<Option<XY>> {
-    if orient2d_dyadic_points(a.clone(), b.clone(), c.clone())? == ExactSign::Zero {
+    if orient2d_dyadic_points((*a).clone(), (*b).clone(), (*c).clone())? == ExactSign::Zero {
         return Err(GeometryErrorKind::triangulation(
             "cannot construct a circumcenter for collinear sites",
         ));
     }
-    let [ax, ay] = &a;
-    let [bx, by] = &b;
-    let [cx, cy] = &c;
+    let [ax, ay] = a;
+    let [bx, by] = b;
+    let [cx, cy] = c;
     let center = line_intersection(
         &ExactLine::perpendicular_bisector_dyadics([ax, ay], [bx, by])?,
         &ExactLine::perpendicular_bisector_dyadics([ax, ay], [cx, cy])?,
