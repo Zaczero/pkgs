@@ -6,7 +6,7 @@ use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask
 use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
-use crate::geometry::topology::{EmissionPortId, QSourceImage};
+use crate::geometry::topology::{EmissionPortId, ExactChartPoint, QSourceImage};
 use crate::geometry::{GeometryErrorKind, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -20,7 +20,7 @@ pub(super) struct CheckedPublicationLiteral {
     pub(super) address: LiteralAddress,
     pub(super) image: PublicationImage,
     pub(super) record: crate::Point,
-    pub(super) chart: crate::geometry::topology::ExactChartPoint,
+    pub(super) chart: ExactChartPoint,
 }
 
 pub(crate) struct PendingPublicationRow {
@@ -65,6 +65,10 @@ impl PendingPublicationRow {
     }
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing pending rows would allocate once per geographic array result"
+)]
 pub(crate) enum GeometryOutput {
     Shape(Shape),
     Pending(PendingPublicationRow),
@@ -127,6 +131,10 @@ pub(in crate::geometry) enum PublicationRejection {
     Batch(Vec<PublicationImage>),
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the consuming sink returns its admitted owner without a per-call box allocation"
+)]
 pub(in crate::geometry) enum PublicationOutcome {
     Pass(super::finish::FinishedGeometry),
     Reject(PublicationRejection),

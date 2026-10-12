@@ -1,4 +1,10 @@
-use super::{ExactGeographicTopology, OverlayOp, CoordinateAxes, SourceArcMetricAccess, Result, Shape, finish_certified_q_emission, CertifiedQEmission, EvaluationBudget, EvaluationOnly, ExpansionBudget, QEmissionPlan, QCoordinates, source_point_coordinates_with_work, resolve_q_embedding, SealedQDrawing};
+use super::{
+    CertifiedQEmission, CoordinateAxes, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
+    ExpansionBudget, OverlayOp, QCoordinates, QEmissionPlan, Result, SealedQDrawing, Shape,
+    SourceArcMetricAccess, finish_certified_q_emission, resolve_q_embedding,
+    source_point_coordinates_with_work,
+};
+use crate::geometry::publication::PendingPublicationRow;
 
 pub(super) fn exact_geographic_overlay<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
@@ -19,7 +25,7 @@ pub(super) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetr
     strict: bool,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     logical_row: usize,
-) -> Result<crate::geometry::publication::PendingPublicationRow> {
+) -> Result<PendingPublicationRow> {
     let (embedding, budget) =
         certify_geographic_overlay(topology, operation, declared_axes, strict, metric_access)?;
     pending_q_array_row(
@@ -38,25 +44,25 @@ fn certify_geographic_overlay<M: crate::geometry::ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<(CertifiedQEmission, EvaluationBudget)> {
     let mut budget = EvaluationBudget::new(operation.name(), 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new(operation.name(), "computed edges");
-    let plan = QEmissionPlan::build(topology, operation, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let source_points = source_point_coordinates_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        strict,
-        operation.name(),
-        metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    drop(preparation_work);
-    drop(expansion_budget);
+    let embedding = {
+        let mut preparation_work = EvaluationOnly::new(&mut budget);
+        let mut expansion_budget = ExpansionBudget::new(operation.name(), "computed edges");
+        let plan = QEmissionPlan::build(topology, operation, &mut preparation_work)?;
+        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
+        let source_points = source_point_coordinates_with_work(topology, &mut preparation_work)?;
+        resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            strict,
+            operation.name(),
+            metric_access,
+            &mut expansion_budget,
+            &mut preparation_work,
+        )?
+    };
     Ok((embedding, budget))
 }
 
@@ -65,7 +71,7 @@ fn pending_q_array_row(
     logical_row: usize,
     work: EvaluationBudget,
     output_frame: &crate::Frame,
-) -> Result<crate::geometry::publication::PendingPublicationRow> {
+) -> Result<PendingPublicationRow> {
     match sealed {
         SealedQDrawing::Native(native) => {
             native

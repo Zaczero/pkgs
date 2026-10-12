@@ -5,9 +5,12 @@ use super::receipt::{
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::{
-    LiteralPoint, LiteralPolygon, LiteralSequence, LiteralStorage, SealedOutput, ShapeLiteralLayout,
+    FinalGroupRows, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
+    LiteralStorage, SealedOutput, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::storage::ArrayRows;
+use crate::geometry::topology::q_embedding::publication as q_publication;
 use crate::geometry::{GeometryErrorKind, Shape, Work};
 
 pub(crate) struct FinishedGeometry {
@@ -52,7 +55,7 @@ impl FinishedGeometry {
     pub(in crate::geometry) fn into_pending_row(
         mut self,
         logical_row: usize,
-        work: crate::geometry::embedding_search::EvaluationBudget,
+        work: EvaluationBudget,
         output_frame: &Frame,
     ) -> Result<PendingPublicationRow> {
         if self.frame != *output_frame {
@@ -77,7 +80,7 @@ impl FinishedGeometry {
         Ok(PendingPublicationRow {
             shape: Some(shape),
             logical_row,
-            layout: crate::geometry::embedding_completion::LiteralRowLayout {
+            layout: LiteralRowLayout {
                 operation: 0,
                 logical_row,
                 group_row: None,
@@ -111,9 +114,7 @@ impl FinishedGeometry {
         }
     }
 
-    pub(crate) fn into_groups(
-        self,
-    ) -> Result<(crate::geometry::embedding_completion::FinalGroupRows, Frame)> {
+    pub(crate) fn into_groups(self) -> Result<(FinalGroupRows, Frame)> {
         match self.storage {
             LiteralStorage::Groups(groups) => Ok((groups, self.frame)),
             LiteralStorage::Scalar(_) | LiteralStorage::Rows(_) => Err(GeometryErrorKind::Invalid(
@@ -182,37 +183,31 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
     } = call;
     match receipt {
         ProducerReceipt::QNative(receipt) => {
-            match crate::geometry::topology::q_embedding::publication::bind_native_publication(
-                receipt, target, work,
-            )? {
-                crate::geometry::topology::q_embedding::publication::NativePublicationCheck::Pass(
-                    sealed,
-                ) => Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
-                    sealed,
-                    frame,
-                    PublicationImage::Native,
-                ))),
-                crate::geometry::topology::q_embedding::publication::NativePublicationCheck::Reject => {
+            match q_publication::bind_native_publication(receipt, target, work)? {
+                q_publication::NativePublicationCheck::Pass(sealed) => {
+                    Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
+                        sealed,
+                        frame,
+                        PublicationImage::Native,
+                    )))
+                },
+                q_publication::NativePublicationCheck::Reject => {
                     Ok(PublicationOutcome::Reject(PublicationRejection::Native))
                 },
             }
         },
         ProducerReceipt::QSourceOnly(receipt) => {
-            match crate::geometry::topology::q_embedding::publication::bind_source_publication(
-                receipt, target, work,
-            )? {
-                crate::geometry::topology::q_embedding::publication::SourcePublicationCheck::Pass(
-                    sealed,
-                ) => Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
-                    sealed,
-                    frame,
-                    PublicationImage::SourceOnly,
-                ))),
-                crate::geometry::topology::q_embedding::publication::SourcePublicationCheck::Reject(
-                    images,
-                ) => Ok(PublicationOutcome::Reject(PublicationRejection::SourceOnly(
-                    images,
-                ))),
+            match q_publication::bind_source_publication(receipt, target, work)? {
+                q_publication::SourcePublicationCheck::Pass(sealed) => {
+                    Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
+                        sealed,
+                        frame,
+                        PublicationImage::SourceOnly,
+                    )))
+                },
+                q_publication::SourcePublicationCheck::Reject(images) => Ok(
+                    PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)),
+                ),
             }
         },
         ProducerReceipt::ArrayBatch(batch) => {

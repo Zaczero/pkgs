@@ -146,7 +146,7 @@ pub(super) fn finish_array_batch<W: Work>(
 
     let mut row_map = Vec::with_capacity(logical_count);
     let mut pending_rows = Vec::new();
-    let mut present_row = 0;
+    let mut present_row = 0_usize;
     for (logical, pending) in batch.logical_rows.into_iter().enumerate() {
         work.charge(1)?;
         let missing = batch
@@ -166,7 +166,9 @@ pub(super) fn finish_array_batch<W: Work>(
 
         let storage_row = if batch.layout == StorageLayout::PresentOnly {
             let row = present_row;
-            present_row += 1;
+            present_row = present_row
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             row
         } else {
             logical
@@ -349,8 +351,9 @@ mod tests {
                     "an omitted final-storage binder must not publish corrupted M"
                 );
             },
-            PublicationOutcome::Reject(PublicationRejection::Native |
-PublicationRejection::SourceOnly(_)) => {
+            PublicationOutcome::Reject(
+                PublicationRejection::Native | PublicationRejection::SourceOnly(_),
+            ) => {
                 panic!("array storage cannot return a Q candidate rejection")
             },
         }

@@ -1093,7 +1093,7 @@ where
     // a pure overlay of two packed point arrays must not retain multi-MiB
     // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.
     let left_bounds = left.existing_element_bounds();
-    
+
     match right {
         One(right) => {
             let right_shape = match split_operand_arc_for_topology(domain, right, metric) {

@@ -41,6 +41,7 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, OverlayOp, build_certified_overlay_shape_with_axes,
     build_certified_overlay_shape_with_axes_and_order,
 };
+use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -432,7 +433,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             &[],
             &[],
         );
-        let sealed = match crate::geometry::publication::finish_geographic(
+        let sealed = match finish_geographic(
             super::super::publication::PublicationCall::new(
                 super::super::publication::ProducerReceipt::QSourceOnly(receipt),
                 topology.publication_frame().clone(),
@@ -503,7 +504,7 @@ pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geomet
     strict: bool,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     logical_row: usize,
-) -> Result<crate::geometry::publication::PendingPublicationRow> {
+) -> Result<PendingPublicationRow> {
     publication::exact_geographic_overlay_pending_row(
         topology,
         operation,
@@ -605,25 +606,25 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
     }
     let row = SourceRowId(0);
     let mut budget = EvaluationBudget::new("geographic boundary", 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
-    let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
-    let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        false,
-        "geographic boundary",
-        metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    drop(preparation_work);
-    drop(expansion_budget);
+    let embedding = {
+        let mut preparation_work = EvaluationOnly::new(&mut budget);
+        let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
+        let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
+        let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
+        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
+        resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            false,
+            "geographic boundary",
+            metric_access,
+            &mut expansion_budget,
+            &mut preparation_work,
+        )?
+    };
     publish_q_overlay(embedding)
 }
 

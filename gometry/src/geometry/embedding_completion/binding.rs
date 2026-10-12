@@ -1,5 +1,10 @@
 use super::storage::FrozenStorage;
-use super::{ArrayRows, ValidityMask, Work, Result, GeometryErrorKind, ResourceError, LiteralRowBinding, LogicalRow, LiteralReceiver, FrozenLiteralBuffers, LiteralCheck, CoordinateAxes, LiteralChart, CheckedImages, CheckedLiteralRecord, validate_shape_layout, visit_shape_literals, LiteralRowAddress, SealedOutput, LiteralAddress, Point, visit_storage_row, FinalGroupRows};
+use super::{
+    ArrayRows, CheckedLiteralRecord, CoordinateAxes, FinalGroupRows, FrozenLiteralBuffers,
+    GeometryErrorKind, LiteralAddress, LiteralCheck, LiteralReceiver, LiteralRowAddress,
+    LiteralRowBinding, LogicalRow, Point, ResourceError, Result, SealedOutput, ValidityMask, Work,
+    validate_shape_layout, visit_shape_literals, visit_storage_row,
+};
 
 fn validate_group_storage(
     values: &ArrayRows,
@@ -22,26 +27,22 @@ fn validate_group_storage(
         .into());
     }
     work.charge(u64::try_from(offsets.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut previous = 0_i64;
-    for (index, &offset) in offsets.iter().enumerate() {
+    for (group, (&start, &end)) in offsets.iter().zip(offsets.iter().skip(1)).enumerate() {
         work.charge(1)?;
-        if offset < previous || offset < 0 {
+        if start < 0 || end < start {
             return Err(GeometryErrorKind::Invalid(
                 "group offsets are negative or decreasing".into(),
             )
             .into());
         }
-        if index > 0
-            && missing.is_some_and(|missing| missing.is_missing(index - 1))
-            && offset != previous
-        {
+        if missing.is_some_and(|missing| missing.is_missing(group)) && end != start {
             return Err(GeometryErrorKind::Invalid(
                 "a missing group has a nonempty values window".into(),
             )
             .into());
         }
-        previous = offset;
     }
+    work.charge(1)?;
     Ok(group_count)
 }
 
@@ -53,30 +54,28 @@ fn validate_group_literal_map<I>(
     work: &mut impl Work,
 ) -> Result<()> {
     work.charge(u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    for group in 0..group_count {
-        let start =
-            usize::try_from(*offsets.get(group).ok_or_else(|| {
-                GeometryErrorKind::Invalid("group start offset is unknown".into())
-            })?)
+    for (group, (&start, &end)) in offsets
+        .iter()
+        .zip(offsets.iter().skip(1))
+        .take(group_count)
+        .enumerate()
+    {
+        let start = usize::try_from(start)
             .map_err(|_| GeometryErrorKind::Invalid("group start offset is negative".into()))?;
-        let end = usize::try_from(
-            *offsets
-                .get(group + 1)
-                .ok_or_else(|| GeometryErrorKind::Invalid("group end offset is unknown".into()))?,
-        )
-        .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
+        let end = usize::try_from(end)
+            .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
         for value in start..end {
             work.charge(1)?;
             let binding = values.get(value).and_then(Option::as_ref);
             match (admitted_values.logical_row(value), binding) {
-                (Some(LogicalRow::Missing { .. }), None) => {},
+                (Some(LogicalRow::Missing { .. }), None)
+                | (Some(LogicalRow::Present { .. }), Some(LiteralRowBinding::OtherProducer)) => {},
                 (Some(LogicalRow::Missing { .. }), Some(_)) => {
                     return Err(GeometryErrorKind::Invalid(
                         "missing group value has a literal row map".into(),
                     )
                     .into());
                 },
-                (Some(LogicalRow::Present { .. }), Some(LiteralRowBinding::OtherProducer)) => {},
                 (Some(LogicalRow::Present { .. }), Some(LiteralRowBinding::Checked(row))) => {
                     if row.group_row != Some(group) || row.value_row != Some(value) {
                         return Err(GeometryErrorKind::Invalid(
@@ -287,7 +286,13 @@ fn visit_group_literals<I: Copy, W: Work>(
         work,
     )?;
     validate_group_literal_map(&groups.values, row_map, group_count, &groups.offsets, work)?;
-    for group in 0..group_count {
+    for (group, (&start, &end)) in groups
+        .offsets
+        .iter()
+        .zip(groups.offsets.iter().skip(1))
+        .take(group_count)
+        .enumerate()
+    {
         work.charge(1)?;
         if groups
             .missing
@@ -296,18 +301,10 @@ fn visit_group_literals<I: Copy, W: Work>(
         {
             continue;
         }
-        let start =
-            usize::try_from(*groups.offsets.get(group).ok_or_else(|| {
-                GeometryErrorKind::Invalid("group start offset is unknown".into())
-            })?)
+        let start = usize::try_from(start)
             .map_err(|_| GeometryErrorKind::Invalid("group start offset is negative".into()))?;
-        let end = usize::try_from(
-            *groups
-                .offsets
-                .get(group + 1)
-                .ok_or_else(|| GeometryErrorKind::Invalid("group end offset is unknown".into()))?,
-        )
-        .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
+        let end = usize::try_from(end)
+            .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
         for value in start..end {
             work.charge(1)?;
             match groups.values.logical_row(value).ok_or_else(|| {

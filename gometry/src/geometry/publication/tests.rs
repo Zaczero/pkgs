@@ -1,13 +1,19 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 
-use crate::geometry::{Point, Polygon, Ring, Shape};
+use crate::Frame;
+use crate::crs::frame::crs_arc_static;
+use crate::dispatch::MetricResolver;
+use crate::dispatch::kernels::binary_overlay;
+use crate::geometry::{
+    GeographicTopologyRoute, OverlayOp, Point, Polygon, Ring, Shape, Strictness,
+    geographic_topology_route,
+};
 
 #[test]
 fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {
     crate::test_support::initialize_python();
-    let frame =
-        crate::Frame::new(Some(crate::crs::frame::crs_arc_static("OGC:CRS84")), None).unwrap();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let polygon = |points: &[(f64, f64)]| {
         Shape::Polygon(Polygon::new(
             Ring::closed(
@@ -42,8 +48,8 @@ fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {
     )
     .unwrap();
     assert_eq!(
-        crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
-        crate::geometry::GeographicTopologyRoute::Quotient
+        geographic_topology_route(inputs.views().iter().copied()),
+        GeographicTopologyRoute::Quotient
     );
     let array = crate::PyGeometryArray::from_shapes(shapes, frame).unwrap();
 
@@ -72,8 +78,7 @@ fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {
 #[test]
 fn binary_geographic_array_overlay_binds_after_final_array_admission() {
     crate::test_support::initialize_python();
-    let frame =
-        crate::Frame::new(Some(crate::crs::frame::crs_arc_static("OGC:CRS84")), None).unwrap();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let polygon = |points: &[(f64, f64)]| {
         Shape::Polygon(Polygon::new(
             Ring::closed(
@@ -100,8 +105,8 @@ fn binary_geographic_array_overlay_binds_after_final_array_admission() {
     )
     .unwrap();
     assert_eq!(
-        crate::geometry::geographic_topology_route(geographic_inputs.views().iter().copied()),
-        crate::geometry::GeographicTopologyRoute::Quotient
+        geographic_topology_route(geographic_inputs.views().iter().copied()),
+        GeographicTopologyRoute::Quotient
     );
     let left = crate::PyGeometryArray::from_shapes(vec![left], frame.clone()).unwrap();
     let right = crate::PyGeometryArray::from_shapes(vec![right], frame).unwrap();
@@ -114,14 +119,14 @@ fn binary_geographic_array_overlay_binds_after_final_array_admission() {
             &left,
             &right,
             "intersection",
-            crate::dispatch::MetricResolver::GeographicCarry,
+            MetricResolver::GeographicCarry,
             |left, right, context| {
-                crate::dispatch::kernels::binary_overlay(
+                binary_overlay(
                     left,
                     right,
                     context,
-                    crate::geometry::OverlayOp::Intersection,
-                    crate::geometry::Strictness::Lenient,
+                    OverlayOp::Intersection,
+                    Strictness::Lenient,
                 )
             },
         )

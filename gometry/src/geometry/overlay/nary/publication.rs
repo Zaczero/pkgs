@@ -1,8 +1,20 @@
-use super::{GeographicInputs, OverlayOp, Strictness, SourceArcContext, Result, Shape, Frame, Borrow, GeographicFrame, SourceArcMetricAccess, GeometryErrorKind, overlay_view_error, TopologyDomain, geographic_rectangle_operation_result, GeographicTopologyRoute, exact_partition_overlay_with_bounds_certificates, ExactPartitionBudget, overlay_declared_axes, Dimension, exact_puntal_nary_overlay, overlay_bounds_facts_geographic, intersection_bounds_empty, empty_nary_overlay_shape};
+use super::{
+    Borrow, Dimension, ExactPartitionBudget, Frame, GeographicFrame, GeographicInputs,
+    GeographicTopologyRoute, GeometryErrorKind, OverlayOp, Result, Shape, SourceArcContext,
+    SourceArcMetricAccess, Strictness, TopologyDomain, empty_nary_overlay_shape,
+    exact_partition_overlay_with_bounds_certificates, exact_puntal_nary_overlay,
+    geographic_rectangle_operation_result, intersection_bounds_empty,
+    overlay_bounds_facts_geographic, overlay_declared_axes, overlay_view_error,
+};
+use crate::geometry::publication::GeometryOutput;
+use crate::geometry::topology::overlay::{
+    exact_geographic_overlay, exact_geographic_overlay_pending_row,
+};
+use crate::geometry::{
+    ChartMetric, ExactGeographicTopology, compare_shapes, geographic_topology_route,
+};
 
-pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
-    M: crate::geometry::ChartMetric,
->(
+pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<M: ChartMetric>(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: Strictness,
@@ -20,9 +32,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
     )?)
 }
 
-pub(in crate::geometry) fn overlay_all_geographic_from_with_output_frame<
-    M: crate::geometry::ChartMetric,
->(
+pub(in crate::geometry) fn overlay_all_geographic_from_with_output_frame<M: ChartMetric>(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: Strictness,
@@ -43,7 +53,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_output_frame<
 
 pub(crate) fn overlay_all_geographic_output_with_metric_and_frame<
     S: Borrow<Shape>,
-    M: crate::geometry::ChartMetric,
+    M: ChartMetric,
 >(
     geometries: &[S],
     frame: GeographicFrame,
@@ -52,7 +62,7 @@ pub(crate) fn overlay_all_geographic_output_with_metric_and_frame<
     strictness: Strictness,
     metric_access: &SourceArcMetricAccess<'_, '_, M>,
     logical_row: usize,
-) -> Result<crate::geometry::publication::GeometryOutput> {
+) -> Result<GeometryOutput> {
     if geometries.is_empty() {
         return Err(GeometryErrorKind::EmptyGeometrySequence {
             operation: op.name(),
@@ -73,19 +83,17 @@ pub(crate) fn overlay_all_geographic_output_with_metric_and_frame<
     )
 }
 
-fn scalar_shape(output: crate::geometry::publication::GeometryOutput) -> Result<Shape> {
+fn scalar_shape(output: GeometryOutput) -> Result<Shape> {
     match output {
-        crate::geometry::publication::GeometryOutput::Shape(shape) => Ok(shape),
-        crate::geometry::publication::GeometryOutput::Pending(_) => {
-            Err(GeometryErrorKind::Invalid(
-                "scalar geographic overlay produced a pending array row".into(),
-            )
-            .into())
-        },
+        GeometryOutput::Shape(shape) => Ok(shape),
+        GeometryOutput::Pending(_) => Err(GeometryErrorKind::Invalid(
+            "scalar geographic overlay produced a pending array row".into(),
+        )
+        .into()),
     }
 }
 
-fn overlay_all_geographic_output<M: crate::geometry::ChartMetric>(
+fn overlay_all_geographic_output<M: ChartMetric>(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: Strictness,
@@ -93,7 +101,7 @@ fn overlay_all_geographic_output<M: crate::geometry::ChartMetric>(
     context: &SourceArcContext<'_, '_, M>,
     output_frame: Option<&Frame>,
     logical_row: Option<usize>,
-) -> Result<crate::geometry::publication::GeometryOutput> {
+) -> Result<GeometryOutput> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,
         TopologyDomain::Cartesian => {
@@ -112,12 +120,12 @@ fn overlay_all_geographic_output<M: crate::geometry::ChartMetric>(
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
     if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op) {
-        return Ok(crate::geometry::publication::GeometryOutput::Shape(shape));
+        return Ok(GeometryOutput::Shape(shape));
     }
-    if crate::geometry::geographic_topology_route(originals.views().iter().copied())
+    if geographic_topology_route(originals.views().iter().copied())
         == GeographicTopologyRoute::ExactPartition
     {
-        return Ok(crate::geometry::publication::GeometryOutput::Shape(
+        return Ok(GeometryOutput::Shape(
             exact_partition_overlay_with_bounds_certificates::<M>(
                 original_refs,
                 op,
@@ -170,7 +178,7 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
     context: &SourceArcContext<'_, '_, M>,
     output_frame: Option<&Frame>,
     logical_row: Option<usize>,
-) -> Result<crate::geometry::publication::GeometryOutput> {
+) -> Result<GeometryOutput> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,
         TopologyDomain::Cartesian => {
@@ -187,15 +195,16 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
             .all(|shape| shape.topological_dimension() == Dimension::Point)
         && let Some(shape) = exact_puntal_nary_overlay(original_refs, op, strictness, context)?
     {
-        return Ok(crate::geometry::publication::GeometryOutput::Shape(shape));
+        return Ok(GeometryOutput::Shape(shape));
     }
 
     if bounds_certificates && op == OverlayOp::Intersection && originals.views().len() > 1 {
         let facts = overlay_bounds_facts_geographic(originals);
         if facts.raw_coordinate_bounds_sound && intersection_bounds_empty(&facts.bounds) {
-            return Ok(crate::geometry::publication::GeometryOutput::Shape(
-                empty_nary_overlay_shape(original_refs, op),
-            ));
+            return Ok(GeometryOutput::Shape(empty_nary_overlay_shape(
+                original_refs,
+                op,
+            )));
         }
     }
 
@@ -204,54 +213,46 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
         let (_, rest) = views
             .split_first_mut()
             .expect("geographic overlays have at least one operand");
-        rest.sort_unstable_by(|left, right| {
-            crate::geometry::compare_shapes(left.shape(), right.shape())
-        });
+        rest.sort_unstable_by(|left, right| compare_shapes(left.shape(), right.shape()));
     } else {
-        views.sort_unstable_by(|left, right| {
-            crate::geometry::compare_shapes(left.shape(), right.shape())
-        });
+        views.sort_unstable_by(|left, right| compare_shapes(left.shape(), right.shape()));
     }
     let topology = if let Some(output_frame) = output_frame {
-        crate::geometry::ExactGeographicTopology::from_views_as_set_with_publication_frame(
+        ExactGeographicTopology::from_views_as_set_with_publication_frame(
             frame,
             output_frame.clone(),
             views.into_iter(),
         )?
     } else {
-        crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?
+        ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?
     };
     if let Some(logical_row) = logical_row {
-        let mut output = crate::geometry::publication::GeometryOutput::Pending(
-            crate::geometry::topology::overlay::exact_geographic_overlay_pending_row(
-                &topology,
-                op,
-                declared_axes,
-                strictness.is_strict(),
-                context.metric_access(),
-                logical_row,
-            )?,
-        );
-        if let crate::geometry::publication::GeometryOutput::Pending(pending) = &mut output
+        let mut output = GeometryOutput::Pending(exact_geographic_overlay_pending_row(
+            &topology,
+            op,
+            declared_axes,
+            strictness.is_strict(),
+            context.metric_access(),
+            logical_row,
+        )?);
+        if let GeometryOutput::Pending(pending) = &mut output
             && pending.is_empty()
         {
             pending.replace_empty_shape(empty_nary_overlay_shape(original_refs, op))?;
         }
         Ok(output)
     } else {
-        let output = crate::geometry::topology::overlay::exact_geographic_overlay(
+        let output = exact_geographic_overlay(
             &topology,
             op,
             declared_axes,
             strictness.is_strict(),
             context.metric_access(),
         )?;
-        Ok(crate::geometry::publication::GeometryOutput::Shape(
-            if output.is_empty() {
-                empty_nary_overlay_shape(original_refs, op)
-            } else {
-                output
-            },
-        ))
+        Ok(GeometryOutput::Shape(if output.is_empty() {
+            empty_nary_overlay_shape(original_refs, op)
+        } else {
+            output
+        }))
     }
 }

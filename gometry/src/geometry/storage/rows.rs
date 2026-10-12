@@ -224,10 +224,9 @@ impl ArrayRows {
         work.charge(
             u64::try_from(coordinates).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
-        let logical_rows = match missing.as_ref() {
-            Some(mask) => mask.len(),
-            None => storage.len(),
-        };
+        let logical_rows = missing
+            .as_ref()
+            .map_or_else(|| storage.len(), ValidityMask::len);
         let row_map = match (missing.as_ref(), layout) {
             (Some(mask), StorageLayout::PresentOnly) => {
                 if row_map.len() != mask.present_count() {

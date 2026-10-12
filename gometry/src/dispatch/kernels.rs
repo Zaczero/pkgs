@@ -15,6 +15,7 @@ use crate::geographic::PointSelectionChart;
 use crate::geographic::chart::{
     point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
 };
+use crate::geometry::publication::GeometryOutput;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -1140,11 +1141,13 @@ pub(crate) fn binary_overlay(
     ctx: &CachelessRowContext<'_>,
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
-) -> Result<crate::geometry::publication::GeometryOutput> {
+) -> Result<GeometryOutput> {
     match ctx.domain {
-        TopologyDomain::Cartesian => Ok(crate::geometry::publication::GeometryOutput::Shape(
-            op.apply(left.shape(), right.shape(), strictness)?,
-        )),
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(op.apply(
+            left.shape(),
+            right.shape(),
+            strictness,
+        )?)),
         TopologyDomain::Geographic(frame) => {
             let metric_access = || {
                 ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -1164,7 +1167,7 @@ pub(crate) fn binary_overlay(
                     ctx.lane.row(),
                 )
             } else {
-                Ok(crate::geometry::publication::GeometryOutput::Shape(
+                Ok(GeometryOutput::Shape(
                     crate::geometry::overlay_all_geographic_with_metric_and_frame(
                         &[left.shape(), right.shape()],
                         frame,

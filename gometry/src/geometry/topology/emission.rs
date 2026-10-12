@@ -625,18 +625,13 @@ fn directed_chart_restriction_use(
 ) -> Result<DirectedChartRestrictionUse> {
     let synthetic_vertex = |port: &NativePortData| -> Result<SyntheticChartVertex> {
         match (&restriction, &port.spelling) {
-            (ChartRestriction::CutChord, PortSpelling::Seam(side)) => {
-                Ok(SyntheticChartVertex::Cut {
-                    node: port.node.0,
-                    side: *side,
-                })
-            },
-            (ChartRestriction::PolarCap { .. }, PortSpelling::Seam(side)) => {
-                Ok(SyntheticChartVertex::Cut {
-                    node: port.node.0,
-                    side: *side,
-                })
-            },
+            (
+                ChartRestriction::CutChord | ChartRestriction::PolarCap { .. },
+                PortSpelling::Seam(side),
+            ) => Ok(SyntheticChartVertex::Cut {
+                node: port.node.0,
+                side: *side,
+            }),
             (ChartRestriction::PolarCap { pole }, PortSpelling::Pole { native_longitude }) => {
                 Ok(SyntheticChartVertex::Pole {
                     node: port.node.0,
@@ -809,13 +804,14 @@ pub(super) fn native_seam_edges(
                 low.east.try_clone_with_work(budget)?,
                 high.east.try_clone_with_work(budget)?,
             ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::CutChord,
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                kind: NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
-                    ChartRestriction::CutChord,
-                    &vertices,
-                )?),
                 vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
+                kind,
             });
         }
         if let Some(region) = band.west_region
@@ -825,13 +821,14 @@ pub(super) fn native_seam_edges(
                 high.west.try_clone_with_work(budget)?,
                 low.west.try_clone_with_work(budget)?,
             ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::CutChord,
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                kind: NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
-                    ChartRestriction::CutChord,
-                    &vertices,
-                )?),
                 vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
+                kind,
             });
         }
     }
@@ -1099,13 +1096,14 @@ pub(super) fn native_pole_edges(
                 start.try_clone_with_work(budget)?,
                 end.try_clone_with_work(budget)?,
             ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::PolarCap { pole },
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                kind: NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
-                    ChartRestriction::PolarCap { pole },
-                    &vertices,
-                )?),
                 vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
+                kind,
             });
         }
     }
@@ -6163,18 +6161,19 @@ mod tests {
             }],
         };
         let vertices = [pole_port(80.0), pole_port(140.0)];
+        let kind = NativeAreaEdgeKind::Restriction(
+            directed_chart_restriction_use(
+                ChartRestriction::PolarCap {
+                    pole: ChartPole::North,
+                },
+                &vertices,
+            )
+            .unwrap(),
+        );
         let existing = NativeAreaEdge {
-            kind: NativeAreaEdgeKind::Restriction(
-                directed_chart_restriction_use(
-                    ChartRestriction::PolarCap {
-                        pole: ChartPole::North,
-                    },
-                    &vertices,
-                )
-                .unwrap(),
-            ),
             vertices,
             owner: NativeGraphEdgeOwner::Area { region: 0 },
+            kind,
         };
         let seam_vertex = |longitude, spelling| NativePortData {
             node: EmissionNodeId(4),

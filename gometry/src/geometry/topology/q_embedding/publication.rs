@@ -1,6 +1,15 @@
 //! Receipt admission for Q's checked Native and SourceOnly publications.
 
-use super::{NativeCandidateAssignment, FrozenLiteralBuffers, EmissionPortId, AssignedSite, NodeOrdinates, Point, SealedOutput, CheckedImages, Result, ExactChartPoint, GeometryErrorKind, LiteralChart, Work, validate_native_materialized_port, ExactRational, StorageTarget, bind_literals, LiteralCheck, validate_native_sealed_layout, SourceFrozenDrawing, ExactGeographicTopology, PublicationInventory, XY, QSourceImage, SourceOnlyReceipt, QSourceImages, AssignedSourceChart};
+use super::{
+    AssignedSite, AssignedSourceChart, CheckedImages, EmissionPortId, ExactChartPoint,
+    ExactGeographicTopology, ExactRational, FrozenLiteralBuffers, GeometryErrorKind, LiteralChart,
+    LiteralCheck, NativeCandidateAssignment, NodeOrdinates, Point, PublicationInventory,
+    QSourceImage, QSourceImages, Result, SealedOutput, SourceFrozenDrawing, SourceOnlyReceipt,
+    StorageTarget, Work, XY, bind_literals, validate_native_materialized_port,
+    validate_native_sealed_layout,
+};
+use crate::geometry::CoordinateAxes;
+use crate::geometry::embedding_completion::LiteralAddress;
 
 pub(in crate::geometry) struct NativeCandidatePublication<'call, 'reference, 'topology> {
     pub(super) assignment: &'call NativeCandidateAssignment<'reference, 'topology>,
@@ -23,11 +32,7 @@ struct NativeLiteralReceiver<'assignment, 'reference, 'topology> {
 }
 
 impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
-    fn image(
-        &self,
-        _address: crate::geometry::embedding_completion::LiteralAddress,
-        image: EmissionPortId,
-    ) -> Result<&ExactChartPoint> {
+    fn image(&self, _address: LiteralAddress, image: EmissionPortId) -> Result<&ExactChartPoint> {
         let vertex = *self
             .assignment
             .reference
@@ -52,11 +57,11 @@ impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
 impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn read_point<W: Work>(
         &mut self,
-        _address: crate::geometry::embedding_completion::LiteralAddress,
+        _address: LiteralAddress,
         image: EmissionPortId,
         record: Point,
-        _expected_axes: crate::geometry::CoordinateAxes,
-        stored_axes: crate::geometry::CoordinateAxes,
+        _expected_axes: CoordinateAxes,
+        stored_axes: CoordinateAxes,
         work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
         if !validate_native_materialized_port(
@@ -114,7 +119,6 @@ pub(in crate::geometry) fn bind_native_publication<W: Work>(
     )? {
         return Ok(NativePublicationCheck::Reject);
     }
-    drop(receiver);
     Ok(NativePublicationCheck::Pass(sealed))
 }
 

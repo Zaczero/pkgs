@@ -69,7 +69,7 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::publication::{
     ChartRestriction, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
-    StorageTarget,
+    StorageTarget, finish_geographic,
 };
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
@@ -13684,6 +13684,10 @@ struct NativeCutProblem<F> {
     complete: F,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing a short-lived successful result would add a heap allocation to Native publication"
+)]
 enum NativeCutSearchOutcome {
     Pass(super::emission::CompletedNativeDrawing),
     Reject(Vec<usize>),
@@ -19831,7 +19835,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ordinates: &ordinates,
             port_records: &mut candidate.port_records,
         };
-        match crate::geometry::publication::finish_geographic(
+        match finish_geographic(
             PublicationCall::new(
                 ProducerReceipt::QNative(receipt),
                 self.topology.publication_frame().clone(),
@@ -20126,7 +20130,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         publication_points: &publication_points,
                         publication_ordinates: &publication_ordinates,
                     };
-                    let sealed = match crate::geometry::publication::finish_geographic(
+                    let sealed = match finish_geographic(
                         PublicationCall::new(
                             ProducerReceipt::QSourceOnly(receipt),
                             self.topology.publication_frame().clone(),
@@ -21777,10 +21781,15 @@ mod canonical_coordinate_tests {
     )]
 
     use super::*;
+    use crate::Frame;
     use crate::geometry::embedding_completion::{LiteralPoint, LiteralRowLayout};
-    use crate::geometry::{OverlayOp, Shape};
+    use crate::geometry::publication::FinishedGeometry;
+    use crate::geometry::storage::{
+        GeometryArrayStorage, LogicalRow, PackedStorage, RowSelection, StorageLayout,
+    };
+    use crate::geometry::{CoordinateAxes, OverlayOp, Shape};
 
-    fn topology(shapes: &[crate::geometry::Shape]) -> Result<ExactGeographicTopology> {
+    fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
         let frame = GeographicFrame::crs84();
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
@@ -21795,7 +21804,7 @@ mod canonical_coordinate_tests {
         let layout = ShapeLiteralLayout {
             points: vec![LiteralPoint {
                 output: 0,
-                axes: crate::geometry::CoordinateAxes::XYZM,
+                axes: CoordinateAxes::XYZM,
                 image: QSourceImage::PublicationSample(0),
             }],
             lines: Vec::new(),
@@ -21805,12 +21814,10 @@ mod canonical_coordinate_tests {
             StorageTarget::Scalar => FrozenLiteralBuffers::shapes(Shape::Point(point), layout),
             StorageTarget::Array | StorageTarget::Groups => {
                 let storage =
-                    std::sync::Arc::new(crate::geometry::storage::GeometryArrayStorage::Packed(
-                        crate::geometry::storage::PackedStorage::Points {
-                            coords: std::sync::Arc::new(CoordSeq::try_from_points(&[point])?),
-                            row_map: crate::geometry::storage::RowSelection::Identity,
-                        },
-                    ));
+                    std::sync::Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+                        coords: std::sync::Arc::new(CoordSeq::try_from_points(&[point])?),
+                        row_map: RowSelection::Identity,
+                    }));
                 let row = LiteralRowLayout {
                     operation: 0,
                     logical_row: 0,
@@ -21822,14 +21829,14 @@ mod canonical_coordinate_tests {
                     StorageTarget::Array => FrozenLiteralBuffers::rows(
                         storage,
                         None,
-                        crate::geometry::storage::StorageLayout::LogicalRows,
+                        StorageLayout::LogicalRows,
                         vec![Some(row)],
                         work,
                     )?,
                     StorageTarget::Groups => FrozenLiteralBuffers::groups(
                         storage,
                         None,
-                        crate::geometry::storage::StorageLayout::LogicalRows,
+                        StorageLayout::LogicalRows,
                         vec![Some(row)],
                         vec![0, 1],
                         None,
@@ -21842,10 +21849,45 @@ mod canonical_coordinate_tests {
         Ok(SourceFrozenDrawing { buffers })
     }
 
-    fn native_demand_for_shapes(
-        shapes: &[crate::geometry::Shape],
-        operation: OverlayOp,
-    ) -> Result<(bool, bool)> {
+    fn read_finished_point(
+        finished: FinishedGeometry,
+        target: StorageTarget,
+    ) -> Result<(Option<Point>, Frame)> {
+        Ok(match target {
+            StorageTarget::Scalar => {
+                let (shape, frame) = finished.into_scalar()?;
+                let point = match shape {
+                    Shape::Point(point) => Some(point),
+                    Shape::MultiPoint(_)
+                    | Shape::LineString(_)
+                    | Shape::MultiLineString(_)
+                    | Shape::Polygon(_)
+                    | Shape::MultiPolygon(_)
+                    | Shape::GeometryCollection(_)
+                    | Shape::Empty(..) => None,
+                };
+                (point, frame)
+            },
+            StorageTarget::Array => {
+                let (rows, frame) = finished.into_array()?;
+                let point = match rows.logical_row(0) {
+                    Some(LogicalRow::Present { row, .. }) => row.point(),
+                    Some(LogicalRow::Missing { .. }) | None => None,
+                };
+                (point, frame)
+            },
+            StorageTarget::Groups => {
+                let (groups, frame) = finished.into_groups()?;
+                let point = match groups.values.logical_row(0) {
+                    Some(LogicalRow::Present { row, .. }) => row.point(),
+                    Some(LogicalRow::Missing { .. }) | None => None,
+                };
+                (point, frame)
+            },
+        })
+    }
+
+    fn native_demand_for_shapes(shapes: &[Shape], operation: OverlayOp) -> Result<(bool, bool)> {
         let topology = topology(shapes)?;
         let mut budget = EvaluationBudget::new(operation.name(), 0)?;
         let plan = QEmissionPlan::build(&topology, operation, &mut budget)?;
@@ -21873,7 +21915,7 @@ mod canonical_coordinate_tests {
                 &emission,
                 &nearest,
                 &ordinates,
-                crate::geometry::CoordinateAxes::XY,
+                CoordinateAxes::XY,
                 false,
                 operation.name(),
                 None,
@@ -22518,8 +22560,6 @@ mod canonical_coordinate_tests {
             FeatureFamily, FeatureFamilyParent, FragmentRecipeId, PublicationInventory,
             PublishedSample, SampleProducerKind,
         };
-        use crate::geometry::Shape;
-
         let source_shape = crate::io::parse_wkt("POINT (0 0)")?;
         let geographic_frame = GeographicFrame::crs84();
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(
@@ -22578,42 +22618,6 @@ mod canonical_coordinate_tests {
         let publication_ordinates = [sample_ordinates];
         let mut work = Unmetered;
 
-        fn read_finished_point(
-            finished: crate::geometry::publication::FinishedGeometry,
-            target: StorageTarget,
-        ) -> Result<(Option<Point>, crate::Frame)> {
-            Ok(match target {
-                StorageTarget::Scalar => {
-                    let (shape, frame) = finished.into_scalar()?;
-                    let point = match shape {
-                        Shape::Point(point) => Some(point),
-                        _ => None,
-                    };
-                    (point, frame)
-                },
-                StorageTarget::Array => {
-                    let (rows, frame) = finished.into_array()?;
-                    let point = match rows.logical_row(0) {
-                        Some(crate::geometry::storage::LogicalRow::Present { row, .. }) => {
-                            row.point()
-                        },
-                        _ => None,
-                    };
-                    (point, frame)
-                },
-                StorageTarget::Groups => {
-                    let (groups, frame) = finished.into_groups()?;
-                    let point = match groups.values.logical_row(0) {
-                        Some(crate::geometry::storage::LogicalRow::Present { row, .. }) => {
-                            row.point()
-                        },
-                        _ => None,
-                    };
-                    (point, frame)
-                },
-            })
-        }
-
         for target in [
             StorageTarget::Scalar,
             StorageTarget::Array,
@@ -22635,7 +22639,7 @@ mod canonical_coordinate_tests {
                 topology.publication_frame().clone(),
                 &mut work,
             );
-            match crate::geometry::publication::finish_geographic(call, target)? {
+            match finish_geographic(call, target)? {
                 PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
                     assert_eq!(images, [QSourceImage::PublicationSample(0)]);
                 },
@@ -22677,9 +22681,7 @@ mod canonical_coordinate_tests {
                 topology.publication_frame().clone(),
                 &mut work,
             );
-            let PublicationOutcome::Pass(finished) =
-                crate::geometry::publication::finish_geographic(call, target)?
-            else {
+            let PublicationOutcome::Pass(finished) = finish_geographic(call, target)? else {
                 return Err(GeometryErrorKind::Invalid(
                     "valid source-only output was rejected".into(),
                 )
@@ -23917,7 +23919,7 @@ mod canonical_coordinate_tests {
         };
         assert!(
             matches!(
-                crate::geometry::publication::finish_geographic(
+                finish_geographic(
                     PublicationCall::new(
                         ProducerReceipt::QNative(receipt),
                         topology.publication_frame().clone(),
@@ -24005,7 +24007,7 @@ mod canonical_coordinate_tests {
         };
         assert!(
             matches!(
-                crate::geometry::publication::finish_geographic(
+                finish_geographic(
                     PublicationCall::new(
                         ProducerReceipt::QNative(receipt),
                         topology.publication_frame().clone(),
