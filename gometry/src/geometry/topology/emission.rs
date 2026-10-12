@@ -17,16 +17,22 @@ use crate::geographic::{
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout,
+    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout, reorder_rows,
 };
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
 };
 use crate::geometry::embedding_search::{EvaluationBudget, SearchAccount};
+use crate::geometry::exact_arith::{
+    retained_exact_native_site_with_work, split_rational_native_site_with_work,
+};
+#[cfg(test)]
+use crate::geometry::ordinates::AxisValue;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowId, RequestRowInput, RootCatalog, RootId, RootRange, RootRequest,
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
+use crate::geometry::overlay::CertifiedOverlayOrder;
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -62,7 +68,7 @@ pub(super) enum PortSpelling {
     Pole { native_longitude: f64 },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum VertexOrigin {
     SourceNode(QNodeId),
     SourceSample,
@@ -140,11 +146,11 @@ impl EmissionNodeRegistry {
     pub(super) fn intern_computed(
         &mut self,
         frame: GeographicFrame,
-        point: ExactChartPoint,
+        point: &ExactChartPoint,
         work: &mut impl Work,
     ) -> Result<EmissionNodeId> {
         work.charge_into_error(1)?;
-        let key = quotient_key_for_chart_position(frame, &point)?;
+        let key = quotient_key_for_chart_position(frame, point)?;
         self.intern(key.clone(), NodeAuthority::Computed(key), work)
     }
 
@@ -195,13 +201,13 @@ pub(super) struct EmissionPort {
     occurrence_range: Range<usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct OccurrenceSource {
     pub(super) origin: VertexOrigin,
     pub(super) source_trace: Option<TraceRequestLocation>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct WrittenOccurrence {
     pub(super) origin: VertexOrigin,
     pub(super) source_trace: Option<TraceRequestLocation>,
@@ -222,13 +228,45 @@ pub(super) struct EmissionPart {
     pub(super) holes: Vec<Vec<EmissionChordId>>,
 }
 
-#[derive(Clone)]
 pub(super) struct NativePortData {
     pub(super) node: EmissionNodeId,
     pub(super) point: ExactChartPoint,
     pub(super) spelling: PortSpelling,
     pub(super) source_record: Option<Point>,
     pub(super) occurrences: Vec<OccurrenceSource>,
+}
+
+impl NativePortData {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        work.charge_into_error(
+            u64::try_from(self.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let point = self.point.try_clone_with_work(work)?;
+        let mut occurrences = Vec::with_capacity(self.occurrences.len());
+        for occurrence in &self.occurrences {
+            occurrences.push(occurrence.try_clone_with_work(work)?);
+        }
+        Ok(Self {
+            node: self.node,
+            point,
+            spelling: self.spelling.clone(),
+            source_record: self.source_record,
+            occurrences,
+        })
+    }
+}
+
+impl OccurrenceSource {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            origin: self.origin,
+            source_trace: self
+                .source_trace
+                .as_ref()
+                .map(|location| location.try_clone_with_work(work))
+                .transpose()?,
+        })
+    }
 }
 
 fn exact_chart_points_equal_with_work(
@@ -266,20 +304,18 @@ fn validate_native_port_image(
             ExactQuotientKey::Coordinate(_),
         ) => {
             let longitude = frame.longitude();
-            let (left_native, left_lift) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left.point.x,
-                    longitude.period(),
-                    longitude.half_period(),
-                    work,
-                )?;
-            let (right_native, right_lift) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right.point.x,
-                    longitude.period(),
-                    longitude.half_period(),
-                    work,
-                )?;
+            let (left_native, left_lift) = split_rational_native_site_with_work(
+                &left.point.x,
+                longitude.period(),
+                longitude.half_period(),
+                work,
+            )?;
+            let (right_native, right_lift) = split_rational_native_site_with_work(
+                &right.point.x,
+                longitude.period(),
+                longitude.half_period(),
+                work,
+            )?;
             if !left_native
                 .as_ref()
                 .try_cmp_with_work(right_native.as_ref(), work)?
@@ -353,34 +389,30 @@ fn validate_native_port_image(
             let same_spelling = left_longitude.to_bits() == right_longitude.to_bits();
             let left_longitude = ExactRational::from_f64(*left_longitude);
             let right_longitude = ExactRational::from_f64(*right_longitude);
-            let (left_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left_longitude,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (right_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right_longitude,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (left_point_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left.point.x,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (right_point_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right.point.x,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
+            let (left_native, _) = split_rational_native_site_with_work(
+                &left_longitude,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (right_native, _) = split_rational_native_site_with_work(
+                &right_longitude,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (left_point_native, _) = split_rational_native_site_with_work(
+                &left.point.x,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (right_point_native, _) = split_rational_native_site_with_work(
+                &right.point.x,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
             if !same_spelling
                 || !left_native
                     .as_ref()
@@ -421,13 +453,13 @@ pub(super) fn native_source_record_quotient_key(
     let record_key = quotient_key_for_chart_position_with_work(frame, &record_point, work)?;
     let assigned_key = quotient_key_for_chart_position_with_work(frame, assigned, work)?;
     let longitude = frame.longitude();
-    let (record_native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (record_native, _) = split_rational_native_site_with_work(
         &record_point.x,
         longitude.period(),
         longitude.half_period(),
         work,
     )?;
-    let (assigned_native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (assigned_native, _) = split_rational_native_site_with_work(
         &assigned.x,
         longitude.period(),
         longitude.half_period(),
@@ -521,9 +553,7 @@ pub(super) fn merge_native_port_data(
         .into());
     }
     validate_native_port_image(frame, left, right, work)?;
-    let spelling = match (&left.spelling, &right.spelling) {
-        (left, _) => left.clone(),
-    };
+    let spelling = left.spelling.clone();
     for port in [left, right] {
         if let Some(record) = port.source_record {
             validate_native_source_record(frame, port, record, work)?;
@@ -566,11 +596,15 @@ pub(super) fn merge_native_port_data(
         u64::try_from(occurrence_count).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut occurrences = Vec::with_capacity(occurrence_count);
-    occurrences.extend_from_slice(&left.occurrences);
-    occurrences.extend_from_slice(&right.occurrences);
+    for occurrence in &left.occurrences {
+        occurrences.push(occurrence.try_clone_with_work(work)?);
+    }
+    for occurrence in &right.occurrences {
+        occurrences.push(occurrence.try_clone_with_work(work)?);
+    }
     Ok(NativePortData {
         node: left.node,
-        point: left.point.clone(),
+        point: left.point.try_clone_with_work(work)?,
         spelling,
         source_record,
         occurrences,
@@ -593,7 +627,7 @@ pub(super) enum NativeAreaEdgeKind {
     Producer {
         recipe: FragmentRecipeId,
         trace_edge: usize,
-        producer_start: ExactRational,
+        producer_start: Box<ExactRational>,
         producer_end: ExactRational,
         trace_ranges: Vec<(usize, RootRange)>,
         known_spans: Vec<NativeSourceSpanUse>,
@@ -661,7 +695,7 @@ fn native_seam_vertex_index(
     let mut low = 0_usize;
     let mut high = events.len();
     while low < high {
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native seam event index is unknown".into())
         })?;
@@ -735,7 +769,10 @@ pub(super) fn native_seam_edges(
             && !has_existing_area_edge(region, &low.east, &high.east, budget)?
         {
             edges.push(NativeAreaEdge {
-                vertices: [low.east.clone(), high.east.clone()],
+                vertices: [
+                    low.east.try_clone_with_work(budget)?,
+                    high.east.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::SeamConnector,
             });
@@ -744,7 +781,10 @@ pub(super) fn native_seam_edges(
             && !has_existing_area_edge(region, &high.west, &low.west, budget)?
         {
             edges.push(NativeAreaEdge {
-                vertices: [high.west.clone(), low.west.clone()],
+                vertices: [
+                    high.west.try_clone_with_work(budget)?,
+                    low.west.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::SeamConnector,
             });
@@ -951,30 +991,40 @@ pub(super) fn native_pole_edges(
             point: event.east.point.try_clone_with_work(budget)?,
             spelling: PortSpelling::Seam(ChartSide::East),
             source_record: None,
-            occurrences: vec![OccurrenceSource {
-                origin: VertexOrigin::Presentation,
-                source_trace: None,
-            }],
+            occurrences: {
+                budget.charge_into_error(1)?;
+                vec![OccurrenceSource {
+                    origin: VertexOrigin::Presentation,
+                    source_trace: None,
+                }]
+            },
         };
         let west = NativePortData {
             node: event.west.node,
             point: event.west.point.try_clone_with_work(budget)?,
             spelling: PortSpelling::Seam(ChartSide::West),
             source_record: None,
-            occurrences: vec![OccurrenceSource {
-                origin: VertexOrigin::Presentation,
-                source_trace: None,
-            }],
+            occurrences: {
+                budget.charge_into_error(1)?;
+                vec![OccurrenceSource {
+                    origin: VertexOrigin::Presentation,
+                    source_trace: None,
+                }]
+            },
         };
         match pole {
             ChartPole::North => {
                 path.push(east);
-                path.extend(known.iter().rev().cloned());
+                for port in known.iter().rev() {
+                    path.push(port.try_clone_with_work(budget)?);
+                }
                 path.push(west);
             },
             ChartPole::South => {
                 path.push(west);
-                path.extend(known.iter().cloned());
+                for port in known {
+                    path.push(port.try_clone_with_work(budget)?);
+                }
                 path.push(east);
             },
         }
@@ -1010,7 +1060,10 @@ pub(super) fn native_pole_edges(
                 continue;
             }
             edges.push(NativeAreaEdge {
-                vertices: [start.clone(), end.clone()],
+                vertices: [
+                    start.try_clone_with_work(budget)?,
+                    end.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::PolePresentation { pole },
             });
@@ -1085,7 +1138,7 @@ impl<'topology> EmissionBuilder<'topology> {
             .into());
         }
         let node = self.nodes.source_node(source.node)?;
-        self.validate_port_origin(node, &origin)?;
+        self.validate_port_origin(node, origin)?;
         self.push_port(
             EmissionPort {
                 node,
@@ -1112,11 +1165,11 @@ impl<'topology> EmissionBuilder<'topology> {
         let mut nodes = Vec::with_capacity(samples.len());
         for sample in samples {
             work.charge_into_error(1)?;
-            nodes.push(self.nodes.intern_computed(
-                self.topology.sources.frame,
-                sample.exact_point.try_clone_with_work(work)?,
-                work,
-            )?);
+            let point = sample.exact_point.try_clone_with_work(work)?;
+            nodes.push(
+                self.nodes
+                    .intern_computed(self.topology.sources.frame, &point, work)?,
+            );
         }
         Ok(nodes)
     }
@@ -1126,11 +1179,9 @@ impl<'topology> EmissionBuilder<'topology> {
         point: &ExactChartPoint,
         work: &mut impl Work,
     ) -> Result<EmissionNodeId> {
-        self.nodes.intern_computed(
-            self.topology.sources.frame,
-            point.try_clone_with_work(work)?,
-            work,
-        )
+        let point = point.try_clone_with_work(work)?;
+        self.nodes
+            .intern_computed(self.topology.sources.frame, &point, work)
     }
 
     pub(super) fn chord(
@@ -1193,7 +1244,7 @@ impl<'topology> EmissionBuilder<'topology> {
 
     pub(super) fn port(&mut self, data: NativePortData) -> Result<EmissionPortId> {
         for occurrence in &data.occurrences {
-            self.validate_port_origin(data.node, &occurrence.origin)?;
+            self.validate_port_origin(data.node, occurrence.origin)?;
         }
         self.push_port(
             EmissionPort {
@@ -1254,7 +1305,7 @@ impl<'topology> EmissionBuilder<'topology> {
         Ok(id)
     }
 
-    fn validate_port_origin(&self, node: EmissionNodeId, origin: &VertexOrigin) -> Result<()> {
+    fn validate_port_origin(&self, node: EmissionNodeId, origin: VertexOrigin) -> Result<()> {
         let VertexOrigin::SourceNode(source) = origin else {
             return Ok(());
         };
@@ -1267,7 +1318,7 @@ impl<'topology> EmissionBuilder<'topology> {
             )
             .into());
         };
-        if authority != source {
+        if *authority != source {
             return Err(GeometryErrorKind::Invalid(
                 "source-origin port disagrees with its emission node authority".into(),
             )
@@ -1312,7 +1363,7 @@ pub(super) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 pub(super) fn native_literal_uses_in_output_order(
     literal_uses: NativeLiteralUses,
     line_traces: Vec<TracedLine>,
-    order: crate::geometry::overlay::CertifiedOverlayOrder,
+    order: &CertifiedOverlayOrder,
     work: &mut impl Work,
 ) -> Result<(NativeLiteralUses, Vec<TracedLine>)> {
     if literal_uses.lines.len() != line_traces.len() {
@@ -1321,29 +1372,9 @@ pub(super) fn native_literal_uses_in_output_order(
         )
         .into());
     }
-    let line_traces = reorder_literal_rows(line_traces, &order.lines, work)?;
+    let line_traces = reorder_rows(line_traces, &order.lines, work)?;
     let literal_uses = literal_uses.in_output_order(order, work)?;
     Ok((literal_uses, line_traces))
-}
-
-fn reorder_literal_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Result<Vec<T>> {
-    if rows.len() != order.len() {
-        return Err(GeometryErrorKind::Invalid("literal output order omits a row".into()).into());
-    }
-    work.charge_into_error(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut rows = rows.into_iter().map(Some).collect::<Vec<_>>();
-    work.charge_into_error(u64::try_from(order.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut output = Vec::with_capacity(order.len());
-    for &index in order {
-        work.charge_into_error(1)?;
-        let slot = rows.get_mut(index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("literal output order references an unknown row".into())
-        })?;
-        output.push(slot.take().ok_or_else(|| {
-            GeometryErrorKind::Invalid("literal output order repeats a row".into())
-        })?);
-    }
-    Ok(output)
 }
 
 pub(super) struct NativeMaterializedParts {
@@ -1356,7 +1387,11 @@ pub(super) struct NativeMaterializedParts {
 }
 
 impl NativeMaterializedParts {
-    pub(super) fn validate_literal_uses(&self) -> Result<()> {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "LiteralSequence::images is the one-to-one source map for each ring's coordinates"
+    )]
+    pub(super) fn validate_literal_uses(&self, work: &mut impl Work) -> Result<()> {
         if self.literal_uses.points.len() != self.points.len()
             || self.literal_uses.lines.len() != self.lines.len()
             || self.literal_uses.polygons.len() != self.polygons.len()
@@ -1366,7 +1401,14 @@ impl NativeMaterializedParts {
             )
             .into());
         }
-        for (point, uses) in self.points.iter().zip(&self.literal_uses.points) {
+        for index in 0..self.points.len() {
+            work.charge_into_error(1)?;
+            let point = self.points.get(index).expect("point row count was checked");
+            let uses = self
+                .literal_uses
+                .points
+                .get(index)
+                .expect("point-use row count was checked");
             if CoordinateAxes::from_point(*point) != uses.axes {
                 return Err(GeometryErrorKind::Invalid(
                     "native point axes differ from its logical output policy".into(),
@@ -1374,7 +1416,14 @@ impl NativeMaterializedParts {
                 .into());
             }
         }
-        for (line, uses) in self.lines.iter().zip(&self.literal_uses.lines) {
+        for index in 0..self.lines.len() {
+            work.charge_into_error(1)?;
+            let line = self.lines.get(index).expect("line row count was checked");
+            let uses = self
+                .literal_uses
+                .lines
+                .get(index)
+                .expect("line-use row count was checked");
             if line.len() != uses.images.len() || line.axes() != uses.axes {
                 return Err(GeometryErrorKind::Invalid(
                     "native line literal-use rows do not match their coordinates".into(),
@@ -1382,20 +1431,38 @@ impl NativeMaterializedParts {
                 .into());
             }
         }
-        for (polygon, uses) in self.polygons.iter().zip(&self.literal_uses.polygons) {
+        for index in 0..self.polygons.len() {
+            work.charge_into_error(1)?;
+            let polygon = self
+                .polygons
+                .get(index)
+                .expect("polygon row count was checked");
+            let uses = self
+                .literal_uses
+                .polygons
+                .get(index)
+                .expect("polygon-use row count was checked");
             if polygon.shell.coords().len() != uses.shell.images.len()
                 || polygon.holes.len() != uses.holes.len()
                 || polygon.shell.coords().axes() != uses.axes
                 || uses.shell.axes != uses.axes
-                || uses.holes.iter().any(|hole| hole.axes != uses.axes)
             {
                 return Err(GeometryErrorKind::Invalid(
                     "native polygon literal-use rows do not match their rings".into(),
                 )
                 .into());
             }
-            for (hole, uses) in polygon.holes.iter().zip(&uses.holes) {
-                if hole.coords().len() != uses.images.len() {
+            for hole_index in 0..polygon.holes.len() {
+                work.charge_into_error(1)?;
+                let hole = polygon
+                    .holes
+                    .get(hole_index)
+                    .expect("hole row count was checked");
+                let hole_uses = uses
+                    .holes
+                    .get(hole_index)
+                    .expect("hole-use row count was checked");
+                if hole.coords().len() != hole_uses.images.len() || hole_uses.axes != uses.axes {
                     return Err(GeometryErrorKind::Invalid(
                         "native hole literal-use rows do not match their coordinates".into(),
                     )
@@ -1418,7 +1485,7 @@ pub(super) fn materialize_native_parts(
     ordinates: &[NodeOrdinates],
     axes: CoordinateAxes,
     line_traces: &[TracedLine],
-    budget: &mut EvaluationBudget,
+    budget: &mut impl Work,
 ) -> Result<NativeMaterializedParts> {
     if line_traces.len() != plan.lines.len() {
         return Err(GeometryErrorKind::Invalid(
@@ -1429,7 +1496,11 @@ pub(super) fn materialize_native_parts(
     budget.charge_into_error(
         u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let line_traces = line_traces.to_vec();
+    let mut cloned_line_traces = Vec::with_capacity(line_traces.len());
+    for line in line_traces {
+        cloned_line_traces.push(line.try_clone_with_work(budget)?);
+    }
+    let line_traces = cloned_line_traces;
     budget.charge_into_error(
         u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -1460,7 +1531,7 @@ pub(super) fn materialize_native_parts(
         budget.charge_into_error(
             u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        lines.push(CoordSeq::try_from_points(&walk.points)?);
+        lines.push(CoordSeq::try_from_points_with_work(&walk.points, budget)?);
         line_uses.push(LiteralSequence {
             output: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
             axes,
@@ -1482,7 +1553,10 @@ pub(super) fn materialize_native_parts(
         budget.charge_into_error(
             u64::try_from(shell_walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell_walk.points)?)?;
+        let shell = Ring::try_from_closed(CoordSeq::try_from_points_with_work(
+            &shell_walk.points,
+            budget,
+        )?)?;
         budget.charge_into_error(
             u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -1496,8 +1570,9 @@ pub(super) fn materialize_native_parts(
             budget.charge_into_error(
                 u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
-            holes.push(Ring::try_from_closed(CoordSeq::try_from_points(
+            holes.push(Ring::try_from_closed(CoordSeq::try_from_points_with_work(
                 &walk.points,
+                budget,
             )?)?);
             hole_uses.push(LiteralSequence {
                 output,
@@ -1531,17 +1606,15 @@ pub(super) fn materialize_native_parts(
     })
 }
 
-pub(super) fn write_completed_native(
-    drawing: CompletedNativeDrawing,
-) -> Result<WrittenNativeDrawing> {
+pub(super) fn write_completed_native(drawing: CompletedNativeDrawing) -> WrittenNativeDrawing {
     let CompletedNativeDrawing {
         sealed,
         line_traces,
     } = drawing;
-    Ok(WrittenNativeDrawing {
+    WrittenNativeDrawing {
         shape: sealed.into_shape(),
         line_traces,
-    })
+    }
 }
 
 pub(super) struct WrittenNativeDrawing {
@@ -1569,6 +1642,9 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
             CoordinateAxes::XY,
         ));
     }
+    work.charge_into_error(
+        u64::try_from(plan.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut request_rows = Vec::with_capacity(plan.occurrences.len());
     for occurrence in &plan.occurrences {
         work.charge_into_error(1)?;
@@ -1583,6 +1659,9 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
     }
     let resolved_requests = resolve_request_rows(&request_rows, roots, metric_access, work)?;
 
+    work.charge_into_error(
+        u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut output = Vec::with_capacity(plan.ports.len());
     let mut has_z = declared_axes.has_z();
     let mut has_m = declared_axes.has_m();
@@ -1639,11 +1718,14 @@ fn source_requests_at_location(
     work: &mut impl Work,
 ) -> Result<Vec<RootRequest>> {
     match location {
-        TraceRequestLocation::Root { root, parameter } => Ok(vec![RootRequest::new_with_work(
-            *root,
-            parameter.try_clone_with_work(work)?,
-            work,
-        )?]),
+        TraceRequestLocation::Root { root, parameter } => {
+            work.charge_into_error(1)?;
+            Ok(vec![RootRequest::new_with_work(
+                *root,
+                parameter.try_clone_with_work(work)?,
+                work,
+            )?])
+        },
         TraceRequestLocation::Edge {
             recipe,
             edge,
@@ -1682,7 +1764,7 @@ fn native_chord_points(
     chords: &[EmissionChordId],
     axes: CoordinateAxes,
     closed: bool,
-    budget: &mut EvaluationBudget,
+    budget: &mut impl Work,
 ) -> Result<NativeChordPoints> {
     let Some(&first_id) = chords.first() else {
         return Err(GeometryErrorKind::Invalid("native emission walk is empty".into()).into());
@@ -1732,6 +1814,7 @@ fn native_chord_points(
             )
             .into());
         }
+        budget.charge_into_error(1)?;
         let first = *points.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("native polygon part has no first record".into())
         })?;
@@ -1756,24 +1839,27 @@ pub(super) fn native_port_point(
     let site = sites.get(port.node.0 as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("native drawing node has no assigned site".into())
     })?;
-    let (longitude, latitude) = if let Some(record) = port.source_record {
-        (record.x, record.y)
-    } else {
-        let spelling = match &port.position {
-            PortPosition::Source { spelling } | PortPosition::Projected { spelling } => spelling,
-        };
-        let longitude = match spelling {
-            PortSpelling::Interior { .. } => site.longitude.native().get(),
-            PortSpelling::Seam(ChartSide::East) => {
-                plan.topology.sources.frame.longitude().half_period()
-            },
-            PortSpelling::Seam(ChartSide::West) => {
-                -plan.topology.sources.frame.longitude().half_period()
-            },
-            PortSpelling::Pole { native_longitude } => *native_longitude,
-        };
-        (longitude, site.latitude)
-    };
+    let (longitude, latitude) = port.source_record.map_or_else(
+        || {
+            let spelling = match &port.position {
+                PortPosition::Source { spelling } | PortPosition::Projected { spelling } => {
+                    spelling
+                },
+            };
+            let longitude = match spelling {
+                PortSpelling::Interior { .. } => site.longitude.native().get(),
+                PortSpelling::Seam(ChartSide::East) => {
+                    plan.topology.sources.frame.longitude().half_period()
+                },
+                PortSpelling::Seam(ChartSide::West) => {
+                    -plan.topology.sources.frame.longitude().half_period()
+                },
+                PortSpelling::Pole { native_longitude } => *native_longitude,
+            };
+            (longitude, site.latitude)
+        },
+        |record| (record.x, record.y),
+    );
     let ordinates = ordinates.get(port_id.0 as usize).copied().ok_or_else(|| {
         GeometryErrorKind::Invalid("native drawing port has no resolved ordinates".into())
     })?;
@@ -2266,20 +2352,18 @@ impl FragmentRecipe {
                 ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole
             ) {
                 let longitude = topology.sources.frame.longitude();
-                let (record_longitude, _) =
-                    crate::geometry::exact_arith::split_rational_native_site_with_work(
-                        &record_point.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        work,
-                    )?;
-                let (port_longitude, _) =
-                    crate::geometry::exact_arith::split_rational_native_site_with_work(
-                        &port.point.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        work,
-                    )?;
+                let (record_longitude, _) = split_rational_native_site_with_work(
+                    &record_point.x,
+                    longitude.period(),
+                    longitude.half_period(),
+                    work,
+                )?;
+                let (port_longitude, _) = split_rational_native_site_with_work(
+                    &port.point.x,
+                    longitude.period(),
+                    longitude.half_period(),
+                    work,
+                )?;
                 if !record_longitude
                     .as_ref()
                     .try_cmp_with_work(port_longitude.as_ref(), work)?
@@ -2304,8 +2388,12 @@ impl SourceTrace {
         let input_vertex_count = edge_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
+        work.charge_into_error(
+            u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut new_samples_by_edge = vec![0_usize; edge_count];
         for sample in samples {
+            work.charge_into_error(1)?;
             let count = new_samples_by_edge
                 .get_mut(sample.edge_index)
                 .ok_or_else(|| {
@@ -2315,13 +2403,19 @@ impl SourceTrace {
                 })?;
             *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
+        work.charge_into_error(
+            u64::try_from(input_vertex_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut new_samples_before_vertex = vec![0_usize; input_vertex_count];
         for vertex in 1..input_vertex_count {
             work.charge_into_error(1)?;
-            let previous = *new_samples_before_vertex.get(vertex - 1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("publication sample prefix is incomplete".into())
-            })?;
-            let edge_samples = *new_samples_by_edge.get(vertex - 1).ok_or_else(|| {
+            let previous_vertex = vertex.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+            let previous = *new_samples_before_vertex
+                .get(previous_vertex)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("publication sample prefix is incomplete".into())
+                })?;
+            let edge_samples = *new_samples_by_edge.get(previous_vertex).ok_or_else(|| {
                 GeometryErrorKind::Invalid("publication sample edge count is incomplete".into())
             })?;
             *new_samples_before_vertex.get_mut(vertex).ok_or_else(|| {
@@ -2333,8 +2427,16 @@ impl SourceTrace {
         let output_vertex_count = input_vertex_count
             .checked_add(samples.len())
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut output_rows = TraceRowsBuilder::new();
-        let mut output_samples = Vec::with_capacity(samples.len());
+        let output_sample_count = self
+            .samples
+            .len()
+            .checked_add(samples.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut output_rows = TraceRowsBuilder::new(work)?;
+        work.charge_into_error(
+            u64::try_from(output_sample_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut output_samples = Vec::with_capacity(output_sample_count);
         let mut request_row_index = 0_usize;
         for sample in &self.samples {
             work.charge_into_error(1)?;
@@ -2376,7 +2478,7 @@ impl SourceTrace {
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
-            output_rows.push_sample_row(point_ranges)?;
+            output_rows.push_sample_row(point_ranges, work)?;
             output_samples.push(TracedSourceSample {
                 written_vertex,
                 edge: sample.edge,
@@ -2395,7 +2497,19 @@ impl SourceTrace {
         let mut previous_new_written_vertex = None;
         for edge_index in 0..edge_count {
             work.charge_into_error(1)?;
-            let mut boundaries = vec![zero.try_clone_with_work(work)?];
+            let boundary_capacity = new_samples_by_edge
+                .get(edge_index)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("publication sample edge count is incomplete".into())
+                })?
+                .checked_add(2)
+                .ok_or(ResourceError::SizeOverflow)?;
+            work.charge_into_error(
+                u64::try_from(boundary_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let mut boundaries = Vec::with_capacity(boundary_capacity);
+            boundaries.push(zero.try_clone_with_work(work)?);
             let mut previous_parameter = zero.try_clone_with_work(work)?;
             while let Some(sample) = samples.get(sample_index)
                 && sample.edge_index == edge_index
@@ -2437,7 +2551,7 @@ impl SourceTrace {
                         )
                     })
                     .collect::<Result<Vec<_>>>()?;
-                output_rows.push_sample_row(point_ranges)?;
+                output_rows.push_sample_row(point_ranges, work)?;
                 output_samples.push(TracedSourceSample {
                     written_vertex: sample.written_vertex,
                     edge: edge_index,
@@ -2545,10 +2659,30 @@ pub(super) fn next_recipe_walk<'walk>(
     Ok(walk)
 }
 
-#[derive(Clone)]
 pub(in crate::geometry) struct SourceTrace {
     pub(super) rows: TraceRows,
     pub(super) samples: Vec<TracedSourceSample>,
+}
+
+impl SourceTrace {
+    pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        work.charge_into_error(
+            u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let rows = self.rows.try_clone_with_work(work)?;
+        let mut samples = Vec::with_capacity(self.samples.len());
+        for sample in &self.samples {
+            samples.push(TracedSourceSample {
+                written_vertex: sample.written_vertex,
+                edge: sample.edge,
+                parameter: sample.parameter.try_clone_with_work(work)?,
+                request_row: sample.request_row,
+                has_source: sample.has_source,
+                endpoint_only: sample.endpoint_only,
+            });
+        }
+        Ok(Self { rows, samples })
+    }
 }
 
 struct SourceTraceSample {
@@ -2557,10 +2691,18 @@ struct SourceTraceSample {
     written_vertex: usize,
 }
 
-#[derive(Clone)]
 pub(in crate::geometry) struct TracedLine {
     pub(in crate::geometry) member: usize,
     pub(in crate::geometry) trace: SourceTrace,
+}
+
+impl TracedLine {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            member: self.member,
+            trace: self.trace.try_clone_with_work(work)?,
+        })
+    }
 }
 
 pub(in crate::geometry) struct PreparedNativeSource {
@@ -2575,10 +2717,10 @@ impl SourceTrace {
         edge_rows: impl IntoIterator<Item = Vec<RootRange>>,
         work: &mut impl Work,
     ) -> Result<Self> {
-        let mut rows = TraceRowsBuilder::new();
+        let mut rows = TraceRowsBuilder::new(work)?;
         for row in edge_rows {
             work.charge_into_error(1)?;
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(Self {
             rows: rows.finish(work)?,
@@ -2632,26 +2774,40 @@ impl SourceTrace {
 
         let zero = ExactRational::zero();
         let one = ExactRational::one();
-        let mut rows = TraceRowsBuilder::new();
-        for &(edge, ref start, ref end) in slices {
+        let mut rows = TraceRowsBuilder::new(work)?;
+        for (edge, start, end) in slices {
             work.charge_into_error(1)?;
-            if edge >= edge_count {
+            if *edge >= edge_count {
                 return Err(GeometryErrorKind::Invalid(
                     "source trace slice references an unknown edge".into(),
                 )
                 .into());
             }
-            let mut row = Vec::new();
-            for parent in self.rows.row(edge)? {
+            let parents = self.rows.row(*edge)?;
+            let start_requests = requests_by_vertex.get(*edge).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source trace start vertex is unknown".into())
+            })?;
+            let end_vertex = (*edge).checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            let end_requests = requests_by_vertex.get(end_vertex).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source trace end vertex is unknown".into())
+            })?;
+            let row_capacity = parents
+                .len()
+                .checked_add(start_requests.len())
+                .and_then(|capacity| capacity.checked_add(end_requests.len()))
+                .ok_or(ResourceError::SizeOverflow)?;
+            work.charge_into_error(
+                u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let mut row = Vec::with_capacity(row_capacity);
+            for parent in parents {
                 work.charge_into_error(1)?;
                 if let Some(child) = parent.compose_with_work(start, end, work)? {
                     row.push(child);
                 }
             }
             if start.try_cmp_with_work(&zero, work)?.is_eq() {
-                for request in requests_by_vertex.get(edge).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source trace start vertex is unknown".into())
-                })? {
+                for request in start_requests {
                     work.charge_into_error(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
@@ -2662,10 +2818,7 @@ impl SourceTrace {
                 }
             }
             if end.try_cmp_with_work(&one, work)?.is_eq() {
-                let vertex = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                for request in requests_by_vertex.get(vertex).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source trace end vertex is unknown".into())
-                })? {
+                for request in end_requests {
                     work.charge_into_error(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
@@ -2675,7 +2828,7 @@ impl SourceTrace {
                     )?);
                 }
             }
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(Self {
             rows: rows.finish(work)?,
@@ -2684,7 +2837,7 @@ impl SourceTrace {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) enum TraceRequestLocation {
     Edge {
         recipe: FragmentRecipeId,
@@ -2701,6 +2854,30 @@ pub(super) enum TraceRequestLocation {
     },
 }
 
+impl TraceRequestLocation {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(match self {
+            Self::Edge {
+                recipe,
+                edge,
+                parameter,
+            } => Self::Edge {
+                recipe: *recipe,
+                edge: *edge,
+                parameter: parameter.try_clone_with_work(work)?,
+            },
+            Self::Sample { recipe, row } => Self::Sample {
+                recipe: *recipe,
+                row: *row,
+            },
+            Self::Root { root, parameter } => Self::Root {
+                root: *root,
+                parameter: parameter.try_clone_with_work(work)?,
+            },
+        })
+    }
+}
+
 pub(super) fn native_source_sample_occurrences(
     source_trace: Option<TraceRequestLocation>,
     source_requests: &[RootRequest],
@@ -2710,6 +2887,7 @@ pub(super) fn native_source_sample_occurrences(
         .len()
         .checked_add(usize::from(source_trace.is_some()))
         .ok_or(ResourceError::SizeOverflow)?;
+    work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut occurrences = Vec::with_capacity(capacity);
     if let Some(source_trace) = source_trace {
         work.charge_into_error(1)?;
@@ -2738,14 +2916,28 @@ pub(super) fn native_source_sample_occurrences(
     Ok(occurrences)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct SourceSampleOccurrence {
     pub(super) trace: Option<TraceRequestLocation>,
     pub(super) endpoint_only: bool,
     pub(super) publication_sample: Option<usize>,
 }
 
-#[derive(Clone, Debug)]
+impl SourceSampleOccurrence {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            trace: self
+                .trace
+                .as_ref()
+                .map(|location| location.try_clone_with_work(work))
+                .transpose()?,
+            endpoint_only: self.endpoint_only,
+            publication_sample: self.publication_sample,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct TracedSourceSample {
     pub(super) written_vertex: usize,
     pub(super) edge: usize,
@@ -2778,6 +2970,9 @@ pub(super) fn resolve_publication_ordinates<M: ChartMetric>(
         )?;
         return Ok(vec![NodeOrdinates::default(); publication.samples.len()]);
     }
+    work.charge_into_error(
+        u64::try_from(publication.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut request_rows = Vec::with_capacity(publication.samples.len());
     for fragment in &publication.fragments {
         if fragment.trace.samples.len() != fragment.sample_range.len() {
@@ -2897,7 +3092,7 @@ pub(super) enum ChartSide {
     West,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct NativeCutFeature {
     pub(super) family: FeatureFamily,
     pub(super) seam_period_index: i64,
@@ -2918,14 +3113,9 @@ pub(super) fn native_cut_features(
     work: &mut impl Work,
 ) -> Result<Vec<NativeCutFeature>> {
     let axis = topology.sources.frame.longitude();
-    let start_site =
-        crate::geometry::exact_arith::retained_exact_native_site_with_work(axis, &start.x, work)?;
+    let start_site = retained_exact_native_site_with_work(axis, &start.x, work)?;
     let producer_end_x = start.x.try_add_with_work(assigned_displacement, work)?;
-    let end_site = crate::geometry::exact_arith::retained_exact_native_site_with_work(
-        axis,
-        &producer_end_x,
-        work,
-    )?;
+    let end_site = retained_exact_native_site_with_work(axis, &producer_end_x, work)?;
     let mut features = Vec::new();
     if start_site.periods() < end_site.periods() {
         let mut period_index = start_site.periods();
@@ -2989,9 +3179,7 @@ fn append_native_cut_feature(
     let half = ExactRational::from_f64(axis.half_period());
     let seam = half.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(period_index),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(period_index)),
             work,
         )?,
         work,
@@ -3254,7 +3442,7 @@ impl FeatureFamilyRegistry {
         interval
             .family_base
             .checked_add(within)
-            .ok_or(ResourceError::SizeOverflow.into())
+            .ok_or_else(|| ResourceError::SizeOverflow.into())
     }
 
     pub(super) fn register(&mut self, family: FeatureFamily, work: &mut impl Work) -> Result<bool> {
@@ -3388,13 +3576,29 @@ impl FragmentRecipes {
         fragments: &[FragmentRecipeId],
         work: &mut impl Work,
     ) -> Result<SourceTrace> {
-        let mut rows = TraceRowsBuilder::new();
+        let mut rows = TraceRowsBuilder::new(work)?;
         for &fragment_id in fragments {
             work.charge_into_error(1)?;
             let fragment = self.values.get(fragment_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source trace fragment is unknown".into())
             })?;
-            let mut row = Vec::new();
+            let row_capacity =
+                fragment
+                    .ranges
+                    .iter()
+                    .try_fold(0_usize, |count, range| -> Result<usize> {
+                        work.charge_into_error(1)?;
+                        let range_slots = 1_usize
+                            .checked_add(usize::from(range.endpoint_only))
+                            .ok_or(ResourceError::SizeOverflow)?;
+                        count
+                            .checked_add(range_slots)
+                            .ok_or_else(|| ResourceError::SizeOverflow.into())
+                    })?;
+            work.charge_into_error(
+                u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let mut row = Vec::with_capacity(row_capacity);
             for range in &fragment.ranges {
                 work.charge_into_error(1)?;
                 let root = RootId::from_index(range.source_edge.0);
@@ -3422,7 +3626,7 @@ impl FragmentRecipes {
                     )?);
                 }
             }
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(SourceTrace {
             rows: rows.finish(work)?,
@@ -3576,17 +3780,13 @@ impl FragmentRecipes {
                 let parameter = ExactRational::from_f64(parameter);
                 let exact_point =
                     interpolate_exact_reference_point(&exact_endpoints, &parameter, work)?;
-                let retained_site =
-                    crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                        topology.sources.frame.longitude(),
-                        &exact_point.x,
-                        work,
-                    )?;
-                let period_offset = ExactRational::from_dyadic(
-                    crate::geometry::tessellation::exact::ExactDyadic::from_i64(
-                        retained_site.periods(),
-                    ),
-                );
+                let retained_site = retained_exact_native_site_with_work(
+                    topology.sources.frame.longitude(),
+                    &exact_point.x,
+                    work,
+                )?;
+                let period_offset =
+                    ExactRational::from_dyadic(ExactDyadic::from_i64(retained_site.periods()));
                 let published_x = ExactRational::from_f64(point.x).try_add_with_work(
                     &ExactRational::from_f64(topology.sources.frame.longitude().period())
                         .try_product_with_work(&period_offset, work)?,
@@ -3641,11 +3841,12 @@ impl FragmentRecipes {
                 exact_endpoints,
             });
         }
+        let ordinates = vec![NodeOrdinates::default(); samples.len()];
         Ok(PublicationInventory {
             fragments,
-            ordinates: vec![NodeOrdinates::default(); samples.len()],
             samples,
             counts,
+            ordinates,
         })
     }
 
@@ -3667,10 +3868,10 @@ impl FragmentRecipes {
             endpoints,
             ranges: vec![DirectedSourceRange {
                 source_edge,
-                producer_start: ExactRational::zero(),
-                producer_end: ExactRational::one(),
                 range,
                 emitted: true,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
                 endpoint_only: false,
             }],
             exact_displacement,
@@ -3934,7 +4135,7 @@ impl FragmentRecipes {
                 first,
                 Vec::new(),
                 ExactRational::zero(),
-                ExactRational::zero(),
+                &ExactRational::zero(),
                 true,
                 use_kind,
                 &mut emitted,
@@ -3959,12 +4160,15 @@ impl FragmentRecipes {
         if ranges.is_empty() {
             return Ok(());
         }
+        let longitude_displacement =
+            std::mem::replace(longitude_displacement, ExactRational::zero());
+        let latitude_displacement = std::mem::replace(latitude_displacement, ExactRational::zero());
         self.push_fragment(
             from,
             to,
             std::mem::take(ranges),
-            std::mem::replace(longitude_displacement, ExactRational::zero()),
-            std::mem::replace(latitude_displacement, ExactRational::zero()),
+            longitude_displacement,
+            &latitude_displacement,
             support_allowed,
             use_kind,
             emitted,
@@ -3978,7 +4182,7 @@ impl FragmentRecipes {
         to: QPortId,
         ranges: Vec<PendingSourceRange>,
         longitude_displacement: ExactRational,
-        latitude_displacement: ExactRational,
+        latitude_displacement: &ExactRational,
         support_allowed: bool,
         use_kind: SelectedUse,
         emitted: &mut Vec<FragmentRecipeId>,
@@ -3988,7 +4192,7 @@ impl FragmentRecipes {
         let ranges = producer_ranges(
             ranges,
             &longitude_displacement,
-            &latitude_displacement,
+            latitude_displacement,
             support_allowed,
             work,
         )?;
@@ -4009,12 +4213,174 @@ impl FragmentRecipes {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
     use crate::geometry::Unmetered;
     use crate::geometry::embedding_completion::{
         ExactPoints, admit_known_graph, visit_shape_literals,
     };
-    use crate::geometry::ordinates::source_ordinate_values_at_fraction;
+    use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
+
+    const EMISSION_STORAGE_OPERATION: &str = "emission_storage_test";
+
+    #[derive(Clone, Copy)]
+    struct RecordedWorkCharge {
+        spent_before: u128,
+        ticks: u128,
+        progress: usize,
+        accepted: bool,
+    }
+
+    struct RecordedWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        progress: Rc<Cell<usize>>,
+        spent: u128,
+        charges: Vec<RecordedWorkCharge>,
+    }
+
+    impl Work for RecordedWork<'_> {
+        type Error = crate::error::Error;
+
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let spent_before = self.spent;
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.charges.push(RecordedWorkCharge {
+                spent_before,
+                ticks: u128::from(ticks),
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent = self
+                    .spent
+                    .checked_add(u128::from(ticks))
+                    .expect("recorded work total fits u128");
+            }
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = u128::try_from(count)
+                .expect("usize fits u128")
+                .checked_mul(u128::try_from(ticks_per_item).expect("usize fits u128"))
+                .expect("recorded work product fits u128");
+            let spent_before = self.spent;
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.charges.push(RecordedWorkCharge {
+                spent_before,
+                ticks,
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent = self
+                    .spent
+                    .checked_add(ticks)
+                    .expect("recorded work total fits u128");
+            }
+            result
+        }
+    }
+
+    fn emission_budget_refusing_before(charge: RecordedWorkCharge) -> EvaluationBudget {
+        assert!(charge.ticks > 0);
+        EvaluationBudget::with_remaining_ticks_for_test(
+            EMISSION_STORAGE_OPERATION,
+            0,
+            charge
+                .spent_before
+                .checked_add(
+                    charge
+                        .ticks
+                        .checked_sub(1)
+                        .expect("recorded work refusal has positive cost"),
+                )
+                .expect("the calibrated allowance is representable"),
+        )
+        .expect("the calibrated allowance fits the actual EvaluationBudget")
+    }
+
+    fn assert_emission_work_limit(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: EMISSION_STORAGE_OPERATION,
+                ..
+            })
+        ));
+    }
+
+    struct ProgressRootCatalog(Rc<Cell<usize>>);
+
+    impl RootCatalog for ProgressRootCatalog {
+        fn resolve<M: ChartMetric, W: Work>(
+            &self,
+            _root: RootId,
+            _parameter: &ExactRational,
+            axes: CoordinateAxes,
+            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+            _state: &mut RootMetricState,
+            _fraction: &mut Option<f64>,
+            _work: &mut W,
+        ) -> Result<NodeOrdinates> {
+            self.0.set(
+                self.0
+                    .get()
+                    .checked_add(1)
+                    .expect("test resolution count fits usize"),
+            );
+            let mut ordinates = NodeOrdinates::default();
+            if axes.has_z() {
+                ordinates.z.observe(Some(10.0));
+            }
+            if axes.has_m() {
+                ordinates.m.observe(Some(20.0));
+            }
+            Ok(ordinates)
+        }
+    }
+
+    struct RecordingWork {
+        budget: EvaluationBudget,
+        attempted: Vec<u64>,
+        accepted: Vec<u64>,
+    }
+
+    impl RecordingWork {
+        fn with_remaining(operation: &'static str, remaining_ticks: u128) -> Result<Self> {
+            Ok(Self {
+                budget: EvaluationBudget::with_remaining_ticks_for_test(
+                    operation,
+                    1,
+                    remaining_ticks,
+                )?,
+                attempted: Vec::new(),
+                accepted: Vec::new(),
+            })
+        }
+
+        fn accepted_ticks(&self) -> u128 {
+            self.accepted.iter().map(|&ticks| u128::from(ticks)).sum()
+        }
+    }
+
+    impl Work for RecordingWork {
+        type Error = crate::error::Error;
+
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            self.attempted.push(ticks);
+            self.budget.charge(ticks)?;
+            self.accepted.push(ticks);
+            Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+        }
+    }
 
     fn pending_source_range(
         source_edge: u32,
@@ -4048,6 +4414,579 @@ mod tests {
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    #[test]
+    fn emission_ordinate_rows_and_ports_are_reserved_before_progress() {
+        let empty = crate::io::parse_wkt("POINT EMPTY").unwrap();
+        let topology = endpoint_test_topology(std::slice::from_ref(&empty)).unwrap();
+        let mut setup = Unmetered;
+        let node_registry = EmissionNodeRegistry::with_sources(&topology, &[], &mut setup).unwrap();
+        let roots = [
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.25),
+                &mut setup,
+            )
+            .unwrap(),
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.5),
+                &mut setup,
+            )
+            .unwrap(),
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.75),
+                &mut setup,
+            )
+            .unwrap(),
+        ];
+        let occurrences = roots
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                Ok(WrittenOccurrence {
+                    origin: VertexOrigin::SourceSample,
+                    source_trace: Some(TraceRequestLocation::Root {
+                        root: request.root(),
+                        parameter: request.parameter().try_clone_with_work(&mut setup).unwrap(),
+                    }),
+                    request_row: RequestRowId::from_index(index).unwrap(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let plan = ExpandedEmissionPlan {
+            topology: &topology,
+            selected_face_roots: Vec::new(),
+            node_registry,
+            ports: vec![
+                EmissionPort {
+                    node: EmissionNodeId(0),
+                    position: PortPosition::Projected {
+                        spelling: PortSpelling::Interior { periods: 0 },
+                    },
+                    source_record: None,
+                    occurrence_range: 0..2,
+                },
+                EmissionPort {
+                    node: EmissionNodeId(1),
+                    position: PortPosition::Projected {
+                        spelling: PortSpelling::Interior { periods: 0 },
+                    },
+                    source_record: None,
+                    occurrence_range: 2..3,
+                },
+            ],
+            occurrences,
+            chords: Vec::new(),
+            parts: Vec::new(),
+            lines: Vec::new(),
+            points: Vec::new(),
+            whole_sphere: false,
+        };
+        let publication = PublicationInventory {
+            fragments: Vec::new(),
+            samples: Vec::new(),
+            counts: Vec::new(),
+            ordinates: Vec::new(),
+        };
+
+        let targets = {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRootCatalog(Rc::clone(&progress));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let (ordinates, axes) = resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
+                &plan,
+                &publication,
+                &[],
+                &roots,
+                CoordinateAxes::XYZM,
+                false,
+                EMISSION_STORAGE_OPERATION,
+                None,
+                &mut work,
+            )
+            .unwrap();
+            assert_eq!(ordinates.len(), 2);
+            assert_eq!(axes, CoordinateAxes::XYZM);
+            assert_eq!(progress.get(), 3);
+            let request_rows = *work
+                .charges
+                .first()
+                .expect("source occurrence rows reserve their slots first");
+            assert_eq!(request_rows.ticks, 3);
+            assert_eq!(request_rows.progress, 0);
+            let output_ports = *work
+                .charges
+                .iter()
+                .find(|charge| charge.ticks == 2 && charge.progress == 3)
+                .expect("output port rows reserve their slots after request resolution");
+            [request_rows, output_ports]
+        };
+
+        for target in targets {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRootCatalog(Rc::clone(&progress));
+            let mut budget = emission_budget_refusing_before(target);
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let Err(error) = resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
+                &plan,
+                &publication,
+                &[],
+                &roots,
+                CoordinateAxes::XYZM,
+                false,
+                EMISSION_STORAGE_OPERATION,
+                None,
+                &mut work,
+            ) else {
+                panic!("Native ordinate row and port storage must be paid before progress");
+            };
+            assert_emission_work_limit(&error);
+            assert_eq!(progress.get(), target.progress);
+            let refusal = work
+                .charges
+                .last()
+                .expect("the recorder observes the refused emission storage phase");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, target.progress);
+        }
+    }
+
+    #[test]
+    fn source_sample_occurrences_reserve_before_copying_requests() {
+        let mut setup = Unmetered;
+        let requests = [
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.25),
+                &mut setup,
+            )
+            .unwrap(),
+            RootRequest::new_with_work(
+                RootId::from_index(5),
+                ExactRational::from_f64(0.75),
+                &mut setup,
+            )
+            .unwrap(),
+        ];
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let occurrences = native_source_sample_occurrences(None, &requests, &mut work).unwrap();
+            progress.set(1);
+            assert_eq!(occurrences.len(), 2);
+            assert_eq!(progress.get(), 1);
+            let target = *work
+                .charges
+                .first()
+                .expect("source request capacity is paid before occurrence writes");
+            assert_eq!(target.ticks, 2);
+            assert_eq!(target.progress, 0);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = emission_budget_refusing_before(target);
+        let mut work = RecordedWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            charges: Vec::new(),
+        };
+        let Err(error) = native_source_sample_occurrences(None, &requests, &mut work) else {
+            panic!("source occurrence storage must be paid before copying requests");
+        };
+        assert_emission_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .charges
+            .last()
+            .expect("the recorder observes the refused occurrence reservation");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+    }
+
+    #[test]
+    fn native_port_clone_prepays_occurrences_and_root_parameter_limbs() {
+        let mut setup = Unmetered;
+        let quarter_turn = ExactRational::from_f64(0.75);
+        let mut parameter = ExactRational::one();
+        for _ in 0..100 {
+            parameter = parameter
+                .try_product_with_work(&quarter_turn, &mut setup)
+                .unwrap();
+        }
+        let port = NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(0.25),
+                ExactRational::from_f64(0.5),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::SourceSample,
+                source_trace: Some(TraceRequestLocation::Root {
+                    root: RootId::from_index(3),
+                    parameter,
+                }),
+            }],
+        };
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let cloned = port.try_clone_with_work(&mut work).unwrap();
+            progress.set(1);
+            assert_eq!(cloned.node, port.node);
+            assert_eq!(cloned.point, port.point);
+            let Some(TraceRequestLocation::Root {
+                root,
+                parameter: cloned_parameter,
+            }) = cloned
+                .occurrences
+                .first()
+                .and_then(|occurrence| occurrence.source_trace.as_ref())
+            else {
+                panic!("the cloned Native occurrence retains its direct source root");
+            };
+            assert_eq!(*root, RootId::from_index(3));
+            let Some(TraceRequestLocation::Root {
+                parameter: source_parameter,
+                ..
+            }) = port
+                .occurrences
+                .first()
+                .and_then(|occurrence| occurrence.source_trace.as_ref())
+            else {
+                panic!("the source Native occurrence retains its direct source root");
+            };
+            assert_eq!(cloned_parameter, source_parameter);
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.charges
+                    .iter()
+                    .take(5)
+                    .map(|charge| charge.ticks)
+                    .collect::<Vec<_>>(),
+                [1, 1, 1, 1, 1]
+            );
+            let target = *work
+                .charges
+                .iter()
+                .find(|charge| charge.ticks > 1)
+                .expect("the wide root parameter copy has a multi-limb Work charge");
+            assert!(target.accepted);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = emission_budget_refusing_before(target);
+        let mut work = RecordedWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            charges: Vec::new(),
+        };
+        let Err(error) = port.try_clone_with_work(&mut work) else {
+            panic!("Native source-root parameter limbs must be paid before clone completion");
+        };
+        assert_emission_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .charges
+            .last()
+            .expect("the recorder observes refusal during the root-parameter copy");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+    }
+
+    fn materialize_test_line(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, false, false, work)
+    }
+
+    fn materialize_test_ring(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, true, false, work)
+    }
+
+    fn materialize_test_ring_with_hole(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, true, true, work)
+    }
+
+    fn materialize_test_drawing(
+        axes: CoordinateAxes,
+        closed: bool,
+        with_hole: bool,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        let source = crate::io::parse_wkt("LINESTRING (0 0, 1 0)")?;
+        let topology = endpoint_test_topology(std::slice::from_ref(&source))?;
+        let [start_port, end_port] = topology
+            .q
+            .source_edge_ports
+            .first()
+            .copied()
+            .ok_or_else(|| GeometryErrorKind::Invalid("test source edge is missing".into()))?;
+        let start_node = topology
+            .q
+            .ports
+            .get(start_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test start port is missing".into()))?
+            .node;
+        let end_node = topology
+            .q
+            .ports
+            .get(end_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test end port is missing".into()))?
+            .node;
+        let mut setup_work = Unmetered;
+        let node_registry = EmissionNodeRegistry::with_sources(
+            &topology,
+            &[start_node, end_node],
+            &mut setup_work,
+        )?;
+        let start_emission_node = node_registry.source_node(start_node)?;
+        let end_emission_node = node_registry.source_node(end_node)?;
+        let frame = topology.sources.frame;
+        let make_site = |longitude: f64, latitude: f64| -> Result<AssignedSite> {
+            let longitude = frame
+                .longitude()
+                .canonicalize(longitude)
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            Ok(AssignedSite {
+                longitude: crate::geographic::RetainedLongitudeSite::new(longitude, 0),
+                latitude,
+            })
+        };
+        let mut sites = vec![None; node_registry.nodes().len()];
+        *sites
+            .get_mut(start_emission_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test start site is missing".into()))? =
+            Some(make_site(0.0, 0.0)?);
+        *sites
+            .get_mut(end_emission_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test end site is missing".into()))? =
+            Some(make_site(1.0, 0.0)?);
+        let sites = sites
+            .into_iter()
+            .map(|site| {
+                site.ok_or_else(|| GeometryErrorKind::Invalid("test site is missing".into()).into())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let ports = vec![
+            EmissionPort {
+                node: start_emission_node,
+                position: PortPosition::Source {
+                    spelling: PortSpelling::Interior { periods: 0 },
+                },
+                source_record: Some(Point::new_raw_xy(0.0, 0.0)),
+                occurrence_range: 0..0,
+            },
+            EmissionPort {
+                node: end_emission_node,
+                position: PortPosition::Source {
+                    spelling: PortSpelling::Interior { periods: 0 },
+                },
+                source_record: Some(Point::new_raw_xy(1.0, 0.0)),
+                occurrence_range: 0..0,
+            },
+        ];
+        let mut ordinates = vec![NodeOrdinates::default(); ports.len()];
+        for (index, (z, m)) in [(1.25, 2.5), (3.75, 4.5)].into_iter().enumerate() {
+            let row = ordinates
+                .get_mut(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("test ordinate row is missing".into()))?;
+            row.z.observe(Some(z));
+            row.m.observe(Some(m));
+        }
+        let chords = if closed {
+            vec![
+                EmissionChord {
+                    ports: [EmissionPortId(0), EmissionPortId(1)],
+                    recipe: None,
+                },
+                EmissionChord {
+                    ports: [EmissionPortId(1), EmissionPortId(0)],
+                    recipe: None,
+                },
+            ]
+        } else {
+            vec![EmissionChord {
+                ports: [EmissionPortId(0), EmissionPortId(1)],
+                recipe: None,
+            }]
+        };
+        let parts = if closed {
+            vec![EmissionPart {
+                region: 0,
+                face: NativeFaceId(0),
+                shell: vec![
+                    EmissionChordId(0),
+                    EmissionChordId(1),
+                    EmissionChordId(0),
+                    EmissionChordId(1),
+                ],
+                holes: if with_hole {
+                    vec![vec![
+                        EmissionChordId(0),
+                        EmissionChordId(1),
+                        EmissionChordId(0),
+                        EmissionChordId(1),
+                    ]]
+                } else {
+                    Vec::new()
+                },
+            }]
+        } else {
+            Vec::new()
+        };
+        let plan = ExpandedEmissionPlan {
+            topology: &topology,
+            selected_face_roots: Vec::new(),
+            node_registry,
+            ports,
+            occurrences: Vec::new(),
+            chords,
+            parts,
+            lines: if closed {
+                Vec::new()
+            } else {
+                vec![vec![EmissionChordId(0)]]
+            },
+            points: Vec::new(),
+            whole_sphere: false,
+        };
+        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut setup_work)?;
+        let line_traces = if closed {
+            Vec::new()
+        } else {
+            vec![TracedLine { member: 0, trace }]
+        };
+        materialize_native_parts(&plan, &sites, &ordinates, axes, &line_traces, work)
+    }
+
+    fn literal_test_sequence(count: usize) -> LiteralSequence<EmissionPortId> {
+        LiteralSequence {
+            output: 0,
+            axes: CoordinateAxes::XY,
+            images: (0..count)
+                .map(|index| EmissionPortId(u32::try_from(index).expect("test image fits u32")))
+                .collect(),
+        }
+    }
+
+    fn empty_literal_test_parts() -> NativeMaterializedParts {
+        NativeMaterializedParts {
+            axes: CoordinateAxes::XY,
+            points: Vec::new(),
+            lines: Vec::new(),
+            polygons: Vec::new(),
+            line_traces: Vec::new(),
+            literal_uses: NativeLiteralUses {
+                points: Vec::new(),
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        }
+    }
+
+    fn point_literal_test_parts() -> NativeMaterializedParts {
+        let point = Point::new_raw_xy(3.0, 4.0);
+        NativeMaterializedParts {
+            axes: CoordinateAxes::XY,
+            points: vec![point],
+            literal_uses: NativeLiteralUses {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: CoordinateAxes::XY,
+                    image: EmissionPortId(0),
+                }],
+                ..empty_literal_test_parts().literal_uses
+            },
+            ..empty_literal_test_parts()
+        }
+    }
+
+    fn line_literal_test_parts() -> Result<NativeMaterializedParts> {
+        let mut parts = empty_literal_test_parts();
+        parts.lines.push(CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+        ])?);
+        parts.literal_uses.lines.push(literal_test_sequence(2));
+        Ok(parts)
+    }
+
+    fn polygon_literal_test_parts(with_hole: bool) -> Result<NativeMaterializedParts> {
+        let shell = Ring::try_from_closed(CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])?)?;
+        let holes = if with_hole {
+            vec![Ring::try_from_closed(CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.25, 0.25),
+                Point::new_raw_xy(0.5, 0.25),
+                Point::new_raw_xy(0.25, 0.5),
+                Point::new_raw_xy(0.25, 0.25),
+            ])?)?]
+        } else {
+            Vec::new()
+        };
+        let uses = LiteralPolygon {
+            output: 0,
+            axes: CoordinateAxes::XY,
+            shell: literal_test_sequence(4),
+            holes: with_hole
+                .then(|| literal_test_sequence(4))
+                .into_iter()
+                .collect(),
+        };
+        let mut parts = empty_literal_test_parts();
+        parts.polygons.push(Polygon::new(shell, holes));
+        parts.literal_uses.polygons.push(uses);
+        Ok(parts)
     }
 
     fn resolve_native_root_occurrences<M: ChartMetric>(
@@ -4262,20 +5201,25 @@ mod tests {
     }
 
     #[test]
-    fn partial_root_endpoint_does_not_claim_an_authentic_source_record() -> Result<()> {
+    fn partial_root_endpoint_does_not_claim_an_authentic_source_record() {
         let topology = endpoint_test_topology(&[endpoint_test_line(
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(10.0, 0.0),
-        )?])?;
-        let edge =
-            topology.sources.edges.first().ok_or_else(|| {
-                GeometryErrorKind::Invalid("endpoint test edge is missing".into())
-            })?;
+        )
+        .unwrap()])
+        .unwrap();
+        let edge = topology
+            .sources
+            .edges
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint test edge is missing".into()))
+            .unwrap();
         let ports = *topology
             .q
             .source_edge_ports
             .get(edge.id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint test ports are missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint test ports are missing".into()))
+            .unwrap();
         let recipe = endpoint_test_recipe(
             ports,
             edge.id,
@@ -4286,27 +5230,36 @@ mod tests {
 
         assert!(
             recipe
-                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)?
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)
+                .unwrap()
                 .is_none()
         );
         assert!(
             recipe
-                .source_endpoint_record(&topology, EndpointSide::End, &mut work)?
+                .source_endpoint_record(&topology, EndpointSide::End, &mut work)
+                .unwrap()
                 .is_none()
         );
-        Ok(())
     }
 
     #[test]
-    fn source_endpoint_record_accepts_each_matching_owner_orientation() -> Result<()> {
-        let first = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
-            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(Some(101.0))),
-            Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(12.0)), MOrdinate(Some(102.0))),
-        ])?)?;
-        let second = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
-            Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(21.0)), MOrdinate(Some(201.0))),
-            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(22.0)), MOrdinate(Some(202.0))),
-        ])?)?;
+    fn source_endpoint_record_accepts_each_matching_owner_orientation() {
+        let first = crate::geometry::LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(Some(101.0))),
+                Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(12.0)), MOrdinate(Some(102.0))),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let second = crate::geometry::LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(21.0)), MOrdinate(Some(201.0))),
+                Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(22.0)), MOrdinate(Some(202.0))),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
         let shape = Shape::multi_line_string(
             crate::geometry::CoordinateAxes::new(
                 crate::geometry::HasZ(true),
@@ -4314,30 +5267,36 @@ mod tests {
             ),
             vec![first, second],
         );
-        let topology = endpoint_test_topology(&[shape])?;
+        let topology = endpoint_test_topology(&[shape]).unwrap();
         assert_eq!(topology.sources.edges.len(), 2);
-        let first_edge =
-            topology.sources.edges.first().ok_or_else(|| {
-                GeometryErrorKind::Invalid("first endpoint owner is missing".into())
-            })?;
-        let second_edge =
-            topology.sources.edges.get(1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("second endpoint owner is missing".into())
-            })?;
+        let first_edge = topology
+            .sources
+            .edges
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("first endpoint owner is missing".into()))
+            .unwrap();
+        let second_edge = topology
+            .sources
+            .edges
+            .get(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("second endpoint owner is missing".into()))
+            .unwrap();
         let endpoints = *topology
             .q
             .source_edge_ports
             .get(first_edge.id.0 as usize)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("first endpoint owner ports are missing".into())
-            })?;
+            })
+            .unwrap();
         let second_endpoints = *topology
             .q
             .source_edge_ports
             .get(second_edge.id.0 as usize)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("second endpoint owner ports are missing".into())
-            })?;
+            })
+            .unwrap();
         assert_eq!(endpoints, [second_endpoints[1], second_endpoints[0]]);
         let zero = ExactRational::zero();
         let one = ExactRational::one();
@@ -4356,36 +5315,44 @@ mod tests {
         let mut work = Unmetered;
 
         assert_source_record_bits(
-            recipe.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)
+                .unwrap(),
             first_edge.source[0],
         );
         assert_source_record_bits(
-            recipe.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::End, &mut work)
+                .unwrap(),
             first_edge.source[1],
         );
 
         recipe.ranges.swap(0, 1);
         assert_source_record_bits(
-            recipe.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)
+                .unwrap(),
             second_edge.source[1],
         );
         assert_source_record_bits(
-            recipe.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::End, &mut work)
+                .unwrap(),
             second_edge.source[0],
         );
-        Ok(())
     }
 
     #[test]
-    fn publication_preserves_authentic_start_and_samples_constructed_end() -> Result<()> {
+    fn publication_preserves_authentic_start_and_samples_constructed_end() {
         let horizontal = endpoint_test_line(
             Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(11.0))),
             Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(17.0))),
-        )?;
+        )
+        .unwrap();
         let vertical =
-            endpoint_test_line(Point::new_raw_xy(5.0, -1.0), Point::new_raw_xy(5.0, 1.0))?;
-        let source = Shape::geometry_collection(vec![horizontal, vertical])?;
-        let topology = endpoint_test_topology(&[source])?;
+            endpoint_test_line(Point::new_raw_xy(5.0, -1.0), Point::new_raw_xy(5.0, 1.0)).unwrap();
+        let source = Shape::geometry_collection(vec![horizontal, vertical]).unwrap();
+        let topology = endpoint_test_topology(&[source]).unwrap();
         let edge = topology
             .sources
             .edges
@@ -4393,19 +5360,17 @@ mod tests {
             .find(|edge| {
                 edge.source[0].x == 0.0
                     && edge.source[0].y == 0.0
-                    && edge.source[1].x == 10.0
+                    && edge.source[1].x.to_bits() == 10.0_f64.to_bits()
                     && edge.source[1].y == 0.0
             })
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("horizontal source edge is missing".into())
-            })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("horizontal source edge is missing".into()))
+            .unwrap();
         let [start_port, _] = *topology
             .q
             .source_edge_ports
             .get(edge.id.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("horizontal source ports are missing".into())
-            })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("horizontal source ports are missing".into()))
+            .unwrap();
         let constructed_end = topology
             .q
             .ports
@@ -4416,20 +5381,26 @@ mod tests {
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("constructed crossing port is missing".into())
-            })?;
+            })
+            .unwrap();
         let mut work = Unmetered;
-        let displacement = constructed_end.point.x.try_subtract_with_work(
-            &topology
-                .q
-                .ports
-                .get(start_port.0 as usize)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("horizontal start port is unknown".into())
-                })?
-                .point
-                .x,
-            &mut work,
-        )?;
+        let displacement = constructed_end
+            .point
+            .x
+            .try_subtract_with_work(
+                &topology
+                    .q
+                    .ports
+                    .get(start_port.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("horizontal start port is unknown".into())
+                    })
+                    .unwrap()
+                    .point
+                    .x,
+                &mut work,
+            )
+            .unwrap();
         let recipe = FragmentRecipe {
             id: FragmentRecipeId(0),
             endpoints: [start_port, constructed_end.id],
@@ -4447,15 +5418,19 @@ mod tests {
             exact_displacement: displacement,
             use_kind: SelectedUse::Curve,
         };
-        let coordinates = super::super::q_embedding::QCoordinates::build(&topology)?;
+        let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
         let recipes = FragmentRecipes {
             values: vec![recipe],
             walks: Vec::new(),
         };
-        let publication = recipes.publish(&topology, &coordinates, "endpoint intent", &mut work)?;
-        let fragment = publication.fragments.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("endpoint intent fragment is missing".into())
-        })?;
+        let publication = recipes
+            .publish(&topology, &coordinates, "endpoint intent", &mut work)
+            .unwrap();
+        let fragment = publication
+            .fragments
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint intent fragment is missing".into()))
+            .unwrap();
         assert_source_record_bits(fragment.source_records[0], edge.source[0]);
         assert!(fragment.source_records[1].is_none());
         assert_eq!(
@@ -4466,41 +5441,51 @@ mod tests {
         let end = fragment
             .points
             .last()
-            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint intent has no end".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint intent has no end".into()))
+            .unwrap();
         assert_eq!(
             end.x.to_bits(),
             fragment.exact_endpoints[1]
                 .x
-                .round_with_work(&mut work)?
+                .round_with_work(&mut work)
+                .unwrap()
                 .to_bits()
         );
         assert_eq!(
             end.y.to_bits(),
             fragment.exact_endpoints[1]
                 .y
-                .round_with_work(&mut work)?
+                .round_with_work(&mut work)
+                .unwrap()
                 .to_bits()
         );
-        Ok(())
     }
 
     #[test]
-    fn source_endpoint_record_admits_pole_latitude_but_keeps_its_spelling() -> Result<()> {
+    fn source_endpoint_record_admits_pole_latitude_but_keeps_its_spelling() {
         let frame = GeographicFrame::crs84();
         let pole = frame.pole();
-        let first = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
-            Point::new_raw_axes(
-                17.0,
-                pole.next_up(),
-                ZOrdinate(Some(31.0)),
-                MOrdinate(Some(37.0)),
-            ),
-            Point::new_raw_axes(18.0, 80.0, ZOrdinate(Some(41.0)), MOrdinate(Some(43.0))),
-        ])?)?;
-        let second = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
-            Point::new_raw_axes(19.0, pole, ZOrdinate(Some(47.0)), MOrdinate(Some(53.0))),
-            Point::new_raw_axes(20.0, 80.0, ZOrdinate(Some(59.0)), MOrdinate(Some(61.0))),
-        ])?)?;
+        let first = crate::geometry::LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_axes(
+                    17.0,
+                    pole.next_up(),
+                    ZOrdinate(Some(31.0)),
+                    MOrdinate(Some(37.0)),
+                ),
+                Point::new_raw_axes(18.0, 80.0, ZOrdinate(Some(41.0)), MOrdinate(Some(43.0))),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let second = crate::geometry::LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_axes(19.0, pole, ZOrdinate(Some(47.0)), MOrdinate(Some(53.0))),
+                Point::new_raw_axes(20.0, 80.0, ZOrdinate(Some(59.0)), MOrdinate(Some(61.0))),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
         let shape = Shape::multi_line_string(
             crate::geometry::CoordinateAxes::new(
                 crate::geometry::HasZ(true),
@@ -4508,37 +5493,43 @@ mod tests {
             ),
             vec![first, second],
         );
-        let topology = endpoint_test_topology(&[shape])?;
+        let topology = endpoint_test_topology(&[shape]).unwrap();
         let first_edge = topology
             .sources
             .edges
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("first pole edge is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole edge is missing".into()))
+            .unwrap();
         let second_edge = topology
             .sources
             .edges
             .get(1)
-            .ok_or_else(|| GeometryErrorKind::Invalid("second pole edge is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole edge is missing".into()))
+            .unwrap();
         let first_ports = *topology
             .q
             .source_edge_ports
             .get(first_edge.id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("first pole ports are missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole ports are missing".into()))
+            .unwrap();
         let second_ports = *topology
             .q
             .source_edge_ports
             .get(second_edge.id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("second pole ports are missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole ports are missing".into()))
+            .unwrap();
         let first_pole = topology
             .q
             .ports
             .get(first_ports[0].0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("first pole port is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole port is missing".into()))
+            .unwrap();
         let second_pole = topology
             .q
             .ports
             .get(second_ports[0].0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("second pole port is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole port is missing".into()))
+            .unwrap();
         assert_eq!(first_pole.node, second_pole.node);
         assert_ne!(first_ports[0], second_ports[0]);
         let mut work = Unmetered;
@@ -4549,7 +5540,9 @@ mod tests {
             ExactRational::one(),
         );
         assert_source_record_bits(
-            matching.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            matching
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)
+                .unwrap(),
             first_edge.source[0],
         );
         let wrong_pole_spelling = endpoint_test_recipe(
@@ -4560,14 +5553,14 @@ mod tests {
         );
         assert!(
             wrong_pole_spelling
-                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)?
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)
+                .unwrap()
                 .is_none()
         );
-        Ok(())
     }
 
     #[test]
-    fn bent_and_backtracking_producers_are_not_flattened() -> Result<()> {
+    fn bent_and_backtracking_producers_are_not_flattened() {
         let unsupported = [
             (
                 vec![
@@ -4597,11 +5590,10 @@ mod tests {
             )
             .unwrap_err();
         }
-        Ok(())
     }
 
     #[test]
-    fn endpoint_only_producer_keeps_two_endpoint_requests() -> Result<()> {
+    fn endpoint_only_producer_keeps_two_endpoint_requests() {
         let quarter = ExactRational::from_f64(0.25);
         let three_quarters = ExactRational::from_f64(0.75);
         let mut work = Unmetered;
@@ -4611,11 +5603,13 @@ mod tests {
             &ExactRational::zero(),
             false,
             &mut work,
-        )?;
+        )
+        .unwrap();
         let range = mapped
             .into_iter()
             .next()
-            .ok_or_else(|| GeometryErrorKind::Invalid("point support range is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("point support range is missing".into()))
+            .unwrap();
         assert!(range.endpoint_only);
         assert_eq!(range.producer_start, ExactRational::zero());
         assert_eq!(range.producer_end, ExactRational::one());
@@ -4641,36 +5635,42 @@ mod tests {
             values: vec![recipe],
             walks: Vec::new(),
         };
-        let trace = recipes.source_trace_fragment(FragmentRecipeId(0), &mut work)?;
+        let trace = recipes
+            .source_trace_fragment(FragmentRecipeId(0), &mut work)
+            .unwrap();
         assert_eq!(
             trace
                 .rows
-                .requests_at(0, &ExactRational::zero(), &mut work)?
+                .requests_at(0, &ExactRational::zero(), &mut work)
+                .unwrap()
                 .first()
-                .ok_or_else(|| GeometryErrorKind::Invalid("point support lost its start".into()))?
+                .ok_or_else(|| GeometryErrorKind::Invalid("point support lost its start".into()))
+                .unwrap()
                 .parameter(),
             &quarter
         );
         assert!(
             trace
                 .rows
-                .requests_at(0, &ExactRational::from_f64(0.5), &mut work)?
+                .requests_at(0, &ExactRational::from_f64(0.5), &mut work)
+                .unwrap()
                 .is_empty()
         );
         assert_eq!(
             trace
                 .rows
-                .requests_at(0, &ExactRational::one(), &mut work)?
+                .requests_at(0, &ExactRational::one(), &mut work)
+                .unwrap()
                 .first()
-                .ok_or_else(|| GeometryErrorKind::Invalid("point support lost its end".into()))?
+                .ok_or_else(|| GeometryErrorKind::Invalid("point support lost its end".into()))
+                .unwrap()
                 .parameter(),
             &three_quarters
         );
-        Ok(())
     }
 
     #[test]
-    fn merging_vertex_aliases_keeps_presentation_and_source_rows_separate() -> Result<()> {
+    fn merging_vertex_aliases_keeps_presentation_and_source_rows_separate() {
         let point = ExactChartPoint::from_rationals(
             ExactRational::from_f64(12.0),
             ExactRational::from_f64(34.0),
@@ -4705,7 +5705,8 @@ mod tests {
             &presentation,
             &source_sample,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(merged.occurrences.len(), 2);
         assert!(matches!(
             merged.occurrences.first(),
@@ -4721,11 +5722,10 @@ mod tests {
                 source_trace: Some(_),
             })
         ));
-        Ok(())
     }
 
     #[test]
-    fn merging_periodic_vertex_aliases_keeps_the_existing_chart_lift() -> Result<()> {
+    fn merging_periodic_vertex_aliases_keeps_the_existing_chart_lift() {
         let y = ExactRational::from_f64(20.0);
         let left_point =
             ExactChartPoint::from_rationals(ExactRational::from_f64(-170.0), y.clone());
@@ -4741,17 +5741,17 @@ mod tests {
         let right = alias(right_point, 1);
         let mut work = Unmetered;
 
-        let merged = merge_native_port_data(GeographicFrame::crs84(), &left, &right, &mut work)?;
+        let merged =
+            merge_native_port_data(GeographicFrame::crs84(), &left, &right, &mut work).unwrap();
 
         assert_eq!(merged.point, left_point);
         assert!(matches!(merged.spelling, PortSpelling::Interior {
             periods: 0
         }));
-        Ok(())
     }
 
     #[test]
-    fn native_vertex_merge_rejects_nonperiodic_longitude_aliases() -> Result<()> {
+    fn native_vertex_merge_rejects_nonperiodic_longitude_aliases() {
         let frame = GeographicFrame::crs84();
         let point = |x, y| {
             ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
@@ -4775,11 +5775,10 @@ mod tests {
             merge_native_port_data(frame, &left, &alias(point(190.0, 20.0), 0), &mut work).is_err(),
             "one chart spelling cannot name two exact periodic lifts"
         );
-        Ok(())
     }
 
     #[test]
-    fn native_vertex_merge_rejects_mismatched_admitted_latitudes() -> Result<()> {
+    fn native_vertex_merge_rejects_mismatched_admitted_latitudes() {
         let frame = GeographicFrame::crs84();
         let point = |x, y| {
             ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
@@ -4799,11 +5798,10 @@ mod tests {
             merge_native_port_data(frame, &left, &right, &mut work).is_err(),
             "one-ULP admitted latitude differences are not one assigned source image"
         );
-        Ok(())
     }
 
     #[test]
-    fn native_vertex_merge_preserves_one_authenticated_periodic_source_record() -> Result<()> {
+    fn native_vertex_merge_preserves_one_authenticated_periodic_source_record() {
         let frame = GeographicFrame::crs84();
         let y = ExactRational::from_f64(20.0);
         let left = NativePortData {
@@ -4827,7 +5825,7 @@ mod tests {
         };
         let mut work = Unmetered;
 
-        let merged = merge_native_port_data(frame, &left, &right, &mut work)?;
+        let merged = merge_native_port_data(frame, &left, &right, &mut work).unwrap();
 
         assert_eq!(
             merged.source_record.map(|record| record.x.to_bits()),
@@ -4835,11 +5833,10 @@ mod tests {
             "the authenticated raw record is retained even when it uses another exact lift"
         );
         assert_eq!(merged.point, left.point);
-        Ok(())
     }
 
     #[test]
-    fn native_vertex_merge_selects_the_record_for_its_retained_chart_lift() -> Result<()> {
+    fn native_vertex_merge_selects_the_record_for_its_retained_chart_lift() {
         let frame = GeographicFrame::crs84();
         let make_port = |longitude, periods, source_record| NativePortData {
             node: EmissionNodeId(3),
@@ -4855,18 +5852,17 @@ mod tests {
         for (left_record, right_record) in [(190.0, -170.0), (-170.0, 190.0)] {
             let left = make_port(-170.0, 0, left_record);
             let right = make_port(190.0, 1, right_record);
-            let merged = merge_native_port_data(frame, &left, &right, &mut work)?;
+            let merged = merge_native_port_data(frame, &left, &right, &mut work).unwrap();
             assert_eq!(
                 merged.source_record.map(|record| record.x.to_bits()),
                 Some((-170.0_f64).to_bits()),
                 "the retained chart spelling, not contributor arrival order, selects the literal record"
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn native_vertex_merge_keeps_seam_banks_and_pole_spellings_distinct() -> Result<()> {
+    fn native_vertex_merge_keeps_seam_banks_and_pole_spellings_distinct() {
         let frame = GeographicFrame::crs84();
         let point = |x, y| {
             ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
@@ -4912,11 +5908,10 @@ mod tests {
             merge_native_port_data(frame, &pole(10.0, 11.0), &pole(10.0, 11.0), &mut work).is_err(),
             "the pole spelling must remain an exact periodic image of the assigned point"
         );
-        Ok(())
     }
 
     #[test]
-    fn same_seam_bank_occurrence_merges_at_a_pole() -> Result<()> {
+    fn same_seam_bank_occurrence_merges_at_a_pole() {
         let frame = GeographicFrame::crs84();
         let make_port = |side, origin| NativePortData {
             node: EmissionNodeId(4),
@@ -4938,7 +5933,8 @@ mod tests {
         let east_source = make_port(ChartSide::East, VertexOrigin::SourceNode(QNodeId(3)));
         let mut work = Unmetered;
 
-        let merged = merge_native_port_data(frame, &east_presentation, &east_source, &mut work)?;
+        let merged =
+            merge_native_port_data(frame, &east_presentation, &east_source, &mut work).unwrap();
 
         assert_eq!(merged.point, east_presentation.point);
         assert!(matches!(
@@ -4951,11 +5947,10 @@ mod tests {
             merge_native_port_data(frame, &east_presentation, &west, &mut work).is_err(),
             "East and West seam-bank copies remain distinct at a pole"
         );
-        Ok(())
     }
 
     #[test]
-    fn native_pole_presentation_splits_at_a_known_source_occurrence() -> Result<()> {
+    fn native_pole_presentation_splits_at_a_known_source_occurrence() {
         let frame = GeographicFrame::crs84();
         let pole_latitude = frame.chart_pole_latitude(ChartPole::North);
         let pole = NativePortData {
@@ -4989,7 +5984,7 @@ mod tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(0),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: Vec::new(),
@@ -5028,7 +6023,7 @@ mod tests {
             east: seam_vertex(180.0, ChartSide::East),
             west: seam_vertex(-180.0, ChartSide::West),
         };
-        let mut budget = EvaluationBudget::new("pole presentation incidence", 0)?;
+        let mut budget = EvaluationBudget::new("pole presentation incidence", 0).unwrap();
         let edges = native_pole_edges(
             frame,
             &[event],
@@ -5038,7 +6033,8 @@ mod tests {
             &[isolated_pole],
             &mut |_, _, _, _| Ok(false),
             &mut budget,
-        )?;
+        )
+        .unwrap();
 
         assert_eq!(edges.len(), 3);
         let first = &edges[0];
@@ -5076,11 +6072,10 @@ mod tests {
                 }
             ]));
         }
-        Ok(())
     }
 
     #[test]
-    fn overlapping_pole_presentation_arcs_still_fail_known_graph_admission() -> Result<()> {
+    fn overlapping_pole_presentation_arcs_still_fail_known_graph_admission() {
         let frame = GeographicFrame::crs84();
         let pole_latitude = frame.chart_pole_latitude(ChartPole::North);
         let pole_port = |longitude| NativePortData {
@@ -5123,7 +6118,7 @@ mod tests {
             east: seam_vertex(180.0, ChartSide::East),
             west: seam_vertex(-180.0, ChartSide::West),
         };
-        let mut budget = EvaluationBudget::new("overlapping pole presentations", 0)?;
+        let mut budget = EvaluationBudget::new("overlapping pole presentations", 0).unwrap();
         let generated = native_pole_edges(
             frame,
             &[event],
@@ -5133,11 +6128,13 @@ mod tests {
             &[],
             &mut |_, _, _, _| Ok(false),
             &mut budget,
-        )?;
+        )
+        .unwrap();
         assert_eq!(generated.len(), 1);
         let presentation = generated
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("pole arc was not generated".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("pole arc was not generated".into()))
+            .unwrap();
         let exact = vec![
             existing.vertices[0].point.clone(),
             existing.vertices[1].point.clone(),
@@ -5145,39 +6142,42 @@ mod tests {
             presentation.vertices[1].point.clone(),
         ];
         let mut work = Unmetered;
-        let points = ExactPoints::from_exact(exact, &mut work)?;
+        let points = ExactPoints::from_exact(exact, &mut work).unwrap();
 
         assert!(
             admit_known_graph(points, vec![[0, 1], [2, 3]], vec![4; 4], &mut work).is_err(),
             "a partial overlap between known presentation arcs remains inadmissible"
         );
-        Ok(())
     }
 
     #[test]
-    fn live_presentation_use_cannot_inherit_colocated_source_axes() -> Result<()> {
+    fn live_presentation_use_cannot_inherit_colocated_source_axes() {
         let frame = GeographicFrame::crs84();
-        let source = crate::io::parse_wkt("LINESTRING Z (0 0 7, 0 10 9)")?;
+        let source = crate::io::parse_wkt("LINESTRING Z (0 0 7, 0 10 9)").unwrap();
         let inputs =
             crate::geographic::GeographicInputs::try_from_shapes(frame, std::iter::once(&source))
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))
+                .unwrap();
+        let topology =
+            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied()).unwrap();
         let port_id = *topology
             .q
             .source_edge_ports
             .first()
             .and_then(|ports| ports.first())
-            .ok_or_else(|| GeometryErrorKind::Invalid("source port is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("source port is missing".into()))
+            .unwrap();
         let source_node = topology
             .q
             .ports
             .get(port_id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("source port is unknown".into()))?
+            .ok_or_else(|| GeometryErrorKind::Invalid("source port is unknown".into()))
+            .unwrap()
             .node;
         let mut work = Unmetered;
         let node_registry =
-            EmissionNodeRegistry::with_sources(&topology, &[source_node], &mut work)?;
-        let emission_node = node_registry.source_node(source_node)?;
+            EmissionNodeRegistry::with_sources(&topology, &[source_node], &mut work).unwrap();
+        let emission_node = node_registry.source_node(source_node).unwrap();
         let source_record = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(None));
         let plan = ExpandedEmissionPlan {
             topology: &topology,
@@ -5195,12 +6195,12 @@ mod tests {
                 WrittenOccurrence {
                     origin: VertexOrigin::SourceNode(source_node),
                     source_trace: None,
-                    request_row: RequestRowId::from_index(0)?,
+                    request_row: RequestRowId::from_index(0).unwrap(),
                 },
                 WrittenOccurrence {
                     origin: VertexOrigin::Presentation,
                     source_trace: None,
-                    request_row: RequestRowId::from_index(1)?,
+                    request_row: RequestRowId::from_index(1).unwrap(),
                 },
             ],
             chords: Vec::new(),
@@ -5216,11 +6216,12 @@ mod tests {
             ordinates: Vec::new(),
         };
         let mut source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-        let mut source_z = crate::geometry::ordinates::AxisValue::default();
+        let mut source_z = AxisValue::default();
         source_z.observe(Some(7.0));
         source_ordinates
             .get_mut(source_node.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("source ordinate row is missing".into()))?
+            .ok_or_else(|| GeometryErrorKind::Invalid("source ordinate row is missing".into()))
+            .unwrap()
             .z = source_z;
         let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
             None;
@@ -5235,7 +6236,8 @@ mod tests {
             "overlay",
             metric_access,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(axes, CoordinateAxes::XY);
         assert_eq!(ordinates.len(), 1);
         assert_eq!(
@@ -5246,12 +6248,14 @@ mod tests {
         let longitude = frame
             .longitude()
             .canonicalize(0.0)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))
+            .unwrap();
         let sites = [AssignedSite {
             longitude: crate::geographic::RetainedLongitudeSite::new(longitude, 0),
             latitude: 0.0,
         }];
-        let written = native_port_point(&plan, &sites, &ordinates, EmissionPortId(0), axes)?;
+        let written =
+            native_port_point(&plan, &sites, &ordinates, EmissionPortId(0), axes).unwrap();
         assert_eq!(written.z(), None);
         assert_eq!(written.m(), None);
         assert_eq!(
@@ -5275,7 +6279,6 @@ mod tests {
             )
             .is_err()
         );
-        Ok(())
     }
 
     #[test]
@@ -5452,7 +6455,7 @@ mod tests {
     }
 
     #[test]
-    fn native_cut_occurrences_follow_disjoint_prepared_period_ranges() -> Result<()> {
+    fn native_cut_occurrences_follow_disjoint_prepared_period_ranges() {
         let registry = FeatureFamilyRegistry {
             bounds: vec![FeatureFamilyBound {
                 publication: 0,
@@ -5479,7 +6482,9 @@ mod tests {
         let mut work = Unmetered;
         for (period, occurrence) in [(0, 0), (1, 1), (4, 2), (5, 3)] {
             assert_eq!(
-                registry.native_cut_occurrence(FragmentRecipeId(0), 0, period, &mut work,)?,
+                registry
+                    .native_cut_occurrence(FragmentRecipeId(0), 0, period, &mut work,)
+                    .unwrap(),
                 occurrence,
             );
         }
@@ -5489,7 +6494,6 @@ mod tests {
                 .is_err(),
             "a period not admitted by any prepared endpoint pair has no family identity",
         );
-        Ok(())
     }
 
     #[test]
@@ -5530,7 +6534,7 @@ mod tests {
     }
 
     #[test]
-    fn native_literal_port_map_follows_final_shape_order() -> Result<()> {
+    fn native_literal_port_map_follows_final_shape_order() {
         let uses = NativeLiteralUses {
             points: vec![
                 LiteralPoint {
@@ -5558,22 +6562,22 @@ mod tests {
             ],
             polygons: Vec::new(),
         };
-        let order = crate::geometry::overlay::CertifiedOverlayOrder {
+        let order = CertifiedOverlayOrder {
             points: vec![1, 0],
             lines: vec![1, 0],
             polygons: Vec::new(),
         };
         let mut work = Unmetered;
-        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut work)?;
+        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap();
         let line_traces = vec![
             TracedLine {
                 member: 20,
-                trace: trace.clone(),
+                trace: trace.try_clone_with_work(&mut work).unwrap(),
             },
             TracedLine { member: 30, trace },
         ];
         let (ordered, ordered_traces) =
-            native_literal_uses_in_output_order(uses, line_traces, order, &mut work)?;
+            native_literal_uses_in_output_order(uses, line_traces, &order, &mut work).unwrap();
         assert_eq!(
             ordered
                 .points
@@ -5610,14 +6614,276 @@ mod tests {
             [30, 20],
         );
         assert!(ordered.polygons.is_empty());
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before active-column reservation"
+    )]
+    fn native_materialization_refuses_before_active_column_reservation() -> Result<()> {
+        let mut work = RecordingWork::with_remaining("native columns", 12)?;
+        let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "Native materialization completed without funding its active columns".into(),
+            )
+            .into());
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "native columns",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(work.accepted_ticks(), 12);
+        let attempted = &work.attempted;
+        assert_eq!(
+            work.attempted.last(),
+            Some(&2),
+            "column refusal should follow funded preparation charges: {attempted:?}"
+        );
         Ok(())
     }
 
     #[test]
-    fn completed_native_drawing_pairs_literal_points_with_port_uses() -> Result<()> {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal at each unfunded active-column phase"
+    )]
+    fn native_materialization_refuses_before_each_active_column_phase() -> Result<()> {
+        for remaining_ticks in [12, 20, 28] {
+            let mut work = RecordingWork::with_remaining("native columns", remaining_ticks)?;
+            let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
+            let Err(error) = result else {
+                return Err(GeometryErrorKind::Invalid(
+                    "Native materialization passed an unfunded column phase".into(),
+                )
+                .into());
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                    operation: "native columns",
+                    constructed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(work.accepted_ticks(), remaining_ticks);
+            let attempted = &work.attempted;
+            assert_eq!(
+                work.attempted.last(),
+                Some(&2),
+                "allowance {remaining_ticks} should refuse the active-column phase: {attempted:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin XYZM coordinate values and active-column work counts"
+    )]
+    fn native_materialization_charges_only_the_active_columns() -> Result<()> {
+        let mut xy_work = RecordingWork::with_remaining("native columns", 128)?;
+        let xy = materialize_test_line(CoordinateAxes::XY, &mut xy_work)?;
+        let mut xyzm_work = RecordingWork::with_remaining("native columns", 128)?;
+        let xyzm = materialize_test_line(CoordinateAxes::XYZM, &mut xyzm_work)?;
+
+        assert_eq!(
+            xyzm_work.accepted_ticks() - xy_work.accepted_ticks(),
+            12,
+            "two extra columns each reserve, copy, and check two coordinate rows"
+        );
+        let xy_line = xy
+            .lines
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY line is missing".into()))?;
+        let xyzm_line = xyzm.lines.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM line is missing".into())
+        })?;
+        assert_eq!(xy_line.xs(), xyzm_line.xs());
+        assert_eq!(xy_line.ys(), xyzm_line.ys());
+        assert_eq!(xyzm_line.zs(), Some(&[1.25, 3.75][..]));
+        assert_eq!(xyzm_line.ms(), Some(&[2.5, 4.5][..]));
+
+        let mut xy_ring_work = RecordingWork::with_remaining("native columns", 256)?;
+        let xy_ring = materialize_test_ring_with_hole(CoordinateAxes::XY, &mut xy_ring_work)?;
+        let mut xyzm_ring_work = RecordingWork::with_remaining("native columns", 256)?;
+        let xyzm_ring = materialize_test_ring_with_hole(CoordinateAxes::XYZM, &mut xyzm_ring_work)?;
+        assert_eq!(
+            xyzm_ring_work.accepted_ticks() - xy_ring_work.accepted_ticks(),
+            60,
+            "two extra columns are reserved, copied and checked for both five-row rings"
+        );
+        let xy_polygon = xy_ring.polygons.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XY polygon is missing".into())
+        })?;
+        let xyzm_polygon = xyzm_ring.polygons.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM polygon is missing".into())
+        })?;
+        assert_eq!(xy_polygon.holes.len(), 1);
+        assert_eq!(
+            xy_polygon.shell.coords().xs(),
+            xyzm_polygon.shell.coords().xs()
+        );
+        assert_eq!(
+            xy_polygon.shell.coords().ys(),
+            xyzm_polygon.shell.coords().ys()
+        );
+        assert_eq!(
+            xyzm_polygon.shell.coords().zs(),
+            Some(&[1.25, 3.75, 1.25, 3.75, 1.25][..])
+        );
+        assert_eq!(
+            xyzm_polygon.shell.coords().ms(),
+            Some(&[2.5, 4.5, 2.5, 4.5, 2.5][..])
+        );
+        let xy_hole = xy_polygon
+            .holes
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY hole is missing".into()))?;
+        let xyzm_hole = xyzm_polygon.holes.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM hole is missing".into())
+        })?;
+        assert_eq!(xy_hole.coords().xs(), xyzm_hole.coords().xs());
+        assert_eq!(xy_hole.coords().ys(), xyzm_hole.coords().ys());
+        assert_eq!(
+            xyzm_hole.coords().zs(),
+            Some(&[1.25, 3.75, 1.25, 3.75, 1.25][..])
+        );
+        assert_eq!(
+            xyzm_hole.coords().ms(),
+            Some(&[2.5, 4.5, 2.5, 4.5, 2.5][..])
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin full closing-record funding and coordinate identity"
+    )]
+    fn native_materialization_funds_the_complete_closing_xyzm_record() -> Result<()> {
+        let mut limited = RecordingWork::with_remaining("native columns", 17)?;
+        let result = materialize_test_ring(CoordinateAxes::XYZM, &mut limited);
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "Native ring materialization passed an unfunded closing-record write".into(),
+            )
+            .into());
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "native columns",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(limited.accepted_ticks(), 17);
+        assert_eq!(limited.attempted.last(), Some(&1));
+
+        let mut funded = RecordingWork::with_remaining("native columns", 128)?;
+        let parts = materialize_test_ring(CoordinateAxes::XYZM, &mut funded)?;
+        let ring = parts
+            .polygons
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized ring is missing".into()))?
+            .shell
+            .coords();
+        let first = ring.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized first record is missing".into())
+        })?;
+        let last = ring.last().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized closing record is missing".into())
+        })?;
+        assert_eq!(
+            [
+                first.x.to_bits(),
+                first.y.to_bits(),
+                first.z.to_bits(),
+                first.m.to_bits()
+            ],
+            [
+                last.x.to_bits(),
+                last.y.to_bits(),
+                last.z.to_bits(),
+                last.m.to_bits()
+            ],
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin literal-metadata work refusal before row inspection"
+    )]
+    fn native_literal_validation_charges_each_metadata_row_before_inspection() -> Result<()> {
+        let mut all_rows = point_literal_test_parts();
+        let mut line_rows = line_literal_test_parts()?;
+        all_rows.lines.append(&mut line_rows.lines);
+        all_rows
+            .literal_uses
+            .lines
+            .append(&mut line_rows.literal_uses.lines);
+        let mut polygon_rows = polygon_literal_test_parts(true)?;
+        all_rows.polygons.append(&mut polygon_rows.polygons);
+        all_rows
+            .literal_uses
+            .polygons
+            .append(&mut polygon_rows.literal_uses.polygons);
+
+        let mut funded = RecordingWork::with_remaining("literal metadata", 100)?;
+        all_rows.validate_literal_uses(&mut funded)?;
+        assert_eq!(funded.attempted, [1, 1, 1, 1]);
+        assert_eq!(funded.accepted, [1, 1, 1, 1]);
+
+        for parts in [
+            point_literal_test_parts(),
+            line_literal_test_parts()?,
+            polygon_literal_test_parts(false)?,
+        ] {
+            let mut work = RecordingWork::with_remaining("literal metadata", 0)?;
+            let error = parts.validate_literal_uses(&mut work).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                    operation: "literal metadata",
+                    constructed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(work.attempted, [1]);
+            assert!(work.accepted.is_empty());
+        }
+
+        let parts = polygon_literal_test_parts(true)?;
+        let mut work = RecordingWork::with_remaining("literal metadata", 1)?;
+        let error = parts.validate_literal_uses(&mut work).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "literal metadata",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(work.attempted, [1, 1]);
+        assert_eq!(work.accepted, [1]);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_native_drawing_pairs_literal_points_with_port_uses() {
         let shape = Shape::multi_point(
             CoordinateAxes::XY,
-            CoordSeq::try_from_points(&[Point::new_raw_xy(3.0, 1.0), Point::new_raw_xy(8.0, 2.0)])?,
+            CoordSeq::try_from_points(&[Point::new_raw_xy(3.0, 1.0), Point::new_raw_xy(8.0, 2.0)])
+                .unwrap(),
         );
         let layout = NativeLiteralUses {
             points: vec![
@@ -5645,22 +6911,26 @@ mod tests {
                 visited.push((port, point.x, point.y));
                 Ok(())
             },
-        )?;
+        )
+        .unwrap();
         assert_eq!(visited, [
             (EmissionPortId(4), 3.0, 1.0),
             (EmissionPortId(9), 8.0, 2.0),
         ],);
-        Ok(())
     }
 
     #[test]
-    fn completed_native_drawing_keeps_the_full_ring_closure_binding() -> Result<()> {
-        let ring = Ring::try_from_closed(CoordSeq::try_from_points(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 1.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ])?)?;
+    fn completed_native_drawing_keeps_the_full_ring_closure_binding() {
+        let ring = Ring::try_from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(1.0, 0.0),
+                Point::new_raw_xy(0.0, 1.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
         let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
         let layout = NativeLiteralUses {
             points: Vec::new(),
@@ -5691,18 +6961,18 @@ mod tests {
                 visited.push((port, point.x, point.y));
                 Ok(())
             },
-        )?;
+        )
+        .unwrap();
         assert_eq!(visited, [
             (EmissionPortId(4), 0.0, 0.0),
             (EmissionPortId(5), 1.0, 0.0),
             (EmissionPortId(6), 0.0, 1.0),
             (EmissionPortId(4), 0.0, 0.0),
         ],);
-        Ok(())
     }
 
     #[test]
-    fn written_sample_splits_the_original_root_parameter_trace() -> Result<()> {
+    fn written_sample_splits_the_original_root_parameter_trace() {
         let one = ExactRational::one();
         let zero = ExactRational::zero();
         let half = ExactRational::from_f64(0.5);
@@ -5730,21 +7000,25 @@ mod tests {
             walks: Vec::new(),
         };
         let mut work = Unmetered;
-        let original = recipes.source_trace(
-            &RecipeWalk {
-                owner: RecipeWalkOwner::Line(0),
-                fragments: vec![FragmentRecipeId(0)],
-            },
-            &mut work,
-        )?;
-        let split = original.split_at_samples(
-            &[SourceTraceSample {
-                edge_index: 0,
-                local_parameter: half.clone(),
-                written_vertex: 1,
-            }],
-            &mut work,
-        )?;
+        let original = recipes
+            .source_trace(
+                &RecipeWalk {
+                    owner: RecipeWalkOwner::Line(0),
+                    fragments: vec![FragmentRecipeId(0)],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let split = original
+            .split_at_samples(
+                &[SourceTraceSample {
+                    edge_index: 0,
+                    local_parameter: half.clone(),
+                    written_vertex: 1,
+                }],
+                &mut work,
+            )
+            .unwrap();
 
         assert_eq!(split.rows.edge_count(), 2);
         assert_eq!(split.rows.owner_count(), 2);
@@ -5755,21 +7029,27 @@ mod tests {
         assert_eq!(split.samples[0].request_row.index(), 0);
         let sample_request = split
             .rows
-            .sample_requests_at(0, &mut work)?
+            .sample_requests_at(0, &mut work)
+            .unwrap()
             .into_iter()
             .next()
-            .ok_or_else(|| GeometryErrorKind::Invalid("sample lost its root request".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample lost its root request".into()))
+            .unwrap();
         assert_eq!(sample_request.parameter(), &half);
         let left_owner = split
-            .owners_for_edge(0)?
+            .owners_for_edge(0)
+            .unwrap()
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("left child lost its root range".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("left child lost its root range".into()))
+            .unwrap();
         let right_owner = split
-            .owners_for_edge(1)?
+            .owners_for_edge(1)
+            .unwrap()
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("right child lost its root range".into()))?;
-        assert!(left_owner.source_end().try_cmp(&half)?.is_eq());
-        assert!(right_owner.source_start().try_cmp(&half)?.is_eq());
+            .ok_or_else(|| GeometryErrorKind::Invalid("right child lost its root range".into()))
+            .unwrap();
+        assert!(left_owner.source_end().try_cmp(&half).unwrap().is_eq());
+        assert!(right_owner.source_start().try_cmp(&half).unwrap().is_eq());
         assert_eq!(left_owner.producer_start(), &ExactRational::zero());
         assert_eq!(left_owner.producer_end(), &ExactRational::one());
         assert_eq!(right_owner.producer_start(), &ExactRational::zero());
@@ -5777,30 +7057,33 @@ mod tests {
         assert_eq!(
             split
                 .rows
-                .requests_at(0, &half, &mut work)?
+                .requests_at(0, &half, &mut work)
+                .unwrap()
                 .first()
                 .ok_or_else(|| GeometryErrorKind::Invalid(
                     "left child lost its source request".into()
-                ))?
+                ))
+                .unwrap()
                 .parameter(),
             &ExactRational::from_f64(0.375)
         );
         assert_eq!(
             split
                 .rows
-                .requests_at(1, &half, &mut work)?
+                .requests_at(1, &half, &mut work)
+                .unwrap()
                 .first()
                 .ok_or_else(|| GeometryErrorKind::Invalid(
                     "right child lost its source request".into()
-                ))?
+                ))
+                .unwrap()
                 .parameter(),
             &ExactRational::from_f64(0.625)
         );
-        Ok(())
     }
 
     #[test]
-    fn recursive_source_trace_split_retains_prior_sample_rows() -> Result<()> {
+    fn recursive_source_trace_split_retains_prior_sample_rows() {
         let zero = ExactRational::zero();
         let one = ExactRational::one();
         let recipe = FragmentRecipe {
@@ -5825,23 +7108,29 @@ mod tests {
             walks: Vec::new(),
         };
         let mut work = Unmetered;
-        let original = recipes.source_trace_fragment(FragmentRecipeId(0), &mut work)?;
-        let first = original.split_at_samples(
-            &[SourceTraceSample {
-                edge_index: 0,
-                local_parameter: ExactRational::from_f64(0.5),
-                written_vertex: 1,
-            }],
-            &mut work,
-        )?;
-        let second = first.split_at_samples(
-            &[SourceTraceSample {
-                edge_index: 0,
-                local_parameter: ExactRational::from_f64(0.5),
-                written_vertex: 1,
-            }],
-            &mut work,
-        )?;
+        let original = recipes
+            .source_trace_fragment(FragmentRecipeId(0), &mut work)
+            .unwrap();
+        let first = original
+            .split_at_samples(
+                &[SourceTraceSample {
+                    edge_index: 0,
+                    local_parameter: ExactRational::from_f64(0.5),
+                    written_vertex: 1,
+                }],
+                &mut work,
+            )
+            .unwrap();
+        let second = first
+            .split_at_samples(
+                &[SourceTraceSample {
+                    edge_index: 0,
+                    local_parameter: ExactRational::from_f64(0.5),
+                    written_vertex: 1,
+                }],
+                &mut work,
+            )
+            .unwrap();
 
         assert_eq!(second.rows.edge_count(), 3);
         assert_eq!(second.samples.len(), 2);
@@ -5853,75 +7142,81 @@ mod tests {
         ] {
             let requests = second
                 .rows
-                .sample_requests_at(sample.request_row.index(), &mut work)?;
+                .sample_requests_at(sample.request_row.index(), &mut work)
+                .unwrap();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].parameter(), &expected);
         }
-        Ok(())
     }
 
     #[test]
-    fn recursive_source_trace_split_retains_a_prior_child_endpoint() -> Result<()> {
+    fn recursive_source_trace_split_retains_a_prior_child_endpoint() {
         let root = RootId::from_index(12);
         let old_parameter = ExactRational::from_f64(0.75);
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([RootRange::whole(root)])?;
-        rows.push_sample_row([RootRange::point(
-            root,
-            old_parameter.clone(),
-            ExactRational::zero(),
-        )?])?;
         let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work).unwrap();
+        rows.push_row([RootRange::whole(root)], &mut work).unwrap();
+        rows.push_sample_row(
+            [RootRange::point(root, old_parameter.clone(), ExactRational::zero()).unwrap()],
+            &mut work,
+        )
+        .unwrap();
         let trace = SourceTrace {
-            rows: rows.finish(&mut work)?,
+            rows: rows.finish(&mut work).unwrap(),
             samples: vec![TracedSourceSample {
                 written_vertex: 1,
                 edge: 0,
                 parameter: old_parameter.clone(),
-                request_row: RequestRowId::from_index(0)?,
+                request_row: RequestRowId::from_index(0).unwrap(),
                 has_source: true,
                 endpoint_only: true,
             }],
         };
-        let split = trace.split_at_samples(
-            &[SourceTraceSample {
-                edge_index: 0,
-                local_parameter: ExactRational::from_f64(0.5),
-                written_vertex: 1,
-            }],
-            &mut work,
-        )?;
+        let split = trace
+            .split_at_samples(
+                &[SourceTraceSample {
+                    edge_index: 0,
+                    local_parameter: ExactRational::from_f64(0.5),
+                    written_vertex: 1,
+                }],
+                &mut work,
+            )
+            .unwrap();
 
         assert_eq!(split.samples.len(), 2);
         assert_eq!(split.samples[0].written_vertex, 1);
         assert_eq!(split.samples[1].written_vertex, 2);
         let requests = split
             .rows
-            .sample_requests_at(split.samples[1].request_row.index(), &mut work)?;
+            .sample_requests_at(split.samples[1].request_row.index(), &mut work)
+            .unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].root(), root);
         assert_eq!(requests[0].parameter(), &old_parameter);
-        Ok(())
     }
 
     #[test]
-    fn publisher_samples_resolve_through_the_original_source_edge() -> Result<()> {
+    fn publisher_samples_resolve_through_the_original_source_edge() {
         let frame = GeographicFrame::crs84();
-        let shape = crate::io::parse_wkt("LINESTRING ZM (0 0 1 100, 0 10 3 300)")?;
+        let shape = crate::io::parse_wkt("LINESTRING ZM (0 0 1 100, 0 10 3 300)").unwrap();
         let inputs =
             crate::geographic::GeographicInputs::try_from_shapes(frame, std::iter::once(&shape))
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))
+                .unwrap();
+        let topology =
+            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied()).unwrap();
         let edge = topology
             .sources
             .edges
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("source line edge is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("source line edge is missing".into()))
+            .unwrap();
         let endpoints = *topology
             .q
             .source_edge_ports
             .get(edge.id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("source line ports are missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("source line ports are missing".into()))
+            .unwrap();
         let zero = ExactRational::zero();
         let one = ExactRational::one();
         let recipe = FragmentRecipe {
@@ -5945,14 +7240,16 @@ mod tests {
             values: vec![recipe],
             walks: Vec::new(),
         };
-        let coordinates = super::super::q_embedding::QCoordinates::build(&topology)?;
+        let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
         let mut work = Unmetered;
-        let publication =
-            recipes.publish(&topology, &coordinates, "source trace test", &mut work)?;
+        let publication = recipes
+            .publish(&topology, &coordinates, "source trace test", &mut work)
+            .unwrap();
         let fragment = publication
             .fragments
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("published fragment is missing".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("published fragment is missing".into()))
+            .unwrap();
 
         assert_eq!(publication.samples.len(), 3);
         assert_eq!(fragment.points.len(), 5);
@@ -5982,21 +7279,26 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let sample = publication.samples.get(index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("accepted publisher sample is missing".into())
-            })?;
-            let source_trace = sample.source_trace.as_ref().ok_or_else(|| {
-                GeometryErrorKind::Invalid("accepted publisher sample lost its source".into())
-            })?;
+            let sample = publication
+                .samples
+                .get(index)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("accepted publisher sample is missing".into())
+                })
+                .unwrap();
+            let source_trace = sample
+                .source_trace
+                .as_ref()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("accepted publisher sample lost its source".into())
+                })
+                .unwrap();
             let TraceRequestLocation::Sample {
                 recipe: trace_recipe,
                 row,
             } = source_trace
             else {
-                return Err(GeometryErrorKind::Invalid(
-                    "publisher sample does not reference its sample request row".into(),
-                )
-                .into());
+                panic!("publisher sample does not reference its sample request row");
             };
             assert_eq!(
                 *trace_recipe,
@@ -6008,16 +7310,17 @@ mod tests {
             let request = fragment
                 .trace
                 .rows
-                .sample_requests_at(row.index(), &mut work)?
+                .sample_requests_at(row.index(), &mut work)
+                .unwrap()
                 .into_iter()
                 .next()
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("accepted publisher source row is empty".into())
-                })?;
+                })
+                .unwrap();
             assert_eq!(sample.parameter, expected);
             assert_eq!(request.parameter(), &expected);
             assert_eq!(request.root().index(), edge.id.0 as usize);
         }
-        Ok(())
     }
 }

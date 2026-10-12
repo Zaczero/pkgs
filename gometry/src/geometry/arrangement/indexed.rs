@@ -167,7 +167,8 @@ where
     }
     for offset in 1..start_capacity {
         work.charge_into_error(1)?;
-        let previous = *topology.starts.get(offset - 1).ok_or_else(|| {
+        let previous_offset = offset.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+        let previous = *topology.starts.get(previous_offset).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed graph CSR prefix is incomplete".into())
         })?;
         let degree = *topology.starts.get(offset).ok_or_else(|| {
@@ -327,10 +328,6 @@ impl IndexedTopology {
         self.twins[next]
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
-    )]
     #[expect(
         clippy::expect_used,
         reason = "the Unmetered specialization cannot fail its Work charge"

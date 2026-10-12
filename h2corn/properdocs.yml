@@ -65,7 +65,7 @@ extra_css:
 # offline, and stops an upstream 11.x release from re-laying-out the diagrams.
 # Not under assets/vendor/: the repository ignores `vendor/`, so a copy there
 # would never be committed and every published build would fall back to the CDN.
-extra_javascript:
+extra_javascript: &javascript_assets
   - assets/javascripts/mermaid-11.17.0.min.js
 
 extra:
@@ -93,6 +93,7 @@ plugins:
         remove_empty_space: true
       css_files:
         - stylesheets/extra.css
+      js_files: *javascript_assets
       cache_safe: true
   - mkdocstrings:
       default_handler: python

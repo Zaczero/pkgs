@@ -8,8 +8,8 @@ mod reduce;
 mod shape;
 
 pub(crate) use compare::{
-    bounds_from_iter, compare_f64, compare_point_slices, compare_points, compare_polygons,
-    compare_shapes,
+    bounds_from_iter, compare_f64, compare_point_slices, compare_point_slices_with_work,
+    compare_points, compare_polygons, compare_polygons_with_work, compare_shapes,
 };
 pub(crate) use reduce::{column_all_finite, column_minmax, *};
 pub(crate) use shape::*;
