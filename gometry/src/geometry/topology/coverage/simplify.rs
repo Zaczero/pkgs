@@ -79,7 +79,6 @@ struct GeographicChainSequence {
     span_lifts: Vec<i64>,
 }
 
-#[derive(Clone, Copy)]
 struct GeographicRemovalCandidate<'a> {
     chain_index: usize,
     before: usize,
@@ -178,7 +177,7 @@ impl GeographicCoverageAnalysis {
                             return Ok(false);
                         }
                         guard.try_remove(
-                            GeographicRemovalCandidate {
+                            &GeographicRemovalCandidate {
                                 chain_index,
                                 before,
                                 vertex,
@@ -697,18 +696,16 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
 
     fn try_remove(
         &mut self,
-        candidate: GeographicRemovalCandidate<'_>,
+        candidate: &GeographicRemovalCandidate<'_>,
         generated_edges: &mut [Option<usize>],
         work: &mut impl Work,
     ) -> Result<bool> {
-        let GeographicRemovalCandidate {
-            chain_index,
-            before,
-            vertex,
-            after,
-            sequence,
-            rows,
-        } = candidate;
+        let chain_index = candidate.chain_index;
+        let before = candidate.before;
+        let vertex = candidate.vertex;
+        let after = candidate.after;
+        let sequence = candidate.sequence;
+        let rows = candidate.rows;
         let points = &sequence.points;
         let nodes = &sequence.nodes;
         let lifts = &sequence.lifts;
