@@ -18094,7 +18094,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     None
                 }
             },
-            |bank| Some(bank),
+            Some,
         );
         let end_bank = seam_wall_bank.map_or_else(
             || {
@@ -18108,7 +18108,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     None
                 }
             },
-            |bank| Some(bank),
+            Some,
         );
         let start_requests = self.native_endpoint_root_requests(
             &chord.endpoints[0],
