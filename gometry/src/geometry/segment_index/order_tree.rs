@@ -378,6 +378,10 @@ impl<T: Copy> OrderTree<T> {
             .unwrap();
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the sweep status validates insertion ranks before entering the AVL mutation"
+    )]
     pub(in crate::geometry) fn insert_at_rank_with_work<W: Work>(
         &mut self,
         rank: usize,
@@ -425,6 +429,10 @@ impl<T: Copy> OrderTree<T> {
         self.remove_at_rank_with_work(rank, &mut Unmetered).unwrap()
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the sweep status validates removal ranks before entering the AVL mutation"
+    )]
     pub(in crate::geometry) fn remove_at_rank_with_work<W: Work>(
         &mut self,
         rank: usize,
@@ -477,6 +485,10 @@ impl<T: Copy> OrderTree<T> {
         self.splice_with_work(range, items, &mut Unmetered).unwrap();
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the sweep status supplies a validated in-bounds splice range"
+    )]
     pub(in crate::geometry) fn splice_with_work<W: Work>(
         &mut self,
         range: Range<usize>,
@@ -789,7 +801,10 @@ mod tests {
         }
     }
 
-    fn budget_refusing_before(operation: &'static str, event: TreeChargeEvent) -> EvaluationBudget {
+    fn budget_refusing_before(
+        operation: &'static str,
+        event: &TreeChargeEvent,
+    ) -> EvaluationBudget {
         let remaining = event
             .spent_before
             .checked_add(event.ticks)
@@ -884,6 +899,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin AVL rank probes and refusal before the next lookup"
+    )]
     fn native_order_tree_nonroot_lookup_refuses_before_next_rank_probe() -> Result<()> {
         const OPERATION: &str = "native_order_tree_lookup";
         reset_update_progress();
@@ -907,7 +926,7 @@ mod tests {
 
         reset_update_progress();
         let comparisons = Cell::new(0_usize);
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = TreeRecordingWork::new(&mut budget, &comparisons);
             let error = tree
@@ -946,6 +965,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin AVL metadata work and refusal before the next update"
+    )]
     fn native_order_tree_nonroot_update_refuses_before_metadata_write() -> Result<()> {
         const OPERATION: &str = "native_order_tree_update";
         let mut tree = filled_tree(31);
@@ -969,7 +992,7 @@ mod tests {
 
         let mut tree = filled_tree(31);
         reset_update_progress();
-        let mut budget = budget_refusing_before(OPERATION, target);
+        let mut budget = budget_refusing_before(OPERATION, &target);
         let error = {
             let mut work = TreeRecordingWork::new(&mut budget, &comparisons);
             let error = tree
