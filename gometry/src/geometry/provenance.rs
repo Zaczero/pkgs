@@ -63,7 +63,7 @@ impl RefinedChainProvenance {
         let mut start = 0_usize;
         let mut segment_end = 0_usize;
         let mut piece_ends = Vec::with_capacity(parameter_ends.len());
-        for &end in &parameter_ends {
+        for &end in parameter_ends {
             let parameters = source_parameters.get(start..end).ok_or_else(|| {
                 crate::geometry::GeometryErrorKind::Invalid(
                     "refined source parameter edge range is unknown".into(),

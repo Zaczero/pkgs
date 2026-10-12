@@ -281,15 +281,15 @@ fn lifted_longitude_delta(frame: GeographicFrame, segment: Segment) -> f64 {
         .delta(axis)
 }
 
-impl Chart<'_> {
-    fn emission<'a>(
+impl<'metric> Chart<'metric> {
+    fn emission<'source>(
         &self,
         segment: Segment,
         length: f64,
         pieces: usize,
-        source: &'a CoordSeq,
+        source: &'source CoordSeq,
         source_segment: usize,
-    ) -> Result<ChartEmission<'a>> {
+    ) -> Result<ChartEmission<'source, 'metric>> {
         let edge = crate::crs::ChartEdge::new(
             point_from_xy(segment.start),
             point_from_xy(segment.end),
@@ -306,16 +306,16 @@ impl Chart<'_> {
     }
 }
 
-struct ChartEmission<'a> {
-    source: &'a CoordSeq,
+struct ChartEmission<'source, 'metric> {
+    source: &'source CoordSeq,
     source_segment: usize,
     edge: crate::crs::ChartEdge,
-    geodesic: &'a geographiclib_rs::Geodesic,
+    geodesic: &'metric geographiclib_rs::Geodesic,
     length: f64,
     pieces: usize,
 }
 
-impl ChartEmission<'_> {
+impl ChartEmission<'_, '_> {
     #[expect(
         clippy::float_cmp,
         reason = "source parameters are exact binary64 vertices of the emitted chain"
