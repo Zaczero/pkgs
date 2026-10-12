@@ -20,6 +20,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let mut active: VecDeque<usize> = VecDeque::new();
     let mut y_index: BTreeSet<(u64, usize)> = BTreeSet::new();
     let mut candidates: Vec<usize> = Vec::new();
+    let mut survivor_for_site = vec![None; sites.len()];
     for (ordinal, site) in sites.iter().enumerate() {
         let [x_bounds, y_bounds] = site.exact_point.bounds();
         let min_x = x_bounds.sub(radius_bounds).lo;
@@ -63,25 +64,52 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
                 .map(|&(_, candidate)| candidate),
         );
         candidates.sort_unstable();
-        let mut snapped = false;
+        let mut snapped_to = None;
         for &candidate in &candidates {
-            let candidate = sites
+            let candidate_site = sites
                 .get(candidate)
                 .expect("candidate ordinals come from the source site enumeration");
-            let within = if candidate.retained_chart_site.is_none()
+            let within = if candidate_site.retained_chart_site.is_none()
                 && site.retained_chart_site.is_none()
             {
-                exact::distance_within(candidate.point.xy(), site.point.xy(), radius)?
+                exact::distance_within(candidate_site.point.xy(), site.point.xy(), radius)?
             } else {
-                exact::distance_within_points(&candidate.exact_point, &site.exact_point, radius)?
+                exact::distance_within_points(
+                    &candidate_site.exact_point,
+                    &site.exact_point,
+                    radius,
+                )?
             };
             if within {
-                snapped = true;
+                snapped_to = Some(candidate);
                 break;
             }
         }
-        if !snapped {
+        if let Some(candidate) = snapped_to {
+            let survivor = survivor_for_site
+                .get(candidate)
+                .copied()
+                .flatten()
+                .expect("snapping candidates are admitted survivors");
+            let target: &mut Site = survivors
+                .get_mut(survivor)
+                .expect("survivor indices belong to the retained site table");
+            target.snapped_sources.push(site.source_ordinal);
+            target
+                .snapped_sources
+                .extend_from_slice(&site.quotient_aliases);
+            target
+                .snapped_sources
+                .extend_from_slice(&site.snapped_sources);
+            *survivor_for_site
+                .get_mut(ordinal)
+                .expect("site ordinal comes from the source enumeration") = Some(survivor);
+        } else {
+            let survivor = survivors.len();
             survivors.push(site.clone());
+            *survivor_for_site
+                .get_mut(ordinal)
+                .expect("site ordinal comes from the source enumeration") = Some(survivor);
             active.push_back(ordinal);
             y_index.insert((ordered(site.exact_point.round_nearest_even()?.y), ordinal));
         }
@@ -99,6 +127,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
 pub(super) struct DelaunayComplex {
     pub(super) face_component: Vec<usize>,
     pub(super) centers: Vec<exact::ExactPoint>,
+    pub(super) center_sites: Vec<[u32; 3]>,
 }
 
 impl DelaunayComplex {
@@ -172,6 +201,7 @@ pub(super) fn delaunay_complex(
     // defines the exact circumcenter, since all of them are cocircular.
     let mut component_of_root = vec![usize::MAX; triangles.len()];
     let mut centers = Vec::with_capacity(remaining_roots);
+    let mut center_sites = Vec::with_capacity(remaining_roots);
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         let component = component_of_root
@@ -204,6 +234,11 @@ pub(super) fn delaunay_complex(
                     )?
                 },
             );
+            center_sites.push([
+                u32::try_from(a).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                u32::try_from(b).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                u32::try_from(c).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            ]);
         }
     }
     // The union-find storage has the same length and lifetime as the final
@@ -224,5 +259,6 @@ pub(super) fn delaunay_complex(
     Ok(DelaunayComplex {
         face_component: parents,
         centers,
+        center_sites,
     })
 }

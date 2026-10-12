@@ -129,6 +129,22 @@ impl PointSelectionChart {
         self.frame
     }
 
+    pub(crate) fn cut_longitudes(self) -> Result<[crate::geographic::RetainedLongitudeSite; 2]> {
+        let axis = self.frame.longitude();
+        let west = match self.cut {
+            SelectionCut::West(west) => west,
+            SelectionCut::CanonicalSeam => {
+                axis.canonicalize(-axis.half_period()).map_err(|error| {
+                    crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
+                })?
+            },
+        };
+        Ok([
+            crate::geographic::RetainedLongitudeSite::new(west, 0),
+            crate::geographic::RetainedLongitudeSite::new(west, 1),
+        ])
+    }
+
     pub(crate) fn site(&self, source: Point, source_ordinal: usize) -> Result<ChartPointSite> {
         Ok(ChartPointSite {
             longitude: self.longitude_site(source.x)?,

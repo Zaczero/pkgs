@@ -1038,6 +1038,10 @@ impl ExactPoint {
         Self::homogeneous(x, y, ExactDyadic::one())
     }
 
+    pub(in crate::geometry) fn from_homogeneous_dyadics([x, y, w]: [ExactDyadic; 3]) -> Self {
+        Self::homogeneous(x, y, w)
+    }
+
     /// The ONLY constructor. Every homogeneous triple gets its certified
     /// interval here, so a point can never exist without its filter bound.
     fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Self {

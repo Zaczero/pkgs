@@ -162,6 +162,8 @@ pub(super) struct Site {
     pub(super) source_ordinal: usize,
     pub(super) exact_point: exact::ExactPoint,
     pub(super) retained_chart_site: Option<ChartPointSite>,
+    pub(super) quotient_aliases: Vec<usize>,
+    pub(super) snapped_sources: Vec<usize>,
 }
 
 impl Site {
@@ -172,6 +174,8 @@ impl Site {
             source_ordinal,
             exact_point: exact::ExactPoint::from_xy(point.xy()),
             retained_chart_site: None,
+            quotient_aliases: Vec::new(),
+            snapped_sources: Vec::new(),
         }
     }
 
@@ -190,6 +194,8 @@ impl Site {
             source_ordinal,
             exact_point: exact::ExactPoint::from_dyadics(x, y),
             retained_chart_site: Some(chart_site),
+            quotient_aliases: Vec::new(),
+            snapped_sources: Vec::new(),
         })
     }
 

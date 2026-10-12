@@ -176,7 +176,7 @@ pub(crate) fn voronoi_flatten(
         VoronoiBoundary<'_>,
         Option<crate::geographic::GeographicFrame>,
         &mut crate::geometry::ExpansionBudget,
-    ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>>,
+    ) -> Result<crate::geometry::VoronoiPolygonOutputs>,
 ) -> PyResult<PyGeometryArray> {
     let geographic_frame = crate::geometry::topology_domain(&frame)
         .ok()
@@ -193,14 +193,21 @@ pub(crate) fn voronoi_flatten(
         clip,
         operation,
         kernel,
-        move |outputs, _, budget| {
+        move |outputs, _, budget| -> Result<crate::geometry::PublishedVoronoiPolygonOutputs> {
             crate::geometry::publish_voronoi_polygon_outputs(outputs, geographic_frame, budget)
         },
     )?;
-    Ok(PyGeometryArray::from_shapes(
-        cells.into_iter().flatten().collect(),
-        frame,
-    )?)
+    let mut receipts = Vec::with_capacity(cells.len());
+    let mut shapes = Vec::new();
+    for outputs in cells {
+        let (mut row, receipt): (Vec<Shape>, crate::geometry::VoronoiReceiptHold) =
+            outputs.into_parts();
+        shapes.append(&mut row);
+        receipts.push(receipt);
+    }
+    let output = PyGeometryArray::from_shapes(shapes, frame)?;
+    drop(receipts);
+    Ok(output)
 }
 
 /// Voronoi edges straight into packed line storage: the kernel hands back one
@@ -227,21 +234,35 @@ pub(crate) fn voronoi_edge_lines_flatten(
         clip,
         "voronoi_edge_lines",
         Shape::voronoi_edge_column_in_frame_budgeted,
-        move |(coords, offsets), _, budget| {
-            let Some(frame) = geographic_frame else {
-                return Ok((coords, offsets));
-            };
-            crate::geometry::publish_computed_line_column_with_budget(
-                &coords, &offsets, frame, budget,
+        move |output, _, budget| -> Result<crate::geometry::PublishedVoronoiEdgeColumn> {
+            crate::geometry::publish_voronoi_edge_column_with_budget(
+                output,
+                geographic_frame,
+                budget,
             )
         },
     )?;
-    let (coords, offsets) = concat_packed_line_columns(columns)?;
-    Ok(if coords.is_empty() {
+    let mut receipts = Vec::with_capacity(columns.len());
+    let packed_columns = columns
+        .into_iter()
+        .map(|column| {
+            let (coordinates, offsets, receipt): (
+                crate::geometry::CoordSeq,
+                crate::geometry::CsrOffsetColumn,
+                crate::geometry::VoronoiReceiptHold,
+            ) = column.into_parts();
+            receipts.push(receipt);
+            (coordinates, offsets)
+        })
+        .collect();
+    let (coords, offsets) = concat_packed_line_columns(packed_columns)?;
+    let output = if coords.is_empty() {
         PyGeometryArray::from_shapes(Vec::new(), frame)?
     } else {
         PyGeometryArray::packed_lines(coords, offsets, frame)?
-    })
+    };
+    drop(receipts);
+    Ok(output)
 }
 
 pub(crate) fn py_polygonize_full(

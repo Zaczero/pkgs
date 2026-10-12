@@ -49,7 +49,7 @@ fn reversing_a_tagged_ring_keeps_each_edge_with_its_tag() {
     let mut ring = vec![
         tagged(0.0, EdgeTag::Bisector(SiteId(0))),
         tagged(1.0, EdgeTag::Bisector(SiteId(1))),
-        tagged(2.0, EdgeTag::Axis),
+        tagged(2.0, EdgeTag::Frame(FrameSide::Bottom)),
     ];
     reverse_tagged(&mut ring);
     // v2 -(b)-> v1 -(a)-> v0 -(c)-> v2
@@ -57,7 +57,7 @@ fn reversing_a_tagged_ring_keeps_each_edge_with_its_tag() {
     assert_eq!(leaving, [
         EdgeTag::Bisector(SiteId(1)),
         EdgeTag::Bisector(SiteId(0)),
-        EdgeTag::Axis
+        EdgeTag::Frame(FrameSide::Bottom)
     ]);
     let xs: Vec<f64> = ring
         .iter()

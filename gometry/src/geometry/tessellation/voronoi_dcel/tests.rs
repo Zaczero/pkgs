@@ -85,6 +85,493 @@ use super::*;
 use crate::geometry::for_each_indexed_overlapping_bounds_pair;
 use crate::geometry::segment_index::checked_index_count;
 
+fn receipt_site(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiSiteReceipt {
+    receipt
+        .sites
+        .get(id as usize)
+        .filter(|site| site.id == id)
+        .expect("receipt site IDs are dense")
+}
+
+fn receipt_vertex(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiVertexReceipt {
+    receipt
+        .vertices
+        .get(id as usize)
+        .filter(|vertex| vertex.id == id)
+        .expect("receipt vertex IDs are dense")
+}
+
+fn receipt_edge(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiEdgeReceipt {
+    receipt
+        .edges
+        .get(id as usize)
+        .filter(|edge| edge.id == id)
+        .expect("receipt edge IDs are dense")
+}
+
+fn receipt_clip(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiClipSegmentReceipt {
+    receipt
+        .clip_segments
+        .get(id as usize)
+        .filter(|segment| segment.id == id)
+        .expect("receipt clip-segment IDs are dense")
+}
+
+fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
+    let bounded = |parameter: &exact::ExactRational| {
+        assert_ne!(
+            parameter.try_cmp(&exact::ExactRational::zero()).unwrap(),
+            std::cmp::Ordering::Less
+        );
+        assert_ne!(
+            parameter.try_cmp(&exact::ExactRational::one()).unwrap(),
+            std::cmp::Ordering::Greater
+        );
+    };
+    let frame_side = |side| match side {
+        VoronoiFrameSide::Bottom
+        | VoronoiFrameSide::Right
+        | VoronoiFrameSide::Top
+        | VoronoiFrameSide::Left => {},
+    };
+    let mut clip_ring_edges = std::collections::BTreeSet::new();
+    let ring_is_closed = |uses: &[VoronoiDirectedEdgeUse]| {
+        let first = uses.first().expect("receipt cell rings are non-empty");
+        let first_edge = receipt_edge(receipt, first.edge);
+        let [edge_start, edge_end] = first_edge.endpoints;
+        let start = if first.forward { edge_start } else { edge_end };
+        let mut cursor = start;
+        for use_ in uses {
+            let [edge_start, edge_end] = receipt_edge(receipt, use_.edge).endpoints;
+            let (from, to) = if use_.forward {
+                (edge_start, edge_end)
+            } else {
+                (edge_end, edge_start)
+            };
+            assert_eq!(cursor, from, "cell edge uses form one directed ring");
+            cursor = to;
+        }
+        assert_eq!(cursor, start, "cell edge uses close at their first vertex");
+    };
+
+    match receipt.producer() {
+        VoronoiProducer::Exact
+        | VoronoiProducer::Dual
+        | VoronoiProducer::Collinear
+        | VoronoiProducer::LoneSite
+        | VoronoiProducer::Empty => {},
+    }
+    for (id, site_receipt) in receipt.sites.iter().enumerate() {
+        assert_eq!(
+            site_receipt.id,
+            u32::try_from(id).expect("site receipt fits its stored ID")
+        );
+        assert!(site_receipt.source_record.x.is_finite());
+        assert!(site_receipt.source_record.y.is_finite());
+        assert_eq!(site_receipt.exact_xy.len(), 2);
+        if let Some(retained) = site_receipt.retained_chart_site {
+            assert_eq!(retained.source_ordinal(), site_receipt.source_ordinal);
+        }
+        for &source in &site_receipt.quotient_aliases {
+            assert_ne!(source, site_receipt.source_ordinal);
+        }
+        for &source in &site_receipt.snapped_sources {
+            assert_ne!(source, site_receipt.source_ordinal);
+        }
+    }
+    for source in &receipt.source_sites {
+        let owner = match source.decision {
+            VoronoiSourceSiteDecision::Selected { site: site_id } => {
+                assert_eq!(
+                    receipt_site(receipt, site_id).source_ordinal,
+                    source.source_ordinal
+                );
+                site_id
+            },
+            VoronoiSourceSiteDecision::QuotientAlias { site: site_id } => {
+                assert!(
+                    receipt_site(receipt, site_id)
+                        .quotient_aliases
+                        .contains(&source.source_ordinal)
+                );
+                site_id
+            },
+            VoronoiSourceSiteDecision::Snapped { site: site_id } => {
+                assert!(
+                    receipt_site(receipt, site_id)
+                        .snapped_sources
+                        .contains(&source.source_ordinal)
+                );
+                site_id
+            },
+        };
+        assert_eq!(receipt_site(receipt, owner).id, owner);
+    }
+
+    for (id, segment) in receipt.clip_segments.iter().enumerate() {
+        assert_eq!(
+            segment.id,
+            u32::try_from(id).expect("clip segment receipt fits its stored ID")
+        );
+        assert_eq!(segment.exact_start.len(), 2);
+        assert_eq!(segment.exact_end.len(), 2);
+        assert!(
+            clip_ring_edges.insert((segment.ring, segment.edge)),
+            "clip segment IDs retain unique ring-edge identities"
+        );
+        if let Some(side) = segment.frame_side {
+            frame_side(side);
+        }
+        for root in &segment.source_roots {
+            let _root_identity = (root.ring, root.edge, root.reversed);
+            assert!(root.start.xy().x.is_finite() && root.start.xy().y.is_finite());
+            assert!(root.end.xy().x.is_finite() && root.end.xy().y.is_finite());
+            assert_ne!(
+                PointKey::new(root.start.xy()),
+                PointKey::new(root.end.xy()),
+                "source clip roots retain a real directed segment"
+            );
+        }
+        for atom in &segment.atoms {
+            let edge = receipt_edge(receipt, atom.edge);
+            bounded(&atom.start_parameter);
+            bounded(&atom.end_parameter);
+            if let Some(side) = segment.frame_side {
+                assert_eq!(edge.frame_side, Some(side));
+            } else if !segment.source_roots.is_empty() {
+                assert!(edge.clip_sources.contains(&segment.id));
+            }
+            let _reversed = atom.reversed;
+        }
+    }
+
+    for (id, vertex_receipt) in receipt.vertices.iter().enumerate() {
+        assert_eq!(
+            vertex_receipt.id,
+            u32::try_from(id).expect("vertex receipt fits its stored ID")
+        );
+        assert_eq!(vertex_receipt.exact_xy.len(), 2);
+        for origin in &vertex_receipt.origins {
+            match origin {
+                VoronoiVertexOrigin::SourceSite { site: id } => {
+                    let _ = receipt_site(receipt, *id);
+                },
+                VoronoiVertexOrigin::OverlayNode { node } => {
+                    let _node = node;
+                },
+                VoronoiVertexOrigin::Circumcenter {
+                    component,
+                    sites: defining_sites,
+                } => {
+                    let _component = component;
+                    for &id in defining_sites {
+                        let _ = receipt_site(receipt, id);
+                    }
+                },
+                VoronoiVertexOrigin::SourceClip {
+                    segment,
+                    parameter,
+                    source_ring,
+                    source_edge,
+                } => {
+                    let clip_segment = receipt_clip(receipt, *segment);
+                    bounded(parameter);
+                    if let (Some(ring), Some(source_edge)) = (source_ring, source_edge) {
+                        assert!(
+                            clip_segment
+                                .source_roots
+                                .iter()
+                                .any(|root| { root.ring == *ring && root.edge == *source_edge })
+                        );
+                    }
+                },
+                VoronoiVertexOrigin::Bisector { sites } => {
+                    for &id in sites {
+                        let _ = receipt_site(receipt, id);
+                    }
+                },
+                VoronoiVertexOrigin::Frame { side } => frame_side(*side),
+                VoronoiVertexOrigin::Pole { latitude } => {
+                    assert!(latitude.is_finite());
+                },
+                VoronoiVertexOrigin::ChartCut { side } => match side {
+                    VoronoiChartCutSide::Lower | VoronoiChartCutSide::Upper => {},
+                },
+            }
+        }
+    }
+
+    for (id, edge_receipt) in receipt.edges.iter().enumerate() {
+        assert_eq!(
+            edge_receipt.id,
+            u32::try_from(id).expect("edge receipt fits its stored ID")
+        );
+        for &vertex_id in &edge_receipt.endpoints {
+            let _ = receipt_vertex(receipt, vertex_id);
+        }
+        if let Some(sites) = edge_receipt.separator {
+            for site_id in sites {
+                let _ = receipt_site(receipt, site_id);
+            }
+        }
+        for &segment_id in &edge_receipt.clip_sources {
+            let _ = receipt_clip(receipt, segment_id);
+            assert!(
+                edge_receipt
+                    .origins
+                    .contains(&VoronoiEdgeOrigin::SourceClip {
+                        segment: segment_id,
+                    })
+            );
+        }
+        if let Some(side) = edge_receipt.frame_side {
+            frame_side(side);
+            assert!(
+                edge_receipt
+                    .origins
+                    .contains(&VoronoiEdgeOrigin::Frame { side })
+            );
+        }
+        for owner in edge_receipt.owner_transition.into_iter().flatten() {
+            let _ = receipt_site(receipt, owner);
+        }
+        for origin in &edge_receipt.origins {
+            match origin {
+                VoronoiEdgeOrigin::SourceClip { segment } => {
+                    let _ = receipt_clip(receipt, *segment);
+                    assert!(edge_receipt.clip_sources.contains(segment));
+                },
+                VoronoiEdgeOrigin::Bisector { sites } => {
+                    for &id in sites {
+                        let _ = receipt_site(receipt, id);
+                    }
+                },
+                VoronoiEdgeOrigin::Frame { side } => frame_side(*side),
+            }
+        }
+    }
+
+    let mut faces = std::collections::BTreeSet::new();
+    for (id, dart) in receipt.darts.iter().enumerate() {
+        assert_eq!(
+            dart.id,
+            u32::try_from(id).expect("dart receipt fits its stored ID")
+        );
+        let _ = receipt_vertex(receipt, dart.origin);
+        let _ = receipt_vertex(receipt, dart.target);
+        let _ = receipt_edge(receipt, dart.edge);
+        if let Some(owner) = dart.owner {
+            let _ = receipt_site(receipt, owner);
+        }
+        if let Some(face) = dart.face {
+            faces.insert(face);
+        }
+        if let Some(twin_id) = dart.twin {
+            let twin = receipt
+                .darts
+                .get(twin_id as usize)
+                .filter(|twin| twin.id == twin_id)
+                .expect("receipt twin dart exists");
+            assert_eq!(twin.twin, Some(dart.id));
+            assert_eq!(twin.edge, dart.edge);
+            assert_eq!((twin.origin, twin.target), (dart.target, dart.origin));
+        }
+    }
+    for edge in &receipt.edges {
+        let [left_owner, right_owner] = edge.owner_transition;
+        if left_owner.is_none() && right_owner.is_none() {
+            continue;
+        }
+        for dart in receipt.darts.iter().filter(|dart| dart.edge == edge.id) {
+            let expected_owner = if [dart.origin, dart.target] == edge.endpoints {
+                left_owner
+            } else {
+                assert_eq!(
+                    [dart.target, dart.origin],
+                    edge.endpoints,
+                    "a dart follows one of its receipt edge's two directions"
+                );
+                right_owner
+            };
+            assert_eq!(dart.owner, expected_owner);
+        }
+    }
+    for edge in &receipt.edges {
+        let [left_owner, right_owner] = edge.owner_transition;
+        if left_owner.is_none() && right_owner.is_none() {
+            continue;
+        }
+        for dart in receipt.darts.iter().filter(|dart| dart.edge == edge.id) {
+            let expected_owner = if [dart.origin, dart.target] == edge.endpoints {
+                left_owner
+            } else {
+                assert_eq!(
+                    [dart.target, dart.origin],
+                    edge.endpoints,
+                    "receipt dart follows one direction of its edge"
+                );
+                right_owner
+            };
+            assert_eq!(dart.owner, expected_owner);
+        }
+    }
+    for cell in &receipt.cells {
+        let _ = receipt_site(receipt, cell.owner);
+        if let Some(face) = cell.face {
+            assert!(faces.contains(&face));
+        }
+        ring_is_closed(&cell.shell);
+        for hole in &cell.holes {
+            ring_is_closed(hole);
+        }
+    }
+    for separator in &receipt.separators {
+        for &site_id in &separator.sites {
+            let _ = receipt_site(receipt, site_id);
+        }
+        assert_eq!(separator.vertices.len(), separator.edges.len() + 1);
+        for vertex_id in &separator.vertices {
+            let _ = receipt_vertex(receipt, *vertex_id);
+        }
+        for (index, &edge_id) in separator.edges.iter().enumerate() {
+            let edge_receipt = receipt_edge(receipt, edge_id);
+            assert_eq!(edge_receipt.separator, Some(separator.sites));
+            let left = *separator
+                .vertices
+                .get(index)
+                .expect("separator start exists");
+            let right = *separator
+                .vertices
+                .get(index + 1)
+                .expect("separator end exists");
+            assert!(
+                edge_receipt.endpoints == [left, right] || edge_receipt.endpoints == [right, left]
+            );
+        }
+    }
+    let mut embedded_assignments = std::collections::BTreeMap::new();
+    for assignment in &receipt.assignments {
+        let vertex_receipt = receipt_vertex(receipt, assignment.vertex);
+        assert_eq!(vertex_receipt.assignment, Some(assignment.point));
+        if let Some(previous) = embedded_assignments.insert(assignment.embedded, assignment.point) {
+            assert_eq!(
+                PointKey::new(previous),
+                PointKey::new(assignment.point),
+                "one embedded assignment ID denotes one coordinate"
+            );
+        }
+    }
+}
+
+fn assert_polygon_receipt_alignment(outputs: &crate::geometry::VoronoiPolygonOutputs) {
+    assert_eq!(outputs.len(), outputs.receipt.cells.len());
+    for (output, cell) in outputs.iter().zip(&outputs.receipt.cells) {
+        assert_eq!(output.owner, Some(cell.owner));
+        let cell_rings = std::iter::once(&cell.shell).chain(cell.holes.iter());
+        assert_eq!(output.edge_roles.len(), cell_rings.clone().count());
+        for ((ring, roles), edge_uses) in output
+            .polygon
+            .rings()
+            .zip(&output.edge_roles)
+            .zip(cell_rings)
+        {
+            let open_count = ring.len().saturating_sub(1);
+            let points = ring
+                .iter()
+                .take(open_count)
+                .map(|point| point.xy())
+                .collect::<Vec<_>>();
+            assert!(!points.is_empty());
+            assert_eq!(roles.len(), edge_uses.len());
+            assert_eq!(roles.len(), open_count);
+            for (index, (role, edge_use)) in roles.iter().zip(edge_uses).enumerate() {
+                assert_eq!(role.edge, Some(edge_use.edge));
+                assert_eq!(role.forward, edge_use.forward);
+                let edge = receipt_edge(&outputs.receipt, edge_use.edge);
+                assert!(
+                    role.origins
+                        .iter()
+                        .all(|origin| edge.origins.contains(origin))
+                );
+                let [edge_start, edge_end] = edge.endpoints;
+                let edge_start = receipt_vertex(&outputs.receipt, edge_start)
+                    .assignment
+                    .expect("published edge endpoints have assignments");
+                let edge_end = receipt_vertex(&outputs.receipt, edge_end)
+                    .assignment
+                    .expect("published edge endpoints have assignments");
+                let (expected_start, expected_end) = if role.forward {
+                    (edge_start, edge_end)
+                } else {
+                    (edge_end, edge_start)
+                };
+                let actual_start = *points.get(index).expect("ring edge start exists");
+                let actual_end = *points
+                    .get((index + 1) % open_count)
+                    .expect("ring edge end exists");
+                assert_eq!(PointKey::new(actual_start), PointKey::new(expected_start));
+                assert_eq!(PointKey::new(actual_end), PointKey::new(expected_end));
+                for source_use in &role.source_uses {
+                    let segment = receipt_clip(&outputs.receipt, source_use.source_segment);
+                    bounded_source_use(source_use);
+                    assert_eq!(
+                        source_use.forward,
+                        source_use
+                            .start_parameter
+                            .try_cmp(&source_use.end_parameter)
+                            .unwrap()
+                            != std::cmp::Ordering::Greater
+                    );
+                    if let (Some(ring), Some(source_edge)) =
+                        (source_use.source_ring, source_use.source_edge)
+                    {
+                        assert!(segment.source_roots.iter().any(|root| {
+                            root.ring == ring as usize && root.edge == source_edge as usize
+                        }));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_edge_column_receipt_alignment(
+    coordinates: &CoordSeq,
+    offsets: &CsrOffsetColumn,
+    receipt: &VoronoiDiagramReceipt,
+) {
+    let offsets = offsets.as_slice();
+    let line_ranges = offsets.array_windows::<2>();
+    assert_eq!(offsets.len().saturating_sub(1), receipt.separators.len());
+    for (separator, &[start, end]) in receipt.separators.iter().zip(line_ranges) {
+        let start = start as usize;
+        let end = end as usize;
+        assert_eq!(end - start, separator.vertices.len());
+        for (index, &vertex_id) in separator.vertices.iter().enumerate() {
+            let assigned = receipt_vertex(receipt, vertex_id)
+                .assignment
+                .expect("published separator vertices have assignments");
+            assert_eq!(
+                PointKey::new(coordinates.point_at(start + index).xy()),
+                PointKey::new(assigned)
+            );
+        }
+    }
+}
+
+fn bounded_source_use(source_use: &VoronoiEdgeSourceUse) {
+    for parameter in [&source_use.start_parameter, &source_use.end_parameter] {
+        assert_ne!(
+            parameter.try_cmp(&exact::ExactRational::zero()).unwrap(),
+            std::cmp::Ordering::Less
+        );
+        assert_ne!(
+            parameter.try_cmp(&exact::ExactRational::one()).unwrap(),
+            std::cmp::Ordering::Greater
+        );
+    }
+}
+
 #[test]
 fn box_index_keeps_ordinal_and_bounded_count_limits_distinct() {
     let full_range = (u32::MAX as usize).wrapping_add(1);
@@ -1499,21 +1986,26 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
         .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut role_budget)
         .unwrap();
     assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs.receipt.producer(), VoronoiProducer::Collinear);
+    assert_receipt_graph(&outputs.receipt);
+    assert_polygon_receipt_alignment(&outputs);
     for output in &outputs {
-        assert_eq!(output.computed_edges.len(), output.polygon.rings().count());
+        assert_eq!(output.edge_roles.len(), output.polygon.rings().count());
         assert!(
             output
-                .computed_edges
+                .edge_roles
                 .iter()
                 .flatten()
-                .any(|&computed| computed)
+                .flat_map(|role| &role.origins)
+                .any(|origin| !matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
         );
         assert!(
             output
-                .computed_edges
+                .edge_roles
                 .iter()
                 .flatten()
-                .any(|&computed| !computed)
+                .flat_map(|role| &role.origins)
+                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
         );
     }
 
@@ -2117,9 +2609,9 @@ fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
         rings: Vec::new(),
         fixed: Vec::new(),
         chart_fixed: Vec::new(),
+        source_roots: Vec::new(),
         source: None,
         geometry: None,
-        chart: None,
         polygon_baseline: None,
         contacts: Vec::new(),
     };
@@ -2216,10 +2708,10 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
     let clip = NormalizedClip {
         rings: vec![cycle(&shell_points), cycle(&hole_points)],
         chart_fixed: vec![shell.clone(), hole.clone()],
+        source_roots: Vec::new(),
         fixed: vec![shell, hole],
         source: Some(&clip_polygon),
         geometry: Some(clip_polygon.clone()),
-        chart: None,
         polygon_baseline: None,
         contacts: Vec::new(),
     };
@@ -2930,7 +3422,10 @@ fn packed_separator_column_matches_chain_coordinates() {
         &certified_delaunay(&sites).unwrap(),
     )
     .unwrap();
-    let (coords, offsets) = packed.clone().into_line_column().unwrap();
+    let (coords, offsets, receipt) = packed.clone().into_line_column_with_receipt().unwrap();
+    assert_eq!(receipt.producer(), VoronoiProducer::Exact);
+    assert_receipt_graph(&receipt);
+    assert_edge_column_receipt_alignment(&coords, &offsets, &receipt);
     let lines = packed.into_line_seqs().unwrap();
     assert!(!lines.is_empty());
     let ends = offsets.as_slice();
@@ -2964,17 +3459,25 @@ fn direct_dual_edge_budget_counts_only_the_published_line_column() {
         .into(),
     );
     let mut budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
-    let (coordinates, offsets) = source
-        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Envelope, &mut budget)
+    let output = source
+        .voronoi_edge_column_in_frame_budgeted(0.0, VoronoiBoundary::Envelope, None, &mut budget)
         .unwrap();
-    let edge_count = offsets.as_slice().len() - 1;
+    assert_eq!(output.receipt.producer(), VoronoiProducer::Dual);
+    assert_receipt_graph(&output.receipt);
+    assert_edge_column_receipt_alignment(&output.coordinates, &output.offsets, &output.receipt);
+    let edge_count = output.offsets.as_slice().len() - 1;
     assert!(edge_count > 0);
-    assert_eq!(offsets.as_slice().first(), Some(&0));
+    assert_eq!(output.offsets.as_slice().first(), Some(&0));
     assert_eq!(
-        offsets.as_slice().last().copied().map(|end| end as usize),
-        Some(coordinates.len())
+        output
+            .offsets
+            .as_slice()
+            .last()
+            .copied()
+            .map(|end| end as usize),
+        Some(output.coordinates.len())
     );
-    assert_eq!(budget.used(), coordinates.len() + edge_count);
+    assert_eq!(budget.used(), output.coordinates.len() + edge_count);
 }
 
 #[test]
@@ -3735,6 +4238,7 @@ fn geographic_voronoi_zero_meridian_class_preserves_clip_spelling() {
     let published =
         crate::geometry::publish_voronoi_polygon_outputs(outputs, Some(frame), &mut edge_budget)
             .unwrap();
+    let (published, _receipt) = published.into_parts();
     let mut keeps_clip_spelling = false;
     let mut meridian_reads_zero = false;
     for shape in &published {
@@ -4171,18 +4675,23 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
         .unwrap();
     assert_eq!(outputs.len(), 4);
     assert!(outputs.iter().all(|output| {
-        output.computed_edges.len() == output.polygon.rings().count()
-            && output
-                .computed_edges
-                .iter()
-                .all(|edges| !edges.is_empty() && edges.iter().any(|&computed| computed))
+        output.edge_roles.len() == output.polygon.rings().count()
+            && output.edge_roles.iter().all(|edges| {
+                !edges.is_empty()
+                    && edges.iter().any(|role| {
+                        role.origins
+                            .iter()
+                            .any(|origin| !matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
+                    })
+            })
     }));
     assert!(outputs.iter().any(|output| {
         output
-            .computed_edges
+            .edge_roles
             .iter()
             .flatten()
-            .any(|&computed| !computed)
+            .flat_map(|role| &role.origins)
+            .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
     }));
 }
 
@@ -4461,6 +4970,7 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
         &sites,
         VoronoiProduct::Both,
         &mut restored_budget,
+        None,
     )
     .unwrap();
     let restored_admitted = true;
@@ -4481,6 +4991,7 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
         &sites,
         VoronoiProduct::Both,
         &mut mutated_budget,
+        None,
     )
     .is_ok();
     assert_ne!(
@@ -4581,6 +5092,7 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
         &sites,
         VoronoiProduct::Both,
         &mut restored_budget,
+        None,
     )
     .unwrap();
 
@@ -4666,7 +5178,15 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
     for (name, mutation) in mutations {
         let mut budget = ExpansionBudget::new("test", "mutated dual partition");
         assert!(
-            dual_embed(&mutation, &clip, &sites, VoronoiProduct::Both, &mut budget,).is_err(),
+            dual_embed(
+                &mutation,
+                &clip,
+                &sites,
+                VoronoiProduct::Both,
+                &mut budget,
+                None,
+            )
+            .is_err(),
             "dual mutation unexpectedly admitted: {name}"
         );
     }
@@ -4705,6 +5225,18 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
         )
         .unwrap();
     assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs.receipt.producer(), VoronoiProducer::Collinear);
+    assert_receipt_graph(&outputs.receipt);
+    assert_polygon_receipt_alignment(&outputs);
+    assert_eq!(outputs.receipt.cells.len(), 2);
+    assert_eq!(outputs.receipt.separators.len(), 1);
+    assert!(
+        outputs
+            .iter()
+            .flat_map(|output| &output.edge_roles)
+            .flatten()
+            .any(|role| !role.source_uses.is_empty())
+    );
 
     let chart_sites = [
         Shape::Point(Point::new_raw_xy(172.0, 0.0)),
@@ -4729,7 +5261,7 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
     }
 
     let mut edge_budget = ExpansionBudget::new("test", "retained collinear seam edges");
-    let (coordinates, offsets) = source
+    let output = source
         .voronoi_edge_column_in_frame_budgeted(
             0.0,
             VoronoiBoundary::Polygon(&clip),
@@ -4737,9 +5269,13 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
             &mut edge_budget,
         )
         .unwrap();
-    assert_eq!(offsets.as_slice(), &[0, 2]);
-    assert_eq!(coordinates.xs(), &[180.0, 180.0]);
-    assert_eq!(coordinates.ys(), &[-4.0, 4.0]);
+    assert_eq!(output.offsets.as_slice(), &[0, 2]);
+    assert_eq!(output.coordinates.xs(), &[180.0, 180.0]);
+    assert_eq!(output.coordinates.ys(), &[-4.0, 4.0]);
+    assert_eq!(output.receipt.producer(), VoronoiProducer::Collinear);
+    assert_receipt_graph(&output.receipt);
+    assert_edge_column_receipt_alignment(&output.coordinates, &output.offsets, &output.receipt);
+    assert_eq!(output.receipt.separators.len(), 1);
 }
 
 #[test]
@@ -4750,6 +5286,8 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             Point::new_raw_xy(-170.0, 0.0),
             Point::new_raw_xy(-170.0, 10.0),
             Point::new_raw_xy(170.0, 8.0),
+            Point::new_raw_xy(170.0, 0.0),
+            Point::new_raw_xy(170.5, 0.0),
         ]
         .into(),
     );
@@ -4775,13 +5313,41 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
     let mut exact_budget = ExpansionBudget::new("test", "retained exact seam diagram");
     let exact_outputs = source
         .voronoi_polygon_outputs_in_frame_budgeted(
-            0.0,
+            1.0,
             VoronoiBoundary::Polygon(&clip),
             Some(frame),
             &mut exact_budget,
         )
         .unwrap();
     assert_eq!(exact_outputs.len(), chart_sites.len());
+    assert_eq!(exact_outputs.receipt.producer(), VoronoiProducer::Exact);
+    assert_receipt_graph(&exact_outputs.receipt);
+    assert_polygon_receipt_alignment(&exact_outputs);
+    assert_eq!(exact_outputs.receipt.sites.len(), 4);
+    assert_eq!(exact_outputs.receipt.source_sites.len(), 6);
+    assert_eq!(exact_outputs.receipt.sites[0].source_ordinal, 0);
+    assert_eq!(
+        exact_outputs.receipt.sites[0].source_record.xy(),
+        XY::new(170.0, 0.0)
+    );
+    assert_eq!(exact_outputs.receipt.sites[0].quotient_aliases, [4]);
+    assert_eq!(exact_outputs.receipt.sites[0].snapped_sources, [5]);
+    assert!(exact_outputs.iter().all(|output| {
+        output.owner.is_some_and(|owner| {
+            exact_outputs
+                .receipt
+                .cells
+                .iter()
+                .any(|cell| cell.owner == owner)
+        })
+    }));
+    for output in &exact_outputs {
+        assert_eq!(output.edge_roles.len(), output.polygon.rings().count());
+        for (ring, roles) in output.polygon.rings().zip(&output.edge_roles) {
+            assert_eq!(roles.len(), ring.len().saturating_sub(1));
+            assert!(roles.iter().all(|role| role.edge.is_some()));
+        }
+    }
     for site in &chart_sites {
         assert_eq!(
             exact_outputs
@@ -4796,13 +5362,36 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
     let mut dual_budget = ExpansionBudget::new("test", "retained dual seam diagram");
     let dual_outputs = source
         .voronoi_polygon_outputs_in_frame_budgeted(
-            0.0,
+            1.0,
             VoronoiBoundary::Padded,
             Some(frame),
             &mut dual_budget,
         )
         .unwrap();
     assert_eq!(dual_outputs.len(), chart_sites.len());
+    assert_eq!(dual_outputs.receipt.producer(), VoronoiProducer::Dual);
+    assert_receipt_graph(&dual_outputs.receipt);
+    assert_polygon_receipt_alignment(&dual_outputs);
+    assert!(dual_outputs.receipt.vertices.iter().any(|vertex| {
+        vertex
+            .origins
+            .iter()
+            .any(|origin| matches!(origin, VoronoiVertexOrigin::Circumcenter { .. }))
+    }));
+    assert!(
+        dual_outputs
+            .receipt
+            .darts
+            .iter()
+            .any(|dart| dart.twin.is_some())
+    );
+    assert!(
+        dual_outputs
+            .receipt
+            .clip_segments
+            .iter()
+            .any(|segment| segment.frame_side.is_some() && !segment.atoms.is_empty())
+    );
     for site in &chart_sites {
         assert_eq!(
             dual_outputs
@@ -4813,6 +5402,63 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             "the dual producer assigns each retained chart site to one cell"
         );
     }
+
+    let dual_sites = crate::geometry::tessellation::shape::canonical_voronoi_sites(
+        [(170.0, 0.0), (190.0, 0.0), (190.0, 10.0), (170.0, 8.0)]
+            .into_iter()
+            .map(|(x, y)| Point::new_raw_xy(x, y))
+            .collect(),
+        0.0,
+    )
+    .unwrap();
+    let mesh = certified_delaunay(&dual_sites).unwrap();
+    let mut rectangle_budget = ExpansionBudget::new("test", "retained dual source clip receipt");
+    let dual_rectangle = dual_build_product(
+        &dual_sites,
+        VoronoiBoundary::Polygon(&clip),
+        &mut rectangle_budget,
+        &mesh,
+        VoronoiProduct::Polygons,
+        None,
+    )
+    .unwrap();
+    let (dual_rectangle_cells, dual_rectangle_receipt) = dual_rectangle.into_polygon_outputs();
+    assert_eq!(
+        dual_rectangle_receipt.producer(),
+        VoronoiProducer::Dual,
+        "the axis-aligned source clip stays on the tagged dual producer"
+    );
+    assert_receipt_graph(&dual_rectangle_receipt);
+    assert!(
+        dual_rectangle_receipt
+            .edges
+            .iter()
+            .filter(|edge| !edge.clip_sources.is_empty())
+            .all(|edge| {
+                edge.frame_side.is_none()
+                    && !edge
+                        .origins
+                        .iter()
+                        .any(|origin| matches!(origin, VoronoiEdgeOrigin::Frame { .. }))
+            })
+    );
+    assert!(
+        dual_rectangle_receipt
+            .clip_segments
+            .iter()
+            .any(|segment| !segment.atoms.is_empty())
+    );
+    assert!(
+        dual_rectangle_cells
+            .iter()
+            .flat_map(|cell| &cell.edge_roles)
+            .flatten()
+            .any(|role| role
+                .origins
+                .iter()
+                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
+                && !role.source_uses.is_empty())
+    );
 }
 
 #[test]
@@ -4842,12 +5488,70 @@ fn retained_lone_site_reuses_its_clip_and_empty_sites_stay_empty() {
         )
         .unwrap();
     assert_eq!(outputs.len(), 1);
-    assert!(
-        outputs[0]
-            .computed_edges
+    assert_eq!(outputs.receipt.producer(), VoronoiProducer::LoneSite);
+    assert_receipt_graph(&outputs.receipt);
+    assert_polygon_receipt_alignment(&outputs);
+    assert_eq!(outputs.receipt.cells.len(), 1);
+    assert!(outputs.receipt.separators.is_empty());
+    assert_eq!(
+        outputs.receipt.edges.len(),
+        clip.shell.len().saturating_sub(1)
+    );
+    assert!(outputs[0].edge_roles.iter().flatten().all(|role| {
+        role.origins
             .iter()
-            .flatten()
-            .all(|computed| !computed)
+            .all(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
+    }));
+    let mut lone_edge_budget = ExpansionBudget::new("test", "retained lone-site edges");
+    let lone_edges = lone
+        .voronoi_edge_column_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut lone_edge_budget,
+        )
+        .unwrap();
+    assert_eq!(lone_edges.receipt.producer(), VoronoiProducer::LoneSite);
+    assert_receipt_graph(&lone_edges.receipt);
+    assert_edge_column_receipt_alignment(
+        &lone_edges.coordinates,
+        &lone_edges.offsets,
+        &lone_edges.receipt,
+    );
+    let mut lone_envelope_budget = ExpansionBudget::new("test", "empty lone-site envelope");
+    let lone_envelope = lone
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Envelope,
+            Some(frame),
+            &mut lone_envelope_budget,
+        )
+        .unwrap();
+    assert!(lone_envelope.is_empty());
+    assert_eq!(lone_envelope.receipt.producer(), VoronoiProducer::LoneSite);
+    assert_receipt_graph(&lone_envelope.receipt);
+    assert_polygon_receipt_alignment(&lone_envelope);
+    assert!(lone_envelope.receipt.cells.is_empty());
+    assert!(lone_envelope.receipt.separators.is_empty());
+    let mut lone_envelope_edge_budget =
+        ExpansionBudget::new("test", "empty lone-site envelope edges");
+    let lone_envelope_edges = lone
+        .voronoi_edge_column_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Envelope,
+            Some(frame),
+            &mut lone_envelope_edge_budget,
+        )
+        .unwrap();
+    assert_eq!(
+        lone_envelope_edges.receipt.producer(),
+        VoronoiProducer::LoneSite
+    );
+    assert_receipt_graph(&lone_envelope_edges.receipt);
+    assert_edge_column_receipt_alignment(
+        &lone_envelope_edges.coordinates,
+        &lone_envelope_edges.offsets,
+        &lone_envelope_edges.receipt,
     );
 
     let empty = Shape::typed_empty(
@@ -4855,15 +5559,33 @@ fn retained_lone_site_reuses_its_clip_and_empty_sites_stay_empty() {
         crate::geometry::CoordinateAxes::XY,
     );
     let mut empty_budget = ExpansionBudget::new("test", "empty retained Voronoi");
-    assert!(
-        empty
-            .voronoi_polygon_outputs_in_frame_budgeted(
-                0.0,
-                VoronoiBoundary::Polygon(&clip),
-                Some(frame),
-                &mut empty_budget,
-            )
-            .unwrap()
-            .is_empty()
+    let empty_outputs = empty
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut empty_budget,
+        )
+        .unwrap();
+    assert!(empty_outputs.is_empty());
+    assert_eq!(empty_outputs.receipt.producer(), VoronoiProducer::Empty);
+    assert_receipt_graph(&empty_outputs.receipt);
+    assert_polygon_receipt_alignment(&empty_outputs);
+    assert!(empty_outputs.receipt.sites.is_empty());
+    let mut empty_edge_budget = ExpansionBudget::new("test", "empty Voronoi edges");
+    let empty_edges = empty
+        .voronoi_edge_column_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut empty_edge_budget,
+        )
+        .unwrap();
+    assert_eq!(empty_edges.receipt.producer(), VoronoiProducer::Empty);
+    assert_receipt_graph(&empty_edges.receipt);
+    assert_edge_column_receipt_alignment(
+        &empty_edges.coordinates,
+        &empty_edges.offsets,
+        &empty_edges.receipt,
     );
 }
