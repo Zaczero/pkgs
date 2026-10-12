@@ -1133,11 +1133,11 @@ mod geographic_sample_tests {
             .collect()
     }
 
-    fn retained_segment(support: SampleSupport) -> GeographicSampleSegment {
+    fn retained_segment(support: &SampleSupport) -> GeographicSampleSegment {
         let SampleSupport::GeographicSegment { segment } = support else {
             panic!("retained geographic segment support")
         };
-        segment
+        *segment
     }
 
     #[test]
@@ -1147,7 +1147,7 @@ mod geographic_sample_tests {
         let segments = geographic_sample_segments(&source, frame).unwrap();
 
         assert_eq!(segments.len(), 1);
-        let midpoint = retained_segment(*segments.first().expect("one retained segment"))
+        let midpoint = retained_segment(segments.first().expect("one retained segment"))
             .sample(0.5, frame)
             .unwrap();
         assert_eq!(midpoint.x.abs(), 180.0);
@@ -1160,7 +1160,7 @@ mod geographic_sample_tests {
             &support,
             |_| 1.0,
             |support, _| {
-                let segment = retained_segment(*support);
+                let segment = retained_segment(support);
                 let along = 0.5;
                 Ok((segment.sample(along, frame)?, SampleRecipe::Segment {
                     along,
@@ -1180,7 +1180,7 @@ mod geographic_sample_tests {
         assert_eq!(draw.draw_ordinal, 0);
         assert_eq!(draw.selected_element, 0);
         let segment = retained_segment(
-            *product
+            product
                 .support_elements
                 .get(draw.selected_element)
                 .expect("draw selects a prepared support element"),
@@ -1381,8 +1381,8 @@ mod geographic_sample_tests {
         let [first, second] = segments.as_slice() else {
             panic!("two retained source segments")
         };
-        let first = retained_segment(*first);
-        let second = retained_segment(*second);
+        let first = retained_segment(first);
+        let second = retained_segment(second);
         assert_eq!(first.delta_x, 20.0);
         assert_eq!(second.delta_x, 100.0);
         assert_eq!(second.delta_x / first.delta_x, 5.0);
@@ -1398,7 +1398,7 @@ mod geographic_sample_tests {
         };
         assert_eq!(draw.selected_element, 1);
         let segment = retained_segment(
-            *product
+            product
                 .support_elements
                 .get(draw.selected_element)
                 .expect("draw selects a prepared support element"),
