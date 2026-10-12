@@ -2712,7 +2712,7 @@ impl SourceTrace {
     ) -> Result<Self> {
         let edge_count = self.rows.edge_count();
         if self.samples.is_empty() {
-            let mut rows = TraceRowsBuilder::new();
+            let mut rows = TraceRowsBuilder::new(work)?;
             for &(edge, ref start, ref end) in slices {
                 work.charge(1)?;
                 if edge >= edge_count {

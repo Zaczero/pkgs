@@ -1268,7 +1268,7 @@ fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Wor
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;

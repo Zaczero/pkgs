@@ -1309,7 +1309,7 @@ impl SubdivisionRootCatalog {
 }
 
 impl RootCatalog for SubdivisionRootCatalog {
-    fn resolve<M: ChartMetric>(
+    fn resolve<M: ChartMetric, W: Work>(
         &self,
         root: RootId,
         parameter: &ExactRational,
@@ -1317,7 +1317,7 @@ impl RootCatalog for SubdivisionRootCatalog {
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         state: &mut RootMetricState,
         fraction: &mut Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<NodeOrdinates> {
         if !axes.has_z() && !axes.has_m() {
             return Ok(NodeOrdinates::default());
