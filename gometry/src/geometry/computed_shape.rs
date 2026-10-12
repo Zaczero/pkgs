@@ -25,24 +25,24 @@ pub(crate) struct VoronoiReceiptHold {
 
 pub(crate) struct PublishedVoronoiPolygonOutputs {
     pub(crate) shapes: Vec<Shape>,
-    _receipt: VoronoiReceiptHold,
+    receipt: VoronoiReceiptHold,
 }
 
 impl PublishedVoronoiPolygonOutputs {
     pub(crate) fn into_parts(self) -> (Vec<Shape>, VoronoiReceiptHold) {
-        (self.shapes, self._receipt)
+        (self.shapes, self.receipt)
     }
 }
 
 pub(crate) struct PublishedVoronoiEdgeColumn {
     pub(crate) coordinates: CoordSeq,
     pub(crate) offsets: CsrOffsetColumn,
-    _receipt: VoronoiReceiptHold,
+    receipt: VoronoiReceiptHold,
 }
 
 impl PublishedVoronoiEdgeColumn {
     pub(crate) fn into_parts(self) -> (CoordSeq, CsrOffsetColumn, VoronoiReceiptHold) {
-        (self.coordinates, self.offsets, self._receipt)
+        (self.coordinates, self.offsets, self.receipt)
     }
 }
 
@@ -465,7 +465,7 @@ pub(crate) fn publish_voronoi_polygon_outputs(
         .collect::<Result<Vec<_>>>()?;
     Ok(PublishedVoronoiPolygonOutputs {
         shapes,
-        _receipt: VoronoiReceiptHold { _diagram: receipt },
+        receipt: VoronoiReceiptHold { _diagram: receipt },
     })
 }
 
@@ -486,7 +486,7 @@ pub(crate) fn publish_voronoi_edge_column_with_budget(
     Ok(PublishedVoronoiEdgeColumn {
         coordinates,
         offsets,
-        _receipt: VoronoiReceiptHold {
+        receipt: VoronoiReceiptHold {
             _diagram: output.receipt,
         },
     })
