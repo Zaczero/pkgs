@@ -6,9 +6,6 @@ use super::{
     Ball, Bound, HALF_PI_HI, HALF_PI_LO, Midpoint as _, PI_HI, PI_LO, QUARTER_PI_HI, QUARTER_PI_LO,
 };
 
-/// Certified sine/cosine of a bounded radian argument.  The returned balls
-/// enclose mathematical values; inability to prove a unique reduction is an
-/// ordinary fail-open result (`None`).
 fn apply_quadrant(sin: Ball, cos: Ball, quadrant: i64) -> Option<(Ball, Ball)> {
     match quadrant.rem_euclid(4) {
         0 => Some((sin, cos)),
@@ -19,6 +16,9 @@ fn apply_quadrant(sin: Ball, cos: Ball, quadrant: i64) -> Option<(Ball, Ball)> {
     }
 }
 
+/// Certified sine/cosine of a bounded radian argument.  The returned balls
+/// enclose mathematical values; inability to prove a unique reduction is an
+/// ordinary fail-open result (`None`).
 pub(super) fn sin_cos(input: Bound) -> Option<(Ball, Ball)> {
     let (reduced, quadrant) = reduce_quadrant(input)?;
     let (sin, cos) = sin_cos_small(reduced)?;
