@@ -306,8 +306,8 @@ pub(super) fn clip_hull_ray_to_rectangle(
     let left = &site_at(sites, left_site).exact_point;
     let right = &site_at(sites, right_site).exact_point;
     let hits = separator_rectangle_hits([left, right], line, rect)?;
-    let mid = left.midpoint(&right)?;
-    let opposite_sign = exact::orient_points(&left, &right, &site_at(sites, opposite).exact_point)?;
+    let mid = left.midpoint(right)?;
+    let opposite_sign = exact::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
     let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {
         points.push(center.clone());
@@ -332,7 +332,7 @@ pub(super) fn clip_hull_ray_to_rectangle(
             return Ok(None);
         };
         (center.clone(), hint)
-    } else if exact::orient_points(&left, &right, center)? == opposite_sign {
+    } else if exact::orient_points(left, right, center)? == opposite_sign {
         (center.clone(), mid)
     } else {
         (mid, center.clone())

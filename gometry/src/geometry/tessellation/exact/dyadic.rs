@@ -312,9 +312,9 @@ impl ExactLine {
         Ok(Self([
             ExactDyadic::try_subtract_refs(bx, ax)?.try_product(&two)?,
             ExactDyadic::try_subtract_refs(by, ay)?.try_product(&two)?,
-            ax.try_product(&ax)?
-                .try_add(ay.try_product(&ay)?)?
-                .try_subtract(bx.try_product(&bx)?.try_add(by.try_product(&by)?)?)?,
+            ax.try_product(ax)?
+                .try_add(ay.try_product(ay)?)?
+                .try_subtract(bx.try_product(bx)?.try_add(by.try_product(by)?)?)?,
         ]))
     }
 

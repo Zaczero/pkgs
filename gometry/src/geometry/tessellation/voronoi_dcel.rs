@@ -4076,8 +4076,8 @@ impl VoronoiEmbedding<'_> {
                 if exact::segment_intersection(
                     &exact::ExactPoint::from_xy(start),
                     &exact::ExactPoint::from_xy(end),
-                    &query,
-                    &query,
+                    query,
+                    query,
                 )?
                 .is_point()
                 {
