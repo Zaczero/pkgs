@@ -10,11 +10,12 @@ use std::cmp::Ordering;
 use super::{
     BoundaryFaceId, EdgeId, ExactSign, ExactSubdivision, ExactVertex, NodedExactCycle,
     OwnerCycleContainment, OwnerShellPosition, Result, SiteId, VertexId, XY, exact,
-    selected_cell_label, try_sort_by, validate_assembled_exact_cycles, validate_owner_cycle_facts,
+    selected_cell_label, validate_assembled_exact_cycles, validate_owner_cycle_facts,
     voronoi_error, walk_label,
 };
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::overlay::{RayAxis, RayPoints, shoot_left};
+use crate::geometry::segments::ordering::try_sort_by;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

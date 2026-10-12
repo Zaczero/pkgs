@@ -35,6 +35,7 @@ use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
 use crate::geographic::{ChartPointSite, GeographicFrame};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 
@@ -1344,7 +1345,7 @@ impl SourcePieces {
         #[cfg(test)]
         let expected = {
             let mut pieces: Vec<_> = self.values().cloned().collect();
-            crate::geometry::try_sort_by(&mut pieces, compare_source_pieces)?;
+            try_sort_by(&mut pieces, compare_source_pieces)?;
             pieces
         };
         let mut pieces = Vec::with_capacity(self.edges.len());

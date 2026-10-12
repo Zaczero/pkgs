@@ -35,6 +35,7 @@ use crate::geometry::overlay::{
     segments_within_chebyshev, visit_component_faces,
 };
 use crate::geometry::segment_index::YStabbingIndex;
+use crate::geometry::segments::ordering::{try_dedup_by, try_sort_by};
 use crate::geometry::tessellation::{
     CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, VoronoiAssignmentReceipt,
     VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt, VoronoiClipSegmentReceipt,
@@ -48,8 +49,7 @@ use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, Point, PointKey,
     Polygon, PolygonPointIndex, Ring, Segment, SegmentParameter, Shape, Strictness,
     VoronoiBoundary, XY, coverage_is_valid, for_each_candidate_pair,
-    for_each_overlapping_bounds_cross_pair, polygon_is_valid, single_chain, try_dedup_by,
-    try_sort_by,
+    for_each_overlapping_bounds_cross_pair, polygon_is_valid, single_chain,
 };
 #[cfg(test)]
 use crate::geometry::{

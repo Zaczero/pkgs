@@ -389,7 +389,6 @@ pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate,
 };
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
     CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,

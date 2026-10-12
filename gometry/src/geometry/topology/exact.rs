@@ -17,7 +17,7 @@ use crate::geographic::{
 use crate::geometry::exact_arith::{
     ExactSign, retained_source_interval_reads_as, split_rational_native_site_with_work,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, ExactRational};
 use crate::geometry::{
     Bounds, Component, Coordinates as _, ExpansionBudget, GeometryErrorKind, Point, Polygon,

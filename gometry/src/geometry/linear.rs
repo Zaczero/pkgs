@@ -10,6 +10,7 @@ use super::line_index::InterpolationProvenance;
 use super::linear_3d;
 use crate::error::Result;
 use crate::geometry::distance::{ChartParts, point_chart_locate};
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh,
     GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString,
@@ -831,7 +832,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         !(*index == first_live && projection.is_start()
             || *index == last_live && projection.is_end())
     });
-    crate::geometry::try_sort_by(&mut cuts, |left, right| {
+    try_sort_by(&mut cuts, |left, right| {
         Ok(left.0.cmp(&right.0).then(left.1.cmp_along(&right.1)?))
     })?;
     let mut keep: Vec<(usize, SegmentProjection)> = Vec::with_capacity(cuts.len());

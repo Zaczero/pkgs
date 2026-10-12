@@ -3,7 +3,7 @@ use super::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Work};
 

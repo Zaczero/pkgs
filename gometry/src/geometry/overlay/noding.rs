@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
+use crate::geometry::segments::ordering::try_sort_by;
 #[cfg(test)]
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
@@ -455,7 +456,7 @@ pub(crate) fn split_segment_at(
         out.push(segment);
         return Ok(());
     }
-    crate::geometry::try_sort_by(cuts, |left, right| {
+    try_sort_by(cuts, |left, right| {
         Ok(segments::compare_along_segment(segment, *left, *right))
     })?;
     dedup_consecutive_xy(cuts);

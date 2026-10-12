@@ -3,6 +3,7 @@ use std::ops::ControlFlow;
 
 use crate::NonNegative;
 use crate::geometry::constructive::Result;
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates, GeometryErrorKind, GeometryKind, LineSeq,
     MultiLineString, MultiMember, MultiPolygon, Point, Polygon, RepairMethod, Ring, RunIdentity,
@@ -187,7 +188,7 @@ impl SnapReference {
             },
         }
         // Equal projections use the reference XY set rather than its input order.
-        crate::geometry::try_sort_by(&mut candidates, |a, b| {
+        try_sort_by(&mut candidates, |a, b| {
             Ok(a.0
                 .cmp_along(&b.0)?
                 .then_with(|| compare_xy(XY::new(a.1.x, a.1.y), XY::new(b.1.x, b.1.y))))

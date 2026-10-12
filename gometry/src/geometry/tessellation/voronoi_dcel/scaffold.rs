@@ -10,8 +10,9 @@ use super::{
     OwnerTransition, PointKey, PrimitiveOwner, Result, ScaffoldPrimitive, Site, SiteAdjacency,
     SiteId, Transition, VertexId, XY, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact,
     nearest_site_walk, noded_vertex, orient_separator, site_at, site_by_id, sort_unique_along,
-    try_dedup_by, try_sort_by, voronoi_error,
+    voronoi_error,
 };
+use crate::geometry::segments::ordering::{try_dedup_by, try_sort_by};
 
 pub(super) fn coincident_frame_owner(
     pair: [SiteId; 2],

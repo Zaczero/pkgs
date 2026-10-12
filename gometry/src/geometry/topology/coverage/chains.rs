@@ -15,7 +15,7 @@ use super::GeographicCoverageAnalysis;
 use crate::error::{ResourceError, Result};
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::embedding_search::Work;
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 
 const JUNCTION: u8 = 1;
 const INCIDENCE_CHANGE: u8 = 2;
