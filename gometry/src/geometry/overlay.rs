@@ -155,4 +155,8 @@ pub(crate) use nary::{
 pub(crate) use noding::self_node_segments_sourced;
 pub(crate) use rect::{rect_polygon, rectangle_bounds};
 #[cfg(test)]
-mod tests;
+#[path = "overlay/clip/extracted_tests.rs"]
+mod rectangle_clip_tests;
+#[cfg(test)]
+#[path = "overlay/tests/support.rs"]
+mod test_support;

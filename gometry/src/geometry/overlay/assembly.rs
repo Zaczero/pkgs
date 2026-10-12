@@ -528,3 +528,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod extracted_tests;
