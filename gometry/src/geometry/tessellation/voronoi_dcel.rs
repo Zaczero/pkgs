@@ -2726,7 +2726,7 @@ fn clip_segment_receipts(
                 u32::try_from(segment_id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
             let atoms = trace
                 .and_then(|trace| trace.rings.get(ring_index))
-                .map(|ring| {
+                .map_or_default(|ring| {
                     ring.atoms
                         .iter()
                         .filter(|atom| atom.segment == id)
@@ -2737,8 +2737,7 @@ fn clip_segment_receipts(
                             end_parameter: atom.end_parameter.clone(),
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let source_roots = clip
                 .source_roots
                 .get(segment_id)
