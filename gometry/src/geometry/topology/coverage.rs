@@ -1441,14 +1441,13 @@ mod tests {
         let mut selector_budget =
             EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
                 .expect("empty test budget");
-        let selector_error = match analysis.assign_cleaning_faces(
+        let Err(selector_error) = analysis.assign_cleaning_faces(
             &row_areas,
             1.0,
             CoverageOverlapRule::LongestBorder,
             &mut selector_budget,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("face metrics consume work"),
+        ) else {
+            panic!("face metrics consume work");
         };
         assert!(matches!(
             selector_error.kind(),

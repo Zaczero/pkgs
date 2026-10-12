@@ -1328,9 +1328,8 @@ mod tests {
                 .expect("geographic coverage admits");
         let mut work = EvaluationBudget::with_remaining_ticks_for_test("coverage_simplify", 0, 0)
             .expect("empty evaluation budget");
-        let error = match analysis.shared_chain_inventory(&mut work) {
-            Err(error) => error,
-            Ok(_) => panic!("shared-chain inventory consumes work"),
+        let Err(error) = analysis.shared_chain_inventory(&mut work) else {
+            panic!("shared-chain inventory consumes work");
         };
         assert!(matches!(
             error.kind(),
