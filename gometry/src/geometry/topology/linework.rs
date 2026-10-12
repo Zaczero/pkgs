@@ -330,12 +330,12 @@ pub(super) fn minimal_face_boundaries(
                 true;
         }
     }
-    walk_minimal_face_boundaries(q, boundary, selected_faces, work)
+    walk_minimal_face_boundaries(q, &boundary, selected_faces, work)
 }
 
 fn walk_minimal_face_boundaries(
     q: &super::q::ExactGeographicQ,
-    boundary: Vec<bool>,
+    boundary: &[bool],
     selected_faces: &[bool],
     work: &mut impl Work,
 ) -> Result<Vec<FaceBoundaryCycle>> {
