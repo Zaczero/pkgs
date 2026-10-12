@@ -266,16 +266,15 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
     omitted_source.source_ids.pop();
     omitted_source.views.pop();
     reset_source_line_runs_calls();
-    let error = match inventory.source_line_runs(
+    let Err(error) = inventory.source_line_runs(
         &partition,
         &ranges,
         &omitted_source,
         &selected,
         &traces,
         &mut work,
-    ) {
-        Ok(_) => panic!("an omitted operand-0 source row cannot be admitted"),
-        Err(error) => error,
+    ) else {
+        panic!("an omitted operand-0 source row cannot be admitted");
     };
     assert_eq!(source_line_runs_calls(), 1);
     assert!(
