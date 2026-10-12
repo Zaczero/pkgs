@@ -18,12 +18,14 @@ use crate::geometry::distance::{
     ChartEdgePart, ChartParts, coordinate_squared_safe, point_chart_locate, squared_space_safe,
 };
 use crate::geometry::facet_bvh::update_nearest_candidate;
+use crate::geometry::segments::projection::{
+    point_segment_distance_and_projection, segment_projection,
+};
 use crate::geometry::{
     ChartMetric, CoordSeq, Coordinates as _, DistanceParts, GeodesicMetric, GeometryErrorKind,
     LineSeq, MeasureRange, NearestCandidate, Ordering, Point, Segment, Shape, ShapeCountQuery, XY,
     lerp_point, linework_first_point, normalize_line_distance, point_distance,
-    point_segment_distance_and_projection, point_segment_selection, push_distinct_active_position,
-    segment_projection,
+    point_segment_selection, push_distinct_active_position,
 };
 #[cfg(test)]
 use crate::py::support::prepare_line_locate;

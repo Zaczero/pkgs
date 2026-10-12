@@ -11,7 +11,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::embedding_search::Work;
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 
 pub(in crate::geometry::topology) struct GeographicCoverageBoundaryPlans<'q> {
     pub(in crate::geometry::topology) topology: &'q super::super::q::ExactGeographicTopology,

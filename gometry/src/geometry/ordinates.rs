@@ -7,13 +7,15 @@ use std::cell::Cell;
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
+use crate::geometry::segments::projection::{
+    point_segment_distance_and_projection, segment_projection,
+};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
     OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, Unmetered, VertexKey, Work, XY,
     ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate, interpolate_subdivision_ordinate,
-    overlay, point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
-    scaled_residual, segment_projection,
+    overlay, point_distance, point_on_segment, same_point, scaled_residual,
 };
 
 mod trace;

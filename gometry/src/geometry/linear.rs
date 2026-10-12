@@ -10,13 +10,15 @@ use super::line_index::InterpolationProvenance;
 use super::linear_3d;
 use crate::error::Result;
 use crate::geometry::distance::{ChartParts, point_chart_locate};
+use crate::geometry::segments::ordering::try_sort_by;
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh,
     GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString,
     Ordering, PlanarMetric, Point, PreparedLinework, PreparedPlan, Segment, SegmentMetric,
     SegmentProjection, Shape, SharedSlice, distance_3d_with_parts, interpolate_fraction,
     point_distance, point_segment_selection, push_distinct_active_position, same_point,
-    segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
+    shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -831,7 +833,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         !(*index == first_live && projection.is_start()
             || *index == last_live && projection.is_end())
     });
-    crate::geometry::try_sort_by(&mut cuts, |left, right| {
+    try_sort_by(&mut cuts, |left, right| {
         Ok(left.0.cmp(&right.0).then(left.1.cmp_along(&right.1)?))
     })?;
     let mut keep: Vec<(usize, SegmentProjection)> = Vec::with_capacity(cuts.len());

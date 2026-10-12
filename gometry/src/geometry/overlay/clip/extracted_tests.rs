@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::geometry::overlay::{
     OverlayOp, Strictness, binary_areal_overlay, overlay_all, rect_polygon,
 };
-use crate::geometry::segments::clip_segment_rect_interval;
+use crate::geometry::segments::clip::clip_segment_rect_interval;
 use crate::geometry::tessellation::exact::compare_ratios;
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, LineSeq, MOrdinate, Point, Polygon, Ring, Segment, Shape, XY,

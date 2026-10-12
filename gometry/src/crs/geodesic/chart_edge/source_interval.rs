@@ -4,9 +4,8 @@ use crate::geometry::exact_arith::{
     retained_source_interval_initial_piece_count, retained_source_interval_reads_as,
     retained_source_sheet_site,
 };
-use crate::geometry::{
-    GeometryErrorKind, Point, Segment, SegmentProjection, XY, segment_projection,
-};
+use crate::geometry::segments::projection::segment_projection;
+use crate::geometry::{GeometryErrorKind, Point, Segment, SegmentProjection, XY};
 
 impl ChartEdge {
     /// Intended position on the chart edge before canonical point emission.

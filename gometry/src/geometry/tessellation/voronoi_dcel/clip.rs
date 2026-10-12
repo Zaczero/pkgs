@@ -6,8 +6,9 @@
 
 use super::{
     ExactSign, FrameSide, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy,
-    site_at, site_by_id, try_dedup_by, try_sort_by, voronoi_error,
+    site_at, site_by_id, voronoi_error,
 };
+use crate::geometry::segments::ordering::{try_dedup_by, try_sort_by};
 
 pub(super) fn orient_separator(
     mut start: exact::ExactPoint,

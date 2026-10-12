@@ -33,7 +33,7 @@ use crate::geometry::ordinates::{
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
 use crate::geometry::overlay::CertifiedOverlayOrder;
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, MOrdinate, Point,

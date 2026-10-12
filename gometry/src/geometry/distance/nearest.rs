@@ -1,7 +1,8 @@
 use crate::geometry::distance::parts_covers_point;
+use crate::geometry::segments::contact::segment_contact_point;
 use crate::geometry::{
     BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, NearestTarget, Point,
-    PointSetIndex, Segment, Shape, point_pair_distance_key, segment_contact_point,
+    PointSetIndex, Segment, Shape, point_pair_distance_key,
 };
 pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
     probe: &DistanceParts,

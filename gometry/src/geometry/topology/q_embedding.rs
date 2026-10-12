@@ -65,7 +65,7 @@ use crate::geometry::overlay::{
     compare_departures_with_work, graph_global_faces_with_work, segments_within_chebyshev,
     shoot_left_with_work, walk_is_shell_with_work,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
 use crate::geometry::{
     Bounds, ChartMetric, CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Segment, Unmetered,

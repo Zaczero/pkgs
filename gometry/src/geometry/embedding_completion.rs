@@ -19,7 +19,7 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
     compare_departures_with_work, graph_global_faces_with_work,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
     ExactChartPoint, exact_segments_intersect_with_work, point_on_exact_segment_with_work,

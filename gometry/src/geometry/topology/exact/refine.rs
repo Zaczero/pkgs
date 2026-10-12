@@ -7,7 +7,7 @@ use super::{
     source_chart_point,
 };
 use crate::error::{ResourceError, Result};
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     Bounds, ExpansionBudget, GeometryErrorKind, Segment, Work,

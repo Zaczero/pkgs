@@ -1,4 +1,4 @@
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HashMap, LineSeq, Point, PointKey, Polygon, Shape,
     Work,

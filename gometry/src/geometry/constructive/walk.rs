@@ -1,10 +1,11 @@
 use crate::geometry::constructive::offset::{MiterConstruction, miter_join};
 use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, ExpansionBudget, Ordering, Orientation, Point, Polygon,
-    Segment, SegmentProjection, XY, orientation, segment_cross_point, segment_projection,
-    segments_intersect, wrap_index,
+    Segment, SegmentProjection, XY, orientation, segment_cross_point, segments_intersect,
+    wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset

@@ -4,10 +4,12 @@ use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
 #[cfg(test)]
-use crate::geometry::segments::{
+use crate::geometry::segments::contact::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
     segment_envelopes_disjoint,
 };
+#[cfg(test)]
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::{HashMap, PointKey, Segment, same_point, undirected_segment_edge_key};
 #[cfg(test)]
 use crate::geometry::{
@@ -455,8 +457,10 @@ pub(crate) fn split_segment_at(
         out.push(segment);
         return Ok(());
     }
-    crate::geometry::try_sort_by(cuts, |left, right| {
-        Ok(segments::compare_along_segment(segment, *left, *right))
+    try_sort_by(cuts, |left, right| {
+        Ok(segments::ordering::compare_along_segment(
+            segment, *left, *right,
+        ))
     })?;
     dedup_consecutive_xy(cuts);
     let mut previous = segment.start;

@@ -14,7 +14,7 @@ use super::{ChartSpan, ExactGeographicTopology, QNodeId, QNodeKey, QSpanOwner};
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, SeamIdentity};
 use crate::geometry::predicates::collect_duplicate_points;
-use crate::geometry::segments::try_sort_by;
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{GeometryErrorKind, HashSet, Point, PointKey, Shape, ValidationIssue};
 

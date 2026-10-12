@@ -1413,8 +1413,9 @@ mod tests {
     #[test]
     fn chart_support_parameters_compose_exact_partial_ranges_in_reversed_grad_frames() {
         use crate::geographic::{AngularFactor, GeographicAxisOrientation};
+        use crate::geometry::ExactRational;
         use crate::geometry::ordinates::{RootId, RootRange};
-        use crate::geometry::{ExactRational, segment_projection};
+        use crate::geometry::segments::projection::segment_projection;
 
         let grad = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
         let frame = GeographicFrame::try_new_with_orientation(

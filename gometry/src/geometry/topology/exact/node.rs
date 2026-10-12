@@ -8,7 +8,7 @@ use super::{
 use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geometry::Unmetered;
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{ExpansionBudget, Work, for_each_candidate_pair};
 
