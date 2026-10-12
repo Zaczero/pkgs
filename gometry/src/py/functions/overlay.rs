@@ -740,19 +740,38 @@ pub(crate) fn coverage_invalid_edges(
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, _) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
-    let edges = py.detach(move || {
-        geometry::coverage_invalid_edges_with_domain(
-            &shapes,
-            gap_width,
-            domain,
-            "coverage_invalid_edges",
-        )
-    })?;
+    let (edges, analysis) = match domain {
+        geometry::TopologyDomain::Cartesian => {
+            let edges = py.detach(move || {
+                geometry::coverage_invalid_edges_with_domain(
+                    &shapes,
+                    gap_width,
+                    geometry::TopologyDomain::Cartesian,
+                    "coverage_invalid_edges",
+                )
+            })?;
+            (edges, None)
+        },
+        geometry::TopologyDomain::Geographic(frame) => {
+            let (analysis, edges) = py.detach(move || {
+                geometry::coverage_invalid_edges_geographic_analysis(
+                    &shapes,
+                    frame,
+                    gap_width,
+                    "coverage_invalid_edges",
+                )
+            })?;
+            (edges, Some(analysis))
+        },
+    };
     let result = PyGeometryArray::from_shapes(edges, metadata)?;
-    Ok(match source {
+    let result = match source {
         None => result,
         Some(array) => array.scatter_present_result(result)?,
-    })
+    };
+    // Keep original Q edge/range authority alive through nullable row scatter.
+    drop(analysis);
+    Ok(result)
 }
 
 /// Simplify a VALID polygonal coverage's boundaries, preserving its

@@ -19,11 +19,12 @@ use crate::geometry::coverage::{
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    BulkRTree, ExactRationalArea, ExpansionBudget, GeometryErrorKind, Loc, Segment, Shape,
-    Unmetered, Work, XY, point_distance,
+    BulkRTree, ExactRationalArea, ExpansionBudget, GeometryErrorKind, Loc, Shape, Unmetered, Work,
+    XY, point_distance,
 };
 
 pub(in crate::geometry::topology) mod chains;
+mod invalid_edges;
 mod regions;
 mod simplify;
 
@@ -72,13 +73,31 @@ pub(crate) struct GeographicCoverageAnalysis {
     pub(crate) topology: ExactGeographicTopology,
     pub(crate) face_rows: Vec<Vec<usize>>,
     pub(crate) span_rows: Vec<Vec<usize>>,
-    pub(crate) invalid_source_segments: Vec<Vec<Segment>>,
+    invalid_source_edge_flags: Vec<bool>,
+    invalid_source_owners: Vec<super::q::QSpanOwner>,
 }
 
 impl GeographicCoverageAnalysis {
     pub(crate) fn is_valid(&self) -> bool {
-        self.invalid_source_segments.iter().all(Vec::is_empty)
+        self.invalid_source_edge_flags
+            .iter()
+            .all(|invalid| !invalid)
             && self.face_rows.iter().all(|rows| rows.len() <= 1)
+    }
+
+    pub(crate) fn capture_invalid_source_owners(&mut self, work: &mut impl Work) -> Result<()> {
+        self.invalid_source_owners =
+            invalid_edges::capture(&self.topology, &self.invalid_source_edge_flags, work)?;
+        Ok(())
+    }
+
+    pub(crate) fn invalid_source_shapes(&self, work: &mut impl Work) -> Result<Vec<Shape>> {
+        invalid_edges::project_shapes(
+            &self.topology,
+            &self.invalid_source_edge_flags,
+            &self.invalid_source_owners,
+            work,
+        )
     }
 
     pub(crate) fn has_shared_boundary(&self) -> bool {
@@ -867,30 +886,12 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         )?;
     }
 
-    let mut output = vec![Vec::new(); source_rows];
-    for (edge_index, edge) in source_edges.iter().enumerate() {
-        work.charge_into_error(1)?;
-        if !invalid_edges
-            .get(edge_index)
-            .copied()
-            .expect("coverage invalid-edge flag matches its source inventory")
-        {
-            continue;
-        }
-        let row = edge.row.0 as usize;
-        output
-            .get_mut(row)
-            .ok_or_else(|| GeometryErrorKind::Invalid("coverage edge row is out of range".into()))?
-            .push(Segment {
-                start: XY::new(edge.source[0].x, edge.source[0].y),
-                end: XY::new(edge.source[1].x, edge.source[1].y),
-            });
-    }
     Ok(GeographicCoverageAnalysis {
         topology,
         face_rows,
         span_rows,
-        invalid_source_segments: output,
+        invalid_source_edge_flags: invalid_edges,
+        invalid_source_owners: Vec::new(),
     })
 }
 

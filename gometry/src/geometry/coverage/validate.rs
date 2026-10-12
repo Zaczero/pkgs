@@ -561,20 +561,33 @@ pub(crate) fn coverage_invalid_edges_with_domain<S: std::borrow::Borrow<Shape>>(
     let invalid = match domain {
         crate::geometry::TopologyDomain::Cartesian => coverage_invalid_segments(rows, gap_width)?,
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            validate_gap_width(gap_width)?;
-            validate_polygonal_rows(rows)?;
-            let mut budget = EvaluationBudget::new(operation, 0)?;
-            crate::geometry::analyze_geographic_coverage_with_work(
-                rows,
-                frame,
-                gap_width,
-                operation,
-                &mut budget,
-            )?
-            .invalid_source_segments
+            let (_, shapes) =
+                coverage_invalid_edges_geographic_analysis(rows, frame, gap_width, operation)?;
+            return Ok(shapes);
         },
     };
     coverage_invalid_edge_shapes(invalid)
+}
+
+pub(crate) fn coverage_invalid_edges_geographic_analysis<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    frame: crate::geographic::GeographicFrame,
+    gap_width: f64,
+    operation: &'static str,
+) -> Result<(crate::geometry::GeographicCoverageAnalysis, Vec<Shape>)> {
+    validate_gap_width(gap_width)?;
+    validate_polygonal_rows(rows)?;
+    let mut budget = EvaluationBudget::new(operation, 0)?;
+    let mut analysis = crate::geometry::analyze_geographic_coverage_with_work(
+        rows,
+        frame,
+        gap_width,
+        operation,
+        &mut budget,
+    )?;
+    analysis.capture_invalid_source_owners(&mut budget)?;
+    let shapes = analysis.invalid_source_shapes(&mut budget)?;
+    Ok((analysis, shapes))
 }
 
 fn coverage_invalid_edge_shapes(invalid: Vec<Vec<Segment>>) -> Result<Vec<Shape>> {

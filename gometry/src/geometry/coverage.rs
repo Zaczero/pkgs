@@ -32,6 +32,7 @@ pub(crate) use simplify::{vw_area_tolerance, *};
 #[cfg(test)]
 pub(crate) use validate::coverage_invalid_edges;
 pub(crate) use validate::{
-    coverage_invalid_edges_with_domain, coverage_is_valid, coverage_is_valid_with_domain,
-    coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
+    coverage_invalid_edges_geographic_analysis, coverage_invalid_edges_with_domain,
+    coverage_is_valid, coverage_is_valid_with_domain, coverage_rows, valid_coverage_rows,
+    validate_polygonal_rows, visit_invalid_segments,
 };

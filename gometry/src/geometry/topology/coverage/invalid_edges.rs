@@ -1,0 +1,373 @@
+use super::super::q::{ExactGeographicTopology, QSpanOwner};
+use crate::error::Result;
+use crate::geometry::{
+    CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Segment, Shape, Work, XY,
+};
+
+pub(super) fn capture(
+    topology: &ExactGeographicTopology,
+    invalid_edges: &[bool],
+    work: &mut impl Work,
+) -> Result<Vec<QSpanOwner>> {
+    let mut has_invalid_edge = false;
+    for &invalid in invalid_edges {
+        work.charge_into_error(1)?;
+        if invalid {
+            has_invalid_edge = true;
+            break;
+        }
+    }
+    if !has_invalid_edge {
+        return Ok(Vec::new());
+    }
+
+    let mut owners = Vec::new();
+    for span in &topology.q.spans {
+        work.charge_into_error(1)?;
+        for owner in span.owners.iter() {
+            work.charge_into_error(1)?;
+            let invalid = invalid_edges
+                .get(owner.source_edge.0 as usize)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "coverage invalid-edge owner is outside the source inventory".into(),
+                    )
+                })?;
+            if invalid {
+                owners.push(owner.clone());
+            }
+        }
+    }
+    if owners.is_empty() {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage invalid source edge has no Q source owner".into(),
+        )
+        .into());
+    }
+    Ok(owners)
+}
+
+pub(super) fn project_shapes(
+    topology: &ExactGeographicTopology,
+    invalid_source_edge_flags: &[bool],
+    owners: &[QSpanOwner],
+    work: &mut impl Work,
+) -> Result<Vec<Shape>> {
+    if owners.is_empty() {
+        return (0..topology.sources.row_count)
+            .map(|_| {
+                Ok(Shape::typed_empty(
+                    GeometryKind::LineString,
+                    CoordinateAxes::XY,
+                ))
+            })
+            .collect();
+    }
+
+    if invalid_source_edge_flags.len() != topology.sources.edges.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage invalid-edge flags are out of sync with source edges".into(),
+        )
+        .into());
+    }
+    let mut selected = vec![false; topology.sources.edges.len()];
+    for owner in owners {
+        work.charge_into_error(1)?;
+        let selected = selected
+            .get_mut(owner.source_edge.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "coverage invalid-edge projection has an unknown source edge".into(),
+                )
+            })?;
+        *selected = true;
+    }
+
+    let mut output = vec![Vec::new(); topology.sources.row_count];
+    for (edge_index, (is_selected, is_invalid)) in selected
+        .into_iter()
+        .zip(invalid_source_edge_flags.iter().copied())
+        .enumerate()
+    {
+        work.charge_into_error(1)?;
+        if is_selected != is_invalid {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage invalid-edge source ownership is incomplete".into(),
+            )
+            .into());
+        }
+        if !is_selected {
+            continue;
+        }
+        let edge = topology.sources.edges.get(edge_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage invalid source edge is out of range".into())
+        })?;
+        output
+            .get_mut(edge.row.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage invalid source row is out of range".into())
+            })?
+            .push(Segment {
+                start: XY::new(edge.source[0].x, edge.source[0].y),
+                end: XY::new(edge.source[1].x, edge.source[1].y),
+            });
+    }
+
+    let mut shapes = Vec::with_capacity(output.len());
+    for segments in output {
+        if segments.is_empty() {
+            shapes.push(Shape::typed_empty(
+                GeometryKind::LineString,
+                CoordinateAxes::XY,
+            ));
+            continue;
+        }
+        let lines = segments
+            .into_iter()
+            .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
+            .collect::<Result<Vec<_>>>()?;
+        shapes.push(Shape::multi_line_string(CoordinateAxes::XY, lines).line_merge()?);
+    }
+    Ok(shapes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::super::GeographicCoverageAnalysis;
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{ExactRational, Shape};
+
+    fn analyze(rows: &[Shape], gap_width: f64) -> GeographicCoverageAnalysis {
+        crate::geometry::coverage_invalid_edges_geographic_analysis(
+            rows,
+            GeographicFrame::crs84(),
+            gap_width,
+            "coverage_invalid_edges",
+        )
+        .expect("coverage analysis succeeds")
+        .0
+    }
+
+    fn selected_source_edges(analysis: &GeographicCoverageAnalysis) -> BTreeSet<(usize, [u64; 4])> {
+        analysis
+            .invalid_source_owners
+            .iter()
+            .map(|owner| {
+                let edge = analysis
+                    .topology
+                    .sources
+                    .edges
+                    .get(owner.source_edge.0 as usize)
+                    .expect("captured source edge is in its topology");
+                (edge.row.0 as usize, [
+                    edge.source[0].x.to_bits(),
+                    edge.source[0].y.to_bits(),
+                    edge.source[1].x.to_bits(),
+                    edge.source[1].y.to_bits(),
+                ])
+            })
+            .collect()
+    }
+
+    fn edge(row: usize, start: [f64; 2], end: [f64; 2]) -> (usize, [u64; 4]) {
+        (row, [
+            start[0].to_bits(),
+            start[1].to_bits(),
+            end[0].to_bits(),
+            end[1].to_bits(),
+        ])
+    }
+
+    fn assert_full_source_ranges(analysis: &GeographicCoverageAnalysis) {
+        let mut ranges = Vec::<(u32, Vec<_>)>::new();
+        for owner in &analysis.invalid_source_owners {
+            let slot = owner.source_edge.0;
+            if let Some((_, ranges)) = ranges.iter_mut().find(|(edge, _)| *edge == slot) {
+                ranges.push(owner.source_range.clone());
+            } else {
+                ranges.push((slot, vec![owner.source_range.clone()]));
+            }
+        }
+        let zero = ExactRational::from_f64(0.0);
+        let one = ExactRational::from_f64(1.0);
+        for (_, mut edge_ranges) in ranges {
+            crate::geometry::try_sort_by(&mut edge_ranges, |left, right| {
+                left.start.try_cmp(&right.start)
+            })
+            .expect("source range order is exact");
+            assert_eq!(
+                edge_ranges.first().map(|range| &range.start),
+                Some(&zero),
+                "the captured ranges begin at the original source endpoint",
+            );
+            assert_eq!(
+                edge_ranges.last().map(|range| &range.end),
+                Some(&one),
+                "the captured ranges end at the original source endpoint",
+            );
+            for pair in edge_ranges.windows(2) {
+                let [left, right] = pair else {
+                    unreachable!("two ranges form a pair");
+                };
+                assert_eq!(
+                    left.end, right.start,
+                    "captured source ranges cover the edge without a gap",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seam_t_join_retains_original_edge_ranges_and_rows() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((180 0, -170 0, -170 10, 180 10, 180 0))")
+                .expect("seam-spanning row"),
+            crate::io::parse_wkt("POLYGON ((170 0, 180 0, 180 5, 170 5, 170 0))")
+                .expect("lower seam neighbor"),
+            crate::io::parse_wkt("POLYGON ((170 5, 180 5, 180 10, 170 10, 170 5))")
+                .expect("upper seam neighbor"),
+        ];
+        let analysis = analyze(&rows, 0.0);
+
+        assert_eq!(
+            selected_source_edges(&analysis),
+            BTreeSet::from([
+                edge(0, [180.0, 10.0], [180.0, 0.0]),
+                edge(1, [180.0, 0.0], [180.0, 5.0]),
+                edge(1, [180.0, 5.0], [170.0, 5.0]),
+                edge(2, [170.0, 5.0], [180.0, 5.0]),
+                edge(2, [180.0, 5.0], [180.0, 10.0]),
+            ]),
+        );
+        assert_full_source_ranges(&analysis);
+    }
+
+    #[test]
+    fn seam_gap_width_retains_both_original_boundary_ranges() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((170 0, 179.995 0, 179.995 1, 170 1, 170 0))")
+                .expect("east seam row"),
+            crate::io::parse_wkt("POLYGON ((-180 0, -170 0, -170 1, -180 1, -180 0))")
+                .expect("west seam row"),
+        ];
+        let analysis = analyze(&rows, 0.01);
+
+        let selected = selected_source_edges(&analysis);
+        assert!(selected.contains(&edge(0, [179.995, 0.0], [179.995, 1.0])));
+        assert!(selected.contains(&edge(1, [-180.0, 1.0], [-180.0, 0.0])));
+        assert!(!selected.contains(&edge(0, [170.0, 0.0], [170.0, 1.0])));
+        assert!(!selected.contains(&edge(1, [-170.0, 0.0], [-170.0, 1.0])));
+        assert_full_source_ranges(&analysis);
+    }
+
+    #[test]
+    fn seam_aliases_keep_distinct_original_edge_and_row_owners() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((170 0, 180 0, 180 10, 170 10, 170 0))")
+                .expect("positive seam spelling"),
+            crate::io::parse_wkt("POLYGON ((170 0, -180 0, -180 10, 170 10, 170 0))")
+                .expect("negative seam spelling"),
+        ];
+        let analysis = analyze(&rows, 0.0);
+        let selected = selected_source_edges(&analysis);
+
+        assert_eq!(
+            selected,
+            BTreeSet::from([
+                edge(0, [170.0, 0.0], [180.0, 0.0]),
+                edge(0, [180.0, 0.0], [180.0, 10.0]),
+                edge(0, [180.0, 10.0], [170.0, 10.0]),
+                edge(0, [170.0, 10.0], [170.0, 0.0]),
+                edge(1, [170.0, 0.0], [-180.0, 0.0]),
+                edge(1, [-180.0, 0.0], [-180.0, 10.0]),
+                edge(1, [-180.0, 10.0], [170.0, 10.0]),
+                edge(1, [170.0, 10.0], [170.0, 0.0]),
+            ]),
+        );
+        assert_full_source_ranges(&analysis);
+    }
+
+    #[test]
+    fn captured_edge_id_mutation_changes_the_independent_source_projection() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")
+                .expect("first overlapping row"),
+            crate::io::parse_wkt("POLYGON ((1 0.5, 3 0.5, 3 1.5, 1 1.5, 1 0.5))")
+                .expect("second overlapping row"),
+            crate::io::parse_wkt("POLYGON ((10 0, 11 0, 11 1, 10 1, 10 0))")
+                .expect("disjoint clean row"),
+        ];
+        let mut analysis = analyze(&rows, 0.0);
+        let shapes = analysis
+            .invalid_source_shapes(&mut crate::geometry::Unmetered)
+            .expect("typed source edges project");
+        assert!(shapes.get(2).expect("clean row exists").is_empty());
+        let clean_edge = analysis
+            .topology
+            .sources
+            .edges
+            .iter()
+            .find(|edge| edge.row.0 == 2)
+            .expect("clean row has source edges")
+            .id;
+        let corrupted_source_edge = analysis
+            .invalid_source_owners
+            .first()
+            .expect("overlap has a captured source edge")
+            .source_edge;
+        for owner in analysis
+            .invalid_source_owners
+            .iter_mut()
+            .filter(|owner| owner.source_edge == corrupted_source_edge)
+        {
+            owner.source_edge = clean_edge;
+        }
+
+        assert!(
+            analysis
+                .invalid_source_shapes(&mut crate::geometry::Unmetered)
+                .is_err(),
+            "a source-edge crosswire is rejected before row scatter",
+        );
+    }
+
+    #[test]
+    fn captured_owner_rows_preserve_present_row_ordinals() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((10 0, 11 0, 11 1, 10 1, 10 0))")
+                .expect("disjoint clean row"),
+            crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")
+                .expect("first overlapping row"),
+            crate::io::parse_wkt("POLYGON ((1 0.5, 3 0.5, 3 1.5, 1 1.5, 1 0.5))")
+                .expect("second overlapping row"),
+        ];
+        let analysis = analyze(&rows, 0.0);
+        let mut invalid_rows = analysis
+            .invalid_source_owners
+            .iter()
+            .map(|owner| {
+                analysis
+                    .topology
+                    .sources
+                    .edges
+                    .get(owner.source_edge.0 as usize)
+                    .expect("captured edge is in topology")
+                    .row
+                    .0
+            })
+            .collect::<Vec<_>>();
+        invalid_rows.sort_unstable();
+        invalid_rows.dedup();
+
+        assert_eq!(invalid_rows, [1, 2]);
+        assert!(
+            analysis
+                .invalid_source_owners
+                .iter()
+                .all(|owner| owner.source_edge.0 < analysis.topology.sources.edges.len() as u32),
+        );
+    }
+}

@@ -51,7 +51,9 @@ pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSour
 mod coverage;
 pub(in crate::geometry) mod linework;
 pub(in crate::geometry) mod overlay;
-pub(crate) use coverage::{analyze_geographic_coverage, analyze_geographic_coverage_with_work};
+pub(crate) use coverage::{
+    GeographicCoverageAnalysis, analyze_geographic_coverage, analyze_geographic_coverage_with_work,
+};
 mod q;
 pub(in crate::geometry) use q::exact_segments_intersect_with_work;
 pub(in crate::geometry) mod q_embedding;
