@@ -1958,15 +1958,15 @@ pub(super) fn rectangular_boundary_for_exact(
         max_y = outward(&max_y, false)?;
     }
     Ok([
-        ExactPoint::from_rationals(min_x.clone(), min_y.clone())?,
-        ExactPoint::from_rationals(max_x.clone(), min_y)?,
-        ExactPoint::from_rationals(max_x, max_y.clone())?,
-        ExactPoint::from_rationals(min_x, max_y)?,
+        ExactPoint::from_rationals(&min_x, &min_y)?,
+        ExactPoint::from_rationals(&max_x, &min_y)?,
+        ExactPoint::from_rationals(&max_x, &max_y)?,
+        ExactPoint::from_rationals(&min_x, &max_y)?,
     ])
 }
 
 impl ExactPoint {
-    fn from_rationals(x: ExactRational, y: ExactRational) -> Result<Self> {
+    fn from_rationals(x: &ExactRational, y: &ExactRational) -> Result<Self> {
         let numerator_x = x.numerator.try_product(&y.denominator)?;
         let numerator_y = y.numerator.try_product(&x.denominator)?;
         let denominator = x.denominator.try_product(&y.denominator)?;
