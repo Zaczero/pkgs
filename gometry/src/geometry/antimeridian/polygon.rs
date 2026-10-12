@@ -24,11 +24,12 @@ mod chart_events;
 mod chart_shape;
 mod split;
 
-use chart_events::{
-    certified_no_chart_events, chart_latitude, line_has_certified_no_chart_events,
-    lineal_shape_has_certified_no_chart_events,
-};
-use chart_shape::{chart_line, chart_polygon, chart_ring, chart_shape, map_xy_with_shared_owners};
+#[cfg(test)]
+use chart_events::{certified_no_chart_events, line_has_certified_no_chart_events};
+use chart_events::{chart_latitude, lineal_shape_has_certified_no_chart_events};
+#[cfg(test)]
+use chart_shape::{chart_line, chart_polygon, chart_ring};
+use chart_shape::{chart_shape, map_xy_with_shared_owners};
 use split::split_polygon;
 
 use super::normalize;

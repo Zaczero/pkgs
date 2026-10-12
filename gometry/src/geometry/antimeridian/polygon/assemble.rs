@@ -1,5 +1,8 @@
 use super::split::ring_is_ccw;
-use super::*;
+use super::{
+    ChartPole, CoordSeq, GeographicFrame, GeometryErrorKind, MOrdinate, Point, PoleClosure,
+    Polygon, Result, Ring, Shape, ZOrdinate, same_point,
+};
 
 pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     match shape {
