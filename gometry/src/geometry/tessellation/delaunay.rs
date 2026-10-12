@@ -9,19 +9,48 @@
 
 use std::cmp::Ordering;
 
-use crate::geographic::{ChartPointSite, GeographicFrame};
+use crate::geographic::{
+    ChartPointSite, GeographicFrame, GeographicRing, PointSelectionChart, RingDomain, RingSummary,
+    SeamIdentity,
+};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
 use crate::geometry::tessellation::{
-    EMPTY, RingOwner, Triangulation, exact, next_halfedge, overlapping_rings_error, prev_halfedge,
+    EMPTY, MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
+    PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite, RingOwner, Triangulation, exact,
+    next_halfedge, overlapping_rings_error, prev_halfedge,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
-    GeometryErrorKind, HasM, HasZ, MOrdinate, Orientation, Point, PointKey, Result, XY, ZOrdinate,
-    open_xy_cycle_magnitude, orientation, same_point,
+    CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
+    HasM, HasZ, MOrdinate, Point, PointKey, Result, Ring, XY, ZOrdinate, same_point,
 };
+
+#[cfg(test)]
+thread_local! {
+    static DELAUNAY_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_delaunay_output_reserve() {
+    DELAUNAY_OUTPUT_RESERVES.with(|count| {
+        let reserves = count
+            .get()
+            .checked_add(1)
+            .expect("Delaunay output reserve test counter overflow");
+        count.set(reserves);
+    });
+}
+
+#[cfg(test)]
+pub(super) fn take_delaunay_output_reserves() -> usize {
+    DELAUNAY_OUTPUT_RESERVES.with(|count| count.replace(0))
+}
 
 #[path = "cdt.rs"]
 mod cdt;
+pub(crate) use cdt::{
+    CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
+    RefinementConstruction, SourceConstraint, SourcePiece,
+};
 #[path = "exact_delaunay.rs"]
 pub(super) mod exact_delaunay;
 
@@ -65,7 +94,11 @@ impl CdtRefinement {
 /// triangulation; a limit at least that total cannot. Every retained CDT face
 /// lies inside the source and therefore has no more area than the source as a
 /// whole, so that request is inert and is dropped before refinement starts.
-fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
+fn effective_refinement(
+    area: f64,
+    exact_chart_area: Option<&exact::ExactDyadic>,
+    refinement: CdtRefinement,
+) -> CdtRefinement {
     let CdtRefinement::On {
         min_angle,
         max_area: Some(max_area),
@@ -73,7 +106,15 @@ fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
     else {
         return refinement;
     };
-    if area.is_finite() && max_area.get() >= area.abs() {
+    let inert = exact_chart_area.map_or_else(
+        || area.is_finite() && max_area.get() >= area.abs(),
+        |area| {
+            exact::ExactDyadic::from_f64(max_area.get())
+                .cmp(&area.clone().abs())
+                .is_ge()
+        },
+    );
+    if inert {
         min_angle.map_or(CdtRefinement::Off, |min_angle| CdtRefinement::On {
             min_angle: Some(min_angle),
             max_area: None,
@@ -83,7 +124,11 @@ fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
     }
 }
 
-fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<()> {
+fn validate_refinement_request(
+    area: f64,
+    exact_chart_area: Option<&exact::ExactDyadic>,
+    refinement: CdtRefinement,
+) -> Result<()> {
     if let CdtRefinement::On {
         min_angle: Some(angle),
         ..
@@ -104,55 +149,62 @@ fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<(
         // the common shell/hole frame and its exact fallback. Summing a second
         // per-ring approximation here made cyclic rotations disagree about
         // the same max-area admission.
-        let minimum_faces = (area.abs() / max_area.get()).ceil();
-        if !minimum_faces.is_finite() || minimum_faces > (GENERATED_ITEM_LIMIT / 4) as f64 {
-            // The quotient is either non-finite or already beyond the
-            // generated-output cap; report the bound before converting it to
-            // usize or multiplying the face estimate.
-            return Err(GeometryErrorKind::GeneratedOutputTooLarge {
-                operation: "triangulate",
-                parameter: "max_area",
-                produced: GENERATED_ITEM_LIMIT + 1,
-                limit: GENERATED_ITEM_LIMIT,
+        let minimum_faces = if let Some(area) = exact_chart_area {
+            exact_minimum_faces(area, max_area.get())?
+        } else {
+            let minimum_faces = (area.abs() / max_area.get()).ceil();
+            if !minimum_faces.is_finite() || minimum_faces > (GENERATED_ITEM_LIMIT / 4) as f64 {
+                return Err(refinement_area_limit_error());
             }
-            .into());
+            minimum_faces as usize
+        };
+        if minimum_faces > GENERATED_ITEM_LIMIT / 4 {
+            return Err(refinement_area_limit_error());
         }
-        let minimum_faces = minimum_faces as usize;
         ExpansionBudget::product("triangulate", "max_area", minimum_faces, 4)?;
     }
     Ok(())
 }
 
-fn validate_refined_triangle(
-    a: Point,
-    b: Point,
-    c: Point,
-    refinement: CdtRefinement,
-) -> Result<()> {
-    let CdtRefinement::On {
-        min_angle,
-        max_area,
-    } = refinement
-    else {
-        return Ok(());
-    };
-    if let Some(limit) = min_angle
-        && cdt::triangle_min_angle_degrees(a.xy(), b.xy(), c.xy()) + 1.0e-9 < limit.get()
-    {
-        return Err(GeometryErrorKind::triangulation(format!(
-            "constrained refinement did not satisfy min_angle={} degrees",
-            limit.get()
-        )));
+fn refinement_area_limit_error() -> crate::error::Error {
+    GeometryErrorKind::GeneratedOutputTooLarge {
+        operation: "triangulate",
+        parameter: "max_area",
+        produced: GENERATED_ITEM_LIMIT + 1,
+        limit: GENERATED_ITEM_LIMIT,
     }
-    if let Some(limit) = max_area
-        && open_xy_cycle_magnitude(&[a.xy(), b.xy(), c.xy()]).get() > limit.get() * (1.0 + 1.0e-12)
-    {
-        return Err(GeometryErrorKind::triangulation(format!(
-            "constrained refinement did not satisfy max_area={}",
-            limit.get()
-        )));
+    .into()
+}
+
+fn exact_minimum_faces(exact_area: &exact::ExactDyadic, max_area: f64) -> Result<usize> {
+    let area = exact_area.clone().abs();
+    let max_area = exact::ExactDyadic::from_f64(max_area);
+    let limit = GENERATED_ITEM_LIMIT / 4;
+    let limit_i64 = i64::try_from(limit).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    let maximum_area = max_area.try_product(&exact::ExactDyadic::from_i64(limit_i64))?;
+    if area.cmp(&maximum_area).is_gt() {
+        return Err(refinement_area_limit_error());
     }
-    Ok(())
+    let (mut low, mut high) = (0_usize, limit);
+    while low < high {
+        let span = high
+            .checked_sub(low)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let middle = low
+            .checked_add(span / 2)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let multiple = max_area.try_product(&exact::ExactDyadic::from_i64(
+            i64::try_from(middle).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        ))?;
+        if area.cmp(&multiple).is_le() {
+            high = middle;
+        } else {
+            low = middle
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+    }
+    Ok(low)
 }
 
 #[derive(Clone, Debug)]
@@ -493,6 +545,161 @@ pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
     certified_delaunay_with_coordinates(&coordinates, sites.len())
 }
 
+pub(in crate::geometry::tessellation) fn prepare_retained_delaunay_publication(
+    frame: GeographicFrame,
+    source_points: &[Point],
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let Some(chart) = PointSelectionChart::try_from_points(frame, source_points)? else {
+        return Ok(PreparedMeshPublication::new(
+            MeshProducer::Delaunay,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    };
+    let mut chart_sites = chart.sites_from_points(source_points)?;
+    chart_sites.sort_unstable_by(|left, right| left.compare_chart_xy(*right));
+    let sites = chart_sites
+        .iter()
+        .enumerate()
+        .map(|(producer_ordinal, &site)| {
+            PreparedMeshSite::source(
+                producer_ordinal,
+                site.source_ordinal(),
+                *source_points
+                    .get(site.source_ordinal())
+                    .expect("retained source ordinal belongs to the source point inventory"),
+                MeshSiteLocation::Retained(site),
+            )
+        })
+        .collect::<Vec<_>>();
+    let coordinates = RetainedPointCoordinates::new(frame, &chart_sites);
+    let mesh = certified_delaunay_for_retained_points(frame, &chart_sites)?;
+    prepare_delaunay_publication(&mesh, sites, &coordinates, budget)
+}
+
+pub(in crate::geometry::tessellation) fn prepare_raw_delaunay_publication(
+    source_points: &[Point],
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let mut indexed_points = source_points
+        .iter()
+        .copied()
+        .enumerate()
+        .collect::<Vec<_>>();
+    indexed_points.sort_unstable_by(|left, right| {
+        left.1
+            .x
+            .total_cmp(&right.1.x)
+            .then_with(|| left.1.y.total_cmp(&right.1.y))
+    });
+    let sites = indexed_points
+        .iter()
+        .enumerate()
+        .map(|(producer_ordinal, &(occurrence, point))| {
+            PreparedMeshSite::source(
+                producer_ordinal,
+                occurrence,
+                point,
+                MeshSiteLocation::Cartesian,
+            )
+        })
+        .collect::<Vec<_>>();
+    let points = indexed_points
+        .iter()
+        .map(|&(_, point)| point)
+        .collect::<Vec<_>>();
+    let provider_sites = points
+        .iter()
+        .enumerate()
+        .map(|(id, &point)| Site { id, point })
+        .collect::<Vec<_>>();
+    let mesh = certified_delaunay(&provider_sites)?;
+    let coordinates = |site| exact_delaunay::site_xy(&points, site);
+    prepare_delaunay_publication(&mesh, sites, &coordinates, budget)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "canonical side maps and halfedge columns are emitted together by the same certified mesh"
+)]
+fn prepare_delaunay_publication<C: exact_delaunay::MeshCoordinates>(
+    mesh: &CertifiedDelaunay,
+    sites: Vec<PreparedMeshSite>,
+    coordinates: &C,
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let canonical_faces = exact_delaunay::canonical_triangle_order(coordinates, mesh.triangles());
+    let capacity = canonical_faces
+        .len()
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    budget.check_additional(capacity)?;
+    #[cfg(test)]
+    note_delaunay_output_reserve();
+
+    let mut points = Vec::with_capacity(capacity);
+    let mut faces = Vec::with_capacity(canonical_faces.len());
+    for canonical in canonical_faces {
+        let start = points.len();
+        let output_points = canonical.output_sites.map(|site| {
+            sites
+                .get(site)
+                .expect("canonical site ordinal belongs to the prepared site table")
+                .source_record()
+        });
+        let [a, b, c, closure] = selected_triangle_points(&output_points, [0, 1, 2], false);
+        points.extend_from_slice(&[a, b, c, closure]);
+        let end = points.len();
+        let boundary_uses = std::array::from_fn(|output_side| {
+            let selected_side = usize::from(canonical.output_to_selected[output_side]);
+            let selected_slot = canonical
+                .selected_face
+                .wrapping_mul(3)
+                .wrapping_add(selected_side);
+            let reverse_slot = mesh.halfedges()[selected_slot];
+            let reverse = (reverse_slot != EMPTY).then(|| {
+                MeshUseId::new(
+                    reverse_slot / 3,
+                    u8::try_from(reverse_slot % 3)
+                        .expect("halfedge side is one of the three triangle sides"),
+                )
+            });
+            let selected_use = MeshUseId::new(
+                canonical.selected_face,
+                u8::try_from(selected_side).expect("triangle side fits u8"),
+            );
+            PreparedMeshBoundaryUse::new(
+                u8::try_from(output_side).expect("triangle side fits u8"),
+                selected_use,
+                canonical.output_sites[output_side],
+                canonical.output_sites[cdt::next_triangle_side(output_side)],
+                reverse,
+                canonical.reversed,
+                mesh.edge_is_cocircular(selected_slot),
+                MeshEdgeRole::Delaunay,
+            )
+        });
+        faces.push(PreparedMeshFace::new(
+            canonical.selected_face,
+            canonical.selected_sites,
+            canonical.output_sites,
+            canonical.output_to_selected,
+            canonical.reversed,
+            start..end,
+            &boundary_uses,
+        ));
+    }
+    budget.add(capacity)?;
+    Ok(PreparedMeshPublication::new(
+        MeshProducer::Delaunay,
+        sites,
+        faces,
+        points,
+    ))
+}
+
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
     let mut sites = Vec::with_capacity(points.len());
     for (id, &point) in points.iter().enumerate() {
@@ -736,10 +943,12 @@ fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
 /// Source sites retain the first full `Point` for each XY key, while each
 /// nonzero constraint keeps those selected endpoint sites and its stable source
 /// identity for exact refinement certificates.
-fn constrained_triangle_plan<'a>(
-    rings: impl Iterator<Item = (RingOwner, &'a CoordSeq)>,
+pub(crate) fn prepare_constrained_triangle_plan<'a>(
+    rings: impl Iterator<Item = (RingOwner, &'a Ring)>,
     area: f64,
     refinement: CdtRefinement,
+    domain: crate::geometry::TopologyDomain,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<cdt::ConstrainedMeshPlan> {
     let mut ring_list = Vec::new();
     for ring in rings {
@@ -747,15 +956,18 @@ fn constrained_triangle_plan<'a>(
     }
     let rings = ring_list;
     let force_xy = refinement.active();
-    let refinement = effective_refinement(area, refinement);
-    validate_refinement_request(area, refinement)?;
     let ConstrainedSourcePlan {
         mut vertices,
         sources,
         source_rings,
-    } = constrained_source_plan(&rings)?;
+        coordinates,
+        chart_area,
+    } = constrained_source_plan(&rings, domain, chart)?;
+    let exact_chart_area = chart_area.as_ref();
+    let refinement = effective_refinement(area, exact_chart_area, refinement);
+    validate_refinement_request(area, exact_chart_area, refinement)?;
     let Some(mut cdt) =
-        cdt::ConstrainedMesh::build_with_sources(&vertices, &sources, source_rings)?
+        cdt::ConstrainedMesh::build_with_sources(&vertices, &sources, source_rings, coordinates)?
     else {
         return Err(GeometryErrorKind::triangulation(
             "constrained triangulation needs three non-collinear vertices",
@@ -785,51 +997,31 @@ fn constrained_triangle_plan<'a>(
     cdt.finish_plan(vertices, refinement, force_xy)
 }
 
-/// Constrained Delaunay triangulation of an areal geometry as a flat
-/// `[a, b, c, a]`-per-kept-face vertex stream. This is the one publisher used
-/// by both scalar and packed surfaces; it consumes one checked mesh plan and
-/// applies the active-refinement XY policy before emitting.
-pub(crate) fn constrained_triangle_vertices<'a>(
-    rings: impl Iterator<Item = (RingOwner, &'a CoordSeq)>,
-    area: f64,
-    refinement: CdtRefinement,
-    budget: &mut ExpansionBudget,
-) -> Result<Vec<Point>> {
-    let plan = constrained_triangle_plan(rings, area, refinement)?;
-    publish_constrained_plan(&plan, budget)
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the private plan's face site IDs are produced by its completed constrained mesh"
-)]
-fn publish_constrained_plan(
+pub(crate) fn publish_constrained_plan(
     plan: &cdt::ConstrainedMeshPlan,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<Point>> {
     plan.validate_certificate()?;
     let faces = &plan.faces;
-    let capacity = faces.len().wrapping_mul(4);
+    let capacity = faces
+        .len()
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     for &[a, b, c] in faces {
-        validate_refined_triangle(
-            plan.vertices[a],
-            plan.vertices[b],
-            plan.vertices[c],
-            plan.refinement,
-        )?;
+        plan.validate_refined_triangle([a, b, c], plan.refinement)?;
     }
     budget.check_additional(capacity)?;
     #[cfg(test)]
     note_constrained_output_reserve();
     let mut output = Vec::with_capacity(capacity);
     for &[a, b, c] in faces {
+        let face_orientation = plan.triangle_orientation([a, b, c])?;
         let [a, b, c, _] = selected_triangle_points(&plan.vertices, [a, b, c], plan.force_xy);
-        match orientation(a.xy(), b.xy(), c.xy()) {
-            Orientation::CounterClockwise => output.extend_from_slice(&[a, b, c, a]),
-            Orientation::Clockwise => output.extend_from_slice(&[a, c, b, a]),
-            Orientation::Collinear => {
+        match face_orientation {
+            ExactSign::Positive => output.extend_from_slice(&[a, b, c, a]),
+            ExactSign::Negative | ExactSign::Zero => {
                 return Err(GeometryErrorKind::triangulation(
-                    "constrained triangulation produced a collinear face",
+                    "constrained triangulation produced a non-counter-clockwise face",
                 ));
             },
         }
@@ -878,9 +1070,9 @@ pub(super) fn selected_triangle_points(
 
 /// Select the first full source point at each XY key, then order those points
 /// by XY for the exact mesh.
-fn selected_source_sites(points: Vec<Point>) -> Result<Vec<Point>> {
+fn selected_source_sites(points: &[Point]) -> Result<Vec<Point>> {
     let mut selected = crate::collections::try_hash_map_with_capacity(points.len())?;
-    for point in points {
+    for &point in points {
         selected.entry(PointKey::new(point)).or_insert(point);
     }
     let mut selected: Vec<_> = selected.into_values().collect();
@@ -896,25 +1088,416 @@ struct ConstrainedSourcePlan {
     vertices: Vec<Point>,
     sources: Vec<cdt::SourceConstraint>,
     source_rings: Vec<cdt::SourceRingStart>,
+    coordinates: cdt::CdtCoordinates,
+    chart_area: Option<exact::ExactDyadic>,
+}
+
+fn constrained_source_plan(
+    rings: &[(RingOwner, &Ring)],
+    domain: crate::geometry::TopologyDomain,
+    chart: Option<&PointSelectionChart>,
+) -> Result<ConstrainedSourcePlan> {
+    if let crate::geometry::TopologyDomain::Geographic(frame) = domain
+        && let Some(plan) = retained_constrained_source_plan(frame, chart, rings)?
+    {
+        return Ok(plan);
+    }
+    raw_constrained_source_plan(rings)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct RetainedSiteKey {
+    periods: i64,
+    native_x: u64,
+    y: u64,
+}
+
+fn normalized_bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
+fn retained_site_key(site: ChartPointSite) -> RetainedSiteKey {
+    RetainedSiteKey {
+        periods: site.longitude().periods(),
+        native_x: normalized_bits(site.longitude().native().get()),
+        y: normalized_bits(site.source_y()),
+    }
+}
+
+fn compare_retained_x(left: ChartPointSite, right: ChartPointSite) -> Ordering {
+    left.longitude()
+        .periods()
+        .cmp(&right.longitude().periods())
+        .then_with(|| {
+            left.longitude()
+                .native()
+                .get()
+                .total_cmp(&right.longitude().native().get())
+        })
+}
+
+fn compare_retained_y(left: ChartPointSite, right: ChartPointSite) -> Ordering {
+    left.source_y().total_cmp(&right.source_y())
+}
+
+fn retained_between_axis(
+    start: ChartPointSite,
+    end: ChartPointSite,
+    point: ChartPointSite,
+    compare: impl Fn(ChartPointSite, ChartPointSite) -> Ordering,
+) -> bool {
+    let (low, high) = if compare(start, end).is_le() {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    compare(low, point).is_le() && compare(point, high).is_le()
+}
+
+fn retained_on_segment(
+    frame: GeographicFrame,
+    start: ChartPointSite,
+    end: ChartPointSite,
+    point: ChartPointSite,
+) -> Result<bool> {
+    Ok(retained_site_orientation(frame.longitude(), &[
+        (start.longitude(), start.source_y()),
+        (end.longitude(), end.source_y()),
+        (point.longitude(), point.source_y()),
+    ])? == ExactSign::Zero
+        && retained_between_axis(start, end, point, compare_retained_x)
+        && retained_between_axis(start, end, point, compare_retained_y))
+}
+
+fn retained_point_in_cycle(
+    frame: GeographicFrame,
+    cycle: &[ChartPointSite],
+    point: ChartPointSite,
+) -> Result<cdt::CdtPointLocation> {
+    let mut inside = false;
+    for pair in cycle.windows(2) {
+        let (Some(&start), Some(&end)) = (pair.first(), pair.get(1)) else {
+            continue;
+        };
+        if retained_on_segment(frame, start, end, point)? {
+            return Ok(cdt::CdtPointLocation::Boundary);
+        }
+        let start_y = compare_retained_y(start, point);
+        let end_y = compare_retained_y(end, point);
+        let orientation = retained_site_orientation(frame.longitude(), &[
+            (start.longitude(), start.source_y()),
+            (end.longitude(), end.source_y()),
+            (point.longitude(), point.source_y()),
+        ])?;
+        let crosses = (start_y != Ordering::Greater
+            && end_y == Ordering::Greater
+            && orientation == ExactSign::Positive)
+            || (end_y != Ordering::Greater
+                && start_y == Ordering::Greater
+                && orientation == ExactSign::Negative);
+        if crosses {
+            inside = !inside;
+        }
+    }
+    Ok(if inside {
+        cdt::CdtPointLocation::Inside
+    } else {
+        cdt::CdtPointLocation::Outside
+    })
+}
+
+fn retained_chart_area(
+    frame: GeographicFrame,
+    rings: &[(RingOwner, Vec<ChartPointSite>)],
+) -> Result<exact::ExactDyadic> {
+    let mut total = exact::ExactDyadic::zero();
+    let mut at = 0;
+    while let Some((first_owner, _)) = rings.get(at) {
+        let polygon = first_owner.polygon();
+        let mut polygon_area = exact::ExactDyadic::zero();
+        while let Some((owner, sites)) = rings.get(at) {
+            if owner.polygon() != polygon {
+                break;
+            }
+            let mut twice_area = exact::ExactDyadic::zero();
+            for pair in sites.windows(2) {
+                let (Some(&left), Some(&right)) = (pair.first(), pair.get(1)) else {
+                    continue;
+                };
+                let left_x = retained_site_longitude(frame.longitude(), left.longitude())?;
+                let right_x = retained_site_longitude(frame.longitude(), right.longitude())?;
+                let left_y = exact::ExactDyadic::from_f64(left.source_y());
+                let right_y = exact::ExactDyadic::from_f64(right.source_y());
+                let cross = left_x
+                    .try_product(&right_y)?
+                    .try_subtract(left_y.try_product(&right_x)?)?;
+                twice_area = twice_area.try_add(cross)?;
+            }
+            let area = twice_area.abs();
+            if owner.ring() == 0 {
+                polygon_area = polygon_area.try_add(area)?;
+            } else {
+                polygon_area = polygon_area.try_subtract(area)?;
+            }
+            at = at
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+        total = total.try_add(polygon_area)?;
+    }
+    total.abs().try_product(&exact::ExactDyadic::from_f64(0.5))
+}
+
+fn retained_constrained_source_plan(
+    frame: GeographicFrame,
+    chart: Option<&PointSelectionChart>,
+    rings: &[(RingOwner, &Ring)],
+) -> Result<Option<ConstrainedSourcePlan>> {
+    if chart.is_some_and(|chart| chart.has_full_longitude_support()) {
+        return Ok(None);
+    }
+    let capacity = rings.iter().try_fold(0_usize, |total, ring| {
+        total
+            .checked_add(ring.1.coords().coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut source_points = Vec::with_capacity(capacity);
+    let mut retained_rings = Vec::with_capacity(rings.len());
+    for &(owner, ring) in rings {
+        let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let reaches_pole = summary.south.identity(frame) == SeamIdentity::Pole
+            || summary.north.identity(frame) == SeamIdentity::Pole;
+        if summary.domain != RingDomain::Ordinary || summary.exact_axis_band || reaches_pole {
+            return Ok(None);
+        }
+        let coords = ring.coords();
+        let first = coords.nth_coord(0);
+        let initial_lift = chart
+            .map(|chart| chart.longitude_site(first.x))
+            .transpose()?
+            .map_or(0, |longitude| longitude.periods());
+        let mut lift = initial_lift;
+        let mut sites = Vec::with_capacity(coords.coord_count());
+        for index in 0..coords.coord_count() {
+            let point = coords.nth_coord(index);
+            let source_ordinal = source_points.len();
+            source_points.push(point);
+            sites.push(ChartPointSite::from_lifted_source(
+                frame,
+                point,
+                source_ordinal,
+                lift,
+            )?);
+            let next_index = index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            if next_index < coords.coord_count() {
+                let next = coords.nth_coord(next_index);
+                let transit = frame
+                    .longitude()
+                    .chart_connection(point.x, next.x)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                    .seam_transit();
+                lift = lift
+                    .checked_add(i64::from(transit))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            }
+        }
+        if lift.checked_sub(initial_lift) != Some(summary.chart_turn) {
+            return Err(GeometryErrorKind::Invalid(
+                "retained polygon chart disagrees with its admitted ring turn".into(),
+            )
+            .into());
+        }
+        if summary.chart_turn != 0 {
+            return Ok(None);
+        }
+        retained_rings.push((owner, sites));
+    }
+
+    // Each polygon hole is translated by an integral period into its shell's
+    // continuous lift. Exact containment chooses the chart; rounded X is never
+    // used to admit or deduplicate a site.
+    for hole_index in 0..retained_rings.len() {
+        let Some((owner, hole)) = retained_rings.get(hole_index) else {
+            continue;
+        };
+        let owner = *owner;
+        if owner.ring() == 0 {
+            continue;
+        }
+        let Some(shell_index) = retained_rings.iter().position(|(candidate, _)| {
+            candidate.polygon() == owner.polygon() && candidate.ring() == 0
+        }) else {
+            continue;
+        };
+        let Some((_, shell)) = retained_rings.get(shell_index) else {
+            return Err(GeometryErrorKind::triangulation(
+                "polygon shell chart is absent from its retained ring table",
+            ));
+        };
+        let first = *hole.first().ok_or_else(|| {
+            GeometryErrorKind::triangulation("polygon hole has no retained source sites")
+        })?;
+        let mut containing = None;
+        for shift in -1_i64..=1 {
+            let candidate = first.shifted(shift)?;
+            if retained_point_in_cycle(frame, shell, candidate)? == cdt::CdtPointLocation::Inside
+                && containing.replace(shift).is_some()
+            {
+                containing = None;
+                break;
+            }
+        }
+        if let Some(shift) = containing {
+            let Some((_, hole_sites)) = retained_rings.get_mut(hole_index) else {
+                return Err(GeometryErrorKind::triangulation(
+                    "polygon hole chart disappeared during admission",
+                ));
+            };
+            for site in hole_sites {
+                *site = site.shifted(shift)?;
+            }
+        }
+    }
+
+    let mut first_site_by_key = crate::collections::try_hash_map_with_capacity(capacity)?;
+    for (_, sites) in &retained_rings {
+        for &site in sites {
+            first_site_by_key
+                .entry(retained_site_key(site))
+                .or_insert_with(|| (site.source_ordinal(), site));
+        }
+    }
+    let mut selected_sites = first_site_by_key
+        .into_iter()
+        .map(|(key, (source_ordinal, site))| (key, source_ordinal, site))
+        .collect::<Vec<_>>();
+    selected_sites.sort_unstable_by(|left, right| {
+        left.2
+            .compare_chart_xy(right.2)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let mut vertices = Vec::with_capacity(selected_sites.len());
+    let mut site_locations = Vec::with_capacity(selected_sites.len());
+    let mut site_indices = crate::collections::try_hash_map_with_capacity(selected_sites.len())?;
+    for (site, (key, source_ordinal, location)) in selected_sites.into_iter().enumerate() {
+        vertices.push(*source_points.get(source_ordinal).ok_or_else(|| {
+            GeometryErrorKind::triangulation(
+                "retained source site references an absent source record",
+            )
+        })?);
+        site_locations.push(location);
+        site_indices.insert(key, site);
+    }
+
+    let mut occurrence_locations = Vec::with_capacity(source_points.len());
+    for (_, sites) in &retained_rings {
+        occurrence_locations.extend_from_slice(sites);
+    }
+    let mut occurrence_to_site = Vec::with_capacity(occurrence_locations.len());
+    for &location in &occurrence_locations {
+        occurrence_to_site.push(*site_indices.get(&retained_site_key(location)).ok_or_else(
+            || {
+                GeometryErrorKind::triangulation(
+                    "retained source occurrence has no admitted mesh site",
+                )
+            },
+        )?);
+    }
+
+    let mut sources: Vec<cdt::SourceConstraint> = Vec::with_capacity(capacity);
+    let mut source_rings = Vec::with_capacity(rings.len());
+    let mut seen: crate::collections::HashMap<(usize, usize), usize> =
+        crate::collections::try_hash_map_with_capacity(capacity)?;
+    let mut occurrence_start = 0_usize;
+    for &(owner, ring) in rings {
+        let coords = ring.coords();
+        source_rings.push(cdt::SourceRingStart::new(sources.len(), owner));
+        for index in 0..coords.coord_count().saturating_sub(1) {
+            let start_occurrence = occurrence_start
+                .checked_add(index)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let end_occurrence = start_occurrence
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let start_site = occurrence_to_site
+                .get(start_occurrence)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::triangulation("retained source edge has no start occurrence")
+                })?;
+            let end_site = occurrence_to_site
+                .get(end_occurrence)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::triangulation("retained source edge has no end occurrence")
+                })?;
+            if start_site == end_site {
+                continue;
+            }
+            let edge_key = (start_site.min(end_site), start_site.max(end_site));
+            if let Some(&previous_id) = seen.get(&edge_key) {
+                let previous = sources.get(previous_id).ok_or_else(|| {
+                    GeometryErrorKind::triangulation(
+                        "retained duplicate edge has no earlier source owner",
+                    )
+                })?;
+                let previous_owner = cdt::source_ring_owner(previous.id, &source_rings)
+                    .expect("an admitted source constraint belongs to a source ring");
+                return Err(overlapping_rings_error(previous_owner, owner));
+            }
+            seen.insert(edge_key, sources.len());
+            let end_index = index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            sources.push(cdt::SourceConstraint {
+                id: sources.len(),
+                start: coords.nth_coord(index),
+                end: coords.nth_coord(end_index),
+                start_site,
+                end_site,
+                start_occurrence,
+                end_occurrence,
+            });
+        }
+        occurrence_start = occurrence_start
+            .checked_add(coords.coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    }
+    let coordinates = cdt::CdtCoordinates::retained(frame, &site_locations, &occurrence_locations)?;
+    let chart_area = retained_chart_area(frame, &retained_rings)?;
+    Ok(Some(ConstrainedSourcePlan {
+        vertices,
+        sources,
+        source_rings,
+        coordinates,
+        chart_area: Some(chart_area),
+    }))
 }
 
 #[expect(
     clippy::indexing_slicing,
     reason = "source endpoint keys come from the ring points collected above, and their site IDs index the selected vertex column used to build the map"
 )]
-fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<ConstrainedSourcePlan> {
+fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<ConstrainedSourcePlan> {
     let capacity = rings.iter().try_fold(0_usize, |total, ring| {
         total
-            .checked_add(ring.1.coord_count())
+            .checked_add(ring.1.coords().coord_count())
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
     let mut source_points = Vec::with_capacity(capacity);
     for &(_, ring) in rings {
-        for index in 0..ring.coord_count() {
-            source_points.push(ring.nth_coord(index));
+        for index in 0..ring.coords().coord_count() {
+            source_points.push(ring.coords().nth_coord(index));
         }
     }
-    let vertices = selected_source_sites(source_points)?;
+    let vertices = selected_source_sites(&source_points)?;
     let mut indices = crate::collections::try_hash_map_with_capacity(vertices.len())?;
     for (site, point) in vertices.iter().enumerate() {
         indices.insert(PointKey::new(*point), site);
@@ -922,11 +1505,16 @@ fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<Constrain
     let mut sources = Vec::with_capacity(capacity);
     let mut source_rings = Vec::with_capacity(rings.len());
     let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
+    let mut occurrence_start = 0_usize;
     for &(owner, ring) in rings {
+        let coords = ring.coords();
         source_rings.push(cdt::SourceRingStart::new(sources.len(), owner));
-        for index in 0..ring.coord_count().saturating_sub(1) {
-            let start = ring.nth_coord(index);
-            let end = ring.nth_coord(index.wrapping_add(1));
+        for index in 0..coords.coord_count().saturating_sub(1) {
+            let start = coords.nth_coord(index);
+            let end_index = index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let end = coords.nth_coord(end_index);
             if same_point(start.xy(), end.xy()) {
                 continue;
             }
@@ -945,19 +1533,33 @@ fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<Constrain
             let start_site = indices[&PointKey::new(start)];
             let end_site = indices[&PointKey::new(end)];
             let id = sources.len();
+            let start_occurrence = occurrence_start
+                .checked_add(index)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let end_occurrence = start_occurrence
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             sources.push(cdt::SourceConstraint {
                 id,
                 start: vertices[start_site],
                 end: vertices[end_site],
                 start_site,
                 end_site,
+                start_occurrence,
+                end_occurrence,
             });
         }
+        occurrence_start = occurrence_start
+            .checked_add(coords.coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
+    let coordinates = cdt::CdtCoordinates::raw(&vertices, &source_points);
     Ok(ConstrainedSourcePlan {
         vertices,
         sources,
         source_rings,
+        coordinates,
+        chart_area: None,
     })
 }
 
@@ -985,6 +1587,7 @@ pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::{Orientation, orientation};
 
     fn sites(points: &[(f64, f64)]) -> Vec<Site> {
         points
@@ -992,6 +1595,16 @@ mod tests {
             .enumerate()
             .map(|(id, &(x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
             .collect()
+    }
+
+    fn geographic_ring(points: &[(f64, f64)]) -> crate::geometry::Ring {
+        crate::geometry::Ring::closed(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1066,11 +1679,13 @@ mod tests {
         ])
         .unwrap();
         let rings = [
-            (RingOwner::new(7, 0), zero_edge_ring.coords()),
-            (RingOwner::new(7, 1), source_ring.coords()),
+            (RingOwner::new(7, 0), &zero_edge_ring),
+            (RingOwner::new(7, 1), &source_ring),
         ];
 
-        let plan = constrained_source_plan(&rings).unwrap();
+        let plan =
+            constrained_source_plan(&rings, crate::geometry::TopologyDomain::Cartesian, None)
+                .unwrap();
 
         assert_eq!(
             plan.vertices
@@ -1130,6 +1745,238 @@ mod tests {
             Some(RingOwner::new(7, 1)),
             "the source row follows a ring with no nonzero XY edges"
         );
+    }
+
+    #[test]
+    fn retained_cdt_chart_keeps_hole_faces_and_live_source_uses() {
+        let shell = geographic_ring(&[
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+            (170.0, -10.0),
+        ]);
+        let hole = geographic_ring(&[
+            (175.0, -2.0),
+            (-175.0, -2.0),
+            (-175.0, 2.0),
+            (175.0, 2.0),
+            (175.0, -2.0),
+        ]);
+        let rings = [
+            (RingOwner::new(0, 0), &shell),
+            (RingOwner::new(0, 1), &hole),
+        ];
+        let frame = GeographicFrame::crs84();
+        let shape =
+            crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell.clone(), vec![
+                hole.clone(),
+            ]));
+        let chart = PointSelectionChart::try_from_shape(frame, &shape, shape.bounds()).unwrap();
+        let source_plan = retained_constrained_source_plan(frame, chart.as_ref(), &rings)
+            .unwrap()
+            .expect("zero-turn seam rings have one continuous chart");
+        let area = exact::ExactRational::from_dyadic(source_plan.chart_area.unwrap())
+            .round()
+            .unwrap();
+        assert_eq!(area, 360.0);
+
+        let plan = prepare_constrained_triangle_plan(
+            rings.into_iter(),
+            6_800.0,
+            CdtRefinement::Off,
+            crate::geometry::TopologyDomain::Geographic(frame),
+            chart.as_ref(),
+        )
+        .unwrap();
+        let first_source = plan.source_constraints.first().unwrap();
+        assert!(plan.site_chart_location(first_source.start_site).is_some());
+        assert!(
+            plan.source_chart_location(first_source.start_occurrence)
+                .is_some()
+        );
+        assert_eq!(plan.faces.len(), 8);
+        assert_eq!(plan.face_uses.len(), 8);
+        assert_eq!(plan.source_constraints.len(), 8);
+        assert_eq!(
+            plan.face_uses
+                .iter()
+                .flat_map(|face| &face.sides)
+                .filter(|side| {
+                    side.source
+                        .as_ref()
+                        .is_some_and(|source| source.owner.ring() == 1)
+                })
+                .count(),
+            4
+        );
+        assert!(
+            plan.face_uses
+                .iter()
+                .flat_map(|face| &face.sides)
+                .filter(|side| side.constrained)
+                .all(|side| !side.twin_selected)
+        );
+        let selected_sides = plan
+            .face_uses
+            .iter()
+            .flat_map(|face| &face.sides)
+            .collect::<Vec<_>>();
+        assert!(
+            selected_sides.iter().any(|side| side.twin_selected),
+            "the selected mesh contains shared interior sides"
+        );
+        for side in &selected_sides {
+            let selected_twin = side.twin.and_then(|twin| {
+                selected_sides
+                    .iter()
+                    .copied()
+                    .find(|candidate| candidate.halfedge == twin)
+            });
+            assert_eq!(
+                side.twin_selected,
+                selected_twin.is_some(),
+                "selected-side twin status matches the captured selected-face set"
+            );
+            if let Some(twin) = selected_twin {
+                assert_eq!(twin.twin, Some(side.halfedge));
+                assert_eq!(
+                    (twin.start_site, twin.end_site),
+                    (side.end_site, side.start_site)
+                );
+            }
+        }
+        plan.validate_certificate().unwrap();
+    }
+
+    #[test]
+    fn retained_cdt_refinement_keeps_chart_centers_and_boundary_splits() {
+        let ring = geographic_ring(&[
+            (170.0, 0.0),
+            (-170.0, 0.0),
+            (-170.0, 20.0),
+            (170.0, 20.0),
+            (170.0, 0.0),
+        ]);
+        let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(
+            ring.clone(),
+            Vec::new(),
+        ));
+        let frame = GeographicFrame::crs84();
+        let chart = PointSelectionChart::try_from_shape(frame, &shape, shape.bounds()).unwrap();
+        let plan = prepare_constrained_triangle_plan(
+            [(RingOwner::new(0, 0), &ring)].into_iter(),
+            6_800.0,
+            CdtRefinement::On {
+                min_angle: None,
+                max_area: Some(crate::Positive::try_new("max_area", 25.0).unwrap()),
+            },
+            crate::geometry::TopologyDomain::Geographic(frame),
+            chart.as_ref(),
+        )
+        .unwrap();
+
+        assert!(plan.provenance.iter().any(|origin| {
+            matches!(origin, cdt::NodeProvenance::InteriorRefinement {
+                construction: cdt::RefinementConstruction::Circumcenter,
+                ..
+            })
+        }));
+        assert!(
+            plan.provenance
+                .iter()
+                .any(|origin| matches!(origin, cdt::NodeProvenance::ConstraintSplit { .. }))
+        );
+        assert!(plan.constraint_pieces.len() > plan.source_constraints.len());
+        plan.validate_certificate().unwrap();
+    }
+
+    #[test]
+    fn retained_cdt_uses_chart_area_to_drop_an_inert_max_area_request() {
+        let ring = geographic_ring(&[
+            (170.0, 0.0),
+            (-170.0, 0.0),
+            (-170.0, 10.0),
+            (170.0, 8.0),
+            (170.0, 0.0),
+        ]);
+        let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(
+            ring.clone(),
+            Vec::new(),
+        ));
+        let chart =
+            PointSelectionChart::try_from_shape(GeographicFrame::crs84(), &shape, shape.bounds())
+                .unwrap();
+        let refinement = CdtRefinement::On {
+            min_angle: None,
+            max_area: Some(crate::Positive::try_new("max_area", 1_000.0).unwrap()),
+        };
+        let plan = prepare_constrained_triangle_plan(
+            [(RingOwner::new(0, 0), &ring)].into_iter(),
+            6_120.0,
+            refinement,
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            chart.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(plan.refinement, CdtRefinement::Off);
+        assert_eq!(plan.faces.len(), 2);
+        plan.validate_certificate().unwrap();
+    }
+
+    #[test]
+    fn retained_cdt_distinguishes_sites_with_identical_lifted_proposals() {
+        let next = 0.2_f64.next_up();
+        let ring = geographic_ring(&[
+            (170.0, 0.0),
+            (-170.0, 0.0),
+            (-100.0, 0.0),
+            (0.2, 0.0),
+            (next, 0.0),
+            (next, 1.0),
+            (0.2, 1.0),
+            (-100.0, 1.0),
+            (-170.0, 1.0),
+            (170.0, 1.0),
+            (170.0, 0.0),
+        ]);
+        let rings = [(RingOwner::new(0, 0), &ring)];
+        let frame = GeographicFrame::crs84();
+        let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(
+            ring.clone(),
+            Vec::new(),
+        ));
+        let chart = PointSelectionChart::try_from_shape(frame, &shape, shape.bounds()).unwrap();
+        let plan = prepare_constrained_triangle_plan(
+            rings.into_iter(),
+            0.0,
+            CdtRefinement::Off,
+            crate::geometry::TopologyDomain::Geographic(frame),
+            chart.as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.source_constraints.len(), 10);
+        let adjacent = plan
+            .source_constraints
+            .iter()
+            .find(|source| {
+                source.start.x.to_bits() == 0.2_f64.to_bits()
+                    && source.start.y.to_bits() == 0.0_f64.to_bits()
+                    && source.end.x.to_bits() == next.to_bits()
+                    && source.end.y.to_bits() == 0.0_f64.to_bits()
+            })
+            .expect("the adjacent lifted source edge remains admitted");
+        assert_ne!(adjacent.start_site, adjacent.end_site);
+        assert_eq!(
+            plan.chart_proposal(adjacent.start_site).x,
+            plan.chart_proposal(adjacent.end_site).x,
+            "the binary64 chart proposal rounds the adjacent exact sites together"
+        );
+        let start = plan.site_chart_location(adjacent.start_site).unwrap();
+        let end = plan.site_chart_location(adjacent.end_site).unwrap();
+        assert!(start.compare_chart_xy(end).is_lt());
+        plan.validate_certificate().unwrap();
     }
 
     #[test]

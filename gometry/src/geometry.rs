@@ -108,7 +108,8 @@ mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
     PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
-    publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
+    publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
+    publish_computed_point_or_raw_shape, publish_mesh_publication_for_domain,
     publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
     publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
@@ -382,7 +383,16 @@ pub(crate) use segments::{
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
-    CdtRefinement, VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs, row_sample_seed,
+    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, row_sample_seed,
+};
+#[expect(
+    unused_imports,
+    reason = "The common sample publication sink consumes these producer receipt types"
+)]
+pub(crate) use tessellation::{
+    EarcutCornerId, EarcutOccurrenceId, EarcutSiteId, GeographicSampleSegment, SampleDraw,
+    SampleOccurrenceId, SampleRecipe, SampleSupport,
 };
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;

@@ -471,6 +471,7 @@ impl ExactRational {
         clippy::float_cmp,
         reason = "exact coordinate equality selects the nonzero source axis; tolerance would change the parameter"
     )]
+    #[cfg(test)]
     pub(super) fn from_segment(start: XY, end: XY, point: XY) -> Result<Self> {
         let (start, end, point) = if start.x != end.x {
             (start.x, end.x, point.x)
@@ -740,6 +741,22 @@ pub(in crate::geometry) fn incircle_dyadic_points(
         .try_product(&bcdet)?
         .try_add(blift.try_product(&cadet)?)?
         .try_add(clift.try_product(&abdet)?)
+        .map(|determinant| determinant.sign())
+}
+
+/// Exact orientation over source or generated chart coordinates retained as
+/// dyadics, without first rounding retained native-plus-lift locations to XY.
+pub(in crate::geometry) fn orient2d_dyadic_points(
+    [ax, ay]: [ExactDyadic; 2],
+    [bx, by]: [ExactDyadic; 2],
+    [cx, cy]: [ExactDyadic; 2],
+) -> Result<ExactSign> {
+    let abx = bx.try_subtract(ax.clone())?;
+    let aby = by.try_subtract(ay.clone())?;
+    let acx = cx.try_subtract(ax)?;
+    let acy = cy.try_subtract(ay)?;
+    abx.try_product(&acy)?
+        .try_subtract(aby.try_product(&acx)?)
         .map(|determinant| determinant.sign())
 }
 
@@ -2269,6 +2286,28 @@ pub(super) fn distance_within_points(
     let radius = ExactRational::from_f64(radius);
     let radius_squared = radius.try_product(&radius)?;
     Ok(distance_squared.try_cmp(&radius_squared)?.is_lt())
+}
+
+/// Round the exact circumcenter of retained dyadic chart sites to nearest
+/// binary64. `None` means the center does not have a finite representation.
+pub(in crate::geometry) fn circumcenter_dyadic_points(
+    a: [ExactDyadic; 2],
+    b: [ExactDyadic; 2],
+    c: [ExactDyadic; 2],
+) -> Result<Option<XY>> {
+    if orient2d_dyadic_points(a.clone(), b.clone(), c.clone())? == ExactSign::Zero {
+        return Err(GeometryErrorKind::triangulation(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    let [ax, ay] = &a;
+    let [bx, by] = &b;
+    let [cx, cy] = &c;
+    let center = line_intersection(
+        &ExactLine::perpendicular_bisector_dyadics([ax, ay], [bx, by])?,
+        &ExactLine::perpendicular_bisector_dyadics([ax, ay], [cx, cy])?,
+    )?;
+    center.finite_rounding()
 }
 
 fn approximate_ratio_components(

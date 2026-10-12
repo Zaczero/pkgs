@@ -494,6 +494,7 @@ impl PyGeometryArray {
                             (logical, crate::geometry::PublishedTriangleVertices {
                                 points: Vec::new(),
                                 ring_ends: Vec::new(),
+                                mesh_publication: None,
                             })
                         },
                         ArrayRow::Present(row) => {

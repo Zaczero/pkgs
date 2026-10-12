@@ -6,16 +6,16 @@ use crate::error::Result;
 use crate::geographic::{ChartPointSite, GeographicFrame, PointSelectionChart};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
-    CdtRefinement, CertifiedDelaunay, RingOwner, Site, certified_delaunay,
-    collect_sample_triangles, constrained_triangle_vertices, earcut_polygon_with, sample_weighted,
-    selected_triangle_points, snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel,
-    weight_scale,
+    CdtRefinement, CertifiedDelaunay, GeographicSampleSegment, PreparedSampling, RingOwner,
+    SampleOccurrenceId, SampleRecipe, SampleSupport, Site, certified_delaunay,
+    collect_sample_atoms, collect_sample_triangles, earcut_polygon_with, sample_weighted,
+    snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, ExpansionBudget,
-    GeometryErrorKind, MultiMember, MultiPolygon, Point, PointKey, Polygon, Polygonal,
-    PolygonizeFull, Ring, Segment, Shape, ShapeCountQuery, SourceArcContext, TopologyDomain,
-    VoronoiBoundary, axis_extent, line_segments,
+    AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, CsrOffsetColumn, Dimension,
+    ExpansionBudget, GeometryErrorKind, MultiMember, MultiPolygon, Point, PointKey, Polygon,
+    Polygonal, PolygonizeFull, Ring, Segment, Shape, ShapeCountQuery, SourceArcContext,
+    TopologyDomain, VoronoiBoundary, axis_extent, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -23,29 +23,6 @@ use crate::geometry::{
 pub(super) struct BudgetedTriangleSink<'budget> {
     budget: &'budget mut ExpansionBudget,
     shapes: Vec<Shape>,
-}
-
-// The cap must be admitted before this local output vector is reserved. Keep
-// the ordering observable in a test build; it is compiled out of production.
-#[cfg(test)]
-thread_local! {
-    static DELAUNAY_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn note_delaunay_output_reserve() {
-    DELAUNAY_OUTPUT_RESERVES.with(|count| {
-        let reserves = count
-            .get()
-            .checked_add(1)
-            .expect("Delaunay output reserve test counter overflow");
-        count.set(reserves);
-    });
-}
-
-#[cfg(test)]
-pub(super) fn take_delaunay_output_reserves() -> usize {
-    DELAUNAY_OUTPUT_RESERVES.with(|count| count.replace(0))
 }
 
 impl<'budget> BudgetedTriangleSink<'budget> {
@@ -94,32 +71,6 @@ impl<'budget> BudgetedPackedTriangleSink<'budget> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct GeographicSampleSegment {
-    start: Point,
-    end: Point,
-    longitude: crate::geographic::RetainedChartDisplacement,
-    delta_x: f64,
-    delta_y: f64,
-    raw_compatible: bool,
-}
-
-impl GeographicSampleSegment {
-    fn sample(self, along: f64, frame: crate::geographic::GeographicFrame) -> Result<Point> {
-        let x = if self.raw_compatible {
-            (1.0 - along) * self.start.x + along * self.end.x
-        } else {
-            let start = self.longitude.endpoints()[0].get();
-            frame
-                .longitude()
-                .canonicalize(start + self.delta_x * along)
-                .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?
-                .get()
-        };
-        Point::new(x, (1.0 - along) * self.start.y + along * self.end.y)
-    }
-}
-
 #[expect(
     clippy::float_cmp,
     reason = "raw interpolation requires equal deltas; signed zero remains compatible"
@@ -131,14 +82,15 @@ fn raw_delta_matches_retained(raw_delta: f64, retained_delta: f64) -> bool {
 fn geographic_sample_segments(
     shape: &Shape,
     frame: crate::geographic::GeographicFrame,
-) -> Result<Vec<GeographicSampleSegment>> {
+) -> Result<Vec<SampleSupport>> {
     let mut segments = Vec::with_capacity(ShapeCountQuery::default().segments(shape)?);
+    let mut component = 0_usize;
     shape.try_for_each_segment_chain(|chain| -> Result<()> {
         let mut points = chain.iter_coords();
         let Some(mut start) = points.next() else {
             return Ok(());
         };
-        for end in points {
+        for (occurrence, end) in points.enumerate() {
             let connection = frame
                 .longitude()
                 .chart_connection(start.x, end.x)
@@ -147,20 +99,29 @@ fn geographic_sample_segments(
             let raw_delta = end.x - start.x;
             let retained_delta = longitude.delta_native(frame.longitude());
             let raw_compatible = raw_delta_matches_retained(raw_delta, retained_delta);
-            segments.push(GeographicSampleSegment {
-                start,
-                end,
-                longitude,
-                delta_x: if raw_compatible {
-                    raw_delta
-                } else {
-                    retained_delta
+            segments.push(SampleSupport::GeographicSegment {
+                segment: GeographicSampleSegment {
+                    occurrence: SampleOccurrenceId {
+                        component,
+                        occurrence,
+                    },
+                    start,
+                    end,
+                    longitude,
+                    delta_x: if raw_compatible {
+                        raw_delta
+                    } else {
+                        retained_delta
+                    },
+                    delta_y: end.y - start.y,
+                    raw_compatible,
                 },
-                delta_y: end.y - start.y,
-                raw_compatible,
             });
             start = end;
         }
+        component = component
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     })?;
     Ok(segments)
@@ -195,6 +156,13 @@ fn geographic_sample_requires_preparation(
         Ok(())
     })?;
     Ok(!raw_compatible || crate::geometry::crosses_antimeridian_in_frame(shape, frame))
+}
+
+fn sample_triangle_vertices(support: &SampleSupport) -> &[Point; 3] {
+    let SampleSupport::AreaTriangle { vertices, .. } = support else {
+        unreachable!("surface support contains only Earcut triangles")
+    };
+    vertices
 }
 
 fn prepare_geographic_sample_leaf(
@@ -285,91 +253,107 @@ impl Shape {
         }
         let mut shapes = Vec::with_capacity(vertices.len() / 4);
         for ring in vertices.as_chunks::<4>().0 {
-            shapes.push(Self::Polygon(Polygon::new(
-                Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
-                Vec::new(),
-            )));
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
         }
         Ok(shapes)
     }
 
-    /// The Delaunay triangulation as one flat CLOSED-ring vertex stream — four
-    /// points `[a, c, b, a]` per triangle, CCW (gometry's shell canon). Lets the
-    /// array surface build a packed `Polygons` layout in ONE pass instead of a
-    /// `Polygon`/`CoordSeq` per triangle that is then re-packed.
-    pub(crate) fn delaunay_triangle_vertices(&self) -> Result<Vec<Point>> {
-        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
-        self.delaunay_triangle_vertices_budgeted(&mut budget)
+    pub(crate) fn triangle_shapes_from_published_rings(
+        vertices: &[Point],
+        ring_ends: &[usize],
+    ) -> Result<Vec<Self>> {
+        let mut shapes = Vec::with_capacity(ring_ends.len());
+        let mut start = 0;
+        for &end in ring_ends {
+            if end > vertices.len() || end.checked_sub(start).is_none_or(|len| len < 4) {
+                return Err(GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+                .into());
+            }
+            let ring = vertices.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+            })?;
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
+            start = end;
+        }
+        if start != vertices.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "triangle ring offsets do not match the vertex stream".into(),
+            )
+            .into());
+        }
+        Ok(shapes)
     }
 
-    fn delaunay_points(&self) -> Result<Vec<Point>> {
-        // Sites are an XY set, but each one carries the first full source Point
-        // so triangle corners retain its Z/M without a post-hoc lookup.
-        let mut points = self.first_seen_xy_vertices()?;
-        points.sort_unstable_by(|left, right| {
-            left.x
-                .total_cmp(&right.x)
-                .then_with(|| left.y.total_cmp(&right.y))
-        });
-        if points.len() < 3 {
-            return Ok(Vec::new());
-        }
-        // The exact engine takes the unique vertices as they are: no
-        // conversion, no proposal path, no repair afterwards.
-        Ok(points)
+    fn triangle_shape_from_ring(vertices: &[Point]) -> Result<Self> {
+        Ok(Self::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(vertices)?)?,
+            Vec::new(),
+        )))
     }
 
     pub(crate) fn delaunay_triangle_vertices_budgeted(
         &self,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        let points = self.delaunay_points()?;
-        if points.len() < 3 {
-            return Ok(Vec::new());
-        }
-        // The triangulation's indexed faces are input-sized working state; the
-        // closed-ring vertices below are the generated output. Charge their
-        // exact count before reserving or emitting any of them.
-        let mut sites = Vec::with_capacity(points.len());
-        for (id, &point) in points.iter().enumerate() {
-            sites.push(Site::raw(id, point, id));
-        }
-        let triangulation = certified_delaunay(&sites)?;
-        let capacity = triangulation
-            .triangles()
-            .len()
-            .checked_mul(4)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        budget.check_additional(capacity)?;
-        #[cfg(test)]
-        note_delaunay_output_reserve();
-        let mut vertices = Vec::with_capacity(capacity);
-        let mut triangles = triangulation.triangles().to_vec();
-        let xy = |site| super::delaunay::exact_delaunay::site_xy(&points, site);
-        super::delaunay::exact_delaunay::canonicalize_triangles(&xy, &mut triangles);
-        for triangle in triangles {
-            vertices.extend_from_slice(&selected_triangle_points(&points, triangle, false));
-        }
-        budget.add(capacity)?;
-        Ok(vertices)
+        Ok(self
+            .delaunay_mesh_publication_in_domain_budgeted(
+                crate::geometry::TopologyDomain::Cartesian,
+                budget,
+            )?
+            .into_points())
     }
 
-    pub(crate) fn constrained_delaunay_triangles(
+    #[cfg(test)]
+    pub(crate) fn delaunay_mesh_publication_in_domain(
+        &self,
+        domain: crate::geometry::TopologyDomain,
+    ) -> Result<super::PreparedMeshPublication> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+        self.delaunay_mesh_publication_in_domain_budgeted(domain, &mut budget)
+    }
+
+    pub(crate) fn delaunay_mesh_publication_in_domain_budgeted(
+        &self,
+        domain: crate::geometry::TopologyDomain,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<super::PreparedMeshPublication> {
+        let source_points = self.first_seen_xy_vertices()?;
+        let publication = match domain {
+            crate::geometry::TopologyDomain::Cartesian => {
+                super::delaunay::prepare_raw_delaunay_publication(&source_points, budget)?
+            },
+            crate::geometry::TopologyDomain::Geographic(frame) => {
+                super::delaunay::prepare_retained_delaunay_publication(
+                    frame,
+                    &source_points,
+                    budget,
+                )?
+            },
+        };
+        Ok(publication)
+    }
+
+    pub(crate) fn constrained_delaunay_triangles_in_domain(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
     ) -> Result<Vec<Self>> {
         let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-        self.constrained_delaunay_triangles_budgeted(refinement, &mut budget)
+        self.constrained_delaunay_triangles_in_domain_budgeted(refinement, domain, &mut budget)
     }
 
-    pub(crate) fn constrained_delaunay_triangles_budgeted(
+    pub(crate) fn constrained_delaunay_triangles_in_domain_budgeted(
         &self,
         refinement: CdtRefinement,
+        domain: TopologyDomain,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        // Build and publish one constrained mesh plan; packed and per-shape
-        // callers consume the same selected source sites and face IDs.
-        let vertices = self.constrained_delaunay_vertices_budgeted(refinement, budget)?;
+        let vertices =
+            self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, budget)?;
         Self::triangle_shapes_from_vertices(&vertices)
     }
 
@@ -377,6 +361,7 @@ impl Shape {
     /// vertex stream. Each ring is emitted from the shared mesh plan: inactive
     /// refinement preserves selected source-site axes, while active refinement
     /// emits uniform XY.
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices(
         &self,
         refinement: CdtRefinement,
@@ -385,33 +370,81 @@ impl Shape {
         self.constrained_delaunay_vertices_budgeted(refinement, &mut budget)
     }
 
+    pub(crate) fn constrained_delaunay_vertices_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Vec<Point>> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+        self.constrained_delaunay_vertices_in_domain_budgeted(refinement, domain, &mut budget)
+    }
+
+    #[cfg(test)]
     pub(crate) fn constrained_delaunay_vertices_budgeted(
         &self,
         refinement: CdtRefinement,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
-            Polygonal::Polygon(polygon) => constrained_triangle_vertices(
-                polygon
-                    .rings()
-                    .enumerate()
-                    .map(|(ring, value)| (RingOwner::new(0, ring), value.coords())),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::MultiPolygon(polygons) => constrained_triangle_vertices(
-                polygons.iter().enumerate().flat_map(|(polygon, value)| {
-                    value
+        self.constrained_delaunay_vertices_in_domain_budgeted(
+            refinement,
+            TopologyDomain::Cartesian,
+            budget,
+        )
+    }
+
+    pub(crate) fn constrained_delaunay_vertices_in_domain_budgeted(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Vec<Point>> {
+        let Some(plan) = self.prepare_constrained_delaunay_plan_in_domain(refinement, domain)?
+        else {
+            return Ok(Vec::new());
+        };
+        super::delaunay::publish_constrained_plan(&plan, budget)
+    }
+
+    pub(crate) fn prepare_constrained_delaunay_plan_in_domain(
+        &self,
+        refinement: CdtRefinement,
+        domain: TopologyDomain,
+    ) -> Result<Option<super::delaunay::ConstrainedMeshPlan>> {
+        let polygonal = self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        let chart = match domain {
+            TopologyDomain::Cartesian => None,
+            TopologyDomain::Geographic(frame) => {
+                PointSelectionChart::try_from_shape(frame, self, self.bounds())?
+            },
+        };
+        match polygonal {
+            Polygonal::Polygon(polygon) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygon
                         .rings()
                         .enumerate()
-                        .map(move |(ring, value)| (RingOwner::new(polygon, ring), value.coords()))
-                }),
-                self.area(),
-                refinement,
-                budget,
-            ),
-            Polygonal::Empty => Ok(Vec::new()),
+                        .map(|(ring, value)| (RingOwner::new(0, ring), value)),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::MultiPolygon(polygons) => {
+                Ok(Some(super::delaunay::prepare_constrained_triangle_plan(
+                    polygons.iter().enumerate().flat_map(|(polygon, value)| {
+                        value
+                            .rings()
+                            .enumerate()
+                            .map(move |(ring, value)| (RingOwner::new(polygon, ring), value))
+                    }),
+                    self.area(),
+                    refinement,
+                    domain,
+                    chart.as_ref(),
+                )?))
+            },
+            Polygonal::Empty => Ok(None),
         }
     }
 
@@ -511,72 +544,136 @@ impl Shape {
         if count == 0 {
             return Ok(Vec::new());
         }
-        self.sample_points_from_support(self, count, seed, None)
+        self.sample_point_receipts_from_support(
+            self,
+            count,
+            seed,
+            0,
+            TopologyDomain::Cartesian,
+            None,
+        )
+        .map(PreparedSampling::into_points)
     }
 
+    #[cfg(test)]
     pub(crate) fn sample_points_in_domain(
         &self,
         count: usize,
         seed: u64,
         domain: TopologyDomain,
     ) -> Result<Vec<Point>> {
+        self.sample_point_receipts_in_domain(count, seed, 0, domain)
+            .map(PreparedSampling::into_points)
+    }
+
+    pub(crate) fn sample_point_receipts_in_domain(
+        &self,
+        count: usize,
+        seed: u64,
+        logical_row: usize,
+        domain: TopologyDomain,
+    ) -> Result<PreparedSampling> {
         ExpansionBudget::check("sample_points", "count", count)?;
         if count == 0 {
-            return Ok(Vec::new());
+            return Ok(PreparedSampling::empty(logical_row, seed, domain));
         }
         let TopologyDomain::Geographic(frame) = domain else {
-            return self.sample_points_from_support(self, count, seed, None);
+            return self.sample_point_receipts_from_support(
+                self,
+                count,
+                seed,
+                logical_row,
+                domain,
+                None,
+            );
         };
         if self.topological_dimension() < Dimension::Curve {
-            return self.sample_points_from_support(self, count, seed, None);
+            return self.sample_point_receipts_from_support(
+                self,
+                count,
+                seed,
+                logical_row,
+                domain,
+                None,
+            );
         }
         crate::geographic::ScalarGeographicView::try_new(frame, self)
             .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
         if !geographic_sample_requires_preparation(self, frame)? {
-            return self.sample_points_from_support(self, count, seed, None);
+            return self.sample_point_receipts_from_support(
+                self,
+                count,
+                seed,
+                logical_row,
+                domain,
+                None,
+            );
         }
         let area_support = geographic_areal_sample_support(self, frame)?;
         let segments = geographic_sample_segments(self, frame)?;
-        area_support.sample_points_from_support(self, count, seed, Some((&segments, &frame)))
+        area_support.sample_point_receipts_from_support(
+            self,
+            count,
+            seed,
+            logical_row,
+            domain,
+            Some(segments),
+        )
     }
 
-    fn sample_points_from_support(
+    fn sample_point_receipts_from_support(
         &self,
         point_source: &Self,
         count: usize,
         seed: u64,
-        geographic_segments: Option<(
-            &[GeographicSampleSegment],
-            &crate::geographic::GeographicFrame,
-        )>,
-    ) -> Result<Vec<Point>> {
+        logical_row: usize,
+        domain: TopologyDomain,
+        mut geographic_segments: Option<Vec<SampleSupport>>,
+    ) -> Result<PreparedSampling> {
         if self.topological_dimension() >= Dimension::Surface {
-            let mut triangles: Vec<[Point; 3]> = Vec::new();
-            collect_sample_triangles(self, &mut triangles)?;
+            let mut supports = Vec::new();
+            collect_sample_triangles(self, &mut supports)?;
             // Every triangle uses one shared *per-axis* frame. Relative areas
             // retain the common `sx*sy` factor, while reciprocal spans remain
             // nonzero instead of collapsing to the lower-dimensional fallback.
-            let frame = triangles.first().and_then(|[origin, ..]| {
-                let extent_x =
-                    axis_extent(triangles.iter().flatten().map(|point| point.x), origin.x)?;
-                let extent_y =
-                    axis_extent(triangles.iter().flatten().map(|point| point.y), origin.y)?;
-                AxisFrame::from_origin_extents(*origin, extent_x, extent_y)
+            let frame = supports.first().and_then(|support| {
+                let origin = *sample_triangle_vertices(support)
+                    .first()
+                    .expect("an area triangle has a first vertex");
+                let extent_x = axis_extent(
+                    supports.iter().flat_map(|support| {
+                        sample_triangle_vertices(support)
+                            .iter()
+                            .map(|point| point.x)
+                    }),
+                    origin.x,
+                )?;
+                let extent_y = axis_extent(
+                    supports.iter().flat_map(|support| {
+                        sample_triangle_vertices(support)
+                            .iter()
+                            .map(|point| point.y)
+                    }),
+                    origin.y,
+                )?;
+                AxisFrame::from_origin_extents(origin, extent_x, extent_y)
             });
             let placed = sample_weighted(
                 count,
                 seed,
-                &triangles,
-                |[a, b, c]| {
+                &supports,
+                |support| {
                     let Some(frame) = frame else {
                         return 0.0;
                     };
+                    let [a, b, c] = sample_triangle_vertices(support);
                     let a = frame.frame_point(*a);
                     let b = frame.frame_point(*b);
                     let c = frame.frame_point(*c);
                     ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs()
                 },
-                |[base, mid, apex], state| {
+                |support, state| {
+                    let [base, mid, apex] = sample_triangle_vertices(support);
                     // P = (1 - s) A + s (1 - t) B + s t C with s = sqrt(u):
                     // uniform over the triangle.
                     let spread = uniform_f64(state).sqrt();
@@ -585,76 +682,144 @@ impl Shape {
                         (1.0 - spread) * base.x + spread * ((1.0 - blend) * mid.x + blend * apex.x);
                     let y =
                         (1.0 - spread) * base.y + spread * ((1.0 - blend) * mid.y + blend * apex.y);
-                    Point::new(x, y)
+                    Ok((Point::new(x, y)?, SampleRecipe::Triangle { spread, blend }))
                 },
             )?;
-            if let Some(points) = placed {
-                return Ok(points);
+            if let Some(draws) = placed {
+                return Ok(PreparedSampling::from_draws(
+                    logical_row,
+                    seed,
+                    domain,
+                    supports,
+                    draws,
+                ));
             }
         }
         if self.topological_dimension() >= Dimension::Curve {
-            let placed = if let Some((segments, frame)) = geographic_segments {
-                let scale = weight_scale(
-                    segments
-                        .iter()
-                        .flat_map(|segment| [segment.start, segment.end])
+            let placed = if let Some(supports) = geographic_segments.take() {
+                let TopologyDomain::Geographic(frame) = domain else {
+                    unreachable!("retained sample segments require a geographic domain")
+                };
+                let scale = weight_scale(supports.iter().fold(0.0_f64, |largest, support| {
+                    let SampleSupport::GeographicSegment { segment } = support else {
+                        unreachable!("geographic support contains retained segments")
+                    };
+                    [segment.start, segment.end]
+                        .into_iter()
                         .flat_map(|point| [point.x.abs(), point.y.abs()])
-                        .fold(0.0_f64, f64::max),
-                );
+                        .fold(largest, f64::max)
+                }));
                 sample_weighted(
                     count,
                     seed,
-                    segments,
-                    |segment| {
+                    &supports,
+                    |support| {
+                        let SampleSupport::GeographicSegment { segment } = support else {
+                            unreachable!("geographic support contains retained segments")
+                        };
                         let dx = segment.delta_x * scale;
                         let dy = segment.delta_y * scale;
                         (dx * dx + dy * dy).sqrt()
                     },
-                    |segment, state| segment.sample(uniform_f64(state), *frame),
+                    |support, state| {
+                        let SampleSupport::GeographicSegment { segment } = support else {
+                            unreachable!("geographic support contains retained segments")
+                        };
+                        let along = uniform_f64(state);
+                        Ok((segment.sample(along, frame)?, SampleRecipe::Segment {
+                            along,
+                        }))
+                    },
                 )?
+                .map(|draws| (supports, draws))
             } else {
                 let segment_count = ShapeCountQuery::default().segments(self)?;
-                let mut segments: Vec<Segment> = Vec::with_capacity(segment_count);
-                self.for_each_segment_chain(|chain| {
-                    segments.extend(line_segments(chain));
-                });
+                let mut segments: Vec<SampleSupport> = Vec::with_capacity(segment_count);
+                let mut component = 0_usize;
+                self.try_for_each_segment_chain(|chain| -> Result<()> {
+                    for (occurrence, segment) in line_segments(chain).enumerate() {
+                        segments.push(SampleSupport::Segment {
+                            occurrence: SampleOccurrenceId {
+                                component,
+                                occurrence,
+                            },
+                            segment,
+                        });
+                    }
+                    component = component
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    Ok(())
+                })?;
                 let scale = weight_scale(
                     segments
                         .iter()
-                        .flat_map(|segment| [segment.start, segment.end])
-                        .flat_map(|point| [point.x.abs(), point.y.abs()])
+                        .flat_map(|support| {
+                            let SampleSupport::Segment { segment, .. } = support else {
+                                unreachable!("Cartesian support contains line segments")
+                            };
+                            [
+                                segment.start.x.abs(),
+                                segment.start.y.abs(),
+                                segment.end.x.abs(),
+                                segment.end.y.abs(),
+                            ]
+                        })
                         .fold(0.0_f64, f64::max),
                 );
                 sample_weighted(
                     count,
                     seed,
                     &segments,
-                    |segment| {
+                    |support| {
+                        let SampleSupport::Segment { segment, .. } = support else {
+                            unreachable!("Cartesian support contains line segments")
+                        };
                         let dx = (segment.end.x - segment.start.x) * scale;
                         let dy = (segment.end.y - segment.start.y) * scale;
                         (dx * dx + dy * dy).sqrt()
                     },
-                    |segment, state| {
+                    |support, state| {
+                        let SampleSupport::Segment { segment, .. } = support else {
+                            unreachable!("Cartesian support contains line segments")
+                        };
                         let along = uniform_f64(state);
                         let x = (1.0 - along) * segment.start.x + along * segment.end.x;
                         let y = (1.0 - along) * segment.start.y + along * segment.end.y;
-                        Point::new(x, y)
+                        Ok((Point::new(x, y)?, SampleRecipe::Segment { along }))
                     },
                 )?
+                .map(|draws| (segments, draws))
             };
-            if let Some(points) = placed {
-                return Ok(points);
+            if let Some((supports, draws)) = placed {
+                return Ok(PreparedSampling::from_draws(
+                    logical_row,
+                    seed,
+                    domain,
+                    supports,
+                    draws,
+                ));
             }
         }
-        let atoms = point_source.points_vec()?;
-        Ok(sample_weighted(
+        let atom_count = ShapeCountQuery::default().coordinates(point_source)?;
+        let mut supports = Vec::with_capacity(atom_count);
+        collect_sample_atoms(point_source, &mut supports)?;
+        let draws = sample_weighted(
             count,
             seed,
-            &atoms,
+            &supports,
             |_| 1.0,
-            |atom, _| Point::new(atom.x, atom.y),
-        )?
-        .unwrap_or_default())
+            |support, _| {
+                let SampleSupport::PointAtom { point, .. } = support else {
+                    unreachable!("atomic support contains points")
+                };
+                Ok((Point::new(point.x, point.y)?, SampleRecipe::Atom))
+            },
+        )?;
+        Ok(draws.map_or_else(
+            || PreparedSampling::empty(logical_row, seed, domain),
+            |draws| PreparedSampling::from_draws(logical_row, seed, domain, supports, draws),
+        ))
     }
 
     #[cfg(test)]
@@ -1166,6 +1331,9 @@ pub(super) fn canonical_voronoi_sites(points: Vec<Point>, tolerance: f64) -> Res
 mod geographic_sample_tests {
     use super::geographic_sample_segments;
     use crate::geographic::GeographicFrame;
+    use crate::geometry::tessellation::{
+        GeographicSampleSegment, PreparedSampling, SampleRecipe, SampleSupport, sample_weighted,
+    };
     use crate::geometry::{
         CoordSeq, CoordinateAxes, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
         Polygon, Ring, Shape, TopologyDomain, row_sample_seed,
@@ -1198,6 +1366,13 @@ mod geographic_sample_tests {
             .collect()
     }
 
+    fn retained_segment(support: &SampleSupport) -> GeographicSampleSegment {
+        let SampleSupport::GeographicSegment { segment } = support else {
+            panic!("retained geographic segment support")
+        };
+        *segment
+    }
+
     #[test]
     fn retained_line_midpoint_is_the_antimeridian() {
         let frame = GeographicFrame::crs84();
@@ -1205,9 +1380,188 @@ mod geographic_sample_tests {
         let segments = geographic_sample_segments(&source, frame).unwrap();
 
         assert_eq!(segments.len(), 1);
-        let midpoint = segments[0].sample(0.5, frame).unwrap();
+        let midpoint = retained_segment(segments.first().expect("one retained segment"))
+            .sample(0.5, frame)
+            .unwrap();
         assert_eq!(midpoint.x.abs(), 180.0);
         assert_eq!(midpoint.y, 0.0);
+
+        let support = segments;
+        let draws = sample_weighted(
+            1,
+            1,
+            &support,
+            |_| 1.0,
+            |support, _| {
+                let segment = retained_segment(support);
+                let along = 0.5;
+                Ok((segment.sample(along, frame)?, SampleRecipe::Segment {
+                    along,
+                }))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let product =
+            PreparedSampling::from_draws(4, 1, TopologyDomain::Geographic(frame), support, draws);
+        assert_eq!(product.logical_row, 4);
+        assert_eq!(product.resolved_seed, 1);
+        assert_eq!(product.domain, TopologyDomain::Geographic(frame));
+        let [draw] = product.draws.as_slice() else {
+            panic!("one midpoint draw")
+        };
+        assert_eq!(draw.draw_ordinal, 0);
+        assert_eq!(draw.selected_element, 0);
+        let segment = retained_segment(
+            product
+                .support_elements
+                .get(draw.selected_element)
+                .expect("draw selects a prepared support element"),
+        );
+        assert_eq!(segment.occurrence.component, 0);
+        assert_eq!(segment.occurrence.occurrence, 0);
+        assert_eq!(segment.longitude.delta_native(frame.longitude()), 20.0);
+        assert_eq!(draw.recipe, SampleRecipe::Segment { along: 0.5 });
+        assert_eq!(draw.point.x.abs(), 180.0);
+        assert_eq!(draw.point.y, 0.0);
+    }
+
+    #[test]
+    fn line_receipt_keeps_selected_segment_and_along_parameter() {
+        let source = line(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
+        let product = source
+            .sample_point_receipts_in_domain(1, 1, 12, TopologyDomain::Cartesian)
+            .unwrap();
+        let [draw] = product.draws.as_slice() else {
+            panic!("one line sample")
+        };
+
+        assert_eq!(product.logical_row, 12);
+        assert_eq!(product.resolved_seed, 1);
+        assert_eq!(draw.draw_ordinal, 0);
+        assert_eq!(draw.selected_element, 1);
+        let SampleSupport::Segment {
+            occurrence,
+            segment,
+        } = *product
+            .support_elements
+            .get(draw.selected_element)
+            .expect("draw selects a prepared support element")
+        else {
+            panic!("Cartesian segment receipt")
+        };
+        assert_eq!(occurrence.component, 0);
+        assert_eq!(occurrence.occurrence, 1);
+        assert_eq!((segment.start.x, segment.start.y), (1.0, 0.0));
+        assert_eq!((segment.end.x, segment.end.y), (2.0, 0.0));
+        assert_eq!(draw.recipe, SampleRecipe::Segment {
+            along: 0.745_781_757_262_701_1,
+        });
+        assert_eq!(draw.point.x, 1.745_781_757_262_701);
+        assert_eq!(draw.point.y, 0.0);
+    }
+
+    #[test]
+    fn coincident_atom_draws_keep_each_selected_occurrence() {
+        let point = Point::new(3.0, 4.0).unwrap();
+        let source = Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_points(&[point, point, point]).unwrap(),
+        );
+        let product = source
+            .sample_point_receipts_in_domain(2, 1, 5, TopologyDomain::Cartesian)
+            .unwrap();
+
+        assert_eq!(product.logical_row, 5);
+        assert_eq!(product.resolved_seed, 1);
+        assert_eq!(product.support_elements.len(), 3);
+        assert_eq!(product.draws.len(), 2);
+        for (draw_ordinal, draw) in product.draws.iter().enumerate() {
+            assert_eq!(draw.draw_ordinal, draw_ordinal);
+            assert_eq!(draw.point, point);
+            assert_eq!(draw.recipe, SampleRecipe::Atom);
+            let SampleSupport::PointAtom {
+                occurrence,
+                point: support,
+            } = *product
+                .support_elements
+                .get(draw.selected_element)
+                .expect("draw selects a prepared support element")
+            else {
+                panic!("point atom receipt")
+            };
+            assert_eq!(occurrence.component, 0);
+            assert_eq!(occurrence.occurrence, draw.selected_element);
+            assert_eq!(support, point);
+        }
+        assert_eq!(
+            product
+                .draws
+                .iter()
+                .map(|draw| draw.selected_element)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn area_receipt_keeps_the_selected_earcut_triangle_and_parameters() {
+        let source_vertices = [
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(10.0, 0.0).unwrap(),
+            Point::new(10.0, 10.0).unwrap(),
+            Point::new(0.0, 10.0).unwrap(),
+        ];
+        let source = Shape::Polygon(polygon(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ]));
+        let product = source
+            .sample_point_receipts_in_domain(1, 1, 9, TopologyDomain::Cartesian)
+            .unwrap();
+
+        assert_eq!(product.logical_row, 9);
+        assert_eq!(product.resolved_seed, 1);
+        assert_eq!(product.support_elements.len(), 2);
+        let [draw] = product.draws.as_slice() else {
+            panic!("one weighted area draw")
+        };
+        assert_eq!(draw.draw_ordinal, 0);
+        assert_eq!(draw.selected_element, 1);
+        let SampleSupport::AreaTriangle {
+            occurrence,
+            vertices,
+            corners,
+        } = *product
+            .support_elements
+            .get(draw.selected_element)
+            .expect("draw selects a prepared support element")
+        else {
+            panic!("area triangle receipt")
+        };
+        assert_eq!(occurrence.component, 0);
+        assert_eq!(occurrence.occurrence, draw.selected_element);
+        for (point, corner) in vertices.iter().zip(corners) {
+            assert_eq!(corner.site.ring, 0);
+            assert_eq!(
+                *source_vertices
+                    .get(corner.site.vertex)
+                    .expect("Earcut site ID points to a source corner"),
+                *point
+            );
+        }
+        assert!(
+            corners
+                .iter()
+                .all(|corner| corner.occurrence.0 < source_vertices.len())
+        );
+        assert_eq!(draw.recipe, SampleRecipe::Triangle {
+            spread: 0.863_586_566_166_184_1,
+            blend: 0.971_002_753_586_796_2,
+        });
+        assert!(draw.point.x.is_finite() && draw.point.y.is_finite());
     }
 
     #[test]
@@ -1257,17 +1611,39 @@ mod geographic_sample_tests {
         );
         let segments = geographic_sample_segments(&lines, frame).unwrap();
 
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].delta_x, 20.0);
-        assert_eq!(segments[1].delta_x, 100.0);
-        assert_eq!(segments[1].delta_x / segments[0].delta_x, 5.0);
+        let [first, second] = segments.as_slice() else {
+            panic!("two retained source segments")
+        };
+        let first = retained_segment(first);
+        let second = retained_segment(second);
+        assert_eq!(first.delta_x, 20.0);
+        assert_eq!(second.delta_x, 100.0);
+        assert_eq!(second.delta_x / first.delta_x, 5.0);
 
-        let sample = lines
-            .sample_points_in_domain(1, row_sample_seed(1, 0), TopologyDomain::Geographic(frame))
+        let resolved_seed = row_sample_seed(1, 0);
+        let product = lines
+            .sample_point_receipts_in_domain(1, resolved_seed, 0, TopologyDomain::Geographic(frame))
             .unwrap();
-        assert_eq!(sample.len(), 1);
-        assert!((sample[0].x - 94.356_423_086_485_44).abs() <= 1.0e-12);
-        assert_eq!(sample[0].y, 0.0);
+        assert_eq!(product.logical_row, 0);
+        assert_eq!(product.resolved_seed, resolved_seed);
+        let [draw] = product.draws.as_slice() else {
+            panic!("one retained-line draw")
+        };
+        assert_eq!(draw.selected_element, 1);
+        let segment = retained_segment(
+            product
+                .support_elements
+                .get(draw.selected_element)
+                .expect("draw selects a prepared support element"),
+        );
+        assert_eq!(segment.occurrence.component, 1);
+        assert_eq!(segment.occurrence.occurrence, 0);
+        assert_eq!(segment.delta_x, 100.0);
+        assert_eq!(draw.recipe, SampleRecipe::Segment {
+            along: 0.943_564_230_864_854_4,
+        });
+        assert!((draw.point.x - 94.356_423_086_485_44).abs() <= 1.0e-12);
+        assert_eq!(draw.point.y, 0.0);
     }
 
     #[test]

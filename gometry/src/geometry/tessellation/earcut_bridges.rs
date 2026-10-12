@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTreeNode, RTreeObject as _};
 
-use super::earcut::point_in_triangle;
+use super::earcut::{EarcutCornerId, point_in_triangle};
 use crate::geometry::{BulkRTree, Orientation, Point, orientation, point_on_segment, same_point};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub(super) struct BridgeId(usize);
 
 struct BridgeNode {
     point: Point,
+    identity: EarcutCornerId,
     prev: BridgeId,
     next: BridgeId,
     // Bridge selection filters collinear occurrences; tessellation retains
@@ -45,6 +46,7 @@ pub(super) struct BridgeArena {
     nodes: Vec<BridgeNode>,
     edges: BulkRTree<Entry>,
     vertices: BulkRTree<Entry>,
+    next_occurrence: usize,
 }
 
 #[expect(
@@ -56,11 +58,28 @@ pub(super) struct BridgeArena {
     reason = "bridge selection preserves the exact floating comparisons and tie rules of earcut"
 )]
 impl BridgeArena {
+    #[cfg(test)]
     pub(super) fn new(points: &[Point], capacity: usize) -> Self {
+        let identities = points
+            .iter()
+            .enumerate()
+            .map(|(index, _)| EarcutCornerId::source(0, index, index))
+            .collect::<Vec<_>>();
+        Self::new_with_ids(points, &identities, capacity, points.len())
+    }
+
+    pub(super) fn new_with_ids(
+        points: &[Point],
+        identities: &[EarcutCornerId],
+        capacity: usize,
+        next_occurrence: usize,
+    ) -> Self {
+        debug_assert_eq!(points.len(), identities.len());
         let root = BridgeId(0);
         let mut nodes = Vec::with_capacity(capacity.wrapping_add(1));
         nodes.push(BridgeNode {
             point: points[0],
+            identity: EarcutCornerId::source(usize::MAX, usize::MAX, usize::MAX),
             prev: root,
             next: root,
             boundary_next: root,
@@ -72,6 +91,7 @@ impl BridgeArena {
         for (index, &point) in points.iter().enumerate() {
             nodes.push(BridgeNode {
                 point,
+                identity: identities[index],
                 prev: BridgeId(if index == 0 { points.len() } else { index }),
                 next: BridgeId(if index.wrapping_add(1) == points.len() {
                     1
@@ -93,6 +113,7 @@ impl BridgeArena {
             nodes,
             edges: BulkRTree::new_with_params(),
             vertices: BulkRTree::new_with_params(),
+            next_occurrence,
         };
         arena.edges = BulkRTree::bulk_load_with_params(
             (1..arena.nodes.len())
@@ -154,8 +175,16 @@ impl BridgeArena {
         }
     }
 
-    fn append(&mut self, point: Point, parent: BridgeId, batch: usize) -> BridgeId {
+    fn append(
+        &mut self,
+        point: Point,
+        identity: EarcutCornerId,
+        parent: BridgeId,
+        batch: usize,
+    ) -> BridgeId {
         let id = BridgeId(self.nodes.len());
+        let occurrence = self.next_occurrence;
+        self.next_occurrence = self.next_occurrence.wrapping_add(1);
         let depth = self.nodes[parent.0].depth.wrapping_add(1);
         let mut ancestors = Vec::with_capacity((depth.ilog2() as usize).wrapping_add(1));
         ancestors.push(parent);
@@ -170,6 +199,7 @@ impl BridgeArena {
         }
         self.nodes.push(BridgeNode {
             point,
+            identity: identity.copied(occurrence),
             prev: id,
             next: id,
             boundary_next: id,
@@ -383,15 +413,37 @@ impl BridgeArena {
         self.insert_edge(prev);
     }
 
+    #[cfg(test)]
     pub(super) fn splice(&mut self, bridge: BridgeId, hole: &[Point], batch: usize) {
+        let identities = hole
+            .iter()
+            .enumerate()
+            .map(|(vertex, _)| EarcutCornerId::source(batch.wrapping_add(1), vertex, vertex))
+            .collect::<Vec<_>>();
+        self.splice_with_ids(bridge, hole, &identities, batch);
+    }
+
+    pub(super) fn splice_with_ids(
+        &mut self,
+        bridge: BridgeId,
+        hole: &[Point],
+        identities: &[EarcutCornerId],
+        batch: usize,
+    ) {
+        debug_assert_eq!(hole.len(), identities.len());
         let next = self.nodes[bridge.0].next;
         let boundary_next = self.nodes[bridge.0].boundary_next;
         let start = BridgeId(self.nodes.len());
-        for &point in hole {
-            self.append(point, bridge, batch);
+        for (&point, &identity) in hole.iter().zip(identities) {
+            self.append(point, identity, bridge, batch);
         }
-        self.append(hole[0], bridge, batch);
-        let end = self.append(self.point(bridge), bridge, batch);
+        self.append(hole[0], identities[0], bridge, batch);
+        let end = self.append(
+            self.point(bridge),
+            self.nodes[bridge.0].identity,
+            bridge,
+            batch,
+        );
         self.remove_edge(bridge);
         let mut prev = bridge;
         for index in start.0..=end.0 {
@@ -429,17 +481,19 @@ impl BridgeArena {
         }
     }
 
-    pub(super) fn into_points(self) -> Vec<Point> {
+    pub(super) fn into_points_and_ids(self) -> (Vec<Point>, Vec<EarcutCornerId>) {
         let mut points = Vec::with_capacity(self.nodes.len().wrapping_sub(1));
+        let mut identities = Vec::with_capacity(self.nodes.len().wrapping_sub(1));
         let mut id = BridgeId(1);
         loop {
             points.push(self.point(id));
+            identities.push(self.nodes[id.0].identity);
             id = self.nodes[id.0].boundary_next;
             if id == BridgeId(1) {
                 break;
             }
         }
-        points
+        (points, identities)
     }
 
     #[cfg(test)]

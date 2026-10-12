@@ -4,10 +4,11 @@ use crate::geometry::XY;
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::tessellation::delaunay::exact_delaunay::MeshCoordinates as _;
-use crate::geometry::tessellation::delaunay::take_constrained_output_reserves;
+use crate::geometry::tessellation::delaunay::{
+    take_constrained_output_reserves, take_delaunay_output_reserves,
+};
 use crate::geometry::tessellation::shape::{
     BudgetedPackedTriangleSink, BudgetedTriangleSink, canonical_voronoi_sites,
-    take_delaunay_output_reserves,
 };
 
 #[test]
@@ -40,8 +41,8 @@ use crate::geometry::tessellation::earcut::{
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
-    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_magnitude, orientation,
-    ring_contains_interior,
+    Polygon, Ring, Shape, Strictness, TopologyDomain, ZOrdinate, open_point_cycle_magnitude,
+    orientation, ring_contains_interior,
 };
 
 fn xy(x: f64, y: f64) -> Point {
@@ -524,6 +525,75 @@ fn earcut_mixed_ring_succeeds_with_per_triangle_common_axes() {
 }
 
 #[test]
+fn earcut_id_callback_keeps_source_sites_and_distinct_bridge_occurrences() {
+    let shell = vec![
+        xyz(0.0, 0.0, 1.0),
+        xyz(4.0, 0.0, 2.0),
+        xyz(8.0, 0.0, 3.0),
+        xyz(8.0, 8.0, 4.0),
+        xyz(0.0, 8.0, 5.0),
+        xyz(0.0, 0.0, 1.0),
+    ];
+    let hole = vec![
+        xy(2.0, 2.0),
+        xy(2.0, 4.0),
+        xy(4.0, 4.0),
+        xy(4.0, 2.0),
+        xy(2.0, 2.0),
+    ];
+    let source = polygon(shell.clone(), vec![hole.clone()]);
+    let mut triangles = Vec::new();
+    super::earcut::earcut_polygon_with_ids(&source, &mut |triangle| {
+        triangles.push(triangle);
+        Ok(())
+    })
+    .unwrap();
+    assert!(!triangles.is_empty());
+
+    let mut occurrences_by_site = std::collections::HashMap::<
+        super::earcut::EarcutSiteId,
+        std::collections::HashSet<super::earcut::EarcutOccurrenceId>,
+    >::new();
+    let mut sites_by_occurrence = std::collections::HashMap::<
+        super::earcut::EarcutOccurrenceId,
+        super::earcut::EarcutSiteId,
+    >::new();
+    for (selected_face, triangle) in triangles.iter().enumerate() {
+        assert_eq!(triangle.face, selected_face);
+        let mut triangle_occurrences = std::collections::HashSet::new();
+        for corner in 0..3 {
+            let identity = triangle.corners[corner];
+            let source = match identity.site.ring {
+                0 => shell.get(identity.site.vertex),
+                1 => hole.get(identity.site.vertex),
+                ring => panic!("unexpected source ring {ring}"),
+            }
+            .expect("callback site ordinal belongs to its source ring");
+            assert_eq!(triangle.points[corner], *source);
+            assert_ne!(
+                (identity.site.ring, identity.site.vertex),
+                (0, 1),
+                "the removed collinear source corner must not be reidentified"
+            );
+            assert!(triangle_occurrences.insert(identity.occurrence));
+            if let Some(previous) = sites_by_occurrence.insert(identity.occurrence, identity.site) {
+                assert_eq!(previous, identity.site);
+            }
+            occurrences_by_site
+                .entry(identity.site)
+                .or_default()
+                .insert(identity.occurrence);
+        }
+    }
+    assert!(
+        occurrences_by_site
+            .values()
+            .any(|occurrences| occurrences.len() > 1),
+        "a bridge copy must keep its source site while owning another occurrence ID"
+    );
+}
+
+#[test]
 fn earcut_packed_axes_none_on_mixed_rings_some_on_homogeneous() {
     assert_eq!(
         Shape::Polygon(mixed_ring_polygon()).earcut_packed_axes(),
@@ -909,6 +979,90 @@ fn retained_site_mesh_keeps_adjacent_lifted_sites_and_first_source_records() {
         );
     }
     assert_eq!(used.len(), 6, "every exact retained site is covered");
+}
+
+#[test]
+fn retained_delaunay_publication_keeps_canonical_faces_and_reciprocal_uses() {
+    let source_points = [
+        Point::new_axes(170.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(Some(21.0))).unwrap(),
+        Point::new_axes(-170.0, 0.0, ZOrdinate(Some(12.0)), MOrdinate(Some(22.0))).unwrap(),
+        Point::new_axes(-170.0, 10.0, ZOrdinate(Some(13.0)), MOrdinate(Some(23.0))).unwrap(),
+        Point::new_axes(170.0, 8.0, ZOrdinate(Some(14.0)), MOrdinate(Some(24.0))).unwrap(),
+    ];
+    let shape = Shape::multi_point(
+        CoordinateAxes::XY,
+        CoordSeq::try_from_points(&source_points).unwrap(),
+    );
+    let publication = shape
+        .delaunay_mesh_publication_in_domain(TopologyDomain::Geographic(GeographicFrame::crs84()))
+        .unwrap();
+
+    assert_eq!(publication.producer, super::MeshProducer::Delaunay);
+    assert_eq!(publication.sites.len(), 4);
+    assert_eq!(publication.faces.len(), 2);
+    assert_eq!(publication.points.len(), 8);
+    for (producer_ordinal, site) in publication.sites.iter().enumerate() {
+        assert_eq!(site.producer_ordinal, producer_ordinal);
+        assert_eq!(source_points[site.source_ordinal], site.record);
+        assert!(matches!(site.source_ordinal, 0..=3));
+        assert!(matches!(
+            site.location,
+            super::MeshSiteLocation::Retained(_)
+        ));
+    }
+
+    let mut selected_faces = std::collections::HashSet::new();
+    for face in &publication.faces {
+        assert!(selected_faces.insert(face.selected_face));
+        let output_vertices = face.output_vertices.clone();
+        assert_eq!(output_vertices.len(), 4);
+        assert!(!face.reversed);
+        let mut selected_vertices = face.output_to_selected;
+        selected_vertices.sort_unstable();
+        assert_eq!(selected_vertices, [0, 1, 2]);
+        for output_vertex in 0..3 {
+            assert_eq!(
+                face.output_sites[output_vertex],
+                face.selected_sites[usize::from(face.output_to_selected[output_vertex])]
+            );
+            assert_eq!(
+                publication.points[output_vertices.start + output_vertex],
+                publication.sites[face.output_sites[output_vertex]].record
+            );
+        }
+        assert_eq!(
+            publication.points[output_vertices.start + 3],
+            publication.points[output_vertices.start]
+        );
+        for (output_side, boundary) in face.boundary_uses.iter().enumerate() {
+            assert_eq!(usize::from(boundary.output_side), output_side);
+            assert_eq!(boundary.selected_use.face, face.selected_face);
+            assert_eq!(
+                usize::from(boundary.selected_use.side),
+                usize::from(face.output_to_selected[output_side])
+            );
+            assert_eq!(boundary.role, super::MeshEdgeRole::Delaunay);
+            assert!(!boundary.reversed_for_output);
+            assert!(!boundary.cocircular);
+            assert_eq!([boundary.start_site, boundary.end_site], [
+                face.output_sites[output_side],
+                face.output_sites[(output_side + 1) % 3],
+            ]);
+            if let Some(reverse) = boundary.reverse {
+                let reciprocal = publication
+                    .faces
+                    .iter()
+                    .flat_map(|other| other.boundary_uses.iter())
+                    .find(|other| other.selected_use == reverse)
+                    .expect("every selected interior use has its authentic twin");
+                assert_eq!(reciprocal.reverse, Some(boundary.selected_use));
+                assert_eq!([reciprocal.start_site, reciprocal.end_site], [
+                    boundary.end_site,
+                    boundary.start_site
+                ]);
+            }
+        }
+    }
 }
 
 #[test]

@@ -47,7 +47,7 @@ pub(crate) const fn prev_halfedge(edge: usize) -> usize {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct FaceId(usize);
 
 impl FaceId {
@@ -60,7 +60,7 @@ impl FaceId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct HalfedgeId(usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -311,38 +311,66 @@ fn canonical_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     Ok(canonical_incircle!(&xy, a, b, c, d))
 }
 
-pub(in crate::geometry::tessellation) fn canonicalize_triangles<C: MeshCoordinates>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CanonicalTriangle {
+    pub(super) selected_face: usize,
+    pub(super) selected_sites: [usize; 3],
+    pub(super) output_sites: [usize; 3],
+    pub(super) output_to_selected: [u8; 3],
+    pub(super) reversed: bool,
+}
+
+pub(super) fn canonical_triangle_order<C: MeshCoordinates>(
     coordinates: &C,
-    triangles: &mut [[usize; 3]],
-) {
-    for triangle in triangles.iter_mut() {
-        let [a, b, c] = *triangle;
-        *triangle = if coordinates
-            .compare(coordinates.query(b), coordinates.query(a))
-            .is_lt()
-            && coordinates
-                .compare(coordinates.query(b), coordinates.query(c))
+    triangles: &[[usize; 3]],
+) -> Vec<CanonicalTriangle> {
+    let mut faces = triangles
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(selected_face, selected_sites)| {
+            let [a, b, c] = selected_sites;
+            let rotation = if coordinates
+                .compare(coordinates.query(b), coordinates.query(a))
                 .is_lt()
-        {
-            [b, c, a]
-        } else if coordinates
-            .compare(coordinates.query(c), coordinates.query(a))
-            .is_lt()
-        {
-            [c, a, b]
-        } else {
-            [a, b, c]
-        };
-    }
-    triangles.sort_unstable_by(|left, right| {
-        left.iter()
-            .zip(right)
-            .map(|(&left, &right)| {
+                && coordinates
+                    .compare(coordinates.query(b), coordinates.query(c))
+                    .is_lt()
+            {
+                1
+            } else if coordinates
+                .compare(coordinates.query(c), coordinates.query(a))
+                .is_lt()
+            {
+                2
+            } else {
+                0
+            };
+            let (output_sites, output_to_selected) = match rotation {
+                1 => ([b, c, a], [1, 2, 0]),
+                2 => ([c, a, b], [2, 0, 1]),
+                _ => ([a, b, c], [0, 1, 2]),
+            };
+            CanonicalTriangle {
+                selected_face,
+                selected_sites,
+                output_sites,
+                output_to_selected,
+                reversed: false,
+            }
+        })
+        .collect::<Vec<_>>();
+    faces.sort_unstable_by(|left, right| {
+        left.output_sites
+            .iter()
+            .zip(right.output_sites)
+            .map(|(&left, right)| {
                 coordinates.compare(coordinates.query(left), coordinates.query(right))
             })
             .find(|order| !order.is_eq())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    faces
 }
 
 #[cfg(test)]

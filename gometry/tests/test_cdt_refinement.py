@@ -254,6 +254,33 @@ def test_max_area_caps_triangle_areas(sliver: gm.Polygon) -> None:
         assert triangle.area <= max_area + eps
 
 
+def test_geographic_constrained_chart_is_shared_by_scalar_and_array() -> None:
+    seam_hole = gm.Polygon(
+        [(170, -10), (-170, -10), (-170, 10), (170, 10)],
+        holes=[[(175, -2), (-175, -2), (-175, 2), (175, 2)]],
+        crs=4326,
+    )
+    assert seam_hole.is_valid
+    scalar = seam_hole.triangulate(method='constrained')
+    array = gm.GeometryArray([seam_hole]).triangulate(method='constrained')[0]
+    assert len(scalar) == 8
+    assert len(array) == 8
+
+    seam_trapezoid = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 8)],
+        crs=4326,
+    )
+    assert len(seam_trapezoid.triangulate(method='constrained', max_area=1000)) == 2
+    assert (
+        len(
+            gm.GeometryArray([seam_trapezoid]).triangulate(
+                method='constrained', max_area=1000
+            )[0]
+        )
+        == 2
+    )
+
+
 @pytest.mark.parametrize(
     'coords',
     [

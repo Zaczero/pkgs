@@ -76,6 +76,23 @@ fn publish_triangle_vertices_for_domain(
     }
 }
 
+fn publish_mesh_publication_for_domain(
+    publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<crate::geometry::PublishedTriangleVertices> {
+    let metric_access = || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic triangulation requires the operation's CRS metric",
+            )
+        })
+    };
+    let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+    geometry::publish_mesh_publication_for_domain(publication, domain, &source_context, budget)
+}
+
 impl PyGeometryArray {
     pub(crate) fn to_wkt_impl(
         &self,
@@ -422,8 +439,9 @@ impl PyGeometryArray {
             "triangulate",
             "method",
             move |_, shape, budget| {
-                let vertices = shape.delaunay_triangle_vertices_budgeted(budget)?;
-                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
+                let publication =
+                    shape.delaunay_mesh_publication_in_domain_budgeted(domain, budget)?;
+                publish_mesh_publication_for_domain(publication, domain, metric, budget)
             },
         )
     }
@@ -462,10 +480,11 @@ impl PyGeometryArray {
                 "triangulate",
                 "min_angle/max_area",
                 move |row, shape, budget| {
-                    let triangles = shape.constrained_delaunay_triangles_budgeted(
+                    let triangles = shape.constrained_delaunay_triangles_in_domain_budgeted(
                         *refinements
                             .get(row)
                             .expect("refinement values match the admitted array rows"),
+                        domain,
                         budget,
                     )?;
                     publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
@@ -477,10 +496,11 @@ impl PyGeometryArray {
             "triangulate",
             "min_angle/max_area",
             move |row, shape, budget| {
-                let vertices = shape.constrained_delaunay_vertices_budgeted(
+                let vertices = shape.constrained_delaunay_vertices_in_domain_budgeted(
                     *refinements
                         .get(row)
                         .expect("refinement values match the admitted array rows"),
+                    domain,
                     budget,
                 )?;
                 publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
@@ -581,7 +601,9 @@ impl PyGeometryArray {
                         let points = row
                             .row()
                             .try_with_shape(|shape| {
-                                shape.sample_points_in_domain(count, seed, domain)
+                                shape
+                                    .sample_point_receipts_in_domain(count, seed, logical, domain)
+                                    .map(crate::geometry::PreparedSampling::into_points)
                             })
                             .map_err(|error| (error, None))?;
                         (logical, Some(points))
