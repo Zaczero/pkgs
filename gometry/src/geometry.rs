@@ -162,7 +162,10 @@ pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
 mod provenance;
-pub(crate) use provenance::{RefinedChainProvenance, VertexProvenance, emit_from_original};
+pub(crate) use provenance::{
+    RefinedChainProvenance, VertexProvenance, emit_from_original,
+    emit_from_original_with_source_roots,
+};
 mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
@@ -195,9 +198,10 @@ use access::{
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use chart_bvh::ChartEdgeBvh;
 pub(crate) use constructive::{
-    AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, OriginSpec,
-    PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
-    densify_points_budgeted_with_placement, rdp_keep_with_edge_guard, segmentize_points_budgeted,
+    AffineLinear, ChartSourceParameters, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine,
+    OriginSpec, PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
+    densify_points_budgeted_with_placement, rdp_keep_with_edge_guard,
+    segmentize_chart_points_with_piece_counts_budgeted, segmentize_points_budgeted,
     segmentize_points_with_piece_counts_budgeted, stable_affine_xy, stable_snap_ordinate, vw_keep,
     vw_keep_geographic,
 };
