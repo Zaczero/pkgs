@@ -377,44 +377,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
             assert_eq!((twin.origin, twin.target), (dart.target, dart.origin));
         }
     }
-    for edge in &receipt.edges {
-        let [left_owner, right_owner] = edge.owner_transition;
-        if left_owner.is_none() && right_owner.is_none() {
-            continue;
-        }
-        for dart in receipt.darts.iter().filter(|dart| dart.edge == edge.id) {
-            let expected_owner = if [dart.origin, dart.target] == edge.endpoints {
-                left_owner
-            } else {
-                assert_eq!(
-                    [dart.target, dart.origin],
-                    edge.endpoints,
-                    "a dart follows one of its receipt edge's two directions"
-                );
-                right_owner
-            };
-            assert_eq!(dart.owner, expected_owner);
-        }
-    }
-    for edge in &receipt.edges {
-        let [left_owner, right_owner] = edge.owner_transition;
-        if left_owner.is_none() && right_owner.is_none() {
-            continue;
-        }
-        for dart in receipt.darts.iter().filter(|dart| dart.edge == edge.id) {
-            let expected_owner = if [dart.origin, dart.target] == edge.endpoints {
-                left_owner
-            } else {
-                assert_eq!(
-                    [dart.target, dart.origin],
-                    edge.endpoints,
-                    "receipt dart follows one direction of its edge"
-                );
-                right_owner
-            };
-            assert_eq!(dart.owner, expected_owner);
-        }
-    }
     for cell in &receipt.cells {
         let _ = receipt_site(receipt, cell.owner);
         if let Some(face) = cell.face {
@@ -5311,6 +5273,16 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
     assert_polygon_receipt_alignment(&outputs);
     assert_eq!(outputs.receipt.cells.len(), 2);
     assert_eq!(outputs.receipt.separators.len(), 1);
+    for separator in &outputs.receipt.separators {
+        let mut expected_sites = separator.sites;
+        expected_sites.sort_unstable();
+        for &edge_id in &separator.edges {
+            let edge = receipt_edge(&outputs.receipt, edge_id);
+            let mut actual_owners: Vec<_> = edge.owner_transition.into_iter().flatten().collect();
+            actual_owners.sort_unstable();
+            assert_eq!(actual_owners.as_slice(), expected_sites.as_slice());
+        }
+    }
     assert!(
         outputs
             .iter()

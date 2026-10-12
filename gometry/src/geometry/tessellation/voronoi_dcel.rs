@@ -6705,43 +6705,16 @@ fn collinear_polygon_receipt(
                 origins.sort_unstable();
                 origins.dedup();
                 let key = (origins.clone(), low, high);
-                let other_owner = origins.iter().find_map(|origin| match origin {
-                    VoronoiEdgeOrigin::Bisector { sites } => {
-                        sites.iter().copied().find(|&site| site != owner)
-                    },
-                    _ => None,
-                });
                 let filled_left_canonical = solid_left == forward;
-                let owner_transition = if let Some(other) = other_owner {
-                    if filled_left_canonical {
-                        [Some(owner), Some(other)]
-                    } else {
-                        [Some(other), Some(owner)]
-                    }
-                } else if filled_left_canonical {
-                    [Some(owner), None]
-                } else {
-                    [None, Some(owner)]
-                };
                 let edge_id = if let Some(&edge) = edge_ids.get(&key) {
-                    let existing = receipt
+                    let _ = receipt
                         .edges
                         .get(edge as usize)
                         .ok_or_else(|| voronoi_error("collinear edge identity is absent"))?;
-                    // Both rows are relative to the same `[low, high]` edge endpoints.
-                    if existing.owner_transition != owner_transition {
-                        return Err(voronoi_error(
-                            "collinear shared edge owner transitions disagree between directed uses",
-                        ));
-                    }
                     edge
                 } else {
                     let edge = u32::try_from(receipt.edges.len())
                         .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-                    let separator = origins.iter().find_map(|origin| match origin {
-                        VoronoiEdgeOrigin::Bisector { sites } => Some(*sites),
-                        _ => None,
-                    });
                     let clip_sources: Vec<_> = origins
                         .iter()
                         .filter_map(|origin| match origin {
@@ -6756,10 +6729,10 @@ fn collinear_polygon_receipt(
                     receipt.edges.push(VoronoiEdgeReceipt {
                         id: edge,
                         endpoints: [low, high],
-                        separator,
+                        separator: None,
                         clip_sources,
                         frame_side,
-                        owner_transition,
+                        owner_transition: [None, None],
                         origins: origins.clone(),
                     });
                     let _ = edge_ids.insert(key.clone(), edge);
@@ -6773,7 +6746,7 @@ fn collinear_polygon_receipt(
                 let twin = *first_darts
                     .get(edge_id as usize)
                     .ok_or_else(|| voronoi_error("collinear edge has no dart row"))?;
-                if let Some(twin) = twin {
+                let twin_owner = if let Some(twin) = twin {
                     let previous = receipt
                         .darts
                         .get_mut(twin as usize)
@@ -6785,12 +6758,68 @@ fn collinear_polygon_receipt(
                         ));
                     }
                     previous.twin = Some(dart_id);
+                    Some(
+                        previous
+                            .owner
+                            .ok_or_else(|| voronoi_error("collinear twin has no owner"))?,
+                    )
                 } else {
                     *first_darts
                         .get_mut(edge_id as usize)
                         .ok_or_else(|| voronoi_error("collinear edge has no dart row"))? =
                         Some(dart_id);
-                }
+                    None
+                };
+                let separator = {
+                    let edge = receipt
+                        .edges
+                        .get_mut(edge_id as usize)
+                        .ok_or_else(|| voronoi_error("collinear edge identity is absent"))?;
+                    let (side_owner, opposite_owner) = if filled_left_canonical {
+                        let [left, right] = &mut edge.owner_transition;
+                        (left, right)
+                    } else {
+                        let [left, right] = &mut edge.owner_transition;
+                        (right, left)
+                    };
+                    if side_owner.is_some() {
+                        return Err(voronoi_error(
+                            "collinear edge has duplicate directed uses on one owner side",
+                        ));
+                    }
+                    *side_owner = Some(owner);
+                    if let Some(twin_owner) = twin_owner {
+                        if *opposite_owner != Some(twin_owner) {
+                            return Err(voronoi_error(
+                                "collinear opposite dart does not match its recorded owner side",
+                            ));
+                        }
+                        if twin_owner == owner {
+                            None
+                        } else {
+                            let owners = if owner < twin_owner {
+                                [owner, twin_owner]
+                            } else {
+                                [twin_owner, owner]
+                            };
+                            let origin_pair = edge.origins.iter().find_map(|origin| match origin {
+                                VoronoiEdgeOrigin::Bisector { sites } if *sites == owners => {
+                                    Some(*sites)
+                                },
+                                _ => None,
+                            });
+                            let separator = origin_pair.ok_or_else(|| {
+                                voronoi_error(
+                                    "collinear shared owners have no matching bisector origin",
+                                )
+                            })?;
+                            edge.separator = Some(separator);
+                            Some(separator)
+                        }
+                    } else {
+                        None
+                    }
+                };
                 receipt.darts.push(VoronoiDartReceipt {
                     id: dart_id,
                     origin: start,
@@ -6800,15 +6829,10 @@ fn collinear_polygon_receipt(
                     face: None,
                     owner: Some(owner),
                 });
-                if let Some(separator) = receipt
-                    .edges
-                    .get(edge_id as usize)
-                    .and_then(|edge| edge.separator)
-                    && twin.is_none()
-                {
+                if let Some(separator) = separator {
                     receipt.separators.push(VoronoiSeparatorReceipt {
                         sites: separator,
-                        vertices: vec![start, end],
+                        vertices: vec![low, high],
                         edges: vec![edge_id],
                     });
                 }

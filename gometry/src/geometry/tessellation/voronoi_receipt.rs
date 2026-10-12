@@ -318,10 +318,6 @@ pub(in crate::geometry) struct VoronoiDartReceipt {
         expect(dead_code, reason = "V2 consumes exact face incidence")
     )]
     pub(in crate::geometry) face: Option<u32>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes dart site ownership")
-    )]
     pub(in crate::geometry) owner: Option<u32>,
 }
 
