@@ -2382,8 +2382,13 @@ pub(super) struct EmbeddedVoronoi {
     receipt: std::sync::Arc<VoronoiDiagramReceipt>,
 }
 
-fn site_receipts(producer: VoronoiProducer, sites: &[Site]) -> Result<VoronoiDiagramReceipt> {
+fn site_receipts(
+    producer: VoronoiProducer,
+    sites: &[Site],
+    chart: Option<&PointSelectionChart>,
+) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = VoronoiDiagramReceipt::empty(producer);
+    receipt.selected_chart_cuts = chart.map(|chart| chart.cut_longitudes()).transpose()?;
     receipt.sites.reserve(sites.len());
     for site in sites {
         let id = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -2438,8 +2443,9 @@ fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::ExactRation
 
 pub(super) fn empty_polygon_outputs(
     sites: &[Site],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites, chart)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -2448,8 +2454,9 @@ pub(super) fn empty_polygon_outputs(
 
 pub(super) fn lone_site_empty_polygon_outputs(
     sites: &[Site],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -2466,7 +2473,7 @@ pub(super) fn lone_site_empty_edges(
             lone_site_polygon_outputs(sites, polygon, chart)?.receipt
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?)
+            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?)
         },
     };
     empty_edges_with_receipt(receipt)
@@ -2482,7 +2489,7 @@ pub(super) fn lone_site_polygon_outputs(
             "lone-site receipt requires one admitted site",
         ));
     };
-    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites, chart)?;
     let owner = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     let mut output_edge_id = 0_u32;
     let mut vertex_id = 0_u32;
@@ -2782,7 +2789,7 @@ fn exact_diagram_receipt(
     points: &[XY],
     chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(producer, sites)?;
+    let mut receipt = site_receipts(producer, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, Some(clip_trace))?;
 
     let mut assignments = vec![None; subdivision.vertices.len()];
@@ -3025,10 +3032,12 @@ pub(super) struct EmbeddedEdges {
     receipt: std::sync::Arc<VoronoiDiagramReceipt>,
 }
 
-pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
-    empty_edges_with_receipt(std::sync::Arc::new(VoronoiDiagramReceipt::empty(
+pub(super) fn empty_packed_edges(chart: Option<&PointSelectionChart>) -> Result<EmbeddedEdges> {
+    empty_edges_with_receipt(std::sync::Arc::new(site_receipts(
         VoronoiProducer::Empty,
-    )))
+        &[],
+        chart,
+    )?))
 }
 
 fn empty_edges_with_receipt(
@@ -6119,7 +6128,8 @@ pub(super) fn build_collinear_polygons_with_chart(
             same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
         }
         if same_x || same_y {
-            let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites)?);
+            let receipt =
+                std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites, chart)?);
             return Ok(EmbeddedVoronoi {
                 polygons: Vec::new(),
                 edges: EmbeddedEdges {
@@ -6574,7 +6584,7 @@ fn collinear_polygon_receipt(
     cells: &mut [EmbeddedPolygon],
     chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, None)?;
     let vertex_count = cells
         .iter()
@@ -7199,10 +7209,10 @@ pub(super) fn build_collinear_edges_with_chart(
                 same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
             }
             if same_x || same_y {
-                return empty_packed_edges();
+                return empty_packed_edges(chart);
             }
         } else {
-            return empty_packed_edges();
+            return empty_packed_edges(chart);
         }
     }
     let clip = normalize_clip_with_chart(sites, boundary, false, chart)?;
@@ -7393,6 +7403,9 @@ pub(super) fn build_collinear_edges_with_chart(
     Ok(embedded.into_edges())
 }
 
+#[cfg(test)]
+#[path = "voronoi_dcel/chart_cut_receipt_tests.rs"]
+mod chart_cut_receipt_tests;
 #[cfg(test)]
 mod tests;
 
@@ -8701,7 +8714,7 @@ fn dual_embed(
     };
     budget.add(published.saturating_sub(baseline))?;
 
-    let mut receipt = site_receipts(VoronoiProducer::Dual, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::Dual, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, None)?;
     let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
         .take(vertex_xy.len())

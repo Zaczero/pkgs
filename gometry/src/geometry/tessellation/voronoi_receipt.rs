@@ -1,4 +1,4 @@
-use crate::geographic::ChartPointSite;
+use crate::geographic::{ChartPointSite, RetainedLongitudeSite};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{Point, XY};
 
@@ -34,6 +34,7 @@ pub(in crate::geometry) struct VoronoiDiagramReceipt {
     pub(in crate::geometry) producer: VoronoiProducer,
     pub(in crate::geometry) sites: Vec<VoronoiSiteReceipt>,
     pub(in crate::geometry) source_sites: Vec<VoronoiSourceSiteReceipt>,
+    pub(in crate::geometry) selected_chart_cuts: Option<[RetainedLongitudeSite; 2]>,
     pub(in crate::geometry) clip_segments: Vec<VoronoiClipSegmentReceipt>,
     pub(in crate::geometry) vertices: Vec<VoronoiVertexReceipt>,
     pub(in crate::geometry) edges: Vec<VoronoiEdgeReceipt>,
@@ -49,6 +50,7 @@ impl VoronoiDiagramReceipt {
             producer,
             sites: Vec::new(),
             source_sites: Vec::new(),
+            selected_chart_cuts: None,
             clip_segments: Vec::new(),
             vertices: Vec::new(),
             edges: Vec::new(),
