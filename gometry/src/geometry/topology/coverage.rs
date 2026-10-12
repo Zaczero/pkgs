@@ -772,7 +772,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
     let mut coincident_pairs = try_hash_set_with_capacity(shared_span_counts.len())?;
     for (pair, shared_count) in shared_span_counts {
         work.charge(1)?;
-        let [left, right] = [pair.0, pair.1];
+        let (left, right) = pair;
         if shared_count != 0
             && row_span_counts.get(left) == Some(&shared_count)
             && row_span_counts.get(right) == Some(&shared_count)
