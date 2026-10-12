@@ -1464,7 +1464,11 @@ mod tests {
                 1.0_f64.to_bits()
             );
             for pair in ranges.parameters.windows(2) {
-                assert!(pair[0] < pair[1]);
+                assert!(
+                    pair.first()
+                        .zip(pair.get(1))
+                        .is_some_and(|(left, right)| left < right)
+                );
             }
 
             let edge = crate::crs::ChartEdge::new(
@@ -1482,10 +1486,12 @@ mod tests {
             assert_ne!(first_equal_arclength_parameter, 0.25);
 
             let interval_index = 1;
-            let first_interval = (
-                ranges.parameters[interval_index],
-                ranges.parameters[interval_index + 1],
-            );
+            let first_support_interval = ranges.parameters.windows(2).nth(interval_index).unwrap();
+            let first_interval = first_support_interval
+                .first()
+                .zip(first_support_interval.get(1))
+                .map(|(start, end)| (*start, *end))
+                .unwrap();
             assert!(first_interval.0 > 0.0);
             assert!(first_interval.1 < 1.0);
             let first_segment = Segment {

@@ -69,15 +69,23 @@ impl RefinedChainProvenance {
                     "refined source parameter edge range is unknown".into(),
                 )
             })?;
+            let starts_at_zero = parameters
+                .first()
+                .is_some_and(|parameter| parameter.to_bits() == 0.0_f64.to_bits());
+            let ends_at_one = parameters
+                .last()
+                .is_some_and(|parameter| parameter.to_bits() == 1.0_f64.to_bits());
+            let strictly_increasing = parameters
+                .iter()
+                .zip(parameters.iter().skip(1))
+                .all(|(left, right)| left < right);
             if parameters.len() < 2
-                || parameters[0].to_bits() != 0.0_f64.to_bits()
-                || parameters
-                    .last()
-                    .is_none_or(|parameter| parameter.to_bits() != 1.0_f64.to_bits())
+                || !starts_at_zero
+                || !ends_at_one
                 || parameters
                     .iter()
                     .any(|parameter| !parameter.is_finite() || *parameter < 0.0 || *parameter > 1.0)
-                || parameters.windows(2).any(|pair| pair[0] >= pair[1])
+                || !strictly_increasing
             {
                 return Err(crate::geometry::GeometryErrorKind::Invalid(
                     "refined source parameters are not a directed partition of their root edge"
