@@ -1140,9 +1140,11 @@ pub(crate) fn binary_overlay(
     ctx: &CachelessRowContext<'_>,
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
-) -> Result<Shape> {
+) -> Result<crate::geometry::publication::GeometryOutput> {
     match ctx.domain {
-        TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
+        TopologyDomain::Cartesian => Ok(crate::geometry::publication::GeometryOutput::Shape(
+            op.apply(left.shape(), right.shape(), strictness)?,
+        )),
         TopologyDomain::Geographic(frame) => {
             let metric_access = || {
                 ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -1151,14 +1153,28 @@ pub(crate) fn binary_overlay(
                     )
                 })
             };
-            crate::geometry::overlay_all_geographic_with_metric_and_frame(
-                &[left.shape(), right.shape()],
-                frame,
-                ctx.frame,
-                op,
-                strictness,
-                &metric_access,
-            )
+            if ctx.lane.is_array() {
+                crate::geometry::overlay_all_geographic_output_with_metric_and_frame(
+                    &[left.shape(), right.shape()],
+                    frame,
+                    ctx.frame,
+                    op,
+                    strictness,
+                    &metric_access,
+                    ctx.lane.row(),
+                )
+            } else {
+                Ok(crate::geometry::publication::GeometryOutput::Shape(
+                    crate::geometry::overlay_all_geographic_with_metric_and_frame(
+                        &[left.shape(), right.shape()],
+                        frame,
+                        ctx.frame,
+                        op,
+                        strictness,
+                        &metric_access,
+                    )?,
+                ))
+            }
         },
     }
 }

@@ -146,8 +146,9 @@ pub(in crate::geometry) use nary::{
     overlay_all_geographic_from_with_output_frame, overlay_view_error,
 };
 pub(crate) use nary::{
-    overlay_all, overlay_all_geographic_chart, overlay_all_geographic_with_metric_and_frame,
-    overlay_all_with_metric, overlay_intersection_with_rectangle,
+    overlay_all, overlay_all_geographic_chart, overlay_all_geographic_output_with_metric_and_frame,
+    overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
+    overlay_intersection_with_rectangle,
 };
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;

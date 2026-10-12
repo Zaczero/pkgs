@@ -48,6 +48,8 @@ use crate::geometry::{
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
 };
 
+mod publication;
+
 #[derive(Clone, Copy)]
 pub(super) struct LineStep {
     span: usize,
@@ -305,25 +307,25 @@ struct WrittenDrawingParts {
     layout: ShapeLiteralLayout<QSourceImage>,
 }
 
+fn finish_certified_q_emission(
+    embedding: CertifiedQEmission,
+) -> (SealedQDrawing, Option<FeatureFamilyRegistry>) {
+    (embedding.sealed, embedding.family_state)
+}
+
 fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
-    let family_state = embedding.family_state;
-    Ok(match embedding.sealed {
-        SealedQDrawing::Source(source) => {
-            let (shape, _frame) = source.sealed.into_scalar()?;
-            WrittenQDrawing {
-                shape,
-                line_traces: source.line_traces,
-                family_state,
-            }
-        },
+    let (sealed, family_state) = finish_certified_q_emission(embedding);
+    let (shape, line_traces) = match sealed {
+        SealedQDrawing::Source(source) => (source.sealed.into_scalar()?.0, source.line_traces),
         SealedQDrawing::Native(native) => {
             let written = write_completed_native(native)?;
-            WrittenQDrawing {
-                shape: written.shape,
-                line_traces: written.line_traces,
-                family_state,
-            }
+            (written.shape, written.line_traces)
         },
+    };
+    Ok(WrittenQDrawing {
+        shape,
+        line_traces,
+        family_state,
     })
 }
 
@@ -420,7 +422,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             operation,
             preparation_work,
         )?;
-        let receipt = super::q_embedding::SourceOnlyPublication::new(
+        let receipt = super::q_embedding::publication::SourceOnlyPublication::new(
             source,
             topology,
             None,
@@ -438,7 +440,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             ),
             super::super::publication::StorageTarget::Scalar,
         )? {
-            super::super::publication::PublicationOutcome::Pass(sealed) => sealed,
+            super::super::publication::PublicationOutcome::Pass(finished) => finished,
             super::super::publication::PublicationOutcome::Reject(
                 super::super::publication::PublicationRejection::SourceOnly(_),
             ) => {
@@ -452,6 +454,14 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             ) => {
                 return Err(GeometryErrorKind::Invalid(
                     "Q source-only finisher returned native rejection".into(),
+                )
+                .into());
+            },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::Batch(_),
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned array batch rejection".into(),
                 )
                 .into());
             },
@@ -483,25 +493,25 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
     strict: bool,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
-    let mut budget = EvaluationBudget::new(operation.name(), 0)?;
-    let mut preparation_work = EvaluationOnly::new(&mut budget);
-    let mut expansion_budget = ExpansionBudget::new(operation.name(), "computed edges");
-    let plan = QEmissionPlan::build(topology, operation, &mut preparation_work)?;
-    let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-    let source_points = source_point_coordinates_with_work(topology, &mut preparation_work)?;
-    let embedding = resolve_q_embedding(
+    publication::exact_geographic_overlay(topology, operation, declared_axes, strict, metric_access)
+}
+
+pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    operation: OverlayOp,
+    declared_axes: CoordinateAxes,
+    strict: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    logical_row: usize,
+) -> Result<crate::geometry::publication::PendingPublicationRow> {
+    publication::exact_geographic_overlay_pending_row(
         topology,
-        &plan,
-        &source_points,
-        &nearest,
+        operation,
         declared_axes,
         strict,
-        operation.name(),
         metric_access,
-        &mut expansion_budget,
-        &mut preparation_work,
-    )?;
-    publish_q_overlay(embedding)
+        logical_row,
+    )
 }
 
 pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
@@ -612,7 +622,9 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    Ok(write_certified_q_emission(embedding)?.shape)
+    drop(preparation_work);
+    drop(expansion_budget);
+    publish_q_overlay(embedding)
 }
 
 fn boundary_cycle_line_paths(

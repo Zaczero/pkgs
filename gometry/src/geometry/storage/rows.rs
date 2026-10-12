@@ -203,10 +203,6 @@ impl ArrayRows {
 
     /// Admit a final writer's row map with the payload, preserving its logical
     /// row identity through present-only compaction or scattering.
-    #[expect(
-        dead_code,
-        reason = "geographic final-storage receipts admit their writer map with the row owner"
-    )]
     pub(crate) fn admit_with_row_map<T, W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
