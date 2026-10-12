@@ -122,7 +122,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                     &fixed_cache,
                                     &element,
                                     &element_cache,
-                                    source_context,
+                                    (common.has_z() || common.has_m()).then_some(source_context),
                                 )
                             } else {
                                 metric_nearest_points_resolved(
@@ -131,7 +131,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                     &element_cache,
                                     &fixed_plan,
                                     &fixed_cache,
-                                    source_context,
+                                    (common.has_z() || common.has_m()).then_some(source_context),
                                 )
                             }
                             .map(|pair| (pair, common))

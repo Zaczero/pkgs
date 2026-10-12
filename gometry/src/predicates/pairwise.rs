@@ -528,25 +528,38 @@ pub(crate) fn nearest_points(
             let left_cache = left.frame_cache();
             let right_cache = right.frame_cache();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
-            let source_frame = admission.frame.clone();
-            let domain = admission.domain;
-            let pair = py.detach(move || {
-                crate::broadcast::with_source_arc_context(
-                    &resolved,
-                    &source_frame,
-                    domain,
-                    |source_context| {
-                        metric_nearest_points_resolved(
-                            &resolved,
-                            &left_plan,
-                            &left_cache,
-                            &right_plan,
-                            &right_cache,
-                            source_context,
-                        )
-                    },
-                )
-            })?;
+            let pair = if common.has_z() || common.has_m() {
+                let source_frame = admission.frame.clone();
+                let domain = admission.domain;
+                py.detach(move || {
+                    crate::broadcast::with_source_arc_context(
+                        &resolved,
+                        &source_frame,
+                        domain,
+                        |source_context| {
+                            metric_nearest_points_resolved(
+                                &resolved,
+                                &left_plan,
+                                &left_cache,
+                                &right_plan,
+                                &right_cache,
+                                Some(source_context),
+                            )
+                        },
+                    )
+                })?
+            } else {
+                py.detach(move || {
+                    metric_nearest_points_resolved(
+                        &resolved,
+                        &left_plan,
+                        &left_cache,
+                        &right_plan,
+                        &right_cache,
+                        None,
+                    )
+                })?
+            };
             let (left_shape, right_shape) =
                 crate::geometry::nearest_point_pair(pair.as_ref(), common);
             (
@@ -631,7 +644,8 @@ pub(crate) fn nearest_points(
                                         &left_cache,
                                         &right,
                                         &right_cache,
-                                        source_context,
+                                        (common.has_z() || common.has_m())
+                                            .then_some(source_context),
                                     )
                                     .map(|pair| (pair, common))
                                 })

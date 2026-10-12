@@ -821,29 +821,14 @@ pub(crate) fn metric_nearest_points_resolved(
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
-    source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
-) -> crate::error::Result<Option<(Point, Point)>> {
-    let source_capture = SourceArcCapture::for_output_axes(
-        crate::geometry::common_axes(a.shape(), b.shape()),
-        *source_context,
-    );
-    metric_nearest_points_with_capture(metric, a, a_cache, b, b_cache, source_capture)
-}
-
-fn metric_nearest_points_with_capture(
-    metric: &crs::ResolvedMetric,
-    a: &PreparedPlan,
-    a_cache: &FrameDependentCaches,
-    b: &PreparedPlan,
-    b_cache: &FrameDependentCaches,
-    source_capture: SourceArcCapture<'_, '_, crs::GeodesicMetric>,
+    source_context: Option<&SourceArcContext<'_, '_, crs::GeodesicMetric>>,
 ) -> crate::error::Result<Option<(Point, Point)>> {
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(None);
     }
     dispatch_resolved_metric(
         metric,
-        |_| match source_capture.context() {
+        |_| match source_context {
             Some(source_context) => a.nearest_points_with_source_context(b, source_context),
             None => a.nearest_points(b),
         },
@@ -882,13 +867,13 @@ pub(crate) fn metric_shortest_line_resolved(
     let source_capture = SourceArcCapture::for_output_axes(common, *source_context);
     match metric {
         crs::ResolvedMetric::Planar { .. } => {
-            let pair = metric_nearest_points_with_capture(
+            let pair = metric_nearest_points_resolved(
                 metric,
                 a,
                 &FrameDependentCaches::default(),
                 b,
                 &FrameDependentCaches::default(),
-                source_capture,
+                source_capture.context(),
             )?;
             match (pair.as_ref(), domain) {
                 (Some((start, end)), TopologyDomain::Geographic(frame)) => {
@@ -1597,7 +1582,7 @@ mod planar_nearest_source_ordinate_tests {
             &FrameDependentCaches::default(),
             &query_plan,
             &FrameDependentCaches::default(),
-            &source_context,
+            Some(&source_context),
         )
         .unwrap()
         .unwrap();
@@ -1714,14 +1699,6 @@ mod planar_nearest_source_ordinate_tests {
     #[test]
     fn geographic_xy_planar_nearest_points_skip_source_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        let state = crate::crs::runtime_state_snapshot().unwrap();
-        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
-        let metric = GeodesicMetric::from_model(&model).unwrap();
-        let metric_access = || Ok(&metric);
-        let context = SourceArcContext::new(
-            TopologyDomain::Geographic(metric.frame),
-            Some(&metric_access),
-        );
         let planar = ResolvedMetric::from_model(&MetricModel::COORDINATE).unwrap();
         let line = PreparedPlan::new(Shape::LineString(
             LineSeq::segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(120.0, 60.0)).unwrap(),
@@ -1739,7 +1716,7 @@ mod planar_nearest_source_ordinate_tests {
                 &FrameDependentCaches::default(),
                 right,
                 &FrameDependentCaches::default(),
-                &context,
+                None,
             )
             .unwrap()
             .expect("nonempty XY nearest pair");

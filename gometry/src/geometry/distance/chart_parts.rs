@@ -1260,7 +1260,7 @@ mod tests {
             &left_cache,
             &right,
             &right_cache,
-            &source_context,
+            None,
         )
         .unwrap()
         .unwrap();
