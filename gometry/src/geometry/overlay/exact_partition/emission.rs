@@ -515,13 +515,12 @@ impl BoundaryPlan {
         let embedding = partition.embed(&[&emission], operation)?;
         let coordinates = embedding.coordinates();
         let mut remaining = emission.items.as_slice();
-        let mut rings: Vec<
-            Option<(
-                Ring,
-                Vec<Vec<OverlaySourceEdgeUse>>,
-                Vec<OverlayNodeReceipt>,
-            )>,
-        > = Vec::with_capacity(self.walks.len());
+        type EmittedRing = Option<(
+            Ring,
+            Vec<Vec<OverlaySourceEdgeUse>>,
+            Vec<OverlayNodeReceipt>,
+        )>;
+        let mut rings: Vec<EmittedRing> = Vec::with_capacity(self.walks.len());
         rings.resize_with(self.walks.len(), || None);
         for (ring_index, walk) in self.walks.iter().enumerate() {
             let (chords, rest) = remaining.split_at(walk.len());

@@ -6354,10 +6354,12 @@ fn clip_to_half_plane_with_origins(
     Ok((vertices, origins))
 }
 
+type RoundedRingWithOrigins = (Vec<XY>, Vec<Vec<VoronoiEdgeOrigin>>, Vec<exact::ExactPoint>);
+
 fn rounded_ring_with_origins(
     ring: &[exact::ExactPoint],
     edge_origins: &[Vec<VoronoiEdgeOrigin>],
-) -> Result<(Vec<XY>, Vec<Vec<VoronoiEdgeOrigin>>, Vec<exact::ExactPoint>)> {
+) -> Result<RoundedRingWithOrigins> {
     if ring.len() != edge_origins.len() {
         return Err(voronoi_error(
             "collinear strip edge origins do not match the exact ring",
