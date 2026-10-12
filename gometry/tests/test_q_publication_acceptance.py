@@ -31,8 +31,10 @@ def test_au_pg_union_keeps_its_known_public_wkb_digest() -> None:
     result = gm.union(countries['AU'], countries['PG'])
 
     assert result.is_valid
+    # The public union follows the n-ary canonical-order path; the native Q
+    # receipt control pins a separate digest for its direct producer order.
     assert hashlib.sha256(result.to_wkb()).hexdigest() == (
-        '3de292238e1cfcfa472ddd95548bb3ea28321182c2124f801d1fb63186fad206'
+        'e5cd6a92943e8e13db66c64da5c8b9bd0d621ecd6bf1baa72aa5f393899bc6c0'
     )
 
 
