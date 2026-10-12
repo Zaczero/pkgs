@@ -141,7 +141,7 @@ pub(crate) fn orient_earcut_ring(vertices: &mut [Point], exterior_cw: bool) {
 
 fn orient_earcut_ring_with_ids(
     vertices: &mut [Point],
-    mut identities: Option<&mut Vec<EarcutCornerId>>,
+    identities: Option<&mut Vec<EarcutCornerId>>,
     exterior_cw: bool,
 ) {
     if let Some(identities) = identities.as_deref() {
@@ -153,7 +153,7 @@ fn orient_earcut_ring_with_ids(
     let is_clockwise = open_point_cycle_winding(vertices) == RingWinding::Clockwise;
     if is_clockwise != exterior_cw {
         vertices.reverse();
-        if let Some(identities) = identities.as_deref_mut() {
+        if let Some(identities) = identities {
             identities.reverse();
         }
     }
