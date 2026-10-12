@@ -1145,28 +1145,24 @@ mod work_funded_constructor_tests {
     }
 
     #[test]
-    fn column_reservation_refuses_before_allocating() -> crate::error::Result<()> {
-        let mut work = RecordingWork::with_remaining(0)?;
+    fn column_reservation_refuses_before_allocating() {
+        let mut work = RecordingWork::with_remaining(0).unwrap();
 
         let Err(error) = reserve_point_column(2, &mut work) else {
-            return Err(GeometryErrorKind::Invalid(
-                "coordinate column reserved without work allowance".into(),
-            )
-            .into());
+            panic!("coordinate column reserved without work allowance");
         };
 
         assert!(search_limit(&error));
         assert_eq!(work.attempted, [2]);
         assert!(work.accepted.is_empty());
-        Ok(())
     }
 
     #[test]
-    fn column_copy_refuses_before_reading_or_writing_points() -> crate::error::Result<()> {
+    fn column_copy_refuses_before_reading_or_writing_points() {
         let points = [Point::new_raw_xy(1.0, 2.0), Point::new_raw_xy(3.0, 4.0)];
         let mut output = vec![99.0];
         let reads = std::cell::Cell::new(0);
-        let mut work = RecordingWork::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining(0).unwrap();
 
         let error = match copy_point_column(
             &points,
@@ -1178,10 +1174,7 @@ mod work_funded_constructor_tests {
             &mut work,
         ) {
             Ok(()) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "coordinate column copied without work allowance".into(),
-                )
-                .into());
+                panic!("coordinate column copied without work allowance");
             },
             Err(error) => error,
         };
@@ -1191,20 +1184,16 @@ mod work_funded_constructor_tests {
         assert!(work.accepted.is_empty());
         assert_eq!(reads.get(), 0);
         assert_eq!(output, [99.0]);
-        Ok(())
     }
 
     #[test]
-    fn column_finiteness_pass_refuses_before_inspecting_values() -> crate::error::Result<()> {
+    fn column_finiteness_pass_refuses_before_inspecting_values() {
         let values = [1.0, f64::NAN];
-        let mut work = RecordingWork::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining(0).unwrap();
 
         let error = match point_column_all_finite(&values, &mut work) {
             Ok(_) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "coordinate column was scanned without work allowance".into(),
-                )
-                .into());
+                panic!("coordinate column was scanned without work allowance");
             },
             Err(error) => error,
         };
@@ -1212,12 +1201,10 @@ mod work_funded_constructor_tests {
         assert!(search_limit(&error));
         assert_eq!(work.attempted, [2]);
         assert!(work.accepted.is_empty());
-        Ok(())
     }
 
     #[test]
-    fn xyzm_column_phases_are_billed_and_ordinary_policies_erase_them() -> crate::error::Result<()>
-    {
+    fn xyzm_column_phases_are_billed_and_ordinary_policies_erase_them() {
         let points = [
             Point::new_raw_axes(-0.0, 1.25, ZOrdinate(Some(2.5)), MOrdinate(Some(3.75))),
             Point::new_raw_axes(4.5, -0.0, ZOrdinate(Some(5.25)), MOrdinate(Some(6.75))),
@@ -1236,19 +1223,20 @@ mod work_funded_constructor_tests {
                 6.75_f64.to_bits(),
             ],
         ];
-        let ordinary = CoordSeq::try_from_points(&points)?;
+        let ordinary = CoordSeq::try_from_points(&points).unwrap();
         let mut unmetered = Unmetered;
-        let native_unmetered = CoordSeq::try_from_points_with_work(&points, &mut unmetered)?;
+        let native_unmetered =
+            CoordSeq::try_from_points_with_work(&points, &mut unmetered).unwrap();
         let mut budget =
-            EvaluationBudget::with_remaining_ticks_for_test("coordinate columns", 1, 1)?;
+            EvaluationBudget::with_remaining_ticks_for_test("coordinate columns", 1, 1).unwrap();
         let evaluation_only = {
             let mut work = EvaluationOnly::new(&mut budget);
-            CoordSeq::try_from_points_with_work(&points, &mut work)?
+            CoordSeq::try_from_points_with_work(&points, &mut work).unwrap()
         };
-        <EvaluationBudget as Work>::charge(&mut budget, 1)?;
+        <EvaluationBudget as Work>::charge(&mut budget, 1).unwrap();
 
-        let mut work = RecordingWork::with_remaining(100)?;
-        let funded = CoordSeq::try_from_points_with_work(&points, &mut work)?;
+        let mut work = RecordingWork::with_remaining(100).unwrap();
+        let funded = CoordSeq::try_from_points_with_work(&points, &mut work).unwrap();
 
         assert_eq!(record_bits(&ordinary), expected);
         assert_eq!(record_bits(&native_unmetered), expected);
@@ -1256,7 +1244,6 @@ mod work_funded_constructor_tests {
         assert_eq!(record_bits(&funded), expected);
         assert_eq!(work.attempted, [2; 12]);
         assert_eq!(work.accepted, [2; 12]);
-        Ok(())
     }
 }
 

@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn root_slots_are_dense_across_alternating_and_repeated_requests() -> Result<()> {
+    fn root_slots_are_dense_across_alternating_and_repeated_requests() {
         let first_root = RootId::from_index(7);
         let second_root = RootId::from_index(2);
         let third_root = RootId::from_index(5);
@@ -1424,28 +1424,49 @@ mod tests {
             },
         ];
         let mut work = Unmetered;
-        let table = RootRequestTable::from_rows(&rows, &mut work)?;
-        let first = RequestRowId::from_index(0)?;
-        let second = RequestRowId::from_index(1)?;
+        let table = RootRequestTable::from_rows(&rows, &mut work).unwrap();
+        let first = RequestRowId::from_index(0).unwrap();
+        let second = RequestRowId::from_index(1).unwrap();
         assert_eq!(table.root_count(), 3);
-        assert_eq!(table.root_state_slot(table.request_id_at(first, 0)?)?, 2);
-        assert_eq!(table.root_state_slot(table.request_id_at(first, 1)?)?, 0);
-        assert_eq!(table.root_state_slot(table.request_id_at(second, 0)?)?, 2);
-        assert_eq!(table.root_state_slot(table.request_id_at(second, 1)?)?, 1);
         assert_eq!(
-            table.request_id_at(first, 0)?,
-            table.request_id_at(second, 0)?
+            table
+                .root_state_slot(table.request_id_at(first, 0).unwrap())
+                .unwrap(),
+            2
         );
-        Ok(())
+        assert_eq!(
+            table
+                .root_state_slot(table.request_id_at(first, 1).unwrap())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            table
+                .root_state_slot(table.request_id_at(second, 0).unwrap())
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            table
+                .root_state_slot(table.request_id_at(second, 1).unwrap())
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            table.request_id_at(first, 0).unwrap(),
+            table.request_id_at(second, 0).unwrap()
+        );
     }
 
     #[test]
-    fn unique_request_records_pay_capacity_and_exact_parameter_clones() -> Result<()> {
+    fn unique_request_records_pay_capacity_and_exact_parameter_clones() {
         let quarter_turn = ExactRational::from_f64(0.75);
         let mut parameter = ExactRational::one();
         let mut setup = Unmetered;
         for _ in 0..100 {
-            parameter = parameter.try_product_with_work(&quarter_turn, &mut setup)?;
+            parameter = parameter
+                .try_product_with_work(&quarter_turn, &mut setup)
+                .unwrap();
         }
         let request = RootRequest {
             root: RootId::from_index(3),
@@ -1453,7 +1474,7 @@ mod tests {
         };
         let target_attempts = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
@@ -1461,7 +1482,7 @@ mod tests {
                 attempts: Vec::new(),
             };
             let mut records = Vec::new();
-            let id = push_unique_root_request(&mut records, &request, &mut work)?;
+            let id = push_unique_root_request(&mut records, &request, &mut work).unwrap();
             progress.set(1);
             let record = records
                 .get(id.0 as usize)
@@ -1505,11 +1526,10 @@ mod tests {
             assert_eq!(refusal.spent_before, target.spent_before);
             assert_eq!(refusal.progress, 0);
         }
-        Ok(())
     }
 
     #[test]
-    fn root_state_storage_refusal_precedes_first_ordinate_resolution() -> Result<()> {
+    fn root_state_storage_refusal_precedes_first_ordinate_resolution() {
         let requests = (0..7)
             .map(|root| RootRequest {
                 root: RootId::from_index(root),
@@ -1522,14 +1542,14 @@ mod tests {
         }];
         let table_attempt_count = {
             let table_progress = Rc::new(Cell::new(0));
-            let mut table_budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut table_budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut table_work = RecordingWork {
                 budget: &mut table_budget,
                 progress: Rc::clone(&table_progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            let table = RootRequestTable::from_rows(&rows, &mut table_work)?;
+            let table = RootRequestTable::from_rows(&rows, &mut table_work).unwrap();
             assert_eq!(table.root_count(), 7);
             assert_eq!(
                 table_work
@@ -1546,7 +1566,7 @@ mod tests {
         let target = {
             let progress = Rc::new(Cell::new(0));
             let roots = ProgressRoots(Rc::clone(&progress));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
@@ -1555,7 +1575,8 @@ mod tests {
             };
             let ordinates = resolve_request_rows::<crate::crs::GeodesicMetric, _>(
                 &rows, &roots, None, &mut work,
-            )?;
+            )
+            .unwrap();
             assert_eq!(ordinates.len(), 1);
             assert_eq!(progress.get(), 7);
             let target = *work
@@ -1593,11 +1614,10 @@ mod tests {
         assert_eq!(refusal.ticks, target.ticks);
         assert_eq!(refusal.spent_before, target.spent_before);
         assert_eq!(refusal.progress, 0);
-        Ok(())
     }
 
     #[test]
-    fn request_table_storage_refusal_precedes_first_ordinate_resolution() -> Result<()> {
+    fn request_table_storage_refusal_precedes_first_ordinate_resolution() {
         let rows = [RequestRowInput {
             axes: CoordinateAxes::XYZM,
             requests: (0..7)
@@ -1610,14 +1630,15 @@ mod tests {
         let target = {
             let progress = Rc::new(Cell::new(0));
             let roots = ProgressRoots(Rc::clone(&progress));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)?;
+            resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)
+                .unwrap();
             assert_eq!(progress.get(), 7);
             let target = *work
                 .attempts
@@ -1654,11 +1675,10 @@ mod tests {
         assert_eq!(refusal.ticks, target.ticks);
         assert_eq!(refusal.spent_before, target.spent_before);
         assert_eq!(refusal.progress, 0);
-        Ok(())
     }
 
     #[test]
-    fn evaluation_only_and_unmetered_request_rows_are_bit_identical() -> Result<()> {
+    fn evaluation_only_and_unmetered_request_rows_are_bit_identical() {
         let rows = [
             RequestRowInput {
                 axes: CoordinateAxes::XYZM,
@@ -1701,11 +1721,13 @@ mod tests {
             &baseline_roots,
             None,
             &mut unmetered,
-        )?;
+        )
+        .unwrap();
 
         let evaluation_progress = Rc::new(Cell::new(0));
         let evaluation_roots = ProgressRoots(Rc::clone(&evaluation_progress));
-        let mut budget = EvaluationBudget::with_remaining_ticks_for_test(TRACE_OPERATION, 0, 0)?;
+        let mut budget =
+            EvaluationBudget::with_remaining_ticks_for_test(TRACE_OPERATION, 0, 0).unwrap();
         let evaluation_only = {
             let mut work = EvaluationOnly::new(&mut budget);
             resolve_request_rows::<crate::crs::GeodesicMetric, _>(
@@ -1713,7 +1735,8 @@ mod tests {
                 &evaluation_roots,
                 None,
                 &mut work,
-            )?
+            )
+            .unwrap()
         };
         assert_eq!(ordinate_bits(&baseline), ordinate_bits(&evaluation_only));
         assert_eq!(evaluation_progress.get(), baseline_progress.get());
@@ -1730,14 +1753,14 @@ mod tests {
             &ordinary_roots,
             None,
             &mut ordinary,
-        )?;
+        )
+        .unwrap();
         assert_eq!(ordinate_bits(&baseline), ordinate_bits(&ordinary_result));
         assert_eq!(ordinary_progress.get(), baseline_progress.get());
-        Ok(())
     }
 
     #[test]
-    fn distinct_root_signed_zero_values_remain_a_conflict() -> Result<()> {
+    fn distinct_root_signed_zero_values_remain_a_conflict() {
         let root_a = RootId::from_index(0);
         let root_b = RootId::from_index(1);
         let rows = [RequestRowInput {
@@ -1759,40 +1782,47 @@ mod tests {
             &SignedZeroRoots,
             None,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].z.value(), None);
-        Ok(())
     }
 
     #[test]
-    fn empty_sample_rows_keep_their_offsets() -> Result<()> {
+    fn empty_sample_rows_keep_their_offsets() {
         let root = RootId::from_index(4);
         let mut work = Unmetered;
-        let mut builder = TraceRowsBuilder::new(&mut work)?;
+        let mut builder = TraceRowsBuilder::new(&mut work).unwrap();
         for _ in 0..128 {
-            builder.push_sample_row([], &mut work)?;
+            builder.push_sample_row([], &mut work).unwrap();
         }
-        builder.push_sample_row([RootRange::whole(root)], &mut work)?;
-        let rows = builder.finish(&mut work)?;
+        builder
+            .push_sample_row([RootRange::whole(root)], &mut work)
+            .unwrap();
+        let rows = builder.finish(&mut work).unwrap();
 
         for sample in 0..128 {
-            assert!(rows.sample_requests_at(sample, &mut work)?.is_empty());
+            assert!(
+                rows.sample_requests_at(sample, &mut work)
+                    .unwrap()
+                    .is_empty()
+            );
         }
-        let last = rows.sample_requests_at(128, &mut work)?;
+        let last = rows.sample_requests_at(128, &mut work).unwrap();
         assert_eq!(last.len(), 1);
         assert_eq!(last[0].root(), root);
-        Ok(())
     }
 
     #[test]
-    fn trace_row_clone_prepays_storage_and_exact_range_copies() -> Result<()> {
+    fn trace_row_clone_prepays_storage_and_exact_range_copies() {
         let root = RootId::from_index(8);
         let quarter_turn = ExactRational::from_f64(0.75);
         let mut source_start = ExactRational::one();
         let mut setup = Unmetered;
         for _ in 0..100 {
-            source_start = source_start.try_product_with_work(&quarter_turn, &mut setup)?;
+            source_start = source_start
+                .try_product_with_work(&quarter_turn, &mut setup)
+                .unwrap();
         }
         let range = RootRange::from_mapped(
             root,
@@ -1800,23 +1830,24 @@ mod tests {
             ExactRational::from_f64(0.75),
             ExactRational::from_f64(0.125),
             ExactRational::from_f64(0.875),
-        )?;
-        let mut builder = TraceRowsBuilder::new(&mut setup)?;
-        builder.push_row([range], &mut setup)?;
-        let rows = builder.finish(&mut setup)?;
+        )
+        .unwrap();
+        let mut builder = TraceRowsBuilder::new(&mut setup).unwrap();
+        builder.push_row([range], &mut setup).unwrap();
+        let rows = builder.finish(&mut setup).unwrap();
 
         let target_attempts = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            let cloned = rows.try_clone_with_work(&mut work)?;
+            let cloned = rows.try_clone_with_work(&mut work).unwrap();
             progress.set(1);
-            assert_eq!(cloned.row(0)?, rows.row(0)?);
+            assert_eq!(cloned.row(0).unwrap(), rows.row(0).unwrap());
             assert_eq!(progress.get(), 1);
             assert_eq!(
                 work.attempts
@@ -1857,7 +1888,6 @@ mod tests {
         assert_eq!(refusal.ticks, target_attempts.ticks);
         assert_eq!(refusal.spent_before, target_attempts.spent_before);
         assert_eq!(refusal.progress, 0);
-        Ok(())
     }
 
     fn append_test_trace_row(work: &mut impl Work, progress: &Cell<usize>) -> Result<()> {
@@ -1876,17 +1906,17 @@ mod tests {
     }
 
     #[test]
-    fn trace_row_storage_and_offsets_refuse_before_append_progress() -> Result<()> {
+    fn trace_row_storage_and_offsets_refuse_before_append_progress() {
         let target_attempts = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            append_test_trace_row(&mut work, &progress)?;
+            append_test_trace_row(&mut work, &progress).unwrap();
             assert_eq!(progress.get(), 1);
             assert_eq!(
                 work.attempts
@@ -1920,22 +1950,23 @@ mod tests {
             assert_eq!(refusal.spent_before, target.spent_before);
             assert_eq!(refusal.progress, 0);
         }
-        Ok(())
     }
 
     #[test]
-    fn sample_row_storage_and_offset_refuse_before_append_progress() -> Result<()> {
+    fn sample_row_storage_and_offset_refuse_before_append_progress() {
         let target_attempts = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            let mut builder = TraceRowsBuilder::new(&mut work)?;
-            builder.push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)?;
+            let mut builder = TraceRowsBuilder::new(&mut work).unwrap();
+            builder
+                .push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)
+                .unwrap();
             progress.set(1);
             assert_eq!(progress.get(), 1);
             assert_eq!(
@@ -1958,8 +1989,10 @@ mod tests {
                 attempts: Vec::new(),
             };
             let result = (|| {
-                let mut builder = TraceRowsBuilder::new(&mut work)?;
-                builder.push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)?;
+                let mut builder = TraceRowsBuilder::new(&mut work).unwrap();
+                builder
+                    .push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)
+                    .unwrap();
                 progress.set(1);
                 Ok(())
             })();
@@ -1976,11 +2009,10 @@ mod tests {
             assert_eq!(refusal.spent_before, target.spent_before);
             assert_eq!(refusal.progress, 0);
         }
-        Ok(())
     }
 
     #[test]
-    fn trace_finish_prepays_range_copy_and_sample_offsets() -> Result<()> {
+    fn trace_finish_prepays_range_copy_and_sample_offsets() {
         fn finish_test_trace(work: &mut impl Work, progress: &Cell<usize>) -> Result<()> {
             let mut setup = Unmetered;
             let mut builder = TraceRowsBuilder::new(&mut setup)?;
@@ -2002,14 +2034,14 @@ mod tests {
 
         let target_attempts = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
             let mut work = RecordingWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 attempts: Vec::new(),
             };
-            finish_test_trace(&mut work, &progress)?;
+            finish_test_trace(&mut work, &progress).unwrap();
             assert_eq!(progress.get(), 1);
             assert_eq!(
                 work.attempts
@@ -2043,7 +2075,6 @@ mod tests {
             assert_eq!(refusal.spent_before, target.spent_before);
             assert_eq!(refusal.progress, 0);
         }
-        Ok(())
     }
 
     #[test]

@@ -4333,27 +4333,30 @@ mod tests {
     }
 
     #[test]
-    fn emission_ordinate_rows_and_ports_are_reserved_before_progress() -> Result<()> {
-        let empty = crate::io::parse_wkt("POINT EMPTY")?;
-        let topology = endpoint_test_topology(std::slice::from_ref(&empty))?;
+    fn emission_ordinate_rows_and_ports_are_reserved_before_progress() {
+        let empty = crate::io::parse_wkt("POINT EMPTY").unwrap();
+        let topology = endpoint_test_topology(std::slice::from_ref(&empty)).unwrap();
         let mut setup = Unmetered;
-        let node_registry = EmissionNodeRegistry::with_sources(&topology, &[], &mut setup)?;
+        let node_registry = EmissionNodeRegistry::with_sources(&topology, &[], &mut setup).unwrap();
         let roots = [
             RootRequest::new_with_work(
                 RootId::from_index(2),
                 ExactRational::from_f64(0.25),
                 &mut setup,
-            )?,
+            )
+            .unwrap(),
             RootRequest::new_with_work(
                 RootId::from_index(2),
                 ExactRational::from_f64(0.5),
                 &mut setup,
-            )?,
+            )
+            .unwrap(),
             RootRequest::new_with_work(
                 RootId::from_index(2),
                 ExactRational::from_f64(0.75),
                 &mut setup,
-            )?,
+            )
+            .unwrap(),
         ];
         let occurrences = roots
             .iter()
@@ -4363,12 +4366,13 @@ mod tests {
                     origin: VertexOrigin::SourceSample,
                     source_trace: Some(TraceRequestLocation::Root {
                         root: request.root(),
-                        parameter: request.parameter().try_clone_with_work(&mut setup)?,
+                        parameter: request.parameter().try_clone_with_work(&mut setup).unwrap(),
                     }),
-                    request_row: RequestRowId::from_index(index)?,
+                    request_row: RequestRowId::from_index(index).unwrap(),
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         let plan = ExpandedEmissionPlan {
             topology: &topology,
             selected_face_roots: Vec::new(),
@@ -4408,7 +4412,7 @@ mod tests {
         let targets = {
             let progress = Rc::new(Cell::new(0));
             let roots = ProgressRootCatalog(Rc::clone(&progress));
-            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
             let mut work = RecordedWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
@@ -4425,7 +4429,8 @@ mod tests {
                 EMISSION_STORAGE_OPERATION,
                 None,
                 &mut work,
-            )?;
+            )
+            .unwrap();
             assert_eq!(ordinates.len(), 2);
             assert_eq!(axes, CoordinateAxes::XYZM);
             assert_eq!(progress.get(), 3);
@@ -4480,34 +4485,35 @@ mod tests {
             assert_eq!(refusal.spent_before, target.spent_before);
             assert_eq!(refusal.progress, target.progress);
         }
-        Ok(())
     }
 
     #[test]
-    fn source_sample_occurrences_reserve_before_copying_requests() -> Result<()> {
+    fn source_sample_occurrences_reserve_before_copying_requests() {
         let mut setup = Unmetered;
         let requests = [
             RootRequest::new_with_work(
                 RootId::from_index(2),
                 ExactRational::from_f64(0.25),
                 &mut setup,
-            )?,
+            )
+            .unwrap(),
             RootRequest::new_with_work(
                 RootId::from_index(5),
                 ExactRational::from_f64(0.75),
                 &mut setup,
-            )?,
+            )
+            .unwrap(),
         ];
         let target = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
             let mut work = RecordedWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 charges: Vec::new(),
             };
-            let occurrences = native_source_sample_occurrences(None, &requests, &mut work)?;
+            let occurrences = native_source_sample_occurrences(None, &requests, &mut work).unwrap();
             progress.set(1);
             assert_eq!(occurrences.len(), 2);
             assert_eq!(progress.get(), 1);
@@ -4542,16 +4548,17 @@ mod tests {
         assert_eq!(refusal.ticks, target.ticks);
         assert_eq!(refusal.spent_before, target.spent_before);
         assert_eq!(refusal.progress, 0);
-        Ok(())
     }
 
     #[test]
-    fn native_port_clone_prepays_occurrences_and_root_parameter_limbs() -> Result<()> {
+    fn native_port_clone_prepays_occurrences_and_root_parameter_limbs() {
         let mut setup = Unmetered;
         let quarter_turn = ExactRational::from_f64(0.75);
         let mut parameter = ExactRational::one();
         for _ in 0..100 {
-            parameter = parameter.try_product_with_work(&quarter_turn, &mut setup)?;
+            parameter = parameter
+                .try_product_with_work(&quarter_turn, &mut setup)
+                .unwrap();
         }
         let port = NativePortData {
             node: EmissionNodeId(4),
@@ -4571,14 +4578,14 @@ mod tests {
         };
         let target = {
             let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0).unwrap();
             let mut work = RecordedWork {
                 budget: &mut budget,
                 progress: Rc::clone(&progress),
                 spent: 0,
                 charges: Vec::new(),
             };
-            let cloned = port.try_clone_with_work(&mut work)?;
+            let cloned = port.try_clone_with_work(&mut work).unwrap();
             progress.set(1);
             assert_eq!(cloned.node, port.node);
             assert_eq!(cloned.point, port.point);
@@ -4646,7 +4653,6 @@ mod tests {
         assert_eq!(refusal.ticks, target.ticks);
         assert_eq!(refusal.spent_before, target.spent_before);
         assert_eq!(refusal.progress, 0);
-        Ok(())
     }
 
     fn materialize_test_line(
@@ -6534,14 +6540,11 @@ mod tests {
     }
 
     #[test]
-    fn native_materialization_refuses_before_active_column_reservation() -> Result<()> {
-        let mut work = RecordingWork::with_remaining("native columns", 11)?;
+    fn native_materialization_refuses_before_active_column_reservation() {
+        let mut work = RecordingWork::with_remaining("native columns", 11).unwrap();
         let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
         let Err(error) = result else {
-            return Err(GeometryErrorKind::Invalid(
-                "Native materialization completed without funding its active columns".into(),
-            )
-            .into());
+            panic!("Native materialization completed without funding its active columns");
         };
         assert!(matches!(
             error.kind(),
@@ -6553,19 +6556,16 @@ mod tests {
         ));
         assert_eq!(work.accepted_ticks(), 11);
         assert_eq!(work.attempted.last(), Some(&2));
-        Ok(())
     }
 
     #[test]
-    fn native_materialization_refuses_before_each_active_column_phase() -> Result<()> {
+    fn native_materialization_refuses_before_each_active_column_phase() {
         for remaining_ticks in [11, 19, 27] {
-            let mut work = RecordingWork::with_remaining("native columns", remaining_ticks)?;
+            let mut work =
+                RecordingWork::with_remaining("native columns", remaining_ticks).unwrap();
             let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
             let Err(error) = result else {
-                return Err(GeometryErrorKind::Invalid(
-                    "Native materialization passed an unfunded column phase".into(),
-                )
-                .into());
+                panic!("Native materialization passed an unfunded column phase");
             };
             assert!(matches!(
                 error.kind(),
@@ -6578,15 +6578,14 @@ mod tests {
             assert_eq!(work.accepted_ticks(), remaining_ticks);
             assert_eq!(work.attempted.last(), Some(&2));
         }
-        Ok(())
     }
 
     #[test]
-    fn native_materialization_charges_only_the_active_columns() -> Result<()> {
-        let mut xy_work = RecordingWork::with_remaining("native columns", 128)?;
-        let xy = materialize_test_line(CoordinateAxes::XY, &mut xy_work)?;
-        let mut xyzm_work = RecordingWork::with_remaining("native columns", 128)?;
-        let xyzm = materialize_test_line(CoordinateAxes::XYZM, &mut xyzm_work)?;
+    fn native_materialization_charges_only_the_active_columns() {
+        let mut xy_work = RecordingWork::with_remaining("native columns", 128).unwrap();
+        let xy = materialize_test_line(CoordinateAxes::XY, &mut xy_work).unwrap();
+        let mut xyzm_work = RecordingWork::with_remaining("native columns", 128).unwrap();
+        let xyzm = materialize_test_line(CoordinateAxes::XYZM, &mut xyzm_work).unwrap();
 
         assert_eq!(
             xyzm_work.accepted_ticks() - xy_work.accepted_ticks(),
@@ -6596,30 +6595,41 @@ mod tests {
         let xy_line = xy
             .lines
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY line is missing".into()))?;
-        let xyzm_line = xyzm.lines.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized XYZM line is missing".into())
-        })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY line is missing".into()))
+            .unwrap();
+        let xyzm_line = xyzm
+            .lines
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XYZM line is missing".into()))
+            .unwrap();
         assert_eq!(xy_line.xs(), xyzm_line.xs());
         assert_eq!(xy_line.ys(), xyzm_line.ys());
         assert_eq!(xyzm_line.zs(), Some(&[1.25, 3.75][..]));
         assert_eq!(xyzm_line.ms(), Some(&[2.5, 4.5][..]));
 
-        let mut xy_ring_work = RecordingWork::with_remaining("native columns", 256)?;
-        let xy_ring = materialize_test_ring_with_hole(CoordinateAxes::XY, &mut xy_ring_work)?;
-        let mut xyzm_ring_work = RecordingWork::with_remaining("native columns", 256)?;
-        let xyzm_ring = materialize_test_ring_with_hole(CoordinateAxes::XYZM, &mut xyzm_ring_work)?;
+        let mut xy_ring_work = RecordingWork::with_remaining("native columns", 256).unwrap();
+        let xy_ring =
+            materialize_test_ring_with_hole(CoordinateAxes::XY, &mut xy_ring_work).unwrap();
+        let mut xyzm_ring_work = RecordingWork::with_remaining("native columns", 256).unwrap();
+        let xyzm_ring =
+            materialize_test_ring_with_hole(CoordinateAxes::XYZM, &mut xyzm_ring_work).unwrap();
         assert_eq!(
             xyzm_ring_work.accepted_ticks() - xy_ring_work.accepted_ticks(),
             60,
             "two extra columns are reserved, copied and checked for both five-row rings"
         );
-        let xy_polygon = xy_ring.polygons.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized XY polygon is missing".into())
-        })?;
-        let xyzm_polygon = xyzm_ring.polygons.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized XYZM polygon is missing".into())
-        })?;
+        let xy_polygon = xy_ring
+            .polygons
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY polygon is missing".into()))
+            .unwrap();
+        let xyzm_polygon = xyzm_ring
+            .polygons
+            .first()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("materialized XYZM polygon is missing".into())
+            })
+            .unwrap();
         assert_eq!(xy_polygon.holes.len(), 1);
         assert_eq!(
             xy_polygon.shell.coords().xs(),
@@ -6640,10 +6650,13 @@ mod tests {
         let xy_hole = xy_polygon
             .holes
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY hole is missing".into()))?;
-        let xyzm_hole = xyzm_polygon.holes.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized XYZM hole is missing".into())
-        })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY hole is missing".into()))
+            .unwrap();
+        let xyzm_hole = xyzm_polygon
+            .holes
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XYZM hole is missing".into()))
+            .unwrap();
         assert_eq!(xy_hole.coords().xs(), xyzm_hole.coords().xs());
         assert_eq!(xy_hole.coords().ys(), xyzm_hole.coords().ys());
         assert_eq!(
@@ -6654,18 +6667,14 @@ mod tests {
             xyzm_hole.coords().ms(),
             Some(&[2.5, 4.5, 2.5, 4.5, 2.5][..])
         );
-        Ok(())
     }
 
     #[test]
-    fn native_materialization_funds_the_complete_closing_xyzm_record() -> Result<()> {
-        let mut limited = RecordingWork::with_remaining("native columns", 17)?;
+    fn native_materialization_funds_the_complete_closing_xyzm_record() {
+        let mut limited = RecordingWork::with_remaining("native columns", 17).unwrap();
         let result = materialize_test_ring(CoordinateAxes::XYZM, &mut limited);
         let Err(error) = result else {
-            return Err(GeometryErrorKind::Invalid(
-                "Native ring materialization passed an unfunded closing-record write".into(),
-            )
-            .into());
+            panic!("Native ring materialization passed an unfunded closing-record write");
         };
         assert!(matches!(
             error.kind(),
@@ -6678,20 +6687,27 @@ mod tests {
         assert_eq!(limited.accepted_ticks(), 17);
         assert_eq!(limited.attempted.last(), Some(&1));
 
-        let mut funded = RecordingWork::with_remaining("native columns", 128)?;
-        let parts = materialize_test_ring(CoordinateAxes::XYZM, &mut funded)?;
+        let mut funded = RecordingWork::with_remaining("native columns", 128).unwrap();
+        let parts = materialize_test_ring(CoordinateAxes::XYZM, &mut funded).unwrap();
         let ring = parts
             .polygons
             .first()
-            .ok_or_else(|| GeometryErrorKind::Invalid("materialized ring is missing".into()))?
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized ring is missing".into()))
+            .unwrap()
             .shell
             .coords();
-        let first = ring.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized first record is missing".into())
-        })?;
-        let last = ring.last().ok_or_else(|| {
-            GeometryErrorKind::Invalid("materialized closing record is missing".into())
-        })?;
+        let first = ring
+            .first()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("materialized first record is missing".into())
+            })
+            .unwrap();
+        let last = ring
+            .last()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("materialized closing record is missing".into())
+            })
+            .unwrap();
         assert_eq!(
             [
                 first.x.to_bits(),
@@ -6706,36 +6722,35 @@ mod tests {
                 last.m.to_bits()
             ],
         );
-        Ok(())
     }
 
     #[test]
-    fn native_literal_validation_charges_each_metadata_row_before_inspection() -> Result<()> {
+    fn native_literal_validation_charges_each_metadata_row_before_inspection() {
         let mut all_rows = point_literal_test_parts();
-        let mut line_rows = line_literal_test_parts()?;
+        let mut line_rows = line_literal_test_parts().unwrap();
         all_rows.lines.append(&mut line_rows.lines);
         all_rows
             .literal_uses
             .lines
             .append(&mut line_rows.literal_uses.lines);
-        let mut polygon_rows = polygon_literal_test_parts(true)?;
+        let mut polygon_rows = polygon_literal_test_parts(true).unwrap();
         all_rows.polygons.append(&mut polygon_rows.polygons);
         all_rows
             .literal_uses
             .polygons
             .append(&mut polygon_rows.literal_uses.polygons);
 
-        let mut funded = RecordingWork::with_remaining("literal metadata", 100)?;
-        all_rows.validate_literal_uses(&mut funded)?;
+        let mut funded = RecordingWork::with_remaining("literal metadata", 100).unwrap();
+        all_rows.validate_literal_uses(&mut funded).unwrap();
         assert_eq!(funded.attempted, [1, 1, 1, 1]);
         assert_eq!(funded.accepted, [1, 1, 1, 1]);
 
         for parts in [
             point_literal_test_parts(),
-            line_literal_test_parts()?,
-            polygon_literal_test_parts(false)?,
+            line_literal_test_parts().unwrap(),
+            polygon_literal_test_parts(false).unwrap(),
         ] {
-            let mut work = RecordingWork::with_remaining("literal metadata", 0)?;
+            let mut work = RecordingWork::with_remaining("literal metadata", 0).unwrap();
             let error = parts.validate_literal_uses(&mut work).unwrap_err();
             assert!(matches!(
                 error.kind(),
@@ -6749,8 +6764,8 @@ mod tests {
             assert!(work.accepted.is_empty());
         }
 
-        let parts = polygon_literal_test_parts(true)?;
-        let mut work = RecordingWork::with_remaining("literal metadata", 1)?;
+        let parts = polygon_literal_test_parts(true).unwrap();
+        let mut work = RecordingWork::with_remaining("literal metadata", 1).unwrap();
         let error = parts.validate_literal_uses(&mut work).unwrap_err();
         assert!(matches!(
             error.kind(),
@@ -6762,7 +6777,6 @@ mod tests {
         ));
         assert_eq!(work.attempted, [1, 1]);
         assert_eq!(work.accepted, [1]);
-        Ok(())
     }
 
     #[test]
