@@ -45,6 +45,11 @@ fn publish_triangle_shapes_for_domain(
     }
 }
 
+enum SamplePublication {
+    Geographic(geometry::PreparedSampling),
+    Cartesian(Vec<geometry::Point>),
+}
+
 impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
@@ -325,17 +330,28 @@ impl PyGeometry {
         // `arr[0].sample_points(n, seed=s)` agree. Using the raw seed here made
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
-        let points = py.detach(move || {
-            shape
-                .sample_point_receipts_in_domain(
-                    count,
-                    crate::geometry::row_sample_seed(seed, 0),
-                    0,
-                    domain,
-                )
-                .map(crate::geometry::PreparedSampling::into_points)
+        let output = py.detach(move || -> crate::error::Result<SamplePublication> {
+            let prepared = shape.sample_point_receipts_in_domain(
+                count,
+                crate::geometry::row_sample_seed(seed, 0),
+                0,
+                domain,
+            )?;
+            Ok(if domain.is_geographic() {
+                SamplePublication::Geographic(prepared)
+            } else {
+                SamplePublication::Cartesian(prepared.into_points())
+            })
         })?;
-        self.parts_to_array(points.into_iter().map(Shape::Point))
+        match output {
+            SamplePublication::Geographic(prepared) => Ok(geometry::publish_sampling_array(
+                prepared,
+                self.frame.clone(),
+            )?),
+            SamplePublication::Cartesian(points) => {
+                self.parts_to_array(points.into_iter().map(Shape::Point))
+            },
+        }
     }
 
     pub(crate) fn voronoi_cells_impl(

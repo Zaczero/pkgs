@@ -1,8 +1,13 @@
+use super::DirectedChartRestrictionUse;
 use crate::Frame;
 use crate::error::Result;
-use crate::geometry::embedding_completion::{LiteralAddress, LiteralRowLayout};
+use crate::geometry::embedding_completion::{
+    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout,
+};
 use crate::geometry::embedding_search::{EvaluationBudget, Work};
+use crate::geometry::ordinates::RootRange;
 use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask};
+use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
@@ -13,6 +18,70 @@ use crate::geometry::{GeometryErrorKind, Shape};
 pub(in crate::geometry) enum PublicationImage {
     Native(EmissionPortId),
     SourceOnly(QSourceImage),
+    ProducerDrawn(ProducerImageId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(in crate::geometry) struct ProducerImageId(usize);
+
+impl ProducerImageId {
+    pub(in crate::geometry) const fn new(index: usize) -> Self {
+        Self(index)
+    }
+}
+
+pub(in crate::geometry) struct ProducerLiteral {
+    pub(in crate::geometry) address: LiteralAddress,
+    pub(in crate::geometry) image: ProducerImageId,
+    pub(in crate::geometry) record: crate::Point,
+    pub(in crate::geometry) chart: ExactChartPoint,
+}
+
+impl ProducerLiteral {
+    pub(in crate::geometry) fn from_point(
+        address: LiteralAddress,
+        image: ProducerImageId,
+        record: crate::Point,
+    ) -> Self {
+        Self {
+            address,
+            image,
+            record,
+            chart: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(record.x),
+                ExactRational::from_f64(record.y),
+            ),
+        }
+    }
+}
+
+pub(in crate::geometry) struct ProducerSourceRootUse {
+    pub(in crate::geometry) address: LiteralAddress,
+    pub(in crate::geometry) image: ProducerImageId,
+    pub(in crate::geometry) range: RootRange,
+}
+
+pub(in crate::geometry) struct ProducerDrawingReceipt {
+    pub(super) buffers: FrozenLiteralBuffers<ProducerImageId>,
+    pub(super) literals: Vec<ProducerLiteral>,
+    pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
+    pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
+}
+
+impl ProducerDrawingReceipt {
+    pub(in crate::geometry) const fn new(
+        buffers: FrozenLiteralBuffers<ProducerImageId>,
+        literals: Vec<ProducerLiteral>,
+        source_root_uses: Vec<ProducerSourceRootUse>,
+        chart_restrictions: Vec<DirectedChartRestrictionUse>,
+    ) -> Self {
+        Self {
+            buffers,
+            literals,
+            source_root_uses,
+            chart_restrictions,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -91,10 +160,6 @@ pub(in crate::geometry) struct ArrayPublicationBatch {
 pub(in crate::geometry) enum StorageTarget {
     Scalar,
     Array,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no Q producer currently publishes Groups storage")
-    )]
     Groups,
 }
 
@@ -102,6 +167,7 @@ pub(in crate::geometry) enum ProducerReceipt<'call, 'reference, 'topology> {
     QNative(NativeCandidatePublication<'call, 'reference, 'topology>),
     QSourceOnly(SourceOnlyPublication<'call>),
     ArrayBatch(ArrayPublicationBatch),
+    ProducerDrawing(ProducerDrawingReceipt),
 }
 
 pub(in crate::geometry) struct PublicationCall<'call, 'reference, 'topology, W: Work> {
@@ -129,6 +195,7 @@ pub(in crate::geometry) enum PublicationRejection {
     Native,
     SourceOnly(Vec<QSourceImage>),
     Batch(Vec<PublicationImage>),
+    ProducerDrawing(Vec<ProducerImageId>),
 }
 
 #[expect(
