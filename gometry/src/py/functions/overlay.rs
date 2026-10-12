@@ -83,22 +83,37 @@ fn apply_overlay_all(
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
-    let shape = py.detach(move || {
-        let metric_access = || {
-            metric.geographic_chart_metric()?.ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic overlay source ordinates require the operation's CRS metric",
+    let metric_access = || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic overlay source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    let shape = match domain {
+        crate::geometry::TopologyDomain::Cartesian => py.detach(move || {
+            crate::geometry::overlay_all_with_metric(
+                &shapes,
+                domain,
+                operation,
+                crate::geometry::Strictness::Lenient,
+                &metric_access,
+            )
+        })?,
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            let output_frame = metadata.clone();
+            py.detach(move || {
+                crate::geometry::overlay_all_geographic_with_metric_and_frame(
+                    &shapes,
+                    frame,
+                    &output_frame,
+                    operation,
+                    crate::geometry::Strictness::Lenient,
+                    &metric_access,
                 )
-            })
-        };
-        crate::geometry::overlay_all_with_metric(
-            &shapes,
-            domain,
-            operation,
-            crate::geometry::Strictness::Lenient,
-            &metric_access,
-        )
-    })?;
+            })?
+        },
+    };
     drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }

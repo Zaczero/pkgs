@@ -2,11 +2,12 @@
 //! outputs (usize ids cast zero-copy to i64) plus the ragged-row
 //! collectors for geometry and cell fan-outs.
 
-use pyo3::Python;
+use pyo3::{PyErr, Python};
 
 use crate::CsrBuilder;
 use crate::error::Result;
 use crate::geometry::TopologyDomain;
+use crate::geometry::publication::FinishedGeometry;
 use crate::geometry::storage::ValidityMask;
 use crate::py::vectors::{
     Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyOverflowError, PyResult,
@@ -14,6 +15,26 @@ use crate::py::vectors::{
 };
 
 impl Groups {
+    #[expect(
+        dead_code,
+        reason = "geographic grouped producers adopt the sink's sealed CSR owner directly"
+    )]
+    pub(crate) fn from_finished(finished: FinishedGeometry) -> PyResult<Self> {
+        let (groups, frame) = finished.into_groups().map_err(PyErr::from)?;
+        let row_count = validate_csr_offsets(&groups.offsets, groups.values.len())?;
+        let values = PyGeometryArray::from_admitted_rows(
+            groups.values,
+            frame,
+            crate::array::ComputedCaches::fresh(),
+        );
+        Ok(Self {
+            values: GroupsValues::Geometry(Arc::new(values)),
+            offsets: groups.offsets.into(),
+            rows: 0..row_count,
+            missing: groups.missing,
+        })
+    }
+
     pub(super) fn from_int64_values_csr(ids: Vec<i64>, offsets: Vec<i64>) -> PyResult<Self> {
         let row_count = validate_csr_offsets(&offsets, ids.len())?;
         Ok(Self {
