@@ -18794,7 +18794,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                     endpoint,
                                     reference,
                                     reference_offset,
-                                    &point,
+                                    point,
                                     budget,
                                 )?,
                             ));

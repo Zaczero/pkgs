@@ -12,7 +12,7 @@ pub(super) struct NativeEndpointPointKey {
 }
 
 impl NativeEndpointPointKey {
-    pub(super) fn new(port: QPortId, candidate: QCandidate) -> Self {
+    pub(super) const fn new(port: QPortId, candidate: QCandidate) -> Self {
         Self {
             port,
             native_x_bits: candidate.native.x.to_bits(),
@@ -27,7 +27,7 @@ pub(super) struct NativeEndpointPointCache {
 }
 
 impl NativeEndpointPointCache {
-    pub(super) fn new(hash_state: ahash::RandomState) -> Self {
+    pub(super) const fn new(hash_state: ahash::RandomState) -> Self {
         Self {
             points: HashMap::with_hasher(hash_state),
         }
@@ -74,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_candidate_identity_reuses_admitted_and_rejected_points() -> Result<()> {
+    fn repeated_candidate_identity_reuses_admitted_and_rejected_points() {
         let mut cache = NativeEndpointPointCache::new(ahash::RandomState::with_seeds(1, 2, 3, 4));
         let candidate = QCandidate {
             native: XY::new(12.5, 3.25),
@@ -88,35 +88,42 @@ mod tests {
             ExactRational::from_f64(3.25),
         );
 
-        let admitted = cache.get_or_compute(key, &mut work, |work| {
-            computations += 1;
-            work.charge(3)?;
-            Ok(Some(expected.clone()))
-        })?;
+        let admitted = cache
+            .get_or_compute(key, &mut work, |work| {
+                computations += 1;
+                work.charge(3)?;
+                Ok(Some(expected.clone()))
+            })
+            .expect("first admitted point lookup should succeed");
         assert_eq!(admitted, Some(&expected));
-        let admitted_again = cache.get_or_compute(key, &mut work, |work| {
-            computations += 1;
-            work.charge(3)?;
-            Ok(Some(expected.clone()))
-        })?;
+        let admitted_again = cache
+            .get_or_compute(key, &mut work, |work| {
+                computations += 1;
+                work.charge(3)?;
+                Ok(Some(expected.clone()))
+            })
+            .expect("repeated admitted point lookup should succeed");
         assert_eq!(admitted_again, Some(&expected));
 
         let rejected_key = NativeEndpointPointKey { periods: 3, ..key };
-        let rejected = cache.get_or_compute(rejected_key, &mut work, |work| {
-            computations += 1;
-            work.charge(2)?;
-            Ok(None)
-        })?;
+        let rejected = cache
+            .get_or_compute(rejected_key, &mut work, |work| {
+                computations += 1;
+                work.charge(2)?;
+                Ok(None)
+            })
+            .expect("first rejected point lookup should succeed");
         assert_eq!(rejected, None);
-        let rejected_again = cache.get_or_compute(rejected_key, &mut work, |work| {
-            computations += 1;
-            work.charge(2)?;
-            Ok(None)
-        })?;
+        let rejected_again = cache
+            .get_or_compute(rejected_key, &mut work, |work| {
+                computations += 1;
+                work.charge(2)?;
+                Ok(None)
+            })
+            .expect("repeated rejected point lookup should succeed");
         assert_eq!(rejected_again, None);
 
         assert_eq!(computations, 2);
         assert_eq!(work.0, 9);
-        Ok(())
     }
 }

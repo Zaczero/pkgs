@@ -688,7 +688,7 @@ impl EvaluationBudget {
         BASE_EVALUATION_LIMIT
             .checked_add(per_node)
             .and_then(|limit| limit.checked_add(per_leaf))
-            .ok_or(ResourceError::SizeOverflow.into())
+            .ok_or_else(|| ResourceError::SizeOverflow.into())
     }
 
     #[cfg(test)]
