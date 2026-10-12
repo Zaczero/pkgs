@@ -1994,16 +1994,13 @@ mod tests {
                 spent: 0,
                 attempts: Vec::new(),
             };
-            let result = (|| {
-                let mut builder = TraceRowsBuilder::new(&mut work).unwrap();
-                builder
-                    .push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)
-                    .unwrap();
+            let mut builder = TraceRowsBuilder::new(&mut work).unwrap();
+            let Err(error) =
+                builder.push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)
+            else {
                 progress.set(1);
-                Ok(())
-            })();
-            let error =
-                result.expect_err("sample row storage and offset must be paid before append");
+                panic!("sample row storage and offset must be paid before append");
+            };
             assert_work_limit(&error);
             assert_eq!(progress.get(), 0);
             let refusal = work
