@@ -509,11 +509,7 @@ impl PyGeometryArray {
         }
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = resolver.resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-        let source_crs = if matches!(resolver, crate::dispatch::MetricResolver::None) {
-            None
-        } else {
-            self.frame.crs_str().map(str::to_owned)
-        };
+        let source_crs = self.frame.crs_owned();
         self.map_shapes_detached(py, move |shape| {
             let metric_access = || {
                 metric
@@ -526,37 +522,35 @@ impl PyGeometryArray {
                     })
             };
             let source_axes = shape.axes();
-            let source_context = if source_axes.has_z() || source_axes.has_m() {
+            let source_capture = if domain.is_geographic()
+                && (source_axes.has_z() || source_axes.has_m())
+            {
                 #[cfg(test)]
                 crate::geometry::record_root_work(crate::geometry::RootWorkEvent::SourceContextSetup);
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access))
+                crate::geometry::SourceArcCapture::with_context(
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                )
             } else {
-                crate::geometry::SourceArcContext::new(domain, None)
+                crate::geometry::SourceArcCapture::none()
             };
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain
                 && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
                 && PointSelectionChart::accepts_point_set(shape)
                 && let Some(hull) =
-                    point_set_convex_hull_shape(shape, frame, shape.bounds(), &source_context)?
+                    point_set_convex_hull_shape(shape, frame, shape.bounds(), &source_capture)?
             {
                 return Ok(hull);
             }
             let hull = shape.convex_hull()?;
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),
-                crate::geometry::TopologyDomain::Geographic(frame)
-                    if hull.axes().has_z() || hull.axes().has_m() =>
-                {
-                    crate::geometry::publish_raw_computed_shape_with_context(
+                crate::geometry::TopologyDomain::Geographic(frame) =>
+                    crate::geometry::publish_raw_computed_shape_with_capture(
                         &hull,
                         frame,
                         "convex_hull",
-                        &source_context,
-                    )
-                },
-                crate::geometry::TopologyDomain::Geographic(frame) => {
-                    crate::geometry::publish_raw_computed_shape(&hull, frame, "convex_hull")
-                },
+                        &source_capture,
+                    ),
             }
         })
     }

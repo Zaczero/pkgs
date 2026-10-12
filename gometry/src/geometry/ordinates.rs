@@ -76,16 +76,24 @@ impl<M: ChartMetric> Clone for SourceArcCapture<'_, '_, M> {
 }
 
 impl<'access, 'metric, M: ChartMetric> SourceArcCapture<'access, 'metric, M> {
+    pub(crate) const fn none() -> Self {
+        Self { context: None }
+    }
+
+    pub(crate) const fn with_context(context: SourceArcContext<'access, 'metric, M>) -> Self {
+        Self {
+            context: Some(context),
+        }
+    }
+
     pub(crate) const fn for_output_axes(
         output_axes: CoordinateAxes,
         context: SourceArcContext<'access, 'metric, M>,
     ) -> Self {
-        Self {
-            context: if output_axes.has_z() || output_axes.has_m() {
-                Some(context)
-            } else {
-                None
-            },
+        if output_axes.has_z() || output_axes.has_m() {
+            Self::with_context(context)
+        } else {
+            Self::none()
         }
     }
 

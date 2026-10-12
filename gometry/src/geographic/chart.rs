@@ -323,7 +323,7 @@ pub(crate) fn point_set_convex_hull_shape(
     shape: &Shape,
     frame: GeographicFrame,
     raw_extrema: Option<Bounds>,
-    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_capture: &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Option<Shape>> {
     let Some(chain) = point_set_convex_hull(shape, frame, raw_extrema)? else {
         return Ok(None);
@@ -332,7 +332,7 @@ pub(crate) fn point_set_convex_hull_shape(
         chain,
         frame,
         "convex_hull",
-        source_context,
+        source_capture,
     )?))
 }
 
@@ -340,14 +340,14 @@ pub(crate) fn point_set_minimum_rotated_rectangle_shape(
     shape: &Shape,
     frame: GeographicFrame,
     raw_extrema: Option<Bounds>,
-    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_capture: &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Option<Shape>> {
     let Some(rectangle) = point_set_minimum_rotated_rectangle(shape, frame, raw_extrema)? else {
         return Ok(None);
     };
     let shape = match rectangle {
         ChartedPointRectangle::Source(chain) => {
-            publish_charted_point_chain(chain, frame, "minimum_rotated_rectangle", source_context)?
+            publish_charted_point_chain(chain, frame, "minimum_rotated_rectangle", source_capture)?
         },
         // `minimum_area_rectangle_chart` has already used the shared publisher
         // and certified its actual emitted boundary.
@@ -363,7 +363,7 @@ fn publish_charted_point_chain(
     chain: ChartedPointChain,
     frame: GeographicFrame,
     operation: &'static str,
-    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_capture: &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Shape> {
     match chain {
         ChartedPointChain::SourcePoint(point) => Ok(Shape::Point(point)),
@@ -381,11 +381,7 @@ fn publish_charted_point_chain(
                         .expect("each selected source edge has one retained relation"),
                 ))
             };
-            let capture = crate::geometry::SourceArcCapture::for_output_axes(
-                coordinates.axes(),
-                *source_context,
-            );
-            let published = match capture.context() {
+            let published = match source_capture.context() {
                 Some(source_context) => crate::geometry::publish_native_computed_chain(
                     frame,
                     &coordinates,
@@ -497,7 +493,8 @@ mod tests {
     use crate::geographic::{AngularFactor, ChartPole, GeographicFrame};
     use crate::geometry::{
         Bounds, ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point,
-        PointSetCenter, Polygon, Ring, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
+        PointSetCenter, Polygon, Ring, Shape, SourceArcCapture, SourceArcContext, TopologyDomain,
+        ZOrdinate,
     };
 
     fn point(x: f64, y: f64) -> Point {
@@ -909,9 +906,11 @@ mod tests {
             CoordinateAxes::XYZM,
         );
         let metric_access = || Ok(&metric);
-        let source_context =
-            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
-        let output = point_set_convex_hull_shape(&shape, frame, shape.bounds(), &source_context)
+        let source_capture = SourceArcCapture::with_context(SourceArcContext::new(
+            TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        ));
+        let output = point_set_convex_hull_shape(&shape, frame, shape.bounds(), &source_capture)
             .unwrap()
             .unwrap();
         let Shape::Polygon(polygon) = output else {

@@ -330,17 +330,20 @@ pub(crate) struct CachelessRowContext<'a> {
 }
 
 impl CachelessRowContext<'_> {
-    pub(crate) fn with_source_arc_context_for_axes<T>(
+    pub(crate) fn with_source_arc_capture_for_axes<T>(
         &self,
         output_axes: crate::geometry::CoordinateAxes,
         publish: impl FnOnce(
-            &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+            &crate::geometry::SourceArcCapture<'_, '_, crate::crs::GeodesicMetric>,
         ) -> crate::error::Result<T>,
     ) -> crate::error::Result<T> {
-        if output_axes.has_z() || output_axes.has_m() {
-            self.with_source_arc_context(publish)
+        if self.domain.is_geographic() && (output_axes.has_z() || output_axes.has_m()) {
+            self.with_source_arc_context(|source_context| {
+                let capture = crate::geometry::SourceArcCapture::with_context(*source_context);
+                publish(&capture)
+            })
         } else {
-            publish(&crate::geometry::SourceArcContext::new(self.domain, None))
+            publish(&crate::geometry::SourceArcCapture::none())
         }
     }
 
