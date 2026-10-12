@@ -732,10 +732,6 @@ fn shoot_left_with_status<
 
 /// The first item that is not left of the probe, for items ordered so that
 /// `left` holds on a prefix.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "binary-search middle is strictly below high, which starts at items.len()"
-)]
 #[cfg(test)]
 fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(items: &[T], mut left: L) -> Result<usize> {
     let mut work = Unmetered;

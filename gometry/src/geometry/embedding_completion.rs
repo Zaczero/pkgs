@@ -9,7 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
-use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::arrangement::{
+    IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
+};
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
     CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
     graph_global_faces_with_work,
@@ -17,7 +20,8 @@ use crate::geometry::overlay::{
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
-    ExactChartPoint, exact_segments_intersect, vector_cross, vector_difference,
+    ExactChartPoint, exact_segments_intersect, point_on_exact_segment, vector_cross,
+    vector_difference,
 };
 use crate::geometry::{
     Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Work, XY,
@@ -59,7 +63,10 @@ impl ExactPoints {
 
 impl RayPoints for ExactPoints {
     fn rounded(&self, index: u32) -> XY {
-        self.rounded[index as usize]
+        self.rounded
+            .get(index as usize)
+            .copied()
+            .expect("graph point IDs belong to the admitted point table")
     }
 
     fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
@@ -77,12 +84,7 @@ impl RayPoints for ExactPoints {
         }
     }
 
-    fn orientation(
-        &self,
-        a: u32,
-        b: u32,
-        c: u32,
-    ) -> Result<crate::geometry::exact_arith::ExactSign> {
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
         let a = self
             .exact
             .get(a as usize)
@@ -332,7 +334,7 @@ pub(super) struct ShapeLiteralLayout<I> {
 impl<I> ShapeLiteralLayout<I> {
     pub(super) fn in_output_order(
         self,
-        order: CertifiedOverlayOrder,
+        order: &CertifiedOverlayOrder,
         work: &mut impl Work,
     ) -> Result<Self> {
         Ok(Self {
@@ -343,7 +345,11 @@ impl<I> ShapeLiteralLayout<I> {
     }
 }
 
-fn reorder_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Result<Vec<T>> {
+pub(super) fn reorder_rows<T>(
+    rows: Vec<T>,
+    order: &[usize],
+    work: &mut impl Work,
+) -> Result<Vec<T>> {
     if rows.len() != order.len() {
         return Err(
             GeometryErrorKind::Invalid("literal output order omits a physical row".into()).into(),
@@ -748,12 +754,7 @@ pub(super) fn admit_known_graph(
         .into());
     }
     let (topology, edge_of_slot) = indexed_topology(&points, &edge_nodes, work)?;
-    let edge_slots = crate::geometry::arrangement::indexed_edge_slots_with_work(
-        &edge_nodes,
-        &topology,
-        &edge_of_slot,
-        work,
-    )?;
+    let edge_slots = indexed_edge_slots_with_work(&edge_nodes, &topology, &edge_of_slot, work)?;
     Ok(AdmittedGraph {
         points,
         edge_nodes,
@@ -1004,7 +1005,7 @@ fn indexed_topology(
     edge_nodes: &[[u32; 2]],
     work: &mut impl Work,
 ) -> Result<(IndexedTopology, Vec<u32>)> {
-    crate::geometry::arrangement::indexed_topology_from_edges_with_work(
+    indexed_topology_from_edges_with_work(
         points.exact.len(),
         edge_nodes,
         work,
@@ -1171,13 +1172,17 @@ fn stable_wall_face_keys(
     stable_edge_ids: &[u32],
     work: &mut impl Work,
 ) -> Result<(Vec<Vec<u32>>, Vec<u32>)> {
-    if topology.face_starts.is_empty() || faces.walk_faces.len() + 1 != topology.face_starts.len() {
+    let walk_count = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
+        GeometryErrorKind::Invalid(
+            "stable areal wall correspondence has inconsistent face tables".into(),
+        )
+    })?;
+    if faces.walk_faces.len() != walk_count {
         return Err(GeometryErrorKind::Invalid(
             "stable areal wall correspondence has inconsistent face tables".into(),
         )
         .into());
     }
-    let walk_count = topology.face_starts.len() - 1;
     let face_count = usize::try_from(faces.count).map_err(|_| ResourceError::SizeOverflow)?;
     work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut face_keys = vec![Vec::<u32>::new(); face_count];
@@ -1186,8 +1191,9 @@ fn stable_wall_face_keys(
             *topology.face_starts.get(walk).ok_or_else(|| {
                 GeometryErrorKind::Invalid("stable face walk start is missing".into())
             })? as usize;
+        let next_walk = walk.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         let end =
-            *topology.face_starts.get(walk + 1).ok_or_else(|| {
+            *topology.face_starts.get(next_walk).ok_or_else(|| {
                 GeometryErrorKind::Invalid("stable face walk end is missing".into())
             })? as usize;
         let slots = topology.face_slots.get(start..end).ok_or_else(|| {
@@ -1341,12 +1347,11 @@ fn build_areal_signature(
     work: &mut impl Work,
 ) -> Result<ArealSignature> {
     let all_atoms_are_walls = wall_covers_graph(wall_atom_ids, graph.edge_nodes.len());
-    let mut projected_edges = Vec::new();
-    let mut projected_topology = None;
-    let mut projected_edge_of_slot = Vec::new();
-    if !all_atoms_are_walls {
+    let (projected_edges, projected_topology, projected_edge_of_slot) = if all_atoms_are_walls {
+        (Vec::new(), None, Vec::new())
+    } else {
         work.charge(u64::try_from(wall_atom_ids.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        projected_edges.reserve(wall_atom_ids.len());
+        let mut projected_edges = Vec::with_capacity(wall_atom_ids.len());
         for &atom in wall_atom_ids {
             work.charge(1)?;
             projected_edges.push(*graph.edge_nodes.get(atom as usize).ok_or_else(|| {
@@ -1354,9 +1359,8 @@ fn build_areal_signature(
             })?);
         }
         let (topology, edge_of_slot) = indexed_topology(points, &projected_edges, work)?;
-        projected_topology = Some(topology);
-        projected_edge_of_slot = edge_of_slot;
-    }
+        (projected_edges, Some(topology), edge_of_slot)
+    };
     let (wall_edges, wall_topology, wall_edge_of_slot) = if all_atoms_are_walls {
         (
             graph.edge_nodes.as_slice(),
@@ -1510,14 +1514,11 @@ fn point_edge_contacts_preserved(
                 if let Err(error) = work.charge(1) {
                     return ControlFlow::Break(Err(error));
                 }
-                let vertex = match isolated_vertices.get(point_index).copied() {
-                    Some(vertex) => vertex,
-                    None => {
-                        return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
-                            "point-contact sweep returned an unknown point".into(),
-                        )
-                        .into()));
-                    },
+                let Some(vertex) = isolated_vertices.get(point_index).copied() else {
+                    return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                        "point-contact sweep returned an unknown point".into(),
+                    )
+                    .into()));
                 };
                 let [start, end] = match edge_nodes.get(edge_index) {
                     Some(edge) => *edge,
@@ -1538,7 +1539,7 @@ fn point_edge_contacts_preserved(
                     )
                     .into()));
                 };
-                match crate::geometry::topology::point_on_exact_segment(point, start, end) {
+                match point_on_exact_segment(point, start, end) {
                     Ok(false) => ControlFlow::Continue(()),
                     Ok(true) => {
                         if let Err(error) = work.charge(1) {
@@ -1656,16 +1657,12 @@ fn edges_have_only_vertex_contacts(
                         .into()));
                     };
                     match (
-                        crate::geometry::topology::point_on_exact_segment(
+                        point_on_exact_segment(
                             left_other_point,
                             right_start_point,
                             right_end_point,
                         ),
-                        crate::geometry::topology::point_on_exact_segment(
-                            right_other_point,
-                            left_start_point,
-                            left_end_point,
-                        ),
+                        point_on_exact_segment(right_other_point, left_start_point, left_end_point),
                     ) {
                         (Ok(false), Ok(false)) => ControlFlow::Continue(()),
                         (Ok(_), Ok(_)) => {
@@ -1774,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_overlapping_logical_rings_bind_across_wall_faces() -> Result<()> {
+    fn independent_overlapping_logical_rings_bind_across_wall_faces() {
         let coordinates = [
             (0.0, 0.0),
             (2.0, 0.0),
@@ -1808,7 +1805,8 @@ mod tests {
             [1, 8],
         ];
         let mut work = Unmetered;
-        let graph = admit_known_graph(points(&coordinates), atoms, (0..12).collect(), &mut work)?;
+        let graph =
+            admit_known_graph(points(&coordinates), atoms, (0..12).collect(), &mut work).unwrap();
         let layout = admit_logical_layout(
             &graph,
             vec![
@@ -1825,7 +1823,8 @@ mod tests {
             ],
             None,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(
             layout
                 .areal
@@ -1835,13 +1834,17 @@ mod tests {
             "the wall arrangement has Exterior and five bounded faces"
         );
         assert!(
-            admit_candidate(&graph, &layout, &graph.points, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &graph.points, &[], &mut work)
+                .unwrap()
+                .is_some(),
             "the unchanged noded reference must admit both complete ring walks"
         );
 
         let affine = points(&coordinates.map(|(x, y)| (x + y, y)));
         assert!(
-            admit_candidate(&graph, &layout, &affine, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &affine, &[], &mut work)
+                .unwrap()
+                .is_some(),
             "an exact orientation-preserving affine image keeps the same wall correspondence"
         );
 
@@ -1858,18 +1861,24 @@ mod tests {
                             crate::geometry::GeometryErrorKind::Invalid(
                                 "overlapping collection ring vertex is unknown".into(),
                             )
-                        })?;
+                        })
+                        .unwrap();
                     Ok(Point::new_raw_xy(xy.x, xy.y))
                 })
-                .collect::<Result<Vec<_>>>()?;
-            Ring::try_from_closed(CoordSeq::try_from_points(&records)?)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            Ring::try_from_closed(CoordSeq::try_from_points(&records).unwrap())
         };
         let left_vertices = [0, 1, 2, 3, 4, 5, 6, 7, 0];
         let right_vertices = [8, 9, 2, 5, 10, 11, 6, 1, 8];
         let sink = Shape::geometry_collection(vec![
-            Shape::Polygon(Polygon::new(make_ring(&left_vertices)?, Vec::new())),
-            Shape::Polygon(Polygon::new(make_ring(&right_vertices)?, Vec::new())),
-        ])?;
+            Shape::Polygon(Polygon::new(make_ring(&left_vertices).unwrap(), Vec::new())),
+            Shape::Polygon(Polygon::new(
+                make_ring(&right_vertices).unwrap(),
+                Vec::new(),
+            )),
+        ])
+        .unwrap();
         let literal_layout = ShapeLiteralLayout {
             points: Vec::new(),
             lines: Vec::new(),
@@ -1903,10 +1912,10 @@ mod tests {
                 &mut IdentityLiteralChart,
                 &images,
                 &mut work,
-            )?,
+            )
+            .unwrap(),
             LiteralCheck::Pass(_)
         ));
-        Ok(())
     }
 
     #[test]
