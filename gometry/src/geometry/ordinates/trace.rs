@@ -1508,11 +1508,8 @@ mod tests {
                 attempts: Vec::new(),
             };
             let mut records = Vec::new();
-            let error = match push_unique_root_request(&mut records, &request, &mut work) {
-                Err(error) => error,
-                Ok(_) => {
-                    panic!("request capacity and parameter payload must be paid before insert")
-                },
+            let Err(error) = push_unique_root_request(&mut records, &request, &mut work) else {
+                panic!("request capacity and parameter payload must be paid before insert");
             };
             assert_work_limit(&error);
             assert!(records.is_empty());
@@ -1598,11 +1595,10 @@ mod tests {
             spent: 0,
             attempts: Vec::new(),
         };
-        let error = match resolve_request_rows::<crate::crs::GeodesicMetric, _>(
-            &rows, &roots, None, &mut work,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("root state allocation must be paid before ordinate resolution"),
+        let Err(error) =
+            resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)
+        else {
+            panic!("root state allocation must be paid before ordinate resolution");
         };
         assert_work_limit(&error);
         assert_eq!(progress.get(), 0);
@@ -1659,11 +1655,10 @@ mod tests {
             spent: 0,
             attempts: Vec::new(),
         };
-        let error = match resolve_request_rows::<crate::crs::GeodesicMetric, _>(
-            &rows, &roots, None, &mut work,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("request-table storage refusal must precede the first ordinate call"),
+        let Err(error) =
+            resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)
+        else {
+            panic!("request-table storage refusal must precede the first ordinate call");
         };
         assert_work_limit(&error);
         assert_eq!(progress.get(), 0);
@@ -1874,9 +1869,8 @@ mod tests {
             spent: 0,
             attempts: Vec::new(),
         };
-        let error = match rows.try_clone_with_work(&mut work) {
-            Err(error) => error,
-            Ok(_) => panic!("exact root-range copies must be paid before clone completion"),
+        let Err(error) = rows.try_clone_with_work(&mut work) else {
+            panic!("exact root-range copies must be paid before clone completion");
         };
         assert_work_limit(&error);
         assert_eq!(progress.get(), 0);

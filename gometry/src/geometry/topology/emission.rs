@@ -4458,7 +4458,7 @@ mod tests {
                 spent: 0,
                 charges: Vec::new(),
             };
-            let error = match resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
+            let Err(error) = resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
                 &plan,
                 &publication,
                 &[],
@@ -4468,11 +4468,8 @@ mod tests {
                 EMISSION_STORAGE_OPERATION,
                 None,
                 &mut work,
-            ) {
-                Err(error) => error,
-                Ok(_) => {
-                    panic!("Native ordinate row and port storage must be paid before progress")
-                },
+            ) else {
+                panic!("Native ordinate row and port storage must be paid before progress");
             };
             assert_emission_work_limit(&error);
             assert_eq!(progress.get(), target.progress);
@@ -4534,9 +4531,8 @@ mod tests {
             spent: 0,
             charges: Vec::new(),
         };
-        let error = match native_source_sample_occurrences(None, &requests, &mut work) {
-            Err(error) => error,
-            Ok(_) => panic!("source occurrence storage must be paid before copying requests"),
+        let Err(error) = native_source_sample_occurrences(None, &requests, &mut work) else {
+            panic!("source occurrence storage must be paid before copying requests");
         };
         assert_emission_work_limit(&error);
         assert_eq!(progress.get(), 0);
@@ -4637,11 +4633,8 @@ mod tests {
             spent: 0,
             charges: Vec::new(),
         };
-        let error = match port.try_clone_with_work(&mut work) {
-            Err(error) => error,
-            Ok(_) => {
-                panic!("Native source-root parameter limbs must be paid before clone completion")
-            },
+        let Err(error) = port.try_clone_with_work(&mut work) else {
+            panic!("Native source-root parameter limbs must be paid before clone completion");
         };
         assert_emission_work_limit(&error);
         assert_eq!(progress.get(), 0);

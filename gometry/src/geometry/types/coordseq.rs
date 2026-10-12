@@ -1164,7 +1164,7 @@ mod work_funded_constructor_tests {
         let reads = std::cell::Cell::new(0);
         let mut work = RecordingWork::with_remaining(0).unwrap();
 
-        let error = match copy_point_column(
+        let Err(error) = copy_point_column(
             &points,
             &mut output,
             |point| {
@@ -1172,11 +1172,8 @@ mod work_funded_constructor_tests {
                 point.x
             },
             &mut work,
-        ) {
-            Ok(()) => {
-                panic!("coordinate column copied without work allowance");
-            },
-            Err(error) => error,
+        ) else {
+            panic!("coordinate column copied without work allowance");
         };
 
         assert!(search_limit(&error));
@@ -1191,11 +1188,8 @@ mod work_funded_constructor_tests {
         let values = [1.0, f64::NAN];
         let mut work = RecordingWork::with_remaining(0).unwrap();
 
-        let error = match point_column_all_finite(&values, &mut work) {
-            Ok(_) => {
-                panic!("coordinate column was scanned without work allowance");
-            },
-            Err(error) => error,
+        let Err(error) = point_column_all_finite(&values, &mut work) else {
+            panic!("coordinate column was scanned without work allowance");
         };
 
         assert!(search_limit(&error));
