@@ -130,7 +130,7 @@ impl GeographicCoverageAnalysis {
         let mut face_owners = vec![None; self.face_rows.len()];
         let mut gap_assignments = vec![false; self.face_rows.len()];
         for (face, occupants) in self.face_rows.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let owner = match occupants.as_slice() {
                 [] if gap_width > 0.0 => {
                     let metric = metrics
@@ -197,7 +197,9 @@ fn q_face_metrics(
     work: &mut impl Work,
 ) -> Result<Vec<QFaceMetrics>> {
     let q = &topology.q;
-    work.charge(u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut metrics = std::iter::repeat_with(|| {
         Ok(QFaceMetrics {
             area: ExactRationalArea::new(),
@@ -230,7 +232,7 @@ fn q_face_metrics(
     }
 
     for (span_index, face_pair) in q.span_global_faces.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if q.span_is_collapsed_pole(span_index)? {
             continue;
         }
@@ -248,7 +250,7 @@ fn q_face_metrics(
             .ok_or_else(|| GeometryErrorKind::Invalid("coverage face span has no Q dart".into()))?;
         let backward = QDartId(forward.0 ^ 1);
         for (face, dart_id) in [(*left, forward), (*right, backward)] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let metric = metrics.get_mut(face.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage face references an unknown Q face".into())
             })?;
@@ -270,7 +272,7 @@ fn q_face_metrics(
             for &row in span_rows.get(span_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage face span has no source rows".into())
             })? {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 metric
                     .border_lengths
                     .entry(row)
@@ -304,7 +306,7 @@ fn q_face_metrics(
             let mut cycle_end_y = None;
             let mut current = seed;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let slot = visited.get_mut(current.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("coverage face dart is out of range".into())
                 })?;
@@ -440,7 +442,7 @@ fn add_cross_coordinates(
     end_y: &ExactRational,
     work: &mut impl Work,
 ) -> Result<()> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let numerator = start_x
         .try_product_with_work(end_y, work)?
         .try_subtract_with_work(&start_y.try_product_with_work(end_x, work)?, work)?;
@@ -508,7 +510,7 @@ fn next_face_boundary_dart(
         .chain(before_twin.iter().rev().copied())
         .chain(after_twin.iter().rev().copied())
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let right = QDartId(candidate.0 ^ 1);
         if face_of_dart(topology, candidate)? == face && face_of_dart(topology, right)? != face {
             return Ok(candidate);
@@ -617,7 +619,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
 
     let mut views = Vec::with_capacity(rows.len());
     for row in rows {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let shape = row.borrow();
         let view = ScalarGeographicView::try_new(frame, shape)
             .map_err(|diagnostic| geographic_admission_error(&diagnostic))?;
@@ -648,7 +650,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
     let source_edges = &topology.sources.edges;
     let mut locations = Vec::with_capacity(source_rows);
     for row in 0..source_rows {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let row = u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?;
         locations.push(row_locations(&topology, SourceRowId(row))?);
     }
@@ -665,7 +667,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         .collect();
 
     for (span_index, span) in topology.q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let start = topology
             .q
             .ports
@@ -682,7 +684,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         span_bounds.push(bounds);
         let [first_node, _] = span.nodes;
         for (endpoint, node) in span.nodes.into_iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if endpoint == 1 && first_node == node {
                 continue;
             }
@@ -697,7 +699,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         let mut rows_on_span = Vec::with_capacity(span.owners.len());
         let mut edges_on_span = Vec::with_capacity(span.owners.len());
         for owner in &span.owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge_index = owner.source_edge.0 as usize;
             let edge = source_edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage Q span has an unknown source edge".into())
@@ -707,7 +709,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             edges_on_span.push(edge_index);
 
             for (endpoint, node) in span.nodes.into_iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let node = node.0 as usize;
                 let parameter = if (endpoint == 0) == owner.reversed {
                     &owner.source_range.end
@@ -735,7 +737,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         edges_on_span.sort_unstable();
         edges_on_span.dedup();
         for &row in &rows_on_span {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let count = row_span_counts.get_mut(row).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage Q row is out of range".into())
             })?;
@@ -752,7 +754,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         }
         for left in 0..rows_on_span.len() {
             for right in left.wrapping_add(1)..rows_on_span.len() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let pair = (
                     *rows_on_span
                         .get(left)
@@ -777,7 +779,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         reason = "hash order only populates a membership set that is queried by key"
     )]
     for (pair, shared_count) in shared_span_counts {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let (left, right) = pair;
         if shared_count != 0
             && row_span_counts.get(left) == Some(&shared_count)
@@ -787,14 +789,14 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         }
     }
 
-    work.charge_product(row_bounds.len(), 1)?;
-    work.charge_product(span_bounds.len(), 1)?;
+    work.charge_product_into_error(row_bounds.len(), 1)?;
+    work.charge_product_into_error(span_bounds.len(), 1)?;
     let row_index = build_row_index(&row_bounds);
     let span_index = build_span_index(&span_bounds);
     let mut invalid_edges = vec![false; source_edges.len()];
 
     for (span_index, rows_on_span) in span_rows.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if rows_on_span.is_empty() {
             continue;
         }
@@ -803,10 +805,10 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             .expect("coverage Q span has a retained chart envelope");
         let query = AABB::from_bounds(bounds.min, bounds.max);
         for candidate in row_index.locate_in_envelope_intersecting(query) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let candidate_row = candidate.data;
             for &source_row in rows_on_span {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if source_row == candidate_row {
                     continue;
                 }
@@ -867,7 +869,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
 
     let mut output = vec![Vec::new(); source_rows];
     for (edge_index, edge) in source_edges.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !invalid_edges
             .get(edge_index)
             .copied()
@@ -946,7 +948,7 @@ fn expand_winding_row_bounds(
     let full_latitude = [south_pole.min(north_pole), south_pole.max(north_pole)];
 
     for ring in &topology.sources.rings {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if ring.summary.chart_turn == 0
             && !matches!(
                 ring.summary.domain,
@@ -993,7 +995,7 @@ fn mark_edges(
         GeometryErrorKind::Invalid("coverage Q span edge map is incomplete".into())
     })?;
     for &edge in edges {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let source = source_edges.get(edge).ok_or_else(|| {
             GeometryErrorKind::Invalid("coverage source edge is out of range".into())
         })?;
@@ -1016,13 +1018,13 @@ fn mark_t_junction_edges(
     work: &mut impl Work,
 ) -> Result<()> {
     for (node, events) in node_edges.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some(incident) = incident_spans.get(node) else {
             continue;
         };
         for (left_index, left) in events.iter().enumerate() {
             for right in events.iter().skip(left_index.wrapping_add(1)) {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if left.row == right.row
                     || !(left.interior || right.interior)
                     || shared_incident_span_count(incident, span_rows, left.row, right.row, work)?
@@ -1051,7 +1053,7 @@ fn shared_incident_span_count(
 ) -> Result<usize> {
     let mut count = 0_usize;
     for &span in incident {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if span_rows.get(span).is_some_and(|rows| {
             rows.binary_search(&left).is_ok() && rows.binary_search(&right).is_ok()
         }) {
@@ -1083,7 +1085,7 @@ fn mark_near_gap_edges(
     ];
 
     for (query_index, rows_on_query) in span_rows.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let ordinary_shared = rows_on_query.len() == 2
             && rows_on_query
                 .first()
@@ -1097,7 +1099,7 @@ fn mark_near_gap_edges(
             .ok_or_else(|| GeometryErrorKind::Invalid("coverage gap span has no bounds".into()))?;
         let query_segment = exact_span(topology, query_index)?;
         for (shift_f64, shift) in &shifts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let query = AABB::from_bounds(
                 [
                     bounds.min[0] + *shift_f64 - gap_width,
@@ -1109,7 +1111,7 @@ fn mark_near_gap_edges(
                 ],
             );
             for candidate in span_index.locate_in_envelope_intersecting(query) {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let candidate_index = candidate.data;
                 if candidate_index == query_index {
                     continue;
@@ -1122,7 +1124,7 @@ fn mark_near_gap_edges(
                 }
                 let mut near_other_row = false;
                 for &source_row in rows_on_query {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if candidate_rows
                         .iter()
                         .any(|&candidate_row| candidate_row != source_row)
@@ -1144,7 +1146,7 @@ fn mark_near_gap_edges(
                             "coverage gap span edge map is incomplete".into(),
                         )
                     })? {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         *invalid_edges.get_mut(edge).ok_or_else(|| {
                             GeometryErrorKind::Invalid(
                                 "coverage gap source edge is out of range".into(),

@@ -114,7 +114,7 @@ impl GeographicCoverageAnalysis {
         let period = ExactRational::from_f64(topology.sources.frame.longitude().period());
 
         for (chain_index, chain) in inventory.chains.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             guard.begin_chain(chain_index, work)?;
             let mut canonical_sequence: Option<GeographicChainSequence> = None;
             let mut row_use_span_lifts = Vec::with_capacity(chain.row_uses.len());
@@ -125,14 +125,14 @@ impl GeographicCoverageAnalysis {
                     align_chain_sequence(&mut sequence, canonical, &period, work)?;
                     chain_sequences_match(canonical, &sequence, work)?;
                 }
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(sequence.span_lifts.len())
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 row_use_span_lifts.push(sequence.span_lifts.clone());
                 let mut longitudes = Vec::with_capacity(sequence.points.len());
                 for point in &sequence.points {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     longitudes.push(point.x.round_with_work(work)?);
                 }
                 longitude_columns.push(longitudes);
@@ -154,7 +154,9 @@ impl GeographicCoverageAnalysis {
                 .collect::<Vec<_>>();
 
             let kept = if !simplify_boundary && !shared {
-                work.charge(u64::try_from(xy.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+                work.charge_into_error(
+                    u64::try_from(xy.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
                 (0..xy.len()).collect()
             } else {
                 let mut generated_edges = vec![None; xy.len()];
@@ -233,7 +235,7 @@ fn representative_root_indices(
     let mut indices = Vec::with_capacity(span_count);
     let mut cursor = 0_usize;
     for span_index in 0..span_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let root_index = cursor;
         let root = row_use.root_uses.get(cursor).ok_or_else(|| {
             GeometryErrorKind::Invalid("geographic row use omits a chain span".into())
@@ -249,7 +251,7 @@ fn representative_root_indices(
             .get(cursor)
             .is_some_and(|root| root.chain_span_index == span_index)
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             cursor = cursor.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
         indices.push(root_index);
@@ -284,7 +286,7 @@ fn build_chain_sequence(
     let mut span_lifts = Vec::with_capacity(chain.spans.len());
 
     for (span_index, span) in chain.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let root_index = *roots.get(span_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("geographic chain has no representative source root".into())
         })?;
@@ -398,7 +400,7 @@ fn chain_sequences_match(
         .into());
     }
     for (left, right) in canonical.points.iter().zip(&other.points) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !left.same_position(right)? {
             return Err(GeometryErrorKind::Invalid(
                 "signed row uses disagree on the lifted geographic chain".into(),
@@ -412,7 +414,7 @@ fn chain_sequences_match(
 fn exact_points_to_xy(points: &[ExactChartPoint], work: &mut impl Work) -> Result<Vec<XY>> {
     let mut xy = Vec::with_capacity(points.len());
     for point in points {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         xy.push(XY::new(
             point.x.round_with_work(work)?,
             point.y.round_with_work(work)?,
@@ -424,7 +426,7 @@ fn exact_points_to_xy(points: &[ExactChartPoint], work: &mut impl Work) -> Resul
 fn chain_rows(uses: &[GeographicSharedChainUse], work: &mut impl Work) -> Result<Vec<SourceRowId>> {
     let mut rows = BTreeSet::new();
     for use_ in uses {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         rows.insert(use_.row);
     }
     Ok(rows.into_iter().collect())
@@ -442,13 +444,13 @@ fn compose_edge_uses(
     })?;
     let mut output = Vec::with_capacity(chain.row_uses.len());
     for (use_index, row_use) in chain.row_uses.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let span_lifts = row_use_span_lifts.get(use_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("geographic row-use lifts are incomplete".into())
         })?;
         let mut fragments = Vec::new();
         for (root_index, root_use) in row_use.root_uses.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !span_range.contains(&root_use.chain_span_index) {
                 continue;
             }
@@ -476,7 +478,7 @@ fn compose_edge_uses(
         let mut roots: Vec<GeographicComposedRoot> = Vec::new();
         let mut previous_span_by_root: Vec<usize> = Vec::new();
         for fragment in fragments {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let previous = roots.last_mut();
             let previous_span = previous_span_by_root.last_mut();
             let mut merged = false;
@@ -549,7 +551,7 @@ fn build_simplified_chain(
     })?;
     let mut vertices = Vec::with_capacity(kept.len());
     for &source_vertex_index in kept {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         vertices.push(GeographicSimplifiedVertex {
             source_vertex_index,
             node: *canonical.nodes.get(source_vertex_index).ok_or_else(|| {
@@ -569,7 +571,7 @@ fn build_simplified_chain(
     }
     let mut edges = Vec::with_capacity(kept.len().saturating_sub(1));
     for pair in kept.windows(2) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [from_vertex_index, to_vertex_index] = pair else {
             return Err(GeometryErrorKind::Invalid(
                 "simplified geographic edge has incomplete endpoints".into(),
@@ -640,7 +642,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
             .into_iter()
             .zip(&mut occupied_poles)
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let point = ExactChartPoint::from_rationals(
                 topology.q.cut.try_clone_with_work(work)?,
                 ExactRational::from_f64(frame.chart_pole_latitude(pole)),
@@ -677,7 +679,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
         self.current_chain_positions.clear();
         self.current_chain_index = Some(chain_index);
         for (position, span) in chain.spans.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self
                 .current_chain_positions
                 .insert(span.span.0 as usize, position)
@@ -825,7 +827,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
         }
         let charged_spans =
             u64::try_from(chain_spans.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        work.charge(
+        work.charge_into_error(
             charged_spans
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?,
@@ -968,7 +970,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
             .generated_index
             .locate_in_envelope_intersecting(envelope)
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let (edge_index, shift) = entry.data;
             if Some(edge_index) == left_generated || Some(edge_index) == right_generated {
                 continue;
@@ -1132,7 +1134,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
             .generated_index
             .locate_in_envelope_intersecting(envelope)
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let (edge_index, shift) = entry.data;
             if Some(edge_index) == left_generated || Some(edge_index) == right_generated {
                 continue;
@@ -1226,7 +1228,7 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
             if !occupied {
                 continue;
             }
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let pole_y = ExactRational::from_f64(
                 self.inventory
                     .topology
@@ -1328,7 +1330,7 @@ fn intersection_is_endpoint_only(
 ) -> Result<bool> {
     for candidate_index in 0..2 {
         for other_index in 0..2 {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if candidate_nodes.get(candidate_index) != other_nodes.get(other_index)
                 || !candidate
                     .get(candidate_index)
@@ -1451,7 +1453,7 @@ fn exact_triangle_bounds(
     let mut minimum_y = first.y.try_clone_with_work(work)?;
     let mut maximum_y = first.y.try_clone_with_work(work)?;
     for point in triangle.iter().skip(1) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if point.x.try_cmp_with_work(&minimum_x, work)?.is_lt() {
             minimum_x = point.x.try_clone_with_work(work)?;
         }

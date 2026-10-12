@@ -136,7 +136,9 @@ fn build_shared_chain_inventory<'q>(
     let topology = &analysis.topology;
     let q = &topology.q;
     let row_count = topology.sources.row_count;
-    work.charge(u64::try_from(analysis.face_rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(analysis.face_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     if !analysis.is_valid() || analysis.face_rows.len() != q.global_face_count {
         return Err(GeometryErrorKind::InvalidCoverage {
             operation: "coverage_simplify",
@@ -147,7 +149,7 @@ fn build_shared_chain_inventory<'q>(
     let mut face_owners = Vec::with_capacity(q.global_face_count);
     let mut selected_faces = Vec::with_capacity(q.global_face_count);
     for occupants in &analysis.face_rows {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         match occupants.as_slice() {
             [] => {
                 face_owners.push(None);
@@ -180,11 +182,11 @@ fn build_shared_chain_inventory<'q>(
     let mut local_uses = Vec::new();
     span_use_offsets.push(0);
     for (span_index, span) in q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         local_uses.clear();
         let faces = q.span_global_faces.get(span_index).copied().flatten();
         for (owner_index, owner) in span.owners.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let source = topology
                 .sources
                 .edges
@@ -254,7 +256,9 @@ fn build_shared_chain_inventory<'q>(
                 .then(left.boundary_forward.cmp(&right.boundary_forward))
                 .then(left.owner_index.cmp(&right.owner_index)))
         })?;
-        work.charge(u64::try_from(local_uses.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(local_uses.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         span_uses.append(&mut local_uses);
         span_use_offsets.push(span_uses.len());
     }
@@ -262,7 +266,7 @@ fn build_shared_chain_inventory<'q>(
     let (source_anchors, anchor_counts) = source_ring_anchors(topology, work)?;
     let mut pin_reasons = vec![0_u8; q.nodes.len()];
     for node in &q.nodes {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let node_index = node.id.0 as usize;
         if node.pole.is_some() {
             add_pin_reason(&mut pin_reasons, node_index, POLE_TRANSITION)?;
@@ -310,7 +314,7 @@ fn build_shared_chain_inventory<'q>(
         .collect::<Vec<_>>();
     let mut pinned_nodes = Vec::new();
     for (node_index, &reasons) in pin_reasons.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if reasons != 0 {
             pinned_nodes.push(GeographicPinnedChainNode {
                 node: QNodeId(u32::try_from(node_index).map_err(|_| ResourceError::SizeOverflow)?),
@@ -347,7 +351,7 @@ fn build_shared_chain_inventory<'q>(
         work,
     )?;
     for (span_index, offsets) in span_use_offsets.windows(2).enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [start, end] = offsets else {
             return Err(GeometryErrorKind::Invalid(
                 "Q chain span offset window is incomplete".into(),
@@ -377,7 +381,7 @@ fn source_ring_anchors(
     let mut anchors = Vec::new();
     let mut counts = vec![0_usize; topology.q.nodes.len()];
     for ring in &topology.sources.rings {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if ring.source_edges.is_empty() {
             continue;
         }
@@ -432,7 +436,7 @@ fn non_cut_port_count(
         .end
         .checked_sub(node.ports.start)
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let ports = topology
         .q
         .node_ports
@@ -474,7 +478,7 @@ fn incident_boundary_spans(
         .ok_or_else(|| GeometryErrorKind::Invalid("Q chain node fan is incomplete".into()))?;
     let mut spans = Vec::new();
     for &dart_id in fan {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q chain node fan has an unknown dart".into())
         })?;
@@ -540,7 +544,7 @@ fn span_signatures_continue(
         else {
             return Ok(first_cursor == first_uses.len() && second_cursor == second_uses.len());
         };
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if first.key != second.key {
             return Ok(false);
         }
@@ -555,7 +559,7 @@ fn span_signatures_continue(
             first_cursor = first_cursor
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
         }
         let mut second_outward = [0_usize; 2];
         while let Some(use_) = second_uses
@@ -570,7 +574,7 @@ fn span_signatures_continue(
             second_cursor = second_cursor
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
         }
         let [first_incoming, first_outgoing] = first_outward;
         let [second_incoming, second_outgoing] = second_outward;
@@ -689,7 +693,7 @@ fn walk_chain(
     let mut current_span = start_span;
     let mut from_node = start_node;
     loop {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let visited_slot = visited.get_mut(current_span).ok_or_else(|| {
             GeometryErrorKind::Invalid("shared-chain visited index is out of range".into())
         })?;
@@ -810,7 +814,7 @@ fn canonicalize_cycle(
         .len()
         .checked_add(reverse.len())
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(compare_work).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(compare_work).map_err(|_| ResourceError::SizeOverflow)?)?;
     if compare_chain_span_order(&reverse, &chain).is_lt() {
         Ok(reverse)
     } else {
@@ -828,7 +832,7 @@ fn chain_row_uses(
     for (chain_span_index, chain_span) in chain_spans.iter().enumerate() {
         let span_index = chain_span.span.0 as usize;
         for use_ in span_use_range(span_index, offsets, span_uses)? {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             pending.push(PendingChainRootUse {
                 key: ChainUseKey {
                     row: use_.key.row,
@@ -854,14 +858,14 @@ fn chain_row_uses(
     let mut output = Vec::new();
     let mut cursor = 0_usize;
     while cursor < pending.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let key = pending
             .get(cursor)
             .ok_or_else(|| GeometryErrorKind::Invalid("chain use table is incomplete".into()))?
             .key;
         let start = cursor;
         while pending.get(cursor).is_some_and(|use_| use_.key == key) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             cursor = cursor.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
         let roots = pending
@@ -871,7 +875,7 @@ fn chain_row_uses(
         let mut previous_span = None;
         let mut root_uses = Vec::with_capacity(roots.len());
         for root in roots {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if previous_span != Some(root.chain_span_index) {
                 distinct_spans = distinct_spans
                     .checked_add(1)
@@ -920,7 +924,7 @@ fn push_chain(
         .and_then(NonZeroUsize::new)
         .ok_or(ResourceError::SizeOverflow)?;
     for span in &spans {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let slot = span_to_chain.get_mut(span.span.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("shared-chain span index is out of range".into())
         })?;
@@ -953,7 +957,7 @@ fn collect_open_chains(
     work: &mut impl Work,
 ) -> Result<()> {
     for (node_index, &is_pinned) in pinned.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !is_pinned {
             continue;
         }
@@ -999,7 +1003,7 @@ fn collect_closed_chains(
     work: &mut impl Work,
 ) -> Result<()> {
     for (span_index, &is_boundary) in boundary_spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !is_boundary || visited.get(span_index).copied().unwrap_or(true) {
             continue;
         }

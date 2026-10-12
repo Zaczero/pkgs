@@ -101,7 +101,7 @@ impl GeographicCoverageAnalysis {
             .into());
         }
 
-        work.charge(
+        work.charge_into_error(
             u64::try_from(assignment.owners.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut selected_faces = Vec::with_capacity(assignment.owners.len());
@@ -110,7 +110,7 @@ impl GeographicCoverageAnalysis {
             let selected = owner.is_some();
             selected_faces.push(selected);
             if let Some(row) = owner {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let count = owned_face_counts.get_mut(row).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "coverage face owner is outside the source row table".into(),
@@ -148,18 +148,18 @@ impl GeographicCoverageAnalysis {
             .ok_or(ResourceError::SizeOverflow)?;
         let mut region_roots = Vec::with_capacity(root_capacity);
         for root in face_roots.iter().flatten() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             region_roots.push(*root);
         }
         for pending in &boundary_cycles {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             region_roots.push(pending.boundary.region);
         }
         let region_facts =
             overlay::selected_region_facts(q, &selected_faces, &mut regions, &region_roots, work)?;
         let mut face_regions = Vec::with_capacity(face_roots.len());
         for (&owner, root) in assignment.owners.iter().zip(face_roots) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             match (owner, root) {
                 (None, None) => face_regions.push(None),
                 (Some(output_row), Some(local_root)) => {
@@ -190,7 +190,7 @@ impl GeographicCoverageAnalysis {
             })
             .collect::<Vec<_>>();
         for fact in &region_facts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let owner = assignment
                 .owners
                 .get(fact.root)
@@ -209,7 +209,7 @@ impl GeographicCoverageAnalysis {
         }
         if q.global_face_count != 0 {
             for (output_row, &owned_faces) in owned_face_counts.iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if owned_faces != q.global_face_count {
                     continue;
                 }
@@ -220,7 +220,7 @@ impl GeographicCoverageAnalysis {
             }
         }
         for (polygon_index, polygon) in topology.sources.polygons.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let row_index = polygon.row.0 as usize;
             rows.get_mut(row_index)
                 .ok_or_else(|| {
@@ -234,7 +234,7 @@ impl GeographicCoverageAnalysis {
         let mut port_live = vec![false; q.ports.len()];
         let mut node_live = vec![false; q.nodes.len()];
         for (cycle_index, pending) in boundary_cycles.into_iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let row = rows.get_mut(pending.output_row).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage boundary row is unknown".into())
             })?;
@@ -276,7 +276,7 @@ impl GeographicCoverageAnalysis {
             })?;
             let mut uses = Vec::with_capacity(pending.boundary.darts.len());
             for dart_id in pending.boundary.darts {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("coverage boundary has an unknown dart".into())
                 })?;
@@ -293,7 +293,7 @@ impl GeographicCoverageAnalysis {
                 )?;
                 let mut root_uses = Vec::with_capacity(span.owners.len());
                 for (owner_index, owner) in span.owners.iter().enumerate() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let source_forward = (dart.from_port == span.ports[0]) != owner.reversed;
                     let source_range = if source_forward {
                         ExactSourceRange {
@@ -405,7 +405,7 @@ fn coverage_port_presentation(
     port_id: QPortId,
     work: &mut impl Work,
 ) -> Result<GeographicCoveragePortPresentation> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("coverage presentation port is unknown".into())
     })?;
@@ -434,7 +434,7 @@ fn coverage_area_owner_index(
         SourceRowId(u32::try_from(output_row).map_err(|_| ResourceError::SizeOverflow)?);
     let mut first_ring_owner = None;
     for (owner_index, owner) in span.owners.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let source = topology
             .sources
             .edges
@@ -457,7 +457,7 @@ fn coverage_area_owner_index(
 }
 
 fn mark_live(live: &mut [bool], index: usize, work: &mut impl Work, label: &str) -> Result<()> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     *live.get_mut(index).ok_or_else(|| {
         GeometryErrorKind::Invalid(format!("coverage live {label} index is out of range").into())
     })? = true;
@@ -465,7 +465,7 @@ fn mark_live(live: &mut [bool], index: usize, work: &mut impl Work, label: &str)
 }
 
 fn live_ids(live: &[bool], work: &mut impl Work) -> Result<Vec<usize>> {
-    work.charge(u64::try_from(live.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(live.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     Ok(live
         .iter()
         .enumerate()

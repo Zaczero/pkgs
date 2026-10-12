@@ -4435,7 +4435,7 @@ impl ExactGeographicTopology {
                 GeometryErrorKind::Invalid("Q point node fan is incomplete".into())
             })?;
             for &dart_id in fan {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let local_face = *self.q.dart_faces.get(dart_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q point node has an unknown dart".into())
                 })?;
@@ -4539,7 +4539,7 @@ impl ExactGeographicTopology {
                     .into());
                 };
                 for &row in left_rows.iter().chain(right_rows) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let left_has = left_rows.binary_search(&row).is_ok();
                     let right_has = right_rows.binary_search(&row).is_ok();
                     if left_has != right_has && !rows.insert(row) {
@@ -4880,12 +4880,12 @@ fn face_rows_for_ids(
 ) -> Result<Vec<usize>> {
     let mut rows = BTreeSet::new();
     for face in faces {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let occupants = face_rows
             .get(face.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q face row labels are incomplete".into()))?;
         for &row in occupants {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             rows.insert(row);
         }
     }
@@ -6093,7 +6093,7 @@ impl GlobalFaceRowOccupancy {
             .len()
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(
+        work.charge_into_error(
             u64::try_from(
                 face_count
                     .checked_add(event_count)
@@ -6127,7 +6127,7 @@ impl GlobalFaceRowOccupancy {
                 GeometryErrorKind::Invalid("Q face row intervals are out of range".into())
             })?;
             for &[low, high] in intervals {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if low > high || high > face_count {
                     return Err(GeometryErrorKind::Invalid(
                         "Q face row interval is outside the preorder".into(),
@@ -6147,7 +6147,7 @@ impl GlobalFaceRowOccupancy {
             }
         }
         try_sort_by_with_work(&mut events, work, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(left
                 .order
                 .cmp(&right.order)
@@ -6179,7 +6179,7 @@ impl GlobalFaceRowOccupancy {
             let face = face_at_order.get(order).copied().flatten().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q face preorder has a missing face".into())
             })?;
-            work.charge(
+            work.charge_into_error(
                 u64::try_from(
                     active_set
                         .len()
@@ -6231,7 +6231,7 @@ fn apply_face_row_interval_event(
         .checked_mul(2)
         .and_then(|steps| steps.checked_add(1))
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::from(tree_steps) + 1)?;
+    work.charge_into_error(u64::from(tree_steps) + 1)?;
     let count = active_counts.get_mut(event.row).ok_or_else(|| {
         GeometryErrorKind::Invalid("Q face interval references an unknown row".into())
     })?;
