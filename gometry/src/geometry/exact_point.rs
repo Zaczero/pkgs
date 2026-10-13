@@ -1,10 +1,11 @@
 use crate::error::Result;
 use crate::geometry::numerics::product::ExactSign;
+use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
     ExactChartPoint, point_on_exact_segment_with_work, vector_cross_with_work,
     vector_difference_with_work,
 };
-use crate::work::Work;
+use crate::work::{Unmetered, Work};
 
 pub(in crate::geometry) fn exact_segments_intersect(
     left_start: &ExactChartPoint,
@@ -12,7 +13,7 @@ pub(in crate::geometry) fn exact_segments_intersect(
     right_start: &ExactChartPoint,
     right_end: &ExactChartPoint,
 ) -> Result<bool> {
-    let mut work = crate::work::Unmetered;
+    let mut work = Unmetered;
     exact_segments_intersect_with_work(left_start, left_end, right_start, right_end, &mut work)
 }
 
@@ -61,4 +62,46 @@ const fn signs_are_opposite(left: ExactSign, right: ExactSign) -> bool {
         (left, right),
         (ExactSign::Positive, ExactSign::Negative) | (ExactSign::Negative, ExactSign::Positive)
     )
+}
+
+pub(in crate::geometry) fn exact_chord_fraction(
+    start: &ExactChartPoint,
+    end: &ExactChartPoint,
+    point: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<Option<ExactRational>> {
+    work.charge_into_error(4)?;
+    let dx = end.x.try_subtract_with_work(&start.x, work)?;
+    let dy = end.y.try_subtract_with_work(&start.y, work)?;
+    let fraction = if !dx.is_zero() {
+        point
+            .x
+            .try_subtract_with_work(&start.x, work)?
+            .try_quotient_with_work(&dx, work)?
+    } else if !dy.is_zero() {
+        point
+            .y
+            .try_subtract_with_work(&start.y, work)?
+            .try_quotient_with_work(&dy, work)?
+    } else {
+        return Ok(None);
+    };
+    if fraction
+        .try_cmp_with_work(&ExactRational::zero(), work)?
+        .is_lt()
+        || fraction
+            .try_cmp_with_work(&ExactRational::one(), work)?
+            .is_gt()
+    {
+        return Ok(None);
+    }
+    let projected = ExactChartPoint::from_rationals(
+        start
+            .x
+            .try_add_with_work(&dx.try_product_with_work(&fraction, work)?, work)?,
+        start
+            .y
+            .try_add_with_work(&dy.try_product_with_work(&fraction, work)?, work)?,
+    );
+    Ok((projected == *point).then_some(fraction))
 }

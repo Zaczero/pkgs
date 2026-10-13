@@ -1288,7 +1288,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::work::Unmetered;
 
     const TRACE_OPERATION: &str = "trace_storage_test";

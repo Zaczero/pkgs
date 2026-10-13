@@ -1,4 +1,5 @@
-use super::{chart_vertex_origins, exact, retained_site_longitude};
+use super::{chart_vertex_origins, exact};
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 use crate::geometry::tessellation::{
     VoronoiChartCutSide, VoronoiDiagramReceipt, VoronoiProducer, VoronoiVertexOrigin,
 };

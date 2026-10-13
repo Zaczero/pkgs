@@ -9,7 +9,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
-use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
+use super::{ExactPoint, GeometryErrorKind, ResourceError, Result, XY};
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(all(test, debug_assertions))]
 use crate::test_support::exact_operation_counts;
 use crate::work::{Unmetered, Work};

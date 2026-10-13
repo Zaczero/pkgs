@@ -8,12 +8,15 @@ use super::receipt::{
 };
 use crate::Frame;
 use crate::error::Result;
-use crate::geometry::embedding_completion::{
-    CheckedImages, FinalGroupRows, LiteralAddress, LiteralChart, LiteralCheck, LiteralPoint,
-    LiteralPolygon, LiteralRowLayout, LiteralSequence, LiteralStorage, SealedOutput,
-    ShapeLiteralLayout, bind_final_literals,
+use crate::geometry::embedding_completion::binding::bind_final_literals;
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
+    ShapeLiteralLayout,
 };
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_completion::storage::{
+    CheckedImages, FinalGroupRows, LiteralChart, LiteralCheck, LiteralStorage, SealedOutput,
+};
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::ArrayRows;
 use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::topology::q_embedding::publication as q_publication;

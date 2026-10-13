@@ -1,10 +1,12 @@
 use super::super::{
-    ExactChartPoint, ExactDyadic, ExactGeographicQ, ExactRational, ExactSign, GeometryErrorKind,
+    ExactChartPoint, ExactDyadic, ExactGeographicQ, ExactRational, GeometryErrorKind,
     NativeReferencePoints, Ordering, QDartId, QNodeId, QPortId, QProducerSourceRange,
-    ResourceError, Result, retained_exact_native_site_with_work, rotation_row_matches,
-    try_sort_by_with_work, vector_cross_with_work, vector_difference_with_work,
+    ResourceError, Result, rotation_row_matches, try_sort_by_with_work, vector_cross_with_work,
+    vector_difference_with_work,
 };
+use crate::geographic::retained_exact::sites::retained_exact_native_site_with_work;
 use crate::geometry::graph::compare_departures_with_work;
+use crate::geometry::numerics::product::ExactSign;
 use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn strict_native_bank_event(

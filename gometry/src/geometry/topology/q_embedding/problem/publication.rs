@@ -9,8 +9,9 @@ use super::super::{
     exact_departures_share_forward_ray, lift_assigned_publication_point,
     pair_preserves_incidence_with_work, producer_range_fan_dart, producer_range_touches_node,
     q_port_assigned_point, quotient_key_for_chart_position_with_work, reconstruct_cut_ports,
-    split_rational_native_site_with_work, translated_exact_point_with_work, try_sort_by_with_work,
+    translated_exact_point_with_work, try_sort_by_with_work,
 };
+use crate::geographic::retained_exact::sites::split_rational_native_site_with_work;
 use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {

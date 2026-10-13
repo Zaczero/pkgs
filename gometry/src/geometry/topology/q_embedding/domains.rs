@@ -2,9 +2,11 @@ use super::{
     EmbeddingDomain, EmissionNodeId, EmissionNodeRegistry, ExactChartPoint, ExactDyadic,
     ExactGeographicTopology, ExactQuotientKey, ExactRational, GeographicFrame, GeometryErrorKind,
     Latitude, NodeAuthority, PublicationInventory, QCandidate, QCoordinates, QEmbeddingEmission,
-    ResourceError, Result, RoundedNativeSite, XY, assigned_port_point,
-    candidate_chart_point_with_work, exact_canonical_longitude_with_work,
-    quotient_key_for_chart_position_with_work, rounded_native_neighbors_with_work,
+    ResourceError, Result, XY, assigned_port_point, candidate_chart_point_with_work,
+    exact_canonical_longitude_with_work, quotient_key_for_chart_position_with_work,
+};
+use crate::geographic::retained_exact::sites::{
+    RoundedNativeSite, rounded_native_neighbors_with_work,
 };
 #[cfg(test)]
 use crate::work::Unmetered;

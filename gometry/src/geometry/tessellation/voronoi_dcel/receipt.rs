@@ -11,8 +11,9 @@ use super::{
     VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
     VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY,
     empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact, exact_chart_point, lex_xy,
-    retained_site_longitude, try_hash_map_with_capacity, voronoi_error,
+    try_hash_map_with_capacity, voronoi_error,
 };
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 
 mod collinear;
 

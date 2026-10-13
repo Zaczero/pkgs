@@ -5,9 +5,10 @@ use super::super::exact::SourceEdgeId;
 use super::super::q::{ExactGeographicTopology, QSpanOwner};
 use crate::array::StreamingShapes;
 use crate::error::Result;
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse,

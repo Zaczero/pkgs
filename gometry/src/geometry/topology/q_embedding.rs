@@ -34,21 +34,22 @@ use super::q::{
 use super::{EmissionPortId, QSourceImage};
 use crate::collections::{HashMap, HashSet, UnionFind, collection_hash_state};
 use crate::error::{ResourceError, Result};
-use crate::geographic::retained_exact::sites::{
-    RoundedNativeSite, retained_exact_native_site_with_work, round_native_longitude_with_work,
-    rounded_native_neighbors_with_work, split_rational_native_site_with_work,
-};
 use crate::geographic::{ChartPole, GeographicFrame, Latitude, SeamIdentity};
-use crate::geometry::embedding_completion::{
-    AdmittedGraph, AdmittedLayout, CheckedAssignment, CheckedImages,
-    ExactPoints as NativeReferencePoints, FrozenLiteralBuffers, LiteralChart, LiteralCheck,
-    LogicalArealWalk, SealedOutput, ShapeLiteralLayout, admit_candidate, admit_known_graph,
-    admit_logical_layout, bind_literals, exact_chord_fraction,
+use crate::geometry::embedding_completion::admission::{
+    AdmittedGraph, AdmittedLayout, CheckedAssignment, admit_candidate, admit_known_graph,
+    admit_logical_layout,
 };
-use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, SearchAccount, SearchOutcome,
-    proximity_limit, run_with_budget, swept_bounds,
+use crate::geometry::embedding_completion::binding::bind_literals;
+use crate::geometry::embedding_completion::layout::LogicalArealWalk;
+use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
+use crate::geometry::embedding_completion::points::ExactPoints as NativeReferencePoints;
+use crate::geometry::embedding_completion::storage::{
+    CheckedImages, FrozenLiteralBuffers, LiteralChart, LiteralCheck, SealedOutput,
 };
+use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};
+use crate::geometry::embedding_search::proximity::{proximity_limit, swept_bounds};
+use crate::geometry::embedding_search::search::run_with_budget;
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem, SearchOutcome};
 use crate::geometry::numerics::product::ExactSign;
 #[cfg(test)]
 use crate::geometry::ordinates::RequestRowId;

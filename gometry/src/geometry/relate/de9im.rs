@@ -1,6 +1,6 @@
+use crate::geometry::predicate_spec::Predicate;
 use crate::geometry::relate::matrix_predicates::{self, Cell as MatrixCell, Decided, Tri};
 use crate::geometry::{CompiledPattern, Dimension};
-use crate::predicates::Predicate;
 
 /// (`II IB IE / BI BB BE / EI EB EE`, `A` rows × `B` columns).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
