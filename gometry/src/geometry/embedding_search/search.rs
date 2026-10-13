@@ -1,12 +1,15 @@
+use std::cmp::Ordering;
 use std::hash::Hash;
 
 use super::account::{EvaluationBudget, EvaluationOnly, SearchAccount};
-use super::preparation::{PreparedClass, PreparedClassSet, prepare_classes};
+use super::preparation::{PreparedClass, prepare_classes};
 use super::{
-    ClassAssignment, GlobalCheck, Problem, SearchAssignment, SearchOutcome, SearchResult, Work,
+    ClassAssignment, ClassSolution, GlobalCheck, Problem, SearchAssignment, SearchOutcome,
+    SearchResult, Work,
 };
 use crate::collections::{HashSet, try_hash_set_with_capacity};
-use crate::error::{GeometryErrorKind, ResourceError, Result};
+use crate::error::{ResourceError, Result};
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 
 pub(super) struct ClassSearchState<C, K> {
@@ -397,7 +400,7 @@ fn contains_ordered_position<W: Work>(
     Ok(false)
 }
 
-fn replace_class_solution<C, W: Work>(
+pub(super) fn replace_class_solution<C, W: Work>(
     current_solutions: &mut [Vec<C>],
     position: usize,
     solution: Vec<C>,

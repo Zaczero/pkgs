@@ -12,11 +12,11 @@ use crate::geometry::arrangement::{
 };
 use crate::geometry::overlay::{GlobalFaces, compare_departures_with_work};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{GeometryErrorKind, Work};
+use crate::geometry::{GeometryErrorKind, Work, XY};
 
 pub(in crate::geometry) struct AdmittedLayout {
     layout: LogicalLayout,
-    areal: Option<ArealProof>,
+    pub(super) areal: Option<ArealProof>,
 }
 
 /// Admit identities and all-graph contacts first. Dimension-specific fan and

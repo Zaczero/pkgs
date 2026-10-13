@@ -17,7 +17,7 @@ use crate::geographic::{
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::literals::{
-    LiteralPoint, LiteralPolygon, LiteralSequence, ShapeLiteralLayout, reorder_rows,
+    LiteralPoint, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};

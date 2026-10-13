@@ -5,7 +5,9 @@ use std::convert::Infallible;
 use std::hash::Hash;
 
 use self::account::SearchAccount;
-use crate::error::{ResourceError, Result};
+#[cfg(test)]
+use crate::error::ResourceError;
+use crate::error::Result;
 
 pub(in crate::geometry) mod account;
 pub(in crate::geometry) mod matching;

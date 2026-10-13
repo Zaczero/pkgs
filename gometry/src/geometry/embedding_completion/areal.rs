@@ -12,10 +12,10 @@ use crate::geometry::{GeometryErrorKind, Work};
 /// Stable identities needed by a candidate proof survive the wall view. Its
 /// indexed CSR and `GlobalFaces` are temporary admission/candidate data.
 pub(super) struct ArealSignature {
-    face_keys: Vec<Vec<u32>>,
-    exterior_face: u32,
-    host_by_vertex: Vec<u32>,
-    fan_rows: Vec<(u32, Vec<u32>)>,
+    pub(super) face_keys: Vec<Vec<u32>>,
+    pub(super) exterior_face: u32,
+    pub(super) host_by_vertex: Vec<u32>,
+    pub(super) fan_rows: Vec<(u32, Vec<u32>)>,
 }
 
 pub(in crate::geometry) struct ArealProof {

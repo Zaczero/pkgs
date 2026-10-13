@@ -4,7 +4,8 @@ use super::account::SearchAccount;
 use super::matching::has_perfect_matching;
 use super::{Problem, Work};
 use crate::collections::try_hash_set_with_capacity;
-use crate::error::{GeometryErrorKind, Result};
+use crate::error::Result;
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 
 struct ClassSpec<N> {

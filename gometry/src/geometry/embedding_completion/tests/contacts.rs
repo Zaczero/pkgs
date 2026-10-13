@@ -204,7 +204,7 @@ fn native_contact_bounds_refuse_before_returning_bounds() -> Result<()> {
     let (expected, charges) = {
         let mut budget = EvaluationBudget::new(OPERATION, 1)?;
         let mut work = SweepRecordingWork::new(&mut budget);
-        let expected = super::outward_bounds(&point, &mut work)?;
+        let expected = super::contacts::outward_bounds(&point, &mut work)?;
         (expected, work.charges)
     };
     assert_eq!(
@@ -223,7 +223,7 @@ fn native_contact_bounds_refuse_before_returning_bounds() -> Result<()> {
     let mut budget = budget_refusing_before(OPERATION, &target);
     let error = {
         let mut work = SweepRecordingWork::new(&mut budget);
-        let error = super::outward_bounds(&point, &mut work)
+        let error = super::contacts::outward_bounds(&point, &mut work)
             .expect_err("failed exact rounding cannot publish outward bounds");
         assert_eq!(
             work.refused.map(|event| event.contact_progress),
@@ -249,7 +249,7 @@ fn native_contact_bounds_refuse_before_returning_bounds() -> Result<()> {
     let ordinary_spend = ordinary_budget.spent_ticks_for_test();
     {
         let mut work = EvaluationOnly::new(&mut ordinary_budget);
-        let bounds = super::outward_bounds(&point, &mut work)?;
+        let bounds = super::contacts::outward_bounds(&point, &mut work)?;
         assert_eq!(
             [
                 bounds.minx().to_bits(),

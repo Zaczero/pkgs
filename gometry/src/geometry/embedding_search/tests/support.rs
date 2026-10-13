@@ -2,13 +2,16 @@ use std::cell::{Cell, RefCell};
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
-use super::account::{EvaluationBudget, EvaluationOnly};
+use super::account::{
+    BASE_EVALUATION_LIMIT, EVALUATIONS_PER_CONSTRUCTED_NODE, EvaluationBudget, EvaluationOnly,
+    WORK_TICKS_PER_EVALUATION,
+};
 use super::matching::has_perfect_matching;
 use super::preparation::{PreparedClass, PreparedOptions};
 use super::proximity::{
     ProximityChord, build_proximity_classes, build_proximity_classes_with_work,
 };
-use super::search::{ClassSearchState, Search, run_with_budget};
+use super::search::{ClassSearchState, Search, replace_class_solution, run_with_budget};
 use super::*;
 use crate::collections::try_hash_set_with_capacity;
 use crate::error::ErrorKind;

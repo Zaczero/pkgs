@@ -11,6 +11,7 @@ use super::{
     Accuracy, CoordSeq, LineSeq, PackedLineColumnView, PreparedSupport, Rational, Result,
     SearchContext, Shape, XY, storage,
 };
+use crate::geometry::predicate_spec::Predicate;
 
 pub(crate) fn distance<'a>(
     left: impl Into<storage::ShapeRow<'a>>,
@@ -35,26 +36,12 @@ pub(crate) fn distance<'a>(
         &source,
         &target,
         &mut context,
-        || {
-            crate::geometry::predicate_rows(
-                left,
-                right,
-                crate::geometry::predicate_spec::Predicate::Equals,
-            )
-        },
+        || crate::geometry::predicate_rows(left, right, Predicate::Equals),
         |forward| {
             if forward {
-                crate::geometry::predicate_rows(
-                    right,
-                    left,
-                    crate::geometry::predicate_spec::Predicate::Covers,
-                )
+                crate::geometry::predicate_rows(right, left, Predicate::Covers)
             } else {
-                crate::geometry::predicate_rows(
-                    left,
-                    right,
-                    crate::geometry::predicate_spec::Predicate::Covers,
-                )
+                crate::geometry::predicate_rows(left, right, Predicate::Covers)
             }
         },
     )

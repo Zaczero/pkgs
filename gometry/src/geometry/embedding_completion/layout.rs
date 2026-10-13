@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{ResourceError, Result};
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, Work};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

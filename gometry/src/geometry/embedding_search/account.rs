@@ -1,16 +1,17 @@
 use std::convert::Infallible;
 
 use super::Work;
-use crate::error::{GeometryErrorKind, ResourceError, Result};
+use crate::error::{ResourceError, Result};
+use crate::geometry::GeometryErrorKind;
 
-const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
+pub(super) const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 
-const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
+pub(super) const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
 
 /// Two times the largest measured residual rate: ceil(2 * 548,837 / 5,472).
 const EVALUATIONS_PER_PUBLISHED_LEAF: u64 = 201;
 
-const WORK_TICKS_PER_EVALUATION: u128 = 16;
+pub(super) const WORK_TICKS_PER_EVALUATION: u128 = 16;
 
 /// One mutable owner for raw primitive work and evaluation events.
 pub(in crate::geometry) trait SearchAccount: Work {
@@ -60,8 +61,8 @@ pub(in crate::geometry) struct EvaluationBudget {
     operation: &'static str,
     constructed: usize,
     published_leaves: usize,
-    limit: u64,
-    spent_ticks: u128,
+    pub(super) limit: u64,
+    pub(super) spent_ticks: u128,
 }
 
 impl EvaluationBudget {
@@ -191,7 +192,7 @@ impl EvaluationBudget {
         Ok(())
     }
 
-    fn limit_ticks(&self) -> u128 {
+    pub(super) fn limit_ticks(&self) -> u128 {
         u128::from(self.limit) * WORK_TICKS_PER_EVALUATION
     }
 

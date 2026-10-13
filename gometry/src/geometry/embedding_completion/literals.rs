@@ -1,5 +1,6 @@
 use crate::error::{ResourceError, Result};
 use crate::geometry::overlay::CertifiedOverlayOrder;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::{CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape, Work};
 
@@ -42,10 +43,10 @@ pub(in crate::geometry) struct LiteralAddress {
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct LiteralRowAddress {
-    operation: u32,
-    logical_row: usize,
-    group_row: Option<usize>,
-    value_row: Option<usize>,
+    pub(super) operation: u32,
+    pub(super) logical_row: usize,
+    pub(super) group_row: Option<usize>,
+    pub(super) value_row: Option<usize>,
 }
 
 impl LiteralRowAddress {

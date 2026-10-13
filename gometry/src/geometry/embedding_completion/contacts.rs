@@ -1,7 +1,7 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
-#[cfg(test)]
-use std::{cell::Cell, thread_local};
 
 use super::points::ExactPoints;
 use crate::error::{ResourceError, Result};
@@ -9,7 +9,7 @@ use crate::geometry::topology::{
     ExactChartPoint, exact_segments_intersect_with_work, point_on_exact_segment_with_work,
 };
 use crate::geometry::{
-    Bounds, GeometryErrorKind, Work, XY, for_each_overlapping_bounds_cross_pair_with_work,
+    Bounds, GeometryErrorKind, Work, for_each_overlapping_bounds_cross_pair_with_work,
 };
 
 #[cfg(test)]
@@ -19,6 +19,17 @@ pub(super) struct ContactCheckProgress {
     pub(super) bounds_completed: usize,
     pub(super) identity_attempted: usize,
     pub(super) identity_completed: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTACT_CHECK_PROGRESS: Cell<ContactCheckProgress> =
+        const { Cell::new(ContactCheckProgress {
+            bounds_attempted: 0,
+            bounds_completed: 0,
+            identity_attempted: 0,
+            identity_completed: 0,
+        }) };
 }
 
 #[cfg(test)]
@@ -67,7 +78,7 @@ fn record_identity_complete() {
     });
 }
 
-fn outward_bounds(point: &ExactChartPoint, work: &mut impl Work) -> Result<Bounds> {
+pub(super) fn outward_bounds(point: &ExactChartPoint, work: &mut impl Work) -> Result<Bounds> {
     #[cfg(test)]
     record_bounds_attempt();
     let [min_x, min_y, max_x, max_y] = point.outward_bounds_with_work(work)?;

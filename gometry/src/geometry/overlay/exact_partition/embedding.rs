@@ -34,11 +34,11 @@ use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::account::SearchAccount;
 use crate::geometry::embedding_search::proximity::{
     ProximityChord, ProximityClasses, build_proximity_classes as build_search_proximity_classes,
-    build_proximity_classes_with_work, exact_chord_radius, possible_swept_bounds, proximity_limit,
+    exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
-use crate::geometry::embedding_search::search::{Search, run_with_budget};
+use crate::geometry::embedding_search::search::Search;
 use crate::geometry::embedding_search::{
-    ClassAssignment, GlobalCheck, Problem, SearchAssignment, SearchOutcome, Work,
+    ClassAssignment, GlobalCheck, Problem, SearchAssignment, Work,
 };
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
