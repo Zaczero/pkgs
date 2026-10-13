@@ -63,13 +63,12 @@ impl<'a> ChartSourceCapture<'a> {
     pub(super) fn record(
         &mut self,
         source_root: Option<RootId>,
-        point: Point,
         parameter: &ExactRational,
     ) -> Result<Option<super::super::lineage::EventId>> {
         if let (Some(capture), Some(root), Some(member)) =
             (self.capture.as_deref_mut(), source_root, self.member)
         {
-            let event = capture.record_root_point(root, member, point, parameter)?;
+            let event = capture.record_root_point(root, member, parameter)?;
             self.records.push((
                 event,
                 parameter.try_clone_with_work(&mut crate::geometry::Unmetered)?,
@@ -78,10 +77,6 @@ impl<'a> ChartSourceCapture<'a> {
         } else {
             Ok(None)
         }
-    }
-
-    pub(super) fn records(&self) -> &[(super::super::lineage::EventId, ExactRational)] {
-        &self.records
     }
 
     pub(super) fn event_ids(&self) -> Vec<super::super::lineage::EventId> {
@@ -341,7 +336,7 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
             interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
         let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
         let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
-        source_capture.record(event.source_root, point, &event.parameter)?;
+        source_capture.record(event.source_root, &event.parameter)?;
         output.push(point);
     }
     Ok(())

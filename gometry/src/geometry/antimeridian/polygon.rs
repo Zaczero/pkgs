@@ -631,7 +631,6 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
     let (split, lineage) = if let (Some(capture), Some(lineage)) =
         (capture.as_deref_mut(), chart_lineage.as_ref())
     {
-        capture.capture_source_edges(&chart);
         split_shape_with_lineage(
             &chart,
             Some(lineage),

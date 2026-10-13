@@ -51,8 +51,7 @@ fn chart_line_captured<M: ChartMetric>(
         };
         let mut source_capture =
             ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-        let start_event =
-            source_capture.record(source_root, start_chart, &ExactRational::zero())?;
+        let start_event = source_capture.record(source_root, &ExactRational::zero())?;
         if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
             vertices
                 .last_mut()
@@ -76,7 +75,7 @@ fn chart_line_captured<M: ChartMetric>(
             vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
         }
         start_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-        let end_event = source_capture.record(source_root, start_chart, &ExactRational::one())?;
+        let end_event = source_capture.record(source_root, &ExactRational::one())?;
         chart.push(start_chart);
         if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
             vertices.push(vec![event]);
@@ -180,8 +179,7 @@ fn chart_ring_captured<M: ChartMetric>(
             }
             let mut source_capture =
                 ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-            let start_event =
-                source_capture.record(source_root, start_chart, &ExactRational::zero())?;
+            let start_event = source_capture.record(source_root, &ExactRational::zero())?;
             if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
                 vertices
                     .last_mut()
@@ -205,7 +203,7 @@ fn chart_ring_captured<M: ChartMetric>(
                 vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
             }
             let end_chart = band_point(end)?;
-            let end_event = source_capture.record(source_root, end_chart, &ExactRational::one())?;
+            let end_event = source_capture.record(source_root, &ExactRational::one())?;
             points.push(end_chart);
             if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
                 vertices.push(vec![event]);
@@ -229,8 +227,7 @@ fn chart_ring_captured<M: ChartMetric>(
             }
             let mut source_capture =
                 ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-            let start_event =
-                source_capture.record(source_root, start_chart, &ExactRational::zero())?;
+            let start_event = source_capture.record(source_root, &ExactRational::zero())?;
             if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
                 vertices
                     .last_mut()
@@ -254,7 +251,7 @@ fn chart_ring_captured<M: ChartMetric>(
                 vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
             }
             let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-            let end_event = source_capture.record(source_root, end_chart, &ExactRational::one())?;
+            let end_event = source_capture.record(source_root, &ExactRational::one())?;
             points.push(end_chart);
             if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
                 vertices.push(vec![event]);
@@ -501,8 +498,7 @@ pub(super) fn chart_shape<M: ChartMetric>(
             let chart = chart_point(*point, frame, longitude_scale, latitude_scale)?;
             let lineage = match (capture.as_deref_mut(), root, member) {
                 (Some(capture), Some(root), Some(member)) => {
-                    let event =
-                        capture.record_root_point(root, member, chart, &ExactRational::zero())?;
+                    let event = capture.record_root_point(root, member, &ExactRational::zero())?;
                     Some(super::super::lineage::ShapeLineage::Point {
                         member,
                         events: vec![event],
@@ -529,12 +525,9 @@ pub(super) fn chart_shape<M: ChartMetric>(
                 };
                 let chart = chart_point(point, frame, longitude_scale, latitude_scale)?;
                 let event = match (capture.as_deref_mut(), root, member) {
-                    (Some(capture), Some(root), Some(member)) => Some(capture.record_root_point(
-                        root,
-                        member,
-                        chart,
-                        &ExactRational::zero(),
-                    )?),
+                    (Some(capture), Some(root), Some(member)) => {
+                        Some(capture.record_root_point(root, member, &ExactRational::zero())?)
+                    },
                     _ => None,
                 };
                 chart_points.push(chart);

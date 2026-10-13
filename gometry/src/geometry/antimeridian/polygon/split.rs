@@ -233,28 +233,6 @@ fn polygon_parts_shape(
     }
 }
 
-fn blank_polygon_lineages(
-    polygons: Vec<Polygon>,
-    member: super::super::lineage::MemberId,
-) -> Vec<super::super::lineage::PolygonWithLineage> {
-    polygons
-        .into_iter()
-        .map(|polygon| {
-            let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
-                member,
-                vertices: vec![Vec::new(); ring.coords().len()],
-                edges: Vec::new(),
-            };
-            let lineage = super::super::lineage::LineagePolygon {
-                member,
-                shell: empty_sequence(&polygon.shell),
-                holes: polygon.holes.iter().map(empty_sequence).collect(),
-            };
-            super::super::lineage::PolygonWithLineage { polygon, lineage }
-        })
-        .collect()
-}
-
 fn append_polygon_edge_uses(
     lineage: &super::super::lineage::LineagePolygon,
     output: &mut Vec<super::super::lineage::EdgeUseId>,
@@ -409,6 +387,9 @@ fn overlay_ring_lineage<M: ChartMetric>(
     if let Some(first) = output_points.first().copied() {
         output_points.push(first);
     }
+    if let Some(first) = lineage_vertices.first().cloned() {
+        lineage_vertices.push(first);
+    }
     let output_ring = Ring::try_from_closed(CoordSeq::try_from_points(&output_points)?)?;
 
     let mut lineage_edges = Vec::with_capacity(vertex_count);
@@ -519,51 +500,6 @@ fn overlay_parts_shape<M: ChartMetric>(
                 members: lineages,
             },
         )),
-    }
-}
-
-fn blank_polygon_lineage(
-    polygon: &Polygon,
-    member: super::super::lineage::MemberId,
-) -> super::super::lineage::LineagePolygon {
-    let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
-        member,
-        vertices: vec![Vec::new(); ring.coords().len()],
-        edges: Vec::new(),
-    };
-    super::super::lineage::LineagePolygon {
-        member,
-        shell: empty_sequence(&polygon.shell),
-        holes: polygon.holes.iter().map(empty_sequence).collect(),
-    }
-}
-
-fn lineage_for_polygonal_shape(
-    shape: &Shape,
-    member: super::super::lineage::MemberId,
-) -> Result<super::super::lineage::ShapeLineage> {
-    match shape {
-        Shape::Polygon(polygon) => Ok(super::super::lineage::ShapeLineage::Polygon(
-            blank_polygon_lineage(polygon, member),
-        )),
-        Shape::MultiPolygon(polygons) => {
-            let members = polygons
-                .members_with_values()
-                .map(|member_shape| match member_shape {
-                    MultiMember::Empty => None,
-                    MultiMember::Value(polygon) => Some(blank_polygon_lineage(polygon, member)),
-                })
-                .collect();
-            Ok(super::super::lineage::ShapeLineage::MultiPolygon {
-                axes: polygons.axes(),
-                members,
-            })
-        },
-        Shape::Empty(..) => Ok(super::super::lineage::ShapeLineage::Empty),
-        _ => Err(GeometryErrorKind::Invalid(
-            "polygon difference produced non-polygonal lineage".into(),
-        )
-        .into()),
     }
 }
 
@@ -684,44 +620,27 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
             };
             if use_quotient {
                 overlay_mode = HoleOverlayMode::Quotient;
-                result = match metric_access {
-                    Some(metric_access) => crate::geometry::overlay_all_with_metric(
-                        &operands,
-                        TopologyDomain::Geographic(frame),
-                        crate::geometry::OverlayOp::Difference,
-                        Strictness::Strict,
-                        metric_access,
-                    )?,
-                    None => crate::geometry::overlay_all(
-                        &operands,
-                        TopologyDomain::Geographic(frame),
-                        crate::geometry::OverlayOp::Difference,
-                        Strictness::Strict,
-                    )?,
-                };
-                result_lineage = lineage_for_polygonal_shape(&result, source_lineage.member)?;
-            } else {
-                let mut source_edges = Vec::new();
-                append_shape_edge_uses(&result_lineage, &mut source_edges)?;
-                append_shape_edge_uses(&hole_result_lineage, &mut source_edges)?;
-                let parts = crate::geometry::overlay_all_geographic_chart_with_sources(
-                    &operands,
-                    frame,
-                    crate::geometry::OverlayOp::Difference,
-                    Strictness::Strict,
-                    metric_access,
-                )?;
-                let axes = result.axes().union(hole_shape.axes());
-                (result, result_lineage) = overlay_parts_shape(
-                    parts,
-                    axes,
-                    source_lineage.member,
-                    &source_edges,
-                    source_frame,
-                    metric_access,
-                    catalog,
-                )?;
             }
+            let mut source_edges = Vec::new();
+            append_shape_edge_uses(&result_lineage, &mut source_edges)?;
+            append_shape_edge_uses(&hole_result_lineage, &mut source_edges)?;
+            let parts = crate::geometry::overlay_all_geographic_chart_with_sources(
+                &operands,
+                frame,
+                crate::geometry::OverlayOp::Difference,
+                Strictness::Strict,
+                metric_access,
+            )?;
+            let axes = result.axes().union(hole_shape.axes());
+            (result, result_lineage) = overlay_parts_shape(
+                parts,
+                axes,
+                source_lineage.member,
+                &source_edges,
+                source_frame,
+                metric_access,
+                catalog,
+            )?;
         }
         let polygons = polygons_from_shape(result)?;
         if overlay_mode != HoleOverlayMode::Quotient {

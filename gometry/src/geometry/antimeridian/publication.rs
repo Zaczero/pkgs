@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::lineage::{
@@ -7,7 +6,7 @@ use super::lineage::{
 use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geographic::{ChartPole, GeodeticPole, GeographicFrame};
+use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
     LiteralSequence, ShapeLiteralLayout,
@@ -26,76 +25,19 @@ use crate::geometry::{
     Ring, Shape, Unmetered,
 };
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct PointRecordKey {
-    x: u64,
-    y: u64,
-    z: Option<u64>,
-    m: Option<u64>,
-}
-
-impl PointRecordKey {
-    fn new(point: Point) -> Self {
-        Self {
-            x: point.x.to_bits(),
-            y: point.y.to_bits(),
-            z: point.z().map(f64::to_bits),
-            m: point.m().map(f64::to_bits),
-        }
-    }
-
-    fn chart_edge(point: Point) -> Self {
-        let mut key = Self::new(point);
-        if point.x.abs() == 180.0 {
-            key.x = 180.0_f64.to_bits();
-        }
-        key
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ChartEdgeKey(PointRecordKey, PointRecordKey);
-
-impl ChartEdgeKey {
-    fn new(start: Point, end: Point) -> Self {
-        let start = PointRecordKey::chart_edge(start);
-        let end = PointRecordKey::chart_edge(end);
-        if start <= end {
-            Self(start, end)
-        } else {
-            Self(end, start)
-        }
-    }
-}
-
-struct CapturedRootPoint {
-    point: Point,
-    range: RootRange,
-    member: MemberId,
-}
-
 pub(super) struct SplitCapture {
-    identity: bool,
     lineage: LineageCatalog,
-    root_points: Vec<CapturedRootPoint>,
-    source_edges: Vec<(Point, Point)>,
 }
 
 impl SplitCapture {
     pub(super) fn enabled() -> Self {
         Self {
-            identity: false,
             lineage: LineageCatalog::default(),
-            root_points: Vec::new(),
-            source_edges: Vec::new(),
         }
     }
 
     pub(super) fn mark_identity(&mut self) {
-        self.identity = true;
-        self.root_points.clear();
-        self.source_edges.clear();
-        self.lineage.clear_roots();
+        self.lineage = LineageCatalog::default();
     }
 
     pub(super) fn next_member(&mut self) -> Result<MemberId> {
@@ -151,7 +93,6 @@ impl SplitCapture {
         &mut self,
         root: RootId,
         member: MemberId,
-        point: Point,
         source_parameter: &ExactRational,
     ) -> Result<EventId> {
         let mut work = Unmetered;
@@ -161,32 +102,7 @@ impl SplitCapture {
             ExactRational::zero(),
             &mut work,
         )?;
-        let event = self
-            .lineage
-            .event(member, vec![range.try_clone_with_work(&mut work)?])?;
-        self.root_points.push(CapturedRootPoint {
-            point,
-            range,
-            member,
-        });
-        if point.x.abs() == 180.0 {
-            let range = self
-                .root_points
-                .last()
-                .expect("the source root was just captured")
-                .range
-                .try_clone_with_work(&mut work)?;
-            self.root_points.push(CapturedRootPoint {
-                point: point.with_xy_raw(-point.x, point.y),
-                range,
-                member,
-            });
-        }
-        Ok(event)
-    }
-
-    pub(super) fn capture_source_edges(&mut self, shape: &Shape) {
-        collect_shape_edges(shape, &mut self.source_edges);
+        self.lineage.event(member, vec![range])
     }
 
     pub(super) fn into_drawing(
@@ -202,11 +118,8 @@ impl SplitCapture {
             frame,
             longitude_scale,
             latitude_scale,
-            identity: self.identity,
             lineage: self.lineage,
             shape_lineage: lineage,
-            root_points: self.root_points,
-            source_edges: self.source_edges,
         }
     }
 }
@@ -216,11 +129,8 @@ pub(crate) struct SplitDrawing {
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
-    identity: bool,
     lineage: LineageCatalog,
     shape_lineage: super::lineage::ShapeLineage,
-    root_points: Vec<CapturedRootPoint>,
-    source_edges: Vec<(Point, Point)>,
 }
 
 struct SplitRowDrawing {
@@ -266,17 +176,15 @@ impl SplitDrawing {
         image_start: usize,
         node_start: u32,
     ) -> Result<SplitRowDrawing> {
-        let source_roots = self.source_root_map()?;
-        let source_edges = self.source_edge_counts()?;
-        let mut layout =
-            ShapeLayoutBuilder::new(logical_row, image_start, &source_roots, &self.lineage);
+        let mut layout = ShapeLayoutBuilder::new(logical_row, image_start, &self.lineage);
         layout.visit(&self.shape, &self.shape_lineage)?;
         let (chart_restrictions, next_node) = chart_restrictions(
             &self.shape,
+            &self.shape_lineage,
+            &self.lineage,
             self.frame,
             self.longitude_scale,
             self.latitude_scale,
-            source_edges,
             node_start,
         )?;
         let next_image = layout.next_image;
@@ -296,44 +204,6 @@ impl SplitDrawing {
             next_image,
             next_node,
         })
-    }
-
-    fn source_root_map(&self) -> Result<BTreeMap<(MemberId, PointRecordKey), Vec<RootRange>>> {
-        let mut result = BTreeMap::new();
-        let mut work = Unmetered;
-        for captured in &self.root_points {
-            let point = unmap_chart_point(
-                captured.point,
-                self.frame,
-                self.longitude_scale,
-                self.latitude_scale,
-            )?;
-            result
-                .entry((captured.member, PointRecordKey::new(point)))
-                .or_insert_with(Vec::new)
-                .push(captured.range.try_clone_with_work(&mut work)?);
-        }
-        Ok(result)
-    }
-
-    fn source_edge_counts(&self) -> Result<BTreeMap<ChartEdgeKey, usize>> {
-        let mut result = BTreeMap::new();
-        if self.identity {
-            let mut edges = Vec::new();
-            collect_shape_edges(&self.shape, &mut edges);
-            for (start, end) in edges {
-                add_edge_count(
-                    &mut result,
-                    chart_point(start, self.frame, self.longitude_scale, self.latitude_scale)?,
-                    chart_point(end, self.frame, self.longitude_scale, self.latitude_scale)?,
-                )?;
-            }
-            return Ok(result);
-        }
-        for &(start, end) in &self.source_edges {
-            add_edge_count(&mut result, start, end)?;
-        }
-        Ok(result)
     }
 }
 
@@ -562,20 +432,22 @@ fn finish_producer_drawing(
 
 fn chart_restrictions(
     shape: &Shape,
+    lineage: &ShapeLineage,
+    catalog: &LineageCatalog,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
-    mut source_edges: BTreeMap<ChartEdgeKey, usize>,
     node_start: u32,
 ) -> Result<(Vec<DirectedChartRestrictionUse>, u32)> {
     let mut restrictions = Vec::new();
     let mut next_node_id = node_start;
     collect_restrictions(
         shape,
+        lineage,
+        catalog,
         frame,
         longitude_scale,
         latitude_scale,
-        &mut source_edges,
         &mut next_node_id,
         &mut restrictions,
     )?;
@@ -588,7 +460,6 @@ struct ShapeLayoutBuilder<'a> {
     point_output: u32,
     line_output: u32,
     polygon_output: u32,
-    source_roots: &'a BTreeMap<(MemberId, PointRecordKey), Vec<RootRange>>,
     lineage: &'a LineageCatalog,
     points: Vec<LiteralPoint<ProducerImageId>>,
     lines: Vec<LiteralSequence<ProducerImageId>>,
@@ -598,19 +469,13 @@ struct ShapeLayoutBuilder<'a> {
 }
 
 impl<'a> ShapeLayoutBuilder<'a> {
-    const fn new(
-        logical_row: usize,
-        image_start: usize,
-        source_roots: &'a BTreeMap<(MemberId, PointRecordKey), Vec<RootRange>>,
-        lineage: &'a LineageCatalog,
-    ) -> Self {
+    const fn new(logical_row: usize, image_start: usize, lineage: &'a LineageCatalog) -> Self {
         Self {
             logical_row,
             next_image: image_start,
             point_output: 0,
             line_output: 0,
             polygon_output: 0,
-            source_roots,
             lineage,
             points: Vec::new(),
             lines: Vec::new(),
@@ -642,31 +507,19 @@ impl<'a> ShapeLayoutBuilder<'a> {
         self.literals
             .push(ProducerLiteral::from_point(address, image, point));
         let mut work = Unmetered;
-        if events.is_empty() {
-            if let Some(ranges) = self.source_roots.get(&(member, PointRecordKey::new(point))) {
-                for range in ranges {
-                    self.source_root_uses.push(ProducerSourceRootUse {
-                        address,
-                        image,
-                        range: range.try_clone_with_work(&mut work)?,
-                    });
-                }
+        for &event in events {
+            if self.lineage.event_member(event) != member {
+                return Err(GeometryErrorKind::Invalid(
+                    "split event belongs to a different source member".into(),
+                )
+                .into());
             }
-        } else {
-            for &event in events {
-                if self.lineage.event_member(event) != member {
-                    return Err(GeometryErrorKind::Invalid(
-                        "split event belongs to a different source member".into(),
-                    )
-                    .into());
-                }
-                for range in self.lineage.event_uses(event) {
-                    self.source_root_uses.push(ProducerSourceRootUse {
-                        address,
-                        image,
-                        range: range.try_clone_with_work(&mut work)?,
-                    });
-                }
+            for range in self.lineage.event_uses(event) {
+                self.source_root_uses.push(ProducerSourceRootUse {
+                    address,
+                    image,
+                    range: range.try_clone_with_work(&mut work)?,
+                });
             }
         }
         Ok(image)
@@ -866,22 +719,6 @@ impl<'a> ShapeLayoutBuilder<'a> {
     }
 }
 
-fn unmap_chart_point(
-    point: Point,
-    frame: GeographicFrame,
-    longitude_scale: f64,
-    latitude_scale: f64,
-) -> Result<Point> {
-    let latitude = if point.y == 90.0 {
-        frame.native_latitude_pole(GeodeticPole::North)
-    } else if point.y == -90.0 {
-        frame.native_latitude_pole(GeodeticPole::South)
-    } else {
-        point.y / latitude_scale
-    };
-    point.with_xy(point.x / longitude_scale, latitude)
-}
-
 fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
     let axis = frame.longitude();
     if (value % axis.period()).to_bits() == axis.half_period().to_bits() {
@@ -912,47 +749,6 @@ fn chart_point(
         chart_longitude(point.x, frame, longitude_scale)?,
         chart_latitude(point.y, frame, latitude_scale)?,
     )
-}
-
-fn collect_shape_edges(shape: &Shape, output: &mut Vec<(Point, Point)>) {
-    match shape {
-        Shape::LineString(line) => {
-            output.extend(line.segment_pairs().map(<(Point, Point)>::from));
-        },
-        Shape::MultiLineString(lines) => {
-            for line in lines.as_slice() {
-                output.extend(line.segment_pairs().map(<(Point, Point)>::from));
-            }
-        },
-        Shape::Polygon(polygon) => {
-            for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                output.extend(ring.segment_pairs().map(<(Point, Point)>::from));
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons.as_slice() {
-                for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                    output.extend(ring.segment_pairs().map(<(Point, Point)>::from));
-                }
-            }
-        },
-        Shape::GeometryCollection(collection) => {
-            for member in collection {
-                collect_shape_edges(member, output);
-            }
-        },
-        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => {},
-    }
-}
-
-fn add_edge_count(
-    edges: &mut BTreeMap<ChartEdgeKey, usize>,
-    start: Point,
-    end: Point,
-) -> Result<()> {
-    let count = edges.entry(ChartEdgeKey::new(start, end)).or_default();
-    *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-    Ok(())
 }
 
 const fn chart_pole(point: Point) -> Option<ChartPole> {
@@ -1043,10 +839,11 @@ fn ring_vertex_node(
 
 fn ring_restrictions(
     ring: &Ring,
+    lineage: &LineageSequence,
+    catalog: &LineageCatalog,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
-    source_edges: &mut BTreeMap<ChartEdgeKey, usize>,
     next_node_id: &mut u32,
     output: &mut Vec<DirectedChartRestrictionUse>,
 ) -> Result<()> {
@@ -1054,14 +851,28 @@ fn ring_restrictions(
     if native_points.len() < 2 {
         return Ok(());
     }
+    if native_points.len() != lineage.vertices.len()
+        || native_points.len().saturating_sub(1) != lineage.edges.len()
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "antimeridian ring coordinates and edge lineage disagree".into(),
+        )
+        .into());
+    }
     let last_index = native_points
         .len()
         .checked_sub(1)
         .ok_or(ResourceError::SizeOverflow)?;
-    let closed_duplicate = native_points
-        .first()
-        .zip(native_points.last())
-        .is_some_and(|(first, last)| PointRecordKey::new(*first) == PointRecordKey::new(*last));
+    let closed_duplicate =
+        native_points
+            .first()
+            .zip(native_points.last())
+            .is_some_and(|(first, last)| {
+                first.x.to_bits() == last.x.to_bits()
+                    && first.y.to_bits() == last.y.to_bits()
+                    && first.z().map(f64::to_bits) == last.z().map(f64::to_bits)
+                    && first.m().map(f64::to_bits) == last.m().map(f64::to_bits)
+            });
     let chart_points = native_points
         .iter()
         .copied()
@@ -1075,14 +886,17 @@ fn ring_restrictions(
     {
         let [start_native, end_native] = *native_pair;
         let [start_chart, end_chart] = *chart_pair;
-        let edge = ChartEdgeKey::new(start_chart, end_chart);
-        if let Some(count) = source_edges.get_mut(&edge)
-            && let Some(remaining) = count.checked_sub(1)
-        {
-            *count = remaining;
-            continue;
+        let edge = lineage.edges.get(index).copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("antimeridian ring edge lineage is unavailable".into())
+        })?;
+        let edge_use = catalog.edge_use_at(edge);
+        if edge_use.member != lineage.member {
+            return Err(GeometryErrorKind::Invalid(
+                "antimeridian chart restriction belongs to a different member".into(),
+            )
+            .into());
         }
-        let Some(restriction) = restriction_for_edge(start_chart, end_chart) else {
+        let Some(restriction) = edge_use.restriction else {
             continue;
         };
         let end_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
@@ -1104,7 +918,10 @@ fn ring_restrictions(
             synthetic_vertex(start_native, start_chart, start_node),
             synthetic_vertex(end_native, end_chart, end_node),
         ) else {
-            continue;
+            return Err(GeometryErrorKind::Invalid(
+                "antimeridian chart restriction has a nonsynthetic endpoint".into(),
+            )
+            .into());
         };
         output.push(DirectedChartRestrictionUse {
             restriction,
@@ -1117,81 +934,124 @@ fn ring_restrictions(
 
 fn collect_restrictions(
     shape: &Shape,
+    lineage: &ShapeLineage,
+    catalog: &LineageCatalog,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
-    source_edges: &mut BTreeMap<ChartEdgeKey, usize>,
     next_node_id: &mut u32,
     output: &mut Vec<DirectedChartRestrictionUse>,
 ) -> Result<()> {
-    match shape {
-        Shape::Polygon(polygon) => {
+    match (shape, lineage) {
+        (Shape::Polygon(polygon), ShapeLineage::Polygon(polygon_lineage)) => {
             ring_restrictions(
                 &polygon.shell,
+                &polygon_lineage.shell,
+                catalog,
                 frame,
                 longitude_scale,
                 latitude_scale,
-                source_edges,
                 next_node_id,
                 output,
             )?;
-            for hole in polygon.holes.iter() {
+            for (hole, hole_lineage) in polygon.holes.iter().zip(&polygon_lineage.holes) {
                 ring_restrictions(
                     hole,
+                    hole_lineage,
+                    catalog,
                     frame,
                     longitude_scale,
                     latitude_scale,
-                    source_edges,
                     next_node_id,
                     output,
                 )?;
             }
             Ok(())
         },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons.as_slice() {
-                ring_restrictions(
-                    &polygon.shell,
-                    frame,
-                    longitude_scale,
-                    latitude_scale,
-                    source_edges,
-                    next_node_id,
-                    output,
-                )?;
-                for hole in polygon.holes.iter() {
-                    ring_restrictions(
-                        hole,
-                        frame,
-                        longitude_scale,
-                        latitude_scale,
-                        source_edges,
-                        next_node_id,
-                        output,
-                    )?;
+        (
+            Shape::MultiPolygon(polygons),
+            ShapeLineage::MultiPolygon {
+                members: lineages, ..
+            },
+        ) => {
+            if polygons.member_count() != lineages.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "antimeridian multipolygon members and lineage disagree".into(),
+                )
+                .into());
+            }
+            for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
+                match (polygon, lineage) {
+                    (MultiMember::Empty, None) => {},
+                    (MultiMember::Value(polygon), Some(lineage)) => {
+                        ring_restrictions(
+                            &polygon.shell,
+                            &lineage.shell,
+                            catalog,
+                            frame,
+                            longitude_scale,
+                            latitude_scale,
+                            next_node_id,
+                            output,
+                        )?;
+                        for (hole, hole_lineage) in polygon.holes.iter().zip(&lineage.holes) {
+                            ring_restrictions(
+                                hole,
+                                hole_lineage,
+                                catalog,
+                                frame,
+                                longitude_scale,
+                                latitude_scale,
+                                next_node_id,
+                                output,
+                            )?;
+                        }
+                    },
+                    _ => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "antimeridian multipolygon members and lineage disagree".into(),
+                        )
+                        .into());
+                    },
                 }
             }
             Ok(())
         },
-        Shape::GeometryCollection(collection) => {
-            for member in collection {
+        (Shape::GeometryCollection(collection), ShapeLineage::GeometryCollection(lineages)) => {
+            if collection.len() != lineages.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "antimeridian collection members and lineage disagree".into(),
+                )
+                .into());
+            }
+            for (member, lineage) in collection.iter().zip(lineages) {
+                let lineage = lineage.as_ref().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "antimeridian collection member has no lineage".into(),
+                    )
+                })?;
                 collect_restrictions(
                     member,
+                    lineage,
+                    catalog,
                     frame,
                     longitude_scale,
                     latitude_scale,
-                    source_edges,
                     next_node_id,
                     output,
                 )?;
             }
             Ok(())
         },
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => Ok(()),
+        (Shape::Point(_), ShapeLineage::Point { .. })
+        | (Shape::MultiPoint(_), ShapeLineage::MultiPoint { .. })
+        | (Shape::LineString(_), ShapeLineage::LineString(_))
+        | (Shape::MultiLineString(_), ShapeLineage::MultiLineString { .. })
+        | (Shape::Empty(..), ShapeLineage::Empty) => Ok(()),
+        _ => Err(GeometryErrorKind::Invalid(
+            "antimeridian shape and lineage disagree during chart restriction collection".into(),
+        )
+        .into()),
     }
 }
 

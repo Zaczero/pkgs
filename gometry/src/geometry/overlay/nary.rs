@@ -388,7 +388,9 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
     )
 }
 
-pub(crate) fn overlay_all_geographic_chart_with_sources<M: crate::geometry::ChartMetric>(
+pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources<
+    M: crate::geometry::ChartMetric,
+>(
     geometries: &[&Shape],
     frame: GeographicFrame,
     operation: OverlayOp,
