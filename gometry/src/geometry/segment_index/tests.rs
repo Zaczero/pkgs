@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::segment_index::sweep::for_each_indexed_overlapping_bounds_pair_with_work;
 use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,

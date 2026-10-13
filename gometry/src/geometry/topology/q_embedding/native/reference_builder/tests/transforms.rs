@@ -2,7 +2,10 @@
 
     use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints, RayAxis};
     use crate::error::{ErrorKind, Result};
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{
+        EvaluationBudget,
+        EvaluationOnly,
+    };
     use crate::geometry::exact_arith::ExactSign;
     use crate::geometry::overlay::RayPointsWithWork;
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};

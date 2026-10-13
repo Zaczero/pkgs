@@ -1047,7 +1047,7 @@ mod tests {
         ray_work_progress, reset_ray_work_progress,
     };
     use crate::error::{ErrorKind, Result};
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::geometry::tessellation::exact::ExactDyadic;
     use crate::geometry::{Unmetered, Work, XY};
 

@@ -6,11 +6,13 @@ use super::super::exact::SourceEdgeId;
 use super::super::q::ExactGeographicTopology;
 use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicInputs;
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress,
-    LiteralSequence, ShapeLiteralLayout, visit_shape_literals,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress, LiteralSequence,
+    ShapeLiteralLayout, visit_shape_literals,
 };
-use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly, Work};
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::embedding_search::Work;
+use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::ordinates::{RootId, RootRange, SourceArcContext};
 use crate::geometry::publication::{
     DirectedChartRestrictionUse, FinishedGeometry, PendingPublicationRow, ProducerDrawingReceipt,

@@ -27,7 +27,7 @@ use crate::collections::HashMap;
 use crate::error::ResourceError;
 use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,

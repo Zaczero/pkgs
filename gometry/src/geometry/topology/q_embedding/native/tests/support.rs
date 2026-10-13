@@ -1,6 +1,9 @@
     use super::*;
     use crate::Frame;
-    use crate::geometry::embedding_completion::{LiteralPoint, LiteralRowLayout};
+    use crate::geometry::embedding_completion::literals::{
+        LiteralPoint,
+        LiteralRowLayout,
+    };
     use crate::geometry::publication::FinishedGeometry;
     use crate::geometry::storage::{
         GeometryArrayStorage, LogicalRow, PackedStorage, RowSelection, StorageLayout,

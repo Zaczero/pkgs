@@ -1,8 +1,9 @@
 use crate::Frame;
 use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
     FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
     PublicationCall, PublicationOutcome, PublicationRejection, StorageTarget, finish_geographic,
@@ -134,7 +135,7 @@ fn ring_literals(
 mod tests {
     use super::{finish_grid_outline, scalar_polygon_literals};
     use crate::Frame;
-    use crate::geometry::embedding_completion::FrozenLiteralBuffers;
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, ProducerReceipt, PublicationCall, PublicationOutcome,
         PublicationRejection, StorageTarget, finish_geographic,

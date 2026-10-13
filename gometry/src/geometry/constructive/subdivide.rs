@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::crs::GeodesicMetric;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicInputs};
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::{NodeOrdinates, RequestRowInput, resolve_request_rows};
 use crate::geometry::overlay::{
     ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,

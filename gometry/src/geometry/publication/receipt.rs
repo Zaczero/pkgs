@@ -1,10 +1,10 @@
 use super::DirectedChartRestrictionUse;
 use crate::Frame;
 use crate::error::Result;
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout,
-};
-use crate::geometry::embedding_search::{EvaluationBudget, Work};
+use crate::geometry::embedding_completion::literals::{LiteralAddress, LiteralRowLayout};
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::embedding_search::Work;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::RootRange;
 use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::tessellation::exact::ExactRational;

@@ -3,9 +3,12 @@ use std::rc::Rc;
 
 use super::*;
 use crate::geometry::Unmetered;
-use crate::geometry::embedding_completion::{
-    ExactPoints, LiteralRowAddress, admit_known_graph, visit_shape_literals,
+use crate::geometry::embedding_completion::admission::admit_known_graph;
+use crate::geometry::embedding_completion::literals::{
+    LiteralRowAddress,
+    visit_shape_literals,
 };
+use crate::geometry::embedding_completion::points::ExactPoints;
 use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
 
 const EMISSION_STORAGE_OPERATION: &str = "emission_storage_test";

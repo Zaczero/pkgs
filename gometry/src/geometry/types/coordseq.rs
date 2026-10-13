@@ -1088,7 +1088,7 @@ mod mask_selection_tests {
 #[cfg(test)]
 mod work_funded_constructor_tests {
     use super::*;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 
     struct RecordingWork {
         budget: EvaluationBudget,

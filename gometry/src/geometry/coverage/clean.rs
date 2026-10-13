@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::geometry::coverage::{
     HashMap, coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, OverlayOp, Shape, SourceArcContext, carry_overlay_ordinates,

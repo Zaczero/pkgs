@@ -1304,7 +1304,7 @@ fn point_segment_distance_squared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::embedding_search::account::EvaluationBudget;
 
     fn topology(rows: &[Shape]) -> ExactGeographicTopology {
         let frame = GeographicFrame::crs84();

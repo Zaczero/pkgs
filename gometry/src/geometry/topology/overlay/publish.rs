@@ -7,7 +7,7 @@ use super::{
     node_injectivity_collisions_with_work, node_ordinates, source_point_coordinates_with_work,
     write_completed_native,
 };
-use crate::geometry::embedding_completion::LiteralAddress;
+use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::publication::{
     FinishedGeometry, PendingPublicationRow, ProducerReceipt, PublicationCall, PublicationOutcome,
     PublicationRejection, StorageTarget,

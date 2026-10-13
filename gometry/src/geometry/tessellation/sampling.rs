@@ -185,9 +185,10 @@ pub(crate) fn publish_sampling_array(
 
     use crate::array::StreamingShapes;
     use crate::geometry::Unmetered;
-    use crate::geometry::embedding_completion::{
-        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
 
     validate_prepared_sampling(&prepared, prepared.logical_row)?;
@@ -243,9 +244,10 @@ pub(crate) fn publish_sampling_groups(
 
     use crate::array::StreamingShapes;
     use crate::geometry::Unmetered;
-    use crate::geometry::embedding_completion::{
-        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
 
     let output_count = rows.iter().try_fold(0_usize, |total, row| {

@@ -35,12 +35,26 @@ pub(crate) fn distance<'a>(
         &source,
         &target,
         &mut context,
-        || crate::geometry::predicate_rows(left, right, crate::predicates::Predicate::Equals),
+        || {
+            crate::geometry::predicate_rows(
+                left,
+                right,
+                crate::geometry::predicate_spec::Predicate::Equals,
+            )
+        },
         |forward| {
             if forward {
-                crate::geometry::predicate_rows(right, left, crate::predicates::Predicate::Covers)
+                crate::geometry::predicate_rows(
+                    right,
+                    left,
+                    crate::geometry::predicate_spec::Predicate::Covers,
+                )
             } else {
-                crate::geometry::predicate_rows(left, right, crate::predicates::Predicate::Covers)
+                crate::geometry::predicate_rows(
+                    left,
+                    right,
+                    crate::geometry::predicate_spec::Predicate::Covers,
+                )
             }
         },
     )

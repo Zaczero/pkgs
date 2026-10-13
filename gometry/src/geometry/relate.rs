@@ -19,7 +19,6 @@ mod evaluator;
 mod graph_matrix;
 mod interval;
 mod matrix_predicates;
-mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
 pub(crate) use evaluator::{
@@ -32,7 +31,6 @@ pub(crate) use graph_matrix::{
     is_axis_aligned_rectangle_row,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
-pub(crate) use operands::{line_has_nonzero_segment, multiline_has_nonzero_segment};
 
 pub(crate) const fn dimension_entry(dimension: Dimension) -> u8 {
     match dimension {

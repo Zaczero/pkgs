@@ -1,7 +1,7 @@
 use super::*;
-use crate::geometry::embedding_search::{
-    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount,
-};
+use crate::geometry::embedding_search::account::SearchAccount;
+use crate::geometry::embedding_search::search::Search;
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem};
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
 use crate::geometry::segments::contact::{

@@ -23,10 +23,13 @@ use crate::error::Result;
 use crate::geographic::PointSelectionChart;
 use crate::geometry::area::{RingWinding, open_xy_cycle_winding};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
-use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search, SearchAccount,
-    Work, build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
+use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};
+use crate::geometry::embedding_search::proximity::{
+    ProximityChord, build_proximity_classes, exact_chord_radius, possible_swept_bounds,
+    proximity_limit,
 };
+use crate::geometry::embedding_search::search::Search;
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem, Work};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::overlay::{
     NodeId, OverlayNodeReceipt, OverlaySourceEdgeUse, RayAxis, RayPoints,

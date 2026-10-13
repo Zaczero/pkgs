@@ -737,7 +737,7 @@ mod tests {
 
     use super::{OrderTree, UpdateProgress, reset_update_progress, update_progress};
     use crate::error::{ErrorKind, Result};
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::geometry::{Unmetered, Work};
 
     #[derive(Clone, Copy)]
