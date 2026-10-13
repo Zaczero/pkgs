@@ -233,9 +233,10 @@ use constructive::{
     snap_ring_to_reference_with_context,
 };
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_cartesian,
-    coverage_invalid_edges_geographic_finished, coverage_is_valid, coverage_is_valid_with_domain,
-    coverage_simplify_with_context, coverage_union_topo,
+    CoverageCleanOutput, CoverageOverlapRule, HashMapExt, coverage_clean, coverage_clean_output,
+    coverage_invalid_edges_cartesian, coverage_invalid_edges_geographic_finished,
+    coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
+    coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{
     TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,

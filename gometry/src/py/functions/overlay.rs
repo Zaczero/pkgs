@@ -992,7 +992,8 @@ pub(crate) fn coverage_clean(
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
-    let rows = py.detach(move || {
+    let output_frame = metadata.clone();
+    let output = py.detach(move || {
         let metric_access = || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
@@ -1000,15 +1001,23 @@ pub(crate) fn coverage_clean(
                 )
             })
         };
-        geometry::coverage_clean(
+        geometry::coverage_clean_output(
             &shapes,
             grid_size,
             gap_width,
             overlap_rule,
             &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            output_frame,
         )
     })?;
-    let result = PyGeometryArray::from_shapes(rows, metadata)?;
+    let result = match output {
+        geometry::CoverageCleanOutput::Shapes(rows) => {
+            PyGeometryArray::from_shapes(rows, metadata)?
+        },
+        geometry::CoverageCleanOutput::Finished(finished) => {
+            PyGeometryArray::from_finished(finished)?
+        },
+    };
     Ok(match source {
         None => result,
         Some(array) => array.scatter_present_result(result)?,

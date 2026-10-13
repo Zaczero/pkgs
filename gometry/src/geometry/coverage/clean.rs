@@ -4,6 +4,10 @@ use crate::geometry::coverage::{
 };
 use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::publication::{
+    FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+    StorageTarget, finish_geographic,
+};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, OverlayOp, Shape, SourceArcContext, carry_overlay_ordinates,
     polygon_parts_to_shape,
@@ -25,21 +29,20 @@ crate::tokens::token_enum! {
 
 crate::tokens::token_from_pyobject!(CoverageOverlapRule);
 
-/// Clean a near-coverage into an exact one.
-///
-/// Optionally snaps vertices, then labels every face of one exact partition:
-/// a face covered by several rows goes to the `overlaps` winner, and an
-/// enclosed gap face narrower than `gap_width` merges into the neighbor with
-/// the longest shared border. Every output row is published from that shared
-/// partition, so interfaces use one exact node identity and one rounded
-/// coordinate.
-pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
+pub(crate) enum CoverageCleanOutput {
+    Shapes(Vec<Shape>),
+    Finished(FinishedGeometry),
+}
+
+/// Clean a near-coverage and retain its final geographic storage receipt.
+pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     grid_size: f64,
     gap_width: f64,
     overlaps: CoverageOverlapRule,
     context: &SourceArcContext<'_, '_>,
-) -> Result<Vec<Shape>> {
+    output_frame: crate::Frame,
+) -> Result<CoverageCleanOutput> {
     if !(grid_size.is_finite() && grid_size >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
     }
@@ -60,31 +63,25 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
     let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
-    // Cleaning an already-valid coverage is an identity operation. Besides
-    // avoiding needless partition work, this preserves coordinate bits, ring
-    // presentation, and makes repeated cleaning exactly idempotent.
-    // Finish validation so errors from later rows precede partition construction.
-    let already_valid = match context.domain() {
-        crate::geometry::TopologyDomain::Cartesian => {
-            let prepared = coverage_rows(&snapped, gap_width)?;
-            !visit_invalid_segments(&prepared, gap_width, |_, _| true)?
-        },
+    let declared_axes = snapped
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.axes())
+        });
+
+    match context.domain() {
         crate::geometry::TopologyDomain::Geographic(frame) => {
             validate_polygonal_rows(&snapped)?;
-            let mut evaluation_budget = EvaluationBudget::new("coverage_clean", 0)?;
+            let mut budget = EvaluationBudget::new("coverage_clean", 0)?;
             let analysis = crate::geometry::analyze_geographic_coverage_with_work(
                 &snapped,
                 frame,
                 gap_width,
                 "coverage_clean",
-                &mut evaluation_budget,
+                &mut budget,
             )?;
-            let selection = analysis.assign_cleaning_faces(
-                &row_areas,
-                gap_width,
-                overlaps,
-                &mut evaluation_budget,
-            )?;
+            let selection =
+                analysis.assign_cleaning_faces(&row_areas, gap_width, overlaps, &mut budget)?;
             let labels_preserve_sources =
                 analysis.face_rows.iter().zip(&selection.owners).all(
                     |(source_rows, selected_row)| match source_rows.as_slice() {
@@ -93,37 +90,111 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
                         _ => false,
                     },
                 ) && selection.gap_assignments.iter().all(|&assigned| !assigned);
-            analysis.is_valid() && labels_preserve_sources
-        },
-    };
-    if already_valid {
-        return Ok(snapped);
-    }
 
-    #[cfg(test)]
-    drop(admission_phase);
-    #[cfg(test)]
-    let source_staging_phase =
-        crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
-    let shape_refs: Vec<_> = snapped.iter().collect();
-    let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
-    let mut partition = inventory.partition(&mut budget)?;
-    #[cfg(test)]
-    drop(source_staging_phase);
-    let declared_axes = snapped
-        .iter()
-        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
-            axes.union(shape.axes())
-        });
-    inventory.coverage_clean_rows(
-        &mut partition,
-        &row_areas,
+            // Cleaning an already-valid coverage is an identity operation.
+            // Preserve its original coordinate bits and ring presentation.
+            if analysis.is_valid() && labels_preserve_sources {
+                return Ok(CoverageCleanOutput::Shapes(snapped));
+            }
+
+            #[cfg(test)]
+            drop(admission_phase);
+            let receipt = analysis.cleaning_drawing_receipt(
+                &selection,
+                declared_axes,
+                context,
+                &mut budget,
+            )?;
+            match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::ProducerDrawing(receipt),
+                    output_frame,
+                    &mut budget,
+                ),
+                StorageTarget::Array,
+            )? {
+                PublicationOutcome::Pass(finished) => Ok(CoverageCleanOutput::Finished(finished)),
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                    Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "final coverage-clean storage changed {} producer literal images",
+                            images.len()
+                        )
+                        .into(),
+                    )
+                    .into())
+                },
+                PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+                    "coverage-clean finisher returned a different producer rejection family".into(),
+                )
+                .into()),
+            }
+        },
+        crate::geometry::TopologyDomain::Cartesian => {
+            let prepared = coverage_rows(&snapped, gap_width)?;
+            if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
+                return Ok(CoverageCleanOutput::Shapes(snapped));
+            }
+            #[cfg(test)]
+            drop(admission_phase);
+            #[cfg(test)]
+            let source_staging_phase = crate::test_support::allocation_phase(
+                crate::test_support::AllocationPhase::SourceStaging,
+            );
+            let shape_refs: Vec<_> = snapped.iter().collect();
+            let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
+            let mut partition = inventory.partition(&mut budget)?;
+            #[cfg(test)]
+            drop(source_staging_phase);
+            Ok(CoverageCleanOutput::Shapes(inventory.coverage_clean_rows(
+                &mut partition,
+                &row_areas,
+                gap_width,
+                overlaps,
+                declared_axes,
+                context,
+            )?))
+        },
+    }
+}
+
+/// Clean a near-coverage into shapes for native callers.
+///
+/// Geographic public output consumes the `FinishedGeometry` directly so its
+/// checked storage remains the object handed to Python.
+pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    grid_size: f64,
+    gap_width: f64,
+    overlaps: CoverageOverlapRule,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Vec<Shape>> {
+    match coverage_clean_output(
+        rows,
+        grid_size,
         gap_width,
         overlaps,
-        declared_axes,
         context,
-    )
+        crate::Frame::None,
+    )? {
+        CoverageCleanOutput::Shapes(shapes) => Ok(shapes),
+        CoverageCleanOutput::Finished(finished) => {
+            let (rows, _) = finished.into_array()?;
+            rows.logical_rows()
+                .map(|row| match row {
+                    crate::geometry::storage::LogicalRow::Present { row, .. } => row.to_shape(),
+                    crate::geometry::storage::LogicalRow::Missing { .. } => {
+                        Err(GeometryErrorKind::Invalid(
+                            "coverage-clean result unexpectedly contains a missing row".into(),
+                        )
+                        .into())
+                    },
+                })
+                .collect()
+        },
+    }
 }
 
 /// Frame-aware coverage dissolve: rows whose raw boxes are unsound in the
