@@ -1,5 +1,5 @@
 use super::row::{AFFINE_FIXUP_MARKER, AdmittedAffineOriginRow, AffineOriginRow, AffineRowExtents};
-use super::*;
+use super::{DekkerParts, GeometryErrorKind, Result, binary_zero};
 
 pub(crate) struct OriginAffine {
     pub(in crate::geometry::constructive::edit) preserved: [bool; 2],

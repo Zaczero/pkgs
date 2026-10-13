@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    AffineLinear, CoordSeq, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, OrdinateAxis,
+    OriginAffine, Point, ReduceSimd, Result, Shape, ZOrdinate, affine_ordinate_simd,
+    affine_x_row_identity, affine_y_row_identity, column_all_finite, decimal_scale,
+    quantize_column_simd, set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
+    snap_column_simd, stable_affine_xy,
+};
 
 impl CoordSeq {
     /// `op` over every `(x, y)` pair, Z/M columns carried through untouched —

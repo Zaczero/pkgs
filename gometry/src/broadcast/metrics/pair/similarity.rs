@@ -1,5 +1,14 @@
-use super::*;
+use super::{
+    GeometryArrayStorage, PackedStorage, Shape, ShapeCountQuery, crs, dispatch_metric_model,
+    ensure_hausdorff_geodesic_shape, storage,
+};
 
+/// Element-wise zero metric for array-vs-self when both operands share one
+/// `Arc<GeometryArrayStorage>`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "selected polygon ring ranges come from validated nested CSR offsets"
+)]
 pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorage) -> Vec<f64> {
     let mut values = Vec::with_capacity(storage.len());
     match storage {
@@ -78,20 +87,6 @@ pub(crate) fn metric_hausdorff(
         |to_metre| crate::geometry::hausdorff_distance(a, b, max_error, to_metre),
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
-}
-
-#[cfg(test)]
-mod same_storage_metric_tests {
-    use super::*;
-
-    #[test]
-    fn same_storage_hausdorff_returns_one_zero_per_row() {
-        let storage = GeometryArrayStorage::Mixed(vec![
-            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
-            Shape::Point(Point::new_raw_xy(1.0, 0.0)),
-        ]);
-        assert_eq!(same_storage_similarity_metric_zeros(&storage), [0.0, 0.0]);
-    }
 }
 
 pub(crate) fn metric_frechet_with_scratch(
@@ -204,5 +199,19 @@ pub(crate) fn metric_frechet_densified_with_scratch(
             charge_frechet_dp(&a, &b)?;
             metric_frechet_with_scratch(model, &a, &b, scratch)
         },
+    }
+}
+
+#[cfg(test)]
+mod same_storage_metric_tests {
+    use super::*;
+
+    #[test]
+    fn same_storage_hausdorff_returns_one_zero_per_row() {
+        let storage = GeometryArrayStorage::Mixed(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(1.0, 0.0)),
+        ]);
+        assert_eq!(same_storage_similarity_metric_zeros(&storage), [0.0, 0.0]);
     }
 }

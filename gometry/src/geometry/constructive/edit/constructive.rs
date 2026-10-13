@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    Bounds, CoordSeq, ExpansionBudget, GeometryErrorKind, MultiPoint, MultiPolygon, NonNegative,
+    OverlayOp, Polygon, Result, SegmentPlacement, Shape, Strictness,
+    overlay_all_geographic_from_with_output_frame, overlay_intersection_with_rectangle,
+    overlay_view_error, remove_repeated_points, remove_repeated_ring_points, split,
+};
 
 impl Shape {
     /// Split the geometry into parts of at most `max_vertices` coordinates

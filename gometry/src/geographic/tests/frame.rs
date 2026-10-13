@@ -153,6 +153,10 @@ fn computed_native_points_canonicalize_longitude_and_preserve_other_axes() {
     assert_bits(zero.x, 0.0);
 }
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the error payload must retain the exact invalid input latitude"
+)]
 fn lane_conversion_leaves_the_failing_pair_and_later_pairs_unchanged() {
     let paris = GeographicFrame::try_new(
         factor(std::f64::consts::PI / 180.0),

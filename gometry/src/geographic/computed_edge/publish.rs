@@ -1,7 +1,12 @@
 use super::aliases::{ZeroLongitudeAlias, zero_longitude_aliases};
 use super::intents::{collect_edge_intents, interpolate_sample_ordinates};
 use super::vertices::{SampledVertex, observe_sampled_vertex, publish_vertex_at};
-use super::*;
+use super::{
+    ChartStep, ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates,
+    ComputedVertexIntent, CoordSeq, Coordinates, EdgeDirection, ExpansionBudget, GeographicError,
+    GeographicFrame, GeometryErrorKind, Point, Result, RetainedComputedSample,
+    RetainedLongitudeClass,
+};
 
 /// Canonicalize a computed chain and split only edges whose canonical writing
 /// no longer reads the producer-retained displacement.

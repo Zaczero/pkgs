@@ -1,5 +1,8 @@
 use super::plan::{Plan, Route};
-use super::*;
+use super::{
+    Arc, CoordSeq, ExpansionBudget, GeographicFrame, Point, Result,
+    ensure_coordseq_vertex_capacity, interpolate_subdivision_ordinate, line_segments,
+};
 
 /// How interior vertices are placed along a segment.
 ///

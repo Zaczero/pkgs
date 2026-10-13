@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ChartEdge, ChartEdgePart, ChartMetric, LineSegments, Point, Result, Segment, lerp_point,
+    point_distance, point_segment_distance_and_projection, push_distinct_active_position,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum InterpolationProvenance {

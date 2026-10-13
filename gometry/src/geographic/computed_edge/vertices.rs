@@ -1,6 +1,10 @@
 use super::aliases::{ZeroLongitudeAlias, zero_longitude_alias_at};
 use super::publish::map_geographic_error;
-use super::*;
+use super::{
+    ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
+    Coordinates, GeographicFrame, GeometryErrorKind, MOrdinate, Point, Result,
+    RetainedComputedSample, ZOrdinate,
+};
 
 pub(super) struct SampledVertex<'intent> {
     pub(super) edge_index: usize,

@@ -1,5 +1,8 @@
 use super::publish::map_geographic_error;
-use super::*;
+use super::{
+    ComputedEdgeIntent, ComputedVertexIntent, Coordinates, GeographicFrame, GeometryErrorKind,
+    Point, Result,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct ZeroLongitudeAlias {

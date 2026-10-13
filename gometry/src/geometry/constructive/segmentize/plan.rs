@@ -1,5 +1,8 @@
 use super::output::{OutputColumns, materialize};
-use super::*;
+use super::{
+    CoordSeq, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, NonZeroUsize, Result,
+    Segment, line_segments,
+};
 
 pub(super) fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
     if length == 0.0 || !length.is_finite() || max_segment_length <= 0.0 {

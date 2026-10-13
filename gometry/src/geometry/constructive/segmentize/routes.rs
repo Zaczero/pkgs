@@ -1,7 +1,11 @@
 use super::chart::Chart;
 use super::output::{OutputColumns, push_interpolated};
 use super::plan::{Route, segmentize_steps};
-use super::*;
+use super::{
+    CoordSeq, ExpansionBudget, GENERATED_ITEM_LIMIT, GeographicFrame, GeometryErrorKind, Point,
+    Result, Segment, SegmentPlacement, Target, XY, axis_pow2_scale,
+    interpolate_subdivision_ordinate, point_distance, same_point, scaled_residual, subdivide,
+};
 
 /// Plan the ideal planar piece count without allowing an overflowing endpoint
 /// difference to masquerade as an already-complete segment. The common path
@@ -58,7 +62,7 @@ fn planar_segmentize_steps_from_length(
 }
 
 #[derive(Clone, Copy)]
-struct DirectedLength {
+pub(super) struct DirectedLength {
     bearing: f64,
     length: f64,
     longitude_delta_native: f64,

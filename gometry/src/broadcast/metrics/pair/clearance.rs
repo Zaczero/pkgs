@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CoordinateAxes, GeometryKind, LineSeq, LocalInputPurpose, PreparedLocalInput, Shape, crs,
+    dispatch_metric_model, emit_from_original, geodesic_by_identity,
+};
 
 /// CRS-aware minimum-clearance witness line: the realizing two-point
 /// `LineString` in the geometry's own coordinates. On a geographic CRS the

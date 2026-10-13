@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AffineLinear, MOrdinate, Point, Result, Shape, ZOrdinate, affine_x_row_identity,
+    affine_y_row_identity, stable_affine_xy,
+};
 
 impl Shape {
     /// Fallible columnar XY transform generic over the error — the in-core

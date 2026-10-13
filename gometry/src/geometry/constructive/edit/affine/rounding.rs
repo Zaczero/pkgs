@@ -1,5 +1,10 @@
-use super::row::{AffineExpansion, AffineOriginRow};
-use super::*;
+use super::row::AffineExpansion;
+#[cfg(test)]
+use super::row::AffineOriginRow;
+use super::{
+    DekkerParts, ExactSum, GeometryErrorKind, Result, binary_zero, checked_normal_sum,
+    normal_or_zero, same_topological_coordinate, two_product_dekker_checked_parts, two_sum,
+};
 
 pub(super) fn exact_affine_origin_ordinate(
     coefficient_x: f64,
@@ -287,10 +292,6 @@ pub(super) fn round_certified_double_double<const ADMITTED: bool>(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "keep affine rounding witnesses beside their private certificate helpers"
-)]
 mod affine_rounding_tests {
     use super::exact_affine_origin_ordinate;
     use super::row::{

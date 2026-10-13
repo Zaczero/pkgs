@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ChartLineIndex, ChartMetric, ChartParts, CoordSeq, GeodesicMetric, GeometryErrorKind,
+    InterpolationProvenance, LineIndex, LineSegments, LineSeq, MeasureRange, Ordering, Point,
+    PointEdgeScratch, Result, SegmentMetric, Shape, normalize_line_distance, point_chart_locate,
+    push_distinct_active_position,
+};
 
 impl ChartLineIndex {
     pub(crate) fn locate_chart_point<M>(

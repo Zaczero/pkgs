@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DistanceUnit, Frame, GeographicFrame, GeometryError, MetricOp, PreparedPlan, PyGeometry,
+    PyResult, Shape, SourceArcContext, TopologyDomain, crs, validate_lonlat_shape,
+};
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
 pub(super) fn dispatch_metric_model<R>(

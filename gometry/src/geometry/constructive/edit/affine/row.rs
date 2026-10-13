@@ -3,7 +3,11 @@ use super::rounding::{
     affine_origin_bias, checked_two_sum, exact_affine_origin_ordinate,
     round_certified_double_double, upper_sum,
 };
-use super::*;
+use super::{
+    DekkerParts, GeometryErrorKind, OriginAffine, ReduceSimd, Result, binary_zero,
+    floor_binary_exponent, normal_or_zero, same_topological_coordinate,
+    two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
+};
 
 /// Inline the admitted product and residual merge into the coordinate loop.
 macro_rules! add_affine_product_admitted {

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq, Point, Polygon, Result,
+    SegmentPlacement, Shape, normalized_line, remove_repeated_line_points,
+    segmentize_points_budgeted,
+};
 
 /// Length-preserving lifts of the [`CoordSeq`] editors above. Each rebuilds
 /// every column with the same vertex count, so a `LineSeq`'s "at least two

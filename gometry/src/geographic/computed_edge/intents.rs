@@ -1,5 +1,14 @@
 use super::publish::map_geographic_error;
-use super::*;
+use super::{
+    ChartStep, ComputedSampleOrdinates, ComputedVertexIntent, Coordinates, GeographicFrame,
+    MOrdinate, Result, RetainedChartDisplacement, RetainedComputedSample, RetainedLongitudeClass,
+    ZOrdinate, interpolate_optional_ordinate, interpolate_subdivision_ordinate,
+    retained_computed_samples_connection, retained_edge_from_chart_witness,
+    retained_edge_from_lifted_binary64_pair, retained_exact_interval_class,
+    retained_exact_publisher_sample, retained_exact_split_piece_count,
+    retained_native_interval_class, retained_native_publisher_sample,
+    retained_native_split_piece_count,
+};
 use crate::geographic::PeriodicAxis;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    DekkerParts, ExactSum, GeometryErrorKind, ReduceSimd, Result, axis_pow2_scale, binary_zero,
+    checked_normal_sum, floor_binary_exponent, normal_or_zero, same_topological_coordinate,
+    two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
+};
 
 /// Expand each checked product into the retained double-double and its error
 /// bound for affine setup and coordinate evaluation.

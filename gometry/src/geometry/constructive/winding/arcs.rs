@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BufferCapStyle, GeometryErrorKind, Ordering, Point, Result, WalkSink, XY, axis_pow2_scale,
+    emit_cap, interpolate_f64, power_of_two_exponent, same_point, scale_by_power_of_two,
+    scaled_residual,
+};
 
 /// Source vector in a power-of-two frame. Preserve a finite world-space
 /// residual when it exists; only an overflowing subtraction scales both

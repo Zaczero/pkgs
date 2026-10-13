@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    HashMap, Polygon, Result, Shape, ShapeOwnerKey, compare_point_slices, compare_points,
+    compare_polygons, compare_shapes,
+};
 
 impl Shape {
     /// Swap the X and Y ordinates of every coordinate (Z/M untouched) —

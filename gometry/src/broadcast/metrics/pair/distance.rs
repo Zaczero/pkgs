@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ComputedEdgeIntent, FrameDependentCaches, NonNegative, Point, PreparedPlan, Shape,
+    SourceArcCapture, SourceArcContext, TopologyDomain, crs, dispatch_resolved_metric,
+    ensure_geodesic_shape, prepare_geodesic_pair,
+};
 
 pub(crate) fn pair_distance_planar(
     to_metre: f64,
@@ -93,12 +97,6 @@ pub(crate) fn pair_dwithin_geodesic(
     )
 }
 
-/// Element-wise zero metric for array-vs-self when both operands share one
-/// `Arc<GeometryArrayStorage>`.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "selected polygon ring ranges are admitted by the corresponding nested CSR offset columns"
-)]
 /// `metric_nearest_points` against an already-resolved metric. `None` when an
 /// operand is empty — the surfaces map it to the output-type EMPTY sentinel
 /// (`(POINT EMPTY, POINT EMPTY)` / `LINESTRING EMPTY`), mirroring distance's

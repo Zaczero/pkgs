@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CoordRun, CoordSeq, CoordWindow, GeometryErrorKind, LineSeq, MColumn, MOrdinate, Point, Range,
+    Result, Shape, SharedSlice, TransformFailure, ZOrdinate, types,
+};
 
 const TRANSFORM_CHUNK_BYTES: usize = 1024 * 1024;
 const XY_CHUNK_VERTICES: usize = TRANSFORM_CHUNK_BYTES / (2 * size_of::<f64>());

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CrsError, GeographicError, GeographicFrame, GeometryErrorKind, Result, TopologyDomain,
+    TransformFailure, transform_in_core_xy_batch, transform_in_core_xy_batch_indexed,
+};
 
 pub(in crate::crs) fn transform_in_core_xy_with_domains(
     operation: &crate::crs::InCoreTransform,
