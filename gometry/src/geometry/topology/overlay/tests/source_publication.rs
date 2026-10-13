@@ -77,7 +77,7 @@ fn source_ring_rotation_keeps_publication_samples_with_their_recipes() -> Result
         .ok_or_else(|| GeometryErrorKind::Invalid("rotated ring start is missing".into()))?
         .port
         .id;
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let (rotated_vertices, recipe_rotation) =
         rotate_area_ring_vertices(&vertices, Some(start_port), &mut work)?.ok_or_else(
             || GeometryErrorKind::Invalid("ring rotation was not applied".into()),

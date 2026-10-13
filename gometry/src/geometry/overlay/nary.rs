@@ -6,10 +6,11 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
 use crate::geometry::ordinates::AxisValue;
+use crate::geometry::output::build_certified_shape;
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, OverlayPolygonPartWithSources, Strictness,
-    build_certified_overlay_shape, intersect_rectangular_polygonal, merge_chains,
-    overlay_declared_axes, rect_polygon, rectangle_bounds,
+    intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
+    rectangle_bounds,
 };
 use crate::geometry::segments::crossing_point;
 use crate::geometry::tessellation::exact::ExactDyadic;
@@ -703,7 +704,7 @@ fn exact_puntal_nary_overlay<M: crate::geometry::ChartMetric>(
             crate::geometry::MOrdinate(point.m().filter(|_| axes.has_m())),
         );
     }
-    build_certified_overlay_shape(points, Vec::new(), Vec::new()).map(Some)
+    build_certified_shape(points, Vec::new(), Vec::new()).map(Some)
 }
 
 fn compare_puntal_sources(
@@ -925,7 +926,7 @@ fn point_overlay_shape(
     if points.is_empty() {
         return Ok(empty_nary_overlay_shape(inputs, operation));
     }
-    let shape = build_certified_overlay_shape(points, Vec::new(), Vec::new())?;
+    let shape = build_certified_shape(points, Vec::new(), Vec::new())?;
     carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict(), context)
 }
 
@@ -1231,7 +1232,7 @@ fn exact_cartesian_line_polygon_overlay(
     for line in &mut lines {
         *line = dissolve_boundary_line_vertices(line, &polygon_contact_points)?;
     }
-    let shape = build_certified_overlay_shape(Vec::new(), lines, Vec::new())?;
+    let shape = build_certified_shape(Vec::new(), lines, Vec::new())?;
     let shape = carry_overlay_ordinates(
         shape,
         inputs,
@@ -1906,7 +1907,7 @@ fn join_components(shapes: &[Shape]) -> Result<Shape> {
             *polygon = crate::geometry::Polygon::new(shell, holes);
         }
     }
-    build_certified_overlay_shape(points, lines, polygons)
+    build_certified_shape(points, lines, polygons)
 }
 
 fn append_overlay_parts(

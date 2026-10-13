@@ -2,7 +2,7 @@
 
 use super::{Orientation, crossing_point, orientation};
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::{Bounds, Coordinates, PointKey, Segment, XY, same_point};
 
 /// Return a binary64 witness when the stored segments contact, or `None` when
@@ -365,7 +365,7 @@ macro_rules! segment_contact_exact_impl {
         }
     }};
     ($left:expr, $right:expr) => {{
-        use $crate::geometry::exact_arith::ExactSign;
+        use $crate::geometry::numerics::product::ExactSign;
         use $crate::geometry::same_point;
         use $crate::geometry::segments::contact::{
             Contact, SegmentEndpoint, TouchEndpoint, TouchLocation, strictly_inside,

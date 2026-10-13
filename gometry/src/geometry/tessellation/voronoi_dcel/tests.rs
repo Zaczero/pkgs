@@ -1,6 +1,6 @@
 use super::*;
 use crate::geometry::for_each_indexed_overlapping_bounds_pair;
-use crate::geometry::overlay::shoot_left;
+use crate::geometry::graph::shoot_left;
 use crate::geometry::segment_index::checked_index_count;
 use crate::geometry::tessellation::shape::canonical_voronoi_sites;
 

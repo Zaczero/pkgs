@@ -21,7 +21,7 @@ use std::hash::{BuildHasher as _, BuildHasherDefault, Hash, Hasher};
 use std::ops::ControlFlow;
 use std::sync::{LazyLock, OnceLock};
 
-use crate::geometry::Work;
+use crate::work::Work;
 
 pub(crate) mod csr;
 
@@ -298,7 +298,7 @@ pub(crate) fn sort_unique_row_ids(ids: &mut Vec<usize>, start: usize, universe: 
 #[cfg(test)]
 mod row_id_sort_tests {
     use crate::error::{ErrorKind, ResourceError};
-    use crate::geometry::Work;
+    use crate::work::Work;
 
     struct TickLimit {
         limit: u64,
@@ -325,7 +325,7 @@ mod row_id_sort_tests {
             count: usize,
             ticks_per_item: usize,
         ) -> crate::error::Result<()> {
-            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

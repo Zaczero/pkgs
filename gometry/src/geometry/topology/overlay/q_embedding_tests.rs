@@ -99,7 +99,7 @@ fn geographic_face_certificate_rejects_a_collision_free_neighbor_with_changed_ro
         &topology,
         &nearest,
         OverlayOp::Intersection.name(),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let mut live = plan.live_node_keys(&topology, &nearest, &source_points)?;
@@ -146,7 +146,7 @@ fn geographic_face_certificate_rejects_a_collision_free_neighbor_with_changed_ro
         &emission,
         &nearest,
         None,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let exact_faces = QFaceStructure::build(&topology, &emission, exact_chart)?;
     let assigned_chart = subgraph_chart(
@@ -154,7 +154,7 @@ fn geographic_face_certificate_rejects_a_collision_free_neighbor_with_changed_ro
         &emission,
         &nearest,
         Some(&assigned),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let assigned_faces = QFaceStructure::build(&topology, &emission, assigned_chart)?;
     let witnesses =
@@ -185,7 +185,7 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
         &topology,
         &nearest,
         OverlayOp::Intersection.name(),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let mut live_node_keys = plan.live_node_keys(&topology, &nearest, &source_points)?;
@@ -342,7 +342,7 @@ fn q_search_repairs_two_constructed_nodes_with_one_nearest_key() -> Result<()> {
         &topology,
         &nearest,
         OverlayOp::Intersection.name(),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let source_nodes = b3_source_endpoint_nodes(&topology);

@@ -10,11 +10,11 @@ use crate::geometry::constructive::{
     remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
     segmentize_points_budgeted, snap_column_simd, split,
 };
-use crate::geometry::exact_arith::product_sum::ExactSum;
-use crate::geometry::exact_arith::{
+use crate::geometry::numerics::product::{
     DekkerParts, binary_zero, checked_normal_sum, floor_binary_exponent, normal_or_zero,
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::overlay::{
     OverlayOp, overlay_all_geographic_from_with_output_frame, overlay_intersection_with_rectangle,
     overlay_view_error,
@@ -1508,7 +1508,7 @@ mod affine_rounding_tests {
         AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineLinear,
         AffineOriginRow, AffineRowExtents, DekkerParts, exact_affine_origin_ordinate,
     };
-    use crate::geometry::exact_arith::product_sum::ExactSum;
+    use crate::geometry::numerics::product_sum::ExactSum;
 
     #[test]
     fn residual_bound_rejects_an_expansion_whose_exact_value_crosses_halfway() {

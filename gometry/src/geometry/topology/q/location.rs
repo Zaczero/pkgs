@@ -3,8 +3,9 @@ use super::{
     ExactGeographicPointLocation, ExactGeographicQ, ExactGeographicRectangleLocation,
     ExactGeographicTopology, ExactRational, GeographicFrame, GeometryErrorKind, GlobalFaceId, Loc,
     Point, QNodeId, QNodeKey, QRowLocations, QSpatialItem, ResourceError, Result, Shape,
-    SourceRowId, ValidationIssue, Work, point_on_exact_segment_with_work, q_port_node, validity,
+    SourceRowId, ValidationIssue, point_on_exact_segment_with_work, q_port_node, validity,
 };
+use crate::work::Work;
 
 impl QRowLocations<'_> {
     pub(in crate::geometry::topology) fn face(&self, face: GlobalFaceId) -> Loc {

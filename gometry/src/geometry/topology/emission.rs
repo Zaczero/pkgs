@@ -12,6 +12,9 @@ use super::q::{
     QNodeId, QPortId,
 };
 use crate::error::{ResourceError, Result};
+use crate::geographic::retained_exact::sites::{
+    retained_exact_native_site_with_work, split_rational_native_site_with_work,
+};
 use crate::geographic::{
     ChartPole, ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
@@ -21,9 +24,6 @@ pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
 };
 use crate::geometry::embedding_search::{EvaluationBudget, SearchAccount};
-use crate::geometry::exact_arith::{
-    retained_exact_native_site_with_work, split_rational_native_site_with_work,
-};
 #[cfg(test)]
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::ordinates::{
@@ -38,7 +38,7 @@ use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, MOrdinate, Point,
-    Polygon, Ring, Shape, Work, ZOrdinate,
+    Polygon, Ring, Shape, ZOrdinate,
 };
 
 mod builder;
@@ -113,7 +113,7 @@ pub(super) use self::trace::{
 
 #[cfg(test)]
 mod tests {
-    use crate::geometry::overlay::CertifiedOverlayOrder;
+
     use crate::geometry::topology::emission::families::{
         FeatureFamilyBound, NativeCutOccurrenceInterval, NativeCutOccurrenceRange,
     };

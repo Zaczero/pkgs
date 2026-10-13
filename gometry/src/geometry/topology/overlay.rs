@@ -57,7 +57,7 @@ use crate::geometry::overlay::OverlayOp;
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
-use crate::geometry::{CoordinateAxes, ExpansionBudget, GeometryErrorKind, Loc, Shape, Work};
+use crate::geometry::{CoordinateAxes, ExpansionBudget, GeometryErrorKind, Loc, Shape};
 #[cfg(test)]
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
 

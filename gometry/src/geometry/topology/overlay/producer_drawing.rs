@@ -10,7 +10,7 @@ use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress,
     LiteralSequence, ShapeLiteralLayout, visit_shape_literals,
 };
-use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly, Work};
+use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::ordinates::{RootId, RootRange, SourceArcContext};
 use crate::geometry::publication::{
     DirectedChartRestrictionUse, FinishedGeometry, PendingPublicationRow, ProducerDrawingReceipt,
@@ -18,6 +18,7 @@ use crate::geometry::publication::{
 };
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Shape, TopologyDomain};
+use crate::work::Work;
 
 pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
     M: crate::geometry::ChartMetric,

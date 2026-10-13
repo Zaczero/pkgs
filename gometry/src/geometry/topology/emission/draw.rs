@@ -13,9 +13,9 @@ use super::sites::{
 use super::source_reuse::source_edge_at;
 use super::{
     GeometryErrorKind, Point, QEmissionPlan, QSourceImage, RecipeWalkOwner, ResourceError, Result,
-    Work,
 };
 use crate::geographic::SeamIdentity;
+use crate::work::Work;
 
 pub(in crate::geometry::topology) fn emitted_point<'topology>(
     topology: &'topology ExactGeographicTopology,
@@ -273,7 +273,7 @@ pub(in crate::geometry::topology) fn draw_points<'topology>(
 pub(in crate::geometry::topology) fn source_point_coordinates(
     topology: &ExactGeographicTopology,
 ) -> Result<Vec<Option<EmittedVertex<'_>>>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     source_point_coordinates_with_work(topology, &mut work)
 }
 pub(in crate::geometry::topology) fn source_point_coordinates_with_work<'topology>(
@@ -323,7 +323,7 @@ pub(in crate::geometry::topology) fn boundary_source_points(
     topology: &ExactGeographicTopology,
     row: SourceRowId,
 ) -> Result<Vec<Option<EmittedVertex<'_>>>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     boundary_source_points_with_work(topology, row, &mut work)
 }
 pub(in crate::geometry::topology) fn boundary_source_points_with_work<'topology>(
@@ -420,9 +420,9 @@ impl QEmissionPlan {
         coordinates: &QCoordinates,
         source_points: &[Option<EmittedVertex<'_>>],
     ) -> Result<Vec<(EmittedNodeKey, QNodeId)>> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let drawing = self.drawing(topology, coordinates, source_points, &mut work)?;
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         drawing.live_node_keys(topology.sources.frame, &mut work)
     }
     pub(in crate::geometry::topology) fn drawing<'topology>(

@@ -75,6 +75,7 @@ mod geometry;
 mod native_test_identity;
 #[cfg(test)]
 mod test_support;
+mod work;
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: test_support::CountingAllocator = test_support::CountingAllocator;

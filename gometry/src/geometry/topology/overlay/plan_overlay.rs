@@ -1,10 +1,11 @@
 use super::{
     BoundaryCycle, ExactGeographicTopology, GeometryErrorKind, OverlayOp, PlannedAreaRing,
-    PolygonPlan, QEmissionPlan, QProducer, ResourceError, Result, Work, build_fragment_recipes,
+    PolygonPlan, QEmissionPlan, QProducer, ResourceError, Result, build_fragment_recipes,
     face_regions, line_steps, planned_line_paths, select_faces, select_line_spans, select_points,
     selected_area_boundaries, selected_face_roots, selected_region_facts, source_cycle_start_port,
     source_cycles_by_ring, source_ring_cycles_cover_boundary, source_ring_cycles_follow_source,
 };
+use crate::work::Work;
 
 impl PolygonPlan {
     pub(in crate::geometry::topology) fn build(
