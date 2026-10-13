@@ -236,14 +236,8 @@ pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
-) -> Result<(bool, Option<ChartPole>)> {
-    let Some(role) = exact_q_ring_role_with_work(frame, exact_ports.iter(), work)? else {
-        return Err(GeometryErrorKind::Invalid(
-            "selected Q area boundary has no bounded pole".into(),
-        )
-        .into());
-    };
-    Ok(role)
+) -> Result<Option<(bool, Option<ChartPole>)>> {
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
 }
 
 pub(in crate::geometry::topology) fn quotient_ring_role(
@@ -533,7 +527,7 @@ pub(in crate::geometry::topology) fn round_canonical_longitude_with_work(
     // A rounded chart alias such as `122.427194 + 360` loses source low bits
     // before floating remainder can canonicalize it.
     axis.canonicalize(canonical.round_with_work(work)?)
-        .map(|longitude| longitude.get())
+        .map(crate::geographic::CanonicalLongitude::get)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()).into())
 }
 

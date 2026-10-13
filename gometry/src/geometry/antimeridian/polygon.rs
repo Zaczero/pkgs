@@ -602,6 +602,10 @@ fn split_geographic_view_captured<M: ChartMetric>(
     Ok(capture.into_drawing(shape, frame, longitude_scale, latitude_scale, lineage))
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn split_geographic_view_with_capture<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,

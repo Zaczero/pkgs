@@ -104,7 +104,7 @@ pub(crate) fn _unpickle_spatial_index_v2(
         }
         parsed_handles.push(handle);
     }
-    restore_spatial_index_v2(values, parsed_handles, next_handle, has_metadata)
+    restore_spatial_index_v2(values, &parsed_handles, next_handle, has_metadata)
 }
 
 fn parse_index_next_handle(value: &Bound<'_, PyAny>) -> PyResult<usize> {

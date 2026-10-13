@@ -127,6 +127,10 @@ impl PyPoint {
     /// Returns
     /// -------
     /// Point
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to read the inherited geometry"
+    )]
     #[pyo3(signature = (*, **kwargs), text_signature = "($self, /, *, x=..., y=..., z=..., m=..., crs=..., epoch=...)")]
     fn __replace__(slf: PyRef<'_, Self>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Typed> {
         reject_unknown_kwargs(

@@ -56,6 +56,7 @@ fn canonical_crs84_split_skips_retained_edge_admission() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn certified_chart_event_skip_falls_back_at_the_periodic_boundary() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
     let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -165,6 +166,7 @@ fn chart_line_seam_ordinates_use_the_original_root_arclength() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn segment_transit_ordinates_follow_the_retained_piece_arclength() {
     let source = [
         Point::new_axes(170.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(1.0))).unwrap(),
@@ -201,6 +203,7 @@ fn segment_transit_ordinates_follow_the_retained_piece_arclength() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn split_line_preserves_an_authored_full_turn_circle() {
     let source = Shape::LineString(
         LineSeq::try_new(
@@ -242,6 +245,7 @@ fn split_line_preserves_an_authored_full_turn_circle() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn tilted_full_turn_seam_and_witnesses_use_the_original_root() {
     let source = Shape::LineString(
         LineSeq::try_new(
@@ -276,7 +280,7 @@ fn tilted_full_turn_seam_and_witnesses_use_the_original_root() {
         let longitude = frame
             .longitude()
             .chart_connection(piece[0].x, piece[1].x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| {
                 GeometryErrorKind::antimeridian_split_failed(error.to_string())
             })?;
@@ -422,7 +426,7 @@ fn seam_piece_ordinate_composition_matches_independent_root_arclength() {
         let retained = frame
             .longitude()
             .chart_connection(piece[0].x, piece[1].x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
         let parameter = ExactRational::new(ExactDyadic::from_i64(1), ExactDyadic::from_i64(2))?;
         let request = SourceArcRequest::new(
@@ -497,6 +501,7 @@ fn chart_line_eligible_interior_request_propagates_metric_failure() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn crossing_hole_circle_piece_ordinates_compose_to_the_original_root() {
     let shell = xyzm_ring(&[
         (0.0, -30.0, 30.0, 3000.0),

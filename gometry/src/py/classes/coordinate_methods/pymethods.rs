@@ -145,11 +145,8 @@ impl PyCoordinates {
     /// Returns
     /// -------
     /// iterator of tuple
-    pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
-        Py::new(
-            py,
-            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
-        )
+    pub fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
+        Py::new(py, PyCoordinatesIter::new(&self.view, self.layout, false))
     }
 
     /// Iterate coordinate tuples in reverse vertex order.
@@ -157,11 +154,8 @@ impl PyCoordinates {
     /// Returns
     /// -------
     /// iterator of tuple
-    pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
-        Py::new(
-            py,
-            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
-        )
+    pub fn __reversed__(&self, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
+        Py::new(py, PyCoordinatesIter::new(&self.view, self.layout, true))
     }
 
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
@@ -255,7 +249,7 @@ impl PyCoordinates {
     ///     native coordinate units (raw coordinate units when CRS-free). The
     ///     array shares the immutable coordinate column when one is available.
     #[getter]
-    pub fn x(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn x(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::X)
     }
 
@@ -268,7 +262,7 @@ impl PyCoordinates {
     ///     native coordinate units (raw coordinate units when CRS-free). The
     ///     array shares the immutable coordinate column when one is available.
     #[getter]
-    pub fn y(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn y(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Y)
     }
 
@@ -282,7 +276,7 @@ impl PyCoordinates {
     ///     are ``NaN``. Values remain in the geometry's native coordinate
     ///     units; absent columns are materialized.
     #[getter]
-    pub fn z(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn z(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Z)
     }
 
@@ -296,7 +290,7 @@ impl PyCoordinates {
     ///     are ``NaN``. M is a measure ordinate, not a CRS unit; absent columns
     ///     are materialized.
     #[getter]
-    pub fn m(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn m(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::M)
     }
 
@@ -324,7 +318,7 @@ impl PyCoordinates {
     /// [0.0, 1.0]
     #[pyo3(signature = (*, index = false))]
     pub fn to_dict<'py>(
-        slf: Bound<'py, Self>,
+        slf: &Bound<'py, Self>,
         py: Python<'py>,
         index: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
@@ -335,13 +329,13 @@ impl PyCoordinates {
             None => this.view.axes_for_python(py)?,
         };
         drop(this);
-        dict.set_item("x", column_axis_to_py(py, slf.clone(), CoordinateAxis::X)?)?;
-        dict.set_item("y", column_axis_to_py(py, slf.clone(), CoordinateAxis::Y)?)?;
+        dict.set_item("x", column_axis_to_py(py, slf, CoordinateAxis::X)?)?;
+        dict.set_item("y", column_axis_to_py(py, slf, CoordinateAxis::Y)?)?;
         if layout.has_z() {
-            dict.set_item("z", column_axis_to_py(py, slf.clone(), CoordinateAxis::Z)?)?;
+            dict.set_item("z", column_axis_to_py(py, slf, CoordinateAxis::Z)?)?;
         }
         if layout.has_m() {
-            dict.set_item("m", column_axis_to_py(py, slf.clone(), CoordinateAxis::M)?)?;
+            dict.set_item("m", column_axis_to_py(py, slf, CoordinateAxis::M)?)?;
         }
         if index {
             dict.set_item(

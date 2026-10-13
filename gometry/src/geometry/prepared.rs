@@ -1661,7 +1661,7 @@ pub struct ValidationIssue {
 }
 
 #[derive(Clone, Debug)]
-pub struct PolygonizeFull {
+pub(crate) struct PolygonizeFull {
     pub polygons: Vec<Shape>,
     pub cuts: Vec<Vec<Shape>>,
     pub dangles: Vec<Vec<Shape>>,

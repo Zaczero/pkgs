@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Ellipsoidal rhumb-line (loxodrome) solutions on the CRS ellipsoid.
 //!
 //! A rhumb line is straight in Mercator space, so the inverse problem reads

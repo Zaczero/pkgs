@@ -13,6 +13,10 @@ pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> 
 
 /// Resolve the two exact chart aliases of a quotient seam from the incoming
 /// edge. Pole aliases remain interchangeable. No neighborhood is snapped.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn resolve_seam_aliases(coords: &mut [Point]) {
     let Some(last) = coords.last() else {
         return;
@@ -287,6 +291,10 @@ pub(in crate::geometry) fn segment_coords_with_occurrences<M: ChartMetric>(
 /// interior occupies, which neither neighbour alone determines. A run that
 /// returns to its entry latitude on the side it entered from only touches the
 /// seam.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     points: &[Point],
     frame: GeographicFrame,
@@ -423,6 +431,10 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
 }
 
 /// Whether consecutive ring vertices trace an edge along the seam.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 pub(crate) fn ring_follows_seam(points: &[Point]) -> bool {
     points
         .array_windows::<2>()
@@ -430,10 +442,18 @@ pub(crate) fn ring_follows_seam(points: &[Point]) -> bool {
 }
 
 /// A seam vertex other than a pole, where every longitude is the same point.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn on_seam(point: Point) -> bool {
     point.x.abs() == 180.0 && point.y.abs() != 90.0
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn is_chart_pole(point: Point, frame: GeographicFrame) -> bool {
     point.y == frame.chart_pole_latitude(ChartPole::North)
         || point.y == frame.chart_pole_latitude(ChartPole::South)
@@ -454,6 +474,10 @@ fn seam_side(neighbour: Point, vertex: Point) -> f64 {
 
 /// Close `piece` at the seam and open the next one when the chart edge from
 /// `start` to `end` transits it.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn split_transit<M: ChartMetric>(
     piece: &mut Vec<Point>,
     pieces: &mut Vec<Vec<Point>>,
@@ -570,6 +594,10 @@ fn crossing_points<M: ChartMetric>(
 /// The endpoints are canonical chart longitudes, with `west` below `east`.
 /// A seam endpoint remains exact; otherwise the rational parameter follows
 /// the edge's retained periodic branch.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn crossing_latitude_and_parameter(
     west: Point,
     east: Point,

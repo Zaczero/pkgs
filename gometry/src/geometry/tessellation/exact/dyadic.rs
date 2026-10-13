@@ -9,7 +9,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
-use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
+use super::{ExactPoint, GeometryErrorKind, ResourceError, Result, XY};
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(all(test, debug_assertions))]
 use crate::test_support::exact_operation_counts;
 use crate::work::{Unmetered, Work};
@@ -398,7 +399,7 @@ impl ExactDyadic {
         })
     }
 
-    pub(crate) fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::zero(),
@@ -406,7 +407,7 @@ impl ExactDyadic {
         }
     }
 
-    pub(crate) fn one() -> Self {
+    pub(crate) const fn one() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::single(1),

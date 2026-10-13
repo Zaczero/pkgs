@@ -139,7 +139,7 @@ impl PyCellArray {
     /// numpy.ndarray
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__(
-        slf: Bound<'_, Self>,
+        slf: &Bound<'_, Self>,
         dtype: Option<&Bound<'_, PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
@@ -297,8 +297,8 @@ impl PyCellArray {
     /// >>> assert cell is not None
     /// >>> type(gm.CellArray([cell]).to_numpy()).__name__
     /// 'ndarray'
-    fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let owner = slf.clone().into_any();
+    fn to_numpy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let owner = (*slf).clone().into_any();
         let borrowed = slf.borrow();
         if borrowed.kind() == GridKind::GeohashCell
             || (0..borrowed.len()).any(|row| borrowed.is_row_missing(row))

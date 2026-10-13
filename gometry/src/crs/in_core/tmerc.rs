@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Poder/Engsager exact transverse Mercator — the algorithm behind PROJ's
 //! `utm`/`etmerc` (ported from PROJ 9.8 `src/projections/tmerc.cpp`).
 

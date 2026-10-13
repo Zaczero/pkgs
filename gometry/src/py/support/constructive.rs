@@ -334,7 +334,7 @@ pub(crate) fn py_polygonize_full(
     full: PolygonizeFull,
     crs: Option<&Crs>,
     epoch: Option<f64>,
-    missing: Option<ValidityMask>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
     let frame = match Frame::new(crs.cloned(), epoch) {
         Ok(frame) => frame,
@@ -344,7 +344,7 @@ pub(crate) fn py_polygonize_full(
         },
     };
     let result_type = polygonize_result_type(py)?;
-    let parts = Groups::polygonize_full_parts(full, frame, missing)?;
+    let parts = Groups::polygonize_full_parts(full, &frame, missing)?;
     let result = result_type.call1(parts)?;
     Ok(result.unbind())
 }

@@ -5,7 +5,7 @@ use rstar::{AABB, Envelope as _};
 
 use crate::collections::{try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::publication::{
     FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, finish_geographic,

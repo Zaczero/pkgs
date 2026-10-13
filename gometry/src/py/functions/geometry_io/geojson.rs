@@ -34,7 +34,7 @@ enum OwnedGeoJsonRow {
 }
 
 fn decode_geojson_value(
-    parsed: Value,
+    parsed: &Value,
     crs: Option<Crs>,
     epoch: Option<f64>,
 ) -> crate::error::Result<DecodedGeoJson> {
@@ -45,14 +45,14 @@ fn decode_geojson_value(
         == Some("FeatureCollection")
     {
         let fixed = io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref());
-        let features = geojson_feature_collection(&parsed)?
+        let features = geojson_feature_collection(parsed)?
             .expect("type checked before detached FeatureCollection parse");
-        io::GeoJsonCrs::new(fixed).reconcile_tree(&parsed)?;
+        io::GeoJsonCrs::new(fixed).reconcile_tree(parsed)?;
         let geometries = feature_value_array(features, crs, epoch)?;
         return Ok(DecodedGeoJson::Array(geometries));
     }
     let Some((shape, frame)) = coerce_geojson_geometry_value(
-        &parsed,
+        parsed,
         GeoJsonDecodeContext::GeometryLike,
         io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref()),
         epoch,
@@ -67,22 +67,22 @@ fn decode_geojson_value(
 }
 
 fn decode_geojson_text(
-    text: PyBackedStr,
+    text: &PyBackedStr,
     crs: Option<Crs>,
     epoch: Option<f64>,
 ) -> crate::error::Result<DecodedGeoJson> {
     let text: &str = text.as_ref();
     let parsed = support::deserialize_json(text.as_bytes())?;
-    decode_geojson_value(parsed, crs, epoch)
+    decode_geojson_value(&parsed, crs, epoch)
 }
 
 fn decode_geojson_bytes(
-    bytes: OwnedBytes,
+    bytes: &OwnedBytes,
     crs: Option<Crs>,
     epoch: Option<f64>,
 ) -> crate::error::Result<DecodedGeoJson> {
     let parsed = support::deserialize_json(bytes.as_slice())?;
-    decode_geojson_value(parsed, crs, epoch)
+    decode_geojson_value(&parsed, crs, epoch)
 }
 
 fn decoded_geojson_into_py(py: Python<'_>, decoded: DecodedGeoJson) -> PyResult<Py<PyAny>> {
@@ -94,8 +94,8 @@ fn decoded_geojson_into_py(py: Python<'_>, decoded: DecodedGeoJson) -> PyResult<
     }
 }
 
-fn parse_geojson_row_owned(
-    value: Option<Value>,
+fn parse_geojson_row(
+    value: Option<&Value>,
     row: usize,
     crs: Option<&Crs>,
 ) -> crate::error::Result<StreamedShape> {
@@ -104,7 +104,7 @@ fn parse_geojson_row_owned(
     };
     let path = format!("$[{row}]");
     let Some((shape, _)) = coerce_geojson_geometry_value_at(
-        &value,
+        value,
         GeoJsonDecodeContext::NullableRow,
         io::LegacyGeoJsonCrsPolicy::Fixed(crs.map(AsRef::as_ref)),
         None,
@@ -126,17 +126,17 @@ fn parse_geojson_concrete_row(
     crs: Option<&Crs>,
 ) -> crate::error::Result<StreamedShape> {
     match row {
-        OwnedGeoJsonRow::Missing => parse_geojson_row_owned(None, index, crs),
+        OwnedGeoJsonRow::Missing => parse_geojson_row(None, index, crs),
         OwnedGeoJsonRow::Text(text) => {
             let text: &str = text.as_ref();
             let value = support::deserialize_json(text.as_bytes())?;
-            parse_geojson_row_owned(Some(value), index, crs)
+            parse_geojson_row(Some(&value), index, crs)
         },
         OwnedGeoJsonRow::Bytes(bytes) => {
             let value = support::deserialize_json(bytes.as_slice())?;
-            parse_geojson_row_owned(Some(value), index, crs)
+            parse_geojson_row(Some(&value), index, crs)
         },
-        OwnedGeoJsonRow::Value(value) => parse_geojson_row_owned(Some(value), index, crs),
+        OwnedGeoJsonRow::Value(value) => parse_geojson_row(Some(&value), index, crs),
     }
 }
 
@@ -254,7 +254,7 @@ pub(crate) fn from_geojson(
     if let Ok(text) = data.cast::<PyString>() {
         let text: PyBackedStr = text.extract()?;
         let crs_for_parse = crs;
-        let decoded = py.detach(move || decode_geojson_text(text, crs_for_parse, parsed_epoch))?;
+        let decoded = py.detach(move || decode_geojson_text(&text, crs_for_parse, parsed_epoch))?;
         return decoded_geojson_into_py(py, decoded);
     }
     if is_py_bytes_or_bytearray(data)? {
@@ -265,7 +265,7 @@ pub(crate) fn from_geojson(
         };
         let crs_for_parse = crs;
         let decoded =
-            py.detach(move || decode_geojson_bytes(bytes, crs_for_parse, parsed_epoch))?;
+            py.detach(move || decode_geojson_bytes(&bytes, crs_for_parse, parsed_epoch))?;
         return decoded_geojson_into_py(py, decoded);
     }
     // One classifier: retain the acquired iterator (no double try_iter) and
@@ -343,7 +343,7 @@ pub(crate) fn from_geojson(
     // direct serde seed used to make text a second geometry parser, which
     // produced different paths and error details from mappings/interfaces.
     let parsed = parse_geojson_geometry_value(data)?;
-    let decoded = py.detach(move || decode_geojson_value(parsed, crs, parsed_epoch))?;
+    let decoded = py.detach(move || decode_geojson_value(&parsed, crs, parsed_epoch))?;
     decoded_geojson_into_py(py, decoded)
 }
 

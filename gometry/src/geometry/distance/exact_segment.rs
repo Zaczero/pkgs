@@ -120,7 +120,7 @@ pub(super) struct UnreducedRatio {
 }
 
 impl UnreducedRatio {
-    pub(super) fn zero() -> Self {
+    pub(super) const fn zero() -> Self {
         Self {
             numerator: ExactDyadic::zero(),
             denominator: ExactDyadic::one(),

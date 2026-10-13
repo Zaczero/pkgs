@@ -56,6 +56,10 @@ impl PyS2Cell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable S2 cell property through a borrowed receiver"
+    )]
     fn level(&self) -> u8 {
         self.cell.depth()
     }
@@ -66,6 +70,10 @@ impl PyS2Cell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable S2 cell property through a borrowed receiver"
+    )]
     const fn id(&self) -> u64 {
         self.cell.raw()
     }
@@ -76,6 +84,10 @@ impl PyS2Cell {
     /// -------
     /// str
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable S2 cell property through a borrowed receiver"
+    )]
     fn token(&self) -> String {
         self.cell.token()
     }

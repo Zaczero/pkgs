@@ -41,6 +41,7 @@ impl PyH3Vertex {
     /// -------
     /// int
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn id(&self) -> u64 {
         self.vertex.into()
     }
@@ -51,6 +52,7 @@ impl PyH3Vertex {
     /// -------
     /// int
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     const fn nbytes(&self) -> usize {
         std::mem::size_of::<VertexIndex>()
     }
@@ -66,6 +68,7 @@ impl PyH3Vertex {
     /// -------
     /// str
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn token(&self) -> String {
         self.vertex.to_string()
     }
@@ -77,6 +80,7 @@ impl PyH3Vertex {
     /// Point
     ///     Longitude/latitude point tagged ``OGC:CRS84``.
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn point(&self) -> Typed {
         let latlng = LatLng::from(self.vertex);
         PyGeometry::typed_wgs84(Shape::Point(Point::new_raw_xy(
@@ -85,31 +89,38 @@ impl PyH3Vertex {
         )))
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __int__(&self) -> u64 {
         self.vertex.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __index__(&self) -> u64 {
         self.vertex.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __hash__(&self) -> u64 {
         self.vertex.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __richcmp__(&self, other: &Self, op: pyo3::basic::CompareOp) -> bool {
         op.matches(u64::from(self.vertex).cmp(&u64::from(other.vertex)))
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __repr__(&self) -> String {
         format!("<H3Vertex {}>", self.vertex)
     }
 
     /// The vertex's token — ``print(vertex)`` reads as data.
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __str__(&self) -> String {
         self.vertex.to_string()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (u64,))> {
         Ok((
             crate::gometry_lib_module(py)?
@@ -175,6 +186,7 @@ impl PyH3Edge {
     /// -------
     /// int
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn id(&self) -> u64 {
         self.edge.into()
     }
@@ -185,6 +197,7 @@ impl PyH3Edge {
     /// -------
     /// int
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     const fn nbytes(&self) -> usize {
         std::mem::size_of::<DirectedEdgeIndex>()
     }
@@ -200,6 +213,7 @@ impl PyH3Edge {
     /// -------
     /// str
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn token(&self) -> String {
         self.edge.to_string()
     }
@@ -210,6 +224,7 @@ impl PyH3Edge {
     /// -------
     /// H3Cell
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn origin(&self) -> PyH3Cell {
         PyH3Cell {
             cell: self.edge.origin(),
@@ -222,6 +237,7 @@ impl PyH3Edge {
     /// -------
     /// H3Cell
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn destination(&self) -> PyH3Cell {
         PyH3Cell {
             cell: self.edge.destination(),
@@ -244,6 +260,7 @@ impl PyH3Edge {
 /// >>> edge = cell.edge(neighbor)
 /// >>> edge.reverse().token
     /// '137283082cffffff'
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
 fn reverse(&self) -> Self {
         Self {
             edge: self.edge.reverse(),
@@ -257,6 +274,7 @@ fn reverse(&self) -> Self {
     /// LineString
     ///     Longitude/latitude line tagged ``OGC:CRS84``.
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn line(&self) -> PyResult<Typed> {
         let points: Vec<Point> = self
             .edge
@@ -289,35 +307,43 @@ fn reverse(&self) -> Self {
 /// >>> 1000 < edge.length < 3000
     /// True
     #[getter]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn length(&self) -> f64 {
         self.edge.length_m()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __int__(&self) -> u64 {
         self.edge.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __index__(&self) -> u64 {
         self.edge.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __hash__(&self) -> u64 {
         self.edge.into()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __richcmp__(&self, other: &Self, op: pyo3::basic::CompareOp) -> bool {
         op.matches(u64::from(self.edge).cmp(&u64::from(other.edge)))
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __repr__(&self) -> String {
         format!("<H3Edge {}>", self.edge)
     }
 
     /// The edge's token — ``print(edge)`` reads as data.
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __str__(&self) -> String {
         self.edge.to_string()
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "PyO3 requires borrowed receivers and comparison operands for these immutable H3 value classes")]
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (u64,))> {
         Ok((
             crate::gometry_lib_module(py)?

@@ -984,7 +984,7 @@ impl PyGeometry {
         }
     }
 
-    pub(crate) fn from_prepared_plan(plan: Arc<PreparedPlan>, frame: Frame) -> Self {
+    pub(crate) fn from_prepared_plan(plan: &PreparedPlan, frame: Frame) -> Self {
         Self {
             shape: Arc::clone(plan.shape_arc()),
             row_products: RowProducts::fresh(1),

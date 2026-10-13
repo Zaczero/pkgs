@@ -357,6 +357,10 @@ impl PySpatialIndex {
     /// array query rows (free-threading: never a receiver cache or lock).
     /// `leaf_frontier` is bounded scratch for one static leaf and is likewise
     /// reused across rows.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the all-ties pass shares one query resolver and reusable frontier state across both traversals"
+    )]
     pub(crate) fn geodesic_nearest_core_ties(
         &self,
         metric: &crs::MetricModel,
@@ -401,6 +405,10 @@ impl PySpatialIndex {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the geodesic traversal keeps its resolved query, limits, cache resolver, and borrowed scratch states explicit"
+    )]
     pub(crate) fn geodesic_nearest_core(
         &self,
         metric: &crs::MetricModel,

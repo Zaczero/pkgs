@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use std::ops::Range;
 
 use crate::error::Result;
@@ -1089,7 +1085,7 @@ mod mask_selection_tests {
 #[cfg(test)]
 mod work_funded_constructor_tests {
     use super::*;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 
     struct RecordingWork {
         budget: EvaluationBudget,

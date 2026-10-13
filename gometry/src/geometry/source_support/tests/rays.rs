@@ -189,6 +189,7 @@ fn exact_node_keeps_node_identity_and_late_ordinate_failures() {
     }
 
     #[test]
+#[expect(clippy::float_cmp, reason = "exact source-coordinate equality distinguishes contact from an open ray crossing")]
 fn exact_overlay_retains_xy_collinear_ordinate_knots() {
         let source = shape("POLYGON Z ((0 0 0,1 0 1,2 0 2,2 2 3,0 2 4,0 0 0))");
         let result = crate::geometry::overlay_all(

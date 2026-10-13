@@ -118,20 +118,25 @@ pub(in crate::geometry) use areal::ray_crossing;
 pub(crate) use assembly::merge_chains;
 pub(crate) use clip::intersect_rectangular_polygonal;
 pub(super) use clip::polygon_parts_to_shape;
-#[cfg(test)]
-pub(crate) use exact_partition::cartesian_support_nonempty;
+pub(in crate::geometry) use exact_partition::model::{
+    ExactChainView, ExactMetricSpan, ExactMetricSupport, ExactPartition, ExactSourceInventory,
+    NodeId, StagedExactSources, StagedRelationItem, StagedSourceComponent,
+};
+pub(in crate::geometry) use exact_partition::operations::clip_polygonal_rectangle;
+pub(in crate::geometry) use exact_partition::serialize::ExactLineEmission;
 pub(in crate::geometry) use exact_partition::subdivision::{
     SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,
 };
-pub(in crate::geometry) use exact_partition::{
-    AreaLocationStrategy, ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport,
-    ExactPartition, ExactPointForest, ExactSourceInventory, NodeId, OverlayNodeReceipt,
-    OverlayPolygonPartWithSources, OverlaySourceEdgeUse, StagedExactSources, StagedRelationItem,
-    StagedSourceComponent, clip_polygonal_rectangle, emitted_pair_preserves_incidence,
-    homogeneous_midpoint, segments_within_chebyshev, walk_is_shell_with_work,
-};
-pub(crate) use exact_partition::{
+#[cfg(test)]
+pub(crate) use exact_partition::support_queries::cartesian_support_nonempty;
+pub(crate) use exact_partition::support_queries::{
     exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,
+};
+pub(in crate::geometry) use exact_partition::winding::homogeneous_midpoint;
+pub(in crate::geometry) use exact_partition::{
+    AreaLocationStrategy, ExactPointForest, OverlayNodeReceipt, OverlayPolygonPartWithSources,
+    OverlaySourceEdgeUse, emitted_pair_preserves_incidence, segments_within_chebyshev,
+    walk_is_shell_with_work,
 };
 #[cfg(test)]
 pub(in crate::geometry) use exact_partition::{

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Kernels that consume resolved packed columns: CRS transform, per-row
 //! bounds, segmentize/densify, per-row affine, and packed length reduction.
 //!

@@ -438,8 +438,8 @@ impl OwnerRingForest {
         let mut nearest_positive = vec![None; rings.len()];
         let mut clock = 0;
         let mut stack = Vec::with_capacity(rings.len().saturating_mul(2));
-        for root in 0..rings.len() {
-            if parent[root].is_some() {
+        for (root, parent_of_root) in parent.iter().enumerate() {
+            if parent_of_root.is_some() {
                 continue;
             }
             stack.push((root, false, None));
@@ -656,7 +656,13 @@ pub(super) fn assemble_owner_parts(
     );
     let mut rings = taken;
     for (slot, positive) in positives.into_iter().enumerate() {
-        let shell = rings[ring_indices[positive]].take().unwrap();
+        let shell_ring_index = *ring_indices
+            .get(positive)
+            .ok_or_else(|| voronoi_error("positive face ring has no backing ring"))?;
+        let shell = rings
+            .get_mut(shell_ring_index)
+            .and_then(Option::take)
+            .ok_or_else(|| voronoi_error("exact face shell ring was absent or already consumed"))?;
         let hole_indices = std::mem::take(&mut holes_by_shell[slot]);
         #[expect(
             clippy::arithmetic_side_effects,
@@ -667,11 +673,18 @@ pub(super) fn assemble_owner_parts(
         cycle_rings.push(positive);
         cycle_rings.extend_from_slice(&hole_indices);
         let mut holes = Vec::with_capacity(hole_indices.len());
-        holes.extend(
-            hole_indices
-                .iter()
-                .map(|&hole| rings[ring_indices[hole]].take().unwrap()),
-        );
+        for &hole in &hole_indices {
+            let ring_index = *ring_indices
+                .get(hole)
+                .ok_or_else(|| voronoi_error("hole face ring has no backing ring"))?;
+            let ring = rings
+                .get_mut(ring_index)
+                .and_then(Option::take)
+                .ok_or_else(|| {
+                    voronoi_error("exact face hole ring was absent or already consumed")
+                })?;
+            holes.push(ring);
+        }
         drop(hole_indices);
         if walk_label(subdivision, shell.face).owner != Some(owner)
             || holes

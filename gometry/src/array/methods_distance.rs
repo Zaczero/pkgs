@@ -1,8 +1,3 @@
-#![expect(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
-)]
-
 use crate::array::{
     Arc, BoundsSeed, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point,
     PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
@@ -19,9 +14,9 @@ use crate::geometry::storage::{
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq, storage};
 
-fn point_from_unary_shape(shape: Shape) -> Point {
+fn point_from_unary_shape(shape: &Shape) -> Point {
     match shape {
-        Shape::Point(point) => point,
+        Shape::Point(point) => *point,
         Shape::Empty(GeometryKind::Point, _) => Point::new_raw_xy(f64::NAN, f64::NAN),
         Shape::MultiPoint(_)
         | Shape::LineString(_)
@@ -46,7 +41,7 @@ fn packed_point_row(
     if crosses_antimeridian {
         let shape = shape()?;
         Ok(point_from_unary_shape(
-            crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
+            &crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
         ))
     } else {
         column_point()
@@ -61,7 +56,7 @@ fn packed_polygon_crossing_point(
 ) -> Result<Point> {
     let shape = row.to_shape()?;
     Ok(point_from_unary_shape(
-        crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
+        &crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
     ))
 }
 

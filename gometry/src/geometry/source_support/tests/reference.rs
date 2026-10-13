@@ -274,6 +274,7 @@ impl LocalStar<'_, '_> {
         clippy::arithmetic_side_effects,
         reason = "nonempty groups and bounded cyclic offsets keep group ordinals representable"
     )]
+    #[expect(clippy::float_cmp, reason = "exact source-coordinate equality distinguishes contact from an open ray crossing")]
     fn location(&mut self) -> Loc {
         if self.groups.is_empty() {
             return self.location_without_rays();

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! SVG rendering of geometries for Jupyter/`_repr_svg_`. Pure geometry →
 //! string; no `PyO3`. The Y axis is flipped so geographic north points up.
 

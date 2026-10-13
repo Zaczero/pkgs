@@ -312,7 +312,7 @@ impl PyGeometryArray {
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         // A packed array can still contain a million-vertex row; walk the
         // pure-Rust deduplication detached just like the packed linref lanes.
-        self.map_shapes_detached(py, |shape| shape.unique_points())
+        self.map_shapes_detached(py, crate::geometry::Shape::unique_points)
     }
 
     pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> PyResult<Self> {

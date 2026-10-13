@@ -11,8 +11,9 @@ use super::{
     VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
     VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY,
     empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact, exact_chart_point, lex_xy,
-    retained_site_longitude, try_hash_map_with_capacity, voronoi_error,
+    try_hash_map_with_capacity, voronoi_error,
 };
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 
 mod collinear;
 
@@ -378,7 +379,7 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
     })
 }
 
-pub(super) fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
+pub(super) const fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
     match side {
         FrameSide::Bottom => VoronoiFrameSide::Bottom,
         FrameSide::Right => VoronoiFrameSide::Right,

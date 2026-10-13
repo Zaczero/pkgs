@@ -221,6 +221,10 @@ fn require_geometry_contract(
     Ok(geometry)
 }
 
+#[expect(
+    clippy::redundant_closure_for_method_calls,
+    reason = "PresentRow is private to array::prepared; the closure avoids exposing that implementation type"
+)]
 fn require_array_contract(
     mut array: PyGeometryArray,
     expected: Option<&Crs>,

@@ -1,8 +1,7 @@
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::ordinates::{
-    AxisValue, NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, SourceArcRequest,
-    source_arc_ordinates,
+    AxisValue, NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, resolve_source_root,
 };
 use crate::geometry::publication::ChartRestriction;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -145,21 +144,16 @@ impl LineageCatalog {
                         "split lineage references an unknown edge metric".into(),
                     )
                 })?;
-                let request =
-                    SourceArcRequest::new(frame, points, axes, parameter, || Ok(*longitude))?;
                 let mut fraction = None;
                 let mut work = Unmetered;
                 let mut metric_state = metric.get();
-                let ordinates = source_arc_ordinates(
-                    &request,
-                    || {
-                        let access = metric_access.ok_or_else(|| {
-                            crate::crs::CrsError::invalid(
-                                "antimeridian lineage resolution requires the source CRS metric",
-                            )
-                        })?;
-                        access()
-                    },
+                let ordinates = resolve_source_root(
+                    frame,
+                    points,
+                    *longitude,
+                    parameter,
+                    axes,
+                    metric_access,
                     &mut metric_state,
                     &mut fraction,
                     &mut work,

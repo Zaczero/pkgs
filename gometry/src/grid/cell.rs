@@ -67,7 +67,7 @@ pub(crate) trait GridCell: HierarchicalCell + Copy + Eq + Ord + Send + Sync {
     fn neighbors(self) -> Vec<Self>;
     fn parent_at(self, depth: u8) -> Option<Self>;
     fn children_to(self, depth: u8) -> crate::error::Result<Vec<Self>> {
-        cell_set::uncompact(&[self], depth).map(|cells| cells.into_public_vec())
+        cell_set::uncompact(&[self], depth).map(cell_set::CanonicalCellSet::into_public_vec)
     }
     fn contains_cell(self, other: Self) -> bool {
         HierarchicalCell::contains(self, other)

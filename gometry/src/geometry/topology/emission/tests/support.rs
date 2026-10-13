@@ -1,13 +1,12 @@
-use crate::work::Work;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use super::*;
-use crate::work::Unmetered;
-use crate::geometry::embedding_completion::{
-    ExactPoints, LiteralRowAddress, admit_known_graph, visit_shape_literals,
-};
+use crate::geometry::embedding_completion::admission::admit_known_graph;
+use crate::geometry::embedding_completion::literals::{LiteralRowAddress, visit_shape_literals};
+use crate::geometry::embedding_completion::points::ExactPoints;
 use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
+use crate::work::{Unmetered, Work};
 
 const EMISSION_STORAGE_OPERATION: &str = "emission_storage_test";
 
@@ -53,8 +52,7 @@ impl Work for RecordedWork<'_> {
             .checked_mul(u128::try_from(ticks_per_item).expect("usize fits u128"))
             .expect("recorded work product fits u128");
         let spent_before = self.spent;
-        let result =
-            <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+        let result = <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
         self.charges.push(RecordedWorkCharge {
             spent_before,
             ticks,
@@ -138,11 +136,7 @@ struct RecordingWork {
 impl RecordingWork {
     fn with_remaining(operation: &'static str, remaining_ticks: u128) -> Result<Self> {
         Ok(Self {
-            budget: EvaluationBudget::with_remaining_ticks_for_test(
-                operation,
-                1,
-                remaining_ticks,
-            )?,
+            budget: EvaluationBudget::with_remaining_ticks_for_test(operation, 1, remaining_ticks)?,
             attempted: Vec::new(),
             accepted: Vec::new(),
         })
@@ -202,9 +196,6 @@ fn endpoint_test_topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
     ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
 }
 
-
-
-
 fn materialize_test_line(
     axes: CoordinateAxes,
     work: &mut impl Work,
@@ -253,11 +244,8 @@ fn materialize_test_drawing(
         .ok_or_else(|| GeometryErrorKind::Invalid("test end port is missing".into()))?
         .node;
     let mut setup_work = Unmetered;
-    let node_registry = EmissionNodeRegistry::with_sources(
-        &topology,
-        &[start_node, end_node],
-        &mut setup_work,
-    )?;
+    let node_registry =
+        EmissionNodeRegistry::with_sources(&topology, &[start_node, end_node], &mut setup_work)?;
     let start_emission_node = node_registry.source_node(start_node)?;
     let end_emission_node = node_registry.source_node(end_node)?;
     let frame = topology.sources.frame;
@@ -464,11 +452,11 @@ fn resolve_native_root_occurrences<M: ChartMetric>(
     strict: bool,
 ) -> Result<(Vec<NodeOrdinates>, CoordinateAxes)> {
     let mut work = Unmetered;
-    let q_port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("source-root test Q port is unknown".into())
-    })?;
-    let node_registry =
-        EmissionNodeRegistry::with_sources(topology, &[q_port.node], &mut work)?;
+    let q_port =
+        topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source-root test Q port is unknown".into())
+        })?;
+    let node_registry = EmissionNodeRegistry::with_sources(topology, &[q_port.node], &mut work)?;
     let node = node_registry.source_node(q_port.node)?;
     let mut requests = Vec::with_capacity(root_requests.len());
     for (root, parameter) in root_requests {
@@ -533,8 +521,7 @@ fn resolve_native_root_occurrences<M: ChartMetric>(
     reason = "source-root coordinates are exact stored values, and the fixture rejects horizontal edges"
 )]
 fn source_edge_varies_in_latitude_and_ordinates(source: &[Point; 2]) -> bool {
-    source[0].y != source[1].y
-        && (source[0].z() != source[1].z() || source[0].m() != source[1].m())
+    source[0].y != source[1].y && (source[0].z() != source[1].z() || source[0].m() != source[1].m())
 }
 
 fn source_requests_at_shared_port(

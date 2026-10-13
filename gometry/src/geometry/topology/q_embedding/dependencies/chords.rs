@@ -8,8 +8,9 @@ use super::super::{
     for_each_overlapping_bounds_cross_pair_with_work, port_swept_radius, proximity_limit,
     publication_leaf_replaces_source_span, quotient_key_for_chart_position_with_work,
     rounded_chart_point_with_work, segments_within_chebyshev, shifted_segment,
-    split_rational_native_site_with_work, try_sort_by_with_work,
+    try_sort_by_with_work,
 };
+use crate::geographic::retained_exact::sites::split_rational_native_site_with_work;
 use crate::work::Work;
 
 #[derive(Clone)]

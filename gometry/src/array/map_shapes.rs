@@ -6,7 +6,7 @@ use crate::array::packed_ops::{
     PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
 use crate::array::{Arc, ComputedCaches, StorageLayout};
-use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
 /// collect either replacement shapes or optional replacements without an
@@ -21,7 +21,7 @@ where
     let mut output = Vec::with_capacity(
         array
             .missing()
-            .map_or(array.len(), |mask| mask.present_count()),
+            .map_or(array.len(), ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
         let logical = row.logical();
@@ -252,7 +252,6 @@ mod tests {
     use super::*;
     use crate::crs::frame::Frame;
     use crate::geometry::Point;
-    use crate::geometry::storage::ValidityMask;
 
     fn mixed_with_missing() -> PyGeometryArray {
         let shapes = (0..3)

@@ -1,8 +1,3 @@
-#![expect(
-    clippy::many_single_char_names,
-    reason = "the segment metric follows the standard closest-points notation"
-)]
-
 use crate::error::Result;
 use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio};
 use crate::geometry::{DdInterval, GeometryErrorKind, Ordering, dd_strict_cmp};

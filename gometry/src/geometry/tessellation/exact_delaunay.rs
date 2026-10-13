@@ -17,11 +17,6 @@
 //! `halfedges[e]` is the twin slot or `EMPTY`, and `hull` is the counter-
 //! clockwise hull cycle.
 
-#![expect(
-    clippy::many_single_char_names,
-    reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
-)]
-
 use std::hash::Hash;
 
 use mesh::{bounds, hilbert16};

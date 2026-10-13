@@ -418,7 +418,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         let longitude = source_frame
             .longitude()
             .chart_connection(start.x, end.x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         let edge = crate::crs::ChartEdge::from_retained(start, end, source_frame, longitude)?;
         let (projection, query, segment) = edge.project_source_chart(point)?;
@@ -1090,7 +1090,7 @@ fn carry_or_degrade(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::embedding_search::account::EvaluationBudget;
     use crate::geometry::{Coordinates as _, LineSeq};
 
     fn xy_source_line() -> Shape {

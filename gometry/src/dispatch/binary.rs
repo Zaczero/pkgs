@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "left and right operands carry the same set of derived names"
-)]
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -886,11 +882,15 @@ fn invoke_topology_geometry_kernel<R, K>(
     metric: MetricCtx<'_>,
     left: &PreparedPlan,
     right: &PreparedPlan,
+    split_geographic_inputs: bool,
     kernel: &K,
 ) -> Result<R>
 where
     K: Fn(&PreparedPlan, &PreparedPlan) -> Result<R>,
 {
+    if !split_geographic_inputs {
+        return kernel(left, right);
+    }
     let (left_crosses, right_crosses) = match domain {
         TopologyDomain::Cartesian => (false, false),
         TopologyDomain::Geographic(frame) => (
@@ -952,25 +952,33 @@ fn geometry_output_shape(output: GeometryOutput) -> Result<Shape> {
     }
 }
 
-/// Geometry-returning binary dispatch with topology split.
+/// Geometry-returning binary dispatch with optional geographic input splitting.
 pub(crate) fn dispatch_binary_geometry<R: Into<GeometryOutput>>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: MetricResolver,
+    split_geographic_inputs: bool,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let left = crate::normalize_geometry_batch(py, left)?;
     let right = crate::normalize_geometry_batch(py, right)?;
     let admission = admit_binary(&left, &right, op_name)?;
-    dispatch_binary_geometry_admitted_with_resolver(py, &admission, resolver, kernel)
+    dispatch_binary_geometry_admitted_with_resolver(
+        py,
+        &admission,
+        resolver,
+        split_geographic_inputs,
+        kernel,
+    )
 }
 
 pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOutput>>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     resolver: MetricResolver,
+    split_geographic_inputs: bool,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
@@ -1001,6 +1009,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                     metric,
                     &left_shape,
                     &right_shape,
+                    split_geographic_inputs,
                     &|l, r| kernel(l, r, &ctx),
                 )
                 .and_then(|output| geometry_output_shape(output.into()))
@@ -1023,12 +1032,16 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                             return Err(error);
                         },
                     };
-                let left_fixed = match split_operand_arc_for_topology(domain, left, metric) {
-                    Ok(left_fixed) => left_fixed,
-                    Err(error) => {
-                        drop(metric_scratch);
-                        return Err(PyErr::from(error));
-                    },
+                let left_fixed = if split_geographic_inputs {
+                    match split_operand_arc_for_topology(domain, left, metric) {
+                        Ok(left_fixed) => left_fixed,
+                        Err(error) => {
+                            drop(metric_scratch);
+                            return Err(PyErr::from(error));
+                        },
+                    }
+                } else {
+                    left.prepared_plan()
                 };
                 // Overlay rows use transient plans and retain no frame cache;
                 // geographic carry keeps its lazy metric scratch call-local.
@@ -1046,6 +1059,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                             metric,
                             &left_fixed,
                             &right_data,
+                            split_geographic_inputs,
                             &|l, r| kernel(l, r, ctx),
                         )
                     },
@@ -1061,7 +1075,13 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
             let result = {
                 let (domain, metric) = resolver.resolve_topology_ctx(&frame, &mut scratch)?;
                 geometry_kernel_over_array_admitted(
-                    py, left, right_in, &frame, domain, metric, kernel,
+                    py,
+                    left,
+                    right_in,
+                    domain,
+                    metric,
+                    split_geographic_inputs,
+                    kernel,
                 )
             };
             drop(scratch);
@@ -1075,15 +1095,16 @@ fn geometry_kernel_over_array_admitted<R: Into<GeometryOutput>, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: GeometryInput<'_>,
-    frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
+    split_geographic_inputs: bool,
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     use GeometryInput::{Many, One};
+    let frame = &left.frame;
     let row_box = |bounds: &Option<crate::array::ElementBounds>,
                    row: usize|
      -> Option<crate::geometry::Bounds> {
@@ -1096,9 +1117,13 @@ where
 
     match right {
         One(right) => {
-            let right_shape = match split_operand_arc_for_topology(domain, right, metric) {
-                Ok(right_shape) => right_shape,
-                Err(error) => return Err(PyErr::from(error)),
+            let right_shape = if split_geographic_inputs {
+                match split_operand_arc_for_topology(domain, right, metric) {
+                    Ok(right_shape) => right_shape,
+                    Err(error) => return Err(PyErr::from(error)),
+                }
+            } else {
+                right.prepared_plan()
             };
             // Transient row plans retain no frame caches; any geographic carry
             // metric scratch belongs only to this operation.
@@ -1116,6 +1141,7 @@ where
                         metric,
                         &left_data,
                         &right_shape,
+                        split_geographic_inputs,
                         &|l, r| kernel(l, r, ctx),
                     )
                 },
@@ -1141,6 +1167,7 @@ where
                         metric,
                         &left_data,
                         &right_data,
+                        split_geographic_inputs,
                         &|l, r| kernel(l, r, ctx),
                     )
                 },
@@ -1168,9 +1195,9 @@ where
             py,
             left,
             admission.right,
-            &admission.frame,
             admission.domain,
             metric,
+            true,
             kernel,
         )
     };
@@ -1265,6 +1292,7 @@ mod tests {
                 &right,
                 "test binary geometry",
                 MetricResolver::None,
+                true,
                 |left, _, _| Ok(left.shape().clone()),
             )
             .expect("scalar/array geometry stream");

@@ -1292,7 +1292,12 @@ fn strictly_monotone_column(values: &[f64]) -> bool {
 fn line_sequences(shape: &Shape) -> Option<Vec<&CoordSeq>> {
     match shape {
         Shape::LineString(line) => Some(vec![line.as_coords()]),
-        Shape::MultiLineString(lines) => Some(lines.iter().map(|line| line.as_coords()).collect()),
+        Shape::MultiLineString(lines) => Some(
+            lines
+                .iter()
+                .map(crate::geometry::LineSeq::as_coords)
+                .collect(),
+        ),
         Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
             Some(Vec::new())
         },

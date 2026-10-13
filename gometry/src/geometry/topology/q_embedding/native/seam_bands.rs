@@ -1,11 +1,12 @@
 use super::super::{
-    ChartPole, ExactChartPoint, ExactRational, ExactSign, GeographicFrame, GeometryErrorKind,
-    NativeAreaEdge, NativeAreaEdgeKind, NativeRayTransform, NativeReferenceGraph,
-    NativeReferenceGraphBuilder, NativeReferenceRayPoints, NativeSeamEvent, ResourceError, Result,
-    SelectedNativeSeamBand, XY, point_on_exact_segment_with_work, try_sort_by_with_work,
-    vector_cross_with_work, vector_difference_with_work,
+    ChartPole, ExactChartPoint, ExactRational, GeographicFrame, GeometryErrorKind, NativeAreaEdge,
+    NativeAreaEdgeKind, NativeRayTransform, NativeReferenceGraph, NativeReferenceGraphBuilder,
+    NativeReferenceRayPoints, NativeSeamEvent, ResourceError, Result, SelectedNativeSeamBand, XY,
+    point_on_exact_segment_with_work, try_sort_by_with_work, vector_cross_with_work,
+    vector_difference_with_work,
 };
 use crate::geometry::graph::shoot_left_with_work;
+use crate::geometry::numerics::product::ExactSign;
 use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn native_region_at_bank(
