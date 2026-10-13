@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Bounds, ExactChartPoint, ExactRational, GeographicFrame, Result, Segment,
+    exact_segments_intersect,
+};
 
 /// Spatial relation between a source and a supported, nondegenerate rectangle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

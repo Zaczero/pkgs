@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ChartSpan, ExactChartPoint, GeometryErrorKind, GlobalNodeRowSupport, HeapSize, QNode, QPort,
+    QPortId, ResourceError, Result, Segment, SegmentIndex,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::geometry::topology) enum QSpatialItem {

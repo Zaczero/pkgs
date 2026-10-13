@@ -53,9 +53,15 @@ use self::cut_index::{
     source_ring_transition, span_has_ring_transition,
 };
 use self::cut_selection::select_cut;
+#[cfg(test)]
+use self::cut_selection::{
+    chart_edge_longitude_intervals, chart_has_cut_port, select_edge_free_cut,
+};
 pub(super) use self::face_validity::QFaceValidity;
 use self::face_validity::{FaceArc, FaceOccupancyState, FaceWalkFrame};
 pub(super) use self::global_faces::global_face_structure;
+#[cfg(test)]
+use self::global_faces::north_pole_ring_windings;
 use self::global_faces::{SeedFaceGerm, build_global_face_topology};
 use self::host_sweep::{compare_span_to_query, compare_spans_at, resolve_host_queries};
 pub(super) use self::location::row_locations;
@@ -81,6 +87,8 @@ pub(super) use self::occupancy::GlobalFaceRowOccupancy;
 use self::occupancy::GlobalFaceRowProducts;
 pub(crate) use self::rectangle::ExactGeographicRectangleLocation;
 use self::rectangle::ExactQRectangleWindows;
+#[cfg(test)]
+use self::rotation::compare_q_darts;
 pub(super) use self::rotation::compare_q_darts_with_points;
 use self::rotation::{UnionFind, face_at_pole_longitude, face_in_direction};
 use self::row_support::{

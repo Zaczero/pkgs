@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    BTreeSet, Bounds, CanonicalQNodeKey, ChartPole, De9im, Dimension, ExactChartPoint,
+    ExactGeographicPointLocation, ExactGeographicQ, ExactGeographicRectangleLocation,
+    ExactGeographicTopology, ExactRational, GeometryErrorKind, GlobalFaceId, Loc, Point, QNodeId,
+    QNodeKey, QPortId, QRowLocations, QSpatialItem, ResourceError, Result, Shape, SourceRowId,
+    ValidationIssue, Work, point_on_exact_segment_with_work, q_port_node, validity,
+};
 
 impl QRowLocations<'_> {
     pub(in crate::geometry::topology) fn face(&self, face: GlobalFaceId) -> Loc {

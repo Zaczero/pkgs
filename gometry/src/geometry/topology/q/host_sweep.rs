@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ChartSpan, ExactRational, FallibleAvl, GeometryErrorKind, HostGerm, HostQuery, HostQueryTarget,
+    Ordering, QComponentId, QLocalFaceId, QNode, QPort, QuotientFaces, Result,
+};
 
 pub(in crate::geometry::topology::q) fn span_x_slope(
     ports: &[QPort],

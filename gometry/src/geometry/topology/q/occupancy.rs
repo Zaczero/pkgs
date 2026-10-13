@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    BTreeSet, ChartPole, ChartSpan, ExactGeographicChartInventory, FaceArc, FaceOccupancyState,
+    FaceWalkFrame, GeometryErrorKind, GlobalFaceId, GlobalFaceRowProducts, GlobalFaceTopology,
+    GlobalNodeRowSupport, GlobalSpanRowSupport, HeapSize, QFaceValidity, QuotientFaces,
+    ResourceError, Result, SeamBoundaryOwner, SeamOwnerSide, SourceEdgeKind, SourceRowId, Work,
+    append_explicit_node_point_support, collapsed_point_candidates,
+    collect_collapsed_shell_candidates, span_has_collapsed_shell, span_has_ring_transition,
+    trim_collapsed_points_on_face, try_sort_by_with_work,
+};
 
 #[derive(Debug)]
 /// A row occupies half-open intervals in the dual walk's face preorder.

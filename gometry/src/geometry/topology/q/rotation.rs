@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ChartPole, ChartSpan, ChartSpanId, CutChart, ExactChartPoint, ExactRational, ExactSign,
+    GeographicFrame, GeometryErrorKind, GlobalFaceId, HeapSize, Ordering, QComponentId, QDart,
+    QDartId, QFaceChart, QLocalFace, QLocalFaceId, QNodeId, QPortId, QuotientFaces, ResourceError,
+    Result, try_sort_by, vector_cross, vector_difference,
+};
 
 impl QuotientFaces {
     #[expect(
@@ -310,7 +315,7 @@ pub(in crate::geometry::topology::q) fn is_collapsed_pole_span(
     Ok(start.point.y.try_cmp(&latitude)?.is_eq() && end.point.y.try_cmp(&latitude)?.is_eq())
 }
 
-fn compare_q_darts(
+pub(in crate::geometry::topology::q) fn compare_q_darts(
     chart: QFaceChart<'_>,
     darts: &[QDart],
     left: QDartId,

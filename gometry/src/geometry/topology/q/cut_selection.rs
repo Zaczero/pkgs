@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ChartPole, ExactRational, GeographicFrame, GeometryErrorKind, NodedExactChart, Ordering,
+    Result, try_sort_by,
+};
 
 pub(in crate::geometry::topology::q) fn consider_cut_gap(
     low: &ExactRational,

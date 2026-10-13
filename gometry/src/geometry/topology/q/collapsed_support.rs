@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ChartSpan, CollapsedPointFaces, ExactGeographicChartInventory, FaceOccupancyState,
+    GeometryErrorKind, GlobalFaceId, GlobalFaceTopology, QNodeId, QuotientFaces, ResourceError,
+    Result, RingKind, SourceEdgeKind, SourcePolygonId, SourceRowId,
+};
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology::q) struct CollapsedShellCandidate {

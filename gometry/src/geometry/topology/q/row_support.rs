@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ChartSpan, ExactGeographicChartInventory, GeometryErrorKind, QuotientFaces, ResourceError,
+    Result, SourceEdgeKind, SourceRowId,
+};
 
 pub(in crate::geometry::topology::q) fn build_span_line_rows(
     sources: &ExactGeographicChartInventory,

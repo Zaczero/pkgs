@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BTreeSet, ExactGeographicChartInventory, GeometryErrorKind, GlobalFaceId, QSpanOwner,
+    ResourceError, Result, RingTransition, SeamBoundaryOwner, SourcePolygonId, SourceRingId,
+    SourceRowId, for_each_span_ring_transition,
+};
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology::q) struct FaceArc {

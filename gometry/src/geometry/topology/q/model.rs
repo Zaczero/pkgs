@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ChartPole, ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactRational,
+    ExactSourceRange, GlobalFaceRowOccupancy, GlobalNodeRowSupport, GlobalSpanRowSupport, HeapSize,
+    Loc, NodedExactChart, QFaceValidity, QSpatialIndex, QuotientNodeId, SeedFaceGerm, SourceEdgeId,
+    SourcePolygonId, SourceRingId, SourceRowId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology) struct QPortId(pub u32);

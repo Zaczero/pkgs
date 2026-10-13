@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    ChartPole, ChartSpan, ChartSpanId, CutChart, ExactChartPoint, ExactGeographicChartInventory,
+    ExactQuotientKey, ExactRational, ExactSourceRange, GeographicFrame, GeometryErrorKind,
+    NodedExactChart, Ordering, PortCandidate, QNode, QNodeId, QNodeKey, QPort, QPortId,
+    QuotientNodeId, ResourceError, Result, SourceRingId, SpanOccurrence, Work, compare_qnode_keys,
+    compare_qnode_keys_with_work, source_ring_transition, try_sort_by,
+};
 
 pub(in crate::geometry::topology::q) fn lifted_point(
     point: &ExactChartPoint,
