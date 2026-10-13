@@ -1975,8 +1975,9 @@ class Geometry:
         """
 
     def to_geojson(self, *, drop_epoch: bool = False) -> str:
-        """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
-        CRS-tagged input must use the 2D longitude/latitude family
+        """Serialize to `GeoJSON` text. GeoJSON uses OGC:CRS84 longitude/latitude
+        order under RFC 7946 and carries no source CRS label. CRS-tagged input must use
+        the 2D WGS 84 geographic family
         (``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
         (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
         input is explicitly assumed to already be WGS84 longitude/latitude:
@@ -2085,6 +2086,13 @@ class Geometry:
         max_area: _FloatScalarInput | None = None,
     ) -> GeometryArray[Polygon]:
         """Triangulate geometry with an explicit algorithm.
+
+        Geographic Delaunay and constrained triangulation use a CRS-native chart
+        for seam-crossing input without a preliminary split. Delaunay triangulates point
+        sites in that coordinate chart; it is not a spherical mesh. Constrained
+        triangulation preserves polygon boundaries and the pole selected by a polar
+        cap. Earcut follows polygon XY rings; call ``split_antimeridian`` first when a
+        geographic polygon crosses the seam or encloses a pole.
 
         Parameters
         ----------
@@ -3555,12 +3563,15 @@ class Geometry:
         tolerance: _FloatScalarInput = 0.0,
         clip: VoronoiClip | Polygon = 'padded',
     ) -> GeometryArray[LineString]:
-        """Construct a Voronoi diagram from the geometry's vertices. Operates in
-        planar longitude/latitude space and does NOT auto-split antimeridian-crossing
-        geographic input; call ``split_antimeridian`` first. Collinear vertices divide
-        the clip region into strips at their perpendicular bisectors, and a lone
-        vertex owns the whole clip polygon; the padded and envelope frames of a lone
-        vertex, or the envelope of a horizontal or vertical row, bound no cells.
+        """Construct a Voronoi diagram from the geometry's vertices. Geographic
+        sites and a supplied clip polygon use a CRS-native chart for seam crossings;
+        publication retains chart cuts and polar-cap edge roles without a preliminary
+        ``split_antimeridian``. The construction is planar in longitude/latitude
+        coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+        divide the clip region into strips at their
+        perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
+        padded and envelope frames of a lone vertex, or the envelope of a horizontal
+        or vertical row, bound no cells.
 
         Parameters
         ----------
@@ -3611,8 +3622,9 @@ class Geometry:
         follow ellipsoidal arclength along the retained source edge. An authored
         full-period edge is retained with quarter witnesses before its longitudes are
         canonicalized. The two seam aliases and a displacement of multiple periods do
-        not imply a full-period edge. A ring running off the seam closes over its pole
-        automatically. Geometries that do not cross are returned unchanged. A split
+        not imply a full-period edge. When a seam split needs polar closure, it follows
+        the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+        Geometries that do not cross are returned unchanged. A split
         ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
         ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
         existing chart edges, so ellipsoidal area and perimeter are conserved to
@@ -4021,7 +4033,9 @@ class Geometry:
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
         When returned polygons retain different coordinate axes, they remain separate
-        members of a GeometryCollection rather than being promoted or flattened.
+        members of a GeometryCollection rather than being promoted or flattened. The
+        GeometryArray method processes rows independently; to assemble linework from
+        several geometries as one area, combine them into one GeometryCollection first.
 
         Returns
         -------
@@ -8435,8 +8449,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str]: ...
     @overload
     def to_geojson(self, *, drop_epoch: bool = False) -> list[str | None]:
-        """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
-        CRS-tagged input must use the 2D longitude/latitude family
+        """Serialize to `GeoJSON` text. GeoJSON uses OGC:CRS84 longitude/latitude
+        order under RFC 7946 and carries no source CRS label. CRS-tagged input must use
+        the 2D WGS 84 geographic family
         (``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
         (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
         input is explicitly assumed to already be WGS84 longitude/latitude:
@@ -8598,6 +8613,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         max_area: FloatInput | None = None,
     ) -> Groups[GeometryArray[Polygon] | None]:
         """Triangulate each geometry with an explicit algorithm.
+
+        Geographic Delaunay and constrained triangulation use a CRS-native chart
+        for seam-crossing input without a preliminary split. Delaunay triangulates point
+        sites in that coordinate chart; it is not a spherical mesh. Constrained
+        triangulation preserves polygon boundaries and the pole selected by a polar
+        cap. Earcut follows polygon XY rings; call ``split_antimeridian`` first when a
+        geographic polygon crosses the seam or encloses a pole.
 
         Parameters
         ----------
@@ -10377,12 +10399,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
         tolerance: float = 0.0,
         clip: VoronoiClip | Polygon = 'padded',
     ) -> Groups[GeometryArray[LineString] | None]:
-        """Construct a Voronoi diagram from the geometry's vertices. Operates in
-        planar longitude/latitude space and does NOT auto-split antimeridian-crossing
-        geographic input; call ``split_antimeridian`` first. Collinear vertices divide
-        the clip region into strips at their perpendicular bisectors, and a lone
-        vertex owns the whole clip polygon; the padded and envelope frames of a lone
-        vertex, or the envelope of a horizontal or vertical row, bound no cells.
+        """Construct a Voronoi diagram from the geometry's vertices. Geographic
+        sites and a supplied clip polygon use a CRS-native chart for seam crossings;
+        publication retains chart cuts and polar-cap edge roles without a preliminary
+        ``split_antimeridian``. The construction is planar in longitude/latitude
+        coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+        divide the clip region into strips at their
+        perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
+        padded and envelope frames of a lone vertex, or the envelope of a horizontal
+        or vertical row, bound no cells.
 
         Parameters
         ----------
@@ -10496,8 +10521,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         follow ellipsoidal arclength along the retained source edge. An authored
         full-period edge is retained with quarter witnesses before its longitudes are
         canonicalized. The two seam aliases and a displacement of multiple periods do
-        not imply a full-period edge. A ring running off the seam closes over its pole
-        automatically. Geometries that do not cross are returned unchanged. A split
+        not imply a full-period edge. When a seam split needs polar closure, it follows
+        the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+        Geometries that do not cross are returned unchanged. A split
         ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
         ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
         existing chart edges, so ellipsoidal area and perimeter are conserved to
@@ -11187,12 +11213,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
         When returned polygons retain different coordinate axes, they remain separate
-        members of a GeometryCollection rather than being promoted or flattened.
+        members of a GeometryCollection rather than being promoted or flattened. The
+        GeometryArray method processes rows independently; to assemble linework from
+        several geometries as one area, combine them into one GeometryCollection first.
 
         Returns
         -------
         GeometryArray
-            One areal geometry per row.
+            One areal geometry per input row; missing rows remain missing.
 
 
         Raises
@@ -11245,7 +11273,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         Groups of GeometryArray
-            One ragged group of polygons per input geometry, in input order — each
+            One ragged group of polygons per input geometry, in input order; missing
+            rows yield ``None`` groups and present empty rows yield empty groups. Each
             input's OWN linework is polygonized independently (row ``i`` is
             ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
             ring can close across inputs, use the free function ``polygonize_all``.
@@ -14050,8 +14079,11 @@ class CellArray(Sequence[_CellT_co]):
         7
         """
     def to_polygon(self) -> Polygon | MultiPolygon:
-        """Dissolve this cell set into one outline geometry.
+        """Dissolve this cell set into one WGS 84 longitude/latitude outline.
         Missing rows are skipped; this is a set operation over present cells.
+        A seam-crossing outline preserves support on both sides of ±180° rather
+        than filling through the map's middle; its chart-cut edge is not part of
+        the represented cell boundary.
 
         Returns
         -------
