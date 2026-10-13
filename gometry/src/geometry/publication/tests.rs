@@ -24,9 +24,10 @@ use crate::geometry::publication::{
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
-    LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain, Unmetered,
+    LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain,
     geographic_topology_route,
 };
+use crate::work::Unmetered;
 
 fn point_literal_layout(
     image: ProducerImageId,

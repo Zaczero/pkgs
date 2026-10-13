@@ -6,13 +6,14 @@ use super::{
     GlobalFaceRowProducts, HeapSize, Loc, NodeOrdinates, NodedExactChart, Point, PoleSector,
     QComponentId, QDart, QDartId, QFaceValidity, QLocalFace, QLocalFaceId, QNode, QNodeKey, QPort,
     QPortId, QSpanOwner, QSpatialIndex, QSpatialItem, QuotientFaces, ResourceError, Result,
-    RootCatalog, RootId, RootMetricState, SeamOwnerSide, SourceArcMetricAccess, SourceRowId, Work,
+    RootCatalog, RootId, RootMetricState, SeamOwnerSide, SourceArcMetricAccess, SourceRowId,
     build_global_face_topology, build_node_line_boundary_rows, build_span_line_rows,
     lift_query_point, locate_q_node, locate_q_span, location_in_area_face, location_in_global_face,
     make_cut_chart, outward_segment_proxy, point_heap_bytes, point_on_exact_segment,
     q_face_has_row, q_port_node, rational_heap_bytes, resolve_source_root, select_cut,
     source_range_heap_bytes, span_crosses_north_ray,
 };
+use crate::work::Work;
 
 impl ExactGeographicQ {
     pub(in crate::geometry::topology) fn build(
@@ -748,7 +749,7 @@ impl ExactGeographicTopology {
     ) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let sources =
             ExactGeographicChartInventory::collect_views_with_work(frame, views, &mut work)?;
         Self::build_with_publication_frame(
@@ -784,7 +785,7 @@ impl ExactGeographicTopology {
     ) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let sources =
             ExactGeographicChartInventory::collect_views_as_set_with_work(frame, views, &mut work)?;
         Self::build_with_publication_frame(

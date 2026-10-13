@@ -1,3 +1,4 @@
+use crate::work::Unmetered;
     #[test]
     fn native_refinement_mismatch_rejects_first_candidate_and_searches_next() -> Result<()> {
         let mut problem = NativeRefinementSearch {

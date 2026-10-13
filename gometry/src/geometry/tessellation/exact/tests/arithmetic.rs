@@ -1,3 +1,4 @@
+use crate::work::Unmetered;
 #[test]
 fn rational_integrality_includes_the_dyadic_numerator_exponent() {
     assert!(ExactRational::zero().is_integer());

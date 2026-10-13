@@ -10,9 +10,9 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    Bounds, ExpansionBudget, GeometryErrorKind, Segment, Work,
-    for_each_overlapping_bounds_cross_pair,
+    Bounds, ExpansionBudget, GeometryErrorKind, Segment, for_each_overlapping_bounds_cross_pair,
 };
+use crate::work::Work;
 
 impl ExactGeographicChartInventory {
     /// Noding is planar inside each chart strip; only pieces incident to

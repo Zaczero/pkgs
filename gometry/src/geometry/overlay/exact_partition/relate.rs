@@ -5,14 +5,14 @@
 //! interior, boundary and exterior intersections follow from the cell facts.
 
 use super::{
-    ArealCells, BoundarySelection, CellFacts, ExactPartition, ExactSourceInventory, GlobalFaces,
-    NodeId, PolygonOccupancy, location, node_source_range, ring_occupied, rings_occupied,
-    select_operation,
+    ArealCells, BoundarySelection, CellFacts, ExactPartition, ExactSourceInventory, NodeId,
+    PolygonOccupancy, location, node_source_range, ring_occupied, rings_occupied, select_operation,
 };
 use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::graph::GlobalFaces;
 use crate::geometry::source_support::SourcePointLocation;
 #[cfg(test)]
 use crate::geometry::tessellation::exact::ExactDyadic;

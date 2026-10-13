@@ -1,3 +1,4 @@
+
 #[test]
 fn source_endpoint_record_uses_local_side_and_composed_root_side() -> Result<()> {
     let start = Point::new_raw_axes(-0.0, -0.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(17.0)));

@@ -8,16 +8,17 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use crate::error::{ResourceError, Result};
+use crate::geographic::retained_exact::edges::retained_source_interval_reads_as;
+use crate::geographic::retained_exact::sites::split_rational_native_site_with_work;
 use crate::geographic::{
     GeographicFrame, Latitude, RetainedChartDisplacement, RingDomain, RingSummary, SeamIdentity,
 };
 #[cfg(test)]
 use crate::geometry::XY;
-use crate::geometry::exact_arith::{
-    ExactSign, retained_source_interval_reads_as, split_rational_native_site_with_work,
-};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, ExactRational};
-use crate::geometry::{GeometryErrorKind, Point, RingKind, Unmetered, Work};
+use crate::geometry::{GeometryErrorKind, Point, RingKind};
+use crate::work::{Unmetered, Work};
 
 mod collect;
 mod events;

@@ -1,3 +1,4 @@
+
     #[test]
     fn full_source_line_walk_proves_literal_reuse() -> Result<()> {
         let line = crate::io::parse_wkt("LINESTRING Z (0 0 1, 1 1 2)")?;

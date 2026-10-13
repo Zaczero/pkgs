@@ -4,9 +4,10 @@ use super::sites::{EmittedNodeKey, EmittedVertex, record_emitted_node};
 use super::{
     ChartPole, CoordinateAxes, EmissionNodeRegistry, FragmentRecipe, FragmentRecipes,
     GeometryErrorKind, NodeOrdinates, PublicationInventory, QDartId, QNodeId, QPortId, RecipeWalk,
-    RecipeWalkOwner, Result, Work,
+    RecipeWalkOwner, Result,
 };
 use crate::geometry::{HasM, HasZ};
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::geometry::topology) enum DiagnosticKind {

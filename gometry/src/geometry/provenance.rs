@@ -9,8 +9,9 @@ use crate::geometry::ordinates::{
 };
 use crate::geometry::{
     ChartMetric, CoordinateAxes, ExactRational, MOrdinate, Point, RootMetricState,
-    SegmentProjection, SourceArcMetricAccess, Work, ZOrdinate,
+    SegmentProjection, SourceArcMetricAccess, ZOrdinate,
 };
+use crate::work::Work;
 
 /// How one output vertex derives from the operation's source-frame input.
 ///

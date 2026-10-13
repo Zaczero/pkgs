@@ -3,7 +3,7 @@
 use super::contact::{PairOrientations, collinear_shared_span_exact, touch_endpoint};
 use super::{ExactDyadic, crossing_homogeneous};
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::{compare_ratios, round_ratio};
 use crate::geometry::{Bounds, Ordering, Segment, XY, same_point, same_topological_coordinate};
 

@@ -1,8 +1,8 @@
 use super::{
     GeometryErrorKind, NodeOrdinates, PublicationInventory, QEmissionPlan, ResourceError, Result,
-    Work,
 };
 use crate::geometry::XY;
+use crate::work::Work;
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct SourcePublication<'a> {

@@ -8,12 +8,13 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{GeographicFrame, Latitude, RingDomain, RingSummary, ScalarGeographicView};
-#[cfg(test)]
-use crate::geometry::Unmetered;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Component, Coordinates as _, GeometryErrorKind, Point, Polygon, RingKind, Shape, Work,
+    Component, Coordinates as _, GeometryErrorKind, Point, Polygon, RingKind, Shape,
 };
+#[cfg(test)]
+use crate::work::Unmetered;
+use crate::work::Work;
 
 impl ExactGeographicChartInventory {
     #[cfg(test)]

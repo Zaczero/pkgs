@@ -463,6 +463,11 @@ print("dissolved:", cov.to_polygon().geometry_type)
 
 ```
 
+The outline uses WGS 84 longitude/latitude coordinates. When the selected cells cross the
+antimeridian, it preserves the occupied regions on both sides of ±180° rather
+than filling the longitude span through the middle of the map; the chart-cut
+edge is not part of the represented cell boundary.
+
 When you have a *detached* list of cell IDs rather than a coverage — rows from a
 database, the output of `compact`/`union`, a hand-built set — build a
 `CellArray` and call `cells.to_polygon()` (mixed resolutions allowed, so

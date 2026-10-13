@@ -15,8 +15,9 @@ use crate::geometry::publication::{
 use crate::geometry::storage::{StorageLayout, ValidityMask};
 use crate::geometry::{
     CoordinateAxes, ExactRational, GeometryErrorKind, GeometryKind, LineSeq, PointKey, Segment,
-    Shape, Work, XY,
+    Shape, XY,
 };
+use crate::work::Work;
 
 type OwnersBySource<'a> = BTreeMap<SourceEdgeId, Vec<&'a QSpanOwner>>;
 type SegmentOwners = BTreeMap<(usize, PointKey, PointKey), VecDeque<SourceEdgeId>>;
@@ -637,7 +638,7 @@ mod tests {
         ];
         let mut analysis = analyze(&rows, 0.0);
         let shapes = analysis
-            .invalid_source_shapes(&mut crate::geometry::Unmetered)
+            .invalid_source_shapes(&mut crate::work::Unmetered)
             .expect("typed source edges project");
         assert!(shapes.get(2).expect("clean row exists").is_empty());
         let clean_edge = analysis
@@ -663,7 +664,7 @@ mod tests {
 
         assert!(
             analysis
-                .invalid_source_shapes(&mut crate::geometry::Unmetered)
+                .invalid_source_shapes(&mut crate::work::Unmetered)
                 .is_err(),
             "a source-edge crosswire is rejected before row scatter",
         );
@@ -686,7 +687,7 @@ mod tests {
 
         assert!(
             analysis
-                .invalid_source_shapes(&mut crate::geometry::Unmetered)
+                .invalid_source_shapes(&mut crate::work::Unmetered)
                 .is_err(),
             "missing captured owners must not turn invalid rows into empty output",
         );
