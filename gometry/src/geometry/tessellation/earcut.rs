@@ -33,8 +33,9 @@ pub(crate) use linked::earcut_linked_ring_with_ids;
 pub(super) use linked::{count_ear_candidates, ear_scan_steps};
 use normalize::cleaned_earcut_ring_with_ids;
 #[cfg(test)]
+pub(crate) use normalize::open_ring;
+#[cfg(test)]
 pub(crate) use normalize::{cleaned_earcut_ring, filter_earcut_ring_points, orient_earcut_ring};
-pub(crate) use normalize::{closed_ring, open_ring};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct EarcutSiteId {

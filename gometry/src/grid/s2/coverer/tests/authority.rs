@@ -58,7 +58,9 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
     assert!(affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit));
     assert_eq!(
         affine
-            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
+            .classify_rect(
+                &affine.admit_rectangular_candidate(super::super::classify::rect_bounds(rect),)
+            )
             .expect("exact rectangle classification"),
         AffineRectClass::Boundary,
         "the retained raw affine edge meets the candidate enclosure"
@@ -108,7 +110,9 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
+            .classify_rect(
+                &affine.admit_rectangular_candidate(super::super::classify::rect_bounds(rect),)
+            )
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the continuous seam lift excludes lon 0 from a 179/-179 strip"
@@ -119,7 +123,9 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let far_rect = far_cell.rect_bound(&far_cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(far_rect)))
+            .classify_rect(
+                &affine.admit_rectangular_candidate(super::super::classify::rect_bounds(far_rect),)
+            )
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the exact seam carrier excludes a far-latitude seam cell"
@@ -152,7 +158,7 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert!(rect.crosses_seam());
-    let candidate = affine.admit_rectangular_candidate(super::rect_bounds(rect));
+    let candidate = affine.admit_rectangular_candidate(super::super::classify::rect_bounds(rect));
     let windows = candidate.windows();
     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
         longitude: CertifiedLongitudeDegrees::Two([_, seam]),
@@ -188,7 +194,9 @@ fn polar_cap_affine_certificate_prunes_the_south() {
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
+            .classify_rect(
+                &affine.admit_rectangular_candidate(super::super::classify::rect_bounds(rect),)
+            )
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the full-longitude cap's exact carrier excludes a south cell"

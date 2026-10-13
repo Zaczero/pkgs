@@ -172,7 +172,7 @@ pub(super) fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass
         .authority
         .classify_rect(
             &ctx.authority
-                .admit_rectangular_candidate(super::super::rect_bounds(rect)),
+                .admit_rectangular_candidate(super::super::classify::rect_bounds(rect)),
         )
         .expect("exact rectangle classification")
         == AffineRectClass::Outside

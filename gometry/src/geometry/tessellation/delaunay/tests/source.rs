@@ -1,3 +1,4 @@
+use super::super::source::retained_constrained_source_plan;
 use super::*;
 
 #[test]

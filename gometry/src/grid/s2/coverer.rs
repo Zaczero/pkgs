@@ -56,7 +56,7 @@ use candidate::{
 };
 #[cfg(test)]
 use classify::classify;
-use classify::{CoverContext, classify_one, rect_bounds, stage_children_at};
+use classify::{CoverContext, classify_one, stage_children_at};
 pub(crate) use stats::CoverStats;
 
 /// Level budget for a covering. `min_level <= max_level`; emitted levels

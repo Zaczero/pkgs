@@ -17,5 +17,7 @@ mod sample;
 mod triangles;
 mod voronoi;
 
+#[cfg(test)]
 pub(super) use triangles::{BudgetedPackedTriangleSink, BudgetedTriangleSink};
+#[cfg(test)]
 pub(super) use voronoi::canonical_voronoi_sites;

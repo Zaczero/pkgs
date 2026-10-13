@@ -1,5 +1,3 @@
-use super::{Productivity, rect_bounds};
-
 #[path = "tests/authority.rs"]
 mod authority;
 #[path = "tests/budget.rs"]

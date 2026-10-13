@@ -1,3 +1,4 @@
+use super::super::candidate::Productivity;
 use super::*;
 
 #[test]
@@ -165,7 +166,7 @@ fn complete_carried_fan_matches_fresh_certificates_without_repreparation() {
         let target = coverer.refinement_target(root.certificate.id.level())?;
         let productivity = productive_state(&ctx, root.certificate, coverer, &mut stats)
             .expect("productivity classification")?;
-        let super::Productivity::Children(_) = &productivity else {
+        let Productivity::Children(_) = &productivity else {
             return None;
         };
         let mut moved = Vec::new();
