@@ -2,7 +2,7 @@ use super::*;
 use crate::geometry::ordinates::RootId;
 use crate::work::Unmetered;
 
-pub(super) fn chart_point(
+pub(in crate::geometry::antimeridian) fn chart_point(
     point: Point,
     frame: GeographicFrame,
     longitude_scale: f64,
@@ -25,7 +25,11 @@ pub(super) fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) ->
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
-pub(super) fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
+pub(in crate::geometry::antimeridian) fn chart_latitude(
+    value: f64,
+    frame: GeographicFrame,
+    scale: f64,
+) -> Result<f64> {
     Latitude::try_new(frame, value)
         .map(|latitude| latitude.get() * scale)
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))

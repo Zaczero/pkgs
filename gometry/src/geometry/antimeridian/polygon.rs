@@ -25,11 +25,12 @@ mod chart_events;
 mod chart_shape;
 mod split;
 
+use chart_events::lineal_shape_has_certified_no_chart_events;
 #[cfg(test)]
 use chart_events::{
     certified_no_chart_events, chart_connection, line_has_certified_no_chart_events, seam_event,
 };
-use chart_events::{chart_latitude, lineal_shape_has_certified_no_chart_events};
+pub(super) use chart_events::{chart_latitude, chart_point};
 #[cfg(test)]
 use chart_shape::{chart_line, chart_polygon, chart_ring};
 use chart_shape::{chart_shape, map_xy_with_shared_owners};

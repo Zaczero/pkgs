@@ -1,6 +1,4 @@
-use super::chart_events::{
-    ChartSourceCapture, append_source_edge_events, chart_longitude, chart_point,
-};
+use super::chart_events::{ChartSourceCapture, append_source_edge_events, chart_longitude};
 use super::*;
 
 #[cfg(test)]

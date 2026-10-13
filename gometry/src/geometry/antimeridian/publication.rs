@@ -8,22 +8,25 @@ use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry,
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
-    ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
-    StorageTarget, SyntheticChartVertex, finish_geographic,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
+    SyntheticChartVertex, finish_producer_drawing,
+};
+#[cfg(test)]
+use crate::geometry::publication::{
+    ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection, finish_geographic,
 };
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
+#[cfg(test)]
+use crate::geometry::{CoordinateAxes, LineSeq};
 use crate::geometry::{
-    CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MultiMember, Point, Polygon,
-    Ring, Shape, ring_winding,
+    Coordinates as _, GeometryErrorKind, MultiMember, Point, Polygon, Ring, Shape, ring_winding,
 };
 use crate::work::Unmetered;
 
@@ -178,8 +181,19 @@ impl SplitDrawing {
         image_start: usize,
         node_start: u32,
     ) -> Result<SplitRowDrawing> {
-        let mut layout = ShapeLayoutBuilder::new(logical_row, image_start, &self.lineage);
-        layout.visit(&self.shape, &self.shape_lineage)?;
+        let mut next_image = image_start;
+        let mut outputs = (0, 0, 0);
+        let (shape_layout, literals) = ProducerDrawingReceipt::drawing_layout(
+            &self.shape,
+            logical_row,
+            None,
+            None,
+            &mut next_image,
+            &mut outputs,
+        )?;
+        let mut source_uses = SourceRootUseBuilder::new(logical_row, &self.lineage);
+        source_uses.visit(&self.shape, &self.shape_lineage, &shape_layout)?;
+        let source_root_uses = source_uses.finish(&shape_layout)?;
         let (chart_restrictions, next_node) = chart_restrictions(
             &self.shape,
             &self.shape_lineage,
@@ -189,8 +203,6 @@ impl SplitDrawing {
             self.latitude_scale,
             node_start,
         )?;
-        let next_image = layout.next_image;
-        let (shape_layout, literals, source_root_uses) = layout.finish();
         Ok(SplitRowDrawing {
             shape: self.shape,
             layout: LiteralRowLayout {
@@ -381,34 +393,6 @@ impl SplitArrayPublisher {
     }
 }
 
-fn finish_producer_drawing(
-    receipt: ProducerDrawingReceipt,
-    frame: Frame,
-    target: StorageTarget,
-) -> Result<FinishedGeometry> {
-    let mut work = Unmetered;
-    match finish_geographic(
-        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
-        target,
-    )? {
-        PublicationOutcome::Pass(finished) => Ok(finished),
-        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-            Err(GeometryErrorKind::Invalid(
-                format!(
-                    "final antimeridian storage changed {} checked output records",
-                    images.len()
-                )
-                .into(),
-            )
-            .into())
-        },
-        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
-            "antimeridian finisher returned a different producer rejection family".into(),
-        )
-        .into()),
-    }
-}
-
 fn chart_restrictions(
     shape: &Shape,
     lineage: &ShapeLineage,
@@ -433,49 +417,42 @@ fn chart_restrictions(
     Ok((restrictions, next_node_id))
 }
 
-struct ShapeLayoutBuilder<'a> {
+struct SourceRootUseBuilder<'a> {
     logical_row: usize,
-    next_image: usize,
-    point_output: u32,
-    line_output: u32,
-    polygon_output: u32,
     lineage: &'a LineageCatalog,
-    points: Vec<LiteralPoint<ProducerImageId>>,
-    lines: Vec<LiteralSequence<ProducerImageId>>,
-    polygons: Vec<LiteralPolygon<ProducerImageId>>,
-    literals: Vec<ProducerLiteral>,
     source_root_uses: Vec<ProducerSourceRootUse>,
+    point: usize,
+    line: usize,
+    polygon: usize,
 }
 
-impl<'a> ShapeLayoutBuilder<'a> {
-    const fn new(logical_row: usize, image_start: usize, lineage: &'a LineageCatalog) -> Self {
+impl<'a> SourceRootUseBuilder<'a> {
+    const fn new(logical_row: usize, lineage: &'a LineageCatalog) -> Self {
         Self {
             logical_row,
-            next_image: image_start,
-            point_output: 0,
-            line_output: 0,
-            polygon_output: 0,
             lineage,
-            points: Vec::new(),
-            lines: Vec::new(),
-            polygons: Vec::new(),
-            literals: Vec::new(),
             source_root_uses: Vec::new(),
+            point: 0,
+            line: 0,
+            polygon: 0,
         }
     }
 
-    fn image(
+    fn next_layout<'b, T>(values: &'b [T], index: &mut usize) -> Result<&'b T> {
+        let current = *index;
+        *index = current.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        values.get(current).ok_or_else(|| {
+            GeometryErrorKind::Invalid("split literal layout and lineage disagree".into()).into()
+        })
+    }
+
+    fn source_uses(
         &mut self,
-        point: Point,
         output: u32,
+        image: ProducerImageId,
         member: MemberId,
         events: &[EventId],
-    ) -> Result<ProducerImageId> {
-        let image = ProducerImageId::new(self.next_image);
-        self.next_image = self
-            .next_image
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
+    ) -> Result<()> {
         let address = LiteralAddress {
             operation: 0,
             logical_row: self.logical_row,
@@ -483,8 +460,6 @@ impl<'a> ShapeLayoutBuilder<'a> {
             value_row: None,
             output,
         };
-        self.literals
-            .push(ProducerLiteral::from_point(address, image, point));
         let mut work = Unmetered;
         for &event in events {
             if self.lineage.event_member(event) != member {
@@ -501,20 +476,54 @@ impl<'a> ShapeLayoutBuilder<'a> {
                 });
             }
         }
-        Ok(image)
+        Ok(())
     }
 
-    fn visit(&mut self, shape: &Shape, lineage: &ShapeLineage) -> Result<()> {
+    fn sequence(
+        &mut self,
+        sequence: &LiteralSequence<ProducerImageId>,
+        lineage: &LineageSequence,
+    ) -> Result<()> {
+        if sequence.images.len() != lineage.vertices.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "split sequence layout and vertex lineage disagree".into(),
+            )
+            .into());
+        }
+        for (&image, events) in sequence.images.iter().zip(&lineage.vertices) {
+            self.source_uses(sequence.output, image, lineage.member, events)?;
+        }
+        Ok(())
+    }
+
+    fn polygon(
+        &mut self,
+        polygon: &LiteralPolygon<ProducerImageId>,
+        lineage: &LineagePolygon,
+    ) -> Result<()> {
+        if polygon.holes.len() != lineage.holes.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "split polygon layout and hole lineage disagree".into(),
+            )
+            .into());
+        }
+        self.sequence(&polygon.shell, &lineage.shell)?;
+        for (hole, lineage) in polygon.holes.iter().zip(&lineage.holes) {
+            self.sequence(hole, lineage)?;
+        }
+        Ok(())
+    }
+
+    fn visit(
+        &mut self,
+        shape: &Shape,
+        lineage: &ShapeLineage,
+        layout: &ShapeLiteralLayout<ProducerImageId>,
+    ) -> Result<()> {
         match (shape, lineage) {
-            (Shape::Point(point), ShapeLineage::Point { member, events }) => {
-                let output = self.point_output;
-                self.point_output = output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                let image = self.image(*point, output, *member, events)?;
-                self.points.push(LiteralPoint {
-                    output,
-                    axes: CoordinateAxes::from_point(*point),
-                    image,
-                });
+            (Shape::Point(_), ShapeLineage::Point { member, events }) => {
+                let point = Self::next_layout(&layout.points, &mut self.point)?;
+                self.source_uses(point.output, point.image, *member, events)?;
             },
             (
                 Shape::MultiPoint(points),
@@ -523,22 +532,20 @@ impl<'a> ShapeLayoutBuilder<'a> {
                     events: point_events,
                 },
             ) => {
-                for (point, events) in points.points().zip(point_events) {
-                    let output = self.point_output;
-                    self.point_output = output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                    let image = self.image(point, output, *member, events)?;
-                    self.points.push(LiteralPoint {
-                        output,
-                        axes: points.axes(),
-                        image,
-                    });
+                if points.len() != point_events.len() {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian multipoint members and lineage disagree".into(),
+                    )
+                    .into());
+                }
+                for events in point_events {
+                    let point = Self::next_layout(&layout.points, &mut self.point)?;
+                    self.source_uses(point.output, point.image, *member, events)?;
                 }
             },
-            (Shape::LineString(line), ShapeLineage::LineString(lineage)) => {
-                let output = self.line_output;
-                self.line_output = output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                let sequence = self.sequence(line, output, lineage)?;
-                self.lines.push(sequence);
+            (Shape::LineString(_), ShapeLineage::LineString(lineage)) => {
+                let line = Self::next_layout(&layout.lines, &mut self.line)?;
+                self.sequence(line, lineage)?;
             },
             (
                 Shape::MultiLineString(lines),
@@ -546,15 +553,18 @@ impl<'a> ShapeLayoutBuilder<'a> {
                     members: lineages, ..
                 },
             ) => {
+                if lines.member_count() != lineages.len() {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian line members and lineage disagree".into(),
+                    )
+                    .into());
+                }
                 for (line, lineage) in lines.members_with_values().zip(lineages) {
                     match (line, lineage) {
                         (MultiMember::Empty, None) => {},
-                        (MultiMember::Value(line), Some(lineage)) => {
-                            let output = self.line_output;
-                            self.line_output =
-                                output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                            let sequence = self.sequence(line, output, lineage)?;
-                            self.lines.push(sequence);
+                        (MultiMember::Value(_), Some(lineage)) => {
+                            let line = Self::next_layout(&layout.lines, &mut self.line)?;
+                            self.sequence(line, lineage)?;
                         },
                         _ => {
                             return Err(GeometryErrorKind::Invalid(
@@ -565,11 +575,9 @@ impl<'a> ShapeLayoutBuilder<'a> {
                     }
                 }
             },
-            (Shape::Polygon(polygon), ShapeLineage::Polygon(lineage)) => {
-                let output = self.polygon_output;
-                self.polygon_output = output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                let polygon = self.polygon(polygon, output, lineage)?;
-                self.polygons.push(polygon);
+            (Shape::Polygon(_), ShapeLineage::Polygon(lineage)) => {
+                let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
+                self.polygon(polygon, lineage)?;
             },
             (
                 Shape::MultiPolygon(polygons),
@@ -577,15 +585,18 @@ impl<'a> ShapeLayoutBuilder<'a> {
                     members: lineages, ..
                 },
             ) => {
+                if polygons.member_count() != lineages.len() {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian polygon members and lineage disagree".into(),
+                    )
+                    .into());
+                }
                 for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
                     match (polygon, lineage) {
                         (MultiMember::Empty, None) => {},
-                        (MultiMember::Value(polygon), Some(lineage)) => {
-                            let output = self.polygon_output;
-                            self.polygon_output =
-                                output.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                            let polygon = self.polygon(polygon, output, lineage)?;
-                            self.polygons.push(polygon);
+                        (MultiMember::Value(_), Some(lineage)) => {
+                            let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
+                            self.polygon(polygon, lineage)?;
                         },
                         _ => {
                             return Err(GeometryErrorKind::Invalid(
@@ -609,7 +620,7 @@ impl<'a> ShapeLayoutBuilder<'a> {
                             "antimeridian collection member has no lineage".into(),
                         )
                     })?;
-                    self.visit(member, lineage)?;
+                    self.visit(member, lineage, layout)?;
                 }
             },
             (Shape::Empty(..), ShapeLineage::Empty) => {},
@@ -623,111 +634,21 @@ impl<'a> ShapeLayoutBuilder<'a> {
         Ok(())
     }
 
-    fn sequence(
-        &mut self,
-        line: &LineSeq,
-        output: u32,
-        lineage: &LineageSequence,
-    ) -> Result<LiteralSequence<ProducerImageId>> {
-        let axes = line.as_coords().axes();
-        let mut images = Vec::with_capacity(line.len());
-        for (point, events) in line.iter_coords().zip(&lineage.vertices) {
-            images.push(self.image(point, output, lineage.member, events)?);
-        }
-        Ok(LiteralSequence {
-            output,
-            axes,
-            images,
-        })
-    }
-
-    fn polygon(
-        &mut self,
-        polygon: &Polygon,
-        output: u32,
-        lineage: &LineagePolygon,
-    ) -> Result<LiteralPolygon<ProducerImageId>> {
-        let axes = polygon.axes();
-        let shell = self.ring(&polygon.shell, output, &lineage.shell)?;
-        let mut holes = Vec::with_capacity(polygon.holes.len());
-        for (hole, hole_lineage) in polygon.holes.iter().zip(&lineage.holes) {
-            holes.push(self.ring(hole, output, hole_lineage)?);
-        }
-        Ok(LiteralPolygon {
-            output,
-            axes,
-            shell,
-            holes,
-        })
-    }
-
-    fn ring(
-        &mut self,
-        ring: &Ring,
-        output: u32,
-        lineage: &LineageSequence,
-    ) -> Result<LiteralSequence<ProducerImageId>> {
-        let axes = ring.coords().axes();
-        let mut images = Vec::with_capacity(ring.coords().len());
-        for (point, events) in ring.iter_coords().zip(&lineage.vertices) {
-            images.push(self.image(point, output, lineage.member, events)?);
-        }
-        Ok(LiteralSequence {
-            output,
-            axes,
-            images,
-        })
-    }
-
     fn finish(
         self,
-    ) -> (
-        ShapeLiteralLayout<ProducerImageId>,
-        Vec<ProducerLiteral>,
-        Vec<ProducerSourceRootUse>,
-    ) {
-        (
-            ShapeLiteralLayout {
-                points: self.points,
-                lines: self.lines,
-                polygons: self.polygons,
-            },
-            self.literals,
-            self.source_root_uses,
-        )
+        layout: &ShapeLiteralLayout<ProducerImageId>,
+    ) -> Result<Vec<ProducerSourceRootUse>> {
+        if self.point != layout.points.len()
+            || self.line != layout.lines.len()
+            || self.polygon != layout.polygons.len()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "split literal layout contains an unmatched output".into(),
+            )
+            .into());
+        }
+        Ok(self.source_root_uses)
     }
-}
-
-fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
-    let axis = frame.longitude();
-    if (value % axis.period()).to_bits() == axis.half_period().to_bits() {
-        return Ok(180.0);
-    }
-    axis.canonicalize(value)
-        .map(|longitude| longitude.get() * scale)
-        .map_err(|error| {
-            crate::geometry::GeometryErrorKind::antimeridian_split_failed(error.to_string())
-        })
-}
-
-fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
-    crate::geographic::Latitude::try_new(frame, value)
-        .map(|latitude| latitude.get() * scale)
-        .map_err(|error| {
-            crate::geometry::GeometryErrorKind::antimeridian_split_failed(error.to_string())
-        })
-}
-
-fn chart_point(
-    point: Point,
-    frame: GeographicFrame,
-    longitude_scale: f64,
-    latitude_scale: f64,
-) -> Result<Point> {
-    point.with_xy(
-        chart_longitude(point.x, frame, longitude_scale)?,
-        chart_latitude(point.y, frame, latitude_scale)?,
-    )
 }
 
 const fn chart_pole(point: Point) -> Option<ChartPole> {
@@ -863,7 +784,7 @@ fn ring_restrictions(
     let chart_points = native_points
         .iter()
         .copied()
-        .map(|point| chart_point(point, frame, longitude_scale, latitude_scale))
+        .map(|point| super::polygon::chart_point(point, frame, longitude_scale, latitude_scale))
         .collect::<Result<Vec<_>>>()?;
     let mut nodes = vec![None; native_points.len()];
     for (index, (native_pair, chart_pair)) in native_points
