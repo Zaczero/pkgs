@@ -49,6 +49,8 @@ pub(crate) use frame::{
     AxisFrame, axis_extent, axis_pow2_scale, power_of_two_exponent, scale_by_power_of_two,
     scaled_residual, unscale_area,
 };
+#[cfg(test)]
+pub(crate) use test_support::RecordingWork;
 mod area;
 pub(crate) mod expansion;
 mod geographic_area;
@@ -74,6 +76,7 @@ pub(crate) use geographic_area::{
 };
 pub(crate) use segments::interpolation::held_axis_interpolate;
 pub(crate) use segments::{Orientation, orientation};
+mod metric;
 mod prepared;
 pub(crate) mod storage;
 pub(crate) mod types;
