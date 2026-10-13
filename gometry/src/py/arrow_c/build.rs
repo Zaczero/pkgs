@@ -761,7 +761,6 @@ fn assemble_extension_metadata(
             .wrapping_add(crs_definition_field_len)
             .wrapping_add(
                 crs_definition
-                    .as_deref()
                     .expect("a CRS definition accompanies PROJJSON")
                     .len(),
             )
@@ -772,7 +771,6 @@ fn assemble_extension_metadata(
             .wrapping_add(crs_definition_field_len)
             .wrapping_add(
                 crs_definition
-                    .as_deref()
                     .expect("a CRS definition accompanies PROJJSON")
                     .len(),
             )
@@ -794,11 +792,7 @@ fn assemble_extension_metadata(
         out.push_str(CRS_DEFINITION_FIELD_PREFIX);
         out.push_str(CRS_DEFINITION_METADATA_KEY);
         out.push_str(CRS_DEFINITION_FIELD_SUFFIX);
-        out.push_str(
-            crs_definition
-                .as_deref()
-                .expect("a CRS definition accompanies PROJJSON"),
-        );
+        out.push_str(crs_definition.expect("a CRS definition accompanies PROJJSON"));
         if let Some(epoch) = epoch {
             out.push_str(EPOCH_FIELD);
             write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
