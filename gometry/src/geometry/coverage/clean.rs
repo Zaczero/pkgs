@@ -208,7 +208,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
 ) -> Result<Shape> {
     let domain = context.domain();
     let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
-        return coverage_union_inner(coverage, context);
+        return coverage_union_inner(coverage, None, context);
     };
     if coverage.iter().all(|row| {
         let shape = row.borrow();
@@ -216,7 +216,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
         })
     }) {
-        return coverage_union_inner(coverage, context);
+        return coverage_union_inner(coverage, None, context);
     }
     let mut split_owned = Vec::with_capacity(coverage.len());
     for row in coverage {
@@ -230,17 +230,30 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
         };
         split_owned.push(split);
     }
-    coverage_union_inner(&split_owned, context)
+    let source_refs = coverage
+        .iter()
+        .map(|shape| shape.borrow())
+        .collect::<Vec<_>>();
+    coverage_union_inner(&split_owned, Some(&source_refs), context)
 }
 
 fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
+    original_sources: Option<&[&Shape]>,
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
     let prepared = valid_coverage_rows(coverage, "coverage_union_all")?;
-    let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
+    let source_refs = original_sources.map_or_else(
+        || {
+            coverage
+                .iter()
+                .map(|shape| shape.borrow())
+                .collect::<Vec<_>>()
+        },
+        |sources| sources.to_vec(),
+    );
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
     let mut sole: Option<&crate::geometry::Polygon> = None;
