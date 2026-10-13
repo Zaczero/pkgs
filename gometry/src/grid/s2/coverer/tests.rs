@@ -14,7 +14,7 @@ mod support;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-pub(super) use support::*;
+use support::*;
 
 use crate::geometry::{
     Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, ShapeCountQuery,

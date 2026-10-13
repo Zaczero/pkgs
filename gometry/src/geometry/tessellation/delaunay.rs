@@ -80,8 +80,7 @@ use retained::{
     RetainedPolarClosure, compare_retained_x, retained_chart_area,
     retained_point_in_coordinate_cycle, retained_point_in_cycle, retained_site_key,
 };
-pub(super) use source::retained_constrained_source_plan;
-use source::{ConstrainedSourcePlan, constrained_source_plan};
+use source::{ConstrainedSourcePlan, constrained_source_plan, retained_constrained_source_plan};
 #[cfg(test)]
 #[path = "delaunay/chart_restriction_tests.rs"]
 mod chart_restriction_tests;

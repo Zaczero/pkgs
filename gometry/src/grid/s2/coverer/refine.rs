@@ -1,5 +1,4 @@
 use super::*;
-use crate::grid::s2::cellid::Face;
 
 impl Coverer {
     /// Classify the six face roots into the phase-1 DFS stack or phase-2 queue.

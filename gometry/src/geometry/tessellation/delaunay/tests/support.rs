@@ -1,6 +1,6 @@
 use super::super::*;
 
-fn sites(points: &[(f64, f64)]) -> Vec<Site> {
+pub(super) fn sites(points: &[(f64, f64)]) -> Vec<Site> {
     points
         .iter()
         .enumerate()

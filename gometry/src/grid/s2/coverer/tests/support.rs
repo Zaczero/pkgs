@@ -4,11 +4,11 @@ use super::*;
 /// general native DE-9IM relate engine (a DIFFERENT code path from the
 /// production `NativeRectClassifier`), so the differential test below
 /// cross-checks the fast rect classifier against the relate engine.
-struct RelateCoverContext {
-    authority: GeographicCoverageSource,
-    tester: PointBatchTester,
-    source: Shape,
-    point_leaves: Option<Vec<CellId>>,
+pub(super) struct RelateCoverContext {
+    pub(super) authority: GeographicCoverageSource,
+    pub(super) tester: PointBatchTester,
+    pub(super) source: Shape,
+    pub(super) point_leaves: Option<Vec<CellId>>,
 }
 
 /// Sorted-vector membership, named for readable assertions.

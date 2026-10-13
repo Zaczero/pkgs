@@ -9,4 +9,4 @@ mod source;
 #[path = "tests/support.rs"]
 mod support;
 
-pub(super) use support::{geographic_ring, sites};
+use support::{geographic_ring, sites};
