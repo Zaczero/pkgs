@@ -20591,8 +20591,8 @@ def polygonize_all(
     `diagnostics=True` returns those same polygons together with cut edges,
     dangles, and invalid rings grouped by source row. Missing source rows are
     `None` groups; present rows with no diagnostic linework are empty groups.
-    `Geometry.polygonize()` and `GeometryArray.polygonize()` instead polygonize
-    each geometry's own linework independently.
+    `GeometryArray.polygonize()` instead preserves one result group per input
+    row, so use this function when different rows' edges should close together.
 
     Parameters
     ----------
