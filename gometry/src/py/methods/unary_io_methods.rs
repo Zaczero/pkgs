@@ -121,8 +121,9 @@ True";
 
 method_doc! {
     doc_to_geojson;
-    body: concat!(r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
-CRS-tagged input must use the 2D longitude/latitude family
+    body: concat!(r"Serialize to `GeoJSON` text. GeoJSON uses OGC:CRS84 longitude/latitude
+order under RFC 7946 and carries no source CRS label. CRS-tagged input must use
+the 2D WGS 84 geographic family
 (``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
 (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
 input is explicitly assumed to already be WGS84 longitude/latitude:

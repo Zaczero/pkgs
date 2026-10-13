@@ -106,8 +106,11 @@ impl PyCellArray {
         })
     }
 
-    /// Dissolve this cell set into one outline geometry.
+    /// Dissolve this cell set into one WGS 84 longitude/latitude outline.
     /// Missing rows are skipped; this is a set operation over present cells.
+    /// A seam-crossing outline preserves support on both sides of ±180° rather
+    /// than filling through the map's middle; its chart-cut edge is not part of
+    /// the represented cell boundary.
     ///
     /// Returns
     /// -------
