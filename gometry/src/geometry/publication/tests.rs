@@ -8,6 +8,7 @@ use super::receipt::{
     ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget,
 };
+use super::routes::snap_drawing_receipt;
 use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::crs::frame::crs_arc_static;
@@ -28,7 +29,7 @@ use crate::geometry::storage::ValidityMask;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
     LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain,
-    geographic_topology_route, snap_drawing_receipt,
+    geographic_topology_route,
 };
 use crate::work::Unmetered;
 
@@ -555,6 +556,7 @@ fn split_groups_receipt_omission_fails_final_readback() {
             0,
             Some(0),
             Some(value_row),
+            0,
             &mut next_image,
         )
         .unwrap();
@@ -686,7 +688,7 @@ fn snap_receipt_omission_fails_final_readback() {
     let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
         crate::geometry::SourceArcContext::new(TopologyDomain::Geographic(geographic), None);
     let output = source.snap_with_context(&reference, 0.5, &context).unwrap();
-    let mut receipt = snap_drawing_receipt(output, false).unwrap();
+    let mut receipt = snap_drawing_receipt(output).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 

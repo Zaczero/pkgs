@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::geometry::publication::{GeometryOutput, PublicationRows};
+use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_parts_array};
 use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
@@ -454,7 +454,7 @@ impl PyGeometry {
             })?,
             None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
         };
-        Ok(crate::geometry::publish_split_parts_array(shapes, frame)?)
+        Ok(publish_split_parts_array(shapes, frame)?)
     }
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {

@@ -14,7 +14,7 @@ use crate::array::{
     owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
     row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
-use crate::geometry::publication::{GeometryOutput, PublicationRows};
+use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_groups};
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
@@ -62,7 +62,7 @@ fn publish_split_group_builder(
     missing: Option<ValidityMask>,
 ) -> PyResult<Groups> {
     let (shapes, offsets) = builder.finish();
-    crate::geometry::publish_split_groups(shapes, offsets, frame, missing).map_err(PyErr::from)
+    publish_split_groups(shapes, offsets, frame, missing).map_err(PyErr::from)
 }
 
 fn split_array_groups(

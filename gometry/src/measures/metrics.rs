@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::{MetricCtx, MetricOp, MetricResolver, kernels};
-use crate::geometry::publication::GeometryOutput;
+use crate::geometry::publication::{
+    GeometryOutput, finish_geographic_snap, geographic_snap_pending_row,
+};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
 pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult<Py<PyAny>> {
@@ -305,16 +307,16 @@ fn snap_output(
     let output = snap_prepared(left, right, tolerance, context)?;
     match context.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
-        crate::geometry::TopologyDomain::Geographic(_) if context.lane.is_array() => Ok(
-            GeometryOutput::Pending(crate::geometry::geographic_snap_pending_row(
+        crate::geometry::TopologyDomain::Geographic(_) if context.lane.is_array() => {
+            Ok(GeometryOutput::Pending(geographic_snap_pending_row(
                 output,
                 context.frame,
                 context.lane.row(),
                 "snap",
-            )?),
-        ),
+            )?))
+        },
         crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Shape(
-            crate::geometry::finish_geographic_snap(output, context.frame.clone())?,
+            finish_geographic_snap(output, context.frame.clone())?,
         )),
     }
 }

@@ -1,7 +1,10 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::geometry::publication::GeometryOutput;
+use crate::geometry::publication::{
+    GeometryOutput, finish_geographic_line, finish_geographic_nearest_point,
+    geographic_line_pending_row,
+};
 use crate::geometry::storage::validity::union_many;
 use crate::{
     Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py,
@@ -22,12 +25,7 @@ fn shortest_line_array_output(
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            crate::geometry::geographic_line_pending_row(
-                output,
-                ctx.frame,
-                ctx.lane.row(),
-                "shortest_line",
-            )?,
+            geographic_line_pending_row(output, ctx.frame, ctx.lane.row(), "shortest_line")?,
         )),
     }
 }
@@ -169,8 +167,7 @@ pub(crate) fn shortest_line(
                     )
                 })?;
                 let shape = if domain.is_geographic() {
-                    crate::geometry::finish_geographic_line(shape, admission.frame.clone())
-                        .map_err(PyErr::from)?
+                    finish_geographic_line(shape, admission.frame.clone()).map_err(PyErr::from)?
                 } else {
                     shape
                 };
@@ -577,16 +574,10 @@ pub(crate) fn nearest_points(
                 crate::geometry::nearest_point_pair(pair.as_ref(), common);
             let (left_shape, right_shape) = if admission.domain.is_geographic() {
                 (
-                    crate::geometry::finish_geographic_nearest_point(
-                        left_shape,
-                        left.frame.clone(),
-                    )
-                    .map_err(PyErr::from)?,
-                    crate::geometry::finish_geographic_nearest_point(
-                        right_shape,
-                        right.frame.clone(),
-                    )
-                    .map_err(PyErr::from)?,
+                    finish_geographic_nearest_point(left_shape, left.frame.clone())
+                        .map_err(PyErr::from)?,
+                    finish_geographic_nearest_point(right_shape, right.frame.clone())
+                        .map_err(PyErr::from)?,
                 )
             } else {
                 (left_shape, right_shape)

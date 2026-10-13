@@ -1,4 +1,7 @@
 use crate::array::ArrayRow;
+use crate::geometry::publication::{
+    finish_geographic_nearest_point_columns, geographic_line_pending_row,
+};
 use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyErr, PyGeometry, PyGeometryArray, PyResult,
@@ -30,13 +33,8 @@ pub(crate) fn nearest_point_columns_masked(
         right.push(right_shape);
     }
     if domain.is_geographic() {
-        return crate::geometry::finish_geographic_nearest_point_columns(
-            left,
-            right,
-            &frame,
-            missing.as_ref(),
-        )
-        .map_err(PyErr::from);
+        return finish_geographic_nearest_point_columns(left, right, &frame, missing.as_ref())
+            .map_err(PyErr::from);
     }
     Ok((
         PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
@@ -257,7 +255,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                         None => crate::geometry::nearest_line(None, common)?,
                                     };
                                     let pending =
-                                        crate::geometry::geographic_line_pending_row(
+                                        geographic_line_pending_row(
                                             line,
                                             &output_frame,
                                             logical,

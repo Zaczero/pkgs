@@ -15,7 +15,10 @@ use crate::geographic::PointSelectionChart;
 use crate::geographic::chart::{
     point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
 };
-use crate::geometry::publication::GeometryOutput;
+use crate::geometry::publication::{
+    GeometryOutput, finish_geographic_line, finish_geographic_point_selection,
+    geographic_line_pending_row, geographic_point_selection_pending_row,
+};
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -177,7 +180,7 @@ pub(crate) fn unary_convex_hull(
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(output),
         TopologyDomain::Geographic(_) => {
-            crate::geometry::finish_geographic_point_selection(output, ctx.frame.clone())
+            finish_geographic_point_selection(output, ctx.frame.clone())
         },
     }
 }
@@ -190,7 +193,7 @@ pub(crate) fn unary_convex_hull_array(
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            crate::geometry::geographic_point_selection_pending_row(
+            geographic_point_selection_pending_row(
                 output,
                 ctx.frame,
                 ctx.lane.row(),
@@ -491,7 +494,7 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(output),
         TopologyDomain::Geographic(_) => {
-            crate::geometry::finish_geographic_point_selection(output, ctx.frame.clone())
+            finish_geographic_point_selection(output, ctx.frame.clone())
         },
     }
 }
@@ -504,7 +507,7 @@ pub(crate) fn unary_minimum_rotated_rectangle_array(
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            crate::geometry::geographic_point_selection_pending_row(
+            geographic_point_selection_pending_row(
                 output,
                 ctx.frame,
                 ctx.lane.row(),
@@ -1264,9 +1267,7 @@ pub(crate) fn unary_minimum_clearance_line(
     let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(output),
-        TopologyDomain::Geographic(_) => {
-            crate::geometry::finish_geographic_line(output, ctx.frame.clone())
-        },
+        TopologyDomain::Geographic(_) => finish_geographic_line(output, ctx.frame.clone()),
     }
 }
 
@@ -1278,14 +1279,12 @@ pub(crate) fn unary_minimum_clearance_line_array(
     let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
-        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            crate::geometry::geographic_line_pending_row(
-                output,
-                ctx.frame,
-                ctx.lane.row(),
-                "minimum_clearance_line",
-            )?,
-        )),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(geographic_line_pending_row(
+            output,
+            ctx.frame,
+            ctx.lane.row(),
+            "minimum_clearance_line",
+        )?)),
     }
 }
 
