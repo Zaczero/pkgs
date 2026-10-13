@@ -738,10 +738,26 @@ impl ExactGeographicTopology {
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
     ) -> Result<Self> {
+        Self::from_views_with_publication_frame(frame, crate::Frame::None, views)
+    }
+
+    pub(in crate::geometry) fn from_views_with_publication_frame<'a>(
+        frame: GeographicFrame,
+        publication_frame: crate::Frame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+    ) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
         let mut work = crate::geometry::Unmetered;
-        Self::from_views_with_work_and_expansion_budget(frame, views, &mut budget, &mut work)
+        let sources =
+            ExactGeographicChartInventory::collect_views_with_work(frame, views, &mut work)?;
+        Self::build_with_publication_frame(
+            frame,
+            sources,
+            publication_frame,
+            &mut budget,
+            &mut work,
+        )
     }
 
     pub(crate) fn from_views_with_work_and_expansion_budget<'a>(

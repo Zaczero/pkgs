@@ -17,7 +17,7 @@ use crate::dispatch::metric::{
     CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricScratch,
 };
 use crate::error::Result;
-use crate::geometry::publication::{GeometryOutput, PublicationArrayRows};
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
 use crate::geometry::{GeometryErrorKind, PreparedPlan, Shape, ShapeData, TopologyDomain};
 #[cfg(test)]
@@ -251,7 +251,7 @@ where
     let output_frame = frame.clone();
     let result = py.detach(move || {
         let mut rows = array.row_operation();
-        let mut output = PublicationArrayRows::with_capacity(array.len());
+        let mut output = PublicationRows::with_capacity(array.len());
         for row in rows.rows_with_missing(Shape::empty_point) {
             let (logical, result) = match row {
                 ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
@@ -304,7 +304,7 @@ where
     let result = py.detach(move || {
         let mut left_rows = left_array.row_operation();
         let mut right_rows = right_array.row_operation();
-        let mut output = PublicationArrayRows::with_capacity(left_array.len());
+        let mut output = PublicationRows::with_capacity(left_array.len());
         let left_iter = left_rows.rows_with_missing(Shape::empty_point);
         let right_iter = right_rows.rows_with_missing(Shape::empty_point);
         for (left, right) in left_iter.zip(right_iter) {

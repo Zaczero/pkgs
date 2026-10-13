@@ -9,6 +9,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::storage::ValidityMask;
 use crate::{
     CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
@@ -446,8 +447,8 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 /// `diagnostics=True` returns those same polygons together with cut edges,
 /// dangles, and invalid rings grouped by source row. Missing source rows are
 /// `None` groups; present rows with no diagnostic linework are empty groups.
-/// `Geometry.polygonize()` and `GeometryArray.polygonize()` instead polygonize
-/// each geometry's own linework independently.
+/// `GeometryArray.polygonize()` instead preserves one result group per input
+/// row, so use this function when different rows' edges should close together.
 ///
 /// Parameters
 /// ----------
@@ -532,6 +533,37 @@ pub(crate) fn polygonize_all(
         drop(metric_scratch);
         crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
     } else {
+        let output_frame = metadata.clone();
+        if domain.is_geographic() {
+            let polygons = py.detach(move || {
+                let metric_access = || {
+                    metric.geographic_chart_metric()?.ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic polygonize_all source ordinates require the operation's CRS metric",
+                        )
+                    })
+                };
+                let context =
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                let shape_refs = shapes.iter().collect::<Vec<_>>();
+                let pending = Shape::polygonize_producer_rows(
+                    &shape_refs,
+                    false,
+                    &context,
+                    &output_frame,
+                    0,
+                    None,
+                    None,
+                )?;
+                let mut rows = PublicationRows::with_producer_drawing_capacity(pending.len());
+                for row in pending {
+                    rows.try_push(GeometryOutput::Pending(row))?;
+                }
+                rows.finish(output_frame)
+            })?;
+            drop(metric_scratch);
+            return polygons.into_py_any(py);
+        }
         let polygons = py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -540,10 +572,11 @@ pub(crate) fn polygonize_all(
                     )
                 })
             };
-            Shape::polygonize_all_with_context(
+            Shape::polygonize_all_with_publication_frame(
                 &shapes,
                 false,
                 &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                output_frame,
             )
         })?;
         drop(metric_scratch);

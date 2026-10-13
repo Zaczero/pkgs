@@ -104,6 +104,39 @@ macro_rules! unary_operation {
 }
 
 macro_rules! unary_shape_method {
+    ($name:ident, $op:tt, $doc:ident, $scalar_kernel:path, $array_kernel:path, synthesized) => {
+        #[pymethods]
+        impl PyGeometry {
+            #[doc = $doc!(scalar)]
+            pub fn $name(&self, py: Python<'_>) -> PyResult<crate::Typed> {
+                unary_spine_shapes!(
+                    scalar,
+                    py,
+                    self,
+                    unary_operation!($op),
+                    None,
+                    default,
+                    $scalar_kernel
+                )
+            }
+        }
+
+        #[pymethods]
+        impl PyGeometryArray {
+            #[doc = $doc!(array)]
+            pub fn $name(&self, py: Python<'_>) -> PyResult<Self> {
+                unary_spine_shapes!(
+                    array,
+                    py,
+                    self,
+                    unary_operation!($op),
+                    None,
+                    synthesized,
+                    $array_kernel
+                )
+            }
+        }
+    };
     ($name:ident, $op:tt, $doc:ident, $kernel:path) => {
         #[pymethods]
         impl PyGeometry {

@@ -1,31 +1,62 @@
 use std::sync::Arc;
 
+use super::DirectedChartRestrictionUse;
 use super::binding::CheckedLiteralSnapshot;
 use super::finish::FinishedGeometry;
 use super::receipt::{
-    ArrayPublicationBatch, GeometryOutput, PendingPublicationRow, ProducerReceipt, PublicationCall,
+    ArrayPublicationBatch, GeometryOutput, PendingPublicationRow, ProducerDrawingReceipt,
+    ProducerLiteral, ProducerReceipt, ProducerSourceRootUse, PublicationCall, PublicationImage,
     PublicationOutcome, PublicationRejection, StorageTarget,
 };
 use crate::Frame;
 use crate::array::{ComputedCaches, StreamingShapes};
 use crate::error::Result;
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding, bind_final_literals,
+    FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding, LiteralRowLayout, bind_final_literals,
 };
 use crate::geometry::embedding_search::{Unmetered, Work};
-use crate::geometry::storage::{ArrayRows, StorageLayout, ValidityMask};
+use crate::geometry::publication::{ProducerImageId, finish_geographic};
+use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::{GeometryErrorKind, ShapeCountQuery};
+use crate::py::vectors::Groups;
 
-pub(crate) struct PublicationArrayRows {
+pub(crate) struct PublicationRows {
     writer: StreamingShapes,
     pending: Vec<PendingPublicationRow>,
+    group_offsets: Option<Vec<i64>>,
+    value_count: usize,
+    producer_drawing_required: bool,
+    has_unreceipted_output: bool,
 }
 
-impl PublicationArrayRows {
+impl PublicationRows {
     pub(crate) fn with_capacity(rows: usize) -> Self {
         Self {
             writer: StreamingShapes::with_capacity(0, rows),
             pending: Vec::new(),
+            group_offsets: None,
+            value_count: 0,
+            producer_drawing_required: false,
+            has_unreceipted_output: false,
+        }
+    }
+
+    pub(crate) fn with_producer_drawing_capacity(rows: usize) -> Self {
+        let mut output = Self::with_capacity(rows);
+        output.producer_drawing_required = true;
+        output
+    }
+
+    pub(crate) fn with_groups_capacity(groups: usize) -> Self {
+        let mut offsets = Vec::with_capacity(groups.saturating_add(1));
+        offsets.push(0);
+        Self {
+            writer: StreamingShapes::with_capacity(0, 0),
+            pending: Vec::new(),
+            group_offsets: Some(offsets),
+            value_count: 0,
+            producer_drawing_required: true,
+            has_unreceipted_output: false,
         }
     }
 
@@ -33,23 +64,60 @@ impl PublicationArrayRows {
         match output {
             GeometryOutput::Shape(shape) => {
                 self.writer.try_push(shape)?;
+                self.has_unreceipted_output = true;
             },
             GeometryOutput::Pending(mut pending) => {
                 pending.precharge_append()?;
                 self.writer.try_push(pending.take_shape())?;
+                self.has_unreceipted_output |= !pending.producer_drawing;
                 self.pending.push(pending);
             },
         }
+        self.value_count = self
+            .value_count
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     }
 
     pub(crate) fn try_push_missing(&mut self) -> Result<()> {
+        if self.group_offsets.is_some() {
+            return Err(GeometryErrorKind::Invalid(
+                "a missing group cannot be stored as a missing geometry value".into(),
+            )
+            .into());
+        }
         self.writer.try_push_missing()?;
         Ok(())
     }
 
+    pub(crate) fn end_group(&mut self) -> Result<()> {
+        let offsets = self.group_offsets.as_mut().ok_or_else(|| {
+            GeometryErrorKind::Invalid("only a Groups publication has group boundaries".into())
+        })?;
+        offsets.push(
+            i64::try_from(self.value_count)
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        );
+        Ok(())
+    }
+
+    pub(crate) const fn next_value_row(&self) -> usize {
+        self.value_count
+    }
+
     pub(crate) fn finish(self, frame: Frame) -> Result<crate::PyGeometryArray> {
-        if self.pending.is_empty() {
+        if self.group_offsets.is_some() {
+            return Err(GeometryErrorKind::Invalid(
+                "a Groups publication must finish through finish_groups".into(),
+            )
+            .into());
+        }
+        let producer_drawing = self.producer_drawing_required
+            || (!self.pending.is_empty()
+                && !self.has_unreceipted_output
+                && self.pending.iter().all(|pending| pending.producer_drawing));
+        if self.pending.is_empty() && !producer_drawing {
             let (storage, missing, layout) = self.writer.finish_parts()?;
             return crate::PyGeometryArray::from_result_storage(
                 Arc::new(storage),
@@ -76,6 +144,15 @@ impl PublicationArrayRows {
                 .into());
             }
             *slot = Some(pending);
+        }
+        if producer_drawing {
+            if self.has_unreceipted_output {
+                return Err(GeometryErrorKind::Invalid(
+                    "producer-drawn array publication contains an output without a receipt".into(),
+                )
+                .into());
+            }
+            return finish_producer_array(storage, missing, layout, logical_rows, frame);
         }
         let batch = ArrayPublicationBatch {
             storage: Arc::new(storage),
@@ -126,6 +203,185 @@ impl PublicationArrayRows {
             },
         }
     }
+
+    pub(crate) fn finish_groups(
+        self,
+        frame: Frame,
+        missing: Option<ValidityMask>,
+    ) -> Result<Groups> {
+        let Some(group_offsets) = self.group_offsets else {
+            return Err(GeometryErrorKind::Invalid(
+                "an ArrayRows publication has no group offsets".into(),
+            )
+            .into());
+        };
+        if self.has_unreceipted_output {
+            return Err(GeometryErrorKind::Invalid(
+                "producer-drawn Groups publication contains an output without a receipt".into(),
+            )
+            .into());
+        }
+        if !self.producer_drawing_required {
+            return Err(GeometryErrorKind::Invalid(
+                "Groups publication requires producer-drawn receipts".into(),
+            )
+            .into());
+        }
+        if self.pending.len() != self.value_count {
+            return Err(GeometryErrorKind::Invalid(
+                "producer-drawn Groups storage is missing a value receipt".into(),
+            )
+            .into());
+        }
+        let group_count = group_offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Groups offsets have no origin".into()))?;
+        if missing
+            .as_ref()
+            .is_some_and(|mask| mask.len() != group_count)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "Groups offsets do not match their logical rows".into(),
+            )
+            .into());
+        }
+        let (storage, value_missing, layout) = self.writer.finish_parts()?;
+        let mut row_map = std::iter::repeat_with(|| None)
+            .take(storage.len())
+            .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
+        let (literals, source_root_uses, chart_restrictions) =
+            collect_producer_rows(self.pending, &mut row_map, |pending| {
+                pending.layout.value_row.ok_or_else(|| {
+                    GeometryErrorKind::Invalid("producer-drawn group value has no value row".into())
+                        .into()
+                })
+            })?;
+        let mut work = Unmetered;
+        let buffers = FrozenLiteralBuffers::groups(
+            Arc::new(storage),
+            value_missing,
+            layout,
+            row_map,
+            group_offsets,
+            missing,
+            &mut work,
+        )?;
+        let receipt =
+            ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
+        match finish_geographic(
+            PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+            StorageTarget::Groups,
+        )? {
+            PublicationOutcome::Pass(finished) => Groups::from_finished(finished),
+            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                Err(GeometryErrorKind::Invalid(
+                    format!(
+                        "final Groups writer changed {} producer literal images",
+                        images.len()
+                    )
+                    .into(),
+                )
+                .into())
+            },
+            PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+                "Groups publication finisher returned a different rejection family".into(),
+            )
+            .into()),
+        }
+    }
+}
+
+fn finish_producer_array(
+    storage: GeometryArrayStorage,
+    missing: Option<ValidityMask>,
+    layout: StorageLayout,
+    logical_rows: Vec<Option<PendingPublicationRow>>,
+    frame: Frame,
+) -> Result<crate::PyGeometryArray> {
+    let mut row_map = std::iter::repeat_with(|| None)
+        .take(logical_rows.len())
+        .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
+    let (literals, source_root_uses, chart_restrictions) = collect_producer_rows(
+        logical_rows.into_iter().flatten(),
+        &mut row_map,
+        |pending| Ok(pending.logical_row),
+    )?;
+    let row_map = if layout == StorageLayout::PresentOnly {
+        if let Some(missing) = &missing {
+            row_map
+                .into_iter()
+                .enumerate()
+                .filter_map(|(logical, row)| (!missing.is_missing(logical)).then_some(row))
+                .collect()
+        } else {
+            row_map
+        }
+    } else {
+        row_map
+    };
+    let mut work = Unmetered;
+    let buffers =
+        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
+    let receipt =
+        ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
+    match finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Array,
+    )? {
+        PublicationOutcome::Pass(finished) => crate::PyGeometryArray::from_finished(finished),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final array writer changed {} producer literal images",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "array publication finisher returned a different rejection family".into(),
+        )
+        .into()),
+    }
+}
+
+fn collect_producer_rows(
+    pending_rows: impl IntoIterator<Item = PendingPublicationRow>,
+    row_map: &mut [Option<LiteralRowLayout<ProducerImageId>>],
+    row_index: impl Fn(&PendingPublicationRow) -> Result<usize>,
+) -> Result<(
+    Vec<ProducerLiteral>,
+    Vec<ProducerSourceRootUse>,
+    Vec<DirectedChartRestrictionUse>,
+)> {
+    let mut literals = Vec::new();
+    let mut source_root_uses = Vec::new();
+    let mut chart_restrictions = Vec::new();
+    for pending in pending_rows {
+        if !pending.producer_drawing {
+            return Err(GeometryErrorKind::Invalid(
+                "publication row lost its producer-drawn receipt".into(),
+            )
+            .into());
+        }
+        let row = row_index(&pending)?;
+        let slot = row_map.get_mut(row).ok_or_else(|| {
+            GeometryErrorKind::Invalid("producer-drawn row is outside final storage".into())
+        })?;
+        if slot.is_some() {
+            return Err(GeometryErrorKind::Invalid(
+                "multiple producer receipts claim one final storage row".into(),
+            )
+            .into());
+        }
+        *slot = Some(super::finish::producer_row_layout(pending.layout)?);
+        literals.extend(pending.producer_literals);
+        source_root_uses.extend(pending.source_root_uses);
+        chart_restrictions.extend(pending.chart_restrictions);
+    }
+    Ok((literals, source_root_uses, chart_restrictions))
 }
 
 pub(super) fn finish_array_batch<W: Work>(
@@ -207,7 +463,13 @@ pub(super) fn finish_array_batch<W: Work>(
             let mut pending = pending;
             pending.work.charge_into_error(admission_ticks)?;
             row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
-            pending_rows.push((logical, pending.checked, pending.work));
+            pending_rows.push((
+                logical,
+                pending.checked,
+                pending.source_root_uses,
+                pending.chart_restrictions,
+                pending.work,
+            ));
         } else {
             row_map.push(Some(LiteralRowBinding::OtherProducer));
         }
@@ -235,13 +497,33 @@ pub(super) fn finish_array_batch<W: Work>(
         &mut unmetered,
     )?;
     let row_map = Arc::from(row_map);
-    for (logical_row, records, mut row_work) in pending_rows {
+    let mut source_root_uses = Vec::new();
+    let mut chart_restrictions = Vec::new();
+    for (logical_row, records, row_source_uses, row_chart_restrictions, mut row_work) in
+        pending_rows
+    {
         let buffers = FrozenLiteralBuffers::admitted_row_view(
             rows.clone(),
             Arc::clone(&row_map),
             logical_row,
         )?;
         let mut receiver = CheckedLiteralSnapshot::new(records)?;
+        for source_use in &row_source_uses {
+            row_work.charge_into_error(1)?;
+            if !receiver.contains(
+                source_use.address,
+                PublicationImage::ProducerDrawn(source_use.image),
+            ) {
+                return Err(GeometryErrorKind::Invalid(
+                    "producer source-root use has no checked final array literal".into(),
+                )
+                .into());
+            }
+        }
+        row_work.charge_into_error(
+            u64::try_from(row_chart_restrictions.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
         match bind_final_literals(buffers, &mut receiver, &mut row_work)? {
             LiteralCheck::Pass(_) => {},
             LiteralCheck::Reject(images) => {
@@ -250,20 +532,20 @@ pub(super) fn finish_array_batch<W: Work>(
                 )));
             },
         }
+        source_root_uses.extend(row_source_uses);
+        chart_restrictions.extend(row_chart_restrictions);
     }
 
     Ok(PublicationOutcome::Pass(
-        FinishedGeometry::from_admitted_rows(rows, frame),
+        FinishedGeometry::from_admitted_rows(rows, frame, source_root_uses, chart_restrictions),
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::receipt::{CheckedPublicationLiteral, PublicationImage};
+    use super::super::receipt::CheckedPublicationLiteral;
     use super::*;
-    use crate::geometry::embedding_completion::{
-        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
-    };
+    use crate::geometry::embedding_completion::{LiteralAddress, LiteralPoint, ShapeLiteralLayout};
     use crate::geometry::embedding_search::EvaluationBudget;
     use crate::geometry::tessellation::exact::ExactRational;
     use crate::geometry::topology::{ExactChartPoint, QSourceImage};
@@ -312,6 +594,10 @@ mod tests {
                     ExactRational::from_f64(expected.y),
                 ),
             }],
+            producer_literals: Vec::new(),
+            source_root_uses: Vec::new(),
+            chart_restrictions: Vec::new(),
+            producer_drawing: false,
             work: EvaluationBudget::new("array publication test", 0).unwrap(),
         };
         (

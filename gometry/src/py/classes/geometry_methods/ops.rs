@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use pyo3::types::{PyBytes, PyTuple};
 
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
@@ -458,9 +459,38 @@ impl PyGeometry {
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
+        let output_frame = self.frame.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        if domain.is_geographic() {
+            let array = py.detach(move || {
+                let metric_access = || {
+                    metric.geographic_chart_metric()?.ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic polygonize source ordinates require the operation's CRS metric",
+                        )
+                    })
+                };
+                let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                let pending = crate::geometry::Shape::polygonize_producer_rows(
+                    &[shape.shape()],
+                    false,
+                    &context,
+                    &output_frame,
+                    0,
+                    None,
+                    None,
+                )?;
+                let mut rows = PublicationRows::with_producer_drawing_capacity(pending.len());
+                for row in pending {
+                    rows.try_push(GeometryOutput::Pending(row))?;
+                }
+                rows.finish(output_frame)
+            })?;
+            drop(metric_scratch);
+            return Ok(array);
+        }
         let polygons = py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -470,7 +500,7 @@ impl PyGeometry {
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.polygonize_with_context(false, &context)
+            shape.polygonize_with_publication_frame(false, &context, output_frame)
         })?;
         self.parts_to_array(polygons)
     }

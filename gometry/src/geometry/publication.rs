@@ -19,4 +19,4 @@ pub(in crate::geometry) use receipt::{
     ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget,
 };
-pub(crate) use storage::PublicationArrayRows;
+pub(crate) use storage::PublicationRows;

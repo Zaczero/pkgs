@@ -9,9 +9,17 @@ unary_shape_method!(
     BuildArea,
     doc_build_area,
     kernels::unary_build_area,
+    kernels::unary_build_area_array,
     synthesized
 );
-unary_shape_method!(node, Node, doc_node, kernels::unary_node, synthesized);
+unary_shape_method!(
+    node,
+    Node,
+    doc_node,
+    kernels::unary_node,
+    kernels::unary_node_array,
+    synthesized
+);
 unary_shape_method!(
     unique_points,
     UniquePoints,

@@ -15,6 +15,7 @@ use crate::dispatch::packed::{
     try_unary_packed_bool, try_unary_packed_bounds, try_unary_packed_f64,
 };
 use crate::error::Result;
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::{PreparedPlan, Shape, TopologyDomain};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
 
@@ -245,23 +246,19 @@ fn execute_unary_rows<T: BulkElement>(
     })
 }
 
-fn execute_unary_shape_rows(
+fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
     py: Python<'_>,
     array: PyGeometryArray,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     mode: UnaryRowMode,
-    kernel: impl Fn(
-        &PreparedPlan,
-        &CachelessRowContext<'_>,
-        &mut ArrayRowOperation<'_>,
-    ) -> Result<Shape>
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
     + Send
     + Sync,
-) -> std::result::Result<StreamingShapes, (usize, crate::error::Error)> {
+) -> std::result::Result<PublicationRows, (usize, crate::error::Error)> {
     py.detach(move || {
         let mut rows = array.row_operation();
-        let mut output = StreamingShapes::with_capacity(0, array.len());
+        let mut output = PublicationRows::with_capacity(array.len());
         for row in rows.rows_with_missing(Shape::empty_point) {
             let (logical, result) = match row {
                 ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
@@ -279,9 +276,8 @@ fn execute_unary_shape_rows(
                         UnaryRowMode::Prepared => rows.prepared_at(row_index, shape_row),
                     };
                     let result = match data {
-                        Ok(data) => {
-                            kernel(&data, &ctx, &mut rows).and_then(|shape| output.try_push(shape))
-                        },
+                        Ok(data) => kernel(&data, &ctx, &mut rows)
+                            .and_then(|value| output.try_push(value.into())),
                         Err(error) => Err(error),
                     };
                     (row_index, result)
@@ -293,16 +289,12 @@ fn execute_unary_shape_rows(
     })
 }
 
-fn run_unary_shape_rows(
+fn run_unary_shape_rows<R: Into<GeometryOutput>>(
     py: Python<'_>,
     array: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     mode: UnaryRowMode,
-    kernel: impl Fn(
-        &PreparedPlan,
-        &CachelessRowContext<'_>,
-        &mut ArrayRowOperation<'_>,
-    ) -> Result<Shape>
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
     + Send
     + Sync,
 ) -> PyResult<PyGeometryArray> {
@@ -483,13 +475,13 @@ fn unary_array_split_antimeridian(
 /// Geometry-returning unaries: prefer pure-`Shape` fallback (no prepared
 /// persistence). Distance-basis linref still acquires a frame cache via
 /// [`unary_row_mode`].
-pub(crate) fn unary_array_shapes(
+pub(crate) fn unary_array_shapes<R: Into<GeometryOutput>>(
     py: Python<'_>,
     array: &PyGeometryArray,
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
     if op == Operation::SplitAntimeridian {
         return unary_array_split_antimeridian(py, array);

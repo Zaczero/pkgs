@@ -1,17 +1,10 @@
 //! Geographic linework selection over one exact quotient chart.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "public producer routing starts when the shared F4 receiver lands"
-    )
-)]
-
 use std::collections::VecDeque;
 
 use super::exact::SourceRowId;
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
+use crate::geographic::ChartPole;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, Work};
 
@@ -40,6 +33,18 @@ pub(super) struct DiagnosticSpan {
 pub(super) struct FaceBoundaryCycle {
     pub(super) face: GlobalFaceId,
     pub(super) darts: Vec<QDartId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FaceCycleRole {
+    pub(super) is_hole: bool,
+    pub(super) named_pole: Option<ChartPole>,
+}
+
+pub(super) struct MinimalFaceSelection {
+    pub(super) selected_faces: Vec<bool>,
+    pub(super) cycles: Vec<FaceBoundaryCycle>,
+    pub(super) cycle_roles: Vec<FaceCycleRole>,
 }
 
 pub(super) fn noded_spans(
@@ -71,19 +76,37 @@ pub(super) fn noded_spans(
 pub(super) fn minimal_face_selection(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,
-) -> Result<Vec<bool>> {
+) -> Result<MinimalFaceSelection> {
+    // A once-winding boundary names a pole cap; its opposite pole face is the exterior root.
     let face_count = topology.q.global_face_count;
     work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut selected = Vec::with_capacity(face_count);
     selected.extend((0..face_count).map(|face| face != 0));
-    Ok(selected)
+    let mut cycles = minimal_face_boundaries(topology, &selected, work)?;
+    let mut roles = face_cycle_hole_roles(topology, &cycles, work)?;
+    if let Some(exterior) = exterior_face_for_pole_caps(topology, &roles, work)? {
+        work.charge_into_error(
+            u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        selected.fill(true);
+        *selected.get_mut(exterior.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("named-pole exterior face is unknown".into())
+        })? = false;
+        cycles = minimal_face_boundaries(topology, &selected, work)?;
+        roles = face_cycle_hole_roles(topology, &cycles, work)?;
+    }
+    Ok(MinimalFaceSelection {
+        selected_faces: selected,
+        cycles,
+        cycle_roles: roles,
+    })
 }
 
 pub(super) fn face_cycle_hole_roles(
     topology: &ExactGeographicTopology,
     cycles: &[FaceBoundaryCycle],
     work: &mut impl Work,
-) -> Result<Vec<bool>> {
+) -> Result<Vec<FaceCycleRole>> {
     let q = &topology.q;
     let mut roles = Vec::with_capacity(cycles.len());
     for cycle in cycles {
@@ -109,11 +132,15 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        roles.push(super::q_embedding::exact_q_ring_role_for_linework(
+        let (is_hole, named_pole) = super::q_embedding::exact_q_ring_role_for_linework(
             topology.sources.frame,
             &points,
             work,
-        )?);
+        )?;
+        roles.push(FaceCycleRole {
+            is_hole,
+            named_pole,
+        });
     }
     Ok(roles)
 }
@@ -123,17 +150,19 @@ pub(super) fn face_cycle_hole_roles(
 pub(super) fn even_odd_face_selection(
     topology: &ExactGeographicTopology,
     cycles: &[FaceBoundaryCycle],
-    hole_roles: &[bool],
+    cycle_roles: &[FaceCycleRole],
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
     let q = &topology.q;
     let face_count = q.global_face_count;
-    if cycles.len() != hole_roles.len() {
+    if cycles.len() != cycle_roles.len() {
         return Err(GeometryErrorKind::Invalid(
             "Q face cycles do not match their exact ring roles".into(),
         )
         .into());
     }
+    let exterior =
+        exterior_face_for_pole_caps(topology, cycle_roles, work)?.unwrap_or(GlobalFaceId(0));
     work.charge_into_error(
         u64::try_from(
             face_count
@@ -145,12 +174,12 @@ pub(super) fn even_odd_face_selection(
     let mut children = Vec::with_capacity(face_count);
     children.resize_with(face_count, Vec::<GlobalFaceId>::new);
     let mut parent = vec![None; face_count];
-    for (cycle, &is_hole) in cycles.iter().zip(hole_roles) {
+    for (cycle, &role) in cycles.iter().zip(cycle_roles) {
         work.charge_into_error(1)?;
-        if !is_hole {
+        if role.named_pole.is_some() || !role.is_hole {
             continue;
         }
-        if cycle.face.0 == 0 {
+        if cycle.face == exterior {
             return Err(GeometryErrorKind::Invalid(
                 "the Q exterior face cannot own a selected hole cycle".into(),
             )
@@ -163,7 +192,7 @@ pub(super) fn even_odd_face_selection(
             if opposite == cycle.face {
                 continue;
             }
-            if opposite.0 == 0 {
+            if opposite == exterior {
                 return Err(GeometryErrorKind::Invalid(
                     "a geographic linework hole reaches the Q exterior face".into(),
                 )
@@ -211,12 +240,12 @@ pub(super) fn even_odd_face_selection(
 
     let mut depths = vec![None; face_count];
     *depths
-        .get_mut(0)
+        .get_mut(exterior.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q has no exterior face".into()))? = Some(-1_i64);
     let mut pending = VecDeque::new();
-    for face in 1..face_count {
+    for face in 0..face_count {
         work.charge_into_error(1)?;
-        if parent.get(face).copied().flatten().is_none() {
+        if face != exterior.0 as usize && parent.get(face).copied().flatten().is_none() {
             *depths.get_mut(face).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q linework root face is unknown".into())
             })? = Some(0);
@@ -270,6 +299,60 @@ pub(super) fn even_odd_face_selection(
     Ok(selected)
 }
 
+fn exterior_face_for_pole_caps(
+    topology: &ExactGeographicTopology,
+    cycle_roles: &[FaceCycleRole],
+    work: &mut impl Work,
+) -> Result<Option<GlobalFaceId>> {
+    let mut exterior = None;
+    for role in cycle_roles {
+        work.charge_into_error(1)?;
+        let Some(named_pole) = role.named_pole else {
+            continue;
+        };
+        let Some(cap) = pole_sector_face(topology, named_pole, work)? else {
+            return Ok(None);
+        };
+        let opposite_pole = match named_pole {
+            ChartPole::North => ChartPole::South,
+            ChartPole::South => ChartPole::North,
+        };
+        let Some(candidate) = pole_sector_face(topology, opposite_pole, work)? else {
+            return Ok(None);
+        };
+        if cap == candidate {
+            return Ok(None);
+        }
+        if exterior.is_some_and(|previous| previous != candidate) {
+            return Ok(None);
+        }
+        exterior = Some(candidate);
+    }
+    Ok(exterior)
+}
+
+fn pole_sector_face(
+    topology: &ExactGeographicTopology,
+    pole: ChartPole,
+    work: &mut impl Work,
+) -> Result<Option<GlobalFaceId>> {
+    let mut face = None;
+    let mut multiple = false;
+    topology
+        .q
+        .for_each_pole_sector_with_work(pole, work, |sector, work| {
+            work.charge_into_error(1)?;
+            let candidate = sector.face();
+            if face.is_some_and(|previous| previous != candidate) {
+                multiple = true;
+            } else {
+                face = Some(candidate);
+            }
+            Ok(())
+        })?;
+    Ok(if multiple { None } else { face })
+}
+
 pub(super) fn minimal_face_boundaries(
     topology: &ExactGeographicTopology,
     selected_faces: &[bool],
@@ -313,7 +396,6 @@ pub(super) fn minimal_face_boundaries(
             .get(left.0 as usize)
             .copied()
             .ok_or_else(|| GeometryErrorKind::Invalid("Q span has an unknown left face".into()))?
-            && left.0 != 0
         {
             *boundary
                 .get_mut(forward.0 as usize)
@@ -324,7 +406,6 @@ pub(super) fn minimal_face_boundaries(
             .get(right.0 as usize)
             .copied()
             .ok_or_else(|| GeometryErrorKind::Invalid("Q span has an unknown right face".into()))?
-            && right.0 != 0
         {
             *boundary
                 .get_mut((forward.0 ^ 1) as usize)
@@ -355,7 +436,6 @@ fn walk_minimal_face_boundaries(
             .get(face.0 as usize)
             .copied()
             .unwrap_or(false)
-            || face.0 == 0
         {
             return Err(GeometryErrorKind::Invalid(
                 "minimal-face boundary belongs to an unselected face".into(),
@@ -699,6 +779,49 @@ mod tests {
             .count()
     }
 
+    fn emitted_cycle_source_rows(
+        topology: &ExactGeographicTopology,
+        plan: &QEmissionPlan,
+    ) -> Result<BTreeSet<SourceRowId>> {
+        let mut rows = BTreeSet::new();
+        for walk in plan.fragment_recipes.walks() {
+            if !matches!(walk.owner, RecipeWalkOwner::Cycle(_)) {
+                continue;
+            }
+            for fragment in &walk.fragments {
+                let recipe = plan
+                    .fragment_recipes
+                    .as_slice()
+                    .get(fragment.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q cycle recipe is unknown".into())
+                    })?;
+                for range in recipe.ranges.iter().filter(|range| range.emitted) {
+                    if !((range.range.start.is_zero() && range.range.end.is_one())
+                        || (range.range.start.is_one() && range.range.end.is_zero()))
+                    {
+                        return Err(GeometryErrorKind::Invalid(
+                            "alias-ring source use does not retain its complete edge interval"
+                                .into(),
+                        )
+                        .into());
+                    }
+                    let edge = topology
+                        .sources
+                        .edges
+                        .get(range.source_edge.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q cycle recipe source edge is unknown".into(),
+                            )
+                        })?;
+                    rows.insert(edge.row);
+                }
+            }
+        }
+        Ok(rows)
+    }
+
     #[test]
     fn node_selection_uses_the_seam_junction_not_a_greenwich_crossing() -> Result<()> {
         let seam = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;
@@ -765,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn alias_closed_ring_selects_a_geographic_face_for_both_producers() -> Result<()> {
+    fn alias_closed_ring_keeps_all_six_source_rows_for_both_producers() -> Result<()> {
         let edges = [
             "LINESTRING (170 0, 180 0)",
             "LINESTRING (-180 0, -170 0)",
@@ -788,6 +911,22 @@ mod tests {
         assert_eq!(build_area.producer, QProducer::BuildArea);
         assert_eq!(selected_face_count(&polygonize), 1);
         assert_eq!(selected_face_count(&build_area), 1);
+        let expected_rows = BTreeSet::from([
+            SourceRowId(0),
+            SourceRowId(1),
+            SourceRowId(2),
+            SourceRowId(3),
+            SourceRowId(4),
+            SourceRowId(5),
+        ]);
+        assert_eq!(
+            emitted_cycle_source_rows(&topology, &polygonize)?,
+            expected_rows
+        );
+        assert_eq!(
+            emitted_cycle_source_rows(&topology, &build_area)?,
+            expected_rows
+        );
         assert!(matches!(
             &polygonize.polygons,
             PolygonPlan::Regions { rings, .. } if !rings.is_empty()
@@ -796,6 +935,42 @@ mod tests {
             &build_area.polygons,
             PolygonPlan::Regions { rings, .. } if !rings.is_empty()
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn once_winding_polygonize_selects_the_named_north_pole_cap() -> Result<()> {
+        let linework =
+            crate::io::parse_wkt("LINESTRING (-135 80, -45 80, 45 80, 135 80, -135 80)")?;
+        let topology = topology(&[linework])?;
+        let mut work = Unmetered;
+        let plan = QEmissionPlan::build_polygonize(&topology, false, &mut work)?;
+
+        assert_eq!(plan.selected_regions.len(), 1);
+        let selected = plan
+            .selected_regions
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("selected pole cap is missing".into()))?;
+        assert!(selected.poles.includes(crate::geographic::ChartPole::North));
+        assert!(!selected.poles.includes(crate::geographic::ChartPole::South));
+        Ok(())
+    }
+
+    #[test]
+    fn once_winding_build_area_selects_the_named_north_pole_cap() -> Result<()> {
+        let linework =
+            crate::io::parse_wkt("LINESTRING (-135 80, -45 80, 45 80, 135 80, -135 80)")?;
+        let topology = topology(&[linework])?;
+        let mut work = Unmetered;
+        let plan = QEmissionPlan::build_area(&topology, &mut work)?;
+
+        assert_eq!(plan.selected_regions.len(), 1);
+        let selected = plan
+            .selected_regions
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("selected pole cap is missing".into()))?;
+        assert!(selected.poles.includes(crate::geographic::ChartPole::North));
+        assert!(!selected.poles.includes(crate::geographic::ChartPole::South));
         Ok(())
     }
 
