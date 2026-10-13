@@ -5,11 +5,12 @@ use crate::geographic::{
     ChartConnection, ChartPole, GeodeticPole, GeographicFrame, GeographicRing, GeographicViewError,
     Latitude, RetainedChartDisplacement, RingDomain, RingSummary, ScalarGeographicView,
 };
+use crate::geometry::antimeridian::publication::SplitCapture;
 use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords_with_metric,
     split_ring_at_seam_with_metric,
 };
-use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
+use crate::geometry::ordinates::{RootId, SourceArcRequest, source_arc_ordinates};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryErrorKind,
@@ -64,6 +65,36 @@ impl Shape {
         let view =
             ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
         split_geographic_view(view, metric_access)
+    }
+
+    pub(crate) fn split_antimeridian_captured_in_frame(
+        &self,
+        frame: GeographicFrame,
+    ) -> Result<super::publication::SplitDrawing> {
+        if frame == GeographicFrame::crs84() {
+            let metric = std::sync::OnceLock::new();
+            let metric_access = || {
+                metric.get_or_try_init(|| {
+                    let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
+                    crate::crs::GeodesicMetric::from_model(&model)
+                })
+            };
+            return self
+                .split_antimeridian_captured_in_frame_with_metric(frame, Some(&metric_access));
+        }
+        self.split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+            frame, None,
+        )
+    }
+
+    pub(crate) fn split_antimeridian_captured_in_frame_with_metric<M: ChartMetric>(
+        &self,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<super::publication::SplitDrawing> {
+        let view =
+            ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
+        split_geographic_view_captured(view, metric_access)
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
@@ -262,9 +293,33 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
+    split_geographic_view_with_capture(view, metric_access, None)
+}
+
+fn split_geographic_view_captured<M: ChartMetric>(
+    view: ScalarGeographicView<'_>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<super::publication::SplitDrawing> {
+    let frame = view.frame();
+    let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
+    let latitude_scale =
+        frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
+    let mut capture = SplitCapture::enabled();
+    let shape = split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
+    Ok(capture.into_drawing(shape, frame, longitude_scale, latitude_scale))
+}
+
+fn split_geographic_view_with_capture<M: ChartMetric>(
+    view: ScalarGeographicView<'_>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
+) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
     if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
     }
     let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
@@ -272,6 +327,9 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
     if canonical && lineal_shape_has_certified_no_chart_events(view.shape(), frame, longitude_scale)
     {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
     }
     let chart = chart_shape(
@@ -280,13 +338,20 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         longitude_scale,
         latitude_scale,
         metric_access,
+        capture.as_deref_mut(),
         &mut ShapeTransformMemo::default(),
     )?;
     if canonical
         && !crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame)
         && !chart.crosses_antimeridian()
     {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
+    }
+    if let Some(capture) = capture.as_deref_mut() {
+        capture.capture_source_edges(&chart);
     }
     let split =
         chart.split_antimeridian_chart(&mut ShapeTransformMemo::default(), metric_access)?;
@@ -341,6 +406,7 @@ struct ChartEdgeEvent {
     longitude: RetainedChartDisplacement,
     parameter: ExactRational,
     seam_longitude: Option<f64>,
+    source_root: Option<RootId>,
 }
 
 fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<ChartConnection> {
@@ -419,6 +485,7 @@ fn seam_event(
     source: &[Point; 2],
     longitude: RetainedChartDisplacement,
     frame: GeographicFrame,
+    source_root: Option<RootId>,
 ) -> Result<Option<ChartEdgeEvent>> {
     let axis = frame.longitude();
     let [start, end] = longitude.endpoints();
@@ -451,6 +518,7 @@ fn seam_event(
                 longitude,
                 parameter,
                 seam_longitude: Some(native_side * frame.longitude_orientation_sign()),
+                source_root,
             })
         })
         .transpose()
@@ -516,6 +584,8 @@ fn append_source_edge_events<M: ChartMetric>(
     include_seam: bool,
     circle_witnesses: bool,
     band: Option<(f64, f64, f64)>,
+    source_root: Option<RootId>,
+    mut capture: Option<&mut SplitCapture>,
 ) -> Result<()> {
     if include_seam && certified_no_chart_events(source[0].x, source[1].x, frame) {
         return Ok(());
@@ -546,10 +616,11 @@ fn append_source_edge_events<M: ChartMetric>(
                     ExactDyadic::from_i64(4),
                 )?,
                 seam_longitude: None,
+                source_root,
             })?;
         }
     }
-    if include_seam && let Some(event) = seam_event(source, longitude, frame)? {
+    if include_seam && let Some(event) = seam_event(source, longitude, frame, source_root)? {
         insert_chart_event(&mut events, event)?;
     }
     if events.is_empty() {
@@ -573,16 +644,16 @@ fn append_source_edge_events<M: ChartMetric>(
         let latitude =
             interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
         let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
-        output.push(Point::new_axes(
-            x,
-            chart_latitude(latitude, frame, latitude_scale)?,
-            z,
-            m,
-        )?);
+        let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
+        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), event.source_root) {
+            capture.record_root_point(root, point, &event.parameter)?;
+        }
+        output.push(point);
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn chart_line<M: ChartMetric>(
     line: &LineSeq,
     frame: GeographicFrame,
@@ -590,10 +661,36 @@ fn chart_line<M: ChartMetric>(
     latitude_scale: f64,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<LineSeq> {
+    chart_line_captured(
+        line,
+        frame,
+        longitude_scale,
+        latitude_scale,
+        metric_access,
+        None,
+    )
+}
+
+fn chart_line_captured<M: ChartMetric>(
+    line: &LineSeq,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
+) -> Result<LineSeq> {
     let mut start = line.point_at(0);
+    let mut start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
     let mut chart = CoordSeqBuilder::with_capacity(start.axes(), line.len());
-    chart.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
+    chart.push(start_chart);
     for end in line.iter_coords().skip(1) {
+        let source_root = match capture.as_deref_mut() {
+            Some(capture) => Some(capture.next_source_root()?),
+            None => None,
+        };
+        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+            capture.record_root_point(root, start_chart, &ExactRational::zero())?;
+        }
         append_source_edge_events(
             &mut chart,
             &[start, end],
@@ -604,19 +701,44 @@ fn chart_line<M: ChartMetric>(
             true,
             true,
             None,
+            source_root,
+            capture.as_deref_mut(),
         )?;
-        chart.push(chart_point(end, frame, longitude_scale, latitude_scale)?);
+        start_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+            capture.record_root_point(root, start_chart, &ExactRational::one())?;
+        }
+        chart.push(start_chart);
         start = end;
     }
     Ok(LineSeq::from_proven(chart.finish()?))
 }
 
+#[cfg(test)]
 fn chart_ring<M: ChartMetric>(
     ring: &Ring,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Ring> {
+    chart_ring_captured(
+        ring,
+        frame,
+        longitude_scale,
+        latitude_scale,
+        metric_access,
+        None,
+    )
+}
+
+fn chart_ring_captured<M: ChartMetric>(
+    ring: &Ring,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
 ) -> Result<Ring> {
     let geographic = GeographicRing::from_ring(ring);
     let summary =
@@ -660,8 +782,16 @@ fn chart_ring<M: ChartMetric>(
         for ([start, end], [source_start, source_end]) in
             unwrapped.segment_pairs().zip(ring.segment_pairs())
         {
+            let source_root = match capture.as_deref_mut() {
+                Some(capture) => Some(capture.next_source_root()?),
+                None => None,
+            };
+            let start_chart = band_point(start)?;
             if points.len() == 0 {
-                points.push(band_point(start)?);
+                points.push(start_chart);
+            }
+            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+                capture.record_root_point(root, start_chart, &ExactRational::zero())?;
             }
             append_source_edge_events(
                 &mut points,
@@ -673,13 +803,27 @@ fn chart_ring<M: ChartMetric>(
                 false,
                 start.y.to_bits() == end.y.to_bits(),
                 Some((start.x, end.x, west)),
+                source_root,
+                capture.as_deref_mut(),
             )?;
-            points.push(band_point(end)?);
+            let end_chart = band_point(end)?;
+            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+                capture.record_root_point(root, end_chart, &ExactRational::one())?;
+            }
+            points.push(end_chart);
         }
     } else {
         for [start, end] in ring.segment_pairs() {
+            let source_root = match capture.as_deref_mut() {
+                Some(capture) => Some(capture.next_source_root()?),
+                None => None,
+            };
+            let start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
             if points.len() == 0 {
-                points.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
+                points.push(start_chart);
+            }
+            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+                capture.record_root_point(root, start_chart, &ExactRational::zero())?;
             }
             append_source_edge_events(
                 &mut points,
@@ -691,13 +835,20 @@ fn chart_ring<M: ChartMetric>(
                 true,
                 true,
                 None,
+                source_root,
+                capture.as_deref_mut(),
             )?;
-            points.push(chart_point(end, frame, longitude_scale, latitude_scale)?);
+            let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
+                capture.record_root_point(root, end_chart, &ExactRational::one())?;
+            }
+            points.push(end_chart);
         }
     }
     Ring::try_from_closed(points.finish()?)
 }
 
+#[cfg(test)]
 fn chart_polygon<M: ChartMetric>(
     polygon: &Polygon,
     frame: GeographicFrame,
@@ -705,22 +856,42 @@ fn chart_polygon<M: ChartMetric>(
     latitude_scale: f64,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Polygon> {
-    let shell = chart_ring(
+    chart_polygon_captured(
+        polygon,
+        frame,
+        longitude_scale,
+        latitude_scale,
+        metric_access,
+        None,
+    )
+}
+
+fn chart_polygon_captured<M: ChartMetric>(
+    polygon: &Polygon,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
+) -> Result<Polygon> {
+    let shell = chart_ring_captured(
         &polygon.shell,
         frame,
         longitude_scale,
         latitude_scale,
         metric_access,
+        capture.as_deref_mut(),
     )?;
     let mut holes = Vec::new();
     holes.reserve_exact(polygon.holes.len());
     for hole in polygon.holes.iter() {
-        holes.push(chart_ring(
+        holes.push(chart_ring_captured(
             hole,
             frame,
             longitude_scale,
             latitude_scale,
             metric_access,
+            capture.as_deref_mut(),
         )?);
     }
     Ok(Polygon::new(shell, holes))
@@ -732,15 +903,17 @@ fn chart_shape<M: ChartMetric>(
     longitude_scale: f64,
     latitude_scale: f64,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
     memo: &mut ShapeTransformMemo,
 ) -> Result<Shape> {
     match shape {
-        Shape::Polygon(polygon) => Ok(Shape::Polygon(chart_polygon(
+        Shape::Polygon(polygon) => Ok(Shape::Polygon(chart_polygon_captured(
             polygon,
             frame,
             longitude_scale,
             latitude_scale,
             metric_access,
+            capture.as_deref_mut(),
         )?)),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::new();
@@ -748,12 +921,13 @@ fn chart_shape<M: ChartMetric>(
             for member in polygons.members_with_values() {
                 members.push(match member {
                     MultiMember::Empty => MultiMember::Empty,
-                    MultiMember::Value(polygon) => MultiMember::Value(chart_polygon(
+                    MultiMember::Value(polygon) => MultiMember::Value(chart_polygon_captured(
                         polygon,
                         frame,
                         longitude_scale,
                         latitude_scale,
                         metric_access,
+                        capture.as_deref_mut(),
                     )?),
                 });
             }
@@ -776,30 +950,33 @@ fn chart_shape<M: ChartMetric>(
                     longitude_scale,
                     latitude_scale,
                     metric_access,
+                    capture.as_deref_mut(),
                     memo,
                 )
             })?);
             memo.insert(owner, chart.clone());
             Ok(chart)
         },
-        Shape::LineString(line) => Ok(Shape::LineString(chart_line(
+        Shape::LineString(line) => Ok(Shape::LineString(chart_line_captured(
             line,
             frame,
             longitude_scale,
             latitude_scale,
             metric_access,
+            capture.as_deref_mut(),
         )?)),
         Shape::MultiLineString(lines) => {
             let mut members = Vec::with_capacity(lines.member_count());
             for member in lines.members_with_values() {
                 members.push(match member {
                     MultiMember::Empty => MultiMember::Empty,
-                    MultiMember::Value(line) => MultiMember::Value(chart_line(
+                    MultiMember::Value(line) => MultiMember::Value(chart_line_captured(
                         line,
                         frame,
                         longitude_scale,
                         latitude_scale,
                         metric_access,
+                        capture.as_deref_mut(),
                     )?),
                 });
             }
@@ -808,7 +985,33 @@ fn chart_shape<M: ChartMetric>(
                 members,
             )?))
         },
-        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => shape.map_xy_with(|x, y| {
+        Shape::Point(point) => {
+            let root = match capture.as_deref_mut() {
+                Some(capture) => Some(capture.next_source_root()?),
+                None => None,
+            };
+            let chart = chart_point(*point, frame, longitude_scale, latitude_scale)?;
+            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), root) {
+                capture.record_root_point(root, chart, &ExactRational::zero())?;
+            }
+            Ok(Shape::Point(chart))
+        },
+        Shape::MultiPoint(points) => {
+            let mut chart_points = Vec::with_capacity(points.len());
+            for point in points.points() {
+                let root = match capture.as_deref_mut() {
+                    Some(capture) => Some(capture.next_source_root()?),
+                    None => None,
+                };
+                let chart = chart_point(point, frame, longitude_scale, latitude_scale)?;
+                if let (Some(capture), Some(root)) = (capture.as_deref_mut(), root) {
+                    capture.record_root_point(root, chart, &ExactRational::zero())?;
+                }
+                chart_points.push(chart);
+            }
+            Ok(Shape::MultiPoint(points.with_values(&chart_points)?))
+        },
+        Shape::Empty(..) => shape.map_xy_with(|x, y| {
             Ok((
                 chart_longitude(x, frame, longitude_scale)?,
                 chart_latitude(y, frame, latitude_scale)?,
@@ -1592,7 +1795,7 @@ mod tests {
         let longitude = chart_connection(source[0], source[1], frame)
             .unwrap()
             .retained();
-        let event = seam_event(&source, longitude, frame)
+        let event = seam_event(&source, longitude, frame, None)
             .unwrap()
             .expect("the retained source edge crosses the seam");
 

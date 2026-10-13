@@ -189,6 +189,28 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     assert line.split_antimeridian().to_wkt() == split_rows[0].to_wkt()
 
 
+def test_split_antimeridian_nullable_gather_keeps_logical_rows() -> None:
+    crossing = gm.LineString([(170.0, -10.0), (-170.0, 10.0)], crs=4326)
+    ordinary = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    source = gm.GeometryArray([crossing, None, ordinary, crossing])
+
+    gathered = source[[3, 1, 0, 2, 3]].split_antimeridian()
+
+    expected_crossing = crossing.split_antimeridian().to_wkt()
+    assert gathered.is_missing.tolist() == [False, True, False, False, False]
+    assert [
+        gathered[index].to_wkt() if gathered[index] is not None else None
+        for index in range(len(gathered))
+    ] == [
+        expected_crossing,
+        None,
+        expected_crossing,
+        ordinary.to_wkt(),
+        expected_crossing,
+    ]
+    assert gathered.crs == gm.CRS('EPSG:4326')
+
+
 def test_multipolygon_perimeter_cancels_partial_periodic_seam_overlap() -> None:
     geometry = gm.from_wkt(
         'MULTIPOLYGON (((170 -10, 180 -10, 180 10, 170 10, 170 -10)),'

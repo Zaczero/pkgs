@@ -128,7 +128,7 @@ fn to_geojson_string_with_limit_and_metric<M: ChartMetric>(
     let limit = limit.min(isize::MAX.unsigned_abs());
     validate_geojson_value(shape)?;
     crate::io::require_serializable_axes(shape)?;
-    let prepared = geojson_output_shape(shape, domain, metric_access)?;
+    let prepared = geojson_output_shape_for_write(shape, domain, metric_access)?;
     let summary = geojson_text_summary(&prepared);
     summary.geojson_lower_bound(limit).require_within()?;
     // Three zmij-formatted ordinates, delimiters and a preceding comma fit within 80 bytes.
@@ -253,6 +253,23 @@ pub(crate) fn geojson_output_shape<'s, M: ChartMetric>(
     } else {
         Ok(prepared)
     }
+}
+
+fn geojson_output_shape_for_write<'s, M: ChartMetric>(
+    shape: &'s Shape,
+    domain: TopologyDomain,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Cow<'s, Shape>> {
+    let TopologyDomain::Geographic(frame) = domain else {
+        return geojson_output_shape(shape, domain, metric_access);
+    };
+    validate_geojson_domain(shape)?;
+    let drawing = shape.split_antimeridian_captured_in_frame_with_metric(frame, metric_access)?;
+    let finished = drawing
+        .orient_geojson()?
+        .finish_scalar(crate::Frame::None)?;
+    let (shape, _) = finished.into_scalar()?;
+    Ok(Cow::Owned(shape))
 }
 
 /// Position outside the WGS84 lon/lat domain, as `(coordinate_label, value)`.
