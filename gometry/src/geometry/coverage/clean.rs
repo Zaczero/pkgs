@@ -99,10 +99,11 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
 
             #[cfg(test)]
             drop(admission_phase);
-            let receipt = analysis.cleaning_drawing_receipt(
+            let receipt = analysis.coverage_drawing_receipt(
                 &selection,
                 declared_axes,
                 context,
+                StorageTarget::Array,
                 &mut budget,
             )?;
             match finish_geographic(
@@ -200,15 +201,15 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     }
 }
 
-/// Frame-aware coverage dissolve: rows whose raw boxes are unsound in the
-/// geographic frame are split before the edge inventory sees them as planar.
+/// Dissolve a valid geographic coverage from its original Q source roots when
+/// raw bounds cross the longitude seam.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let domain = context.domain();
     let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
-        return coverage_union_inner(coverage, None, context);
+        return coverage_union_inner(coverage, context);
     };
     if coverage.iter().all(|row| {
         let shape = row.borrow();
@@ -216,44 +217,19 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
         })
     }) {
-        return coverage_union_inner(coverage, None, context);
+        return coverage_union_inner(coverage, context);
     }
-    let mut split_owned = Vec::with_capacity(coverage.len());
-    for row in coverage {
-        let shape = row.borrow();
-        let split = if shape.bounds().is_some_and(|bounds| {
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
-        }) {
-            shape.clone()
-        } else {
-            shape.split_antimeridian_in_frame_with_metric(frame, context.metric_access())?
-        };
-        split_owned.push(split);
-    }
-    let source_refs = coverage
-        .iter()
-        .map(|shape| shape.borrow())
-        .collect::<Vec<_>>();
-    coverage_union_inner(&split_owned, Some(&source_refs), context)
+    coverage_union_geographic(coverage, frame, context)
 }
 
 fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    original_sources: Option<&[&Shape]>,
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
     let prepared = valid_coverage_rows(coverage, "coverage_union_all")?;
-    let source_refs = original_sources.map_or_else(
-        || {
-            coverage
-                .iter()
-                .map(|shape| shape.borrow())
-                .collect::<Vec<_>>()
-        },
-        |sources| sources.to_vec(),
-    );
+    let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
     let mut sole: Option<&crate::geometry::Polygon> = None;
@@ -354,6 +330,80 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
         false,
         context,
     )
+}
+
+fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
+    coverage: &[S],
+    frame: crate::geographic::GeographicFrame,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
+    let mut budget = EvaluationBudget::new("coverage_union_all", 0)?;
+    let analysis = crate::geometry::analyze_geographic_coverage_with_work(
+        coverage,
+        frame,
+        0.0,
+        "coverage_union_all",
+        &mut budget,
+    )?;
+    if !analysis.is_valid() {
+        return Err(GeometryErrorKind::InvalidCoverage {
+            operation: "coverage_union_all",
+        }
+        .into());
+    }
+    let row_areas = coverage
+        .iter()
+        .map(|shape| shape.borrow().area())
+        .collect::<Vec<_>>();
+    let mut assignment = analysis.assign_cleaning_faces(
+        &row_areas,
+        0.0,
+        CoverageOverlapRule::MinIndex,
+        &mut budget,
+    )?;
+    // Valid coverage faces have at most one source owner. Assign all occupied
+    // faces to the scalar result so Q cancels shared boundaries before writing.
+    for owner in &mut assignment.owners {
+        if owner.is_some() {
+            *owner = Some(0);
+        }
+    }
+    let declared_axes = coverage
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.borrow().axes())
+        });
+    let receipt = analysis.coverage_drawing_receipt(
+        &assignment,
+        declared_axes,
+        context,
+        StorageTarget::Scalar,
+        &mut budget,
+    )?;
+    match finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            crate::Frame::None,
+            &mut budget,
+        ),
+        StorageTarget::Scalar,
+    )? {
+        PublicationOutcome::Pass(finished) => finished.into_scalar().map(|(shape, _)| shape),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final coverage-union storage changed {} producer literal images",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "coverage-union finisher returned a different producer rejection family".into(),
+        )
+        .into()),
+    }
 }
 
 /// Dissolve the validation product's exterior incidences through one exact
@@ -760,9 +810,11 @@ mod tests {
                 }
                 Ok::<_, crate::error::Error>(())
             })?;
-            assert_eq!(seam_samples.len(), 2);
             assert!(seam_samples.iter().all(|(z, m)| z.is_some() && m.is_some()));
-            assert_eq!(seam_samples[0], seam_samples[1]);
+            let [first, remaining @ ..] = seam_samples.as_slice() else {
+                panic!("the dissolve output retains at least one seam sample");
+            };
+            assert!(remaining.iter().all(|sample| sample == first));
         }
         Ok(())
     }

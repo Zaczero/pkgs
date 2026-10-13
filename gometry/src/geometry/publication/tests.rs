@@ -508,7 +508,13 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
             crate::geometry::TopologyDomain::Geographic(frame),
             None,
         );
-    analysis.cleaning_drawing_receipt(&assignment, CoordinateAxes::XY, &context, &mut work)
+    analysis.coverage_drawing_receipt(
+        &assignment,
+        CoordinateAxes::XY,
+        &context,
+        StorageTarget::Array,
+        &mut work,
+    )
 }
 
 fn producer_polygon_ring_layout(

@@ -19,7 +19,7 @@ use crate::geometry::ordinates::{
 };
 use crate::geometry::predicates::ring_contains_interior;
 use crate::geometry::publication::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
 };
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -97,11 +97,12 @@ struct OutputRing {
 }
 
 impl GeographicCoverageAnalysis {
-    pub(in crate::geometry) fn cleaning_drawing_receipt<M: ChartMetric>(
+    pub(in crate::geometry) fn coverage_drawing_receipt<M: ChartMetric>(
         &self,
         assignment: &GeographicCoverageFaceAssignment,
         declared_axes: CoordinateAxes,
         context: &crate::geometry::SourceArcContext<'_, '_, M>,
+        target: StorageTarget,
         work: &mut impl Work,
     ) -> Result<ProducerDrawingReceipt> {
         let crate::geometry::TopologyDomain::Geographic(frame) = context.domain() else {
@@ -284,6 +285,9 @@ impl GeographicCoverageAnalysis {
                 polygons,
             });
         }
+        if target == StorageTarget::Scalar {
+            output_rows.truncate(1);
+        }
 
         let mut request_rows = Vec::new();
         for row in &mut output_rows {
@@ -331,7 +335,7 @@ impl GeographicCoverageAnalysis {
             work,
         )?;
 
-        let mut writer = StreamingShapes::with_capacity(0, output_rows.len());
+        let mut output_shapes = Vec::with_capacity(output_rows.len());
         let mut row_map = Vec::with_capacity(output_rows.len());
         let mut literals = Vec::new();
         let mut source_root_uses = Vec::new();
@@ -412,17 +416,54 @@ impl GeographicCoverageAnalysis {
                     polygons: literal_polygons,
                 },
             }));
-            writer.try_push(shape)?;
+            output_shapes.push(shape);
         }
 
-        let (storage, ..) = writer.finish_parts()?;
-        let buffers = FrozenLiteralBuffers::rows(
-            Arc::new(storage),
-            None,
-            StorageLayout::PresentOnly,
-            row_map,
-            work,
-        )?;
+        let buffers = match target {
+            StorageTarget::Array => {
+                let mut writer = StreamingShapes::with_capacity(0, output_shapes.len());
+                for shape in output_shapes {
+                    writer.try_push(shape)?;
+                }
+                let (storage, ..) = writer.finish_parts()?;
+                FrozenLiteralBuffers::rows(
+                    Arc::new(storage),
+                    None,
+                    StorageLayout::PresentOnly,
+                    row_map,
+                    work,
+                )?
+            },
+            StorageTarget::Scalar => {
+                if output_shapes.len() > 1 || row_map.len() > 1 {
+                    return Err(GeometryErrorKind::Invalid(
+                        "scalar coverage boundary receipt has more than one output row".into(),
+                    )
+                    .into());
+                }
+                let shape = output_shapes
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(Shape::empty_polygon);
+                let layout = row_map
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .map(|row| row.layout)
+                    .unwrap_or(ShapeLiteralLayout {
+                        points: Vec::new(),
+                        lines: Vec::new(),
+                        polygons: Vec::new(),
+                    });
+                FrozenLiteralBuffers::shapes(shape, layout)
+            },
+            StorageTarget::Groups => {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage boundary receipts do not publish grouped rows".into(),
+                )
+                .into());
+            },
+        };
         Ok(ProducerDrawingReceipt::new(
             buffers,
             literals,
