@@ -430,6 +430,10 @@ impl IndirectFloat64Buffer {
 /// -------
 /// _IndirectFloat64Buffer
 ///     Object exporting an indirect buffer view (PIL-style pointer table).
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 extracts the Python shape sequence as an owned Vec before this helper borrows it"
+)]
 #[pyfunction]
 #[pyo3(name = "_indirect_float64_buffer", text_signature = "(values, shape)")]
 pub(crate) fn indirect_float64_buffer(

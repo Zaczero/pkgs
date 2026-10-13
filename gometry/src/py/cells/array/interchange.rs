@@ -139,7 +139,7 @@ impl PyCellArray {
     /// numpy.ndarray
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__(
-        slf: Bound<'_, Self>,
+        slf: &Bound<'_, Self>,
         dtype: Option<&Bound<'_, PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
@@ -164,7 +164,7 @@ impl PyCellArray {
                     let ids = slf.borrow().logical_ids_vec();
                     uint64_array(py, ids)?
                 } else {
-                    Self::to_numpy(&slf)?
+                    Self::to_numpy(slf)?
                 };
                 if !native {
                     let dtype = dtype.expect("non-native ids require a requested dtype");

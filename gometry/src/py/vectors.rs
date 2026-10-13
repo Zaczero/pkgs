@@ -864,13 +864,13 @@ impl Groups {
     /// Returns
     /// -------
     /// Group values, None, or Groups
-    fn __getitem__(slf: Bound<'_, Self>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    fn __getitem__(slf: &Bound<'_, Self>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let parsed = {
             let this = slf.borrow();
             parse_row_index_or_slice(index, this.rows.len(), Self::LABEL)?
         };
         match parsed {
-            RowIndexOrSlice::Index(row) => slf.borrow().row_pyobject(slf.py(), &slf, row),
+            RowIndexOrSlice::Index(row) => slf.borrow().row_pyobject(slf.py(), slf, row),
             RowIndexOrSlice::Slice {
                 start,
                 stop,
