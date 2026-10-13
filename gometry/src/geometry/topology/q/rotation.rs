@@ -1,8 +1,8 @@
 use super::{
     ChartPole, ChartSpan, ChartSpanId, CutChart, ExactChartPoint, ExactRational, ExactSign,
-    GeographicFrame, GeometryErrorKind, GlobalFaceId, HeapSize, Ordering, QComponentId, QDart,
-    QDartId, QFaceChart, QLocalFace, QLocalFaceId, QNodeId, QPortId, QuotientFaces, ResourceError,
-    Result, try_sort_by, vector_cross, vector_difference,
+    GeographicFrame, GeometryErrorKind, Ordering, QComponentId, QCutIndex, QDart, QDartId,
+    QFaceChart, QLocalFace, QLocalFaceId, QNodeId, QPortId, QuotientFaces, ResourceError, Result,
+    try_sort_by, vector_cross, vector_difference,
 };
 
 impl QuotientFaces {
