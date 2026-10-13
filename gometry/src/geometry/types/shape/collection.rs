@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CoordinateAxes, Deref, Dimension, GeometryErrorKind, GeometryKind, MAX_NESTING, NonZeroU8,
+    Result, Shape, ShapeHeapMemo, SharedSlice, SharedSliceIter,
+};
 
 impl Shape {
     /// Admit collection children after checking the complete subtree without

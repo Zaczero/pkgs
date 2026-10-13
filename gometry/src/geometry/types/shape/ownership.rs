@@ -1,4 +1,4 @@
-use super::*;
+use super::{CoordSeq, CoordinateAxes, GeometryCollection, HashMap, HeapSize, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ShapeOwnerKey {
@@ -8,7 +8,7 @@ pub(crate) struct ShapeOwnerKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum ShapeOwnerKind {
+pub(super) enum ShapeOwnerKind {
     Collection,
     MultiLineValues,
     MultiPolygonValues,
@@ -21,7 +21,7 @@ impl ShapeOwnerKey {
     }
 
     /// Slice windows within one allocation have distinct summaries.
-    fn for_slice<T>(kind: ShapeOwnerKind, values: &[T]) -> Self {
+    pub(super) fn for_slice<T>(kind: ShapeOwnerKind, values: &[T]) -> Self {
         Self {
             address: values.as_ptr().addr(),
             len: values.len(),
@@ -31,9 +31,9 @@ impl ShapeOwnerKey {
 }
 
 #[derive(Clone, Copy, Default)]
-struct ShapeHeapStats {
-    coordinate_bytes: usize,
-    heap_bytes: usize,
+pub(super) struct ShapeHeapStats {
+    pub(super) coordinate_bytes: usize,
+    pub(super) heap_bytes: usize,
 }
 
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl ShapeHeapMemo {
         }
     }
 
-    fn collection_stats(&mut self, collection: &GeometryCollection) -> ShapeHeapStats {
+    pub(super) fn collection_stats(&mut self, collection: &GeometryCollection) -> ShapeHeapStats {
         let owner = collection
             .members_are_shared()
             .then(|| ShapeOwnerKey::new(collection.as_slice()));

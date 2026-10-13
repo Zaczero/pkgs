@@ -1,4 +1,11 @@
-use super::*;
+#[cfg(test)]
+use std::cell::Cell;
+
+use super::{
+    CoordSeq, CsrOffsetColumn, GeometryArrayStorage, PackedRow, PackedStorage, PolygonLevel,
+    RingLevel, RowSelectionRef, Shape, ShapeRow, line_logical_len, point_logical_len,
+    polygon_logical_len,
+};
 
 #[cfg(test)]
 std::thread_local! {

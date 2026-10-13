@@ -1,4 +1,7 @@
-use super::*;
+use super::owners::{reserve_owner_map, shape_may_repeat_coord_run};
+use super::{
+    Bounds, CoordSeq, Hash, HashMap, Polygon, Shape, ShapeOwnerKey, VisibleXYKey, bounds_from_iter,
+};
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum BoundsOwner {

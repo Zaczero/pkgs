@@ -5,8 +5,10 @@ mod frame_cache_tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
+    use crate::geographic::GeographicFrame;
     use crate::geometry::{CoordSeq, LineSeq};
     use crate::test_support::allocation_count;
+    use crate::{PlanarMetric, Point, PreparedPlan, Shape};
 
     fn cached_measured_locate(shape: &PreparedPlan, point: Point) -> crate::error::Result<f64> {
         shape.measured_line_index()?.locate(point, &PlanarMetric)

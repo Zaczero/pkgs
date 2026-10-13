@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CoordIter, CoordSeq, CoordWindow, Coordinates, Deref, GeometryErrorKind, Point, Result,
+    coordseq,
+};
 
 /// Coordinate sequence carried by lineal shapes. A `LineSeq` always has at
 /// least two vertices, so an empty or one-vertex `LineString` is

@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    Bounds, CoordSeq, CoordWindow, CsrOffsetColumn, GeometryArrayStorage, GeometryKind, LineSeq,
+    PackedStorage, Point, Polygon, PolygonLevel, RingLevel, RowSelectionRef, Shape,
+    admitted_csr_window, column_window, line_logical_len, physical_row, point_logical_len,
+    row_bounds,
+};
 
 /// Expand selected line-row construction into hot per-row callers. The row
 /// selector and CSR offsets are admitted, so the fast path stores their range
@@ -553,3 +558,8 @@ impl LineRows<'_> {
         }
     }
 }
+
+pub(crate) use packed_line_row;
+pub(crate) use packed_polygon_bounds;
+pub(crate) use packed_polygon_vertex_window;
+pub(crate) use packed_polygon_view;

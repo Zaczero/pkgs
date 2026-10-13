@@ -3,8 +3,6 @@ mod location;
 mod metric;
 mod topology;
 use std::fmt;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) use frame::FrameDependentCaches;
@@ -18,12 +16,10 @@ pub(crate) use super::metric::{
     IndexedSegment, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult,
 };
 use crate::HeapSize;
-use crate::crs::ChartEdge;
 use crate::error::Result;
-use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
-use crate::geometry::interval::Interval;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
 use crate::geometry::source_support::{
     OccupiedToward, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
@@ -35,11 +31,10 @@ pub(crate) use crate::geometry::types::point_key::{PointKey, canonical_f64_bits}
 pub(crate) use crate::geometry::types::results::{PolygonizeFull, ValidationIssue};
 pub(crate) use crate::geometry::types::shape_data::{IntoSharedShape, ShapeData};
 use crate::geometry::{
-    Bounds, ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey,
-    GeographicPrepared, GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex,
-    MeasuredLineIndexSlot, PlanarMetric, Point, Segment, Shape, XY,
+    Bounds, ChartLineIndex, DistanceParts, GeographicMetricKey, GeographicPrepared,
+    GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
+    PlanarMetric, Point, Shape,
 };
-use crate::work::Work;
 
 /// One reusable execution plan for one immutable geometry.
 ///

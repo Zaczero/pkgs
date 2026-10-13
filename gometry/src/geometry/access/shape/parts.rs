@@ -1,4 +1,4 @@
-use super::*;
+use super::{GeometryKind, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Shape};
 
 impl Shape {
     pub fn parts(&self) -> ShapePartsIter<'_> {

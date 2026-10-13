@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CoordIter, CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HeapSize,
+    LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Result,
+    SharedSlice, SharedSliceIter,
+};
 
 impl<T: crate::HeapSize> crate::HeapSize for MultiMember<T> {
     fn heap_bytes(&self) -> usize {
@@ -83,7 +87,7 @@ impl MultipartMembers {
         }
     }
 
-    fn heap_bytes(&self) -> usize {
+    pub(super) fn heap_bytes(&self) -> usize {
         match self {
             Self::Dense => 0,
             Self::Sparse(members) => members.heap_bytes(),

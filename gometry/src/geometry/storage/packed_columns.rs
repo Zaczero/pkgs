@@ -24,8 +24,7 @@ pub(crate) use resolve::{
 pub(super) use resolve::{batch_err, resolve_packed_columns, row_err};
 pub(crate) use transform::map_selected_to_crs;
 pub(crate) use views::{
-    LineColumns, PackedColumns, PointColumns, PointRowCursor, PointRows, PolygonColumns,
-    SegmentedRuns, XyColumns,
+    LineColumns, PackedColumns, PointColumns, PointRows, PolygonColumns, SegmentedRuns, XyColumns,
 };
 #[cfg(test)]
 mod tests;

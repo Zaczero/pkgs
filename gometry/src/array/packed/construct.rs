@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, ArrayRows, ComputedCaches, CoordSeq, CoordSeqBuilder, CsrOffsetColumn, FinishedGeometry,
+    Frame, GeometryArrayStorage, PackedStorage, PolygonLevel, PyGeometryArray, RingLevel,
+    RowSelection, Shape, StorageLayout, ValidityMask, prepared, storage,
+};
 
 impl PyGeometryArray {
     /// Materialize compact point validity into coordinate placeholders for an
@@ -119,7 +123,7 @@ impl PyGeometryArray {
         ))
     }
 
-    pub(in crate::array) fn from_admitted_rows(
+    pub(crate) fn from_admitted_rows(
         rows: ArrayRows,
         frame: Frame,
         caches: ComputedCaches,

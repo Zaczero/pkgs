@@ -1,4 +1,8 @@
+use super::owners::shape_may_repeat_coord_run;
 use super::*;
+
+#[cfg(test)]
+mod tests;
 
 fn reserve_unique_points_capacity(
     capacity: usize,

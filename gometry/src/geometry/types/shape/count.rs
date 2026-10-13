@@ -1,4 +1,5 @@
-use super::*;
+use super::ownership::ShapeOwnerKind;
+use super::{CoordSeq, HashMap, PhantomData, Polygon, Shape, ShapeOwnerKey};
 
 #[derive(Clone, Copy, Debug)]
 struct ShapeCountSummary {

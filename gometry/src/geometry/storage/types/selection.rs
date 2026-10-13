@@ -1,4 +1,4 @@
-use super::*;
+use super::{CoordSeq, HeapSize, SharedSlice};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CheckedPhysicalRows {
@@ -336,3 +336,5 @@ pub(crate) fn contiguous_physical_range(
     }
     Some(start..end)
 }
+
+pub(crate) use admitted_csr_window;

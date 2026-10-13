@@ -1,4 +1,8 @@
-use super::*;
+use super::owners::{reserve_owner_map, shape_may_repeat_coord_run};
+use super::{
+    CoordSeq, CoordinateAxes, HasM, HasZ, Hash, HashMap, Point, Shape, ShapeOwnerKey,
+    SharedShapeOwners, column_minmax,
+};
 
 #[derive(Clone, Copy)]
 enum Ordinate {

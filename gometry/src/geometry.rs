@@ -53,6 +53,8 @@ pub(crate) use frame::{
     AxisFrame, axis_extent, axis_pow2_scale, power_of_two_exponent, scale_by_power_of_two,
     scaled_residual, unscale_area,
 };
+#[cfg(test)]
+pub(crate) use test_support::RecordingWork;
 mod area;
 pub(crate) mod expansion;
 mod geographic_area;

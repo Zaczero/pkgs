@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(test)]
+use super::construct::concat_coord_columns;
+use super::{CoordSeq, CoordWindow, MColumn, Result, SharedSlice, reversed_column};
 
 impl CoordSeq {
     /// Zero-copy coordinate sub-sequence: the same shared columns, a narrowed

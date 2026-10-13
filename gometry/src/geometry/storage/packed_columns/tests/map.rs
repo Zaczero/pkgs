@@ -1,3 +1,4 @@
+use super::super::resolve::resolve_point_columns;
 use super::*;
 
 #[test]

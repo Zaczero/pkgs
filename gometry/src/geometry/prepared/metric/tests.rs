@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::PreparedPlan;
+use crate::geometry::{Point, PreparedPlan, Shape};
 
 #[cfg(test)]
 mod footprint_tests {

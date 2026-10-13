@@ -1,4 +1,5 @@
-use super::*;
+use super::construct::columns_all_finite;
+use super::{CoordSeq, CoordinateAxes, GeometryErrorKind, HasM, HasZ, Point, Range, Result};
 
 /// Incremental column builder for [`CoordSeq`] — the one-pass replacement
 /// for `Vec<Point>` staging.

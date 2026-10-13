@@ -1,4 +1,9 @@
-use super::*;
+use super::transform::TargetLongitudeOutput;
+use super::{
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder, GeographicFrame,
+    PackedColumnOutput, PackedColumnResult, PackedColumns, Point, TransformFailure, batch_err,
+    row_err, storage,
+};
 
 fn finish_pointwise_coords(
     builder: CoordSeqBuilder,
@@ -13,7 +18,7 @@ fn finish_pointwise_coords(
     }
 }
 
-fn canonicalize_transformed_points(
+pub(super) fn canonicalize_transformed_points(
     coordinates: &CoordSeq,
     frame: GeographicFrame,
 ) -> crate::error::Result<CoordSeq> {
@@ -24,7 +29,7 @@ fn canonicalize_transformed_points(
     })
 }
 
-fn transform_selected_coords(
+pub(super) fn transform_selected_coords(
     transformer: &crate::crs::TransformPlan,
     coords: &CoordSeq,
     indices: impl IntoIterator<Item = usize>,

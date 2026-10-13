@@ -1,3 +1,4 @@
+use super::super::construct::{copy_point_column, point_column_all_finite, reserve_point_column};
 use super::*;
 
 #[cfg(test)]

@@ -1,4 +1,12 @@
-use super::*;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use super::{
+    Arc, ExactGeographicTopology, GeographicFrame, GeographicTopologyKey,
+    GeographicTopologyProducts, GeographicTopologyRoute, HeapSize, Mutex, OnceLock, PointQueryPlan,
+    PreparedPlan, Result, ScalarGeographicView, Shape, ShapeData, ValidationIssue, fmt,
+    validate_structure,
+};
 
 /// Shape-derived topology products shared by persistent and transient plans.
 ///
@@ -118,7 +126,10 @@ impl PreparedPlan {
 }
 
 impl TopologyPlan {
-    fn geographic_products(&self, frame: GeographicFrame) -> Arc<GeographicTopologyProducts> {
+    pub(super) fn geographic_products(
+        &self,
+        frame: GeographicFrame,
+    ) -> Arc<GeographicTopologyProducts> {
         let key = GeographicTopologyKey::new(frame);
         let mut slot = self
             .geographic

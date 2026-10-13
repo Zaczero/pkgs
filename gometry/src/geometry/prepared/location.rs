@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Bounds, ExactDyadic, OccupiedToward, OnceLock, Point, PointMembership, PointQueryPlan,
+    PreparedPlan, PreparedPointQueries, Result, Shape, ShapeData, SourcePointLocation,
+    cartesian_point_location_and_area, exact_stored_point, occupied_toward,
+};
 
 fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
     bounds.is_none_or(|bounds| {

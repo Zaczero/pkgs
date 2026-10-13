@@ -1,18 +1,27 @@
-use super::*;
+use super::{
+    CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, GeometryErrorKind, MColumn, MOrdinate,
+    Point, Result, SharedSlice, Unmetered, Work, XY, ZOrdinate, admit_m_column, column_all_finite,
+    ensure_coordseq_vertex_capacity,
+};
 
-fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> bool {
+pub(super) fn columns_all_finite(
+    xs: &[f64],
+    ys: &[f64],
+    zs: Option<&[f64]>,
+    ms: Option<&[f64]>,
+) -> bool {
     column_all_finite(xs)
         && column_all_finite(ys)
         && zs.is_none_or(column_all_finite)
         && ms.is_none_or(column_all_finite)
 }
 
-fn reserve_point_column(count: usize, work: &mut impl Work) -> Result<Vec<f64>> {
+pub(super) fn reserve_point_column(count: usize, work: &mut impl Work) -> Result<Vec<f64>> {
     work.charge_product_into_error(count, 1)?;
     Ok(Vec::with_capacity(count))
 }
 
-fn copy_point_column(
+pub(super) fn copy_point_column(
     points: &[Point],
     column: &mut Vec<f64>,
     ordinate: impl FnMut(Point) -> f64,
@@ -23,7 +32,7 @@ fn copy_point_column(
     Ok(())
 }
 
-fn point_column_all_finite(values: &[f64], work: &mut impl Work) -> Result<bool> {
+pub(super) fn point_column_all_finite(values: &[f64], work: &mut impl Work) -> Result<bool> {
     work.charge_product_into_error(values.len(), 1)?;
     Ok(column_all_finite(values))
 }

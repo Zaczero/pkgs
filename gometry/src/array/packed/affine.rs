@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    GeometryArrayStorage, OriginSpec, PackedStorage, PyGeometryArray, PyResult, Python,
+    packed_per_row_self_origin_affine_columns, row_map_is_identity,
+};
 
 impl PyGeometryArray {
     /// Detached packed lane for an explicit six-coefficient affine matrix.

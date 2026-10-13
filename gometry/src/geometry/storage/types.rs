@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::cell::Cell;
 mod iter;
 mod rows;
 mod selection;
@@ -7,8 +5,8 @@ mod sizes;
 pub(crate) use iter::{RowsIter, ShapesIter};
 #[cfg(test)]
 pub(crate) use iter::{
-    csr_size_row_visits, record_csr_size_row_visit, record_shape_iter_materialization,
-    reset_csr_size_row_visits, reset_shape_iter_materializations, shape_iter_materializations,
+    csr_size_row_visits, record_csr_size_row_visit, reset_csr_size_row_visits,
+    reset_shape_iter_materializations, shape_iter_materializations,
 };
 pub(crate) use rows::{
     LineRows, PackedRow, PointRows, packed_line_row, packed_polygon_bounds,

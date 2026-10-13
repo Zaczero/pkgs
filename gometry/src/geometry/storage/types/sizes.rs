@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    GeometryErrorKind, RowSelectionRef, csr_value_window, line_logical_len, polygon_logical_len,
+};
 
 pub(crate) fn packed_lines_coord_len<'a>(
     offsets: &[i32],

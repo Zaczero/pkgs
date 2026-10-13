@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, Bounds, ElementBounds, GeometryArrayStorage, PackedColumns, PackedStorage, Py, PyAny,
+    PyGeometryArray, PyResult, Python, Shape, optional_float64_array, row_ord_extremes,
+};
 
 impl PyGeometryArray {
     /// Shared driver for the Z-extreme accessors (`min_z`/`max_z`):

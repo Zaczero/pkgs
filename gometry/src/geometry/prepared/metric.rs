@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, ChartLineIndex, ChartMetric, ChartParts, DistanceParts, FrameDependentCaches,
+    GeographicMetricKey, GeographicPrepared, HeapSize, LineIndex, LineIndexSlot, MeasuredLineIndex,
+    MeasuredLineIndexSlot, OnceLock, PlanarMetric, PreparedPlan, Result,
+};
 
 /// Shape-derived metric products shared by persistent and transient plans.
 #[derive(Default)]
@@ -137,3 +141,6 @@ impl HeapSize for DistanceParts {
             .saturating_add(self.point_index.heap_bytes())
     }
 }
+
+#[cfg(test)]
+mod tests;

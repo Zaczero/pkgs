@@ -8,9 +8,9 @@ mod construct;
 mod iter;
 mod select;
 pub(crate) use builder::CoordSeqBuilder;
-pub(crate) use columns::{MColumn, SharedColumns, coordinate_columns_eq};
+pub(crate) use columns::{MColumn, coordinate_columns_eq};
 use columns::{admit_m_column, reversed_column};
-pub(crate) use construct::{coerce_to_common_axes, coerced_pair, concat_coord_columns};
+pub(crate) use construct::{coerce_to_common_axes, coerced_pair};
 pub(crate) use iter::CoordIter;
 #[cfg(test)]
 mod tests;
@@ -150,15 +150,4 @@ impl CoordSeq {
     pub const fn axes(&self) -> CoordinateAxes {
         CoordinateAxes::new(HasZ(self.zs.is_some()), HasM(self.ms.is_some()))
     }
-}
-
-macro_rules! dispatch_coord_iter {
-    ($self:expr, $method:ident $(, $arg:expr)*) => {
-        match $self {
-            CoordIter::Xy(iter) => iter.$method($($arg),*),
-            CoordIter::Xyz(iter) => iter.$method($($arg),*),
-            CoordIter::Xym(iter) => iter.$method($($arg),*),
-            CoordIter::Xyzm(iter) => iter.$method($($arg),*),
-        }
-    };
 }

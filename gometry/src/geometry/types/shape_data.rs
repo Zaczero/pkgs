@@ -11,7 +11,9 @@ use crate::geometry::{Bounds, Shape};
 /// free of topology, distance, tester, and linear-index slots.
 pub struct ShapeData {
     shape: Shape,
-    bounds: OnceLock<Option<Bounds>>,
+    /// Prepared location checks distinguish an unset cache from cached-empty
+    /// bounds, so the geometry subsystem reads this cell without recomputing.
+    pub(in crate::geometry) bounds: OnceLock<Option<Bounds>>,
 }
 
 impl ShapeData {
@@ -107,6 +109,3 @@ impl fmt::Debug for ShapeData {
         self.shape.fmt(f)
     }
 }
-
-#[cfg(test)]
-mod tests;

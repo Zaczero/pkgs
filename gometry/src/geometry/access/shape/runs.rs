@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ControlFlow, CoordSeq, GeometryKind, Infallible, LineSeq, MultiLineString, MultiPoint,
+    MultiPolygon, Point, Polygon, Result, RunIdentity, Shape, SharedShapeOwners, SupportRunKind,
+};
 
 /// One atomic part of a shape: a point, a line, or a polygon.
 ///
@@ -323,7 +326,7 @@ impl Shape {
         self.for_each_coord_run_inner(&mut None, RunIdentity::Full, visit)
     }
 
-    fn for_each_coord_run_inner<'a, R: std::ops::Try<Output = ()>>(
+    pub(super) fn for_each_coord_run_inner<'a, R: std::ops::Try<Output = ()>>(
         &'a self,
         owners: &mut Option<&mut SharedShapeOwners>,
         identity: RunIdentity,

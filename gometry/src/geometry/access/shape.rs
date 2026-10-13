@@ -6,7 +6,6 @@ mod points;
 mod runs;
 pub(crate) use ordinates::shape_axes_all_z;
 pub(crate) use owners::{RunIdentity, SharedShapeOwners, SupportRunKind};
-pub(crate) use parts::ShapePartsIter;
 pub(crate) use points::PointSet;
 pub(crate) use runs::{
     Component, CoordRun, Lineal, MetricSupportRun, Polygonal, linework_first_point,

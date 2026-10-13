@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CoordSeq, GeometryErrorKind, Point, Range, Result, SharedSlice, VisiblePointRunKey,
+    VisibleXYKey,
+};
 
 /// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).

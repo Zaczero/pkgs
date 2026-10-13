@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, ArrayRows, CoordSeq, CsrOffsetColumn, GeometryArrayStorage, LineColumns, PackedColumns,
+    PackedStorage, PointColumns, PolygonColumns, PolygonLevel, RingLevel, RowSelectionRef,
+    ValidityMask, storage,
+};
 
 #[derive(Debug)]
 pub(crate) enum PackedColumnError {
@@ -63,7 +67,7 @@ fn resolve_columns<'a>(
     }
 }
 
-const fn resolve_point_columns<'a>(
+pub(super) const fn resolve_point_columns<'a>(
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
     missing: Option<&'a ValidityMask>,
@@ -75,7 +79,7 @@ const fn resolve_point_columns<'a>(
     }
 }
 
-const fn resolve_line_columns<'a>(
+pub(super) const fn resolve_line_columns<'a>(
     coords: &'a CoordSeq,
     offsets: &'a CsrOffsetColumn,
     row_map: RowSelectionRef<'a>,
@@ -89,7 +93,7 @@ const fn resolve_line_columns<'a>(
     }
 }
 
-const fn resolve_polygon_columns<'a>(
+pub(super) const fn resolve_polygon_columns<'a>(
     coords: &'a CoordSeq,
     ring_offsets: &'a CsrOffsetColumn<RingLevel>,
     polygon_offsets: &'a CsrOffsetColumn<PolygonLevel>,
@@ -105,7 +109,9 @@ const fn resolve_polygon_columns<'a>(
     }
 }
 
-pub(super) fn resolve_packed_columns(owner: &ArrayRows) -> Option<PackedColumns<'_>> {
+pub(in crate::geometry::storage) fn resolve_packed_columns(
+    owner: &ArrayRows,
+) -> Option<PackedColumns<'_>> {
     match owner.storage() {
         GeometryArrayStorage::Packed(packed) => Some(resolve_columns(packed, owner.missing())),
         GeometryArrayStorage::Mixed(_) => None,
@@ -138,10 +144,15 @@ pub(crate) fn assemble_packed_output(output: PackedColumnOutput) -> GeometryArra
     }
 }
 
-pub(super) const fn batch_err(error: crate::error::Error) -> PackedColumnError {
+pub(in crate::geometry::storage) const fn batch_err(
+    error: crate::error::Error,
+) -> PackedColumnError {
     PackedColumnError::Batch(error)
 }
 
-pub(super) const fn row_err(row: usize, error: crate::error::Error) -> PackedColumnError {
+pub(in crate::geometry::storage) const fn row_err(
+    row: usize,
+    error: crate::error::Error,
+) -> PackedColumnError {
     PackedColumnError::Row { row, error }
 }

@@ -5,7 +5,6 @@ mod element_bounds_cache_tests {
 
     use super::*;
     use crate::array::BoundsSeed;
-    use crate::heap_size::HeapSize as _;
     use crate::test_support::allocation_count;
 
     fn lines() -> PyGeometryArray {

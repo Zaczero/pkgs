@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    CoordSeq, Hash, HashMap, HashSet, Shape, ShapeOwnerKey, VisiblePointRunKey, VisibleXYKey,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum RunIdentity {
@@ -126,7 +128,7 @@ impl SharedShapeOwners {
     }
 }
 
-fn shape_may_repeat_coord_run(shape: &Shape) -> bool {
+pub(super) fn shape_may_repeat_coord_run(shape: &Shape) -> bool {
     match shape {
         Shape::Point(_) | Shape::MultiPoint(_) | Shape::LineString(_) | Shape::Empty(..) => false,
         Shape::MultiLineString(lines) => lines.as_slice().len() > 1,
@@ -141,7 +143,10 @@ fn shape_may_repeat_coord_run(shape: &Shape) -> bool {
     }
 }
 
-fn reserve_owner_map<K: Hash + Eq, V>(owners: &mut HashMap<K, V>, capacity_hint: &mut usize) {
+pub(super) fn reserve_owner_map<K: Hash + Eq, V>(
+    owners: &mut HashMap<K, V>,
+    capacity_hint: &mut usize,
+) {
     if owners.is_empty() && *capacity_hint > 0 {
         owners.reserve(*capacity_hint);
         *capacity_hint = 0;

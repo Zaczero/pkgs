@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, ChartLineIndex, ChartParts, ExactGeographicTopology, GeographicMetricKey,
+    GeographicTopologyRoute, HeapSize, Mutex, OnceLock, ValidationIssue, canonical_f64_bits, fmt,
+};
 
 /// Sidecar for geodesic products keyed by ellipsoid and PROJ runtime generation.
 #[derive(Default)]
@@ -39,7 +42,7 @@ pub(super) struct GeographicTopologyKey {
 }
 
 impl GeographicTopologyKey {
-    fn new(frame: crate::geographic::GeographicFrame) -> Self {
+    pub(super) fn new(frame: crate::geographic::GeographicFrame) -> Self {
         Self {
             longitude_unit: canonical_f64_bits(frame.longitude().radians_per_unit()),
             longitude_period: canonical_f64_bits(frame.longitude().period()),
@@ -61,10 +64,10 @@ pub(super) struct GeographicTopologyProducts {
 }
 
 #[derive(Clone, Default)]
-struct FrameDependentEntry {
-    line_index: Option<Arc<ChartLineIndex>>,
-    chart_parts: Option<Arc<ChartParts>>,
-    measured_chart_parts: Option<Arc<ChartParts>>,
+pub(super) struct FrameDependentEntry {
+    pub(super) line_index: Option<Arc<ChartLineIndex>>,
+    pub(super) chart_parts: Option<Arc<ChartParts>>,
+    pub(super) measured_chart_parts: Option<Arc<ChartParts>>,
 }
 
 impl FrameDependentCaches {
@@ -94,7 +97,7 @@ impl FrameDependentCaches {
             Some((frame, bounds_sound, route));
     }
 
-    fn get(&self, key: &GeographicMetricKey) -> Option<FrameDependentEntry> {
+    pub(super) fn get(&self, key: &GeographicMetricKey) -> Option<FrameDependentEntry> {
         self.entry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -103,7 +106,7 @@ impl FrameDependentCaches {
             .map(|(_, value)| value.clone())
     }
 
-    fn merge(
+    pub(super) fn merge(
         &self,
         key: GeographicMetricKey,
         update: impl FnOnce(&mut FrameDependentEntry),

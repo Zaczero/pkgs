@@ -1,4 +1,15 @@
-use super::*;
+use super::{CoordSeq, CoordinateAxes, HasM, HasZ, Point};
+
+macro_rules! dispatch_coord_iter {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            CoordIter::Xy(iter) => iter.$method($($arg),*),
+            CoordIter::Xyz(iter) => iter.$method($($arg),*),
+            CoordIter::Xym(iter) => iter.$method($($arg),*),
+            CoordIter::Xyzm(iter) => iter.$method($($arg),*),
+        }
+    };
+}
 
 impl CoordSeq {
     /// Iterate the coordinates as `Point`s by value.
