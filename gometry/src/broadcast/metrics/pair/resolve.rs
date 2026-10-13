@@ -1,7 +1,11 @@
+use std::sync::OnceLock;
+
 use super::{
     DistanceUnit, Frame, GeographicFrame, GeometryError, MetricOp, PreparedPlan, PyGeometry,
     PyResult, Shape, SourceArcContext, TopologyDomain, crs, validate_lonlat_shape,
 };
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters;
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
 pub(super) fn dispatch_metric_model<R>(

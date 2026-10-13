@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::{Point, Shape};
 
 fn exact_affine_origin_row(row: [f64; 7]) -> f64 {
     let [

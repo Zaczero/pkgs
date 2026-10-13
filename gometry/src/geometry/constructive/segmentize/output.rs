@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use super::plan::{Plan, Route};
 use super::{
     Arc, CoordSeq, ExpansionBudget, GeographicFrame, Point, Result,

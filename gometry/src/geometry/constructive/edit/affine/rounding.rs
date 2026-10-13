@@ -293,11 +293,11 @@ pub(super) fn round_certified_double_double<const ADMITTED: bool>(
 
 #[cfg(test)]
 mod affine_rounding_tests {
-    use super::exact_affine_origin_ordinate;
-    use super::row::{
+    use super::super::row::{
         AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineLinear,
         AffineOriginRow, AffineRowExtents,
     };
+    use super::exact_affine_origin_ordinate;
     use crate::geometry::numerics::product::DekkerParts;
     use crate::geometry::numerics::product_sum::ExactSum;
 

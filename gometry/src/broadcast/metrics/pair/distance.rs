@@ -222,6 +222,7 @@ pub(crate) fn metric_shortest_line_resolved(
 #[cfg(test)]
 mod dwithin_parity_tests {
     use super::*;
+    use crate::broadcast::metrics::ShapeData;
     use crate::geometry::{point_distance, points_dwithin};
 
     fn point(x: f64, y: f64) -> Point {
@@ -563,7 +564,8 @@ mod planar_nearest_source_ordinate_tests {
 #[cfg(test)]
 mod shortest_line_tests {
     use super::*;
-    use crate::geometry::CoordSeq;
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{CoordSeq, LineSeq};
 
     #[test]
     fn shortest_line_from_geodesic_point_witnesses_uses_its_stored_short_step() {
