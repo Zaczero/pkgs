@@ -2,8 +2,9 @@ use super::test_support::{
     assert_constrained_triangulation_error, assert_triangulation_error, polygon, xy, xym, xyz,
 };
 use crate::error::ErrorKind;
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 use crate::geographic::{GeographicFrame, PointSelectionChart};
-use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::{Orientation, stored_orientation_sign};
 use crate::geometry::tessellation::delaunay::exact_delaunay::MeshCoordinates as _;
 use crate::geometry::tessellation::delaunay::{

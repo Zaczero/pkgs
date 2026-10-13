@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
-use crate::geometry::exact_arith::{ExactSign, retained_site_orientation};
+use crate::geographic::retained_exact::sites::retained_site_orientation;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::{
     CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
     same_topological_coordinate, scaled_residual,

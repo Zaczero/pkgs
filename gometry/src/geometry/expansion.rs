@@ -6,9 +6,7 @@
 
 use std::cmp::Ordering;
 
-pub(crate) use crate::geometry::exact_arith::{
-    fast_two_sum, two_product_exact as two_product, two_sum,
-};
+use crate::geometry::numerics::product::{fast_two_sum, two_sum};
 
 /// Sum two increasing-magnitude expansions into caller-owned storage.
 ///

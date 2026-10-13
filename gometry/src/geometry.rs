@@ -11,8 +11,8 @@
 //! `tessellation` (triangulation/voronoi/polygonize), `linear`/`distance`
 //! (linear referencing and proximity), `derived` (polylabel and friends),
 //! `segments` (segment/orientation primitives), `ordinates` (Z/M carry), and
-//! `types` (the data model). Children reach the shared kernel via `use
-//! super::*`.
+//! `types` (the data model) and `prepared` (reusable execution products).
+//! Children reach the shared kernel via `use super::*`.
 
 /// Runtime axis flags select const-generic loops at their callers, avoiding
 /// per-coordinate axis checks. The expanded block remains in the caller, so
@@ -54,10 +54,10 @@ pub(crate) use frame::{
     scaled_residual, unscale_area,
 };
 mod area;
-pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 mod geographic_area;
 pub(crate) mod interval;
+pub(crate) mod numerics;
 pub(crate) use access::{
     Component, CoordRun, Lineal, MetricSupportRun, PointSet, Polygonal, REDUCE_LANES,
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
@@ -78,19 +78,23 @@ pub(crate) use geographic_area::{
 };
 pub(crate) use segments::interpolation::held_axis_interpolate;
 pub(crate) use segments::{Orientation, orientation};
+mod prepared;
 pub(crate) mod storage;
 pub(crate) mod types;
+pub(crate) use prepared::{
+    ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
+    ChartPointDistanceSample, DwithinOutcome, FrameDependentCaches, GeodesicMetric,
+    GeodesicNumericalPolicy, IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery,
+    PointEdgeQueryResult, PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue,
+    canonical_f64_bits,
+};
 pub(crate) use types::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
-    ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
-    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    DwithinOutcome, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
-    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
-    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
-    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
-    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
-    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,
+    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, MAX_NESTING, MColumn, MOrdinate,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, PolygonLevel,
+    RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeOwnerKey, SharedSlice,
+    SimplifyMethod, SmoothMethod, VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate,
     coerce_to_common_axes,
 };
 mod antimeridian;
@@ -134,6 +138,7 @@ mod constructive;
 pub(in crate::geometry) use constructive::snap_drawing_receipt;
 pub(crate) use constructive::{finish_geographic_snap, geographic_snap_pending_row};
 mod coverage;
+pub(crate) mod graph;
 pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
@@ -154,9 +159,6 @@ mod embedding_search;
 mod exact_point;
 mod grid_outline;
 pub(crate) mod publication;
-#[cfg(test)]
-pub(crate) use embedding_search::work_product_ticks;
-pub(crate) use embedding_search::{Unmetered, Work, WorkResult};
 pub(crate) use grid_outline::finish_grid_outline;
 mod facet_bvh;
 mod generated_budget;
@@ -175,6 +177,7 @@ pub(crate) use ordinates::{
 };
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
+pub(crate) mod output;
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
@@ -411,7 +414,9 @@ pub(crate) use segments::{SegmentProjection, WitnessRole};
     reason = "the geographic CDT preparation and finalization functions share this internal drawing type"
 )]
 pub(crate) use tessellation::PreparedCdtDrawing;
-pub(crate) use tessellation::exact::ExactRational;
+pub(crate) use tessellation::exact::{
+    ExactDyadic, ExactRational, round_ratio, round_ratio_with_work,
+};
 #[cfg(test)]
 pub(in crate::geometry) use tessellation::mesh_publication_array_receipt;
 pub(crate) use tessellation::{
@@ -434,6 +439,7 @@ pub(in crate::geometry) use types::GeographicMetricKey;
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
 use crate::py::vectors::Groups;
+use crate::work::Unmetered;
 
 pub(crate) fn geographic_node_pending_row<M: ChartMetric>(
     shape: &Shape,

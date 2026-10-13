@@ -5,9 +5,10 @@ use super::{
     GeographicFrame, GeographicSupportProducts, RetainedChartDisplacement, RetainedLongitudeSite,
 };
 use crate::error::Result;
+use crate::geographic::retained_exact::sites as retained_sites;
 use crate::geometry::{
     Bounds, CoordSeq, ExpansionBudget, LineSeq, Point, PointKey, PointSetCenter, Polygon, Ring,
-    Shape, exact_arith,
+    Shape,
 };
 
 /// A point-site identity retained separately from its rounded working X.
@@ -271,7 +272,7 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
         return Ok(None);
     };
     for &candidate in sites.iter().skip(1) {
-        let order = exact_arith::retained_site_distance_order(
+        let order = retained_sites::retained_site_distance_order(
             frame.longitude(),
             (
                 candidate.longitude(),

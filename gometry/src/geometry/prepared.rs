@@ -17,12 +17,12 @@ use crate::geometry::source_support::{
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
-use crate::geometry::types::{Bounds, Point, Segment, Shape, XY};
 use crate::geometry::{
-    ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey, GeographicPrepared,
-    GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
-    PlanarMetric, Work,
+    Bounds, ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey,
+    GeographicPrepared, GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex,
+    MeasuredLineIndexSlot, PlanarMetric, Point, Segment, Shape, XY,
 };
+use crate::work::Work;
 
 fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
     bounds.is_none_or(|bounds| {

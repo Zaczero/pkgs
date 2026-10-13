@@ -10,7 +10,7 @@ pub(super) fn accumulate_exact(
     ring_moments: &mut [ExactDyadic],
     polygon_moments: &mut [ExactDyadic],
 ) -> Result<(ExactFactorialArea, ExactSourceBounds)> {
-    use crate::geometry::exact_arith::ExactSign;
+    use crate::geometry::numerics::product::ExactSign;
 
     for moment in ring_moments.iter_mut().chain(polygon_moments.iter_mut()) {
         *moment = ExactDyadic::zero();

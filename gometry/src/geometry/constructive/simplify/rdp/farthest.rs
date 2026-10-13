@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use super::point;
 use crate::error::Result;
 use crate::geometry::XY;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::segments::stored_cross_sign;
 use crate::geometry::tessellation::exact::{self, ExactLine, ExactPoint};

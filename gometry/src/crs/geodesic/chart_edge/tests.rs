@@ -7,14 +7,15 @@ use super::ChartEdge;
 use super::arclength::ONE_DEGREE;
 use super::authalic::AuthalicSeries;
 use crate::crs::geodesic::geographic_metric_frame_at;
+use crate::geographic::retained_exact::edges::retained_source_interval_initial_piece_count;
+use crate::geographic::retained_exact::sites::retained_source_sheet_site;
 use crate::geographic::{
     AngularFactor, ChartStep, EdgeDirection, GeographicAxisOrientation, GeographicFrame,
 };
-use crate::geometry::exact_arith::{
-    retained_source_interval_initial_piece_count, retained_source_sheet_site,
+use crate::geometry::{
+    ChartMetric as _, GeodesicMetric as _, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
 };
-use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
-use crate::geometry::{GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate};
+use crate::work::Work;
 
 mod support;
 

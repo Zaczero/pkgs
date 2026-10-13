@@ -1,3 +1,4 @@
+
 #[test]
 fn emission_ordinate_rows_and_ports_are_reserved_before_progress() {
     let empty = crate::io::parse_wkt("POINT EMPTY").unwrap();

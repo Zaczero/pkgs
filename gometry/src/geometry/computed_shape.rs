@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use crate::crs::TransformMetricScratch;
 use crate::error::Result;
+use crate::geographic::retained_exact::transform::select_transformed_chart_displacement;
 use crate::geographic::{
     ComputedEdgeIntent, ComputedLongitudeRelation, ComputedVertexIntent, GeographicFrame,
     RetainedChartDisplacement, publish_computed_chain, publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_samples,
     publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges,
 };
-use crate::geometry::exact_arith::select_transformed_chart_displacement;
 use crate::geometry::tessellation::{
     ConstrainedMeshPlan, VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin,
     VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_constrained_plan,
@@ -16,8 +16,9 @@ use crate::geometry::tessellation::{
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder,
     CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, LineSeq, Polygon, Ring, RootMetricState,
-    Shape, ShapeCountQuery, SourceArcContext, Unmetered, computed_native_sample_ordinates,
+    Shape, ShapeCountQuery, SourceArcContext, computed_native_sample_ordinates,
 };
+use crate::work::Unmetered;
 
 pub(crate) type PolygonPartEdgeRoles = Vec<Vec<Vec<bool>>>;
 

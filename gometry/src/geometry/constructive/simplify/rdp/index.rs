@@ -12,7 +12,7 @@ use std::ops::Range;
 use super::farthest::Diagram;
 use super::point;
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segment_index::StoredHull;
 use crate::geometry::segments::stored_cross_sign;
 use crate::geometry::{

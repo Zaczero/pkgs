@@ -4,12 +4,14 @@ use super::super::clip::SegmentIntersectionExt as _;
 use super::super::{
     Bounds, ClassAssignment, ControlFlow, GlobalCheck, NodeId, Ordering, PointKey, Problem,
     RefCell, Result, SearchAccount, VertexId, VoronoiClassState, VoronoiEmbedding,
-    VoronoiOwnerPoints, VoronoiPoints, VoronoiProblem, VoronoiProximity, Work, XY,
+    VoronoiOwnerPoints, VoronoiPoints, VoronoiProblem, VoronoiProximity, XY,
     build_proximity_classes, emitted_pair_preserves_incidence, exact, exact_chord_radius,
     for_each_overlapping_bounds_cross_pair, possible_swept_bounds, proximity_limit,
-    segments_within_chebyshev, try_hash_map_with_capacity, visit_component_faces, voronoi_error,
+    segments_within_chebyshev, try_hash_map_with_capacity, voronoi_error,
 };
 use super::fans::{FanSortMode, FanSortOutcome, rounded_ring_orientation_matches, sort_fan};
+use crate::geometry::graph::visit_component_faces;
+use crate::work::Work;
 
 impl<'p, 'a> VoronoiProblem<'p, 'a> {
     pub(in crate::geometry::tessellation::voronoi_dcel) fn new(

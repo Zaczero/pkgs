@@ -4,9 +4,10 @@ use super::super::{
     NativeChartSpellingKey, NativeChartVertexKey, NativeGraphEdgeOwner, NativeGraphFaceSourceTable,
     NativeGraphFaceSourceUse, NativeGraphSewing, NativeGraphSewingKind, NativeProducerAtomUse,
     NativeProducerEdgeRow, NativeProducerUseKey, NativeProducerUseTable, NativeReference,
-    NativeReferenceGraph, NativeSourceGermSide, Ordering, ResourceError, Result, Work,
+    NativeReferenceGraph, NativeSourceGermSide, Ordering, ResourceError, Result,
     native_chart_spelling_longitude, native_graph_slot, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn build_native_producer_use_table(
     mut rows: Vec<NativeProducerEdgeRow>,

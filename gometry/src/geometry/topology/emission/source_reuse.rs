@@ -8,8 +8,9 @@ use super::sites::{EmittedVertex, canonical_bits};
 use super::{
     BTreeMap, ExactGeographicTopology, ExactRational, ExactSourceRange, FragmentRecipe,
     GeometryErrorKind, PublicationInventory, QPortId, RecipeWalk, RecipeWalkOwner, ResourceError,
-    Result, SelectedUse, SourceEdgeId, Work, try_sort_by_with_work,
+    Result, SelectedUse, SourceEdgeId, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology) fn source_ring_reuse_matches(
     topology: &ExactGeographicTopology,
