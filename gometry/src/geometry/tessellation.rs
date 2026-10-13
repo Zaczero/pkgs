@@ -162,4 +162,8 @@ pub(crate) use sampling::{
 use voronoi::{DelaunayComplex, delaunay_complex, snap_sites};
 
 #[cfg(test)]
+#[path = "tessellation/tests/support.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests;

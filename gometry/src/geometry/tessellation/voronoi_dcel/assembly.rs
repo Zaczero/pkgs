@@ -171,7 +171,7 @@ impl RayPoints for OwnerRayPoints<'_> {
         update_owner_local_work(|work| {
             work.ray_orientations = work.ray_orientations.wrapping_add(1);
         });
-        exact::orient_points(self.point(a), self.point(b), self.point(c))
+        exact::incidence::orient_points(self.point(a), self.point(b), self.point(c))
     }
 }
 
@@ -235,7 +235,7 @@ pub(super) fn simple_ring(
     let (_, open_vertices) = vertices
         .split_last()
         .expect("boundary face walks are closed exact rings");
-    let orientation = exact::cycle_orientation(
+    let orientation = exact::incidence::cycle_orientation(
         open_vertices
             .iter()
             .map(|&vertex| &subdivision.vertex(vertex).point),
@@ -547,7 +547,7 @@ impl OwnerLocalFaces {
         for (face, bounds) in topology.face_starts.array_windows::<2>().enumerate() {
             let [start, end] = *bounds;
             let walk = &topology.face_slots[start as usize..end as usize];
-            let sign = exact::cycle_orientation(walk.iter().map(|&slot| {
+            let sign = exact::incidence::cycle_orientation(walk.iter().map(|&slot| {
                 &subdivision
                     .vertex(vertices[topology.owners[slot as usize] as usize])
                     .point

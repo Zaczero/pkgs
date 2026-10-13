@@ -670,7 +670,7 @@ impl ClipTrace {
             .collect();
         for (segment, row) in source_segments.iter().zip(&mut rows) {
             try_sort_by(&mut row.vertices, |&left, &right| {
-                exact::compare_along(
+                exact::incidence::compare_along(
                     segment.start,
                     segment.end,
                     &subdivision.vertex(left).point,
@@ -701,9 +701,13 @@ impl ClipTrace {
             #[cfg(debug_assertions)]
             for &vertex in &row.vertices {
                 let point = &subdivision.vertex(vertex).point;
-                let intersection =
-                    exact::segment_intersection(segment.start, segment.end, point, point)
-                        .expect("a noded clip vertex has an exact source-segment classification");
+                let intersection = exact::incidence::segment_intersection(
+                    segment.start,
+                    segment.end,
+                    point,
+                    point,
+                )
+                .expect("a noded clip vertex has an exact source-segment classification");
                 debug_assert!(
                     matches!(intersection, exact::SegmentIntersection::Point(_)),
                     "each atom endpoint lies on its tagged source segment"
@@ -713,7 +717,7 @@ impl ClipTrace {
             let mut atoms = Vec::with_capacity(row.edges.len());
             for &edge in &row.edges {
                 let [left, right] = subdivision.edge(edge).endpoints;
-                let along = exact::compare_along(
+                let along = exact::incidence::compare_along(
                     segment.start,
                     segment.end,
                     &subdivision.vertex(left).point,
@@ -755,7 +759,7 @@ impl ClipTrace {
                 } else {
                     right_start
                 };
-                exact::compare_along(
+                exact::incidence::compare_along(
                     segment.start,
                     segment.end,
                     &subdivision.vertex(left_start).point,
@@ -1134,7 +1138,7 @@ fn validate_exact_rectangle(corners: &[exact::ExactPoint; 4]) -> Result<()> {
             let right_next = (right_edge + 1) % 4;
             let right = [&corners[right_edge], &corners[right_next]];
             let adjacent = right_edge == left_edge + 1 || (left_edge == 0 && right_edge == 3);
-            match exact::segment_intersection(left[0], left[1], right[0], right[1])? {
+            match exact::incidence::segment_intersection(left[0], left[1], right[0], right[1])? {
                 exact::SegmentIntersection::None if !adjacent => {},
                 exact::SegmentIntersection::Point(point) if adjacent => {
                     if position_of(&left, &point)?.is_none()
@@ -1185,7 +1189,7 @@ fn validate_touch_wedge<'a>(
     rays.extend(first_directions.into_iter().map(|target| (0, target)));
     rays.extend(second_directions.into_iter().map(|target| (1, target)));
     let angle = |left: &exact::ExactPoint, right: &exact::ExactPoint| {
-        exact::angle_ccw_cmp(point, left, right).map_err(|_| exact_cycle_error())
+        exact::incidence::angle_ccw_cmp(point, left, right).map_err(|_| exact_cycle_error())
     };
     try_sort_by(rays, |left, right| angle(left.1, right.1))?;
     for [left, right] in rays.array_windows::<2>() {
@@ -1407,7 +1411,7 @@ fn classify_exact_segment_pair(
     let right = [&right_cycle[right_edge], &right_cycle[right_next]];
     let adjacent = left_ring == right_ring
         && (right_edge == left_edge + 1 || (left_edge == 0 && right_edge + 1 == left_cycle.len()));
-    match exact::segment_intersection(left[0], left[1], right[0], right[1])? {
+    match exact::incidence::segment_intersection(left[0], left[1], right[0], right[1])? {
         exact::SegmentIntersection::None if noded_endpoint_pair => Err(exact_cycle_error()),
         exact::SegmentIntersection::None => Ok(None),
         exact::SegmentIntersection::Overlap { .. } => Err(exact_cycle_error()),
@@ -1556,7 +1560,7 @@ fn validate_exact_cycle_nesting(cycles: &[&[exact::ExactPoint]], shell: usize) -
         }
         let mut saw_inside = false;
         for point in *hole_cycle {
-            match exact::point_in_cycle(shell_cycle, point)? {
+            match exact::incidence::point_in_cycle(shell_cycle, point)? {
                 exact::PointInCycle::Outside => return Err(exact_cycle_error()),
                 exact::PointInCycle::Inside => saw_inside = true,
                 exact::PointInCycle::Boundary => {},
@@ -1570,7 +1574,9 @@ fn validate_exact_cycle_nesting(cycles: &[&[exact::ExactPoint]], shell: usize) -
                 continue;
             }
             for point in *other_cycle {
-                if exact::point_in_cycle(hole_cycle, point)? == exact::PointInCycle::Inside {
+                if exact::incidence::point_in_cycle(hole_cycle, point)?
+                    == exact::PointInCycle::Inside
+                {
                     return Err(exact_cycle_error());
                 }
             }
@@ -2079,7 +2085,7 @@ fn normalize_clip_with_chart<'a>(
             {
                 let (mut points, mut coordinates, mut chart_coordinates, mut source_edges) =
                     open_ring(ring, chart)?;
-                let orientation = exact::cycle_orientation(&points)?;
+                let orientation = exact::incidence::cycle_orientation(&points)?;
                 let wanted = if ring_index == 0 {
                     ExactSign::Positive
                 } else {
@@ -2190,7 +2196,7 @@ fn normalize_clip_with_chart<'a>(
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
             let points: Vec<_> = sites.iter().map(|site| &site.exact_point).collect();
-            let rectangle = exact::rectangular_boundary_for_exact(
+            let rectangle = exact::frame::rectangular_boundary_for_exact(
                 &points,
                 matches!(boundary, VoronoiBoundary::Padded),
             )?;
@@ -2321,7 +2327,7 @@ fn nearest_site_walk(
         let neighbors = adjacency.neighbors(current);
         let mut best = current;
         let nearer = |candidate: SiteId, known: SiteId| {
-            exact::squared_distance_cmp_points(
+            exact::incidence::squared_distance_cmp_points(
                 point,
                 &site_by_id(sites, candidate).exact_point,
                 &site_by_id(sites, known).exact_point,
@@ -2353,7 +2359,7 @@ fn nearest_site(point: &exact::ExactPoint, sites: &[Site]) -> Result<SiteId> {
     let mut nearest = 0;
     let mut tied = false;
     for candidate in 1..sites.len() {
-        match exact::squared_distance_cmp_points(
+        match exact::incidence::squared_distance_cmp_points(
             point,
             &sites[candidate].exact_point,
             &sites[nearest].exact_point,
@@ -2501,7 +2507,7 @@ pub(super) fn lone_site_polygon_outputs(
             .iter()
             .map(|point| exact_chart_point(chart, point.xy()))
             .collect::<Result<Vec<_>>>()?;
-        let orientation = exact::cycle_orientation(&exact_points)?;
+        let orientation = exact::incidence::cycle_orientation(&exact_points)?;
         let filled_left = if ring_index == 0 {
             orientation == ExactSign::Positive
         } else {
@@ -3990,7 +3996,7 @@ impl<'a> VoronoiEmbedding<'a> {
             exact::ExactPoint::from_xy(xy_of(end)?),
         );
         let side_of = |site: SiteId| {
-            exact::orient_points(&start, &end, &site_by_id(self.sites, site).exact_point)
+            exact::incidence::orient_points(&start, &end, &site_by_id(self.sites, site).exact_point)
         };
         let (left, right) = match edge.forward.owner {
             OwnerTransition::Boundary { left, right } if left.is_some() || right.is_some() => {
@@ -4092,7 +4098,7 @@ impl VoronoiEmbedding<'_> {
                 let [start, end] = *marked
                     .get(separator)
                     .expect("separator index belongs to the marked segment table");
-                if exact::segment_intersection(
+                if exact::incidence::segment_intersection(
                     &exact::ExactPoint::from_xy(start),
                     &exact::ExactPoint::from_xy(end),
                     query,
@@ -4684,7 +4690,7 @@ impl VoronoiProblem<'_, '_> {
                 .point
                 .xy(),
         );
-        Ok(!exact::segment_intersection(&start, &end, &site, &site)?.is_point())
+        Ok(!exact::incidence::segment_intersection(&start, &end, &site, &site)?.is_point())
     }
 
     fn check_separator(&self, chord: usize, class: usize, assigned: &[Option<XY>]) -> Result<bool> {
@@ -4779,9 +4785,11 @@ impl Problem for VoronoiProblem<'_, '_> {
         _work: &mut W,
     ) -> Result<Ordering> {
         let exact = &self.embedding.subdivision.vertex(node).point;
-        Ok(exact::squared_distance_cmp_point(exact, left, right)?
-            .then_with(|| left.x.total_cmp(&right.x))
-            .then_with(|| left.y.total_cmp(&right.y)))
+        Ok(
+            exact::incidence::squared_distance_cmp_point(exact, left, right)?
+                .then_with(|| left.x.total_cmp(&right.x))
+                .then_with(|| left.y.total_cmp(&right.y)),
+        )
     }
 
     fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
@@ -5078,7 +5086,7 @@ fn sort_fan(
         if let Some(origin) = rounded_origin {
             Ok(rounded_fan_angle_cmp(origin, xy_of(left)?, xy_of(right)?))
         } else {
-            exact::angle_ccw_cmp(
+            exact::incidence::angle_ccw_cmp(
                 exact_origin,
                 &subdivision.vertex(left).point,
                 &subdivision.vertex(right).point,
@@ -5879,7 +5887,7 @@ fn exact_point_covered_by_clip_index<A: SearchAccount>(
             if !in_x_range && !crosses_ray {
                 return Ok(());
             }
-            let orientation = exact::orient_points(&edge.start, &edge.end, point)?;
+            let orientation = exact::incidence::orient_points(&edge.start, &edge.end, point)?;
             if in_x_range && orientation == ExactSign::Zero {
                 boundary = true;
                 return Ok(());
@@ -5985,7 +5993,7 @@ fn rounded_segment_covered_by_clip<A: SearchAccount>(
     for &edge_index in candidates {
         account.charge_evaluations(1)?;
         let edge = clip_edges.get(edge_index).ok_or_else(exact_cycle_error)?;
-        match exact::segment_intersection(&start, &end, &edge.start, &edge.end)? {
+        match exact::incidence::segment_intersection(&start, &end, &edge.start, &edge.end)? {
             exact::SegmentIntersection::None => {},
             exact::SegmentIntersection::Point(point) => events.push(point),
             exact::SegmentIntersection::Overlap { start, end } => {
@@ -5996,7 +6004,7 @@ fn rounded_segment_covered_by_clip<A: SearchAccount>(
     }
     sort_unique_along(&start, &end, events)?;
     for [left, right] in events.array_windows::<2>() {
-        if exact::compare_along(&start, &end, left, right)? != Ordering::Less {
+        if exact::incidence::compare_along(&start, &end, left, right)? != Ordering::Less {
             continue;
         }
         let midpoint = left.midpoint(right)?;
@@ -6141,7 +6149,7 @@ pub(super) fn build_collinear_polygons_with_chart(
             .rings
             .first()
             .ok_or_else(|| voronoi_error("Voronoi clip has no outer ring"))?;
-        exact::axis_aligned_bounds(outer.iter())?.to_vec()
+        exact::frame::axis_aligned_bounds(outer.iter())?.to_vec()
     };
     let mut cells = Vec::new();
     let baseline = clip.polygon_baseline.unwrap_or(0);
@@ -6165,7 +6173,7 @@ pub(super) fn build_collinear_polygons_with_chart(
                 here,
                 &site_at(sites, neighbor).exact_point,
             )?;
-            let keep = exact::signed_line_product(&line, here)?;
+            let keep = exact::incidence::signed_line_product(&line, here)?;
             let [left, right] = [
                 u32::try_from(site_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
                 u32::try_from(neighbor).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
@@ -6314,8 +6322,8 @@ fn clip_to_half_plane_with_origins(
     }
     let mut pieces = Vec::new();
     for (index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
-        let start_side = exact::signed_line_product(line, start)?;
-        let end_side = exact::signed_line_product(line, end)?;
+        let start_side = exact::incidence::signed_line_product(line, start)?;
+        let end_side = exact::incidence::signed_line_product(line, end)?;
         let start_inside = start_side == keep || start_side == ExactSign::Zero;
         let end_inside = end_side == keep || end_side == ExactSign::Zero;
         let crossing = if start_inside == end_inside {
@@ -6327,7 +6335,7 @@ fn clip_to_half_plane_with_origins(
                 end.clone()
             } else {
                 let support = exact::ExactLine::through_points(start, end)?;
-                exact::line_intersection(line, &support)?
+                exact::incidence::line_intersection(line, &support)?
             })
         };
         let (piece_start, piece_end) = match (start_inside, end_inside) {
@@ -6680,7 +6688,7 @@ fn collinear_polygon_receipt(
                 .iter()
                 .map(|vertex| vertex.exact_point.clone())
                 .collect();
-            let orientation = exact::cycle_orientation(&exact_ring)?;
+            let orientation = exact::incidence::cycle_orientation(&exact_ring)?;
             let solid_left = if ring_index == 0 {
                 orientation == ExactSign::Positive
             } else {
@@ -7038,8 +7046,8 @@ fn collinear_clip_events(
             let edge = edges
                 .get(edge_index)
                 .ok_or_else(|| voronoi_error("active clip edge is out of range"))?;
-            let start_sign = exact::signed_line_product(&line, edge.start)?;
-            let end_sign = exact::signed_line_product(&line, edge.end)?;
+            let start_sign = exact::incidence::signed_line_product(&line, edge.start)?;
+            let end_sign = exact::incidence::signed_line_product(&line, edge.end)?;
             if start_sign == ExactSign::Zero && end_sign == ExactSign::Zero {
                 let (start, end) = if edge.start.compare_lex(edge.end)?.is_lt() {
                     (edge.start, edge.end)
@@ -7073,9 +7081,9 @@ fn collinear_clip_events(
                 Some(edge.end.clone())
             } else if start_sign != end_sign {
                 let support = exact::ExactLine::through_points(edge.start, edge.end)?;
-                let point = exact::line_intersection(&line, &support)?;
+                let point = exact::incidence::line_intersection(&line, &support)?;
                 matches!(
-                    exact::segment_intersection(edge.start, edge.end, &point, &point)?,
+                    exact::incidence::segment_intersection(edge.start, edge.end, &point, &point)?,
                     exact::SegmentIntersection::Point(_)
                 )
                 .then_some(())
@@ -7477,8 +7485,8 @@ fn dual_clip_segment_for_edge(
     let mut segment = 0_usize;
     for ring in &clip.rings {
         for (clip_start, clip_end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-            if exact::orient_points(clip_start, clip_end, start)? == ExactSign::Zero
-                && exact::orient_points(clip_start, clip_end, end)? == ExactSign::Zero
+            if exact::incidence::orient_points(clip_start, clip_end, start)? == ExactSign::Zero
+                && exact::incidence::orient_points(clip_start, clip_end, end)? == ExactSign::Zero
             {
                 let start_parameter = exact_segment_parameter(clip_start, clip_end, start)?;
                 let end_parameter = exact_segment_parameter(clip_start, clip_end, end)?;
@@ -7746,10 +7754,11 @@ fn dual_ray_hit(
         &site_at(sites, left_site).exact_point,
         &site_at(sites, right_site).exact_point,
     ];
-    let opposite_sign = exact::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
+    let opposite_sign =
+        exact::incidence::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
     let line = exact::ExactLine::perpendicular_bisector_points(left, right)?;
     for hit in exact_bisector_frame_intersections([left, right], &line, frame)? {
-        if exact::orient_points(left, right, &hit.1)? != opposite_sign {
+        if exact::incidence::orient_points(left, right, &hit.1)? != opposite_sign {
             return Ok(hit);
         }
     }
@@ -7846,7 +7855,7 @@ fn dual_cycle_orientation(ring: &[Tagged], centers: &[exact::ExactPoint]) -> Res
         .next()
         .expect("an exact cycle has at least three vertices");
     for end in points {
-        let sign = exact::orient_points(start, middle, end)?;
+        let sign = exact::incidence::orient_points(start, middle, end)?;
         if sign != ExactSign::Zero {
             return Ok(sign);
         }
@@ -7869,7 +7878,7 @@ fn dual_point_in_cycle(
     for (start, end) in cycle.iter().zip(cycle.iter().cycle().skip(1)) {
         let start = dual_vertex_point(&start.vertex, centers);
         let end = dual_vertex_point(&end.vertex, centers);
-        let orientation = exact::orient_points(start, end, point)?;
+        let orientation = exact::incidence::orient_points(start, end, point)?;
         if orientation == ExactSign::Zero && between(point, start, end)? {
             return Ok(exact::PointInCycle::Boundary);
         }
@@ -7933,7 +7942,7 @@ fn dual_clip_convex(
         let (a, b) = (side.start(rect), side.end(rect));
         let inside = |point: &exact::ExactPoint| -> Result<bool> {
             if !axis_aligned {
-                return Ok(exact::orient_points(a, b, point)? != ExactSign::Negative);
+                return Ok(exact::incidence::orient_points(a, b, point)? != ExactSign::Negative);
             }
             Ok(match side {
                 FrameSide::Bottom => point.compare_y(a)? != Ordering::Less,
@@ -7997,7 +8006,7 @@ fn dual_clip_convex(
             }
             let boundary = exact::ExactLine::through_points(a, b)?;
             let edge = exact::ExactLine::through_points(from, to)?;
-            let hit = exact::line_intersection(&boundary, &edge)?;
+            let hit = exact::incidence::line_intersection(&boundary, &edge)?;
             Ok(hit.is_finite().then_some(hit))
         };
         let mut next = Vec::with_capacity(current.len().saturating_add(1));
@@ -8047,12 +8056,12 @@ fn dual_build_rings(
             .chain(clip.rings.iter().flatten())
             .chain(centers.iter())
     };
-    let frame = if let Some(frame) = exact::enclosing_frame_binary64(frame_inputs())? {
+    let frame = if let Some(frame) = exact::frame::enclosing_frame_binary64(frame_inputs())? {
         frame
     } else {
         let mut inputs = Vec::with_capacity(frame_inputs().count());
         inputs.extend(frame_inputs().cloned());
-        exact::enclosing_frame(&inputs)?
+        exact::frame::enclosing_frame(&inputs)?
     };
     let [clip_outer] = clip.rings.as_slice() else {
         return Err(voronoi_error(
@@ -8453,7 +8462,7 @@ fn dual_embed(
             if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
-            if exact::point_in_cycle(&rounded_ring, &site.exact_point)?
+            if exact::incidence::point_in_cycle(&rounded_ring, &site.exact_point)?
                 == exact::PointInCycle::Outside
             {
                 return Err(DualEmbeddingError::Unrepresentable);
