@@ -6,7 +6,7 @@ use crate::array::packed_ops::{
     PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
 use crate::array::{Arc, ComputedCaches, StorageLayout};
-use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
 /// collect either replacement shapes or optional replacements without an
@@ -18,10 +18,11 @@ fn try_map_shape_rows<T, E>(
 where
     E: From<crate::error::Error>,
 {
-    let mut output = Vec::with_capacity(array.missing().map_or(
-        array.len(),
-        crate::geometry::storage::validity::ValidityMask::present_count,
-    ));
+    let mut output = Vec::with_capacity(
+        array
+            .missing()
+            .map_or(array.len(), ValidityMask::present_count),
+    );
     for row in array.row_operation().present_rows() {
         let logical = row.logical();
         let value = row
