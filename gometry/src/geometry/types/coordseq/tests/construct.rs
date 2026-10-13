@@ -4,45 +4,7 @@ use super::*;
 mod work_funded_constructor_tests {
     use super::*;
     use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
-
-    struct RecordingWork {
-        budget: EvaluationBudget,
-        attempted: Vec<u64>,
-        accepted: Vec<u64>,
-    }
-
-    impl RecordingWork {
-        fn with_remaining(remaining_ticks: u128) -> crate::error::Result<Self> {
-            Ok(Self {
-                budget: EvaluationBudget::with_remaining_ticks_for_test(
-                    "coordinate columns",
-                    1,
-                    remaining_ticks,
-                )?,
-                attempted: Vec::new(),
-                accepted: Vec::new(),
-            })
-        }
-    }
-
-    impl Work for RecordingWork {
-        type Error = crate::error::Error;
-
-        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
-            self.attempted.push(ticks);
-            self.budget.charge(ticks)?;
-            self.accepted.push(ticks);
-            Ok(())
-        }
-
-        fn charge_product(
-            &mut self,
-            count: usize,
-            ticks_per_item: usize,
-        ) -> crate::error::Result<()> {
-            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
-        }
-    }
+    use crate::test_support::RecordingWork;
 
     fn search_limit(error: &crate::error::Error) -> bool {
         matches!(
@@ -75,7 +37,7 @@ mod work_funded_constructor_tests {
         reason = "assertions pin refusal before coordinate-column allocation"
     )]
     fn column_reservation_refuses_before_allocating() -> crate::error::Result<()> {
-        let mut work = RecordingWork::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining("coordinate columns", 0)?;
 
         let Err(error) = reserve_point_column(2, &mut work) else {
             return Err(GeometryErrorKind::Invalid(
@@ -99,7 +61,7 @@ mod work_funded_constructor_tests {
         let points = [Point::new_raw_xy(1.0, 2.0), Point::new_raw_xy(3.0, 4.0)];
         let mut output = vec![99.0];
         let reads = std::cell::Cell::new(0);
-        let mut work = RecordingWork::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining("coordinate columns", 0)?;
 
         let error = match copy_point_column(
             &points,
@@ -134,7 +96,7 @@ mod work_funded_constructor_tests {
     )]
     fn column_finiteness_pass_refuses_before_inspecting_values() -> crate::error::Result<()> {
         let values = [1.0, f64::NAN];
-        let mut work = RecordingWork::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining("coordinate columns", 0)?;
 
         let Err(error) = point_column_all_finite(&values, &mut work) else {
             return Err(GeometryErrorKind::Invalid(
@@ -185,7 +147,7 @@ mod work_funded_constructor_tests {
         };
         <EvaluationBudget as Work>::charge(&mut budget, 1)?;
 
-        let mut work = RecordingWork::with_remaining(100)?;
+        let mut work = RecordingWork::with_remaining("coordinate columns", 100)?;
         let funded = CoordSeq::try_from_points_with_work(&points, &mut work)?;
 
         assert_eq!(record_bits(&ordinary), expected);
