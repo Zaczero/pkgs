@@ -307,8 +307,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         | Shape::GeometryCollection(_)
         | Shape::Empty(..)) => shape,
     };
-    let shape = super::coverage_ops::publish_grid_outline(&shape, "grid coverage")?;
-    Ok(PyGeometry::typed_wgs84(shape))
+    super::grid_outline::publish_grid_outline(&shape, "grid coverage")
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /
@@ -361,7 +360,7 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
             }
         }
     }
-    super::coverage_ops::polygonize_outline(outline)
+    super::grid_outline::polygonize_outline(outline)
 }
 
 /// Dissolve present geohash or tile cells from `CellArray.to_polygon`.

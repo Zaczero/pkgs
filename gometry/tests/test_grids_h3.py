@@ -798,6 +798,47 @@ def test_h3_to_polygon_expands_mixed_resolutions_without_fixed_budget() -> None:
     assert outline.is_valid
 
 
+def test_h3_to_polygon_keeps_a_hole_in_a_cell_ring() -> None:
+    center = gm.H3Cell(13.4, 52.5, resolution=4)
+    ring = center.grid_ring(1)
+    outline = ring.to_polygon()
+
+    assert outline.is_valid
+    assert not gm.contains(outline, center.center)
+    assert gm.contains(outline, ring[0].center)
+
+
+@pytest.mark.parametrize(
+    'cell',
+    [
+        pytest.param(gm.H3Cell(180.0, 0.0, resolution=2), id='seam'),
+        pytest.param(gm.H3Cell(0.0, 90.0, resolution=2), id='pole'),
+    ],
+)
+def test_h3_to_polygon_keeps_seam_and_pole_cell_support(cell: gm.H3Cell) -> None:
+    outline = cell.grid_disk(1).to_polygon()
+
+    assert outline.is_valid
+    assert gm.contains(outline, cell.center)
+    assert not gm.contains(outline, gm.Point(0.0, 0.0, crs=4326))
+
+
+def test_h3_to_polygon_keeps_disjoint_cell_components() -> None:
+    cells = gm.CellArray(
+        [
+            gm.H3Cell(0.0, 0.0, resolution=3),
+            gm.H3Cell(120.0, 0.0, resolution=3),
+        ],
+        type=gm.H3Cell,
+    )
+    outline = cells.to_polygon()
+
+    assert outline.geometry_type == 'MultiPolygon'
+    assert gm.contains(outline, gm.H3Cell(0.0, 0.0, resolution=3).center)
+    assert gm.contains(outline, gm.H3Cell(120.0, 0.0, resolution=3).center)
+    assert not gm.contains(outline, gm.Point(60.0, 0.0, crs=4326))
+
+
 # ---------------------------------------------------------------------------
 # Independent finite-universe H3 coverage oracle
 # ---------------------------------------------------------------------------

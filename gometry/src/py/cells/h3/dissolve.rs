@@ -1,8 +1,7 @@
 use crate::geometry::CoordSeq;
 use crate::grid::cell_set;
-use crate::py::cells::coverage_ops::{
-    GridDissolver, SortedCells, coordseq_crosses_lon_seam, dissolve_grid_cells,
-};
+use crate::py::cells::coverage_ops::{GridDissolver, SortedCells, dissolve_grid_cells};
+use crate::py::cells::grid_outline::coordseq_crosses_lon_seam;
 use crate::py::cells::h3::{CellIndex, h3_cell_shape};
 use crate::py::cells::{GeometryError, Point, PyResult, Shape, Typed};
 

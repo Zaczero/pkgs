@@ -6,7 +6,7 @@ use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
     lonlat as geographic,
 };
-use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
+use crate::geometry::{CoordSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer::{self, RectCoverRule};
@@ -112,7 +112,7 @@ where
                 outline.push(segment);
             }
         }
-        if !crosses_seam && let Some(typed) = polygonize_outline(outline)? {
+        if !crosses_seam && let Some(typed) = super::grid_outline::polygonize_outline(outline)? {
             return Ok(typed);
         }
         prepared
@@ -161,66 +161,6 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
     Ok(PyGeometry::typed_wgs84(shape))
-}
-
-pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
-    if outline.is_empty() {
-        return Ok(None);
-    }
-    let outline = Shape::multi_line_string(
-        crate::geometry::CoordinateAxes::XY,
-        outline.into_iter().map(LineSeq::from_proven).collect(),
-    );
-    let polygons: Vec<_> = Shape::build_area_all_with_context(
-        &[&outline],
-        true,
-        &crate::geometry::SourceArcContext::cartesian(),
-    )?
-    .into_iter()
-    .filter_map(|shape| match shape {
-        Shape::Polygon(polygon) => Some(polygon),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::MultiPolygon(_)
-        | Shape::GeometryCollection(_)
-        | Shape::Empty(..) => None,
-    })
-    .collect();
-    if polygons.is_empty() {
-        return Ok(None);
-    }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
-    let shape = publish_grid_outline(&shape, "grid dissolve")?;
-    Ok(Some(PyGeometry::typed_wgs84(shape)))
-}
-
-pub(super) fn publish_grid_outline(
-    shape: &Shape,
-    operation: &'static str,
-) -> crate::error::Result<Shape> {
-    let frame = GeographicFrame::crs84();
-    let shape = crate::geometry::publish_raw_computed_shape(shape, frame, operation)?;
-    if matches!(shape, Shape::MultiPolygon(_))
-        && crate::geometry::crosses_antimeridian_in_frame(&shape, frame)
-        && let Some(chart) = crate::geometry::unwrap_contact_chart(&shape, frame)?
-    {
-        // Canonical spelling identifies both cut meridians. Remove their shared
-        // boundary in a faithful chart before publishing the dissolved region.
-        let dissolved = Shape::union_all(&[chart], crate::geometry::Strictness::Lenient)?;
-        return crate::geometry::publish_raw_computed_shape(&dissolved, frame, operation);
-    }
-    Ok(shape)
-}
-
-pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for point in segment.points() {
-        lo = lo.min(point.x);
-        hi = hi.max(point.x);
-    }
-    hi - lo > 180.0
 }
 
 pub(crate) trait RectCoverSpec {
@@ -810,28 +750,6 @@ mod tests {
     fn from_sorted_canonicalizes_an_invalid_producer() {
         let cells = SortedCells::from_sorted(vec![3, 1, 3, 2]);
         assert_eq!(cells.as_slice(), &[1, 2, 3]);
-    }
-
-    #[test]
-    fn computed_grid_outline_removes_a_shared_cut_meridian() {
-        let source = crate::io::parse_wkt(
-            "MULTIPOLYGON (((-180 -2, -177 -2, -177 2, -180 2, -180 -2)), \
-             ((177 -2, 180 -2, 180 2, 177 2, 177 -2)))",
-        )
-        .unwrap();
-        let output = super::publish_grid_outline(&source, "grid dissolve").unwrap();
-        assert!(matches!(output, Shape::Polygon(_)));
-        let issue = crate::geometry::validate_shape_in_frame(
-            &output,
-            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
-        )
-        .unwrap();
-        assert!(issue.is_none(), "{issue:?}");
-        let Shape::Polygon(polygon) = output else {
-            unreachable!()
-        };
-        assert!(polygon.shell.iter().all(|point| point.x < 180.0));
-        assert!(polygon.holes.is_empty());
     }
 
     #[test]
