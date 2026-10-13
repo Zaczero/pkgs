@@ -166,6 +166,10 @@ fn indexed_points(points: &[Point]) -> Vec<IndexedPoint> {
     indexed
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "canonical seam and pole coordinates are compared by their exact chart literals"
+)]
 fn resolve_indexed_seam_aliases(points: &mut [IndexedPoint]) {
     let Some(last) = points.last() else {
         return;
@@ -501,6 +505,10 @@ fn split_transit<M: ChartMetric>(
     Ok(())
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "a full-turn edge is the exact 360-degree chart difference"
+)]
 fn split_transit_indexed<M: ChartMetric>(
     piece: &mut Vec<IndexedPoint>,
     pieces: &mut Vec<Vec<IndexedPoint>>,

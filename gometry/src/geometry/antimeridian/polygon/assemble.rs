@@ -205,6 +205,7 @@ pub(super) fn assemble_polygons_with_lineage(
     Ok(output)
 }
 
+#[expect(clippy::float_cmp, reason = "seam banks use exact ±180 chart literals")]
 fn build_rings_with_lineage(
     mut segments: SeamSegmentsWithLineage,
     catalog: &mut LineageCatalog,
@@ -330,10 +331,6 @@ fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
 /// Implying both poles under `Auto` means the winding was inverted, so the
 /// original segments come back reversed. Returns the segments and whether any
 /// pole closure was applied.
-#[expect(
-    clippy::float_cmp,
-    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
-)]
 pub(super) fn extend_over_poles(
     segments: Vec<Vec<Point>>,
     closure: PoleClosure,
@@ -370,6 +367,10 @@ pub(super) fn extend_over_poles_with_lineage(
     Ok((result, false))
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "pole closure classifies exact seam and pole chart literals"
+)]
 fn extend_over_poles_with_direction(
     mut segments: Vec<Vec<Point>>,
     closure: PoleClosure,
