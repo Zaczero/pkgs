@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::super::emission::{FragmentRecipe, QSourceImage};
+use super::super::emission::{FragmentRecipe, PublicationInventory, QSourceImage};
 use super::super::exact::SourceEdgeId;
 use super::super::q::ExactGeographicTopology;
 use crate::error::{ResourceError, Result};
@@ -92,14 +92,32 @@ pub(in crate::geometry::topology) fn source_root_ranges_by_q_port(
     Ok(output)
 }
 
-pub(super) fn source_root_ranges_for_q_image(
+pub(in crate::geometry::topology) fn source_root_ranges_for_q_image(
     topology: &ExactGeographicTopology,
     ranges_by_port: &[Vec<RootRange>],
+    publication: Option<&PublicationInventory>,
     image: QSourceImage,
     work: &mut impl Work,
 ) -> Result<Vec<RootRange>> {
     let port = match image {
-        QSourceImage::PublicationSample(_) => return Ok(Vec::new()),
+        QSourceImage::PublicationSample(sample) => {
+            let Some(publication) = publication else {
+                return Ok(Vec::new());
+            };
+            let sample = publication.samples.get(sample as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "producer sample image has no publication sample row".into(),
+                )
+            })?;
+            let Some(location) = &sample.source_trace else {
+                return Ok(Vec::new());
+            };
+            return super::super::emission::source_root_ranges_at_location(
+                publication,
+                location,
+                work,
+            );
+        },
         source @ (QSourceImage::Port(_)
         | QSourceImage::SourcePoint(_)
         | QSourceImage::SourceRingStart(_)

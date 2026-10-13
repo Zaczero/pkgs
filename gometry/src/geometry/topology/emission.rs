@@ -1167,15 +1167,7 @@ impl ExpandedEmissionPlan<'_> {
                 let Some(location) = &occurrence.source_trace else {
                     continue;
                 };
-                for request in source_requests_at_location(publication, location, work)? {
-                    work.charge_into_error(1)?;
-                    ranges.push(RootRange::point_with_work(
-                        request.root(),
-                        request.parameter().try_clone_with_work(work)?,
-                        ExactRational::zero(),
-                        work,
-                    )?);
-                }
+                ranges.extend(source_root_ranges_at_location(publication, location, work)?);
             }
             output.push(ranges);
         }
@@ -1833,6 +1825,25 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
         return Err(GeometryErrorKind::ordinate_dropped(operation));
     }
     Ok((output, axes))
+}
+
+pub(super) fn source_root_ranges_at_location(
+    publication: &PublicationInventory,
+    location: &TraceRequestLocation,
+    work: &mut impl Work,
+) -> Result<Vec<RootRange>> {
+    let requests = source_requests_at_location(publication, location, work)?;
+    let mut ranges = Vec::with_capacity(requests.len());
+    for request in requests {
+        work.charge_into_error(1)?;
+        ranges.push(RootRange::point_with_work(
+            request.root(),
+            request.parameter().try_clone_with_work(work)?,
+            ExactRational::zero(),
+            work,
+        )?);
+    }
+    Ok(ranges)
 }
 
 fn source_requests_at_location(

@@ -20495,100 +20495,176 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         ordinates: &publication_ordinates,
                         live_samples: &live_publication_samples,
                     };
-                    let source = self.emission.plan.seal_source_drawing(
-                        drawing,
-                        &ring_roles,
-                        &self.ordinates,
-                        Some(source_publication),
-                        Some(&producer_projection.source_ports),
-                        self.declared_axes,
-                        self.strict_axes,
-                        self.operation,
-                        budget,
-                    )?;
-                    let receipt = SourceOnlyPublication {
-                        source,
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        source_ordinates: &self.ordinates,
-                        publication: Some(self.emission.publication),
-                        publication_images: &publication_chart_points,
-                        publication_points: &publication_points,
-                        publication_ordinates: &publication_ordinates,
-                    };
-                    let sealed = match finish_geographic(
-                        PublicationCall::new(
-                            ProducerReceipt::QSourceOnly(receipt),
-                            self.topology.publication_frame().clone(),
+                    let sealed = if self.emission.plan.producer.is_pooled_linework() {
+                        let (shape, layout) = self.emission.plan.write_source_drawing_parts(
+                            drawing,
+                            &ring_roles,
+                            &self.ordinates,
+                            Some(source_publication),
+                            Some(&producer_projection.source_ports),
+                            self.declared_axes,
+                            self.strict_axes,
+                            self.operation,
                             budget,
-                        ),
-                        StorageTarget::Scalar,
-                    )? {
-                        PublicationOutcome::Pass(finished) => finished,
-                        PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
-                            let mut variables = Vec::with_capacity(images.len());
-                            for image in images {
-                                budget.charge_into_error(1)?;
-                                variables.push(match image {
-                                    image @ (QSourceImage::Port(_)
-                                    | QSourceImage::SourcePoint(_)
-                                    | QSourceImage::SourceRingStart(_)
-                                    | QSourceImage::SourceRingEnd(_)
-                                    | QSourceImage::CollapsedStart(_)
-                                    | QSourceImage::CollapsedEnd(_)) => {
-                                        let port =
-                                            require_q_source_image_port(self.topology, image)?;
-                                        let node = self
-                                            .topology
-                                            .q
-                                            .ports
-                                            .get(port.0 as usize)
-                                            .map(|port| port.node)
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected source literal port is unknown"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Source(node)
-                                    },
-                                    QSourceImage::PublicationSample(sample) => {
-                                        let node = self
-                                            .publication_sample_nodes
-                                            .get(sample as usize)
-                                            .copied()
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected publication literal has no node"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Published(node)
-                                    },
-                                });
-                            }
-                            return Ok(GlobalCheck::Reject(
-                                self.classes_for_variables(variables, budget)?,
-                            ));
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Native) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned native rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned array batch rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned producer-drawn rejection".into(),
-                            )
-                            .into());
-                        },
+                        )?;
+                        let ranges_by_port =
+                            super::overlay::producer_drawing::source_root_ranges_by_q_port(
+                                self.topology,
+                                self.emission.fragment_recipes,
+                                budget,
+                            )?;
+                        let receipt = super::overlay::producer_drawing::receipt_from_shape_layout(
+                            shape,
+                            layout,
+                            |image, work| {
+                                super::overlay::producer_drawing::source_root_ranges_for_q_image(
+                                    self.topology,
+                                    &ranges_by_port,
+                                    Some(self.emission.publication),
+                                    image,
+                                    work,
+                                )
+                            },
+                            Vec::new(),
+                            LiteralAddress {
+                                operation: 0,
+                                logical_row: 0,
+                                group_row: None,
+                                value_row: None,
+                                output: 0,
+                            },
+                            budget,
+                        )?;
+                        match finish_geographic(
+                            PublicationCall::new(
+                                ProducerReceipt::ProducerDrawing(receipt),
+                                self.topology.publication_frame().clone(),
+                                budget,
+                            ),
+                            StorageTarget::Scalar,
+                        )? {
+                            PublicationOutcome::Pass(finished) => finished,
+                            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(
+                                images,
+                            )) => {
+                                return Err(GeometryErrorKind::Invalid(
+                                    format!(
+                                        "pooled Q source drawing readback changed {} literal images",
+                                        images.len()
+                                    )
+                                    .into(),
+                                )
+                                .into());
+                            },
+                            PublicationOutcome::Reject(_) => {
+                                return Err(GeometryErrorKind::Invalid(
+                                    "pooled Q source finisher returned a different rejection family"
+                                        .into(),
+                                )
+                                .into());
+                            },
+                        }
+                    } else {
+                        let source = self.emission.plan.seal_source_drawing(
+                            drawing,
+                            &ring_roles,
+                            &self.ordinates,
+                            Some(source_publication),
+                            Some(&producer_projection.source_ports),
+                            self.declared_axes,
+                            self.strict_axes,
+                            self.operation,
+                            budget,
+                        )?;
+                        let receipt = SourceOnlyPublication {
+                            source,
+                            topology: self.topology,
+                            source_ports: Some(&producer_projection.source_ports),
+                            source_ordinates: &self.ordinates,
+                            publication: Some(self.emission.publication),
+                            publication_images: &publication_chart_points,
+                            publication_points: &publication_points,
+                            publication_ordinates: &publication_ordinates,
+                        };
+                        match finish_geographic(
+                            PublicationCall::new(
+                                ProducerReceipt::QSourceOnly(receipt),
+                                self.topology.publication_frame().clone(),
+                                budget,
+                            ),
+                            StorageTarget::Scalar,
+                        )? {
+                            PublicationOutcome::Pass(finished) => finished,
+                            PublicationOutcome::Reject(PublicationRejection::SourceOnly(
+                                images,
+                            )) => {
+                                let mut variables = Vec::with_capacity(images.len());
+                                for image in images {
+                                    budget.charge_into_error(1)?;
+                                    variables.push(match image {
+                                        image @ (QSourceImage::Port(_)
+                                        | QSourceImage::SourcePoint(_)
+                                        | QSourceImage::SourceRingStart(_)
+                                        | QSourceImage::SourceRingEnd(_)
+                                        | QSourceImage::CollapsedStart(_)
+                                        | QSourceImage::CollapsedEnd(_)) => {
+                                            let port =
+                                                require_q_source_image_port(self.topology, image)?;
+                                            let node = self
+                                                .topology
+                                                .q
+                                                .ports
+                                                .get(port.0 as usize)
+                                                .map(|port| port.node)
+                                                .ok_or_else(|| {
+                                                    GeometryErrorKind::Invalid(
+                                                        "rejected source literal port is unknown"
+                                                            .into(),
+                                                    )
+                                                })?;
+                                            QVariableNode::Source(node)
+                                        },
+                                        QSourceImage::PublicationSample(sample) => {
+                                            let node = self
+                                                .publication_sample_nodes
+                                                .get(sample as usize)
+                                                .copied()
+                                                .ok_or_else(|| {
+                                                    GeometryErrorKind::Invalid(
+                                                        "rejected publication literal has no node"
+                                                            .into(),
+                                                    )
+                                                })?;
+                                            QVariableNode::Published(node)
+                                        },
+                                    });
+                                }
+                                return Ok(GlobalCheck::Reject(
+                                    self.classes_for_variables(variables, budget)?,
+                                ));
+                            },
+                            PublicationOutcome::Reject(PublicationRejection::Native) => {
+                                return Err(GeometryErrorKind::Invalid(
+                                    "source-only Q finisher returned native rejection".into(),
+                                )
+                                .into());
+                            },
+                            PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
+                                return Err(GeometryErrorKind::Invalid(
+                                    "source-only Q finisher returned array batch rejection".into(),
+                                )
+                                .into());
+                            },
+                            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(
+                                _,
+                            )) => {
+                                return Err(GeometryErrorKind::Invalid(
+                                    "source-only Q finisher returned producer-drawn rejection"
+                                        .into(),
+                                )
+                                .into());
+                            },
+                        }
                     };
                     super::emission::SealedQDrawing::Source(SealedSourceDrawing {
                         sealed,

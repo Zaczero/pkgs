@@ -575,6 +575,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                     producer_drawing::source_root_ranges_for_q_image(
                         topology,
                         &ranges_by_port,
+                        None,
                         image,
                         work,
                     )
