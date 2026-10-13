@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Ellipsoidal polar stereographic (EPSG methods 9810/9829).
 
 use crate::crs::in_core::adjlon;

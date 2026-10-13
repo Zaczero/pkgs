@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Bulk result containers and internal PEP-3118 buffer holders.
 //!
 //! Public numeric lanes return read-only NumPy ndarrays; [`Groups`] is the

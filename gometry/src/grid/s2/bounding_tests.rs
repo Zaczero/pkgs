@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use crate::geometry::{Bounds, CoordSeq, LineSeq, Point, Polygon, Ring, Shape, ShapeCountQuery};
 use crate::grid::s2::bounding::{
     LonLatBBox, bbox_closed_in_cell, bbox_hilbert_samples, bbox_margin_in_cell, bounding_cell,

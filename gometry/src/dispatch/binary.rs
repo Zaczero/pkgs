@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "left and right operands carry the same set of derived names"
-)]
 use std::sync::Arc;
 
 use pyo3::prelude::*;

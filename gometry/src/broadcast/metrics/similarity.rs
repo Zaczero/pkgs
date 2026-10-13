@@ -1,9 +1,5 @@
 //! Similarity metric parameter broadcasts and scalar CRS-aware thresholds.
 
-#![expect(
-    clippy::similar_names,
-    reason = "coordinate lanes are named by side and axis"
-)]
 use pyo3::types::{PyAny, PyAnyMethods as _};
 
 use crate::array::ArrayRow;

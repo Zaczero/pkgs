@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "paired axis and formula names in the segment kernels intentionally identify corresponding operands"
-)]
 //! Shared segment types and kernels for projection, distance, contact,
 //! clipping, interpolation, and ordering.
 

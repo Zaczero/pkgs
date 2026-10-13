@@ -448,10 +448,6 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions include the first mismatching coordinate in the failure"
     )]
-    #[expect(
-        clippy::similar_names,
-        reason = "xs/ys are the two coordinate lanes of one probe batch"
-    )]
     fn contains_coordinates_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {

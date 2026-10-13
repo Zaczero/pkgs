@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use crate::geometry::packed_line_metrics::PackedLineColumnView;
 use crate::geometry::{
     Point, axis_extent, axis_pow2_scale, packed_line_metrics, point_distance,

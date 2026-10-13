@@ -105,6 +105,8 @@ rest_pat_in_fully_bound_structs = "warn"
 same_name_method = "warn"
 mod_module_files = "warn"
 semicolon_inside_block = "warn"
+# Coordinate pairs and endpoints use standard mathematical names.
+similar_names = "allow"
 str_to_string = "warn"
 string_add = "warn"
 string_lit_chars_any = "warn"

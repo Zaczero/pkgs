@@ -5,10 +5,6 @@ fn degrees() -> crate::geographic::GeographicFrame {
             .unwrap()
     }
 
-    #[expect(
-        clippy::similar_names,
-        reason = "bounds are named by axis and extreme, as in the public API"
-    )]
 fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
         Shape::Polygon(Polygon::new(
             Ring::from_closed(

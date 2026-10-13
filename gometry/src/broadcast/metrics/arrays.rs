@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use std::simd::StdFloat as _;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Linear-referencing and measured-line operations on `Shape`: interpolate /
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! The public coordinate-transform API (`transform`/`transform_coordinates`/
 //! `transform_bounds`/`transform_bounds_3d`).
 //!
