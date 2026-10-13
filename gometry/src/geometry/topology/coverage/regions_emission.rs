@@ -574,10 +574,12 @@ fn output_ring(
         has_hole_source,
         pole_boundary,
     ) {
-        (AreaSign::Positive, true, ..) | (AreaSign::Negative, false, ..) => false,
-        (AreaSign::Negative, true, ..) | (AreaSign::Positive, false, ..) => true,
-        (AreaSign::Zero, _, false, true, _) => true,
-        (AreaSign::Zero, _, true, false, _) => false,
+        (AreaSign::Positive, true, ..)
+        | (AreaSign::Negative, false, ..)
+        | (AreaSign::Zero, _, true, false, _) => false,
+        (AreaSign::Negative, true, ..)
+        | (AreaSign::Positive, false, ..)
+        | (AreaSign::Zero, _, false, true, _) => true,
         (AreaSign::Zero, _, _, _, true) => {
             return Err(GeometryErrorKind::Invalid(
                 "polar coverage boundary has no source shell/hole role".into(),

@@ -1,6 +1,4 @@
-#[cfg(test)]
-use super::super::exact::SourceRowId;
-use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind};
+use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind, SourceRowId};
 use super::super::overlay::{self, BoundaryCycle, SelectedRegionPoles};
 use super::super::q::{ChartSpanId, GlobalFaceId, QNodeId, QPortId};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
