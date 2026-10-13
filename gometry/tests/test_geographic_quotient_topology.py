@@ -29,6 +29,46 @@ def _north_polar_cap() -> gm.Polygon:
     )
 
 
+_T2_NOTCHED_SHELL = [
+    (-180, 5),
+    (-90, 5),
+    (-10, 5),
+    (-10, -10),
+    (0, -10),
+    (10, -10),
+    (10, 5),
+    (90, 5),
+    (180, 5),
+    (180, 90),
+    (90, 90),
+    (0, 90),
+    (-90, 90),
+    (-180, 90),
+    (-180, 5),
+]
+
+
+def _t2_chart_area(geometry: gm.Geometry) -> float:
+    polygons = (
+        [geometry] if geometry.geometry_type == 'Polygon' else list(geometry.parts)
+    )
+
+    def ring_area(coordinates: Any) -> float:
+        points = [(float(point[0]), float(point[1])) for point in coordinates]
+        return abs(
+            sum(
+                start[0] * end[1] - end[0] * start[1] for start, end in pairwise(points)
+            )
+            / 2.0
+        )
+
+    return sum(
+        ring_area(polygon.exterior.coords)
+        - sum(ring_area(hole.coords) for hole in polygon.interiors)
+        for polygon in polygons
+    )
+
+
 RingPoints = tuple[tuple[float, float], ...]
 BoxRings = tuple[RingPoints, ...]
 
@@ -983,6 +1023,250 @@ def test_difference_emits_a_new_shell_across_the_seam() -> None:
     assert not gm.contains(result, gm.Point(180, 15, crs=4326))
     assert not gm.equals(result, source)
     assert not gm.equals(result, cutter)
+
+
+def test_t2_notched_intersection_pairs_winding_cycles_without_a_pole() -> None:
+    source = gm.Polygon(_T2_NOTCHED_SHELL, crs=4326)
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+
+    assert source.is_valid
+    result = gm.intersection(source, band)
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert _t2_chart_area(result) == 9300.0
+    assert gm.contains(result, gm.Point(0, -5, crs=4326))
+    assert gm.contains(result, gm.Point(0, 20, crs=4326))
+    for point in (
+        (50, 0),
+        (0, 60),
+        (0, 90),
+        (0, -90),
+    ):
+        assert not gm.contains(result, gm.Point(*point, crs=4326)), point
+    for point in ((50, 5), (50, 30)):
+        assert gm.covers(result, gm.Point(*point, crs=4326)), point
+    assert gm.covers(result, gm.Point(180, 20, crs=4326))
+    assert gm.covers(result, gm.Point(-180, 20, crs=4326))
+
+
+@pytest.mark.parametrize('reverse_winding_hole', [False, True])
+def test_t2_bounded_exclusion_and_finite_hole_share_the_selected_strip(
+    reverse_winding_hole: bool,
+) -> None:
+    winding_hole = [(0, 30), (90, 30), (180, 30), (-90, 30), (0, 30)]
+    if reverse_winding_hole:
+        winding_hole.reverse()
+    shell = gm.Polygon(_T2_NOTCHED_SHELL, crs=4326)
+    polar_exclusion = gm.Polygon(winding_hole, crs=4326)
+    finite_exclusion = gm.Polygon(
+        [(20, 10), (30, 10), (30, 15), (20, 15), (20, 10)],
+        crs=4326,
+    )
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+
+    assert shell.is_valid
+    assert polar_exclusion.is_valid
+    assert finite_exclusion.is_valid
+    strip = gm.difference(shell, polar_exclusion)
+    assert strip.is_valid
+    without_finite_hole = gm.difference(strip, finite_exclusion)
+    assert without_finite_hole.is_valid
+    result = gm.intersection(without_finite_hole, band)
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert _t2_chart_area(result) == 9250.0
+    assert gm.contains(result, gm.Point(0, -5, crs=4326))
+    assert gm.contains(result, gm.Point(35, 12, crs=4326))
+    assert not gm.contains(result, gm.Point(25, 12, crs=4326))
+    assert gm.covers(result, gm.Point(20, 12, crs=4326))
+    assert not gm.contains(result, gm.Point(0, 60, crs=4326))
+    split = result.split_antimeridian()
+    assert split.is_valid
+    assert not gm.contains(split, gm.Point(25, 12, crs=4326))
+    reused = gm.intersection(split, band)
+    assert reused.is_valid
+    assert not gm.contains(reused, gm.Point(25, 12, crs=4326))
+    assert gm.contains(reused, gm.Point(35, 12, crs=4326))
+
+
+def _t2_north_closed_cap(
+    boundary: list[tuple[int, int]],
+) -> gm.Polygon:
+    return gm.Polygon(
+        [
+            *boundary,
+            (180, 90),
+            (90, 90),
+            (0, 90),
+            (-90, 90),
+            (-180, 90),
+            boundary[0],
+        ],
+        crs=4326,
+    )
+
+
+def test_t2_two_ambiguous_selected_cycles_form_one_pole_free_support() -> None:
+    lower = _t2_north_closed_cap([
+        (-180, -20),
+        (-90, 10),
+        (0, -20),
+        (90, 10),
+        (180, -20),
+    ])
+    upper = _t2_north_closed_cap([
+        (-180, -15),
+        (-90, 15),
+        (0, -15),
+        (90, 15),
+        (180, -15),
+    ])
+
+    assert lower.is_valid
+    assert upper.is_valid
+    result = gm.difference(lower, upper)
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert _t2_chart_area(result) == 1800.0
+    for point in ((0, -17), (90, 12), (-90, 12), (180, -17), (-180, -17)):
+        assert gm.contains(result, gm.Point(*point, crs=4326)), point
+    for point in ((0, 0), (0, -30), (0, 90), (0, -90)):
+        assert not gm.contains(result, gm.Point(*point, crs=4326)), point
+    split = result.split_antimeridian()
+    assert split.is_valid
+    assert gm.contains(split, gm.Point(0, -17, crs=4326))
+    assert not gm.contains(split, gm.Point(0, 0, crs=4326))
+    reused = gm.intersection(split, gm.box(-180, -30, 180, 30, crs=4326))
+    assert reused.is_valid
+    assert gm.contains(reused, gm.Point(0, -17, crs=4326))
+    assert not gm.contains(reused, gm.Point(0, 0, crs=4326))
+
+
+@pytest.mark.parametrize(
+    ('pole_latitude', 'inside_latitude', 'outside_latitude'),
+    [(-5, -85, 85), (5, 85, -85)],
+    ids=['south', 'north'],
+)
+@pytest.mark.parametrize('reverse_boundary', [False, True])
+def test_t2_generated_equator_crossing_cap_closes_only_its_selected_pole(
+    pole_latitude: int,
+    inside_latitude: int,
+    outside_latitude: int,
+    reverse_boundary: bool,
+) -> None:
+    boundary = [
+        (-180, pole_latitude),
+        (-90, pole_latitude),
+        (0, pole_latitude),
+        (90, pole_latitude),
+        (180, pole_latitude),
+        (-180, pole_latitude),
+    ]
+    if reverse_boundary:
+        boundary.reverse()
+    hole_latitude = 50 if pole_latitude > 0 else -50
+    finite_hole = [
+        (20, hole_latitude - 5),
+        (30, hole_latitude - 5),
+        (30, hole_latitude + 5),
+        (20, hole_latitude + 5),
+        (20, hole_latitude - 5),
+    ]
+    cap = gm.Polygon(boundary, holes=[finite_hole], crs=4326)
+    connector = gm.box(-10, -20, 10, 10, crs=4326)
+
+    assert cap.is_valid
+    result = gm.union(cap, connector)
+    split = result.split_antimeridian()
+    reimported = gm.from_wkb(result.to_wkb(include_srid=True))
+    reused = gm.union(split, connector)
+
+    for geometry in (result, split, reimported, reused):
+        assert geometry.geometry_type in ('Polygon', 'MultiPolygon')
+        assert geometry.is_valid
+        assert geometry.validate().valid
+        assert gm.contains(geometry, gm.Point(0, inside_latitude, crs=4326))
+        assert gm.contains(geometry, gm.Point(0, 0, crs=4326))
+        assert not gm.contains(geometry, gm.Point(50, 0, crs=4326))
+        assert not gm.contains(geometry, gm.Point(0, outside_latitude, crs=4326))
+        assert not gm.contains(geometry, gm.Point(25, hole_latitude, crs=4326))
+        assert gm.contains(geometry, gm.Point(35, hole_latitude, crs=4326))
+        assert gm.covers(
+            geometry,
+            gm.Point(-180, -10 if pole_latitude < 0 else 10, crs=4326),
+        )
+        assert gm.covers(
+            geometry,
+            gm.Point(180, -10 if pole_latitude < 0 else 10, crs=4326),
+        )
+        assert geometry.area == pytest.approx(result.area)
+        assert geometry.length == pytest.approx(result.length)
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+
+def _t2_produced_strip() -> gm.Geometry:
+    source = gm.Polygon(_T2_NOTCHED_SHELL, crs=4326)
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+    return gm.intersection(source, band)
+
+
+def test_t2_reimported_strip_preserves_support_and_metrics() -> None:
+    strip = _t2_produced_strip()
+    reimported = gm.from_wkb(strip.to_wkb(include_srid=True))
+    split = strip.split_antimeridian()
+
+    for geometry in (strip, reimported, split):
+        assert geometry.is_valid
+        assert geometry.validate().valid
+        assert gm.contains(geometry, gm.Point(0, -5, crs=4326))
+        assert gm.contains(geometry, gm.Point(0, 20, crs=4326))
+        assert not gm.contains(geometry, gm.Point(50, 0, crs=4326))
+        assert not gm.contains(geometry, gm.Point(0, 90, crs=4326))
+        assert not gm.contains(geometry, gm.Point(0, -90, crs=4326))
+        assert gm.covers(geometry, gm.Point(180, 20, crs=4326))
+        assert gm.covers(geometry, gm.Point(-180, 20, crs=4326))
+        assert geometry.area == pytest.approx(strip.area)
+        assert geometry.length == pytest.approx(strip.length)
+        assert gm.distance(geometry, strip) == 0.0
+        assert gm.hausdorff_distance(geometry.boundary(), strip.boundary()) == 0.0
+
+
+def test_t2_reused_strip_enters_exact_spatial_index_refinement() -> None:
+    strip = _t2_produced_strip()
+    reimported = gm.from_wkb(strip.to_wkb(include_srid=True))
+    split = strip.split_antimeridian()
+    near = gm.Point(50, 0, crs=4326)
+
+    assert 0.0 < gm.distance(strip, near) < 700_000.0
+    for geometry in (strip, reimported, split):
+        index = gm.SpatialIndex([geometry])
+        witness = gm.Point(0, 20, crs=4326)
+        assert ids(index.query(witness, predicate='intersects')) == [0]
+        assert ids(index.nearest(near)) == [0]
+        assert ids(index.query(near, predicate='dwithin', distance=700_000.0)) == [0]
+        assert ids(index.query(near, predicate='dwithin', distance=100_000.0)) == []
+
+
+def test_t2_split_strip_remains_clippable_and_overlayable() -> None:
+    strip = _t2_produced_strip()
+    split = strip.split_antimeridian()
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+
+    assert gm.equals(split.clip_by_rect(-180, -30, 180, 30), strip)
+
+    second_intersection = gm.intersection(split, band)
+    assert second_intersection.is_valid
+    assert gm.contains(second_intersection, gm.Point(0, -5, crs=4326))
+    assert not gm.contains(second_intersection, gm.Point(0, 90, crs=4326))
+    inside = gm.box(-1, 18, 1, 22, crs=4326)
+    outside = gm.box(40, -2, 60, 2, crs=4326)
+    assert gm.contains(gm.intersection(split, inside), gm.Point(0, 20, crs=4326))
+    assert not gm.contains(gm.intersection(split, outside), gm.Point(50, 0, crs=4326))
+    assert gm.contains(gm.union(split, outside), gm.Point(50, 0, crs=4326))
+    assert not gm.contains(gm.difference(split, inside), gm.Point(0, 20, crs=4326))
 
 
 def test_union_merges_seam_adjacent_source_rings_into_one_shell() -> None:
