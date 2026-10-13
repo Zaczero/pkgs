@@ -48,10 +48,9 @@ use super::q_embedding::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 #[cfg(test)]
-use crate::geometry::embedding_completion::LiteralCheck;
-use crate::geometry::embedding_search::{
-    EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
-};
+use crate::geometry::embedding_completion::storage::LiteralCheck;
+use crate::geometry::embedding_search::SearchOutcome;
+use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly, SearchAccount};
 use crate::geometry::ordinates::SourceArcMetricAccess;
 use crate::geometry::overlay::OverlayOp;
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
@@ -172,7 +171,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::geometry::LineSeq;
-    use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
+    use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::ordinates::NodeOrdinates;
     use crate::geometry::topology::emission::draw::{
         boundary_source_points, source_point_coordinates,

@@ -29,16 +29,16 @@ use crate::collections::try_hash_map_with_capacity;
 use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
-use crate::geometry::embedding_search::{
-    ClassAssignment, GlobalCheck, Problem, ProximityChord, ProximityClasses, Search, SearchAccount,
-    SearchAssignment, build_proximity_classes as build_search_proximity_classes,
+use crate::geometry::embedding_search::account::SearchAccount;
+use crate::geometry::embedding_search::proximity::{
+    ProximityChord, ProximityClasses, build_proximity_classes as build_search_proximity_classes,
     exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
-#[cfg(test)]
-use crate::geometry::graph::prefix_contact_offsets;
-#[cfg(test)]
-use crate::geometry::graph::shoot_left;
+use crate::geometry::embedding_search::search::Search;
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem, SearchAssignment};
 use crate::geometry::graph::{RayAxis as Axis, visit_component_faces};
+#[cfg(test)]
+use crate::geometry::graph::{prefix_contact_offsets, shoot_left};
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{

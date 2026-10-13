@@ -7,10 +7,11 @@ use super::{
     PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result, Ring, SearchAccount,
     Segment, SegmentParameter, Site, VertexId, VoronoiBoundary, VoronoiClipSourceRoot, XY,
     YStabbingIndex, clip_source_trace_error, ensure_coordseq_vertex_capacity, exact,
-    exact_cycle_error, polygon_output_baseline, retained_site_longitude, sort_unique_along,
-    try_dedup_by, try_hash_map_with_capacity, try_sort_by, validate_exact_contact_graph,
+    exact_cycle_error, polygon_output_baseline, sort_unique_along, try_dedup_by,
+    try_hash_map_with_capacity, try_sort_by, validate_exact_contact_graph,
     validate_exact_rectangle, voronoi_error,
 };
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 
 pub(in crate::geometry::tessellation::voronoi_dcel) fn exact_chart_point(
     chart: Option<&PointSelectionChart>,

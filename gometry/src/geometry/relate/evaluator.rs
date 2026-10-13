@@ -8,6 +8,7 @@ use crate::geometry::overlay::{
     ExactPointForest, StagedExactSources, StagedRelationItem, StagedSourceComponent,
     homogeneous_midpoint,
 };
+use crate::geometry::predicate_spec::Predicate;
 use crate::geometry::relate::matrix_predicates::{self, CellMask};
 use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
 use crate::geometry::segments::contact::TouchLocation;
@@ -24,7 +25,6 @@ use crate::geometry::{
     Point, PointKey, PreparedPlan, PreparedPointQueries, RingKind, Segment, Shape, XY, dimension,
     for_each_candidate_pair, ring_winding, same_point, segment_contact_exact,
 };
-use crate::predicates::Predicate;
 
 mod atoms;
 mod contacts;

@@ -11,8 +11,10 @@ use super::receipt::{
 use crate::Frame;
 use crate::array::{ComputedCaches, StreamingShapes};
 use crate::error::Result;
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding, LiteralRowLayout, bind_final_literals,
+use crate::geometry::embedding_completion::binding::bind_final_literals;
+use crate::geometry::embedding_completion::literals::LiteralRowLayout;
+use crate::geometry::embedding_completion::storage::{
+    FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding,
 };
 use crate::geometry::publication::{ProducerImageId, finish_geographic};
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
@@ -545,8 +547,10 @@ pub(super) fn finish_array_batch<W: Work>(
 mod tests {
     use super::super::receipt::CheckedPublicationLiteral;
     use super::*;
-    use crate::geometry::embedding_completion::{LiteralAddress, LiteralPoint, ShapeLiteralLayout};
-    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, ShapeLiteralLayout,
+    };
+    use crate::geometry::embedding_search::account::EvaluationBudget;
     use crate::geometry::tessellation::exact::ExactRational;
     use crate::geometry::topology::{ExactChartPoint, QSourceImage};
     use crate::geometry::{CoordinateAxes, MOrdinate, Point, Shape, ZOrdinate};
