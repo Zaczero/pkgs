@@ -305,14 +305,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     })?)
                 },
             };
-            let line_member = match walk.owner {
-                RecipeWalkOwner::Line(member) => Some(member),
-                RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_) => None,
-            };
-            let mut line_run = NativeLineRun {
-                member: line_member,
-                ..NativeLineRun::default()
-            };
+            let mut line_run = NativeLineRun::default();
             for &recipe_id in &walk.fragments {
                 let fragment = self
                     .emission
@@ -435,7 +428,6 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                                     &mut literal_chord_uses,
                                     budget,
                                 )?);
-                                line_run.member = line_member;
                             }
                         }
                     }

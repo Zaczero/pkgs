@@ -1,9 +1,9 @@
 use super::super::{
     ChartMetric, ChartPole, EvaluationBudget, ExactChartPoint, FeatureFamilyBounds,
-    FeatureFamilyRegistry, GeometryErrorKind, NativeChordCutRanges, NativeCutFamilyDomains,
-    NativeEndpointPointCache, NativeEndpointPointKey, NativePoleClosure, NativeRecipeCutRanges,
-    PublishedEndpoint, QCandidate, QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError,
-    Result, SearchAccount, Work, assigned_port_point, candidate_chart_point_with_work,
+    GeometryErrorKind, NativeChordCutRanges, NativeCutFamilyDomains, NativeEndpointPointCache,
+    NativeEndpointPointKey, NativePoleClosure, NativeRecipeCutRanges, PublishedEndpoint,
+    QCandidate, QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError, Result,
+    SearchAccount, Work, assigned_port_point, candidate_chart_point_with_work,
     collection_hash_state, retained_exact_native_site_with_work,
 };
 
@@ -135,24 +135,6 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
         registry.synchronize_budget(budget)?;
         self.family_state = QFamilyState::Native(registry);
         Ok(())
-    }
-    pub(super) fn take_native_families(&mut self) -> Option<FeatureFamilyRegistry> {
-        let QFamilyState::Native(_) = &self.family_state else {
-            return None;
-        };
-        match std::mem::replace(&mut self.family_state, QFamilyState::Shared {
-            original_source_base: 0,
-        }) {
-            QFamilyState::Native(registry) => Some(registry),
-            QFamilyState::Shared {
-                original_source_base,
-            } => {
-                self.family_state = QFamilyState::Shared {
-                    original_source_base,
-                };
-                None
-            },
-        }
     }
     fn native_family_endpoint_domain(
         &self,
