@@ -15,7 +15,9 @@ pub(crate) use computed_edge::{
     ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
     publish_certified_minor_chain, publish_computed_chain,
     publish_computed_chain_with_vertex_intents,
-    publish_computed_chain_with_vertex_intents_and_samples, publish_preserved_minor_chain,
+    publish_computed_chain_with_vertex_intents_and_samples,
+    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges,
+    publish_preserved_minor_chain,
 };
 pub(crate) use envelope::{GeographicSupportEnvelope, GeographicSupportProducts};
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};

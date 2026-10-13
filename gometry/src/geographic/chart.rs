@@ -172,10 +172,6 @@ impl PointSelectionChart {
         ])
     }
 
-    pub(crate) const fn has_full_longitude_support(&self) -> bool {
-        matches!(self.cut, SelectionCut::CanonicalSeam)
-    }
-
     pub(crate) fn site(&self, source: Point, source_ordinal: usize) -> Result<ChartPointSite> {
         Ok(ChartPointSite {
             longitude: self.longitude_site(source.x)?,

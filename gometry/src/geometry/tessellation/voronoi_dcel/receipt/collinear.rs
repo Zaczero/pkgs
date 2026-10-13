@@ -15,7 +15,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
     cells: &mut [EmbeddedPolygon],
     chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, None)?;
     let vertex_count = cells
         .iter()

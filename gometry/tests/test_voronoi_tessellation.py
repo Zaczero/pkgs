@@ -48,6 +48,33 @@ def test_voronoi_output_selects_cells_or_internal_edges_and_groups_rows() -> Non
     ]
 
 
+@pytest.mark.parametrize('output', ['polygons', 'edges'])
+def test_geographic_voronoi_final_storage_matches_grouped_public_output(
+    output: str,
+) -> None:
+    sites = gm.from_wkt(
+        'MULTIPOINT ((170 0), (-170 0), (-170 10), (170 8))',
+        crs=4326,
+    )
+    clip = gm.from_wkt(
+        'POLYGON ((160 -10, 200 -10, 200 20, 160 20, 160 -10))',
+        crs=4326,
+    )
+
+    scalar = sites.voronoi(output=output, clip=clip)
+    grouped = gm.GeometryArray([sites, None, sites]).voronoi(
+        output=output,
+        clip=clip,
+    )
+
+    scalar_wkb = [geometry.to_wkb() for geometry in scalar]
+    assert grouped.offsets.tolist() == [0, len(scalar), len(scalar), 2 * len(scalar)]
+    assert [geometry.to_wkb() for geometry in grouped[0]] == scalar_wkb
+    assert grouped[1] is None
+    assert grouped.is_missing.tolist() == [False, True, False]
+    assert [geometry.to_wkb() for geometry in grouped[2]] == scalar_wkb
+
+
 @pytest.mark.parametrize('carrier', ['multipart', 'collection'])
 @pytest.mark.parametrize('frontend', ['scalar', 'packed'])
 def test_cocircular_faces_share_one_vertex_for_every_site_order(
