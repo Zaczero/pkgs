@@ -436,31 +436,50 @@ def test_geographic_boundary_repairs_nearest_rings_for_scalar_and_gathered_rows(
 ):
     unit = math.ulp(100.0)
 
-    def bar(vertices: list[tuple[int, int]]) -> gm.Polygon:
+    def parallelogram(u: tuple[int, int], v: tuple[int, int]) -> gm.Polygon:
+        ux, uy = u
+        vx, vy = v
+        vertices = [
+            (ux + vx, uy + vy),
+            (-ux + vx, -uy + vy),
+            (-ux - vx, -uy - vy),
+            (ux - vx, uy - vy),
+        ]
         return gm.Polygon(
-            [(100.0 + x * unit, 80.0 + y * unit) for x, y in vertices],
+            [(100.0 + x * unit, 80.0 + y * unit) for x, y in [*vertices, vertices[0]]],
             crs=4326,
         )
 
-    rings = [
-        [(-30, -20), (30, -20), (30, 0), (-30, 0), (-30, -20)],
-        [(-30, -10), (30, 11), (30, 31), (-30, 10), (-30, -10)],
-        [(-30, 11), (30, -10), (30, 10), (-30, 31), (-30, 11)],
+    source = gm.GeometryCollection([
+        parallelogram((-14, 4), (24, -18)),
+        parallelogram((23, -29), (-17, -8)),
+    ])
+    repaired_rings = [
+        [
+            (100.00000000000014, 79.9999999999998),
+            (100.00000000000054, 79.99999999999969),
+            (99.99999999999986, 80.0000000000002),
+            (99.99999999999946, 80.00000000000031),
+            (100.00000000000014, 79.9999999999998),
+        ],
+        [
+            (100.00000000000009, 79.99999999999947),
+            (99.99999999999943, 80.0000000000003),
+            (99.99999999999991, 80.00000000000053),
+            (100.00000000000057, 79.9999999999997),
+            (100.00000000000009, 79.99999999999947),
+        ],
     ]
-    source = gm.GeometryCollection([bar(ring) for ring in rings])
     expected = Counter(
-        _edge(
-            (100.0 + x0 * unit, 80.0 + y0 * unit),
-            (100.0 + x1 * unit, 80.0 + y1 * unit),
-        )
-        for ring in rings
-        for (x0, y0), (x1, y1) in pairwise(ring)
+        _edge(start, end) for ring in repaired_rings for start, end in pairwise(ring)
     )
 
     scalar = source.boundary()
     gathered = gm.GeometryArray([None, source], crs=4326)[[1, 0]].boundary()
 
+    assert scalar.crs == gm.CRS('EPSG:4326')
     assert _line_edges(scalar) == expected
+    assert gathered.crs == gm.CRS('EPSG:4326')
     assert gathered.is_missing.tolist() == [False, True]
     assert gathered[0].to_wkb() == scalar.to_wkb()
     assert gathered[1] is None

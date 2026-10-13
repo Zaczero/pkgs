@@ -395,6 +395,7 @@ pub(crate) fn snap(
                 reference,
                 "snap",
                 resolver,
+                true,
                 move |left, right, context| {
                     snap_prepared(left, right, tolerance.get(context.lane.row()), context)
                 },

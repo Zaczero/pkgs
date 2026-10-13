@@ -325,10 +325,50 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
             .into());
         },
     };
-    let expected = match output.sealed {
+    let certified = match output.sealed {
         SealedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
         SealedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
     };
+    let expected = crate::io::parse_wkt(
+        "POLYGON ((99.9999999999998 80.00000000000007, 100 79.99999999999973, \
+         100.00000000000011 79.99999999999964, 100.0000000000002 79.99999999999993, \
+         100 80.00000000000027, 99.99999999999989 80.00000000000036, \
+         99.9999999999998 80.00000000000007))",
+    )?;
+    let xy_record = |shape: &Shape| -> Result<Vec<(u64, u64)>> {
+        let Shape::Polygon(polygon) = shape else {
+            return Err(GeometryErrorKind::Invalid(
+                "the midpoint tie output must be one polygon".into(),
+            )
+            .into());
+        };
+        let points = polygon.shell.coords().iter_coords().collect::<Vec<_>>();
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return Err(GeometryErrorKind::Invalid(
+                "the midpoint tie output ring is empty".into(),
+            )
+            .into());
+        };
+        if first.x.to_bits() != last.x.to_bits() || first.y.to_bits() != last.y.to_bits() {
+            return Err(GeometryErrorKind::Invalid(
+                "the midpoint tie output ring is not closed".into(),
+            )
+            .into());
+        }
+        let mut record = points
+            .iter()
+            .take(points.len().saturating_sub(1))
+            .map(|point| (point.x.to_bits(), point.y.to_bits()))
+            .collect::<Vec<_>>();
+        record.sort_unstable();
+        Ok(record)
+    };
+    let expected_record = xy_record(&expected)?;
+    assert_eq!(
+        xy_record(&certified)?,
+        expected_record,
+        "the certified nearest-even embedding must publish the independently enumerated XY record"
+    );
     let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
         &topology,
         OverlayOp::Intersection,
@@ -338,9 +378,14 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
     )?;
     assert!(actual.validate()?.is_none(), "nearest output must be valid");
     assert_eq!(
+        xy_record(&actual)?,
+        expected_record,
+        "the independently enumerated nearest-even record must match the exact output"
+    );
+    assert_eq!(
         crate::io::to_wkb(&actual, None, false)?,
-        crate::io::to_wkb(&expected, None, false)?,
-        "a passing nearest-even certificate must preserve the exact output bytes"
+        crate::io::to_wkb(&certified, None, false)?,
+        "the certified and exact outputs must keep identical WKB records"
     );
     Ok(())
 }

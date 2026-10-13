@@ -1654,6 +1654,7 @@ fn binary_geographic_array_overlay_binds_after_final_array_admission() {
             &right,
             "intersection",
             MetricResolver::GeographicCarry,
+            false,
             |left, right, context| {
                 binary_overlay(
                     left,

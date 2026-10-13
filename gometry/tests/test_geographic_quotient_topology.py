@@ -69,6 +69,22 @@ def _t2_chart_area(geometry: gm.Geometry) -> float:
     )
 
 
+def _assert_t2_boundary_omits_pole_and_identification_traces(
+    geometry: gm.Geometry,
+) -> None:
+    boundary = geometry.boundary()
+    lines = (
+        [boundary] if boundary.geometry_type == 'LineString' else list(boundary.parts)
+    )
+
+    for line in lines:
+        coordinates = list(line.coords)
+        assert all(abs(point[1]) != 90.0 for point in coordinates)
+        for start, end in pairwise(coordinates):
+            assert not (abs(start[1]) == 90.0 and abs(end[1]) == 90.0)
+            assert not (abs(start[0]) == 180.0 and abs(end[0]) == 180.0)
+
+
 RingPoints = tuple[tuple[float, float], ...]
 BoxRings = tuple[RingPoints, ...]
 
@@ -1028,13 +1044,39 @@ def test_difference_emits_a_new_shell_across_the_seam() -> None:
 def test_t2_notched_intersection_pairs_winding_cycles_without_a_pole() -> None:
     source = gm.Polygon(_T2_NOTCHED_SHELL, crs=4326)
     band = gm.box(-180, -30, 180, 30, crs=4326)
+    reference = gm.Polygon(
+        [
+            (-90, 5),
+            (-10, 5),
+            (-10, -10),
+            (0, -10),
+            (10, -10),
+            (10, 5),
+            (90, 5),
+            (180, 5),
+            (180, 30),
+            (60, 30),
+            (-60, 30),
+            (-135, 30),
+            (-180, 30),
+            (-180, 5),
+            (-135, 5),
+            (-90, 5),
+        ],
+        crs=4326,
+    )
 
     assert source.is_valid
     result = gm.intersection(source, band)
 
     assert result.geometry_type == 'Polygon'
     assert result.is_valid
+    assert reference.is_valid
+    assert result.area == pytest.approx(reference.area, rel=1e-14)
+    assert result.length == pytest.approx(reference.length, rel=1e-14)
+    assert gm.relate(result, band) == '2FF11F212'
     assert _t2_chart_area(result) == 9300.0
+    _assert_t2_boundary_omits_pole_and_identification_traces(result)
     assert gm.contains(result, gm.Point(0, -5, crs=4326))
     assert gm.contains(result, gm.Point(0, 20, crs=4326))
     for point in (
@@ -1048,6 +1090,127 @@ def test_t2_notched_intersection_pairs_winding_cycles_without_a_pole() -> None:
         assert gm.covers(result, gm.Point(*point, crs=4326)), point
     assert gm.covers(result, gm.Point(180, 20, crs=4326))
     assert gm.covers(result, gm.Point(-180, 20, crs=4326))
+
+
+@pytest.mark.parametrize(
+    ('with_z', 'with_m'),
+    [(True, False), (False, True), (True, True)],
+    ids=['xyz', 'xym', 'xyzm'],
+)
+def test_t2_array_and_group_reduction_preserve_support_crs_and_lenient_axes(
+    with_z: bool,
+    with_m: bool,
+) -> None:
+    source = gm.Polygon(_T2_NOTCHED_SHELL, crs=4326)
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+    reference = gm.Polygon(
+        [
+            (-90, 5),
+            (-10, 5),
+            (-10, -10),
+            (0, -10),
+            (10, -10),
+            (10, 5),
+            (90, 5),
+            (180, 5),
+            (180, 30),
+            (60, 30),
+            (-60, 30),
+            (-135, 30),
+            (-180, 30),
+            (-180, 5),
+            (-135, 5),
+            (-90, 5),
+        ],
+        crs=4326,
+    )
+    ordinary = gm.intersection(
+        gm.GeometryArray([source, band], crs=4326),
+        band,
+    )
+    gathered = gm.intersection(
+        gm.GeometryArray([source, band, None], crs=4326)[[1, 2, 0]],
+        band,
+    )
+
+    assert ordinary.crs == gm.CRS('EPSG:4326')
+    assert ordinary.coordinate_axes == ['XY', 'XY']
+    assert gathered.crs == gm.CRS('EPSG:4326')
+    assert gathered.coordinate_axes == ['XY', None, 'XY']
+    assert gathered.is_missing.tolist() == [False, True, False]
+    assert gathered[1] is None
+    for geometry in (ordinary[0], gathered[2]):
+        assert geometry.is_valid
+        assert gm.relate(geometry, band) == '2FF11F212'
+        assert geometry.area == pytest.approx(reference.area, rel=1e-14)
+        assert geometry.length == pytest.approx(reference.length, rel=1e-14)
+        assert gm.contains(geometry, gm.Point(0, -5, crs=4326))
+        assert gm.contains(geometry, gm.Point(0, 20, crs=4326))
+        assert not gm.contains(geometry, gm.Point(0, 90, crs=4326))
+        _assert_t2_boundary_omits_pole_and_identification_traces(geometry)
+    for geometry in (ordinary[1], gathered[0]):
+        assert geometry.is_valid
+        assert gm.relate(geometry, band) == '2FFF1FFF2'
+        assert gm.equals(geometry, band)
+
+    groups = gathered.polygonize()
+    assert isinstance(groups, gm.Groups)
+    assert groups.offsets[0] == 0
+    assert groups.offsets[1] > groups.offsets[0]
+    assert groups.offsets[2] == groups.offsets[1]
+    assert groups.offsets[3] > groups.offsets[2]
+    assert groups.is_missing.tolist() == [False, True, False]
+    assert groups.values.crs == gm.CRS('EPSG:4326')
+    assert all(axes == 'XY' for axes in groups.values.coordinate_axes)
+    assert groups[1] is None
+    assert all(gm.relate(face, band) != '2FF11F212' for face in groups[0])
+    strip_faces = [face for face in groups[2] if gm.relate(face, band) == '2FF11F212']
+    assert len(strip_faces) == 1
+    strip_face = strip_faces[0]
+    assert strip_face.area == pytest.approx(reference.area, rel=1e-14)
+    assert strip_face.length == pytest.approx(reference.length, rel=1e-14)
+    assert gm.contains(strip_face, gm.Point(0, -5, crs=4326))
+    assert gm.contains(strip_face, gm.Point(0, 20, crs=4326))
+    assert not gm.contains(strip_face, gm.Point(0, 90, crs=4326))
+    _assert_t2_boundary_omits_pole_and_identification_traces(strip_face)
+
+    pole_cap_coordinates = [
+        (-180, -5),
+        (-90, -5),
+        (0, -5),
+        (90, -5),
+        (180, -5),
+        (-180, -5),
+    ]
+    connector = gm.Polygon(
+        [(-10, -20), (10, -20), (10, 10), (-10, 10), (-10, -20)],
+        z=[11, 11, 11, 11, 11] if with_z else None,
+        m=[110, 110, 110, 110, 110] if with_m else None,
+        crs=4326,
+    )
+    pole_cap = gm.Polygon(
+        pole_cap_coordinates,
+        z=[7] * len(pole_cap_coordinates) if with_z else None,
+        m=[70] * len(pole_cap_coordinates) if with_m else None,
+        crs=4326,
+    )
+    scalar_lenient = gm.union(pole_cap, connector)
+    assert scalar_lenient.coordinate_axes == 'XY'
+    assert gm.contains(scalar_lenient, gm.Point(0, -85, crs=4326))
+    assert not gm.contains(scalar_lenient, gm.Point(0, 85, crs=4326))
+
+    lenient = gm.union(
+        gm.GeometryArray([pole_cap, None, pole_cap], crs=4326)[[2, 1, 0]],
+        connector,
+    )
+    assert lenient.crs == gm.CRS('EPSG:4326')
+    assert lenient.coordinate_axes == ['XY', None, 'XY']
+    assert lenient.is_missing.tolist() == [False, True, False]
+    assert lenient[1] is None
+    for geometry in (lenient[0], lenient[2]):
+        assert gm.contains(geometry, gm.Point(0, -85, crs=4326))
+        assert not gm.contains(geometry, gm.Point(0, 85, crs=4326))
+        _assert_t2_boundary_omits_pole_and_identification_traces(geometry)
 
 
 @pytest.mark.parametrize('reverse_winding_hole', [False, True])
@@ -1064,6 +1227,35 @@ def test_t2_bounded_exclusion_and_finite_hole_share_the_selected_strip(
         crs=4326,
     )
     band = gm.box(-180, -30, 180, 30, crs=4326)
+    reference = gm.Polygon(
+        [
+            (-10, 5),
+            (-10, -10),
+            (0, -10),
+            (10, -10),
+            (10, 5),
+            (90, 5),
+            (135, 5),
+            (180, 5),
+            (180, 30),
+            (135, 30),
+            (90, 30),
+            (60, 30),
+            (0, 30),
+            (-35, 30),
+            (-60, 30),
+            (-90, 30),
+            (-135, 30),
+            (-180, 30),
+            (-180, 5),
+            (-135, 5),
+            (-90, 5),
+            (-35, 5),
+            (-10, 5),
+        ],
+        holes=[[(20, 10), (20, 15), (30, 15), (30, 10), (20, 10)]],
+        crs=4326,
+    )
 
     assert shell.is_valid
     assert polar_exclusion.is_valid
@@ -1076,7 +1268,13 @@ def test_t2_bounded_exclusion_and_finite_hole_share_the_selected_strip(
 
     assert result.geometry_type == 'Polygon'
     assert result.is_valid
+    assert reference.is_valid
+    assert result.area == pytest.approx(reference.area, rel=1e-14)
+    assert result.length == pytest.approx(reference.length, rel=1e-14)
+    assert gm.relate(result, band) == '2FF11F212'
+    assert gm.relate(result, finite_exclusion) == 'FF2F112F2'
     assert _t2_chart_area(result) == 9250.0
+    _assert_t2_boundary_omits_pole_and_identification_traces(result)
     assert gm.contains(result, gm.Point(0, -5, crs=4326))
     assert gm.contains(result, gm.Point(35, 12, crs=4326))
     assert not gm.contains(result, gm.Point(25, 12, crs=4326))
@@ -1123,6 +1321,24 @@ def test_t2_two_ambiguous_selected_cycles_form_one_pole_free_support() -> None:
         (90, 15),
         (180, -15),
     ])
+    reference = gm.Polygon(
+        [
+            (-90, 10),
+            (0, -20),
+            (90, 10),
+            (180, -20),
+            (180, -15),
+            (90, 15),
+            (0, -15),
+            (-90, 15),
+            (-135, 0),
+            (-180, -15),
+            (-180, -20),
+            (-135, -5),
+            (-90, 10),
+        ],
+        crs=4326,
+    )
 
     assert lower.is_valid
     assert upper.is_valid
@@ -1130,7 +1346,12 @@ def test_t2_two_ambiguous_selected_cycles_form_one_pole_free_support() -> None:
 
     assert result.geometry_type == 'Polygon'
     assert result.is_valid
+    assert reference.is_valid
+    assert result.area == pytest.approx(reference.area, rel=1e-14)
+    assert result.length == pytest.approx(reference.length, rel=1e-14)
+    assert gm.relate(result, upper) == 'FF2F112F2'
     assert _t2_chart_area(result) == 1800.0
+    _assert_t2_boundary_omits_pole_and_identification_traces(result)
     for point in ((0, -17), (90, 12), (-90, 12), (180, -17), (-180, -17)):
         assert gm.contains(result, gm.Point(*point, crs=4326)), point
     for point in ((0, 0), (0, -30), (0, 90), (0, -90)):
@@ -1183,11 +1404,60 @@ def test_t2_generated_equator_crossing_cap_closes_only_its_selected_pole(
     split = result.split_antimeridian()
     reimported = gm.from_wkb(result.to_wkb(include_srid=True))
     reused = gm.union(split, connector)
+    if pole_latitude < 0:
+        reference = gm.Polygon(
+            [
+                (-90, -5),
+                (-135, -5),
+                (-180, -5),
+                (-180, -90),
+                (-90, -90),
+                (0, -90),
+                (90, -90),
+                (180, -90),
+                (180, -5),
+                (90, -5),
+                (10, -5),
+                (10, 10),
+                (-10, 10),
+                (-10, -5),
+                (-90, -5),
+            ],
+            holes=[[(20, -55), (20, -45), (30, -45), (30, -55), (20, -55)]],
+            crs=4326,
+        )
+    else:
+        reference = gm.Polygon(
+            [
+                (-90, 5),
+                (-10, 5),
+                (-10, -20),
+                (10, -20),
+                (10, 5),
+                (90, 5),
+                (180, 5),
+                (180, 90),
+                (90, 90),
+                (0, 90),
+                (-90, 90),
+                (-180, 90),
+                (-180, 5),
+                (-135, 5),
+                (-90, 5),
+            ],
+            holes=[[(20, 45), (20, 55), (30, 55), (30, 45), (20, 45)]],
+            crs=4326,
+        )
 
+    assert reference.is_valid
+    assert gm.relate(result, connector) == '212F11FF2'
     for geometry in (result, split, reimported, reused):
         assert geometry.geometry_type in ('Polygon', 'MultiPolygon')
         assert geometry.is_valid
         assert geometry.validate().valid
+        assert geometry.area == pytest.approx(reference.area, rel=1e-14)
+        assert geometry.length == pytest.approx(reference.length, rel=1e-14)
+        _assert_t2_boundary_omits_pole_and_identification_traces(geometry)
         assert gm.contains(geometry, gm.Point(0, inside_latitude, crs=4326))
         assert gm.contains(geometry, gm.Point(0, 0, crs=4326))
         assert not gm.contains(geometry, gm.Point(50, 0, crs=4326))
@@ -1202,8 +1472,6 @@ def test_t2_generated_equator_crossing_cap_closes_only_its_selected_pole(
             geometry,
             gm.Point(180, -10 if pole_latitude < 0 else 10, crs=4326),
         )
-        assert geometry.area == pytest.approx(result.area)
-        assert geometry.length == pytest.approx(result.length)
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
 
