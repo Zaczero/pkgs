@@ -151,7 +151,7 @@ impl PyCrs {
         // Build outside the lock (IntoPyObject may take the GIL / call Python).
         let info = (*self.cached_info_at(state)?).clone();
         let built = info.into_pyobject(py)?;
-        let owned = super::list_cache::freeze_top_dict(py, built)?;
+        let owned = super::list_cache::freeze_top_dict(py, &built)?;
         let out = super::list_cache::isolation_copy_dict(py, &owned)?;
         {
             let mut guard = self

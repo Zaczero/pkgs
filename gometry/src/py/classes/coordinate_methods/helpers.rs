@@ -193,10 +193,10 @@ impl<'a, 'py> FromPyObject<'a, 'py> for CoordinateAxes {
 /// absent). Shared by `.x`/`.y`/`.z`/`.m` and `to_dict`.
 pub(crate) fn column_axis_to_py(
     py: Python<'_>,
-    slf: Bound<'_, PyCoordinates>,
+    slf: &Bound<'_, PyCoordinates>,
     axis: CoordinateAxis,
 ) -> PyResult<Py<PyAny>> {
-    let owner = slf.clone().into_any();
+    let owner = (*slf).clone().into_any();
     let this = slf.borrow();
     match this.view.try_column(py, axis)? {
         coordinates::CoordinateColumnRef::Missing => {

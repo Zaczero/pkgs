@@ -473,6 +473,7 @@ impl AdmittedArrowSchema {
 }
 
 /// How deep to walk child schema nodes during admission capture.
+#[derive(Clone, Copy)]
 enum CaptureDepth {
     /// Name/format/metadata only — no grandchildren. Used for non-selected
     /// table siblings so a 50k-deep unused Struct cannot stack-overflow.

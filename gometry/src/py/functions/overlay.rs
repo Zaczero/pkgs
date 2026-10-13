@@ -538,7 +538,13 @@ pub(crate) fn polygonize_all(
             }
         })?;
         drop(metric_scratch);
-        crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
+        crate::py_polygonize_full(
+            py,
+            full,
+            metadata.crs_ref(),
+            metadata.epoch(),
+            missing.as_ref(),
+        )
     } else {
         let output_frame = metadata.clone();
         if domain.is_geographic() {

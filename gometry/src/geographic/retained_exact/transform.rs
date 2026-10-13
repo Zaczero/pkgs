@@ -165,12 +165,18 @@ mod tests {
         assert_eq!(forward.delta_native(degrees.longitude()), 540.0);
         assert_eq!(reverse.periods(), -2);
         assert_eq!(reverse.delta_native(degrees.longitude()), -540.0);
-        assert_eq!(forward.endpoints().map(|longitude| longitude.get()), [
-            0.0, -180.0
-        ]);
-        assert_eq!(reverse.endpoints().map(|longitude| longitude.get()), [
-            -180.0, 0.0
-        ]);
+        assert_eq!(
+            forward
+                .endpoints()
+                .map(crate::geographic::CanonicalLongitude::get),
+            [0.0, -180.0]
+        );
+        assert_eq!(
+            reverse
+                .endpoints()
+                .map(crate::geographic::CanonicalLongitude::get),
+            [-180.0, 0.0]
+        );
     }
     #[test]
     fn transformed_shortest_ties_do_not_add_a_turn_to_a_half_edge() {
@@ -181,9 +187,11 @@ mod tests {
 
         assert_eq!(edge.periods(), 0);
         assert_eq!(edge.delta_native(degrees.longitude()), 0.0);
-        assert_eq!(edge.endpoints().map(|longitude| longitude.get()), [
-            12.0, 12.0
-        ]);
+        assert_eq!(
+            edge.endpoints()
+                .map(crate::geographic::CanonicalLongitude::get),
+            [12.0, 12.0]
+        );
     }
     #[test]
     fn transformed_connector_compares_different_native_periods_exactly() {

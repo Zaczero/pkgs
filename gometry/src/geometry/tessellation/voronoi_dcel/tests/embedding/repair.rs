@@ -43,13 +43,19 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
     let anchor = vertex_id(XY::new(0.0, 5.0));
     let separator_only = vertex_id(separator_nearest);
 
+    let rings = vec![cycle(&shell_points), cycle(&hole_points)];
+    let chart_fixed = vec![shell.clone(), hole.clone()];
+    let source_roots = Vec::new();
+    let fixed = vec![shell, hole];
+    let source = Some(&clip_polygon);
+    let geometry = Some(clip_polygon.clone());
     let clip = NormalizedClip {
-        rings: vec![cycle(&shell_points), cycle(&hole_points)],
-        chart_fixed: vec![shell.clone(), hole.clone()],
-        source_roots: Vec::new(),
-        fixed: vec![shell, hole],
-        source: Some(&clip_polygon),
-        geometry: Some(clip_polygon.clone()),
+        rings,
+        fixed,
+        chart_fixed,
+        source_roots,
+        source,
+        geometry,
         polygon_baseline: None,
         contacts: Vec::new(),
     };

@@ -252,13 +252,13 @@ use frozen_i64_bound::{owner_derived_i64_slice, require_immutable_i64_owner};
 /// The [`require_immutable_i64_owner`] call couples this function to the seal
 /// module so the where-clause cannot silently drop that half of the bound.
 pub(crate) fn frozen_i64_view<T>(
-    slf: Bound<'_, T>,
+    slf: &Bound<'_, T>,
     pick: impl for<'a> FnOnce(&'a T) -> &'a [i64],
 ) -> PyResult<Py<PyAny>>
 where
     T: ImmutableI64Owner + PyClass<Frozen = pyo3::pyclass::boolean_struct::True>,
 {
-    let owner = slf.clone().into_any();
+    let owner = (*slf).clone().into_any();
     let borrowed = slf.borrow();
     // Production seal gate — same trait the compile-fail fixture path-includes.
     require_immutable_i64_owner(&*borrowed);

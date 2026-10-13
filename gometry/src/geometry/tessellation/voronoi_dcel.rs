@@ -1,18 +1,5 @@
 //! Exact labelled Voronoi subdivision and its sole binary64 projection.
 
-#![expect(
-    clippy::clone_on_copy,
-    clippy::explicit_iter_loop,
-    clippy::float_cmp,
-    clippy::inconsistent_struct_constructor,
-    clippy::items_after_statements,
-    clippy::missing_const_for_fn,
-    clippy::needless_range_loop,
-    clippy::unnecessary_semicolon,
-    clippy::unwrap_used,
-    reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"
-)]
-
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
@@ -109,7 +96,7 @@ impl FrameSide {
         }
     }
 
-    fn start(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+    const fn start(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
         let [bottom_left, bottom_right, top_right, top_left] = rectangle;
         match self {
             Self::Bottom => bottom_left,
@@ -119,11 +106,11 @@ impl FrameSide {
         }
     }
 
-    fn end(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+    const fn end(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
         self.next().start(rectangle)
     }
 
-    fn start_xy(self, rectangle: &[XY; 4]) -> XY {
+    const fn start_xy(self, rectangle: &[XY; 4]) -> XY {
         let [bottom_left, bottom_right, top_right, top_left] = rectangle;
         match self {
             Self::Bottom => *bottom_left,
@@ -133,11 +120,11 @@ impl FrameSide {
         }
     }
 
-    fn end_xy(self, rectangle: &[XY; 4]) -> XY {
+    const fn end_xy(self, rectangle: &[XY; 4]) -> XY {
         self.next().start_xy(rectangle)
     }
 
-    fn endpoints_xy(self, rectangle: &[XY; 4]) -> [XY; 2] {
+    const fn endpoints_xy(self, rectangle: &[XY; 4]) -> [XY; 2] {
         [self.start_xy(rectangle), self.end_xy(rectangle)]
     }
 
@@ -512,11 +499,11 @@ fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     clippy::indexing_slicing,
     reason = "the ordinal comes from CertifiedDelaunay built against this admitted canonical site slice"
 )]
-pub(super) fn site_at(sites: &[Site], ordinal: usize) -> &Site {
+pub(super) const fn site_at(sites: &[Site], ordinal: usize) -> &Site {
     &sites[ordinal]
 }
 
-fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
+const fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
     site_at(sites, site.0 as usize)
 }
 
@@ -524,7 +511,7 @@ fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
     clippy::indexing_slicing,
     reason = "VertexId was assigned from the lexicographically interned event_points that produced this NodedVertex column"
 )]
-fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
+const fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
     &vertices[id.0 as usize]
 }
 
@@ -642,7 +629,7 @@ fn pack_separator_chains(
     let mut ends = Vec::with_capacity(offset_count);
     ends.push(0);
     for chain in chains {
-        for &vertex in chain.vertices.iter() {
+        for &vertex in &chain.vertices {
             let point = xy_of(vertex)?;
             xs.push(point.x);
             ys.push(point.y);
@@ -999,7 +986,7 @@ impl VoronoiOwnerPoints<'_, '_> {
         clippy::indexing_slicing,
         reason = "owner-local node IDs are dense ordinals paired with this graph's global-vertex column"
     )]
-    fn global(&self, node: u32) -> u32 {
+    const fn global(&self, node: u32) -> u32 {
         self.vertices[node as usize]
     }
 }

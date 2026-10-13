@@ -127,6 +127,10 @@ impl PyGeohashCell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable geohash cell property through a borrowed receiver"
+    )]
     fn precision(&self) -> u8 {
         self.cell.depth()
     }
@@ -137,6 +141,10 @@ impl PyGeohashCell {
     /// -------
     /// str
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable geohash cell property through a borrowed receiver"
+    )]
     fn token(&self) -> String {
         self.cell.token()
     }

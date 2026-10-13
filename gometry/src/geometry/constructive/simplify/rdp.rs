@@ -320,7 +320,7 @@ pub(super) fn resolve(
             point_segment_exact_distance_key(vertex, chord)
         };
         if best.as_ref().map_or(Ok(true), |(_, incumbent)| {
-            key.cmp_distance(incumbent).map(|order| order.is_gt())
+            key.cmp_distance(incumbent).map(std::cmp::Ordering::is_gt)
         })? {
             best = Some((offset, key));
         }

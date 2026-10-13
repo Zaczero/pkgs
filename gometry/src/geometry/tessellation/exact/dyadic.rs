@@ -399,7 +399,7 @@ impl ExactDyadic {
         })
     }
 
-    pub(crate) fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::zero(),
@@ -407,7 +407,7 @@ impl ExactDyadic {
         }
     }
 
-    pub(crate) fn one() -> Self {
+    pub(crate) const fn one() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::single(1),

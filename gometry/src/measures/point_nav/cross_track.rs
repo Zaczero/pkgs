@@ -193,7 +193,7 @@ fn cross_track_broadcast(
                     })?,
                 );
             }
-            let model = require_geographic_model(point_crs.map(|value| value.as_str()), OP)?;
+            let model = require_geographic_model(point_crs.map(smol_str::SmolStr::as_str), OP)?;
             let metric = crs::GeodesicMetric::from_model(&model)?;
             float64_array(
                 py,

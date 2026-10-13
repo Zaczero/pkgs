@@ -229,7 +229,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
     let prepared = valid_coverage_rows(coverage, "coverage_union_all")?;
-    let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
+    let source_refs: Vec<_> = coverage.iter().map(std::borrow::Borrow::borrow).collect();
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
     let mut sole: Option<&crate::geometry::Polygon> = None;

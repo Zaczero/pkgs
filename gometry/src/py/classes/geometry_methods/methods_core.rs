@@ -1,4 +1,4 @@
-use pyo3::types::{PyDictMethods as _, PyTupleMethods as _};
+use pyo3::types::PyTupleMethods as _;
 
 use crate::boundary::coordinates::measure_shape;
 use crate::dispatch::{MetricOp, kernels};
@@ -205,7 +205,7 @@ impl PyGeometry {
             1 => args.get_item(0)?.is_none(),
             _ => false,
         };
-        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+        if no_matrix && kwargs.is_none_or(pyo3::types::PyDictMethods::is_empty) {
             return Ok(Typed(self.clone()));
         }
         let measure = measure_shape(py, self.shape.shape())?;
@@ -245,7 +245,7 @@ impl PyGeometry {
             coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
             slf.clone().unbind().into_any(),
         );
-        let replacement = map_coordinates_callback(py, coords, func)?;
+        let replacement = map_coordinates_callback(py, &coords, func)?;
         let shape = replace_shape_coordinates(geometry.shape.shape(), &replacement)?;
         Ok(geometry.typed_shape(shape))
     }

@@ -201,7 +201,7 @@ pub(crate) struct GeodesicBoxPruner {
 }
 
 impl GeodesicBoxPruner {
-    pub(crate) fn new(semi_major: f64, flattening: f64, query: Vec<AABB<[f64; 2]>>) -> Self {
+    pub(crate) fn new(semi_major: f64, flattening: f64, query: &[AABB<[f64; 2]>]) -> Self {
         let bound = GeodesicBoxEnvelopeBound::new(semi_major, flattening);
         let query = query
             .iter()

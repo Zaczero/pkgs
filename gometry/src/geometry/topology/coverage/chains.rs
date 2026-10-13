@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "the geographic coverage simplifier consumes this rooted chain inventory"
-)]
-
 use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 

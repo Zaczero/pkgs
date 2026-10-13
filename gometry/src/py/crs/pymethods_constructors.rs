@@ -1,7 +1,3 @@
-#![expect(
-    clippy::used_underscore_items,
-    reason = "`_repr_html_` is IPython's display protocol name"
-)]
 use pyo3::PyRef;
 use pyo3::types::PyAnyMethods as _;
 
@@ -65,6 +61,10 @@ impl PyCrs {
     }
 
     /// HTML preview for notebooks: a compact table of `info` fields.
+    #[expect(
+        clippy::used_underscore_items,
+        reason = "IPython's HTML display protocol requires the `_repr_html_` method name"
+    )]
     fn _repr_html_(&self) -> PyResult<String> {
         let info = self.cached_info()?;
         let mut rows: Vec<(&str, String)> = Vec::new();

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use super::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, RowsIter, ShapeRow,
     ShapesIter, column_window, csr_value_range, csr_value_window, line_logical_len,

@@ -238,7 +238,7 @@ pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult
 
 #[cfg(test)]
 pub(crate) fn materialize_schema_plan(
-    plan: PreparedArrowExportPlan,
+    plan: &PreparedArrowExportPlan,
 ) -> PyResult<GometryArrowSchema> {
     plan.schema
         .materialize_schema()

@@ -47,6 +47,10 @@ impl PyGeometry {
         signature = (*, output = VoronoiOutput::Polygons, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
         text_signature = "($self, *, output='polygons', tolerance=0.0, clip='padded')"
     )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 extracts the public clip option as an owned value before this method borrows it"
+    )]
     pub fn voronoi(
         &self,
         py: Python<'_>,
@@ -98,6 +102,10 @@ impl PyGeometryArray {
     #[pyo3(
         signature = (*, output = VoronoiOutput::Polygons, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
         text_signature = "($self, *, output='polygons', tolerance=0.0, clip='padded')"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 extracts the public clip option as an owned value before this method borrows it"
     )]
     pub fn voronoi(
         &self,

@@ -232,7 +232,7 @@ fn compact_nullable_point_index_resolves_sparse_handles_without_span_rank() {
                     crate::test_support::allocation_count(|| {
                         restore_spatial_index_v2(
                             &payload.0,
-                            payload.1.clone(),
+                            &payload.1,
                             payload.2,
                             payload.3,
                         )

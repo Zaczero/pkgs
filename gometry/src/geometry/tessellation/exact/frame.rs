@@ -132,7 +132,9 @@ pub(in crate::geometry::tessellation) fn enclosing_frame(
         (span_y_n, span_y_d)
     };
     if pad_n.is_zero() {
-        return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
+        return Err(GeometryErrorKind::voronoi(
+            "exact frame input has zero span",
+        ));
     }
     let coordinate = |base_n: &ExactDyadic, base_d: &ExactDyadic, add: bool| -> Result<_> {
         let base = base_n.try_product(&pad_d)?;
@@ -197,7 +199,9 @@ pub(in crate::geometry::tessellation) fn axis_aligned_bounds<'a>(
 ) -> Result<[ExactPoint; 4]> {
     let [min_x, max_x, min_y, max_y] = extreme_points(points)?;
     if min_x.compare_x(max_x)?.is_eq() || min_y.compare_y(max_y)?.is_eq() {
-        return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
+        return Err(GeometryErrorKind::voronoi(
+            "exact frame input has zero span",
+        ));
     }
     let (min_x, max_x, min_y, max_y) = (
         min_x.coords()?,
@@ -252,7 +256,9 @@ pub(in crate::geometry::tessellation) fn rectangular_boundary_for_exact(
             span_y
         };
         if span.numerator.is_zero() {
-            return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
+            return Err(GeometryErrorKind::voronoi(
+                "exact frame input has zero span",
+            ));
         }
         let half = span.try_product(&ExactRational::from_f64(0.5))?;
         min_x = min_x.try_subtract(&half)?;
@@ -271,9 +277,9 @@ pub(in crate::geometry::tessellation) fn rectangular_boundary_for_exact(
                 rounded
             };
             if !rounded.is_finite() {
-                return Err(
-                    GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
-                );
+                return Err(GeometryErrorKind::voronoi(
+                    "padded Voronoi frame overflows binary64",
+                ));
             }
             Ok(ExactRational::from_f64(rounded))
         };

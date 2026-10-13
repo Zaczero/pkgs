@@ -795,7 +795,7 @@ fn wrap_longitude(lon: f64, frame: GeographicFrame) -> Result<f64> {
     frame
         .longitude()
         .canonicalize(lon)
-        .map(|longitude| longitude.get())
+        .map(crate::geographic::CanonicalLongitude::get)
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
@@ -1047,6 +1047,10 @@ mod validity_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn prepared_diagnostics_preserve_repeated_collection_occurrences() {
         let line = Shape::LineString(
             crate::geometry::LineSeq::try_new(

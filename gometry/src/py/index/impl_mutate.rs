@@ -94,7 +94,7 @@ impl PySpatialIndex {
         let total_rows = checked_total_rows(idx, 1)?;
         self.insert_prepared_rows(
             std::iter::once(geometry),
-            entries,
+            &entries,
             &entry_counts,
             non_prunable_live,
             adopt_frame,
@@ -145,7 +145,7 @@ impl PySpatialIndex {
         }
         self.insert_prepared_batch(
             items,
-            entries,
+            &entries,
             &entry_counts,
             non_prunable_live,
             adopt_frame,
@@ -191,11 +191,11 @@ impl PySpatialIndex {
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
             non_prunable_live = non_prunable_live
                 .wrapping_add(usize::from(geodesic_domain_invalid(plan.shape(), domain)));
-            items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
+            items.push(PyGeometry::from_prepared_plan(&plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
             items,
-            entries,
+            &entries,
             &entry_counts,
             non_prunable_live,
             adopt_frame,
@@ -215,7 +215,7 @@ impl PySpatialIndex {
     pub(crate) fn insert_prepared_batch(
         &mut self,
         items: Vec<PyGeometry>,
-        entries: Vec<IndexEntry>,
+        entries: &[IndexEntry],
         entry_counts: &[usize],
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
@@ -241,7 +241,7 @@ impl PySpatialIndex {
     fn insert_prepared_rows(
         &mut self,
         items: impl ExactSizeIterator<Item = PyGeometry>,
-        entries: Vec<IndexEntry>,
+        entries: &[IndexEntry],
         entry_counts: &[usize],
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
@@ -257,7 +257,7 @@ impl PySpatialIndex {
                 .iter()
                 .all(|entry| entry.idx >= start && entry.idx < total_rows)
         );
-        let prepared = self.overflow.prepare_insert(&entries, total_rows)?;
+        let prepared = self.overflow.prepare_insert(entries, total_rows)?;
         self.rows.reserve_insert(count);
         if let Some(frame) = adopt_frame {
             self.metadata = Some(frame);

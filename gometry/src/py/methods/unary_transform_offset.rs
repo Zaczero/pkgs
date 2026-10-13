@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use crate::dispatch::{MetricOp, kernels};
 use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::py::errors::GeometryError;

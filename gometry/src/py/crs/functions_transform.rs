@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use pyo3::exceptions::PyTypeError;
 
 use crate::boundary::FloatInput;
@@ -234,6 +230,10 @@ pub(crate) fn crs_operations<'py>(
 /// >>> import numpy as np
 /// >>> np.round(np.asarray(gm.crs_transform(4326, 3857, -122.4, 37.8)), 1).tolist()
 /// [-13625505.7, 4551210.9]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the Python API keeps CRS endpoints, coordinate columns, epochs, and independent PROJ selection options explicit"
+)]
 pub(crate) fn crs_transform(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
@@ -554,6 +554,10 @@ pub(crate) fn coordinates_to_py(
 /// >>> np.round(np.asarray(gm.crs_transform_bounds(
 /// ...     4326, 3857, (-123, 37, -122, 38))), 0).tolist()
 /// [-13692297.0, 4439107.0, -13580978.0, 4579426.0]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the bounds API exposes its bounds, densification, epochs, and independent PROJ selection options"
+)]
 pub(crate) fn crs_transform_bounds(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
@@ -871,6 +875,10 @@ fn classify_bounds_shape(
 /// >>> import gometry as gm
 /// >>> gm.crs_roundtrip(4326, 3857, -122.4, 37.8) < 1e-9
 /// True
+#[expect(
+    clippy::too_many_arguments,
+    reason = "round-trip iterations, direction, coordinate columns, epochs, and PROJ selection are distinct Python controls"
+)]
 pub(crate) fn crs_roundtrip(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
