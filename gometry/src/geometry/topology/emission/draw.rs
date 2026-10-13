@@ -3,8 +3,8 @@ use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
 use super::line_paths::boundary_owner_index;
 use super::plan::{
     BoundaryCycle, DrawnAreaOrigin, DrawnAreaRing, DrawnPolygons, DrawnQLine, DrawnSourceRing,
-    PlannedAreaRing, PlannedQLine, PolygonPlan, QEmissionDrawing, QLineOrigin, QLinePrimitive,
-    SpanEndpoint,
+    PlannedAreaRing, PlannedQLine, PolygonPlan, QDiagnosticLineTag, QDiagnosticLineTags,
+    QEmissionDrawing, QLineOrigin, QLinePrimitive, SpanEndpoint,
 };
 use super::sites::{
     EmittedNodeKey, EmittedVertex, QCoordinates, emitted_node_key, for_each_q_cycle_vertex,
@@ -45,6 +45,63 @@ pub(in crate::geometry::topology) fn emitted_point<'topology>(
         literal_image: QSourceImage::Port(port),
     })
 }
+
+pub(in crate::geometry::topology) fn diagnostic_line_tag(
+    topology: &ExactGeographicTopology,
+    line: &PlannedQLine,
+    work: &mut impl Work,
+) -> Result<Option<QDiagnosticLineTag>> {
+    let QLineOrigin::Diagnostic(kind) = line.origin else {
+        return Ok(None);
+    };
+    let source_row = line
+        .source_row
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q diagnostic line has no source row".into()))?;
+    if line.path.is_empty() {
+        return Err(GeometryErrorKind::Invalid("Q diagnostic line has no spans".into()).into());
+    }
+
+    let mut has_z = true;
+    let mut has_m = true;
+    for step in &line.path {
+        work.charge_into_error(1)?;
+        let span = topology
+            .q
+            .spans
+            .get(step.span)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q diagnostic span is unknown".into()))?;
+        let owner = span.owners.get(step.owner).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q diagnostic source owner is unknown".into())
+        })?;
+        let edge = topology
+            .sources
+            .edges
+            .get(owner.source_edge.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q diagnostic source edge is unknown".into())
+            })?;
+        if edge.row != source_row {
+            return Err(GeometryErrorKind::Invalid(
+                "Q diagnostic source row disagrees with its span owner".into(),
+            )
+            .into());
+        }
+        for point in edge.source {
+            work.charge_into_error(1)?;
+            has_z &= point.z().is_some();
+            has_m &= point.m().is_some();
+        }
+    }
+    Ok(Some(QDiagnosticLineTag {
+        kind,
+        source_row,
+        axes: crate::geometry::CoordinateAxes::new(
+            crate::geometry::HasZ(has_z),
+            crate::geometry::HasM(has_m),
+        ),
+    }))
+}
+
 pub(in crate::geometry::topology) fn push_line_part<'topology>(
     output: &mut Vec<DrawnQLine<'topology>>,
     origin: QLineOrigin,
@@ -52,8 +109,9 @@ pub(in crate::geometry::topology) fn push_line_part<'topology>(
     source_row: Option<SourceRowId>,
     close: bool,
     vertices: &mut Vec<EmittedVertex<'topology>>,
-) {
+) -> Option<usize> {
     if vertices.len() >= 2 {
+        let output_index = output.len();
         output.push(QLinePrimitive {
             origin,
             recipe_walk,
@@ -61,10 +119,13 @@ pub(in crate::geometry::topology) fn push_line_part<'topology>(
             close,
             path: std::mem::take(vertices),
         });
+        Some(output_index)
     } else {
         vertices.clear();
+        None
     }
 }
+
 pub(in crate::geometry::topology) fn draw_cycle_vertices<'topology>(
     topology: &'topology ExactGeographicTopology,
     coordinates: &QCoordinates,
@@ -95,11 +156,13 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
     paths: &[PlannedQLine],
     coordinates: &QCoordinates,
     work: &mut impl Work,
-) -> Result<Vec<DrawnQLine<'topology>>> {
+) -> Result<(Vec<DrawnQLine<'topology>>, QDiagnosticLineTags)> {
     let q = &topology.q;
     let mut output = Vec::new();
+    let mut diagnostic_line_tags = Vec::new();
     for line in paths {
         work.charge_into_error(1)?;
+        let diagnostic_tag = diagnostic_line_tag(topology, line, work)?;
         let recipe_walk = line.recipe_walk;
         let source_row = line.source_row;
         let close = line.close;
@@ -188,7 +251,7 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
                             EmittedNodeKey::NorthPole | EmittedNodeKey::SouthPole
                         );
                         if is_seam || is_pole {
-                            push_line_part(
+                            let output_index = push_line_part(
                                 &mut output,
                                 line.origin,
                                 recipe_walk,
@@ -196,6 +259,10 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
                                 false,
                                 &mut points,
                             );
+                            if let (Some(output_index), Some(tag)) = (output_index, diagnostic_tag)
+                            {
+                                diagnostic_line_tags.push((output_index, tag));
+                            }
                         } else if points
                             .last()
                             .is_some_and(|last: &EmittedVertex<'_>| last.point != previous.point)
@@ -223,7 +290,7 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
         if close && let Some(&first) = points.first() {
             points.push(first);
         }
-        push_line_part(
+        let output_index = push_line_part(
             &mut output,
             line.origin,
             recipe_walk,
@@ -231,8 +298,11 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
             close,
             &mut points,
         );
+        if let (Some(output_index), Some(tag)) = (output_index, diagnostic_tag) {
+            diagnostic_line_tags.push((output_index, tag));
+        }
     }
-    Ok(output)
+    Ok((output, diagnostic_line_tags))
 }
 pub(in crate::geometry::topology) fn draw_points<'topology>(
     topology: &'topology ExactGeographicTopology,
@@ -530,7 +600,8 @@ impl QEmissionPlan {
                 }
             },
         };
-        let lines = draw_lines(topology, &self.line_paths, coordinates, work)?;
+        let (lines, diagnostic_line_tags) =
+            draw_lines(topology, &self.line_paths, coordinates, work)?;
         let points = draw_points(
             topology,
             &self.point_nodes,
@@ -541,6 +612,7 @@ impl QEmissionPlan {
         Ok(QEmissionDrawing {
             polygons,
             lines,
+            diagnostic_line_tags,
             points,
         })
     }

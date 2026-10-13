@@ -135,33 +135,6 @@ impl ExactGeographicQ {
         Ok(node.pole.is_some())
     }
 
-    pub(in crate::geometry::topology) fn for_each_spatial_candidate_with_work<W: Work>(
-        &self,
-        start: &ExactChartPoint,
-        end: &ExactChartPoint,
-        work: &mut W,
-        mut visit: impl FnMut(QSpatialItem, &mut W) -> Result<bool>,
-    ) -> Result<bool> {
-        let mut failure = None;
-        let mut stopped = false;
-        let result =
-            self.spatial_index
-                .for_each_candidate(outward_segment_proxy(start, end)?, |item| {
-                    match visit(item, work) {
-                        Ok(true) => std::ops::ControlFlow::Continue(()),
-                        Ok(false) => {
-                            stopped = true;
-                            std::ops::ControlFlow::Break(())
-                        },
-                        Err(error) => {
-                            failure = Some(error);
-                            std::ops::ControlFlow::Break(())
-                        },
-                    }
-                })?;
-        failure.map_or_else(|| Ok(!stopped && result.is_continue()), Err)
-    }
-
     pub(in crate::geometry) fn for_each_pole_sector(
         &self,
         pole: ChartPole,

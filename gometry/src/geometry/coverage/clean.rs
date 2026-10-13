@@ -4,6 +4,10 @@ use crate::geometry::coverage::{
 };
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::publication::{
+    FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+    StorageTarget, finish_geographic,
+};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, OverlayOp, Shape, SourceArcContext, carry_overlay_ordinates,
     polygon_parts_to_shape,
@@ -25,21 +29,20 @@ crate::tokens::token_enum! {
 
 crate::tokens::token_from_pyobject!(CoverageOverlapRule);
 
-/// Clean a near-coverage into an exact one.
-///
-/// Optionally snaps vertices, then labels every face of one exact partition:
-/// a face covered by several rows goes to the `overlaps` winner, and an
-/// enclosed gap face narrower than `gap_width` merges into the neighbor with
-/// the longest shared border. Every output row is published from that shared
-/// partition, so interfaces use one exact node identity and one rounded
-/// coordinate.
-pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
+pub(crate) enum CoverageCleanOutput {
+    Shapes(Vec<Shape>),
+    Finished(Box<FinishedGeometry>),
+}
+
+/// Clean a near-coverage and retain its final geographic storage receipt.
+pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     grid_size: f64,
     gap_width: f64,
     overlaps: CoverageOverlapRule,
     context: &SourceArcContext<'_, '_>,
-) -> Result<Vec<Shape>> {
+    output_frame: crate::Frame,
+) -> Result<CoverageCleanOutput> {
     if !(grid_size.is_finite() && grid_size >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
     }
@@ -60,31 +63,25 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
     let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
-    // Cleaning an already-valid coverage is an identity operation. Besides
-    // avoiding needless partition work, this preserves coordinate bits, ring
-    // presentation, and makes repeated cleaning exactly idempotent.
-    // Finish validation so errors from later rows precede partition construction.
-    let already_valid = match context.domain() {
-        crate::geometry::TopologyDomain::Cartesian => {
-            let prepared = coverage_rows(&snapped, gap_width)?;
-            !visit_invalid_segments(&prepared, gap_width, |_, _| true)?
-        },
+    let declared_axes = snapped
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.axes())
+        });
+
+    match context.domain() {
         crate::geometry::TopologyDomain::Geographic(frame) => {
             validate_polygonal_rows(&snapped)?;
-            let mut evaluation_budget = EvaluationBudget::new("coverage_clean", 0)?;
+            let mut budget = EvaluationBudget::new("coverage_clean", 0)?;
             let analysis = crate::geometry::analyze_geographic_coverage_with_work(
                 &snapped,
                 frame,
                 gap_width,
                 "coverage_clean",
-                &mut evaluation_budget,
+                &mut budget,
             )?;
-            let selection = analysis.assign_cleaning_faces(
-                &row_areas,
-                gap_width,
-                overlaps,
-                &mut evaluation_budget,
-            )?;
+            let selection =
+                analysis.assign_cleaning_faces(&row_areas, gap_width, overlaps, &mut budget)?;
             let labels_preserve_sources =
                 analysis.face_rows.iter().zip(&selection.owners).all(
                     |(source_rows, selected_row)| match source_rows.as_slice() {
@@ -93,41 +90,119 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
                         _ => false,
                     },
                 ) && selection.gap_assignments.iter().all(|&assigned| !assigned);
-            analysis.is_valid() && labels_preserve_sources
-        },
-    };
-    if already_valid {
-        return Ok(snapped);
-    }
 
-    #[cfg(test)]
-    drop(admission_phase);
-    #[cfg(test)]
-    let source_staging_phase =
-        crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
-    let shape_refs: Vec<_> = snapped.iter().collect();
-    let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
-    let mut partition = inventory.partition(&mut budget)?;
-    #[cfg(test)]
-    drop(source_staging_phase);
-    let declared_axes = snapped
-        .iter()
-        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
-            axes.union(shape.axes())
-        });
-    inventory.coverage_clean_rows(
-        &mut partition,
-        &row_areas,
-        gap_width,
-        overlaps,
-        declared_axes,
-        context,
-    )
+            // Cleaning an already-valid coverage is an identity operation.
+            // Preserve its original coordinate bits and ring presentation.
+            if analysis.is_valid() && labels_preserve_sources {
+                return Ok(CoverageCleanOutput::Shapes(snapped));
+            }
+
+            #[cfg(test)]
+            drop(admission_phase);
+            let receipt = analysis.coverage_drawing_receipt(
+                &selection,
+                declared_axes,
+                context,
+                StorageTarget::Array,
+                &mut budget,
+            )?;
+            match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::ProducerDrawing(receipt),
+                    output_frame,
+                    &mut budget,
+                ),
+                StorageTarget::Array,
+            )? {
+                PublicationOutcome::Pass(finished) => {
+                    Ok(CoverageCleanOutput::Finished(Box::new(finished)))
+                },
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                    Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "final coverage-clean storage changed {} producer literal images",
+                            images.len()
+                        )
+                        .into(),
+                    )
+                    .into())
+                },
+                PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+                    "coverage-clean finisher returned a different producer rejection family".into(),
+                )
+                .into()),
+            }
+        },
+        crate::geometry::TopologyDomain::Cartesian => {
+            let prepared = coverage_rows(&snapped, gap_width)?;
+            if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
+                return Ok(CoverageCleanOutput::Shapes(snapped));
+            }
+            #[cfg(test)]
+            drop(admission_phase);
+            #[cfg(test)]
+            let source_staging_phase = crate::test_support::allocation_phase(
+                crate::test_support::AllocationPhase::SourceStaging,
+            );
+            let shape_refs: Vec<_> = snapped.iter().collect();
+            let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
+            let mut partition = inventory.partition(&mut budget)?;
+            #[cfg(test)]
+            drop(source_staging_phase);
+            Ok(CoverageCleanOutput::Shapes(inventory.coverage_clean_rows(
+                &mut partition,
+                &row_areas,
+                gap_width,
+                overlaps,
+                declared_axes,
+                context,
+            )?))
+        },
+    }
 }
 
-/// Frame-aware coverage dissolve: rows whose raw boxes are unsound in the
-/// geographic frame are split before the edge inventory sees them as planar.
+/// Clean a near-coverage into shapes for native callers.
+///
+/// Geographic public output consumes the `FinishedGeometry` directly so its
+/// checked storage remains the object handed to Python.
+#[cfg(test)]
+pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    grid_size: f64,
+    gap_width: f64,
+    overlaps: CoverageOverlapRule,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Vec<Shape>> {
+    match coverage_clean_output(
+        rows,
+        grid_size,
+        gap_width,
+        overlaps,
+        context,
+        crate::Frame::None,
+    )? {
+        CoverageCleanOutput::Shapes(shapes) => Ok(shapes),
+        CoverageCleanOutput::Finished(finished) => {
+            let (rows, _) = (*finished).into_array()?;
+            rows.logical_rows()
+                .map(|row| match row {
+                    crate::geometry::storage::LogicalRow::Present { row, .. } => row.to_shape(),
+                    crate::geometry::storage::LogicalRow::Missing { .. } => {
+                        Err(GeometryErrorKind::Invalid(
+                            "coverage-clean result unexpectedly contains a missing row".into(),
+                        )
+                        .into())
+                    },
+                })
+                .collect()
+        },
+    }
+}
+
+/// Dissolve a valid geographic coverage from its original Q source roots when
+/// raw bounds cross the longitude seam.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
     context: &SourceArcContext<'_, '_>,
@@ -144,19 +219,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     }) {
         return coverage_union_inner(coverage, context);
     }
-    let mut split_owned = Vec::with_capacity(coverage.len());
-    for row in coverage {
-        let shape = row.borrow();
-        let split = if shape.bounds().is_some_and(|bounds| {
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
-        }) {
-            shape.clone()
-        } else {
-            shape.split_antimeridian_in_frame_with_metric(frame, context.metric_access())?
-        };
-        split_owned.push(split);
-    }
-    coverage_union_inner(&split_owned, context)
+    coverage_union_geographic(coverage, frame, context)
 }
 
 fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
@@ -269,6 +332,80 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
     )
 }
 
+fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
+    coverage: &[S],
+    frame: crate::geographic::GeographicFrame,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
+    let mut budget = EvaluationBudget::new("coverage_union_all", 0)?;
+    let analysis = crate::geometry::analyze_geographic_coverage_with_work(
+        coverage,
+        frame,
+        0.0,
+        "coverage_union_all",
+        &mut budget,
+    )?;
+    if !analysis.is_valid() {
+        return Err(GeometryErrorKind::InvalidCoverage {
+            operation: "coverage_union_all",
+        }
+        .into());
+    }
+    let row_areas = coverage
+        .iter()
+        .map(|shape| shape.borrow().area())
+        .collect::<Vec<_>>();
+    let mut assignment = analysis.assign_cleaning_faces(
+        &row_areas,
+        0.0,
+        CoverageOverlapRule::MinIndex,
+        &mut budget,
+    )?;
+    // Valid coverage faces have at most one source owner. Assign all occupied
+    // faces to the scalar result so Q cancels shared boundaries before writing.
+    for owner in &mut assignment.owners {
+        if owner.is_some() {
+            *owner = Some(0);
+        }
+    }
+    let declared_axes = coverage
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.borrow().axes())
+        });
+    let receipt = analysis.coverage_drawing_receipt(
+        &assignment,
+        declared_axes,
+        context,
+        StorageTarget::Scalar,
+        &mut budget,
+    )?;
+    match finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            crate::Frame::None,
+            &mut budget,
+        ),
+        StorageTarget::Scalar,
+    )? {
+        PublicationOutcome::Pass(finished) => finished.into_scalar().map(|(shape, _)| shape),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final coverage-union storage changed {} producer literal images",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "coverage-union finisher returned a different producer rejection family".into(),
+        )
+        .into()),
+    }
+}
+
 /// Dissolve the validation product's exterior incidences through one exact
 /// partition. Coverage cleaning does not use this path: its row outputs are
 /// published directly from the labeled source partition above.
@@ -315,7 +452,7 @@ fn dissolve_edge_incidences(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{Point, Polygon, Ring, XY, overlay};
+    use crate::geometry::{CoordinateAxes, Point, Polygon, Ring, XY, overlay};
 
     fn rectangle_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         let points = [
@@ -639,5 +776,72 @@ mod tests {
         );
         crate::geometry::coverage_union_topo(&cleaned, &SourceArcContext::cartesian())
             .expect("dissolve accepts the repaired jittered coverage");
+    }
+
+    #[test]
+    fn geographic_coverage_union_keeps_ordinates_after_presplit_dissolve() -> Result<()> {
+        let crs = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let first = crate::io::parse_wkt(
+            "POLYGON ZM ((165 -20 1 10, -165 -10 11 110, \
+             -165 30 21 210, 165 -20 1 10))",
+        )?;
+        let second = crate::io::parse_wkt(
+            "POLYGON ZM ((165 -20 1 10, -165 30 21 210, \
+             165 20 31 310, 165 -20 1 10))",
+        )?;
+        let rows = [first, second];
+        let model = crate::crs::metric_model(Some(crs))?;
+        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric_access = || Ok(&metric);
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            Some(&metric_access),
+        );
+
+        let forward = coverage_union_topo(&rows, &context)?;
+        let reverse = coverage_union_topo(&[rows[1].clone(), rows[0].clone()], &context)?;
+
+        for output in [&forward, &reverse] {
+            if output.axes() != CoordinateAxes::XYZM {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve dropped resolvable XYZM axes".into(),
+                )
+                .into());
+            }
+            let mut seam_samples = Vec::new();
+            output.try_for_each_point(|point| {
+                if point.x.abs().to_bits() == 180.0_f64.to_bits()
+                    && point.y.to_bits() == (-15.0_f64).to_bits()
+                {
+                    seam_samples.push((point.z(), point.m()));
+                }
+                Ok::<_, crate::error::Error>(())
+            })?;
+            if seam_samples.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve lost its original seam-root sample".into(),
+                )
+                .into());
+            }
+            if seam_samples.iter().any(|(z, m)| z.is_none() || m.is_none()) {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve emitted an unmeasured seam sample".into(),
+                )
+                .into());
+            }
+            let Some(first) = seam_samples.first() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve has no seam sample".into(),
+                )
+                .into());
+            };
+            if seam_samples.iter().any(|sample| sample != first) {
+                return Err(GeometryErrorKind::Invalid(
+                    "reversed coverage owners disagree at the seam sample".into(),
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 }

@@ -1,3 +1,4 @@
+use super::plan::QDiagnosticLine;
 use super::{
     AssignedSite, CoordSeq, CoordinateAxes, EmissionPortId, ExpandedEmissionPlan, FinishedGeometry,
     FrozenLiteralBuffers, GeometryErrorKind, LiteralPoint, LiteralPolygon, LiteralSequence,
@@ -7,11 +8,13 @@ use super::{
 use crate::work::Work;
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 pub(in crate::geometry::topology) struct NativeFrozenDrawing {
     pub(in crate::geometry::topology) shape: Shape,
     pub(in crate::geometry::topology) literal_uses: ShapeLiteralLayout<EmissionPortId>,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -34,6 +37,7 @@ pub(in crate::geometry) enum QSourceImage {
 
 pub(in crate::geometry::topology) struct SourceFrozenDrawing {
     pub(in crate::geometry::topology) buffers: FrozenLiteralBuffers<QSourceImage>,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 #[cfg(test)]
@@ -47,6 +51,7 @@ pub(in crate::geometry::topology) struct NativeMaterializedParts {
     pub(in crate::geometry::topology) lines: Vec<CoordSeq>,
     pub(in crate::geometry::topology) polygons: Vec<Polygon>,
     pub(in crate::geometry::topology) literal_uses: NativeLiteralUses,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 impl NativeMaterializedParts {
@@ -253,7 +258,44 @@ pub(in crate::geometry::topology) fn materialize_native_parts(
             lines: line_uses,
             polygons: polygon_uses,
         },
+        diagnostic_lines: Vec::new(),
     })
+}
+
+pub(in crate::geometry::topology) fn materialize_native_diagnostic_lines(
+    plan: &ExpandedEmissionPlan<'_>,
+    sites: &[AssignedSite],
+    ordinates: &[NodeOrdinates],
+    output_lines: &[CoordSeq],
+    output_axes: CoordinateAxes,
+    tags: &[(usize, super::plan::QDiagnosticLineTag)],
+    budget: &mut impl Work,
+) -> Result<Vec<QDiagnosticLine>> {
+    budget
+        .charge_into_error(u64::try_from(tags.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut diagnostics = Vec::with_capacity(tags.len());
+    for &(line_index, tag) in tags {
+        budget.charge_into_error(1)?;
+        let output_line = output_lines.get(line_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "native Q diagnostic tag has no materialized output line".into(),
+            )
+        })?;
+        let coordinates = if tag.axes == output_axes {
+            output_line.clone()
+        } else {
+            let chords = plan.lines.get(line_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "native Q diagnostic tag has no expanded line walk".into(),
+                )
+            })?;
+            let walk =
+                native_chord_points(plan, sites, ordinates, chords, tag.axes, false, budget)?;
+            CoordSeq::try_from_points_with_work(&walk.points, budget)?
+        };
+        diagnostics.push(QDiagnosticLine { tag, coordinates });
+    }
+    Ok(diagnostics)
 }
 
 pub(in crate::geometry::topology) fn write_completed_native(

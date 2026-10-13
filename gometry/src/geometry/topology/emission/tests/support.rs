@@ -382,6 +382,7 @@ fn empty_literal_test_parts() -> NativeMaterializedParts {
             lines: Vec::new(),
             polygons: Vec::new(),
         },
+        diagnostic_lines: Vec::new(),
     }
 }
 
