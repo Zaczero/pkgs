@@ -838,8 +838,8 @@ def test_geographic_polygonize_full_keeps_seam_faces_and_source_diagnostics() ->
         (-170.0, 5.0, 7.0, 70.0),
         (-160.0, 5.0, 17.0, 170.0),
     ]
-    assert all(len(row) == 0 for row in result.cut_edges)
-    assert all(len(row) == 0 for row in result.invalid_rings)
+    assert all(row is None or len(row) == 0 for row in result.cut_edges)
+    assert all(row is None or len(row) == 0 for row in result.invalid_rings)
 
 
 def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() -> None:

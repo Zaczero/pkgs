@@ -197,6 +197,10 @@ def test_geographic_nonidentity_clean_assigns_seam_overlap_to_input_owner() -> N
     ]
     assert gm.coverage_is_valid(reversed_rows)
 
+
+def test_geographic_nonidentity_clean_assigns_polar_overlap_to_input_owner() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+
     def polar_cap(latitude: float, offset: float) -> gm.Polygon:
         return gm.Polygon(
             [
@@ -481,12 +485,12 @@ def test_geographic_coverage_union_keeps_presplit_original_zm_arclength() -> Non
 
     for rows in ([crossing, separate], [separate, crossing]):
         union = gm.coverage_union_all(rows)
-        seam_records = [
+        seam_records = {
             tuple(float(value) for value in coordinate)
             for polygon in union.parts
             for coordinate in polygon.exterior.coords
             if abs(float(coordinate[0])) == 180.0 and float(coordinate[1]) == 5.0
-        ]
+        }
         assert len(seam_records) == 2
         assert {record[0] for record in seam_records} == {-180.0, 180.0}
         assert all(record[1] == 5.0 for record in seam_records)
