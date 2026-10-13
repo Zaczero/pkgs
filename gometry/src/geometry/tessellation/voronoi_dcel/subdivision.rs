@@ -19,7 +19,7 @@ pub(super) struct ExactVertex {
     clippy::indexing_slicing,
     reason = "union-find nodes and parent links are dense indices from the same initialized parent column"
 )]
-pub(super) fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
+pub(super) const fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     while parents[node] != node {
         parents[node] = parents[parents[node]];
         node = parents[node];
@@ -31,7 +31,7 @@ pub(super) fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     clippy::indexing_slicing,
     reason = "both roots are returned by uf_root over this same admitted parent column"
 )]
-pub(super) fn uf_union(parents: &mut [usize], left: usize, right: usize) -> bool {
+pub(super) const fn uf_union(parents: &mut [usize], left: usize, right: usize) -> bool {
     let left = uf_root(parents, left);
     let right = uf_root(parents, right);
     if left == right {
@@ -302,7 +302,7 @@ pub(super) fn slot_transition(subdivision: &ExactSubdivision, slot: u32) -> Tran
     }
 }
 
-pub(super) fn selected_cell_label(label: RegionLabel) -> bool {
+pub(super) const fn selected_cell_label(label: RegionLabel) -> bool {
     label.frame_winding == 1 && label.clip_winding == 1
 }
 

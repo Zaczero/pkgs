@@ -1,8 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "these regression tests propagate fallible setup with `?` and intentionally fail through assertions"
-)]
-
 use super::*;
 use crate::crs::{self, GeodesicMetric};
 use crate::geometry::overlay::{partition_calls, reset_partition_calls};
@@ -210,6 +205,10 @@ fn geographic_adjacent_binary64_line_keeps_the_no_cut_fallback() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_xy_polygon_skips_unneeded_root_catalog() -> Result<()> {
     let mut points = (0..127)
         .map(|index| {
@@ -245,6 +244,10 @@ fn ordinary_geographic_xy_polygon_skips_unneeded_root_catalog() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_xy_line_without_chart_transit_skips_root_catalog() -> Result<()> {
     let points = (0..128)
         .map(|index| {
@@ -308,6 +311,10 @@ fn ordinary_geographic_xy_line_without_chart_transit_skips_root_catalog() -> Res
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_xy_line_builds_one_root_catalog_across_cuts() -> Result<()> {
     let mut points = vec![
         Point::new_raw_xy(179.0, 0.0),
@@ -353,6 +360,10 @@ fn ordinary_geographic_xy_line_builds_one_root_catalog_across_cuts() -> Result<(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_xy_polygon_seam_uses_partition_roots_only() -> Result<()> {
     let points = [
         (179.0, -2.0),
@@ -394,6 +405,10 @@ fn ordinary_geographic_xy_polygon_seam_uses_partition_roots_only() -> Result<()>
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -435,6 +450,10 @@ fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -475,6 +494,10 @@ fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -574,6 +597,10 @@ fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> 
 #[expect(
     clippy::float_cmp,
     reason = "these coordinates assert exact source-root identity; a tolerance could accept a displaced cut"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
 )]
 fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> Result<()> {
     let crs = concat!(
@@ -693,6 +720,10 @@ fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> R
 #[expect(
     clippy::float_cmp,
     reason = "these coordinates assert exact source-root identity; a tolerance could accept a displaced cut"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
 )]
 fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> Result<()> {
     let crs = concat!(

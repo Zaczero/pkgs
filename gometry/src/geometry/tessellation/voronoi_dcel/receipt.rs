@@ -379,7 +379,7 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
     })
 }
 
-pub(super) fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
+pub(super) const fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
     match side {
         FrameSide::Bottom => VoronoiFrameSide::Bottom,
         FrameSide::Right => VoronoiFrameSide::Right,

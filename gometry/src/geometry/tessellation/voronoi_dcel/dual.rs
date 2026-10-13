@@ -47,7 +47,7 @@ const fn dual_next_halfedge(edge: usize) -> usize {
     if edge % 3 == 2 { edge - 2 } else { edge + 1 }
 }
 
-fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) -> bool {
+const fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) -> bool {
     left.low == right.low && left.high == right.high
 }
 
@@ -156,9 +156,9 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     let flat = |edge: usize| dual_site_at_halfedge(triangles, edge);
     let mut start_edge = Vec::with_capacity(site_count);
     start_edge.resize(site_count, usize::MAX);
-    for edge in 0..halfedges.len() {
+    for (edge, &halfedge) in halfedges.iter().enumerate() {
         let endpoint = flat(dual_next_halfedge(edge));
-        if start_edge[endpoint] == usize::MAX || halfedges[edge] == EMPTY {
+        if start_edge[endpoint] == usize::MAX || halfedge == EMPTY {
             start_edge[endpoint] = edge;
         }
     }
@@ -167,8 +167,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     offsets.reserve(site_count + 1);
     boundaries.reserve(site_count);
     offsets.push(0);
-    for site in 0..site_count {
-        let start = start_edge[site];
+    for &start in &start_edge {
         let (length, boundary) = incident_faces_for_site(start, halfedges, None);
         offsets.push(offsets.last().copied().unwrap_or(0) + length);
         boundaries.push(boundary);
@@ -203,7 +202,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     clippy::indexing_slicing,
     reason = "each certified Delaunay face owns exactly three consecutive half-edge origins"
 )]
-fn dual_site_at_halfedge(triangles: &[[usize; 3]], halfedge: usize) -> usize {
+const fn dual_site_at_halfedge(triangles: &[[usize; 3]], halfedge: usize) -> usize {
     triangles[halfedge / 3][halfedge % 3]
 }
 
@@ -437,6 +436,10 @@ fn dual_point_in_cycle(
 /// the other three sides. Identical verdict, one filtered comparison instead of
 /// six interval operations. A degenerate rectangle falls back to the general
 /// orientation test.
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn dual_clip_convex(
     ring: Vec<Tagged>,
     site: &Site,
@@ -768,6 +771,10 @@ pub(super) fn dual_build_rings(
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "direction_changes is bounded by the number of vertices in this admitted ring"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
 )]
 pub(super) fn certify_convex_cell(ring: &[XY], site: XY) -> bool {
     let count = ring.len();

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::panic,
-    reason = "a build script reports a missing input by panicking"
-)]
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -18,11 +14,12 @@ const RELEASE_ENV_VARS: &[&str] = &[
     "GOMETRY_RELEASE_CXXFLAGS",
 ];
 
-fn main() {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = PathBuf::from(
-        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo did not provide CARGO_MANIFEST_DIR"),
+        env::var_os("CARGO_MANIFEST_DIR")
+            .ok_or_else(|| std::io::Error::other("Cargo did not provide CARGO_MANIFEST_DIR"))?,
     );
-    let (source_inputs_sha256, native_source_inputs_sha256) = source_input_digests(&manifest_dir);
+    let (source_inputs_sha256, native_source_inputs_sha256) = source_input_digests(&manifest_dir)?;
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_owned());
     // Keep only Cargo's coarse profile family; release-dist cannot be observed
     // here and its artifact consequence is checked by the wheel verifier.
@@ -45,7 +42,7 @@ fn main() {
         features.sort_unstable();
         features.join(",")
     };
-    validate_release_identity(&target, &profile_family, &opt_level, debug_assertions);
+    validate_release_identity(&target, &profile_family, &opt_level, debug_assertions)?;
 
     // Exactly the digested inputs: Cargo's own fingerprints already rebuild
     // on dependency and profile changes, so watching the workspace lock only
@@ -81,6 +78,7 @@ fn main() {
         println!("cargo::rustc-link-lib=ole32");
         println!("cargo::rustc-link-lib=shell32");
     }
+    Ok(())
 }
 
 fn validate_release_identity(
@@ -88,46 +86,59 @@ fn validate_release_identity(
     profile_family: &str,
     opt_level: &str,
     debug_assertions: bool,
-) {
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let present = RELEASE_ENV_VARS
         .iter()
         .filter(|variable| env::var_os(variable).is_some())
         .count();
     if present == 0 {
-        return;
+        return Ok(());
     }
-    assert_eq!(
-        present,
-        RELEASE_ENV_VARS.len(),
-        "release identity environment is partial: {present}/{} variables are set",
-        RELEASE_ENV_VARS.len()
-    );
-    let release_target = env::var("GOMETRY_RELEASE_TARGET")
-        .expect("validated release identity contains GOMETRY_RELEASE_TARGET");
-    assert_eq!(
-        release_target, target,
-        "release target disagrees with Cargo TARGET: {release_target:?} != {target:?}"
-    );
-    let policy = env::var("GOMETRY_RELEASE_TARGET_POLICY")
-        .expect("validated release identity contains GOMETRY_RELEASE_TARGET_POLICY");
-    assert!(
-        !policy.is_empty() && policy != "unconfigured",
-        "release target policy is empty or unconfigured"
-    );
-    assert!(
-        profile_family == "release" && opt_level == "3" && !debug_assertions,
-        "release identity does not describe an optimized release: \
-         profile={profile_family:?}, opt-level={opt_level:?}, \
-         debug-assertions={debug_assertions}"
-    );
-    validate_release_compiler_flags(target);
+    if present != RELEASE_ENV_VARS.len() {
+        return Err(std::io::Error::other(format!(
+            "release identity environment is partial: {present}/{} variables are set",
+            RELEASE_ENV_VARS.len()
+        ))
+        .into());
+    }
+    let release_target = env::var("GOMETRY_RELEASE_TARGET").map_err(|error| {
+        std::io::Error::other(format!("cannot read GOMETRY_RELEASE_TARGET: {error}"))
+    })?;
+    if release_target != target {
+        return Err(std::io::Error::other(format!(
+            "release target disagrees with Cargo TARGET: {release_target:?} != {target:?}"
+        ))
+        .into());
+    }
+    let policy = env::var("GOMETRY_RELEASE_TARGET_POLICY").map_err(|error| {
+        std::io::Error::other(format!(
+            "cannot read GOMETRY_RELEASE_TARGET_POLICY: {error}"
+        ))
+    })?;
+    if policy.is_empty() || policy == "unconfigured" {
+        return Err(std::io::Error::other("release target policy is empty or unconfigured").into());
+    }
+    if profile_family != "release" || opt_level != "3" || debug_assertions {
+        return Err(std::io::Error::other(format!(
+            "release identity does not describe an optimized release: \
+             profile={profile_family:?}, opt-level={opt_level:?}, \
+             debug-assertions={debug_assertions}"
+        ))
+        .into());
+    }
+    validate_release_compiler_flags(target)?;
+    Ok(())
 }
 
-fn validate_release_compiler_flags(target: &str) {
+fn validate_release_compiler_flags(
+    target: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // tools/_artifact_common.py maps targets to flags; verify Cargo received
     // its exported values without duplicating that policy table here.
     let policy_rustflags = env::var("GOMETRY_RELEASE_RUSTFLAGS")
-        .expect("validated release identity contains GOMETRY_RELEASE_RUSTFLAGS")
+        .map_err(|error| {
+            std::io::Error::other(format!("cannot read GOMETRY_RELEASE_RUSTFLAGS: {error}"))
+        })?
         .split_whitespace()
         .collect::<Vec<_>>()
         .join("\u{1f}");
@@ -141,27 +152,33 @@ fn validate_release_compiler_flags(target: &str) {
             target_flag_variable("CXXFLAGS", target),
         ),
     ];
-    assert_eq!(
-        env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default(),
-        policy_rustflags,
-        "Cargo rust flags do not match GOMETRY_RELEASE_RUSTFLAGS"
-    );
-    for (policy_variable, actual_variable) in actual_flag_variables {
-        let policy_flags = env::var(policy_variable)
-            .unwrap_or_else(|_| panic!("validated release identity contains {policy_variable}"));
-        let actual_flags = env::var(&actual_variable).unwrap_or_default();
-        assert_eq!(
-            actual_flags, policy_flags,
-            "{actual_variable} does not match exported release flags {policy_variable}"
-        );
+    let actual_rustflags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    if actual_rustflags != policy_rustflags {
+        return Err(std::io::Error::other(
+            "Cargo rust flags do not match GOMETRY_RELEASE_RUSTFLAGS",
+        )
+        .into());
     }
+    for (policy_variable, actual_variable) in actual_flag_variables {
+        let policy_flags = env::var(policy_variable).map_err(|error| {
+            std::io::Error::other(format!("cannot read {policy_variable}: {error}"))
+        })?;
+        let actual_flags = env::var(&actual_variable).unwrap_or_default();
+        if actual_flags != policy_flags {
+            return Err(std::io::Error::other(format!(
+                "{actual_variable} does not match exported release flags {policy_variable}"
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn target_flag_variable(prefix: &str, target: &str) -> String {
     format!("{prefix}_{}", target.replace('-', "_"))
 }
 
-fn source_input_digests(manifest_dir: &Path) -> (String, String) {
+fn source_input_digests(manifest_dir: &Path) -> std::io::Result<(String, String)> {
     // The compiler is identified by the release manifest's `rustc --version`,
     // not by the rolling monorepo toolchain channel.
     let mut files = vec![("gometry/build.rs".to_owned(), manifest_dir.join("build.rs"))];
@@ -176,32 +193,36 @@ fn source_input_digests(manifest_dir: &Path) -> (String, String) {
         "gometry/src",
         &mut source_files,
         false,
-    );
+    )?;
     let mut native_files = Vec::new();
     collect_files(
         &manifest_dir.join("native"),
         "gometry/native",
         &mut native_files,
         true,
-    );
+    )?;
     files.extend(source_files);
     files.extend(native_files.clone());
-    (digest_files(&files), digest_files(&native_files))
+    Ok((digest_files(&files)?, digest_files(&native_files)?))
 }
 
-fn digest_files(files: &[(String, PathBuf)]) -> String {
+fn digest_files(files: &[(String, PathBuf)]) -> std::io::Result<String> {
     let mut files = files.to_vec();
     files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     let mut digest = Sha256::new();
     for (logical, path) in files {
-        let payload = fs::read(&path)
-            .unwrap_or_else(|error| panic!("cannot read build input {}: {error}", path.display()));
+        let payload = fs::read(&path).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot read build input {}: {error}", path.display()),
+            )
+        })?;
         digest.update(logical.as_bytes());
         digest.update([0]);
         digest.update(&payload);
         digest.update([0]);
     }
-    format!("{:x}", digest.finalize())
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn collect_files(
@@ -209,16 +230,29 @@ fn collect_files(
     logical_root: &str,
     files: &mut Vec<(String, PathBuf)>,
     skip_hidden_native: bool,
-) {
-    let mut entries: Vec<_> = fs::read_dir(root)
-        .unwrap_or_else(|error| {
-            panic!(
-                "cannot read build input directory {}: {error}",
-                root.display()
+) -> std::io::Result<()> {
+    let mut entries = fs::read_dir(root)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot read build input directory {}: {error}",
+                    root.display()
+                ),
             )
+        })?
+        .map(|entry| {
+            entry.map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot read build input directory entry under {}: {error}",
+                        root.display()
+                    ),
+                )
+            })
         })
-        .map(|entry| entry.expect("cannot read build input directory entry"))
-        .collect();
+        .collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
@@ -235,9 +269,10 @@ fn collect_files(
             continue;
         }
         if path.is_dir() {
-            collect_files(&path, &logical, files, skip_hidden_native);
+            collect_files(&path, &logical, files, skip_hidden_native)?;
         } else if path.is_file() {
             files.push((logical, path));
         }
     }
+    Ok(())
 }

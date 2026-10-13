@@ -78,6 +78,7 @@ fn cosine_circle_fails_open_to_generic_coverage() {
     );
 }
 
+#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
 fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
     let mut edges: std::collections::BTreeMap<[PointKey; 2], Vec<[XY; 2]>> =
         std::collections::BTreeMap::new();

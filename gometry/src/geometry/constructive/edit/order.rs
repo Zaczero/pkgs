@@ -21,9 +21,9 @@ impl Shape {
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             // Columnar reverse-copies — no AoS `Vec<Point>` round-trip.
             Self::LineString(points) => Self::LineString(points.reversed()?),
-            Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| line.reversed())?)
-            },
+            Self::MultiLineString(lines) => Self::MultiLineString(
+                lines.try_map_values(lines.axes(), crate::geometry::LineSeq::reversed)?,
+            ),
             Self::Polygon(polygon) => Self::Polygon(polygon.reverse()?),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), Polygon::reverse)?)

@@ -2,6 +2,10 @@ use super::support::disconnected_bvh_target;
 use super::*;
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
     let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
     let right_shape = line(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
@@ -29,6 +33,10 @@ fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()> {
     let cases = [
         line(vec![p(-1.0, 0.0), p(1.0, 0.0)]),
@@ -74,6 +82,10 @@ fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
     crate::test_support::initialize_python();
     let geodesic = Geodesic::wgs84();

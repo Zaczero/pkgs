@@ -543,7 +543,8 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>((builder, ring_ends))
             })
             .map_err(rows_err)?;
-        Groups::from_point_builder(frame, builder.0, builder.1, self.missing().cloned())
+        let (points, ring_ends) = builder;
+        Groups::from_point_builder(frame, points, &ring_ends, self.missing().cloned())
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> Option<PyResult<Self>> {

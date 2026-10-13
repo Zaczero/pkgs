@@ -19,10 +19,6 @@ pub(super) struct CertifiedCenter {
 }
 
 /// The circumcenter of `a`, `b`, `c` rounded to nearest-even and certified.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a, b, c are the sites and d the doubled determinant, as in the formula"
-)]
 pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCenter> {
     let ux = Bounded::exact_difference(b.x, a.x);
     let uy = Bounded::exact_difference(b.y, a.y);

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Linear-referencing and measured-line operations on `Shape`: interpolate /
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
@@ -469,7 +465,9 @@ pub(crate) struct MeasuredLineIndex {
 
 impl MeasuredLineIndex {
     pub(crate) fn points(&self) -> impl Iterator<Item = Point> {
-        self.parts.iter().flat_map(|part| part.into_iter())
+        self.parts
+            .iter()
+            .flat_map(std::iter::IntoIterator::into_iter)
     }
 
     pub(crate) fn chart_locate<M>(

@@ -66,12 +66,12 @@ pub(super) const fn dyadic_heap_bytes(value: &ExactDyadic) -> usize {
     clippy::arithmetic_side_effects,
     reason = "HeapSize sums the two already-owned rational limbs"
 )]
-pub(super) fn rational_heap_bytes(value: &ExactRational) -> usize {
+pub(super) const fn rational_heap_bytes(value: &ExactRational) -> usize {
     let (numerator, denominator) = value.parts();
     dyadic_heap_bytes(numerator) + dyadic_heap_bytes(denominator)
 }
 
-fn quotient_key_heap_bytes(value: &ExactQuotientKey) -> usize {
+const fn quotient_key_heap_bytes(value: &ExactQuotientKey) -> usize {
     match value {
         ExactQuotientKey::Coordinate(point) => point.heap_bytes(),
         ExactQuotientKey::Seam(latitude) => rational_heap_bytes(latitude),
@@ -153,7 +153,7 @@ impl ExactChartPoint {
         clippy::arithmetic_side_effects,
         reason = "HeapSize sums the two already-owned chart-coordinate rationals"
     )]
-    pub(super) fn heap_bytes(&self) -> usize {
+    pub(super) const fn heap_bytes(&self) -> usize {
         rational_heap_bytes(&self.x) + rational_heap_bytes(&self.y)
     }
 }
@@ -669,7 +669,7 @@ impl ExactSourceRange {
         clippy::arithmetic_side_effects,
         reason = "HeapSize sums the two rational parameters owned by this range"
     )]
-    pub(super) fn heap_bytes(&self) -> usize {
+    pub(super) const fn heap_bytes(&self) -> usize {
         rational_heap_bytes(&self.start) + rational_heap_bytes(&self.end)
     }
 }

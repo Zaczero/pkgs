@@ -255,7 +255,7 @@ impl EndpointSide {
         }
     }
 
-    pub(super) fn parameter(self) -> ExactRational {
+    pub(super) const fn parameter(self) -> ExactRational {
         match self {
             Self::Start => ExactRational::zero(),
             Self::End => ExactRational::one(),

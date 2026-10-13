@@ -127,7 +127,7 @@ impl PySpatialIndex {
         Ok(Some(GeodesicIndexPruner::Boxes(GeodesicBoxPruner::new(
             resolved.geodesic.a,
             resolved.geodesic.f,
-            cover.entries().to_vec(),
+            cover.entries(),
         ))))
     }
 

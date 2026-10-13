@@ -217,6 +217,7 @@ fn rounded_duplicate(point: &exact::ExactPoint) -> exact::ExactPoint {
     base.midpoint(&upper).unwrap().midpoint(&base).unwrap()
 }
 
+#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
 fn rounded_boundary_side(point: XY, bounds: [f64; 4]) -> Option<usize> {
     if point.y == bounds[2] {
         Some(0)

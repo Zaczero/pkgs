@@ -7,11 +7,6 @@
 //! constant; at contact, the relevant topology is the exact fan of source
 //! rays incident to the query.
 
-#![expect(
-    clippy::float_cmp,
-    reason = "coordinate identity and formal fan ordering use exact represented values"
-)]
-
 use std::ops::Range;
 
 use crate::error::Result;

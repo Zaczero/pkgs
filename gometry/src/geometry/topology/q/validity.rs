@@ -1,8 +1,3 @@
-#![expect(
-    clippy::arithmetic_side_effects,
-    reason = "Q source ordinals and incidence offsets are derived from checked inventory ranges and bounded fan walks"
-)]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -443,7 +438,10 @@ fn line_vertex_classes(
         .iter()
         .map(|line| {
             let edge_count = line.source_edges.len();
-            let mut classes = super::UnionFind::new(edge_count.saturating_add(1));
+            let class_count = edge_count
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let mut classes = super::UnionFind::new(class_count);
             for (ordinal, source_index) in line.source_edges.clone().enumerate() {
                 let edge = topology.sources.edges.get(source_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source line has an invalid edge range".into())
@@ -462,7 +460,10 @@ fn line_vertex_classes(
                     .get(start.0 as usize)
                     .is_some_and(|node| node.pole.is_some());
                 if start == end && (collapsed_longitude || collapsed_pole) {
-                    classes.union(ordinal, ordinal + 1);
+                    let next_ordinal = ordinal
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    classes.union(ordinal, next_ordinal);
                 }
             }
             if boundaries
@@ -514,8 +515,11 @@ fn line_position(
             });
     }
     if parameter.try_cmp(&ExactRational::one())?.is_eq() {
+        let end_ordinal = ordinal
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         return vertex_classes
-            .get(ordinal + 1)
+            .get(end_ordinal)
             .copied()
             .map(LinePosition::Vertex)
             .ok_or_else(|| {
@@ -586,9 +590,21 @@ fn ring_rules(topology: &ExactGeographicTopology) -> Result<Vec<RingRules>> {
         }
         let mut excursion_pairs = BTreeSet::new();
         if edges.len() >= 3 {
+            let edge_count = edges.len();
             for start in 0..edges.len() {
-                let middle = start.wrapping_add(1) % edges.len();
-                let end = start.wrapping_add(2) % edges.len();
+                let middle = start
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let middle = if middle == edge_count { 0 } else { middle };
+                let end = start
+                    .checked_add(2)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let end = if end >= edge_count {
+                    end.checked_sub(edge_count)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?
+                } else {
+                    end
+                };
                 if pole_pair_excursion(edges, start, middle, end, frame) {
                     for edge in [start, middle, end] {
                         *null_edges.get_mut(edge).ok_or_else(|| {
@@ -729,14 +745,16 @@ fn ring_node_incidence(
     }
 
     try_sort_by(lifted_x, ExactRational::try_cmp)?;
-    let mut group_count = 0;
+    let mut group_count = 0_usize;
     let mut invalid = false;
     let mut group_start = 0;
     while group_start < lifted_x.len() {
         let first = lifted_x.get(group_start).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q incidence group has no first position".into())
         })?;
-        let mut group_end = group_start.saturating_add(1);
+        let mut group_end = group_start
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         while group_end < lifted_x.len() {
             let next = lifted_x.get(group_end).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q incidence group has no next position".into())
@@ -744,10 +762,17 @@ fn ring_node_incidence(
             if !first.try_cmp(next)?.is_eq() {
                 break;
             }
-            group_end += 1;
+            group_end = group_end
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
         }
-        group_count += 1;
-        invalid |= group_end - group_start != 2;
+        group_count = group_count
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let group_len = group_end.checked_sub(group_start).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q incidence group offsets are reversed".into())
+        })?;
+        invalid |= group_len != 2;
         group_start = group_end;
     }
     Ok(RingNodeIncidence {
@@ -813,7 +838,11 @@ fn ring_ordinals(
         .ok_or_else(|| {
             GeometryErrorKind::Invalid("validity issue ring has an unknown polygon".into())
         })?;
-    let first_ordinal = first.0 as usize - first_polygon.rings.start;
+    let first_ordinal = (first.0 as usize)
+        .checked_sub(first_polygon.rings.start)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("validity issue ring precedes its polygon".into())
+        })?;
     let second_ordinal = if let Some(second) = second {
         let ring = sources.rings.get(second.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("validity issue references an unknown source ring".into())
@@ -824,7 +853,11 @@ fn ring_ordinals(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("validity issue ring has an unknown polygon".into())
             })?;
-        second.0 as usize - polygon.rings.start
+        (second.0 as usize)
+            .checked_sub(polygon.rings.start)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("validity issue ring precedes its polygon".into())
+            })?
     } else {
         usize::MAX
     };
@@ -986,20 +1019,18 @@ fn make_issue(
         IssueKind::InteriorDisconnected => "interior is disconnected".into(),
         IssueKind::HoleOutsideShell => {
             let ring = candidate.rings.expect("outside-hole issue has a ring").0;
-            let ordinal = ring_ordinal(&topology.sources, ring)?;
+            let interior_index = interior_ring_index(ring_ordinal(&topology.sources, ring)?)?;
             format!(
-                "interior ring at index {} is not contained within the polygon's exterior",
-                ordinal.saturating_sub(1)
+                "interior ring at index {interior_index} is not contained within the polygon's exterior"
             )
         },
         IssueKind::HoleOverlap => {
             let (left, right) = candidate.rings.expect("hole overlap has two rings");
-            let left = ring_ordinal(&topology.sources, left)?.saturating_sub(1);
-            let right = ring_ordinal(
+            let left = interior_ring_index(ring_ordinal(&topology.sources, left)?)?;
+            let right = interior_ring_index(ring_ordinal(
                 &topology.sources,
                 right.expect("hole overlap has a second ring"),
-            )?
-            .saturating_sub(1);
+            )?)?;
             format!(
                 "interior ring at index {} and interior ring at index {} intersect on an area",
                 left.min(right),
@@ -1033,10 +1064,17 @@ fn ring_label(
     ring: SourceRingId,
 ) -> Result<String> {
     let ordinal = ring_ordinal(sources, ring)?;
-    Ok(if ordinal == 0 {
-        "exterior ring".to_owned()
-    } else {
-        format!("interior ring at index {}", ordinal - 1)
+    if ordinal == 0 {
+        return Ok("exterior ring".to_owned());
+    }
+    let interior_index = interior_ring_index(ordinal)?;
+    Ok(format!("interior ring at index {interior_index}"))
+}
+
+fn interior_ring_index(ordinal: usize) -> Result<usize> {
+    ordinal.checked_sub(1).ok_or_else(|| {
+        GeometryErrorKind::Invalid("validity issue references an exterior ring as interior".into())
+            .into()
     })
 }
 
@@ -1051,41 +1089,52 @@ fn ring_ordinal(
         .polygons
         .get(record.polygon.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("source ring has an unknown polygon".into()))?;
-    Ok(ring.0 as usize - polygon.rings.start)
+    (ring.0 as usize)
+        .checked_sub(polygon.rings.start)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("validity issue ring precedes its polygon".into()).into()
+        })
 }
 
 fn polygon_path(shape: &Shape, target: SourcePolygonId) -> Result<String> {
-    fn visit(shape: &Shape, path: &str, target: usize, next: &mut usize) -> Option<String> {
+    fn visit(shape: &Shape, path: &str, target: usize, next: &mut usize) -> Result<Option<String>> {
         match shape {
             Shape::Polygon(_) => {
                 let ordinal = *next;
-                *next += 1;
-                (ordinal == target).then(|| path.to_owned())
+                *next = (*next)
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                Ok((ordinal == target).then(|| path.to_owned()))
             },
             Shape::MultiPolygon(polygons) => {
                 for (index, _) in polygons.iter().enumerate() {
                     let ordinal = *next;
-                    *next += 1;
+                    *next = (*next)
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
                     if ordinal == target {
-                        return Some(format!("{path}[{index}]"));
+                        return Ok(Some(format!("{path}[{index}]")));
                     }
                 }
-                None
+                Ok(None)
             },
             Shape::GeometryCollection(collection) => {
-                collection.iter().enumerate().find_map(|(index, member)| {
-                    visit(member, &format!("{path}[{index}]"), target, next)
-                })
+                for (index, member) in collection.iter().enumerate() {
+                    if let Some(found) = visit(member, &format!("{path}[{index}]"), target, next)? {
+                        return Ok(Some(found));
+                    }
+                }
+                Ok(None)
             },
             Shape::Point(_)
             | Shape::MultiPoint(_)
             | Shape::LineString(_)
             | Shape::MultiLineString(_)
-            | Shape::Empty(..) => None,
+            | Shape::Empty(..) => Ok(None),
         }
     }
     let mut next = 0;
-    visit(shape, "$", target.0 as usize, &mut next).ok_or_else(|| {
+    visit(shape, "$", target.0 as usize, &mut next)?.ok_or_else(|| {
         GeometryErrorKind::Invalid("validity issue has no source polygon path".into()).into()
     })
 }

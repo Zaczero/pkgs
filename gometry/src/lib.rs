@@ -1,18 +1,3 @@
-// Crate-wide lint policy lives here and nowhere else. `similar_names` is
-// deliberately not hoisted: it stays an `expect` on the files whose axis and
-// formula vocabulary trips it, so it still flags confusable names elsewhere.
-#![expect(
-    clippy::arbitrary_source_item_ordering,
-    reason = "cohesive item layout is clearer than a mandated declaration order here"
-)]
-#![expect(
-    clippy::redundant_closure_for_method_calls,
-    reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
-)]
-#![expect(
-    clippy::too_many_lines,
-    reason = "a flow reads best in one place; the long functions here are single pipelines whose phases share state, and splitting them would smear one operation across helpers"
-)]
 #![feature(
     once_cell_try,
     portable_simd,
@@ -462,10 +447,6 @@ mod above_gate_parity_tests {
     #[expect(
         clippy::panic_in_result_fn,
         reason = "assertions include the first mismatching coordinate in the failure"
-    )]
-    #[expect(
-        clippy::similar_names,
-        reason = "xs/ys are the two coordinate lanes of one probe batch"
     )]
     fn contains_coordinates_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();

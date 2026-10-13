@@ -73,7 +73,7 @@ pub(in crate::py::functions::constructors) fn multi_line_string_from_data_item(
 ) -> PyResult<(Shape, Frame)> {
     match item {
         GeometryArrayItem::Buffer(buffer) => {
-            Ok((multi_line_string_from_buffer(buffer)?, Frame::None))
+            Ok((multi_line_string_from_buffer(&buffer)?, Frame::None))
         },
         GeometryArrayItem::Python(item) => geometry_from_data_item(
             &item,
@@ -89,7 +89,7 @@ pub(in crate::py::functions::constructors) fn multi_line_string_from_data_item(
     }
 }
 
-fn multi_line_string_from_buffer(buffer: crate::CoordSeqBuffer) -> PyResult<Shape> {
+fn multi_line_string_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Shape> {
     let [line_count, _] = buffer.shape.as_slice() else {
         unreachable!("MultiLineString buffers have line and coordinate dimensions");
     };
@@ -157,7 +157,7 @@ pub(in crate::py::functions::constructors) fn multi_polygon_from_data_item(
     item: GeometryArrayItem<'_>,
 ) -> PyResult<(Shape, Frame)> {
     match item {
-        GeometryArrayItem::Buffer(buffer) => Ok((multi_polygon_from_buffer(buffer)?, Frame::None)),
+        GeometryArrayItem::Buffer(buffer) => Ok((multi_polygon_from_buffer(&buffer)?, Frame::None)),
         GeometryArrayItem::Python(item) => geometry_from_data_item(
             &item,
             "MultiPolygon",
@@ -172,7 +172,7 @@ pub(in crate::py::functions::constructors) fn multi_polygon_from_data_item(
     }
 }
 
-fn multi_polygon_from_buffer(buffer: crate::CoordSeqBuffer) -> PyResult<Shape> {
+fn multi_polygon_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Shape> {
     let [polygon_count, _, _] = buffer.shape.as_slice() else {
         unreachable!("MultiPolygon buffers have polygon, ring, and coordinate dimensions");
     };

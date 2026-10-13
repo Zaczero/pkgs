@@ -190,7 +190,7 @@ impl CoordinateView {
                     ) => coords.len(),
                 },
             },
-            |seq| seq.len(),
+            crate::geometry::CoordSeq::len,
         );
         hint.min(isize::MAX as usize)
     }

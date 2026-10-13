@@ -1,8 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "known-answer acceptance checks use assertions alongside fallible setup"
-)]
-
 use super::{
     EvaluationBudget, ExactGeographicTopology, ExactRational, GeographicFrame, GeometryErrorKind,
     NodeOrdinates, QCoordinates, QEmbeddingCertification, QEmbeddingOutput, QEmissionPlan,
@@ -54,6 +49,10 @@ fn sealed_shape(output: QEmbeddingOutput) -> Result<crate::geometry::Shape> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf() -> Result<()> {
     let shapes = published_sample_contact_fixture()?;
     let topology = topology(&shapes)?;
@@ -205,6 +204,10 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn assigned_leaf_uses_the_repaired_one_third_endpoint_and_keeps_its_inventory() -> Result<()> {
     let shapes = assigned_leaf_interval_fixture()?;
     let topology = topology(&shapes)?;
@@ -421,6 +424,10 @@ fn assigned_leaf_uses_the_repaired_one_third_endpoint_and_keeps_its_inventory() 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn assigned_endpoint_publisher_shrinks_away_the_midpoint_sample() -> Result<()> {
     use crate::geographic::{
         ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent,
@@ -672,6 +679,10 @@ fn assigned_endpoint_publisher_shrinks_away_the_midpoint_sample() -> Result<()> 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn publication_sample_survives_constructed_endpoint_repair() -> Result<()> {
     let u = 2.0_f64.powi(-45);
     let shapes = [

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "tests assert, and return Result only to propagate setup errors"
-)]
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
 use pyo3::prelude::*;
 

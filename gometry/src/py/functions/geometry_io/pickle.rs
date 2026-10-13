@@ -171,8 +171,10 @@ pub(crate) fn _unpickle_geometry_array_v1(
     let missing_bytes = missing
         .map(|value| pickle_bytes_like(py, value))
         .transpose()?;
-    let missing = missing_bytes.as_ref().map(|bytes| bytes.as_bytes());
-    py.detach(move || unpickle_geometry_array_detached(rows, crs, epoch, missing))
+    let missing = missing_bytes
+        .as_ref()
+        .map(pyo3::types::PyBytesMethods::as_bytes);
+    py.detach(move || unpickle_geometry_array_detached(&rows, crs, epoch, missing))
         .map_err(PyErr::from)
 }
 
@@ -229,15 +231,16 @@ pub(crate) fn _unpickle_packed_array_v1(
     let columns = (
         xs.as_bytes(),
         ys.as_bytes(),
-        zs.as_ref().map(|bytes| bytes.as_bytes()),
-        ms.as_ref().map(|bytes| bytes.as_bytes()),
+        zs.as_ref().map(pyo3::types::PyBytesMethods::as_bytes),
+        ms.as_ref().map(pyo3::types::PyBytesMethods::as_bytes),
     );
-    let missing = missing.as_ref().map(|bytes| bytes.as_bytes());
+    let missing = missing.as_ref().map(pyo3::types::PyBytesMethods::as_bytes);
     py.detach(move || unpickle_packed_array_detached(columns, levels, crs, epoch, missing))
         .map_err(PyErr::from)
 }
 
 /// The CSR offset levels of one packed geometry kind.
+#[derive(Clone, Copy)]
 enum OffsetLevels<T = Vec<u8>> {
     Points,
     Lines(T),
@@ -315,7 +318,7 @@ fn pickled_coordseq(
 }
 
 fn unpickle_geometry_array_detached(
-    rows: Vec<crate::OwnedBytes>,
+    rows: &[crate::OwnedBytes],
     crs: Option<String>,
     epoch: Option<f64>,
     missing: Option<&[u8]>,
@@ -393,7 +396,7 @@ struct GeometryPicklePayload {
 }
 
 fn geometry_pickle_payload_detached(
-    shape: Arc<ShapeData>,
+    shape: &ShapeData,
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> crate::error::Result<GeometryPicklePayload> {
@@ -430,7 +433,7 @@ pub(crate) fn reduce_geometry(
     let crs = geometry.crs_str().map(str::to_owned);
     let epoch = geometry.epoch();
     let payload = py
-        .detach(move || geometry_pickle_payload_detached(shape, crs, epoch))
+        .detach(move || geometry_pickle_payload_detached(&shape, crs, epoch))
         .map_err(PyErr::from)?;
     let callable = crate::gometry_lib_module(py)?
         .getattr(pyo3::intern!(py, "_unpickle_geometry_v1"))?

@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
 use crate::boundary::coordinate_input::broadcast_optional_coordinate_input;
 use crate::boundary::metadata::resolve_frame_rows;
