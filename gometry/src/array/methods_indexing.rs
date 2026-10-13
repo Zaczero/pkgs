@@ -2,10 +2,6 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-#![expect(
-    clippy::used_underscore_items,
-    reason = "`_with_missing` is private by Python convention, not unused"
-)]
 use std::fmt::Write as _;
 
 use numpy::{
@@ -688,6 +684,10 @@ impl PyGeometryArray {
     ///
     /// The array's row count determines the expected mask length. The mask's
     /// length hint is ignored; its iterator supplies the values.
+    #[expect(
+        clippy::used_underscore_items,
+        reason = "the pandas bridge calls this private helper to attach a validity mask without rebuilding storage"
+    )]
     pub fn _with_missing(&self, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
         let expected = self.len();
         let mask = crate::collect_bool_mask(mask, expected)?;
