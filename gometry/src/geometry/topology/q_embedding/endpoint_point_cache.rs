@@ -1,4 +1,5 @@
-use super::{ExactChartPoint, QCandidate, QPortId};
+use super::super::emission::sites::QCandidate;
+use super::{ExactChartPoint, QPortId};
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geometry::Work;
@@ -56,8 +57,8 @@ impl NativeEndpointPointCache {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ExactChartPoint, ExactRational, QCandidate, QPortId};
-    use super::{NativeEndpointPointCache, NativeEndpointPointKey};
+    use super::super::{ExactChartPoint, ExactRational, QPortId};
+    use super::{NativeEndpointPointCache, NativeEndpointPointKey, QCandidate};
     use crate::error::{ResourceError, Result};
     use crate::geometry::{Work, XY};
 
