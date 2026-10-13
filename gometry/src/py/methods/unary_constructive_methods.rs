@@ -76,7 +76,9 @@ method_doc! {
     body: r"Assemble linework into one areal geometry. Input ordinates are carried
 where vertices can be sourced; otherwise the mathematically planar result is XY.
 When returned polygons retain different coordinate axes, they remain separate
-members of a GeometryCollection rather than being promoted or flattened.";
+members of a GeometryCollection rather than being promoted or flattened. The
+GeometryArray method processes rows independently; to assemble linework from
+several geometries as one area, combine them into one GeometryCollection first.";
     scalar: r"
 
 Returns
@@ -92,7 +94,7 @@ Polygon, MultiPolygon, or GeometryCollection
 Returns
 -------
 GeometryArray
-    One areal geometry per row.
+    One areal geometry per input row; missing rows remain missing.
 
 ";
     tail: r"
@@ -812,7 +814,8 @@ GeometryArray
 Returns
 -------
 Groups of GeometryArray
-    One ragged group of polygons per input geometry, in input order — each
+    One ragged group of polygons per input geometry, in input order; missing
+    rows yield ``None`` groups and present empty rows yield empty groups. Each
     input's OWN linework is polygonized independently (row ``i`` is
     ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
     ring can close across inputs, use the free function ``polygonize_all``.
@@ -1025,8 +1028,9 @@ Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
 follow ellipsoidal arclength along the retained source edge. An authored
 full-period edge is retained with quarter witnesses before its longitudes are
 canonicalized. The two seam aliases and a displacement of multiple periods do
-not imply a full-period edge. A ring running off the seam closes over its pole
-automatically. Geometries that do not cross are returned unchanged. A split
+not imply a full-period edge. When a seam split needs polar closure, it follows
+the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+Geometries that do not cross are returned unchanged. A split
 ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
 ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
 existing chart edges, so ellipsoidal area and perimeter are conserved to
@@ -1113,12 +1117,15 @@ Examples
 
 method_doc! {
     doc_voronoi;
-    body: r"Construct a Voronoi diagram from the geometry's vertices. Operates in
-planar longitude/latitude space and does NOT auto-split antimeridian-crossing
-geographic input; call ``split_antimeridian`` first. Collinear vertices divide
-the clip region into strips at their perpendicular bisectors, and a lone
-vertex owns the whole clip polygon; the padded and envelope frames of a lone
-vertex, or the envelope of a horizontal or vertical row, bound no cells.
+    body: r"Construct a Voronoi diagram from the geometry's vertices. Geographic
+sites and a supplied clip polygon use a CRS-native chart for seam crossings;
+publication retains chart cuts and polar-cap edge roles without a preliminary
+``split_antimeridian``. The construction is planar in longitude/latitude
+coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+divide the clip region into strips at their
+perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
+padded and envelope frames of a lone vertex, or the envelope of a horizontal
+or vertical row, bound no cells.
 
 Parameters
 ----------
@@ -1169,11 +1176,27 @@ Examples
 3";
 }
 
+macro_rules! doc_geographic_triangulation {
+    () => {
+        r"Geographic Delaunay and constrained triangulation use a CRS-native chart
+for seam-crossing input without a preliminary split. Delaunay triangulates point
+sites in that coordinate chart; it is not a spherical mesh. Constrained
+triangulation preserves polygon boundaries and the pole selected by a polar
+cap. Earcut follows polygon XY rings; call ``split_antimeridian`` first when a
+geographic polygon crosses the seam or encloses a pole.
+
+"
+    };
+}
+
 macro_rules! doc_triangulate {
     (scalar) => {
-        r"Triangulate geometry with an explicit algorithm.
+        concat!(
+            r"Triangulate geometry with an explicit algorithm.
 
-Parameters
+",
+            doc_geographic_triangulation!(),
+            r"Parameters
 ----------
 method : {'earcut', 'delaunay', 'constrained'}
     Required algorithm choice: ``earcut`` triangulates polygon interiors,
@@ -1226,11 +1249,15 @@ Examples
 >>> tris = sites.triangulate(method='delaunay')
 >>> (len(tris), tris.geometry_type[0])
 (3, 'Polygon')"
+        )
     };
     (array) => {
-        r"Triangulate each geometry with an explicit algorithm.
+        concat!(
+            r"Triangulate each geometry with an explicit algorithm.
 
-Parameters
+",
+            doc_geographic_triangulation!(),
+            r"Parameters
 ----------
 method : {'earcut', 'delaunay', 'constrained'}
     Required triangulation algorithm. Delaunay methods resolve exact
@@ -1280,6 +1307,7 @@ Examples
 >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
 >>> groups[0].to_wkt()
 ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']"
+        )
     };
 }
 
