@@ -1,5 +1,11 @@
 //! Receipt admission for Q's checked Native and SourceOnly publications.
 
+pub(in crate::geometry::topology::q_embedding) mod chords;
+pub(in crate::geometry::topology::q_embedding) mod fans;
+pub(in crate::geometry::topology::q_embedding) mod model;
+pub(in crate::geometry::topology::q_embedding) mod tracing;
+pub(in crate::geometry::topology::q_embedding) mod witness;
+
 use super::{
     AssignedSite, AssignedSourceChart, CheckedImages, EmissionPortId, ExactChartPoint,
     ExactGeographicTopology, ExactRational, FrozenLiteralBuffers, GeometryErrorKind, LiteralChart,

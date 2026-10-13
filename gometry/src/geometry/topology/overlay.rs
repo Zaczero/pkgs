@@ -4126,11 +4126,15 @@ mod tests {
         };
         let frame = GeographicFrame::crs84();
         assert_eq!(
-            super::super::q_embedding::quotient_ring_role(frame, &polygon.shell).unwrap(),
+            super::super::q_embedding::emission::ring_roles::quotient_ring_role(
+                frame,
+                &polygon.shell
+            )
+            .unwrap(),
             Some(false),
         );
         assert_eq!(
-            super::super::q_embedding::quotient_ring_role(
+            super::super::q_embedding::emission::ring_roles::quotient_ring_role(
                 frame,
                 &polygon.shell.reversed().unwrap(),
             )

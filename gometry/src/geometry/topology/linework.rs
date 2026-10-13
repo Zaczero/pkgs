@@ -109,11 +109,13 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        roles.push(super::q_embedding::exact_q_ring_role_for_linework(
-            topology.sources.frame,
-            &points,
-            work,
-        )?);
+        roles.push(
+            super::q_embedding::emission::ring_roles::exact_q_ring_role_for_linework(
+                topology.sources.frame,
+                &points,
+                work,
+            )?,
+        );
     }
     Ok(roles)
 }
