@@ -516,6 +516,7 @@ pub(crate) fn polygonize_all(
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
 
     if diagnostics {
+        let q_polygon_product = domain.is_geographic();
         let full = py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -524,11 +525,18 @@ pub(crate) fn polygonize_all(
                     )
                 })
             };
-            Shape::polygonize_full_all_with_context(
+            let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+            let mut full = Shape::polygonize_full_all_with_context(
                 &shapes,
                 false,
-                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
-            )
+                &context,
+            )?;
+            if q_polygon_product {
+                // The partition path owns diagnostic row classification; geographic
+                // polygon faces come from the pooled Q emitter.
+                full.polygons = Shape::polygonize_all_with_context(&shapes, false, &context)?;
+            }
+            Ok::<_, crate::error::Error>(full)
         })?;
         drop(metric_scratch);
         crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
