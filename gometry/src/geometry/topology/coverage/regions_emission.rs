@@ -445,16 +445,14 @@ impl GeographicCoverageAnalysis {
                     .into_iter()
                     .next()
                     .unwrap_or_else(Shape::empty_polygon);
-                let layout = row_map
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .map(|row| row.layout)
-                    .unwrap_or(ShapeLiteralLayout {
+                let layout = row_map.into_iter().next().flatten().map_or(
+                    ShapeLiteralLayout {
                         points: Vec::new(),
                         lines: Vec::new(),
                         polygons: Vec::new(),
-                    });
+                    },
+                    |row| row.layout,
+                );
                 FrozenLiteralBuffers::shapes(shape, layout)
             },
             StorageTarget::Groups => {

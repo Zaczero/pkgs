@@ -802,19 +802,45 @@ mod tests {
         let reverse = coverage_union_topo(&[rows[1].clone(), rows[0].clone()], &context)?;
 
         for output in [&forward, &reverse] {
-            assert_eq!(output.axes(), CoordinateAxes::XYZM);
+            if output.axes() != CoordinateAxes::XYZM {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve dropped resolvable XYZM axes".into(),
+                )
+                .into());
+            }
             let mut seam_samples = Vec::new();
             output.try_for_each_point(|point| {
-                if point.x.abs() == 180.0 && point.y == -15.0 {
+                if point.x.abs().to_bits() == 180.0_f64.to_bits()
+                    && point.y.to_bits() == (-15.0_f64).to_bits()
+                {
                     seam_samples.push((point.z(), point.m()));
                 }
                 Ok::<_, crate::error::Error>(())
             })?;
-            assert!(seam_samples.iter().all(|(z, m)| z.is_some() && m.is_some()));
-            let [first, remaining @ ..] = seam_samples.as_slice() else {
-                panic!("the dissolve output retains at least one seam sample");
+            if seam_samples.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve lost its original seam-root sample".into(),
+                )
+                .into());
+            }
+            if seam_samples.iter().any(|(z, m)| z.is_none() || m.is_none()) {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve emitted an unmeasured seam sample".into(),
+                )
+                .into());
+            }
+            let Some(first) = seam_samples.first() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "presplit coverage dissolve has no seam sample".into(),
+                )
+                .into());
             };
-            assert!(remaining.iter().all(|sample| sample == first));
+            if seam_samples.iter().any(|sample| sample != first) {
+                return Err(GeometryErrorKind::Invalid(
+                    "reversed coverage owners disagree at the seam sample".into(),
+                )
+                .into());
+            }
         }
         Ok(())
     }
