@@ -535,6 +535,73 @@ def test_geographic_coverage_union_keeps_presplit_original_zm_arclength() -> Non
         assert not gm.covers(union, gm.Point(0, 0, crs=crs))
 
 
+def test_geographic_coverage_union_keeps_original_roots_after_seam_dissolve() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    first_start = (165, -20, 1, 10)
+    first_lower_end = (-165, -10, 11, 110)
+    shared_end = (-165, 30, 21, 210)
+    second_upper_end = (165, 20, 31, 310)
+    first = gm.Polygon(
+        [first_start, first_lower_end, shared_end, first_start],
+        crs=crs,
+    )
+    second = gm.Polygon(
+        [first_start, shared_end, second_upper_end, first_start],
+        crs=crs,
+    )
+    assert gm.coverage_is_valid([first, second])
+
+    semi_major = 7_000_000.0
+    flattening = 1.0 / 150.0
+    eccentricity_squared = flattening * (2.0 - flattening)
+    latitude_rate = math.radians(10.0)
+    longitude_rate = math.radians(30.0)
+    intervals = 4096
+
+    def chart_edge_length(start: float, end: float) -> float:
+        step = (end - start) / intervals
+        weighted_speeds = []
+        for index in range(intervals + 1):
+            parameter = start + index * step
+            latitude = math.radians(-20.0 + 10.0 * parameter)
+            denominator = 1.0 - eccentricity_squared * math.sin(latitude) ** 2
+            meridian_radius = (
+                semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+            )
+            prime_vertical_radius = semi_major / math.sqrt(denominator)
+            speed = math.hypot(
+                meridian_radius * latitude_rate,
+                prime_vertical_radius * math.cos(latitude) * longitude_rate,
+            )
+            weight = 1 if index in (0, intervals) else 4 if index % 2 else 2
+            weighted_speeds.append(weight * speed)
+        return step * math.fsum(weighted_speeds) / 3.0
+
+    source_fraction = chart_edge_length(0.0, 0.5) / chart_edge_length(0.0, 1.0)
+    expected_z = 1.0 + 10.0 * source_fraction
+    expected_m = 10.0 + 100.0 * source_fraction
+
+    for rows in ([first, second], [second, first]):
+        union = gm.coverage_union_all(rows)
+        assert union.coordinate_axes == 'XYZM'
+        seam_records = {
+            tuple(float(value) for value in coordinate)
+            for polygon in (
+                union.parts if union.geometry_type == 'MultiPolygon' else [union]
+            )
+            for coordinate in polygon.exterior.coords
+            if abs(float(coordinate[0])) == 180.0 and float(coordinate[1]) == -15.0
+        }
+        assert {record[0] for record in seam_records} == {-180.0, 180.0}
+        assert all(
+            record[2:] == pytest.approx((expected_z, expected_m), abs=2e-9)
+            for record in seam_records
+        )
+        assert gm.covers(union, gm.Point(179, 0, crs=crs))
+        assert gm.covers(union, gm.Point(-179, 0, crs=crs))
+        assert not gm.covers(union, gm.Point(0, 0, crs=crs))
+
+
 def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
     scale = 1.0e-162
     rows = gm.GeometryArray([
