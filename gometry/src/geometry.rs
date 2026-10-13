@@ -174,6 +174,7 @@ pub(crate) use overlay::{
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;
+pub(crate) mod predicate_spec;
 mod predicates;
 mod provenance;
 pub(crate) use provenance::{
