@@ -21,6 +21,7 @@ use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
     LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain, Unmetered,
@@ -1040,9 +1041,13 @@ fn sampling_array_readback_rejects_an_omitted_line_area_or_atom_literal() {
 fn sampling_array_readback_rejects_a_corrupted_area_draw() {
     let expected = selected_sampling_draws();
     let mut stored = expected.clone();
-    let corrupted_area_draw = expected.get(2).unwrap();
-    *stored.get_mut(2).unwrap() =
-        Point::new_raw_xy(corrupted_area_draw.x + 0.25, corrupted_area_draw.y);
+    let [_, _, corrupted_area_draw, ..] = expected.as_slice() else {
+        panic!("the receipt fixture includes a selected area draw");
+    };
+    let Some(corrupted_slot) = stored.get_mut(2) else {
+        panic!("the stored receipt includes the selected area draw");
+    };
+    *corrupted_slot = Point::new_raw_xy(corrupted_area_draw.x + 0.25, corrupted_area_draw.y);
     let receipt = sampling_array_receipt(&stored, &expected);
     let mut work = Unmetered;
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
@@ -1080,10 +1085,8 @@ fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() 
     let array = crate::PyGeometryArray::from_shapes(shapes.clone(), frame.clone())
         .unwrap()
         .with_missing_mask(Some(
-            crate::geometry::storage::ValidityMask::from_vec(shapes.len(), vec![
-                false, false, false, false, true, false,
-            ])
-            .unwrap(),
+            ValidityMask::from_vec(shapes.len(), vec![false, false, false, false, true, false])
+                .unwrap(),
         ))
         .unwrap();
     let seed = 0x1234;
