@@ -4,7 +4,7 @@ use super::search::search_q_embedding;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn certify_nearest(
+    fn certify_nearest(
         &mut self,
         live_keys: &[(EmittedNodeKey, QNodeId)],
         drawing: QEmissionDrawing<'topology>,
@@ -245,7 +245,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn certify_and_search<A: SearchAccount>(
+    fn certify_and_search<A: SearchAccount>(
         mut self,
         live_keys: &[(EmittedNodeKey, QNodeId)],
         drawing: QEmissionDrawing<'topology>,
@@ -271,10 +271,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             NearestQCertificate::Unrepresentable => Ok(SearchOutcome::Exhausted),
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn nearest_candidate(
-        &self,
-        node: QVariableNode,
-    ) -> Result<QCandidate> {
+    fn nearest_candidate(&self, node: QVariableNode) -> Result<QCandidate> {
         match node {
             QVariableNode::Source(node) => self.nearest.candidate(node),
             QVariableNode::Published(node) => self
@@ -290,10 +287,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }),
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn charge_global_work(
-        &self,
-        budget: &mut impl SearchAccount,
-    ) -> Result<()> {
+    fn charge_global_work(&self, budget: &mut impl SearchAccount) -> Result<()> {
         if self.exact_faces.is_some() {
             let item_count = self
                 .emission

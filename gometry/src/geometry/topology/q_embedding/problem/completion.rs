@@ -3,13 +3,13 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn complete_native_drawing(
+    fn complete_native_drawing(
         &self,
         reference: &NativeReference<'topology>,
         features: &[NativeCutFeature],
         feature_candidates: &[QCandidate],
         budget: &mut EvaluationBudget,
-    ) -> Result<Option<super::emission::CompletedNativeDrawing>> {
+    ) -> Result<Option<super::super::emission::CompletedNativeDrawing>> {
         if reference.feature_nodes.len() != feature_candidates.len()
             || features.len() != feature_candidates.len()
         {
@@ -61,7 +61,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 GeometryErrorKind::Invalid("native reference node has no assigned site".into())
             })?);
         }
-        let (ordinates, axes) = super::emission::resolve_emission_ordinates(
+        let (ordinates, axes) = super::super::emission::resolve_emission_ordinates(
             &reference.plan,
             self.emission.publication,
             &self.ordinates,
@@ -72,7 +72,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             self.metric_access,
             budget,
         )?;
-        let parts = super::emission::materialize_native_parts(
+        let parts = super::super::emission::materialize_native_parts(
             &reference.plan,
             &assigned_sites,
             &ordinates,
@@ -116,7 +116,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ),
             StorageTarget::Scalar,
         )? {
-            PublicationOutcome::Pass(sealed) => Ok(Some(super::emission::CompletedNativeDrawing {
+            PublicationOutcome::Pass(sealed) => Ok(Some(super::super::emission::CompletedNativeDrawing {
                 sealed,
                 line_traces,
             })),
@@ -131,14 +131,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into()),
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn assigned_publication_chart_points(
+    fn assigned_publication_chart_points(
         &self,
         producer: &AssignedProducerProjection,
         budget: &mut impl Work,
     ) -> Result<Vec<ExactChartPoint>> {
         self.checked_publication_sample_images(producer, budget)
     }
-    pub(in crate::geometry::topology::q_embedding) fn checked_publication_sample_images(
+    fn checked_publication_sample_images(
         &self,
         producer: &AssignedProducerProjection,
         work: &mut impl Work,
@@ -248,7 +248,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(checked)
     }
-    pub(in crate::geometry::topology::q_embedding) fn check_global_candidate(
+    fn check_global_candidate(
         &mut self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
@@ -356,10 +356,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             return Ok(GlobalCheck::Reject(classes));
                         },
                     };
-                    super::emission::SealedQDrawing::Native(native)
+                    super::super::emission::SealedQDrawing::Native(native)
                 } else {
                     let live_publication_samples =
-                        super::emission::source_publication::source_live_publication_samples(
+                        super::super::emission::source_publication::source_live_publication_samples(
                             self.emission.plan,
                             self.emission.publication,
                             budget,
@@ -370,7 +370,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         .iter()
                         .map(rounded_chart_point)
                         .collect::<Result<Vec<_>>>()?;
-                    let publication_ordinates = super::emission::resolve_publication_ordinates(
+                    let publication_ordinates = super::super::emission::resolve_publication_ordinates(
                         self.topology,
                         self.emission.publication,
                         &live_publication_samples,
@@ -379,7 +379,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         budget,
                     )?;
                     let source_publication =
-                        super::emission::source_publication::SourcePublication {
+                        super::super::emission::source_publication::SourcePublication {
                             inventory: self.emission.publication,
                             points: &publication_points,
                             ordinates: &publication_ordinates,
@@ -479,7 +479,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             .into());
                         },
                     };
-                    super::emission::SealedQDrawing::Source(SealedSourceDrawing {
+                    super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
                         sealed,
                         line_traces: Vec::new(),
                     })

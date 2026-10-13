@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn fan_matches(
+    fn fan_matches(
         &self,
         fan: &QFanRow,
         class: usize,
@@ -107,7 +107,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         Ok(rotation_row_matches(&fan.darts, &candidate_order))
     }
-    pub(in crate::geometry::topology::q_embedding) fn source_variable_location(
+    fn source_variable_location(
         &self,
         node: QNodeId,
         budget: &mut impl Work,
@@ -137,7 +137,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(location)
     }
-    pub(in crate::geometry::topology::q_embedding) fn publication_variable_location(
+    fn publication_variable_location(
         &self,
         node: EmissionNodeId,
         budget: &mut impl Work,
@@ -214,7 +214,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(location)
     }
-    pub(in crate::geometry::topology::q_embedding) fn classes_for_nodes(
+    fn classes_for_nodes(
         &self,
         nodes: impl IntoIterator<Item = QNodeId>,
         budget: &mut impl Work,
@@ -309,7 +309,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         classes.dedup();
         Ok(classes)
     }
-    pub(in crate::geometry::topology::q_embedding) fn classes_for_variables(
+    fn classes_for_variables(
         &self,
         variables: impl IntoIterator<Item = QVariableNode>,
         budget: &mut impl Work,

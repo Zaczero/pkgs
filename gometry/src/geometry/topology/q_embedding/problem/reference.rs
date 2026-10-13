@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn prepare_native_reference(
+    fn prepare_native_reference(
         &mut self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &[bool],
@@ -69,7 +69,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
         }
-        let mut builder = super::emission::EmissionBuilder::new(
+        let mut builder = super::super::emission::EmissionBuilder::new(
             self.topology,
             self.emission.plan,
             &self.source_inventory,
@@ -318,7 +318,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         GeometryErrorKind::Invalid("native recipe walk is unknown".into())
                     })?;
                 if area_region.is_some()
-                    != matches!(recipe.use_kind, super::emission::SelectedUse::AreaBoundary)
+                    != matches!(recipe.use_kind, super::super::emission::SelectedUse::AreaBoundary)
                 {
                     return Err(GeometryErrorKind::Invalid(
                         "native recipe use does not match its selected walk".into(),
@@ -456,13 +456,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let half = ExactRational::from_f64(frame.longitude().half_period());
             let negative_half = ExactRational::zero().try_subtract_with_work(&half, budget)?;
             let bank = if chart_point.x.try_cmp_with_work(&half, budget)?.is_eq() {
-                Some(super::emission::ChartSide::East)
+                Some(super::super::emission::ChartSide::East)
             } else if chart_point
                 .x
                 .try_cmp_with_work(&negative_half, budget)?
                 .is_eq()
             {
-                Some(super::emission::ChartSide::West)
+                Some(super::super::emission::ChartSide::West)
             } else {
                 None
             };
@@ -474,7 +474,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 chart_point,
                 None,
                 vec![OccurrenceSource {
-                    origin: super::emission::VertexOrigin::SourceNode(vertex.port.node),
+                    origin: super::super::emission::VertexOrigin::SourceNode(vertex.port.node),
                     source_trace: None,
                 }],
                 bank,
@@ -484,7 +484,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             reference_ports.push(port_data);
             let port = builder.source_port(
                 vertex.port.id,
-                super::emission::VertexOrigin::SourceNode(vertex.port.node),
+                super::super::emission::VertexOrigin::SourceNode(vertex.port.node),
                 Some(vertex.point),
                 spelling,
             )?;
@@ -656,10 +656,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &chart_point,
                         None,
                         vec![OccurrenceSource {
-                            origin: super::emission::VertexOrigin::Presentation,
+                            origin: super::super::emission::VertexOrigin::Presentation,
                             source_trace: None,
                         }],
-                        Some(super::emission::ChartSide::East),
+                        Some(super::super::emission::ChartSide::East),
                         budget,
                     )?;
                     let west = native_port_data(
@@ -669,10 +669,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &chart_point,
                         None,
                         vec![OccurrenceSource {
-                            origin: super::emission::VertexOrigin::Presentation,
+                            origin: super::super::emission::VertexOrigin::Presentation,
                             source_trace: None,
                         }],
-                        Some(super::emission::ChartSide::West),
+                        Some(super::super::emission::ChartSide::West),
                         budget,
                     )?;
                     seam_events.push(NativeSeamEventData {

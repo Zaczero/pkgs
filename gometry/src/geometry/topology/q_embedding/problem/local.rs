@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn local_candidate(
+    fn local_candidate(
         &self,
         node: QNodeId,
         class: usize,
@@ -29,7 +29,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn candidate_cut_latitude(
+    fn candidate_cut_latitude(
         &self,
         cut_index: usize,
         class: usize,
@@ -150,7 +150,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(Some(latitude))
     }
-    pub(in crate::geometry::topology::q_embedding) fn candidate_port_point(
+    fn candidate_port_point(
         &self,
         port_id: QPortId,
         class: usize,
@@ -214,7 +214,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget,
         )
     }
-    pub(in crate::geometry::topology::q_embedding) fn local_publication_endpoint(
+    fn local_publication_endpoint(
         &self,
         endpoint: &PublishedEndpoint,
         reference: &ExactChartPoint,
@@ -279,7 +279,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             })
             .transpose()
     }
-    pub(in crate::geometry::topology::q_embedding) fn local_publication_chord(
+    fn local_publication_chord(
         &self,
         chord_id: QPublicationChordId,
         class: usize,
@@ -344,7 +344,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn publication_pair_matches_local(
+    fn publication_pair_matches_local(
         &self,
         pair: QPublicationPair,
         class: usize,
@@ -388,10 +388,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget,
         )
     }
-    pub(in crate::geometry::topology::q_embedding) fn exact_port_point(
-        &self,
-        port_id: QPortId,
-    ) -> Result<&ExactChartPoint> {
+    fn exact_port_point(&self, port_id: QPortId) -> Result<&ExactChartPoint> {
         self.topology
             .q
             .ports

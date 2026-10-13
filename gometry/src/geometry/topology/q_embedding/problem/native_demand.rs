@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn source_reused_recipe_ids(
+    fn source_reused_recipe_ids(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &[bool],
@@ -11,7 +11,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         publication_coordinates: &[Option<QCandidate>],
         budget: &mut impl Work,
     ) -> Result<BTreeSet<FragmentRecipeId>> {
-        let walks = super::emission::index_recipe_walks(self.emission.fragment_walks, budget)?;
+        let walks = super::super::emission::index_recipe_walks(self.emission.fragment_walks, budget)?;
         let mut cursors = BTreeMap::new();
         let mut reused = BTreeSet::new();
         match &drawing.polygons {
@@ -19,7 +19,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 for polygon in polygons {
                     for ring in polygon {
                         budget.charge_into_error(1)?;
-                        let walk = super::emission::next_recipe_walk(
+                        let walk = super::super::emission::next_recipe_walk(
                             &walks,
                             &mut cursors,
                             ring.recipe_walk,
@@ -75,7 +75,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             DrawnPolygons::Regions { rings, .. } => {
                 for (ring_index, ring) in rings.iter().enumerate() {
                     budget.charge_into_error(1)?;
-                    let walk = super::emission::next_recipe_walk(
+                    let walk = super::super::emission::next_recipe_walk(
                         &walks,
                         &mut cursors,
                         ring.recipe_walk,
@@ -159,7 +159,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         for line in &drawing.lines {
             budget.charge_into_error(1)?;
             let walk =
-                super::emission::next_recipe_walk(&walks, &mut cursors, line.recipe_walk, budget)?;
+                super::super::emission::next_recipe_walk(&walks, &mut cursors, line.recipe_walk, budget)?;
             if source_line_reuse_is_complete(
                 self.topology,
                 self.emission.fragment_recipes,
@@ -192,7 +192,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(reused)
     }
-    pub(in crate::geometry::topology::q_embedding) fn source_q_vertices_are_unchanged(
+    fn source_q_vertices_are_unchanged(
         &self,
         vertices: &[EmittedVertex<'_>],
         coordinates: &QCoordinates,
@@ -208,7 +208,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(true)
     }
-    pub(in crate::geometry::topology::q_embedding) fn source_walk_publication_is_unchanged(
+    fn source_walk_publication_is_unchanged(
         &self,
         walk: &RecipeWalk,
         coordinates: &QCoordinates,
@@ -287,7 +287,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(true)
     }
-    pub(in crate::geometry::topology::q_embedding) fn input_port_has_rounding_residual(
+    fn input_port_has_rounding_residual(
         &self,
         port_id: QPortId,
         source_nodes: &[bool],
@@ -341,7 +341,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             position, budget,
         )?)
     }
-    pub(in crate::geometry::topology::q_embedding) fn drawing_has_rounding_residual(
+    fn drawing_has_rounding_residual(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         producer: &AssignedProducerProjection,
@@ -502,7 +502,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(false)
     }
-    pub(in crate::geometry::topology::q_embedding) fn native_demand_after_input_port_check(
+    fn native_demand_after_input_port_check(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         producer: &AssignedProducerProjection,
@@ -510,7 +510,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     ) -> Result<bool> {
         self.drawing_has_rounding_residual(drawing, producer, budget)
     }
-    pub(in crate::geometry::topology::q_embedding) fn actual_native_demand(
+    fn actual_native_demand(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &[bool],

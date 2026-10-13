@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn register_native_pole_families(
+    fn register_native_pole_families(
         &mut self,
         pole_closures: &[NativePoleClosure],
         budget: &mut impl SearchAccount,
@@ -17,9 +17,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut families = Vec::with_capacity(pole_closures.len());
         for &(region, pole) in pole_closures {
             budget.charge_into_error(1)?;
-            families.push(super::emission::FeatureFamily {
-                parent: super::emission::FeatureFamilyParent::Region(region),
-                producer: super::emission::SampleProducerKind::PolePresentation(pole),
+            families.push(super::super::emission::FeatureFamily {
+                parent: super::super::emission::FeatureFamilyParent::Region(region),
+                producer: super::super::emission::SampleProducerKind::PolePresentation(pole),
                 occurrence: 0,
             });
         }
@@ -34,10 +34,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         registry.synchronize_budget(budget)
     }
-    pub(in crate::geometry::topology::q_embedding) fn native_region_family_universe(
+    fn native_region_family_universe(
         &self,
         budget: &mut impl Work,
-    ) -> Result<Vec<super::emission::FeatureFamily>> {
+    ) -> Result<Vec<super::super::emission::FeatureFamily>> {
         let whole_sphere_region = if self.emission.plan.is_whole_sphere() {
             Some(
                 self.emission
@@ -79,9 +79,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         if let Some(region) = whole_sphere_region {
             for occurrence in 0..10_u32 {
                 budget.charge_into_error(1)?;
-                families.push(super::emission::FeatureFamily {
-                    parent: super::emission::FeatureFamilyParent::Region(region),
-                    producer: super::emission::SampleProducerKind::WholeSphereCover,
+                families.push(super::super::emission::FeatureFamily {
+                    parent: super::super::emission::FeatureFamilyParent::Region(region),
+                    producer: super::super::emission::SampleProducerKind::WholeSphereCover,
                     occurrence,
                 });
             }
@@ -90,9 +90,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 for pole in [ChartPole::South, ChartPole::North] {
                     budget.charge_into_error(1)?;
                     if region.poles.includes(pole) {
-                        families.push(super::emission::FeatureFamily {
-                            parent: super::emission::FeatureFamilyParent::Region(region.root),
-                            producer: super::emission::SampleProducerKind::PolePresentation(pole),
+                        families.push(super::super::emission::FeatureFamily {
+                            parent: super::super::emission::FeatureFamilyParent::Region(region.root),
+                            producer: super::super::emission::SampleProducerKind::PolePresentation(pole),
                             occurrence: 0,
                         });
                     }
@@ -101,10 +101,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(families)
     }
-    pub(in crate::geometry::topology::q_embedding) fn freeze_native_families(
-        &mut self,
-        budget: &mut EvaluationBudget,
-    ) -> Result<()> {
+    fn freeze_native_families(&mut self, budget: &mut EvaluationBudget) -> Result<()> {
         let QFamilyState::Shared {
             original_source_base,
         } = &self.family_state
@@ -129,9 +126,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         self.family_state = QFamilyState::Native(registry);
         Ok(())
     }
-    pub(in crate::geometry::topology::q_embedding) fn take_native_families(
-        &mut self,
-    ) -> Option<FeatureFamilyRegistry> {
+    fn take_native_families(&mut self) -> Option<FeatureFamilyRegistry> {
         let QFamilyState::Native(_) = &self.family_state else {
             return None;
         };
@@ -149,7 +144,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             },
         }
     }
-    pub(in crate::geometry::topology::q_embedding) fn native_family_endpoint_domain(
+    fn native_family_endpoint_domain(
         &self,
         chord: &QPublishedChord,
         endpoint_index: usize,
@@ -276,10 +271,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         Ok(output)
     }
-    pub(in crate::geometry::topology::q_embedding) fn native_cut_family_domains(
-        &self,
-        budget: &mut impl Work,
-    ) -> Result<NativeCutFamilyDomains> {
+    fn native_cut_family_domains(&self, budget: &mut impl Work) -> Result<NativeCutFamilyDomains> {
         let recipe_count = self.emission.fragment_recipes.len();
         if self.publication_chord_offsets.len()
             != recipe_count

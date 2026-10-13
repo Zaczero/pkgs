@@ -3,7 +3,7 @@ use super::super::*;
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
 {
-    pub(in crate::geometry::topology::q_embedding) fn publication_identity_conflicts(
+    fn publication_identity_conflicts(
         &self,
         coordinates: &QCoordinates,
         live_keys: &[(EmittedNodeKey, QNodeId)],
@@ -170,7 +170,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         conflicting_nodes.dedup();
         Ok((conflicting_nodes, unrepresentable))
     }
-    pub(in crate::geometry::topology::q_embedding) fn global_q_port_points(
+    fn global_q_port_points(
         &self,
         coordinates: &QCoordinates,
         budget: &mut impl Work,
@@ -217,7 +217,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         Ok(port_points)
     }
-    pub(in crate::geometry::topology::q_embedding) fn publication_candidate_point(
+    fn publication_candidate_point(
         &self,
         endpoint: &PublishedEndpoint,
         reference: &ExactChartPoint,
@@ -280,7 +280,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget,
         )
     }
-    pub(in crate::geometry::topology::q_embedding) fn assigned_publication_endpoint_point(
+    fn assigned_publication_endpoint_point(
         &self,
         endpoint: &PublishedEndpoint,
         reference: &ExactChartPoint,
@@ -312,7 +312,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         lift_assigned_publication_point(assigned, reference_offset, budget)
     }
-    pub(in crate::geometry::topology::q_embedding) fn publication_graph_rejections(
+    fn publication_graph_rejections(
         &self,
         producer: &AssignedProducerProjection,
         budget: &mut impl Work,
@@ -555,7 +555,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         rejected.dedup();
         Ok(rejected)
     }
-    pub(in crate::geometry::topology::q_embedding) fn certify_assigned_producer(
+    fn certify_assigned_producer(
         &self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
