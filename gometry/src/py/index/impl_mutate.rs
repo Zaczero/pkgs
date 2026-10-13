@@ -145,7 +145,7 @@ impl PySpatialIndex {
         }
         self.insert_prepared_batch(
             items,
-            entries,
+            &entries,
             &entry_counts,
             non_prunable_live,
             adopt_frame,
