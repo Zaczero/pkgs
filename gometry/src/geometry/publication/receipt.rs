@@ -72,7 +72,7 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
 }
 
 impl ProducerDrawingReceipt {
-    fn drawing(
+    const fn drawing(
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,
         retain_literals_for_republication: bool,
@@ -141,10 +141,6 @@ impl ProducerDrawingReceipt {
 
     pub(in crate::geometry) fn point(shape: Shape) -> Result<Self> {
         Self::point_drawing(shape, false)
-    }
-
-    pub(in crate::geometry) fn point_for_republication(shape: Shape) -> Result<Self> {
-        Self::point_drawing(shape, true)
     }
 
     fn point_drawing(shape: Shape, retain_literals_for_republication: bool) -> Result<Self> {
