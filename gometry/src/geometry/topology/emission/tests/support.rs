@@ -369,13 +369,7 @@ fn materialize_test_drawing(
         points: Vec::new(),
         whole_sphere: false,
     };
-    let trace = SourceTrace::from_edge_rows([Vec::new()], &mut setup_work)?;
-    let line_traces = if closed {
-        Vec::new()
-    } else {
-        vec![TracedLine { member: 0, trace }]
-    };
-    materialize_native_parts(&plan, &sites, &ordinates, axes, &line_traces, work)
+    materialize_native_parts(&plan, &sites, &ordinates, axes, work)
 }
 
 fn literal_test_sequence(count: usize) -> LiteralSequence<EmissionPortId> {
@@ -394,7 +388,6 @@ fn empty_literal_test_parts() -> NativeMaterializedParts {
         points: Vec::new(),
         lines: Vec::new(),
         polygons: Vec::new(),
-        line_traces: Vec::new(),
         literal_uses: NativeLiteralUses {
             points: Vec::new(),
             lines: Vec::new(),

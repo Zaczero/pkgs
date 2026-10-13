@@ -235,10 +235,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let nearest = self.nearest.clone();
         let publication_nearest = self.publication_nearest.clone();
         match self.check_global_candidate(&nearest, &publication_nearest, drawing, budget)? {
-            GlobalCheck::Pass(mut output) => {
-                output.family_state = self.take_native_families();
-                Ok(NearestQCertificate::Pass(Box::new(output)))
-            },
+            GlobalCheck::Pass(output) => Ok(NearestQCertificate::Pass(Box::new(output))),
             GlobalCheck::Reject(classes) => {
                 if classes.is_empty() {
                     Ok(NearestQCertificate::Unrepresentable)

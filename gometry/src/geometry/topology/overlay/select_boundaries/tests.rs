@@ -362,7 +362,6 @@ fn geographic_boundary_repairs_a_nearest_embedding_before_writing() -> Result<()
     let mut line_members = 0_usize;
     let mut polygon_members = 0_usize;
     written
-        .shape
         .try_for_each_component(&mut |component| -> Result<()> {
             match component {
                 crate::geometry::Component::LineString(_) => {

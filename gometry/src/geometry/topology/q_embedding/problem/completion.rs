@@ -88,7 +88,6 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             &assigned_sites,
             &ordinates,
             axes,
-            &reference.line_traces,
             budget,
         )?;
         let Some(mut candidate) = validate_native_materialized_candidate(
@@ -108,7 +107,6 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let super::super::super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
-            line_traces,
         } = frozen;
         if !std::ptr::eq(candidate.assignment.reference, reference) {
             return Err(GeometryErrorKind::Invalid(
@@ -183,10 +181,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 StorageTarget::Scalar,
             )? {
                 PublicationOutcome::Pass(sealed) => Ok(Some(
-                    super::super::super::emission::CompletedNativeDrawing {
-                        sealed,
-                        line_traces,
-                    },
+                    super::super::super::emission::CompletedNativeDrawing { sealed },
                 )),
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
                     Err(GeometryErrorKind::Invalid(
@@ -220,10 +215,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             StorageTarget::Scalar,
         )? {
             PublicationOutcome::Pass(sealed) => Ok(Some(
-                super::super::super::emission::CompletedNativeDrawing {
-                    sealed,
-                    line_traces,
-                },
+                super::super::super::emission::CompletedNativeDrawing { sealed },
             )),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
@@ -666,15 +658,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     },
                 }
             };
-            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
-                sealed,
-                line_traces: Vec::new(),
-            })
+            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing { sealed })
         };
-        Ok(GlobalCheck::Pass(QEmbeddingOutput {
-            sealed,
-            family_state: None,
-        }))
+        Ok(GlobalCheck::Pass(QEmbeddingOutput { sealed }))
     }
 }
 

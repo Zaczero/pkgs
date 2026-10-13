@@ -1,20 +1,16 @@
 use super::{
-    AssignedSite, CertifiedOverlayOrder, CoordSeq, CoordinateAxes, EmissionPortId,
-    ExpandedEmissionPlan, FinishedGeometry, FrozenLiteralBuffers, GeometryErrorKind, LiteralPoint,
-    LiteralPolygon, LiteralSequence, NodeOrdinates, Point, Polygon, QPortId, ResourceError, Result,
-    Ring, Shape, ShapeLiteralLayout, SourceEdgeId, TracedLine, Work, native_chord_points,
-    native_port_point, reorder_rows,
+    AssignedSite, CoordSeq, CoordinateAxes, EmissionPortId, ExpandedEmissionPlan, FinishedGeometry,
+    FrozenLiteralBuffers, GeometryErrorKind, LiteralPoint, LiteralPolygon, LiteralSequence,
+    NodeOrdinates, Point, Polygon, QPortId, ResourceError, Result, Ring, Shape, ShapeLiteralLayout,
+    SourceEdgeId, Work, native_chord_points, native_port_point,
 };
-
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
-    pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
 }
 
 pub(in crate::geometry::topology) struct NativeFrozenDrawing {
     pub(in crate::geometry::topology) shape: Shape,
     pub(in crate::geometry::topology) literal_uses: ShapeLiteralLayout<EmissionPortId>,
-    pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -44,29 +40,11 @@ pub(in crate::geometry::topology) type NativePolygonLiteralUses = LiteralPolygon
 
 pub(in crate::geometry::topology) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 
-pub(in crate::geometry::topology) fn native_literal_uses_in_output_order(
-    literal_uses: NativeLiteralUses,
-    line_traces: Vec<TracedLine>,
-    order: &CertifiedOverlayOrder,
-    work: &mut impl Work,
-) -> Result<(NativeLiteralUses, Vec<TracedLine>)> {
-    if literal_uses.lines.len() != line_traces.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line traces and literal line rows lost their shared order".into(),
-        )
-        .into());
-    }
-    let line_traces = reorder_rows(line_traces, &order.lines, work)?;
-    let literal_uses = literal_uses.in_output_order(order, work)?;
-    Ok((literal_uses, line_traces))
-}
-
 pub(in crate::geometry::topology) struct NativeMaterializedParts {
     pub(in crate::geometry::topology) axes: CoordinateAxes,
     pub(in crate::geometry::topology) points: Vec<Point>,
     pub(in crate::geometry::topology) lines: Vec<CoordSeq>,
     pub(in crate::geometry::topology) polygons: Vec<Polygon>,
-    pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
     pub(in crate::geometry::topology) literal_uses: NativeLiteralUses,
 }
 
@@ -171,23 +149,8 @@ pub(in crate::geometry::topology) fn materialize_native_parts(
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
     axes: CoordinateAxes,
-    line_traces: &[TracedLine],
     budget: &mut impl Work,
 ) -> Result<NativeMaterializedParts> {
-    if line_traces.len() != plan.lines.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line traces do not match the written line table".into(),
-        )
-        .into());
-    }
-    budget.charge_into_error(
-        u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut cloned_line_traces = Vec::with_capacity(line_traces.len());
-    for line in line_traces {
-        cloned_line_traces.push(line.try_clone_with_work(budget)?);
-    }
-    let line_traces = cloned_line_traces;
     budget.charge_into_error(
         u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -284,7 +247,6 @@ pub(in crate::geometry::topology) fn materialize_native_parts(
         points,
         lines,
         polygons,
-        line_traces,
         literal_uses: NativeLiteralUses {
             points: point_uses,
             lines: line_uses,
@@ -295,16 +257,6 @@ pub(in crate::geometry::topology) fn materialize_native_parts(
 
 pub(in crate::geometry::topology) fn write_completed_native(
     drawing: CompletedNativeDrawing,
-) -> Result<WrittenNativeDrawing> {
-    let CompletedNativeDrawing {
-        sealed,
-        line_traces,
-    } = drawing;
-    let (shape, _frame) = sealed.into_scalar()?;
-    Ok(WrittenNativeDrawing { shape, line_traces })
-}
-
-pub(in crate::geometry::topology) struct WrittenNativeDrawing {
-    pub(in crate::geometry::topology) shape: Shape,
-    pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
+) -> Result<Shape> {
+    Ok(drawing.sealed.into_scalar()?.0)
 }
