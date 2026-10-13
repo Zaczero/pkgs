@@ -165,6 +165,11 @@ share a border intersect in that border (a [`LineString`][gometry.LineString]), 
 touch yields the corner [`Point`][gometry.Point] — so a non-empty [`intersects(a, b)`][gometry.intersects] always has
 a non-empty `intersection(a, b)`.
 
+Geographic overlay treats the two spellings of the longitude seam as one
+location. When selected output closes across a pole, it closes over the pole
+selected by that region; a pole-free strip between regions remains pole-free.
+Overlay does not add a polar cap merely because the chart reaches the seam.
+
 When one operand is a point set (a `Point`, `MultiPoint`, or point-only
 collection) and the other has higher dimension, `intersection` returns the
 covered points and `difference(points, other)` returns the uncovered points.
@@ -504,13 +509,21 @@ explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
 keeps input edges as constraints. [`voronoi`][gometry.Geometry.voronoi] returns
 clipped cells by default; pass `output='edges'` for the internal Voronoi edges,
-which exclude the clip polygon's exterior boundary. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
+which exclude the clip polygon's exterior boundary. Geographic Voronoi,
+Delaunay, and constrained triangulation use the CRS-native chart and preserve
+its seam and pole restrictions; they do not require a preliminary
+[`split_antimeridian`][gometry.Geometry.split_antimeridian]. These are still
+planar longitude/latitude tessellations, not geodesic or spherical ones.
+`method='earcut'` follows the polygon's stored XY ring, so split a geographic
+polygon first when it crosses the seam or encloses a pole. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
 polygonizes that geometry's own linework, automatically splitting crossings
 and overlaps. [`polygonize_all`][gometry.polygonize_all] pools all supplied
 geometries' linework into one graph before polygonization, so a ring can close
-across inputs. Both return a [`GeometryArray`][gometry.GeometryArray]; the
-row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
-returns [`Groups`][gometry.Groups], one result per row.
+across inputs and returns one [`GeometryArray`][gometry.GeometryArray] of
+polygons. The row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
+returns [`Groups`][gometry.Groups], one polygon array per input row.
+[`GeometryArray.build_area()`][gometry.GeometryArray.build_area] likewise
+builds one areal result per row without pooling linework between rows.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

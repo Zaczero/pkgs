@@ -45,7 +45,7 @@ edits and planar construction operate on stored coordinates.
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits endpoints within the CRS frame's native longitude half-period and latitude poles, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
-| **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
+| **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], [`triangulate`][gometry.Geometry.triangulate], [`voronoi`][gometry.Geometry.voronoi] | Coordinate-plane operations, not geodesic tessellations. Geographic Voronoi, Delaunay, and constrained triangulation handle the CRS-native seam and poles; Earcut follows stored XY rings and may need [`split_antimeridian`][gometry.Geometry.split_antimeridian]. See [constructive operations](constructive.md#tessellation-triangulate-voronoi-polygonize). |
 
 `buffer`/`offset_curve` are *not* exact geodesic buffers: on a geographic CRS the
 distance is metres, but the produced outline is a local-projection approximation
@@ -923,9 +923,19 @@ input vertex.
 If preserved vertices on one such run use conflicting spellings, the operation
 raises [`GeometryError`][gometry.GeometryError] rather than choosing one.
 
-The **stay-planar**
-constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
-[`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call
+Geographic [`voronoi`][gometry.Geometry.voronoi],
+[`triangulate(method='delaunay')`][gometry.Geometry.triangulate], and
+[`triangulate(method='constrained')`][gometry.Geometry.triangulate] use
+chart-aware seam and pole handling without a preliminary split. They remain
+planar longitude/latitude tessellations, not spherical or geodesic operations.
+[`triangulate(method='earcut')`][gometry.Geometry.triangulate] follows stored
+polygon rings; split a seam-crossing or pole-enclosing polygon first to make its
+chart interior explicit.
+
+The other stay-planar constructive ops ([`convex_hull`][gometry.Geometry.convex_hull],
+[`concave_hull`][gometry.Geometry.concave_hull],
+[`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
+and [`simplify`][gometry.Geometry.simplify]) do **not** auto-split; call
 [`split_antimeridian`][gometry.Geometry.split_antimeridian] first on crossing
 input. Geographic simplification also rejects a vertex removal that creates
 an edge geographic topology would read across the seam. The check uses the
@@ -936,7 +946,8 @@ does not normalize or split it. A crossing geometry's
 
 For WGS 84 boxes that wrap longitude 180/−180, use `wrap="split"` so the visible
 geometry is split into valid pieces. For arbitrary crossing linework, call
-`split_antimeridian()` before planar algorithms that document that requirement:
+`split_antimeridian()` before planar algorithms that document that requirement,
+including Earcut:
 
 ```python exec="on" html="true"
 from _figures import antimeridian_before_after
@@ -972,8 +983,8 @@ predicate step. Topology and indexing normalize for you. Geographic point-to-poi
 distance uses geodesics; shape distance operations use the same straight chart
 edges as topology and include filled polygon interiors. Geographic Hausdorff
 distance ranges over those chart edges but remains linework-only.
-The planar constructive ops listed in the operation-family table are the places
-manual splitting is still required.
+Manual splitting is required by the operations identified above; chart-aware
+geographic overlay and tessellation do not need it as a preprocessing step.
 
 ## Z and M under transformation
 

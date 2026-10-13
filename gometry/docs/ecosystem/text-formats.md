@@ -133,13 +133,29 @@ positions as `[lon, lat]` with an optional third altitude element. It has **no p
 for M or coordinate epoch metadata**. [`to_geojson`][gometry.Geometry.to_geojson]
 and `__geo_interface__` raise when those values cannot be represented.
 
-GeoJSON is WGS84 longitude/latitude interchange. A CRS-free geometry is an
-explicit assumption that its coordinates already have those semantics: output
-validates longitude in `[-180, 180]` and latitude in `[-90, 90]`, and splits
-antimeridian-crossing geometry according to RFC 7946. CRS-free projected or
-other planar coordinates must be transformed or written with another format.
-On read, the default `crs='OGC:CRS84'` records this WGS84 assumption; pass
-`crs=None` only when you intentionally want to discard the CRS metadata.
+GeoJSON uses CRS84 longitude/latitude order and carries no source CRS label.
+A tagged geometry must already be in the WGS 84 geographic family; serialization
+does not reproject it. A CRS-free geometry is an explicit assumption that its
+coordinates already have CRS84 semantics: output validates longitude in
+`[-180, 180]` and latitude in `[-90, 90]`, and splits antimeridian-crossing
+geometry according to RFC 7946. CRS-free projected or other planar coordinates
+must be transformed or written with another format. On read, the default
+`crs='OGC:CRS84'` records these semantics; pass `crs=None` only when you
+intentionally want to discard the CRS metadata.
+
+An antimeridian-crossing line is written as separate pieces with corresponding
+vertices at `180` and `-180`:
+
+```python exec="on" source="block" result="text"
+import json
+
+import gometry as gm
+
+crossing = gm.LineString([(170, 10, 10), (-170, 10, 30)], crs="OGC:CRS84")
+geojson = json.loads(crossing.to_geojson())
+print(geojson["type"])
+print(geojson["coordinates"])
+```
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
