@@ -33,7 +33,9 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, SeamIdentity};
 #[cfg(test)]
 use crate::geometry::embedding_completion::LiteralCheck;
-use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
+use crate::geometry::embedding_completion::{
+    FrozenLiteralBuffers, LiteralAddress, ShapeLiteralLayout,
+};
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
 };
@@ -45,7 +47,7 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, OverlayOp, build_certified_overlay_shape_with_axes,
     build_certified_overlay_shape_with_axes_and_order,
 };
-use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
+use crate::geometry::publication::{FinishedGeometry, PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -76,13 +78,6 @@ struct SourceLineSpan {
     reversed: bool,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "diagnostic and noded line plans await the shared F4 receiver routing"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QLineOrigin {
     Curve,
@@ -201,6 +196,53 @@ pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
     context: &crate::geometry::SourceArcContext<'_, '_, M>,
     publication_frame: crate::Frame,
 ) -> Result<Shape> {
+    exact_geographic_linework_finished_from_shapes(
+        shapes,
+        producer,
+        diagnostics,
+        strict,
+        context,
+        publication_frame,
+    )?
+    .0
+    .into_scalar()
+    .map(|(shape, _)| shape)
+}
+
+pub(in crate::geometry) fn exact_geographic_linework_pending_row<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &crate::geometry::SourceArcContext<'_, '_, M>,
+    publication_frame: &crate::Frame,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    let (finished, _construction_work) = exact_geographic_linework_finished_from_shapes(
+        shapes,
+        producer,
+        diagnostics,
+        strict,
+        context,
+        publication_frame.clone(),
+    )?;
+    let publication_work =
+        EvaluationBudget::new(producer.operation(), finished.checked_literal_count())?;
+    finished.into_pending_row(logical_row, publication_work, publication_frame)
+}
+
+pub(in crate::geometry) fn exact_geographic_linework_finished_from_shapes<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &crate::geometry::SourceArcContext<'_, '_, M>,
+    publication_frame: crate::Frame,
+) -> Result<(FinishedGeometry, EvaluationBudget)> {
     let crate::geometry::TopologyDomain::Geographic(frame) = context.domain() else {
         return Err(GeometryErrorKind::Invalid(
             "exact Q linework requires a geographic source context".into(),
@@ -219,16 +261,19 @@ pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
         .iter()
         .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
     let mut budget = EvaluationBudget::new(producer.operation(), 0)?;
-    let mut work = EvaluationOnly::new(&mut budget);
-    QEmissionPlan::build_pooled_linework(
-        &topology,
-        producer,
-        diagnostics,
-        strict,
-        declared_axes,
-        context.metric_access(),
-        &mut work,
-    )
+    let finished = {
+        let mut work = EvaluationOnly::new(&mut budget);
+        QEmissionPlan::build_pooled_linework(
+            &topology,
+            producer,
+            diagnostics,
+            strict,
+            declared_axes,
+            context.metric_access(),
+            &mut work,
+        )?
+    };
+    Ok((finished, budget))
 }
 
 pub(super) enum PolygonPlan {
@@ -414,6 +459,15 @@ fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQD
     })
 }
 
+fn into_finished_q_emission(embedding: CertifiedQEmission) -> FinishedGeometry {
+    let sealed = embedding.sealed;
+    drop(embedding.family_state);
+    match sealed {
+        SealedQDrawing::Source(source) => source.sealed,
+        SealedQDrawing::Native(native) => native.sealed,
+    }
+}
+
 fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     topology: &ExactGeographicTopology,
     plan: &QEmissionPlan,
@@ -509,8 +563,11 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                 operation,
                 preparation_work,
             )?;
-            let ranges_by_port =
-                producer_drawing::source_root_ranges_by_q_port(topology, plan, preparation_work)?;
+            let ranges_by_port = producer_drawing::source_root_ranges_by_q_port(
+                topology,
+                plan.fragment_recipes.as_slice(),
+                preparation_work,
+            )?;
             let receipt = producer_drawing::receipt_from_shape_layout(
                 shape,
                 layout,
@@ -523,7 +580,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                     )
                 },
                 Vec::new(),
-                crate::geometry::embedding_completion::LiteralAddress {
+                LiteralAddress {
                     operation: 0,
                     logical_row: 0,
                     group_row: None,
@@ -954,7 +1011,7 @@ impl QEmissionPlan {
         declared_axes: CoordinateAxes,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         work: &mut impl SearchAccount,
-    ) -> Result<Shape> {
+    ) -> Result<FinishedGeometry> {
         if !producer.is_pooled_linework() {
             return Err(GeometryErrorKind::Invalid(
                 "pooled linework emitter received a non-linework producer".into(),
@@ -987,7 +1044,7 @@ impl QEmissionPlan {
             &mut expansion_budget,
             work,
         )?;
-        Ok(write_certified_q_emission(embedding)?.shape)
+        Ok(into_finished_q_emission(embedding))
     }
 
     pub(super) const fn is_whole_sphere(&self) -> bool {
@@ -2298,13 +2355,6 @@ fn build_fragment_recipes(
     Ok(recipes)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "polygonize diagnostic paths are consumed by the F4 row receiver"
-    )
-)]
 fn diagnostic_line_paths(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,

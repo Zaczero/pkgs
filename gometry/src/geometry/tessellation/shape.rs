@@ -5,11 +5,16 @@ use crate::NonNegative;
 use crate::error::Result;
 use crate::geographic::{ChartPointSite, GeographicFrame, PointSelectionChart};
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::publication::PendingPublicationRow;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, GeographicSampleSegment, PreparedSampling, RingOwner,
     SampleOccurrenceId, SampleRecipe, SampleSupport, Site, certified_delaunay,
     collect_sample_atoms, collect_sample_triangles, earcut_polygon_with, sample_weighted,
     snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+};
+use crate::geometry::topology::overlay::{
+    QProducer, exact_geographic_linework_finished_from_shapes,
+    exact_geographic_linework_from_shapes,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, ExpansionBudget,
@@ -28,7 +33,11 @@ fn polygonal_parts(shape: Shape) -> crate::error::Result<Vec<Shape>> {
             .map(Shape::Polygon)
             .collect()),
         Shape::Empty(..) => Ok(Vec::new()),
-        _ => Err(GeometryErrorKind::Invalid(
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_) => Err(GeometryErrorKind::Invalid(
             "Q linework polygon producer emitted a non-polygonal shape".into(),
         )
         .into()),
@@ -1047,15 +1056,14 @@ impl Shape {
                 .iter()
                 .map(Borrow::<Self>::borrow)
                 .collect::<Vec<_>>();
-            let selected =
-                crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
-                    &shapes,
-                    crate::geometry::topology::overlay::QProducer::Polygonize,
-                    false,
-                    strict,
-                    context,
-                    publication_frame,
-                )?;
+            let selected = exact_geographic_linework_from_shapes(
+                &shapes,
+                QProducer::Polygonize,
+                false,
+                strict,
+                context,
+                publication_frame,
+            )?;
             return polygonal_parts(selected);
         }
         let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
@@ -1071,6 +1079,38 @@ impl Shape {
             declared_axes,
             strict,
             context,
+        )
+    }
+
+    pub(crate) fn polygonize_producer_rows<M: crate::geometry::ChartMetric>(
+        shapes: &[&Self],
+        strict: bool,
+        context: &SourceArcContext<'_, '_, M>,
+        publication_frame: &crate::Frame,
+        base_logical_row: usize,
+        group_row: Option<usize>,
+        value_row_start: Option<usize>,
+    ) -> Result<Vec<PendingPublicationRow>> {
+        let crate::geometry::TopologyDomain::Geographic(_) = context.domain() else {
+            return Err(GeometryErrorKind::Invalid(
+                "producer-drawn polygon rows require a geographic source context".into(),
+            )
+            .into());
+        };
+        let (finished, _) = exact_geographic_linework_finished_from_shapes(
+            shapes,
+            QProducer::Polygonize,
+            false,
+            strict,
+            context,
+            (*publication_frame).clone(),
+        )?;
+        finished.into_pending_polygon_rows(
+            publication_frame,
+            "polygonize",
+            base_logical_row,
+            group_row,
+            value_row_start,
         )
     }
 
@@ -1105,15 +1145,14 @@ impl Shape {
         publication_frame: crate::Frame,
     ) -> Result<Vec<Self>> {
         if context.domain().is_geographic() {
-            let selected =
-                crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
-                    shapes,
-                    crate::geometry::topology::overlay::QProducer::BuildArea,
-                    false,
-                    strict,
-                    context,
-                    publication_frame,
-                )?;
+            let selected = exact_geographic_linework_from_shapes(
+                shapes,
+                QProducer::BuildArea,
+                false,
+                strict,
+                context,
+                publication_frame,
+            )?;
             return polygonal_parts(selected);
         }
         let declared_axes = shapes
@@ -1147,6 +1186,16 @@ impl Shape {
         strict: bool,
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
+        if context.domain().is_geographic() {
+            return exact_geographic_linework_from_shapes(
+                &[self],
+                QProducer::BuildArea,
+                false,
+                strict,
+                context,
+                crate::Frame::None,
+            );
+        }
         let polygons: Vec<Polygon> = Self::build_area_all_with_context(&[self], strict, context)?
             .into_iter()
             .map(|shape| {

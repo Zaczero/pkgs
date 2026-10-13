@@ -9,6 +9,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::storage::ValidityMask;
 use crate::{
     CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
@@ -533,6 +534,36 @@ pub(crate) fn polygonize_all(
         crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
     } else {
         let output_frame = metadata.clone();
+        if domain.is_geographic() {
+            let polygons = py.detach(move || {
+                let metric_access = || {
+                    metric.geographic_chart_metric()?.ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic polygonize_all source ordinates require the operation's CRS metric",
+                        )
+                    })
+                };
+                let context =
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                let shape_refs = shapes.iter().collect::<Vec<_>>();
+                let pending = Shape::polygonize_producer_rows(
+                    &shape_refs,
+                    false,
+                    &context,
+                    &output_frame,
+                    0,
+                    None,
+                    None,
+                )?;
+                let mut rows = PublicationRows::with_producer_drawing_capacity(pending.len());
+                for row in pending {
+                    rows.try_push(GeometryOutput::Pending(row))?;
+                }
+                rows.finish(output_frame)
+            })?;
+            drop(metric_scratch);
+            return polygons.into_py_any(py);
+        }
         let polygons = py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {

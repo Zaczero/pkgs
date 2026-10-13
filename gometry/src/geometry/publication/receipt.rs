@@ -97,6 +97,9 @@ pub(crate) struct PendingPublicationRow {
     pub(super) logical_row: usize,
     pub(super) layout: LiteralRowLayout<PublicationImage>,
     pub(super) checked: Vec<CheckedPublicationLiteral>,
+    pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
+    pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
+    pub(super) producer_drawing: bool,
     pub(super) work: EvaluationBudget,
 }
 

@@ -1142,17 +1142,11 @@ impl ExpandedEmissionPlan<'_> {
         publication: &PublicationInventory,
         work: &mut impl Work,
     ) -> Result<Vec<Vec<RootRange>>> {
-        let mut selected_ranges = BTreeMap::<SourceEdgeId, Vec<&ExactSourceRange>>::new();
-        for recipe in selected_recipes {
-            work.charge_into_error(1)?;
-            for range in recipe.ranges.iter().filter(|range| range.emitted) {
-                work.charge_into_error(1)?;
-                selected_ranges
-                    .entry(range.source_edge)
-                    .or_default()
-                    .push(&range.range);
-            }
-        }
+        let ranges_by_q_port = super::overlay::producer_drawing::source_root_ranges_by_q_port(
+            self.topology,
+            selected_recipes,
+            work,
+        )?;
         work.charge_into_error(
             u64::try_from(self.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -1185,79 +1179,19 @@ impl ExpandedEmissionPlan<'_> {
             }
             output.push(ranges);
         }
-        work.charge_into_error(
-            u64::try_from(self.topology.q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut emissions_by_source_port = Vec::with_capacity(self.topology.q.ports.len());
-        emissions_by_source_port.resize_with(self.topology.q.ports.len(), Vec::new);
         for &(source_port, emission_port) in &self.source_port_images {
             work.charge_into_error(1)?;
-            emissions_by_source_port
-                .get_mut(source_port.0 as usize)
+            let source_ranges = ranges_by_q_port
+                .get(source_port.0 as usize)
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("source-port image has an unknown Q port".into())
-                })?
-                .push(emission_port);
-        }
-        for span in &self.topology.q.spans {
-            work.charge_into_error(1)?;
-            for (endpoint, port) in span.ports.into_iter().enumerate() {
+                })?;
+            let output_ranges = output.get_mut(emission_port.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source-port image is outside the emission plan".into())
+            })?;
+            for range in source_ranges {
                 work.charge_into_error(1)?;
-                for owner in span.owners.iter() {
-                    work.charge_into_error(1)?;
-                    let Some(ranges) = selected_ranges.get(&owner.source_edge) else {
-                        continue;
-                    };
-                    let parameter = match (owner.reversed, endpoint) {
-                        (false, 0) | (true, 1) => &owner.source_range.start,
-                        (false, 1) | (true, 0) => &owner.source_range.end,
-                        (..) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source span endpoint index is unknown".into(),
-                            )
-                            .into());
-                        },
-                    };
-                    let mut selected = false;
-                    for range in ranges {
-                        work.charge_into_error(1)?;
-                        let (lower, upper) =
-                            if range.start.try_cmp_with_work(&range.end, work)?.is_gt() {
-                                (&range.end, &range.start)
-                            } else {
-                                (&range.start, &range.end)
-                            };
-                        if parameter.try_cmp_with_work(lower, work)?.is_ge()
-                            && parameter.try_cmp_with_work(upper, work)?.is_le()
-                        {
-                            selected = true;
-                            break;
-                        }
-                    }
-                    if selected {
-                        for &emission_port in emissions_by_source_port
-                            .get(port.0 as usize)
-                            .ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "source span endpoint has no Q-port image row".into(),
-                                )
-                            })?
-                        {
-                            let port_ranges =
-                                output.get_mut(emission_port.0 as usize).ok_or_else(|| {
-                                    GeometryErrorKind::Invalid(
-                                        "source-port image is outside the emission plan".into(),
-                                    )
-                                })?;
-                            port_ranges.push(RootRange::point_with_work(
-                                RootId::from_index(owner.source_edge.0),
-                                parameter.try_clone_with_work(work)?,
-                                ExactRational::zero(),
-                                work,
-                            )?);
-                        }
-                    }
-                }
+                output_ranges.push(range.try_clone_with_work(work)?);
             }
         }
         Ok(output)

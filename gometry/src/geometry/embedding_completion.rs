@@ -486,6 +486,15 @@ impl LiteralRowAddress {
         }
     }
 
+    pub(super) const fn from_literal_address(address: LiteralAddress) -> Self {
+        Self {
+            operation: address.operation,
+            logical_row: address.logical_row,
+            group_row: address.group_row,
+            value_row: address.value_row,
+        }
+    }
+
     const fn output(self, output: u32) -> LiteralAddress {
         LiteralAddress {
             operation: self.operation,

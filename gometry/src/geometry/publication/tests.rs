@@ -200,6 +200,46 @@ fn producer_drawing_rejects_final_storage_readback_mismatch() {
 }
 
 #[test]
+fn producer_drawing_rejects_omitted_literal_at_final_storage_readback() -> crate::error::Result<()>
+{
+    let point = Point::new_raw_xy(4.0, -2.0);
+    let mut receipt = producer_point_receipt(StorageTarget::Array, point, point);
+    receipt.literals.clear();
+    receipt.source_root_uses.clear();
+    let mut work = Unmetered;
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::default(),
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )? {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            if images != [ProducerImageId::new(0)] {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "omitted producer literal returned an unexpected image identity".into(),
+                )
+                .into());
+            }
+        },
+        PublicationOutcome::Pass(_) => {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "final array readback accepted a producer receipt with its literal omitted".into(),
+            )
+            .into());
+        },
+        PublicationOutcome::Reject(_) => {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "omitted producer literals returned another rejection family".into(),
+            )
+            .into());
+        },
+    }
+    Ok(())
+}
+
+#[test]
 fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();

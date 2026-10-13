@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use super::super::emission::QSourceImage;
+use super::super::emission::{FragmentRecipe, QSourceImage};
 use super::super::exact::SourceEdgeId;
 use super::super::q::ExactGeographicTopology;
-use super::QEmissionPlan;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralSequence,
-    ShapeLiteralLayout,
+    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress,
+    LiteralSequence, ShapeLiteralLayout, visit_shape_literals,
 };
 use crate::geometry::embedding_search::Work;
 use crate::geometry::ordinates::{RootId, RootRange};
@@ -18,13 +17,13 @@ use crate::geometry::publication::{
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{GeometryErrorKind, Shape};
 
-pub(super) fn source_root_ranges_by_q_port(
+pub(in crate::geometry::topology) fn source_root_ranges_by_q_port(
     topology: &ExactGeographicTopology,
-    plan: &QEmissionPlan,
+    selected_recipes: &[FragmentRecipe],
     work: &mut impl Work,
 ) -> Result<Vec<Vec<RootRange>>> {
     let mut selected_ranges = BTreeMap::<SourceEdgeId, Vec<(ExactRational, ExactRational)>>::new();
-    for recipe in plan.fragment_recipes.as_slice() {
+    for recipe in selected_recipes {
         work.charge_into_error(1)?;
         for range in recipe.ranges.iter().filter(|range| range.emitted) {
             work.charge_into_error(1)?;
@@ -42,7 +41,7 @@ pub(super) fn source_root_ranges_by_q_port(
     for span in &topology.q.spans {
         work.charge_into_error(1)?;
         let [first_port, second_port] = span.ports;
-        for owner in span.owners.iter() {
+        for owner in &span.owners {
             work.charge_into_error(1)?;
             let Some(ranges) = selected_ranges.get(&owner.source_edge) else {
                 continue;
@@ -100,49 +99,19 @@ pub(super) fn source_root_ranges_for_q_image(
     work: &mut impl Work,
 ) -> Result<Vec<RootRange>> {
     let port = match image {
-        QSourceImage::Port(port) => Some(port),
-        QSourceImage::SourcePoint(index) => Some(
-            topology
-                .q
-                .source_point_ports
-                .get(index as usize)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q source point image has no retained Q port".into())
-                })?,
-        ),
-        QSourceImage::SourceRingStart(edge) | QSourceImage::CollapsedStart(edge) => {
-            if topology.sources.edges.get(edge.0 as usize).is_none() {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q source image has an unknown source edge".into(),
-                )
-                .into());
-            }
-            topology
-                .q
-                .source_edge_ports
-                .get(edge.0 as usize)
-                .and_then(|ports| ports.first())
-                .copied()
+        QSourceImage::PublicationSample(_) => return Ok(Vec::new()),
+        source @ (QSourceImage::Port(_)
+        | QSourceImage::SourcePoint(_)
+        | QSourceImage::SourceRingStart(_)
+        | QSourceImage::SourceRingEnd(_)
+        | QSourceImage::CollapsedStart(_)
+        | QSourceImage::CollapsedEnd(_)) => {
+            let Some(port) = super::super::q_embedding::q_source_image_port(topology, source)?
+            else {
+                return Ok(Vec::new());
+            };
+            port
         },
-        QSourceImage::SourceRingEnd(edge) | QSourceImage::CollapsedEnd(edge) => {
-            if topology.sources.edges.get(edge.0 as usize).is_none() {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q source image has an unknown source edge".into(),
-                )
-                .into());
-            }
-            topology
-                .q
-                .source_edge_ports
-                .get(edge.0 as usize)
-                .and_then(|ports| ports.get(1))
-                .copied()
-        },
-        QSourceImage::PublicationSample(_) => None,
-    };
-    let Some(port) = port else {
-        return Ok(Vec::new());
     };
     let ranges = ranges_by_port.get(port.0 as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("Q source image references an unknown source-use row".into())
@@ -167,14 +136,13 @@ pub(in crate::geometry::topology) fn append_shape_layout<I, W>(
     work: &mut W,
 ) -> Result<ShapeLiteralLayout<ProducerImageId>>
 where
-    I: Copy + Ord,
+    I: Copy,
     W: Work,
 {
     fn map_image<I, W, F>(
         input: I,
         output: u32,
         next_image: &mut usize,
-        literal_slots: &mut Vec<(LiteralAddress, ProducerImageId)>,
         producer_source_uses: &mut Vec<ProducerSourceRootUse>,
         source_ranges: &mut F,
         base_address: LiteralAddress,
@@ -194,7 +162,6 @@ where
             output,
             ..base_address
         };
-        literal_slots.push((address, image));
         for range in source_ranges(input, work)? {
             work.charge_into_error(1)?;
             producer_source_uses.push(ProducerSourceRootUse {
@@ -206,8 +173,6 @@ where
         Ok(image)
     }
 
-    let mut literal_slots = Vec::<(LiteralAddress, ProducerImageId)>::new();
-
     work.charge_into_error(
         u64::try_from(layout.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -217,7 +182,6 @@ where
             point.image,
             point.output,
             next_image,
-            &mut literal_slots,
             producer_source_uses,
             &mut source_ranges,
             base_address,
@@ -241,7 +205,6 @@ where
                 image,
                 line.output,
                 next_image,
-                &mut literal_slots,
                 producer_source_uses,
                 &mut source_ranges,
                 base_address,
@@ -266,7 +229,6 @@ where
                 image,
                 polygon.shell.output,
                 next_image,
-                &mut literal_slots,
                 producer_source_uses,
                 &mut source_ranges,
                 base_address,
@@ -286,7 +248,6 @@ where
                     image,
                     hole.output,
                     next_image,
-                    &mut literal_slots,
                     producer_source_uses,
                     &mut source_ranges,
                     base_address,
@@ -312,23 +273,17 @@ where
         polygons,
     };
 
-    work.charge_into_error(
-        u64::try_from(literal_slots.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut slot = literal_slots.into_iter();
-    shape.try_for_each_point(|record| {
-        let (address, image) = slot.next().ok_or_else(|| {
-            GeometryErrorKind::Invalid("producer literal layout is shorter than its drawing".into())
-        })?;
+    let mut emit_literal = |address, image, record, _axes, _stored_axes, _work: &mut W| {
         literals.push(ProducerLiteral::from_point(address, image, record));
-        Ok::<(), crate::error::Error>(())
-    })?;
-    if slot.next().is_some() {
-        return Err(GeometryErrorKind::Invalid(
-            "producer literal layout is longer than its drawing".into(),
-        )
-        .into());
-    }
+        Ok(())
+    };
+    visit_shape_literals(
+        shape,
+        &layout,
+        LiteralRowAddress::from_literal_address(base_address),
+        work,
+        &mut emit_literal,
+    )?;
     Ok(layout)
 }
 
@@ -341,7 +296,7 @@ pub(in crate::geometry::topology) fn receipt_from_shape_layout<I, W>(
     work: &mut W,
 ) -> Result<ProducerDrawingReceipt>
 where
-    I: Copy + Ord,
+    I: Copy,
     W: Work,
 {
     let mut next_image = 0_usize;

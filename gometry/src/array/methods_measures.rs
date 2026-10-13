@@ -6,7 +6,7 @@ use crate::array::{
     PyTypeMethods as _, Python, Shape, SpatialCurve, crs, crs_label, pymethods, resolve_metric,
 };
 use crate::dispatch::{MetricOp, kernels};
-use crate::geometry::publication::PublicationArrayRows;
+use crate::geometry::publication::PublicationRows;
 use crate::geometry::storage;
 use crate::geometry::storage::kernels::{
     bounds_values_from_columns_masked, geodesic_line_measure, geodesic_polygon_measure,
@@ -418,7 +418,7 @@ impl PyGeometryArray {
             crate::geometry::TopologyDomain::Geographic(geographic_frame) => {
                 let output_frame = frame.clone();
                 py.detach(move || {
-                    let mut output = PublicationArrayRows::with_capacity(group_shapes.len());
+                    let mut output = PublicationRows::with_capacity(group_shapes.len());
                     for (row, group) in group_shapes.into_iter().enumerate() {
                         output.try_push(
                             crate::geometry::overlay_all_geographic_output_with_metric_and_frame(

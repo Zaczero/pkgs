@@ -188,6 +188,7 @@ pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
     analyze_geographic_coverage, analyze_geographic_coverage_with_work,
 };
+
 mod util;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -411,6 +412,56 @@ pub(in crate::geometry) use types::GeographicMetricKey;
 
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
+
+pub(crate) fn geographic_node_pending_row<M: ChartMetric>(
+    shape: &Shape,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: &crate::Frame,
+    logical_row: usize,
+) -> Result<publication::PendingPublicationRow> {
+    topology::overlay::exact_geographic_linework_pending_row(
+        &[shape],
+        topology::overlay::QProducer::Node,
+        false,
+        false,
+        context,
+        publication_frame,
+        logical_row,
+    )
+}
+
+pub(crate) fn geographic_build_area_pending_row<M: ChartMetric>(
+    shape: &Shape,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: &crate::Frame,
+    logical_row: usize,
+) -> Result<publication::PendingPublicationRow> {
+    topology::overlay::exact_geographic_linework_pending_row(
+        &[shape],
+        topology::overlay::QProducer::BuildArea,
+        false,
+        false,
+        context,
+        publication_frame,
+        logical_row,
+    )
+}
+
+pub(crate) fn geographic_build_area_with_publication_frame<M: ChartMetric>(
+    shape: &Shape,
+    strict: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: crate::Frame,
+) -> Result<Shape> {
+    topology::overlay::exact_geographic_linework_from_shapes(
+        &[shape],
+        topology::overlay::QProducer::BuildArea,
+        false,
+        strict,
+        context,
+        publication_frame,
+    )
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct BulkParams;

@@ -14,6 +14,7 @@ use crate::array::{
     owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
     row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
+use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
@@ -817,6 +818,66 @@ impl PyGeometryArray {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        if domain.is_geographic() {
+            let array = self.clone();
+            let missing = self.missing().cloned();
+            let groups = py
+                .detach(move || {
+                    let mut publication = PublicationRows::with_groups_capacity(array.len());
+                    for row in array
+                        .row_operation()
+                        .rows_with_missing(Vec::<Shape>::new)
+                    {
+                        match row {
+                            ArrayRow::Missing { .. } => publication.end_group().map_err(|error| {
+                                (array.len(), error)
+                            })?,
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let metric_access = || {
+                                    metric.geographic_chart_metric()?.ok_or_else(|| {
+                                        crate::crs::CrsError::invalid(
+                                            "geographic polygonize source ordinates require the operation's CRS metric",
+                                        )
+                                    })
+                                };
+                                let context = crate::geometry::SourceArcContext::new(
+                                    domain,
+                                    Some(&metric_access),
+                                );
+                                let pending = row
+                                    .row()
+                                    .try_with_shape(|shape| {
+                                        Shape::polygonize_producer_rows(
+                                            &[shape],
+                                            false,
+                                            &context,
+                                            &output_frame,
+                                            logical,
+                                            Some(logical),
+                                            Some(publication.next_value_row()),
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                for output in pending {
+                                    publication
+                                        .try_push(GeometryOutput::Pending(output))
+                                        .map_err(|error| (logical, error))?;
+                                }
+                                publication
+                                    .end_group()
+                                    .map_err(|error| (logical, error))?;
+                            },
+                        }
+                    }
+                    publication
+                        .finish_groups(output_frame, missing)
+                        .map_err(|error| (array.len(), error))
+                })
+                .map_err(rows_err)?;
+            drop(metric_scratch);
+            return Ok(groups);
+        }
         self.flat_map_shapes_groups(py, move |shape| {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {

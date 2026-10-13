@@ -4054,12 +4054,22 @@ fn q_source_edge(
     Ok(source)
 }
 
-fn q_source_image_port(topology: &ExactGeographicTopology, image: QSourceImage) -> Result<QPortId> {
+pub(super) fn q_source_image_port(
+    topology: &ExactGeographicTopology,
+    image: QSourceImage,
+) -> Result<Option<QPortId>> {
     let port = match image {
-        QSourceImage::Port(port) => return Ok(port),
-        QSourceImage::SourcePoint(index) => {
-            topology.q.source_point_ports.get(index as usize).copied()
-        },
+        QSourceImage::Port(port) => return Ok(Some(port)),
+        QSourceImage::SourcePoint(index) => Some(
+            topology
+                .q
+                .source_point_ports
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source literal has no admitted Q port".into())
+                })?,
+        ),
         QSourceImage::SourceRingStart(edge) | QSourceImage::CollapsedStart(edge) => {
             let _ = q_source_edge(topology, edge)?;
             topology
@@ -4080,7 +4090,14 @@ fn q_source_image_port(topology: &ExactGeographicTopology, image: QSourceImage) 
         },
         QSourceImage::PublicationSample(_) => None,
     };
-    port.ok_or_else(|| {
+    Ok(port)
+}
+
+fn require_q_source_image_port(
+    topology: &ExactGeographicTopology,
+    image: QSourceImage,
+) -> Result<QPortId> {
+    q_source_image_port(topology, image)?.ok_or_else(|| {
         GeometryErrorKind::Invalid("source literal has no admitted Q port".into()).into()
     })
 }
@@ -4151,7 +4168,7 @@ impl QSourceImages<'_> {
     }
 
     fn image_for_port(&self, image: QSourceImage) -> Result<&ExactChartPoint> {
-        self.source_port(q_source_image_port(self.topology, image)?)
+        self.source_port(require_q_source_image_port(self.topology, image)?)
     }
 }
 
@@ -4219,7 +4236,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 } else {
                     record.y
                 };
-                let port_id = q_source_image_port(self.topology, image)?;
+                let port_id = require_q_source_image_port(self.topology, image)?;
                 let port = self
                     .topology
                     .q
@@ -20112,7 +20129,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if !validate_native_sealed_layout(
                 reference,
                 &literal_uses,
-                &mut candidate.port_records,
+                &candidate.port_records,
                 candidate.assignment.points(),
                 budget,
             )? {
@@ -20519,7 +20536,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                     | QSourceImage::SourceRingEnd(_)
                                     | QSourceImage::CollapsedStart(_)
                                     | QSourceImage::CollapsedEnd(_)) => {
-                                        let port = q_source_image_port(self.topology, image)?;
+                                        let port =
+                                            require_q_source_image_port(self.topology, image)?;
                                         let node = self
                                             .topology
                                             .q

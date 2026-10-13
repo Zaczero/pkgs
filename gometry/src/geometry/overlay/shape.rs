@@ -5,6 +5,7 @@ use crate::geometry::overlay::{
     ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
     overlay_all,
 };
+use crate::geometry::topology::overlay::{QProducer, exact_geographic_linework_from_shapes};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, Lineal,
     Point, PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
@@ -138,6 +139,7 @@ impl Shape {
     /// (crossings and shared points) and return the noded edges as a
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
+    #[cfg(test)]
     pub(crate) fn node_with_context<M: crate::geometry::ChartMetric>(
         &self,
         strictness: Strictness,
@@ -153,9 +155,9 @@ impl Shape {
         publication_frame: crate::Frame,
     ) -> Result<Self> {
         if context.domain().is_geographic() {
-            return crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
+            return exact_geographic_linework_from_shapes(
                 &[self],
-                crate::geometry::topology::overlay::QProducer::Node,
+                QProducer::Node,
                 false,
                 strictness.is_strict(),
                 context,

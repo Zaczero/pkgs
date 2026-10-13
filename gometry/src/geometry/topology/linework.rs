@@ -1,12 +1,4 @@
 //! Geographic linework selection over one exact quotient chart.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "public producer routing starts when the shared F4 receiver lands"
-    )
-)]
-
 use std::collections::VecDeque;
 
 use super::exact::SourceRowId;
