@@ -84,6 +84,8 @@ iter_over_hash_type = "warn"
 let_underscore_must_use = "warn"
 lossy_float_literal = "warn"
 map_with_unused_argument_over_ranges = "warn"
+# Geometric formulas follow standard single-letter mathematical notation.
+many_single_char_names = "allow"
 mem_forget = "warn"
 # The assert it asks for also removes the bounds checks that follow it.
 missing_asserts_for_indexing = "warn"

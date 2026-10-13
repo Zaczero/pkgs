@@ -1,5 +1,4 @@
 #![expect(
-    clippy::many_single_char_names,
     clippy::suspicious_operation_groupings,
     reason = "EPSG Albers equations use conventional m, q, n, c, and rho notation"
 )]

@@ -821,10 +821,6 @@ impl CoordSeq {
     /// pure multiply-add into `f64x8` in the SAME left-to-right op order as the
     /// scalar form (`(a*x + b*y) + xoff`, no FMA contraction), so it is
     /// bit-identical. Finiteness validated once over the produced columns.
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a,b,d,e are the canonical affine matrix coefficients"
-    )]
     pub fn try_affine(&self, matrix: &[f64; 6]) -> Result<Self> {
         let [a, b, d, e, xoff, yoff] = *matrix;
         let x_identity = affine_x_row_identity(a, b, xoff);
@@ -1192,10 +1188,6 @@ impl Shape {
     /// (Z/M untouched), validating finiteness once per column. This is the
     /// matrix-form affine path; origin-relative transforms use their exact
     /// pivot evaluator below.
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a,b,d,e are the canonical affine matrix coefficients"
-    )]
     fn affine(&self, matrix: &[f64; 6]) -> Result<Self> {
         let [a, b, d, e, xoff, yoff] = *matrix;
         self.try_map_coordseqs(
@@ -1744,10 +1736,6 @@ mod affine_rounding_tests {
 /// Affine map with power-of-two pre-scale of the input coordinates so
 /// cancelling huge products (`2*1e308 + (-2)*1e308`) stay finite. Ordinary
 /// mid-range inputs take the classic multiply-add (bit-identical).
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a,b,d,e,x,y are the canonical affine matrix and point coordinates"
-)]
 pub(crate) fn stable_affine_xy(
     a: f64,
     b: f64,

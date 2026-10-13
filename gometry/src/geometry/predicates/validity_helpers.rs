@@ -816,7 +816,6 @@ mod prune_dangles_tests {
     }
 
     #[test]
-    #[expect(clippy::many_single_char_names, reason = "standard math notation")]
     fn prune_dangles_matches_iterative_rebuild() {
         let a = XY::new(0.0, 0.0);
         let b = XY::new(1.0, 0.0);
