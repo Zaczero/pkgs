@@ -197,6 +197,10 @@ pub(super) fn chart_edge_point_maximum_oracle(start: Point, end: Point, target: 
     maximum.max(distance(0.0).max(distance(1.0)))
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 pub(super) fn assert_chart_edge_point_hausdorff(
     name: &str,
     start: Point,
@@ -231,6 +235,10 @@ pub(super) fn assert_chart_edge_point_hausdorff(
     Ok(())
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 pub(super) fn assert_chart_pair_contract<M>(
     left_shape: &Shape,
     right_shape: &Shape,

@@ -2,6 +2,10 @@ use super::support::assert_chart_pair_contract;
 use super::*;
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Result<()> {
     let point_shape = Shape::Point(p(0.0, 82.9));
     let line_shape = line(vec![p(-45.0, 80.0), p(45.0, 80.0)]);
@@ -134,6 +138,10 @@ fn public_distance_measures_a_full_turn_line_as_its_parallel() {
     });
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> Result<()> {
     let point_shape = Shape::Point(p(0.0, 82.9));
     let line_shape = line(vec![
@@ -193,6 +201,10 @@ fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> 
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn cached_point_pair_nearest_validates_both_geographic_operands() -> Result<()> {
     let valid_shape = Shape::Point(p(0.0, 0.0));
     let invalid_shape = Shape::Point(p(1.0, 95.0));
@@ -265,6 +277,10 @@ fn chart_distance_property_six_covers_crossings_and_filled_polygons() -> Result<
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn chart_edge_contacts_at_high_latitudes_are_zero_distance() -> Result<()> {
     let cases = [
         (
@@ -296,6 +312,10 @@ fn chart_edge_contacts_at_high_latitudes_are_zero_distance() -> Result<()> {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn fixed_short_parallel_pairs_have_the_meridional_minimum() -> Result<()> {
     let cases = [
         (
