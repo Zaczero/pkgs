@@ -1,11 +1,10 @@
 use super::{
     CoordinateAxes, EmittedVertex, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
-    ExpansionBudget, FeatureFamilyRegistry, GeometryErrorKind, OverlayOp, QCoordinates,
-    QEmbeddingCertification, QEmissionPlan, QProducer, ResourceError, Result, SealedQDrawing,
-    SealedSourceDrawing, SearchAccount, SearchOutcome, Shape, SourceArcMetricAccess,
-    certify_and_search_q_embedding, certify_nearest_ring_roles, finish_geographic,
-    node_injectivity_collisions_with_work, node_ordinates, source_point_coordinates_with_work,
-    write_completed_native,
+    ExpansionBudget, GeometryErrorKind, OverlayOp, QCoordinates, QEmbeddingCertification,
+    QEmissionPlan, QProducer, ResourceError, Result, SealedQDrawing, SealedSourceDrawing,
+    SearchAccount, SearchOutcome, Shape, SourceArcMetricAccess, certify_and_search_q_embedding,
+    certify_nearest_ring_roles, finish_geographic, node_injectivity_collisions_with_work,
+    node_ordinates, source_point_coordinates_with_work, write_completed_native,
 };
 use crate::geometry::embedding_completion::LiteralAddress;
 use crate::geometry::publication::{
@@ -35,7 +34,7 @@ impl QEmissionPlan {
             QProducer::Node => Self::build_node(topology, work)?,
             QProducer::Polygonize => Self::build_polygonize(topology, diagnostics, work)?,
             QProducer::BuildArea => Self::build_area(topology, work)?,
-            QProducer::Overlay | QProducer::Boundary | QProducer::SourceLines => {
+            QProducer::Overlay | QProducer::Boundary => {
                 return Err(GeometryErrorKind::Invalid(
                     "pooled linework emitter received a non-linework producer".into(),
                 )
@@ -84,7 +83,7 @@ pub(super) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetr
     let (embedding, budget) =
         certify_geographic_overlay(topology, operation, declared_axes, strict, metric_access)?;
     pending_q_array_row(
-        finish_certified_q_emission(embedding).0,
+        embedding.sealed,
         logical_row,
         budget,
         topology.publication_frame(),
@@ -150,47 +149,23 @@ pub(in crate::geometry::topology) enum QEmbeddingChoice {
 
 pub(in crate::geometry::topology) struct CertifiedQEmission {
     pub(in crate::geometry::topology) sealed: SealedQDrawing,
-    pub(in crate::geometry::topology) family_state: Option<FeatureFamilyRegistry>,
     #[cfg(test)]
     pub(in crate::geometry::topology) choice: QEmbeddingChoice,
     #[cfg(test)]
     pub(in crate::geometry::topology) coordinates: QCoordinates,
 }
 
-pub(in crate::geometry::topology) struct WrittenQDrawing {
-    pub(in crate::geometry::topology) shape: Shape,
-    pub(in crate::geometry::topology) line_traces: Vec<super::super::emission::TracedLine>,
-    pub(in crate::geometry::topology) family_state: Option<FeatureFamilyRegistry>,
-}
-
-pub(in crate::geometry::topology) fn finish_certified_q_emission(
-    embedding: CertifiedQEmission,
-) -> (SealedQDrawing, Option<FeatureFamilyRegistry>) {
-    (embedding.sealed, embedding.family_state)
-}
-
 pub(in crate::geometry::topology) fn write_certified_q_emission(
     embedding: CertifiedQEmission,
-) -> Result<WrittenQDrawing> {
-    let (sealed, family_state) = finish_certified_q_emission(embedding);
-    let (shape, line_traces) = match sealed {
-        SealedQDrawing::Source(source) => (source.sealed.into_scalar()?.0, source.line_traces),
-        SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native)?;
-            (written.shape, written.line_traces)
-        },
-    };
-    Ok(WrittenQDrawing {
-        shape,
-        line_traces,
-        family_state,
-    })
+) -> Result<Shape> {
+    match embedding.sealed {
+        SealedQDrawing::Source(source) => Ok(source.sealed.into_scalar()?.0),
+        SealedQDrawing::Native(native) => write_completed_native(native),
+    }
 }
 
 fn into_finished_q_emission(embedding: CertifiedQEmission) -> FinishedGeometry {
-    let sealed = embedding.sealed;
-    drop(embedding.family_state);
-    match sealed {
+    match embedding.sealed {
         SealedQDrawing::Source(source) => source.sealed,
         SealedQDrawing::Native(native) => native.sealed,
     }
@@ -233,7 +208,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
     let mut choice = QEmbeddingChoice::Nearest;
     #[cfg(test)]
     let mut test_coordinates = nearest.clone();
-    let (sealed, family_state) = if needs_q_certificate {
+    let sealed = if needs_q_certificate {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
             topology,
@@ -287,7 +262,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
             test_coordinates = pass.coordinates.clone();
         }
         let output = pass.output;
-        (output.sealed, output.family_state)
+        output.sealed
     } else {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, preparation_work)?;
@@ -402,17 +377,10 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 },
             }
         };
-        (
-            SealedQDrawing::Source(SealedSourceDrawing {
-                sealed,
-                line_traces: Vec::new(),
-            }),
-            None,
-        )
+        SealedQDrawing::Source(SealedSourceDrawing { sealed })
     };
     Ok(CertifiedQEmission {
         sealed,
-        family_state,
         #[cfg(test)]
         choice,
         #[cfg(test)]
@@ -423,5 +391,5 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
 pub(in crate::geometry::topology) fn publish_q_overlay(
     embedding: CertifiedQEmission,
 ) -> Result<Shape> {
-    Ok(write_certified_q_emission(embedding)?.shape)
+    write_certified_q_emission(embedding)
 }

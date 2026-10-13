@@ -405,7 +405,7 @@ fn q_search_repairs_two_constructed_nodes_with_one_nearest_key() -> Result<()> {
     }
 
     let written = write_certified_q_emission(certified)?;
-    let expected = written.shape;
+    let expected = written;
     let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
         &topology,
         OverlayOp::Intersection,
