@@ -107,7 +107,7 @@ pub(crate) fn from_wkt(
             parsed_epoch,
             "WKT import",
             "EWKT SRID",
-            |text| text.map(parse_wkt_stream_row).transpose(),
+            |text| text.map(|text| parse_wkt_stream_row(&text)).transpose(),
         )?;
         return Ok(array.into_pyobject(py)?.unbind().into());
     }
@@ -124,7 +124,7 @@ pub(crate) fn from_wkt(
                 .map_err(|_| error())?
                 .extract::<PyBackedStr>()
         },
-        parse_wkt_stream_row,
+        |text| parse_wkt_stream_row(&text),
     )?;
     Ok(array.into_pyobject(py)?.unbind().into())
 }
@@ -271,7 +271,7 @@ pub(crate) fn from_wkb(
     Ok(array.into_pyobject(py)?.unbind().into())
 }
 
-fn parse_wkt_stream_row(text: PyBackedStr) -> crate::error::Result<StreamedSridRow> {
+fn parse_wkt_stream_row(text: &PyBackedStr) -> crate::error::Result<StreamedSridRow> {
     let source = text.as_ref();
     let (body, srid) = split_ewkt_srid(source)?;
     Ok(StreamedSridRow {

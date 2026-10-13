@@ -128,10 +128,9 @@ fn serialize_feature_shapes(
 fn serialize_array_feature_shapes(
     py: Python<'_>,
     array: crate::PyGeometryArray,
-    crs: Option<String>,
 ) -> PyResult<Vec<Option<String>>> {
     let mut metric_scratch = MetricScratch::default();
-    let (domain, metric) = geojson_domain_metric(crs.as_deref(), &mut metric_scratch)?;
+    let (domain, metric) = geojson_domain_metric(array.crs_str(), &mut metric_scratch)?;
     let metric_access = move || {
         metric.geographic_chart_metric()?.ok_or_else(|| {
             CrsError::invalid(
@@ -463,10 +462,7 @@ fn to_feature_collection_impl(
     )?;
     let ids = side_rows(ids, row_count, "ids", None)?;
     let geometry_texts = match geometry_rows {
-        FeatureGeometryRows::Array(array) => {
-            let crs = array.crs_str().map(str::to_owned);
-            serialize_array_feature_shapes(py, array, crs)?
-        },
+        FeatureGeometryRows::Array(array) => serialize_array_feature_shapes(py, array)?,
         FeatureGeometryRows::Shapes(shapes) => serialize_feature_shapes(py, shapes)?,
     };
     let features = PyList::empty(py);

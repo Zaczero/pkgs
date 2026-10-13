@@ -733,7 +733,7 @@ pub(crate) fn extension_metadata_json(
         .transpose()?;
     Ok(Some(assemble_extension_metadata(
         projjson,
-        crs_definition,
+        crs_definition.as_deref(),
         epoch,
     )))
 }
@@ -743,7 +743,7 @@ pub(crate) fn extension_metadata_json(
 /// producer's CRS label beside GeoArrow's standardized PROJJSON value.
 fn assemble_extension_metadata(
     projjson: Option<String>,
-    crs_definition: Option<String>,
+    crs_definition: Option<&str>,
     epoch: Option<Number>,
 ) -> String {
     debug_assert!(
@@ -934,7 +934,7 @@ mod owner_export_tests {
     fn assemble_extension_metadata_embeds_projjson_bytes() {
         let projjson = "{\"type\":\"GeographicCRS\",\"name\":\"fixture\"}".to_owned();
         let definition = serde_json::to_string("EPSG:4326").unwrap();
-        let text = assemble_extension_metadata(Some(projjson.clone()), Some(definition), None);
+        let text = assemble_extension_metadata(Some(projjson.clone()), Some(&definition), None);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["crs_type"], "projjson");
         assert_eq!(
@@ -945,7 +945,7 @@ mod owner_export_tests {
         assert!(text.contains(&projjson), "PROJJSON bytes must be retained");
         let with_epoch = assemble_extension_metadata(
             Some(projjson),
-            Some(serde_json::to_string("EPSG:4326").unwrap()),
+            Some(&definition),
             Number::from_f64(2010.5),
         );
         let value: serde_json::Value = serde_json::from_str(&with_epoch).unwrap();

@@ -876,7 +876,7 @@ impl PyGeometryArray {
         // reject when uniform_axes() is None.
         let array = slf.borrow();
         let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
-        let replacement = map_coordinates_callback(py, coords, func)?;
+        let replacement = map_coordinates_callback(py, &coords, func)?;
         replace_array_coordinates(&array, py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``

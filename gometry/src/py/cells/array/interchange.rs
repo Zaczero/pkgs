@@ -297,8 +297,8 @@ impl PyCellArray {
     /// >>> assert cell is not None
     /// >>> type(gm.CellArray([cell]).to_numpy()).__name__
     /// 'ndarray'
-    fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let owner = slf.clone().into_any();
+    fn to_numpy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let owner = (*slf).clone().into_any();
         let borrowed = slf.borrow();
         if borrowed.kind() == GridKind::GeohashCell
             || (0..borrowed.len()).any(|row| borrowed.is_row_missing(row))

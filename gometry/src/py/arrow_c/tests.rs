@@ -62,7 +62,7 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
         geometry.epoch(),
     )
     .expect("test schema plan");
-    materialize_schema_plan(prepare_export_plan(plan).expect("test schema"))
+    materialize_schema_plan(&prepare_export_plan(plan).expect("test schema"))
         .expect("test schema")
         .into_box()
 }

@@ -686,12 +686,14 @@ where
     check_json_nesting(bytes)?;
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     deserializer.disable_recursion_limit();
-    let value = T::deserialize(&mut deserializer).map_err(geojson_json_error)?;
-    deserializer.end().map_err(geojson_json_error)?;
+    let value = T::deserialize(&mut deserializer).map_err(|error| geojson_json_error(&error))?;
+    deserializer
+        .end()
+        .map_err(|error| geojson_json_error(&error))?;
     Ok(value)
 }
 
-fn geojson_json_error(error: serde_json::Error) -> crate::error::Error {
+fn geojson_json_error(error: &serde_json::Error) -> crate::error::Error {
     let detail = error.to_string();
     if detail.starts_with("number out of range at line ") {
         crate::io::IoError::geojson("JSON number is outside the supported range")

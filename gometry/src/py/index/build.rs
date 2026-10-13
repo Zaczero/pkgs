@@ -240,7 +240,7 @@ pub(crate) fn build_spatial_index(
                 crate::array::ArrayRow::Present(row) => {
                     let plan = row_operation.prepared(row)?.into_owned_plan();
                     Ok(Some(PyGeometry::from_prepared_plan(
-                        plan,
+                        &plan,
                         array.frame.clone(),
                     )))
                 },
@@ -322,7 +322,7 @@ pub(crate) fn restore_spatial_index(
             let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
                 row.row().with_shape(std::clone::Clone::clone)?,
             )));
-            let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone());
+            let geometry = PyGeometry::from_prepared_plan(&plan, values.frame.clone());
             let Some(bounds) = geometry.shape.bounds() else {
                 if packed {
                     rows.push(None);
@@ -375,7 +375,7 @@ pub(crate) fn restore_spatial_index(
 
 pub(crate) fn restore_spatial_index_v2(
     values: &PyGeometryArray,
-    handles: Vec<usize>,
+    handles: &[usize],
     next_handle: usize,
     has_metadata: bool,
 ) -> PyResult<PySpatialIndex> {
@@ -421,7 +421,7 @@ pub(crate) fn restore_spatial_index_v2(
         let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
             row.row().with_shape(std::clone::Clone::clone)?,
         )));
-        let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone());
+        let geometry = PyGeometry::from_prepared_plan(&plan, values.frame.clone());
         let Some(bounds) = geometry.shape.bounds() else {
             return Err(GeometryError::new_err(format!(
                 "spatial index pickle payload marks empty handle {handle} as live"
@@ -990,7 +990,7 @@ mod ownership_tests {
         )
         .unwrap();
         let mut index =
-            restore_spatial_index_v2(&values, vec![7, 63, 0x0001_0001], 70_000, false).unwrap();
+            restore_spatial_index_v2(&values, &[7, 63, 0x0001_0001], 70_000, false).unwrap();
 
         assert!(matches!(&index.rows.boxed, BoxedRows::Sparse(_)));
         assert_eq!(index.rows.next_handle, 70_000);
@@ -1026,7 +1026,7 @@ mod ownership_tests {
     fn exhausted_handle_domain_rejects_insert_without_state_change() {
         let maximum = isize::MAX as usize;
         let values = PyGeometryArray::from_shapes(Vec::new(), Frame::None).unwrap();
-        let mut index = restore_spatial_index_v2(&values, Vec::new(), maximum, false).unwrap();
+        let mut index = restore_spatial_index_v2(&values, &[], maximum, false).unwrap();
         let geometry = PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(4.0, 5.0))),
             Frame::None,
@@ -1057,8 +1057,8 @@ mod ownership_tests {
         )
         .unwrap();
         let handles = [7, 63, 0x0001_0001];
-        let small = restore_spatial_index_v2(&values, handles.to_vec(), 70_000, false).unwrap();
-        let large = restore_spatial_index_v2(&values, handles.to_vec(), 1 << 40, false).unwrap();
+        let small = restore_spatial_index_v2(&values, &handles, 70_000, false).unwrap();
+        let large = restore_spatial_index_v2(&values, &handles, 1 << 40, false).unwrap();
 
         assert_eq!(HeapSize::heap_bytes(&small), HeapSize::heap_bytes(&large));
         let (small_size, small_size_allocations) =

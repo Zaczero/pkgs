@@ -1,5 +1,4 @@
 #![expect(
-    clippy::needless_pass_by_value,
     clippy::too_many_arguments,
     clippy::trivially_copy_pass_by_ref,
     reason = "PyO3 extractors and method signatures intentionally follow Python ownership and call shapes"

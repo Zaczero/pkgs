@@ -54,8 +54,8 @@ pub(crate) struct IndirectFloat64Buffer {
 }
 
 impl IndirectFloat64Buffer {
-    fn from_values_shape(values: Vec<f64>, shape: Vec<usize>) -> PyResult<Self> {
-        match shape.as_slice() {
+    fn from_values_shape(values: Vec<f64>, shape: &[usize]) -> PyResult<Self> {
+        match shape {
             [n] => {
                 let n = *n;
                 if values.len() != n {
@@ -436,7 +436,7 @@ pub(crate) fn indirect_float64_buffer(
     values: Vec<f64>,
     shape: Vec<usize>,
 ) -> PyResult<IndirectFloat64Buffer> {
-    IndirectFloat64Buffer::from_values_shape(values, shape)
+    IndirectFloat64Buffer::from_values_shape(values, &shape)
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

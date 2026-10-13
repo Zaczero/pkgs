@@ -245,7 +245,7 @@ impl PyGeometry {
             coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
             slf.clone().unbind().into_any(),
         );
-        let replacement = map_coordinates_callback(py, coords, func)?;
+        let replacement = map_coordinates_callback(py, &coords, func)?;
         let shape = replace_shape_coordinates(geometry.shape.shape(), &replacement)?;
         Ok(geometry.typed_shape(shape))
     }

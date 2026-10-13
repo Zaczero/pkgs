@@ -318,9 +318,9 @@ impl GridSourceAdmission {
             })
     }
 
-    fn normalize_shape(shape: Shape) -> Result<Shape, GridCoverError> {
-        crate::validate_lonlat_shape(&shape)?;
-        let normalized = normalize_grid_source(&shape);
+    fn normalize_shape(shape: &Shape) -> Result<Shape, GridCoverError> {
+        crate::validate_lonlat_shape(shape)?;
+        let normalized = normalize_grid_source(shape);
         ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized)?;
         Ok(normalized)
     }
@@ -334,7 +334,7 @@ impl GridSourceAdmission {
         } else {
             geometry.shape.shape().clone()
         };
-        Ok(PyGeometry::wgs84(Self::normalize_shape(shape)?))
+        Ok(PyGeometry::wgs84(Self::normalize_shape(&shape)?))
     }
 
     pub(crate) fn admit_array_shapes(
@@ -374,7 +374,7 @@ impl GridSourceAdmission {
                         *output
                             .get_mut(*logical)
                             .expect("source logical row fits admission output") =
-                            Self::normalize_shape(shape)
+                            Self::normalize_shape(&shape)
                                 .map(Some)
                                 .map_err(|error| error.at_row(*logical));
                     }
@@ -395,7 +395,7 @@ impl GridSourceAdmission {
             });
             *output
                 .get_mut(logical)
-                .expect("source logical row fits admission output") = Self::normalize_shape(shape)
+                .expect("source logical row fits admission output") = Self::normalize_shape(&shape)
                 .map(Some)
                 .map_err(|error| error.at_row(logical));
         }

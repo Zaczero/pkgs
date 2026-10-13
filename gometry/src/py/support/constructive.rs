@@ -344,7 +344,7 @@ pub(crate) fn py_polygonize_full(
         },
     };
     let result_type = polygonize_result_type(py)?;
-    let parts = Groups::polygonize_full_parts(full, frame, missing)?;
+    let parts = Groups::polygonize_full_parts(full, &frame, missing.as_ref())?;
     let result = result_type.call1(parts)?;
     Ok(result.unbind())
 }
