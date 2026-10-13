@@ -1,4 +1,4 @@
-use pyo3::types::{PyDictMethods as _, PyTupleMethods as _};
+use pyo3::types::PyTupleMethods as _;
 
 use crate::boundary::coordinates::measure_shape;
 use crate::dispatch::{MetricOp, kernels};
