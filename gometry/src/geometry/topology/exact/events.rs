@@ -6,8 +6,9 @@ use super::{
     vector_difference,
 };
 use crate::error::Result;
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{GeometryErrorKind, Work};
+use crate::work::Work;
 
 pub(in crate::geometry::topology::exact) fn compare_cut_events(
     left: &CutEvent,

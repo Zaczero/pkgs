@@ -12,10 +12,11 @@ use crate::geometry::{
     ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, CoordinateAxes, Coordinates,
     ExactRational, FacetBvh, Ordering, Point, PointSetIndex, Polygon, PreparedLinework,
     RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
-    SquaredDistanceKey, Unmetered, VertexProvenance, XY, point_distance, point_distance_squared,
+    SquaredDistanceKey, VertexProvenance, XY, point_distance, point_distance_squared,
     point_in_ccw_triangle, point_pair_distance_key, point_segment_distance,
     point_segment_exact_distance_key, ring_winding, same_point,
 };
+use crate::work::Unmetered;
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
 /// reference linework used by the validity tests.

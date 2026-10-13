@@ -6,11 +6,12 @@ use super::{
     QuotientNode, QuotientNodeId, compare_quotient_keys, quotient_key, source_chart_point,
 };
 use crate::error::{ResourceError, Result};
-#[cfg(test)]
-use crate::geometry::Unmetered;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{ExpansionBudget, Work, for_each_candidate_pair};
+use crate::geometry::{ExpansionBudget, for_each_candidate_pair};
+#[cfg(test)]
+use crate::work::Unmetered;
+use crate::work::Work;
 
 impl ExactGeographicChartInventory {
     #[cfg(test)]

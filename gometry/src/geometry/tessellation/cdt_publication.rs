@@ -17,8 +17,9 @@ use crate::geometry::tessellation::{
 };
 use crate::geometry::{
     Coordinates as _, ExpansionBudget, GeometryErrorKind, PublishedTriangleVertices, Shape,
-    TopologyDomain, Work,
+    TopologyDomain,
 };
+use crate::work::Work;
 use crate::{Frame, PyGeometryArray};
 
 pub(crate) struct PreparedCdtDrawing {
@@ -95,7 +96,7 @@ pub(crate) fn publish_cdt_array(
     let mut source_root_uses = Vec::new();
     let mut chart_restrictions = Vec::new();
     let mut next_image = 0_usize;
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     append_drawing(
         drawing,
         None,
@@ -131,7 +132,7 @@ pub(crate) struct CdtGroupsDrawingWriter {
     chart_restrictions: Vec<DirectedChartRestrictionUse>,
     offsets: Vec<i64>,
     next_image: usize,
-    work: crate::geometry::Unmetered,
+    work: crate::work::Unmetered,
 }
 
 impl CdtGroupsDrawingWriter {
@@ -157,7 +158,7 @@ impl CdtGroupsDrawingWriter {
             chart_restrictions: Vec::new(),
             offsets,
             next_image: 0,
-            work: crate::geometry::Unmetered,
+            work: crate::work::Unmetered,
         })
     }
 

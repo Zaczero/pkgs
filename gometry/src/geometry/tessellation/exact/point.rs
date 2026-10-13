@@ -11,7 +11,7 @@ use super::{
     try_difference,
 };
 use crate::error::{Error, ErrorKind};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::circumcenter::CertifiedCenter;
 use crate::geometry::{GeometryErrorKind, Result, XY};
 

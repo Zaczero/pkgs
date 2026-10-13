@@ -11,8 +11,8 @@ use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 use crate::geometry::GeometryErrorKind;
-use crate::geometry::embedding_search::Work;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::work::Work;
 
 pub(in crate::geometry::topology) struct GeographicCoverageBoundaryPlans<'q> {
     pub(in crate::geometry::topology) topology: &'q super::super::q::ExactGeographicTopology,
@@ -478,8 +478,9 @@ fn live_ids(live: &[bool], work: &mut impl Work) -> Result<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::geographic::GeographicFrame;
+    use crate::geometry::Shape;
     use crate::geometry::coverage::CoverageOverlapRule;
-    use crate::geometry::{Shape, Unmetered};
+    use crate::work::Unmetered;
 
     fn build_analysis(rows: &[Shape]) -> GeographicCoverageAnalysis {
         super::super::analyze_geographic_coverage(

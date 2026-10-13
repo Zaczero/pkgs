@@ -282,7 +282,7 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
 ) -> Result<ProducerDrawingReceipt> {
     use std::sync::Arc;
 
-    use crate::geometry::Unmetered;
+    use crate::work::Unmetered;
 
     let mut points = Vec::new();
     let mut ring_ends = Vec::new();
@@ -330,7 +330,7 @@ pub(crate) fn finish_mesh_publication_groups(
 ) -> Result<FinishedGeometry> {
     use std::sync::Arc;
 
-    use crate::geometry::Unmetered;
+    use crate::work::Unmetered;
 
     if missing
         .as_ref()

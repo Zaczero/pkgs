@@ -16,7 +16,7 @@ use super::{
 use crate::collections::HashSet;
 use crate::error::{ErrorKind, Result};
 use crate::geographic::ChartPointSite;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::publication::{
     ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };

@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::geographic::{
     ChartPole, ChartStep, GeodeticPole, GeographicFrame, GeographicRing, RingSummary,
 };
-use crate::geometry::exact_arith::{two_product, two_sum};
+use crate::geometry::numerics::product::{two_product, two_sum};
 use crate::geometry::tessellation::exact::{ExactDyadic, outward_ratio_bounds, round_ratio};
 use crate::geometry::{
     ChartMetric, Coordinates as _, ExactFactorialArea, GeometryErrorKind, Polygon, Ring,

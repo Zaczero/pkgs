@@ -1,10 +1,11 @@
 use super::{
     ChartSpan, ChartSpanId, CutChart, ExactGeographicTopology, ExactRational, GeometryErrorKind,
     GlobalFaceId, GlobalFaceStructure, QCandidate, QCoordinates, QDartId, QEmbeddingEmission,
-    QNode, QNodeId, QNodeKey, QPort, QPortId, QuotientFaces, ResourceError, Result, Work,
+    QNode, QNodeId, QNodeKey, QPort, QPortId, QuotientFaces, ResourceError, Result,
     align_native_chart_lift, assigned_port_point, compare_qnode_keys, global_face_structure,
     reconstruct_cut_ports, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology) struct QFaceStructure {
     pub(in crate::geometry::topology) global: GlobalFaceStructure,

@@ -3,8 +3,9 @@ use std::sync::Arc;
 use super::{
     ArrayRows, CoordinateAxes, ExactChartPoint, GeometryArrayStorage, GeometryErrorKind,
     LiteralAddress, LiteralRowLayout, Point, ResourceError, Result, Shape, ShapeLiteralLayout,
-    StorageLayout, StorageTarget, ValidityMask, Work,
+    StorageLayout, StorageTarget, ValidityMask,
 };
+use crate::work::Work;
 
 #[derive(Clone)]
 pub(in crate::geometry) struct CheckedLiteralRecord<I> {
