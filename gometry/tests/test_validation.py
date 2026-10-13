@@ -842,6 +842,33 @@ def test_geographic_polygonize_full_keeps_seam_faces_and_source_diagnostics() ->
     assert all(row is None or len(row) == 0 for row in result.invalid_rings)
 
 
+def test_geographic_polar_polygonize_full_keeps_cap_face() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    lines = gm.GeometryArray([
+        gm.LineString([(0, 80), (90, 80)], crs=crs),
+        gm.LineString([(90, 80), (180, 80)], crs=crs),
+        gm.LineString([(180, 80), (270, 80)], crs=crs),
+        gm.LineString([(270, 80), (0, 80)], crs=crs),
+    ])
+
+    result = gm.polygonize_all(lines, diagnostics=True)
+
+    assert len(result.polygons) == 1
+    cap = result.polygons[0]
+    assert cap.crs == gm.CRS(crs)
+    assert gm.covers(cap, gm.Point(45, 85, crs=crs))
+    assert gm.covers(cap, gm.Point(-135, 85, crs=crs))
+    assert not gm.covers(cap, gm.Point(45, 75, crs=crs))
+    assert all(
+        sum(len(row) for row in groups) == 0
+        for groups in (
+            result.cut_edges,
+            result.dangles,
+            result.invalid_rings,
+        )
+    )
+
+
 def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() -> None:
     first = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
     missing = None
