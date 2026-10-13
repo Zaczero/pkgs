@@ -1047,6 +1047,10 @@ mod validity_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn prepared_diagnostics_preserve_repeated_collection_occurrences() {
         let line = Shape::LineString(
             crate::geometry::LineSeq::try_new(

@@ -59,6 +59,10 @@ impl PolygonSummary {
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+    )]
     fn add_ring(&mut self, shell: bool, scan: RingScan) {
         if shell {
             self.shell = Some(PolygonShell {
@@ -596,6 +600,10 @@ impl<Q: PointQuery> StreamingLocation<Q> {
         self.visit_curve_columns(curve.xs(), curve.ys())
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+    )]
     fn visit_curve_columns(&mut self, xs: &[f64], ys: &[f64]) -> Result<()> {
         let Some((&first_x, &first_y)) = xs.first().zip(ys.first()) else {
             return Ok(());

@@ -23,6 +23,7 @@ fn crossing_hole_subtraction_keeps_a_zero_turn_world_band_in_its_chart() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
     let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -147,6 +148,7 @@ fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart(
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn reversed_grad_hole_overlay_retains_meridian_ordinates() {
     const CRS: &str = r#"GEOGCS["West south grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]"#;
     let state = crate::crs::runtime_state_snapshot().unwrap();

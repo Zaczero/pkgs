@@ -42,6 +42,10 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
         clippy::indexing_slicing,
         reason = "center components index the admitted center map; dense IDs occupy its prefix or are assigned immediately before their coordinate is published, and the intern table only returns those IDs"
     )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+    )]
     fn resolve<'r>(
         vertex: &'r DualVertex,
         centers: &'r [exact::ExactPoint],

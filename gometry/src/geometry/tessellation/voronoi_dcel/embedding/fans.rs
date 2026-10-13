@@ -5,6 +5,10 @@ use super::super::{
     fan_target, open_xy_cycle_winding, try_sort_by,
 };
 
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 pub(in crate::geometry::tessellation::voronoi_dcel) fn rounded_fan_angle_cmp(
     origin: XY,
     left: XY,

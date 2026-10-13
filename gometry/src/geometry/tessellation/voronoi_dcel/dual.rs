@@ -436,6 +436,10 @@ fn dual_point_in_cycle(
 /// the other three sides. Identical verdict, one filtered comparison instead of
 /// six interval operations. A degenerate rectangle falls back to the general
 /// orientation test.
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn dual_clip_convex(
     ring: Vec<Tagged>,
     site: &Site,
@@ -767,6 +771,10 @@ pub(super) fn dual_build_rings(
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "direction_changes is bounded by the number of vertices in this admitted ring"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
 )]
 pub(super) fn certify_convex_cell(ring: &[XY], site: XY) -> bool {
     let count = ring.len();

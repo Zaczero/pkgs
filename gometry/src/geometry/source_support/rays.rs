@@ -111,6 +111,10 @@ pub(super) fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
     groups
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+)]
 pub(in crate::geometry) fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {
     let left_upper = left.y > query.y || (left.y == query.y && left.x > query.x);
     let right_upper = right.y > query.y || (right.y == query.y && right.x > query.x);
@@ -269,6 +273,10 @@ pub(super) fn ring_kind(ring: &Ring) -> RingKind {
     ring_kind_columns(ring.xs(), ring.ys())
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+)]
 pub(crate) fn ring_kind_columns(xs: &[f64], ys: &[f64]) -> RingKind {
     let Some((&ax, &ay)) = xs.first().zip(ys.first()) else {
         return RingKind::Collapsed;
@@ -288,6 +296,10 @@ pub(crate) fn ring_kind_columns(xs: &[f64], ys: &[f64]) -> RingKind {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+)]
 pub(super) fn has_nonzero_segment(xs: &[f64], ys: &[f64]) -> bool {
     xs.array_windows::<2>()
         .zip(ys.array_windows::<2>())
