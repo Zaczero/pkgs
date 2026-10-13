@@ -212,12 +212,12 @@ pub(in crate::geometry::topology::q_embedding) fn candidate_chart_point_with_wor
 pub(in crate::geometry::topology::q_embedding) fn assigned_emission_site(
     frame: GeographicFrame,
     candidate: QCandidate,
-) -> Result<super::emission::AssignedSite> {
+) -> Result<super::super::super::emission::AssignedSite> {
     let longitude = frame
         .longitude()
         .canonicalize(candidate.native.x)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    Ok(super::emission::AssignedSite {
+    Ok(super::super::super::emission::AssignedSite {
         longitude: crate::geographic::RetainedLongitudeSite::new(longitude, candidate.periods),
         latitude: candidate.native.y,
     })
@@ -229,9 +229,9 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
     source_chart_point: &ExactChartPoint,
     source_record: Option<Point>,
     occurrences: Vec<OccurrenceSource>,
-    bank: Option<super::emission::ChartSide>,
+    bank: Option<super::super::super::emission::ChartSide>,
     budget: &mut impl Work,
-) -> Result<super::emission::NativePortData> {
+) -> Result<super::super::super::emission::NativePortData> {
     let longitude_axis = frame.longitude();
     let (_, chart_lift) = split_rational_native_site_with_work(
         &source_chart_point.x,
@@ -260,14 +260,14 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
         .ok_or(ResourceError::SizeOverflow)?;
     let (longitude, spelling, source_record, bank) = if let Some(bank) = bank {
         let longitude = match bank {
-            super::emission::ChartSide::East => frame.longitude().half_period(),
-            super::emission::ChartSide::West => -frame.longitude().half_period(),
+            super::super::super::emission::ChartSide::East => frame.longitude().half_period(),
+            super::super::super::emission::ChartSide::West => -frame.longitude().half_period(),
         };
         let retained_record =
             source_record.filter(|record| record.x.to_bits() == longitude.to_bits());
         (
             longitude,
-            super::emission::PortSpelling::Seam(bank),
+            super::super::super::emission::PortSpelling::Seam(bank),
             retained_record,
             Some(bank),
         )
@@ -275,7 +275,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
         match quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)? {
             ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole => (
                 record.x,
-                super::emission::PortSpelling::Pole {
+                super::super::super::emission::PortSpelling::Pole {
                     native_longitude: record.x,
                 },
                 Some(record),
@@ -283,25 +283,29 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
             ),
             ExactQuotientKey::Seam(_) => {
                 let side = if chart_periods.rem_euclid(2) == 0 {
-                    super::emission::ChartSide::West
+                    super::super::super::emission::ChartSide::West
                 } else {
-                    super::emission::ChartSide::East
+                    super::super::super::emission::ChartSide::East
                 };
                 let longitude = match side {
-                    super::emission::ChartSide::East => frame.longitude().half_period(),
-                    super::emission::ChartSide::West => -frame.longitude().half_period(),
+                    super::super::super::emission::ChartSide::East => {
+                        frame.longitude().half_period()
+                    },
+                    super::super::super::emission::ChartSide::West => {
+                        -frame.longitude().half_period()
+                    },
                 };
                 let retained_record = (record.x.to_bits() == longitude.to_bits()).then_some(record);
                 (
                     longitude,
-                    super::emission::PortSpelling::Seam(side),
+                    super::super::super::emission::PortSpelling::Seam(side),
                     retained_record,
                     Some(side),
                 )
             },
             ExactQuotientKey::Coordinate(_) => (
                 record.x,
-                super::emission::PortSpelling::Interior {
+                super::super::super::emission::PortSpelling::Interior {
                     periods: chart_periods,
                 },
                 Some(record),
@@ -318,7 +322,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
                 )?;
                 (
                     longitude,
-                    super::emission::PortSpelling::Pole {
+                    super::super::super::emission::PortSpelling::Pole {
                         native_longitude: longitude,
                     },
                     None,
@@ -327,24 +331,28 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
             },
             ExactQuotientKey::Seam(_) => {
                 let side = if chart_periods.rem_euclid(2) == 0 {
-                    super::emission::ChartSide::West
+                    super::super::super::emission::ChartSide::West
                 } else {
-                    super::emission::ChartSide::East
+                    super::super::super::emission::ChartSide::East
                 };
                 let longitude = match side {
-                    super::emission::ChartSide::East => frame.longitude().half_period(),
-                    super::emission::ChartSide::West => -frame.longitude().half_period(),
+                    super::super::super::emission::ChartSide::East => {
+                        frame.longitude().half_period()
+                    },
+                    super::super::super::emission::ChartSide::West => {
+                        -frame.longitude().half_period()
+                    },
                 };
                 (
                     longitude,
-                    super::emission::PortSpelling::Seam(side),
+                    super::super::super::emission::PortSpelling::Seam(side),
                     None,
                     Some(side),
                 )
             },
             ExactQuotientKey::Coordinate(_) => (
                 candidate.native.x,
-                super::emission::PortSpelling::Interior {
+                super::super::super::emission::PortSpelling::Interior {
                     periods: chart_periods,
                 },
                 None,
@@ -360,7 +368,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
     } else {
         source_chart_point.try_clone_with_work(budget)?
     };
-    Ok(super::emission::NativePortData {
+    Ok(super::super::super::emission::NativePortData {
         node,
         point,
         spelling,
@@ -374,13 +382,16 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_port_to_seam(
     seam: &NativePortData,
     budget: &mut impl Work,
 ) -> Result<()> {
-    if !matches!(&seam.spelling, super::emission::PortSpelling::Seam(_)) {
+    if !matches!(
+        &seam.spelling,
+        super::super::super::emission::PortSpelling::Seam(_)
+    ) {
         return Err(GeometryErrorKind::Invalid(
             "native chart alignment requires a seam endpoint".into(),
         )
         .into());
     }
-    let super::emission::PortSpelling::Interior { periods } = &port.spelling else {
+    let super::super::super::emission::PortSpelling::Interior { periods } = &port.spelling else {
         return Ok(());
     };
     let old_periods = *periods;
@@ -416,7 +427,7 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_port_to_seam(
         .checked_add(lift_delta as i64)
         .ok_or(ResourceError::SizeOverflow)?;
     port.point.x = longitude;
-    port.spelling = super::emission::PortSpelling::Interior { periods };
+    port.spelling = super::super::super::emission::PortSpelling::Interior { periods };
     if port.source_record.is_some_and(|record| {
         ExactRational::from_f64(record.x) != port.point.x
             || ExactRational::from_f64(record.y) != port.point.y
@@ -427,7 +438,7 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_port_to_seam(
 }
 pub(in crate::geometry::topology::q_embedding) fn native_q_port_data(
     topology: &ExactGeographicTopology,
-    builder: &super::emission::EmissionBuilder<'_>,
+    builder: &super::super::super::emission::EmissionBuilder<'_>,
     port_id: QPortId,
     port_points: &[Option<ExactChartPoint>],
     sites: &[Option<AssignedSite>],
@@ -461,13 +472,13 @@ pub(in crate::geometry::topology::q_embedding) fn native_q_port_data(
     let half = ExactRational::from_f64(frame.longitude().half_period());
     let negative_half = ExactRational::zero().try_subtract_with_work(&half, budget)?;
     let bank = if chart_point.x.try_cmp_with_work(&half, budget)?.is_eq() {
-        Some(super::emission::ChartSide::East)
+        Some(super::super::super::emission::ChartSide::East)
     } else if chart_point
         .x
         .try_cmp_with_work(&negative_half, budget)?
         .is_eq()
     {
-        Some(super::emission::ChartSide::West)
+        Some(super::super::super::emission::ChartSide::West)
     } else {
         None
     };
@@ -476,7 +487,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_q_port_data(
     } else {
         budget.charge_into_error(1)?;
         vec![OccurrenceSource {
-            origin: super::emission::VertexOrigin::SourceNode(port.node),
+            origin: super::super::super::emission::VertexOrigin::SourceNode(port.node),
             source_trace: None,
         }]
     };

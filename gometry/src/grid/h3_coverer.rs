@@ -17,10 +17,12 @@ use crate::grid::affine_source::{
     GeographicCoverageSource, GridDegreePoint, GridPointClass, RectClass, SphericalGridTarget,
 };
 use crate::grid::coverer::dissolved_polygonal_area;
+use crate::grid::spherical_arc::contact::classify_h3_arc_contact;
+use crate::grid::spherical_arc::h3_boundary::h3_bbox_positive_witnesses;
+use crate::grid::spherical_arc::h3_fan::h3_cell_plan;
 use crate::grid::spherical_arc::{
     AffineSourceArc, ArcContact, Bound, CertifiedH3DescendantCap, DegreeWindowResult, H3ArcSet,
-    H3CellPlan, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, h3_bbox_positive_witnesses,
-    h3_cell_plan,
+    H3CellPlan, H3FanPlan, H3FanPointClass,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 
@@ -553,7 +555,7 @@ pub(crate) enum H3LeafClass {
 /// source/cell boundary contact and source-in-cell witnesses veto before a
 /// cell-center PIP can establish area containment; lower-dimensional contact
 /// can retain a leaf but cannot downgrade an areal interior proof.
-pub(crate) fn classify_h3_overlap(
+pub(in crate::grid) fn classify_h3_overlap(
     source: &GeographicCoverageSource,
     cell: &H3CellPlan,
 ) -> H3LeafClass {

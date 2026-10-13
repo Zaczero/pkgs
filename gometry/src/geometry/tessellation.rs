@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
+mod cdt_publication;
 mod earcut;
 mod earcut_bridges;
 mod earcut_sweep;
@@ -17,20 +18,17 @@ mod sampling;
 mod shape;
 mod voronoi;
 mod voronoi_dcel;
+mod voronoi_publication;
 mod voronoi_receipt;
-
-#[expect(
-    unused_imports,
-    reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
-)]
-pub(crate) use delaunay::{
-    CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
-    RefinementConstruction, SourceConstraint, SourcePiece,
+pub(crate) use cdt_publication::{
+    CdtGroupsDrawingWriter, PreparedCdtDrawing, prepare_geographic_cdt_drawing, publish_cdt_array,
 };
+pub(crate) use delaunay::{CdtSideBoundaryUse, ConstrainedMeshPlan, publish_constrained_plan};
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
+pub(crate) use voronoi_publication::VoronoiDrawingWriter;
 pub(in crate::geometry) use voronoi_receipt::{
     VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
     VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
@@ -160,6 +158,10 @@ pub(crate) use sampling::{
     publish_sampling_groups, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
 };
 use voronoi::{DelaunayComplex, delaunay_complex, snap_sites};
+
+#[cfg(test)]
+#[path = "tessellation/tests/support.rs"]
+mod test_support;
 
 #[cfg(test)]
 mod tests;

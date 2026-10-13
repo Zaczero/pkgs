@@ -189,6 +189,28 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     assert line.split_antimeridian().to_wkt() == split_rows[0].to_wkt()
 
 
+def test_split_antimeridian_nullable_gather_keeps_logical_rows() -> None:
+    crossing = gm.LineString([(170.0, -10.0), (-170.0, 10.0)], crs=4326)
+    ordinary = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    source = gm.GeometryArray([crossing, None, ordinary, crossing])
+
+    gathered = source[[3, 1, 0, 2, 3]].split_antimeridian()
+
+    expected_crossing = crossing.split_antimeridian().to_wkt()
+    assert gathered.is_missing.tolist() == [False, True, False, False, False]
+    assert [
+        gathered[index].to_wkt() if gathered[index] is not None else None
+        for index in range(len(gathered))
+    ] == [
+        expected_crossing,
+        None,
+        expected_crossing,
+        ordinary.to_wkt(),
+        expected_crossing,
+    ]
+    assert gathered.crs == gm.CRS('EPSG:4326')
+
+
 def test_multipolygon_perimeter_cancels_partial_periodic_seam_overlap() -> None:
     geometry = gm.from_wkt(
         'MULTIPOLYGON (((170 -10, 180 -10, 180 10, 170 10, 170 -10)),'
@@ -1135,6 +1157,42 @@ def test_split_antimeridian_preserves_north_pole_ownership() -> None:
             assert not gm.contains(split, point)
             assert not gm.intersects(source, point)
             assert not gm.intersects(split, point)
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+
+def test_t2_split_reused_notched_overlay_keeps_pole_free_strip_support() -> None:
+    source = gm.Polygon(
+        [
+            (-180, 5),
+            (-90, 5),
+            (-10, 5),
+            (-10, -10),
+            (0, -10),
+            (10, -10),
+            (10, 5),
+            (90, 5),
+            (180, 5),
+            (180, 90),
+            (90, 90),
+            (0, 90),
+            (-90, 90),
+            (-180, 90),
+            (-180, 5),
+        ],
+        crs=4326,
+    )
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+    strip = gm.intersection(source, band)
+    split = strip.split_antimeridian()
+
+    assert split.is_valid
+    assert split.validate().valid
+    for point in ((0, -5), (0, 20), (180, 20), (-180, 20)):
+        assert gm.covers(split, gm.Point(*point, crs=4326)), point
+    for point in ((50, 0), (0, 60), (0, 90), (0, -90)):
+        assert not gm.contains(split, gm.Point(*point, crs=4326)), point
+    assert split.area == pytest.approx(strip.area)
+    assert split.length == pytest.approx(strip.length)
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
 

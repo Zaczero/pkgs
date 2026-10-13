@@ -144,6 +144,33 @@ def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
     )
 
 
+def test_geojson_split_preserves_banks_across_nullable_gathered_routes() -> None:
+    crossing = gm.LineString([(170.0, 10.0, 10.0), (-170.0, 10.0, 30.0)])
+    expected = {
+        'type': 'MultiLineString',
+        'coordinates': [
+            [[170.0, 10.0, 10.0], [180.0, 10.0, 20.0]],
+            [[-180.0, 10.0, 20.0], [-170.0, 10.0, 30.0]],
+        ],
+    }
+
+    assert json.loads(crossing.to_geojson()) == expected
+    assert crossing.__geo_interface__ == expected
+    assert gm.to_feature(crossing)['geometry'] == expected
+
+    rows = gm.GeometryArray([crossing, None, crossing])[[2, 1, 0, 2]]
+    expected_rows = [expected, None, expected, expected]
+    assert [
+        json.loads(text) if text is not None else None for text in rows.to_geojson()
+    ] == (expected_rows)
+    assert [
+        feature['geometry'] for feature in rows.__geo_interface__['features']
+    ] == expected_rows
+    assert [
+        feature['geometry'] for feature in gm.to_feature_collection(rows)['features']
+    ] == expected_rows
+
+
 def test_geojson_width_summary_counts_coordinates_after_antimeridian_normalization() -> (
     None
 ):

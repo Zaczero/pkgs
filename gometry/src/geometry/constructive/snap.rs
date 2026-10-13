@@ -3,14 +3,16 @@ use std::ops::ControlFlow;
 
 use crate::NonNegative;
 use crate::geometry::constructive::Result;
+use crate::geometry::segments::ordering::try_sort_by;
+use crate::geometry::segments::projection::point_segment_distance_and_projection;
 use crate::geometry::{
     Bounds, BulkRTree, ChartMetric, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind,
     GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
     RepairMethod, Ring, RootMetricState, RunIdentity, Segment, SegmentProjection, Shape,
     SourceArcContext, TopologyDomain, XY, bounds_distance_squared, dedup_consecutive_points,
-    interpolate_source_projection, point_distance, point_segment_distance_and_projection,
-    points_dwithin, push_distinct_xy_position, repair_shape_in_frame, same_point,
-    same_topological_coordinate, source_arc_ordinates_eligible, validate_shape_in_frame,
+    interpolate_source_projection, point_distance, points_dwithin, push_distinct_xy_position,
+    repair_shape_in_frame, same_point, same_topological_coordinate, source_arc_ordinates_eligible,
+    validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -253,7 +255,7 @@ impl SnapReference {
             },
         }
         // Equal projections use the reference XY set rather than its input order.
-        crate::geometry::try_sort_by(&mut candidates, |a, b| {
+        try_sort_by(&mut candidates, |a, b| {
             Ok(a.0.cmp_along(&b.0)?.then_with(|| compare_xy(a.1, b.1)))
         })?;
         // Collapse only genuine duplicates — references at an identical

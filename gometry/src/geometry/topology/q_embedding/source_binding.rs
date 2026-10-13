@@ -123,9 +123,9 @@ impl QSourceImages<'_> {
     }
 }
 impl CheckedImages<QSourceImage> for QSourceImages<'_> {
-    pub(in crate::geometry::topology::q_embedding) fn image(
+    fn image(
         &self,
-        _address: super::super::embedding_completion::LiteralAddress,
+        _address: super::super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
     ) -> Result<&ExactChartPoint> {
         match image {
@@ -155,9 +155,9 @@ pub(in crate::geometry::topology::q_embedding) struct AssignedSourceChart<'a> {
     pub(in crate::geometry::topology::q_embedding) publication_ordinates: &'a [NodeOrdinates],
 }
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
-    pub(in crate::geometry::topology::q_embedding) fn read_point<W: Work>(
+    fn read_point<W: Work>(
         &mut self,
-        _address: super::super::embedding_completion::LiteralAddress,
+        _address: super::super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         _expected_axes: crate::geometry::CoordinateAxes,
@@ -253,7 +253,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                     )
                     .into());
                 }
-                let expected_record = super::emission::sites::with_vertex_axes(
+                let expected_record = super::super::overlay::with_vertex_axes(
                     EmittedVertex {
                         port,
                         point: record,
@@ -285,11 +285,8 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 {
                     return Ok(None);
                 }
-                let expected = super::emission::ordinates::with_publication_axes(
-                    point,
-                    ordinates,
-                    stored_axes,
-                )?;
+                let expected =
+                    super::super::overlay::with_publication_axes(point, ordinates, stored_axes)?;
                 work.charge_into_error(1)?;
                 if expected != record {
                     return Ok(None);
@@ -308,9 +305,9 @@ pub(in crate::geometry::topology::q_embedding) struct SourceOnlyReceipt<'a> {
     pub(in crate::geometry::topology::q_embedding) publication: Option<&'a PublicationInventory>,
 }
 impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
-    pub(in crate::geometry::topology::q_embedding) fn image(
+    fn image(
         &self,
-        address: super::super::embedding_completion::LiteralAddress,
+        address: super::super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
     ) -> Result<&ExactChartPoint> {
         if let QSourceImage::PublicationSample(sample) = image
@@ -328,9 +325,9 @@ impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
     }
 }
 impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
-    pub(in crate::geometry::topology::q_embedding) fn read_point<W: Work>(
+    fn read_point<W: Work>(
         &mut self,
-        address: super::super::embedding_completion::LiteralAddress,
+        address: super::super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         expected_axes: crate::geometry::CoordinateAxes,

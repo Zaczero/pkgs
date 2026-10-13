@@ -72,9 +72,9 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
             let within = if candidate_site.retained_chart_site.is_none()
                 && site.retained_chart_site.is_none()
             {
-                exact::distance_within(candidate_site.point.xy(), site.point.xy(), radius)?
+                exact::point::distance_within(candidate_site.point.xy(), site.point.xy(), radius)?
             } else {
-                exact::distance_within_points(
+                exact::point::distance_within_points(
                     &candidate_site.exact_point,
                     &site.exact_point,
                     radius,
@@ -227,7 +227,7 @@ pub(super) fn delaunay_complex(
                 {
                     exact::circumcenter(a_site.point.xy(), b_site.point.xy(), c_site.point.xy())?
                 } else {
-                    exact::circumcenter_points(
+                    exact::point::circumcenter_points(
                         &a_site.exact_point,
                         &b_site.exact_point,
                         &c_site.exact_point,

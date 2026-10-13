@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::to_geojson_string_with_limit;
+use super::{geojson_output_shape, to_geojson_string_with_limit};
 use crate::error::{ErrorKind, ResourceError};
 use crate::io::*;
 use crate::test_support::allocation_count;
@@ -287,6 +287,73 @@ fn holes_serialize_clockwise() {
     assert!(
         ring_signed_area(&out["coordinates"][1]) < 0.0,
         "RFC 7946 §3.1.6 requires clockwise interior rings"
+    );
+}
+
+#[test]
+fn geographic_geojson_orientation_keeps_full_records_and_closure() {
+    let xyz_ring = |coordinates: &[(f64, f64, f64)]| {
+        Ring::closed(
+            coordinates
+                .iter()
+                .map(|&(x, y, z)| {
+                    Point::new_axes(
+                        x,
+                        y,
+                        crate::geometry::ZOrdinate(Some(z)),
+                        crate::geometry::MOrdinate(None),
+                    )
+                    .expect("finite XYZ test coordinate")
+                })
+                .collect(),
+        )
+        .expect("closed XYZ test ring")
+    };
+    let source = Shape::Polygon(Polygon::new(
+        xyz_ring(&[
+            (-0.0, 0.0, -0.0),
+            (0.0, 2.0, 20.0),
+            (2.0, 2.0, 30.0),
+            (2.0, 0.0, 40.0),
+            (-0.0, 0.0, -0.0),
+        ]),
+        vec![xyz_ring(&[
+            (0.5, 0.5, 101.0),
+            (1.5, 0.5, 102.0),
+            (1.5, 1.5, 103.0),
+            (0.5, 1.5, 104.0),
+            (0.5, 0.5, 101.0),
+        ])],
+    ));
+    let expected = Shape::Polygon(Polygon::new(
+        xyz_ring(&[
+            (-0.0, 0.0, -0.0),
+            (2.0, 0.0, 40.0),
+            (2.0, 2.0, 30.0),
+            (0.0, 2.0, 20.0),
+            (-0.0, 0.0, -0.0),
+        ]),
+        vec![xyz_ring(&[
+            (0.5, 0.5, 101.0),
+            (0.5, 1.5, 104.0),
+            (1.5, 1.5, 103.0),
+            (1.5, 0.5, 102.0),
+            (0.5, 0.5, 101.0),
+        ])],
+    ));
+
+    let prepared =
+        geojson_output_shape::<crate::crs::GeodesicMetric>(&source, geographic_domain(), None)
+            .expect("non-crossing geographic polygon prepares");
+    assert_eq!(prepared.as_ref(), &expected);
+    let text = super::to_geojson_string(&source, geographic_domain())
+        .expect("oriented polygon serializes");
+    assert!(text.contains("-0.0"));
+    let reparsed = parse_geojson(&serde_json::from_str::<Value>(&text).unwrap())
+        .expect("oriented text reparses");
+    assert_eq!(
+        crate::io::to_wkb(&reparsed, None, false).unwrap(),
+        crate::io::to_wkb(&expected, None, false).unwrap()
     );
 }
 

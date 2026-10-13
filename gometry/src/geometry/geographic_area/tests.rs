@@ -1,0 +1,11 @@
+use super::density::Harmonic;
+use super::exact::{ExactSourceBounds, add_exact_edge, exact_scaled_x, exact_scaled_y};
+use super::fast::{RowCertificate, add_fast_determinant, contract_fast, rectangle_moments};
+use super::*;
+use crate::geometry::exact_arith::ExactSign;
+include!("tests/support.rs");
+include!("tests/bounds.rs");
+include!("tests/density.rs");
+include!("tests/fast.rs");
+include!("tests/exact.rs");
+include!("tests/polygon.rs");

@@ -63,7 +63,7 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_materialized_c
     'topology,
 >(
     reference: &'reference NativeReference<'topology>,
-    parts: &super::emission::NativeMaterializedParts,
+    parts: &super::super::super::emission::NativeMaterializedParts,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
     budget: &mut impl Work,

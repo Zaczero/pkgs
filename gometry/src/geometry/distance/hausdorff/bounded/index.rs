@@ -4,11 +4,15 @@
 //! ones refused outright; the index answers both from one node tree built
 //! over the boundary edges.
 
+use super::span_bounds::{
+    box_distance_lower, nonnegative_bounds, nonnegative_upper_bound, point_segment_squared_f64,
+    supporting_line_lower_squared,
+};
+use super::support::span_point;
 use super::{
     BinaryHeap, ExactPoint, ExactSign, FloatBox, HULL_SEPARATION_LIMIT, NEAREST_CANDIDATE_LIMIT,
     NOMINATED_SITE_COUNT, PreparedSupport, Rational, Result, SelectedSpan, SquaredBounds,
-    SupportSpan, Tightness, XY, box_distance_lower, exact, line_filter_enabled, nonnegative_bounds,
-    nonnegative_upper_bound, point_segment_squared_f64, span_point, supporting_line_lower_squared,
+    SupportSpan, Tightness, XY, exact, line_filter_enabled,
 };
 use crate::scratch_pool::ScratchPool;
 

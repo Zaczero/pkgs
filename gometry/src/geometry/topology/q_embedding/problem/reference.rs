@@ -6,7 +6,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     fn prepare_native_reference(
         &mut self,
         drawing: &QEmissionDrawing<'topology>,
-        ring_roles: &[bool],
+        ring_roles: &QRingRoleCheck,
         producer: &AssignedProducerProjection,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
@@ -19,7 +19,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let area_facts = native_area_facts(drawing, ring_roles, self.emission.selected_face_roots)?;
+        let area_facts = native_area_facts(drawing, self.emission.selected_face_roots)?;
         let whole_sphere = matches!(&drawing.polygons, DrawnPolygons::WholeSphere(_));
         let has_area = whole_sphere || !area_facts.is_empty();
         let whole_sphere_region = if whole_sphere {
@@ -56,7 +56,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     continue;
                 }
                 let mut area_region = whole_sphere;
-                for &(candidate, _) in area_facts.values() {
+                for &candidate in area_facts.values() {
                     budget.charge_into_error(1)?;
                     area_region |= candidate == region;
                     if area_region {
@@ -69,7 +69,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
         }
-        let mut builder = super::super::emission::EmissionBuilder::new(
+        let mut builder = super::super::super::emission::EmissionBuilder::new(
             self.topology,
             self.emission.plan,
             &self.source_inventory,
@@ -280,16 +280,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => Some(
-                    area_facts
-                        .get(&owner)
-                        .map(|(region, _)| *region)
-                        .ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "native area walk has no selected-region fact".into(),
-                            )
-                        })?,
-                ),
+                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => {
+                    Some(area_facts.get(&owner).copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native area walk has no selected-region fact".into(),
+                        )
+                    })?)
+                },
             };
             let line_member = match walk.owner {
                 RecipeWalkOwner::Line(member) => Some(member),
@@ -320,7 +317,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 if area_region.is_some()
                     != matches!(
                         recipe.use_kind,
-                        super::super::emission::SelectedUse::AreaBoundary
+                        super::super::super::emission::SelectedUse::AreaBoundary
                     )
                 {
                     return Err(GeometryErrorKind::Invalid(
@@ -459,13 +456,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let half = ExactRational::from_f64(frame.longitude().half_period());
             let negative_half = ExactRational::zero().try_subtract_with_work(&half, budget)?;
             let bank = if chart_point.x.try_cmp_with_work(&half, budget)?.is_eq() {
-                Some(super::super::emission::ChartSide::East)
+                Some(super::super::super::emission::ChartSide::East)
             } else if chart_point
                 .x
                 .try_cmp_with_work(&negative_half, budget)?
                 .is_eq()
             {
-                Some(super::super::emission::ChartSide::West)
+                Some(super::super::super::emission::ChartSide::West)
             } else {
                 None
             };
@@ -477,7 +474,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 chart_point,
                 None,
                 vec![OccurrenceSource {
-                    origin: super::super::emission::VertexOrigin::SourceNode(vertex.port.node),
+                    origin: super::super::super::emission::VertexOrigin::SourceNode(
+                        vertex.port.node,
+                    ),
                     source_trace: None,
                 }],
                 bank,
@@ -487,7 +486,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             reference_ports.push(port_data);
             let port = builder.source_port(
                 vertex.port.id,
-                super::super::emission::VertexOrigin::SourceNode(vertex.port.node),
+                super::super::super::emission::VertexOrigin::SourceNode(vertex.port.node),
                 Some(vertex.point),
                 spelling,
             )?;
@@ -542,19 +541,44 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let mut graph_builder =
             new_native_reference_graph_builder(&area_edges, &reference_ports, budget)?;
+        let pole_path_port_count = if has_area && !whole_sphere {
+            [ChartPole::South, ChartPole::North]
+                .iter()
+                .filter(|&&pole| pole_closures.iter().any(|&(_, selected)| selected == pole))
+                .count()
+                .checked_mul(3)
+                .ok_or(ResourceError::SizeOverflow)?
+        } else {
+            0
+        };
+        budget.charge_into_error(
+            u64::try_from(pole_path_port_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        reference_ports.reserve(pole_path_port_count);
         let mut graph = if has_area {
             if !whole_sphere {
                 let mut band_events = seam_events
                     .iter()
                     .map(|event| event.event.clone())
                     .collect::<Vec<_>>();
-                let bands = native_seam_bands_from_assigned_graph(
+                let mut bands = native_seam_bands_from_assigned_graph(
                     &graph_builder,
                     &area_edges,
                     self.topology.sources.frame,
                     &mut band_events,
                     budget,
                 )?;
+                // A selected polar sector can be the unbounded side of the open
+                // chart graph; its terminal seam band still bounds the cap.
+                for &(region, pole) in &pole_closures {
+                    assign_selected_pole_seam_band(
+                        &mut bands,
+                        self.topology.sources.frame,
+                        region,
+                        pole,
+                        budget,
+                    )?;
+                }
                 for (pole, band) in [
                     (ChartPole::South, bands.first()),
                     (ChartPole::North, bands.last()),
@@ -659,10 +683,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &chart_point,
                         None,
                         vec![OccurrenceSource {
-                            origin: super::super::emission::VertexOrigin::Presentation,
+                            origin: super::super::super::emission::VertexOrigin::Presentation,
                             source_trace: None,
                         }],
-                        Some(super::super::emission::ChartSide::East),
+                        Some(super::super::super::emission::ChartSide::East),
                         budget,
                     )?;
                     let west = native_port_data(
@@ -672,12 +696,44 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &chart_point,
                         None,
                         vec![OccurrenceSource {
-                            origin: super::super::emission::VertexOrigin::Presentation,
+                            origin: super::super::super::emission::VertexOrigin::Presentation,
                             source_trace: None,
                         }],
-                        Some(super::super::emission::ChartSide::West),
+                        Some(super::super::super::emission::ChartSide::West),
                         budget,
                     )?;
+                    // Seam aliases alone carry no chart turn; ordinary pole spellings make
+                    // the named hemisphere explicit without a half-period edge.
+                    let quarter_period =
+                        self.topology.sources.frame.longitude().half_period() / 2.0;
+                    for longitude in [-quarter_period, 0.0, quarter_period] {
+                        budget.charge_into_error(1)?;
+                        let point = ExactChartPoint::from_rationals(
+                            ExactRational::from_f64(longitude),
+                            chart_point.y.try_clone_with_work(budget)?,
+                        );
+                        let [_, nearest, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &point.x,
+                            budget,
+                        )?;
+                        reference_ports.push(native_port_data(
+                            self.topology.sources.frame,
+                            node,
+                            QCandidate {
+                                native: XY::new(nearest.native, point.y.round_with_work(budget)?),
+                                periods: nearest.periods,
+                            },
+                            &point,
+                            None,
+                            vec![OccurrenceSource {
+                                origin: super::super::super::emission::VertexOrigin::Presentation,
+                                source_trace: None,
+                            }],
+                            None,
+                            budget,
+                        )?);
+                    }
                     seam_events.push(NativeSeamEventData {
                         event: NativeSeamEvent {
                             latitude: latitude.clone(),

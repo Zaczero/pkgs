@@ -492,7 +492,7 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_whole_sphere_c
     Ok(())
 }
 pub(in crate::geometry::topology::q_embedding) fn native_whole_sphere_cell_edges(
-    builder: &mut super::emission::EmissionBuilder<'_>,
+    builder: &mut super::super::super::emission::EmissionBuilder<'_>,
     frame: GeographicFrame,
     region: usize,
     presentation_candidates: &mut Vec<Option<QCandidate>>,
@@ -568,12 +568,12 @@ pub(in crate::geometry::topology::q_embedding) fn native_whole_sphere_cell_edges
             poles.push(NativePortData {
                 node,
                 point,
-                spelling: super::emission::PortSpelling::Pole {
+                spelling: super::super::super::emission::PortSpelling::Pole {
                     native_longitude: native_longitude.round_with_work(budget)?,
                 },
                 source_record: None,
                 occurrences: vec![OccurrenceSource {
-                    origin: super::emission::VertexOrigin::Presentation,
+                    origin: super::super::super::emission::VertexOrigin::Presentation,
                     source_trace: None,
                 }],
             });
@@ -582,9 +582,9 @@ pub(in crate::geometry::topology::q_embedding) fn native_whole_sphere_cell_edges
                 .and_then(|base| base.checked_add(longitude_index))
                 .ok_or(ResourceError::SizeOverflow)?;
             families.register(
-                super::emission::FeatureFamily {
-                    parent: super::emission::FeatureFamilyParent::Region(region),
-                    producer: super::emission::SampleProducerKind::WholeSphereCover,
+                super::super::super::emission::FeatureFamily {
+                    parent: super::super::super::emission::FeatureFamilyParent::Region(region),
+                    producer: super::super::super::emission::SampleProducerKind::WholeSphereCover,
                     occurrence: u32::try_from(occurrence)
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 },

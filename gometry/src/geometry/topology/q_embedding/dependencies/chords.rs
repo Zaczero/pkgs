@@ -357,6 +357,11 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_publication_pairs(
             let published_chord = published
                 .get(published_index)
                 .expect("publication sweep ordinal belongs to the publication chord table");
+            // The emitted leaf replaces this rooted source span; it is not an
+            // independent edge whose contact with its own source constrains rounding.
+            if publication_leaf_replaces_source_span(source_chord, published_chord, work)? {
+                return Ok(ControlFlow::<std::convert::Infallible>::Continue(()));
+            }
             let translated = shifted_segment(published_chord.nearest, shift, period);
             let radius = *published_chord
                 .image_radii

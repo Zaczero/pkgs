@@ -708,8 +708,7 @@
         let topology = topology(&[source])?;
         let operation = OverlayOp::Union;
         let mut budget = EvaluationBudget::new("native whole-sphere cover", 0)?;
-        let plan =
-            super::super::emission::plan::QEmissionPlan::build(&topology, operation, &mut budget)?;
+        let plan = super::super::overlay::QEmissionPlan::build(&topology, operation, &mut budget)?;
         assert!(matches!(&plan.polygons, PolygonPlan::WholeSphere(_)));
         let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
         let publication =

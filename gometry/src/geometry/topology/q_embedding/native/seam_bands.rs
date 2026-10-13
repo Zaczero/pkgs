@@ -4,7 +4,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_region_at_bank(
     graph: &NativeReferenceGraphBuilder,
     area_edges: &[NativeAreaEdge],
     query: &ExactChartPoint,
-    bank: super::emission::ChartSide,
+    bank: super::super::super::emission::ChartSide,
     hit: Option<usize>,
     frame: GeographicFrame,
     budget: &mut impl Work,
@@ -36,8 +36,8 @@ pub(in crate::geometry::topology::q_embedding) fn native_region_at_bank(
                 .into());
             }
             let longitude = ExactRational::from_f64(match bank {
-                super::emission::ChartSide::East => frame.longitude().half_period(),
-                super::emission::ChartSide::West => -frame.longitude().half_period(),
+                super::super::super::emission::ChartSide::East => frame.longitude().half_period(),
+                super::super::super::emission::ChartSide::West => -frame.longitude().half_period(),
             });
             if !start.point.x.try_cmp_with_work(&longitude, budget)?.is_eq()
                 || !end.point.x.try_cmp_with_work(&longitude, budget)?.is_eq()
@@ -49,8 +49,8 @@ pub(in crate::geometry::topology::q_embedding) fn native_region_at_bank(
             }
             let vertical = start.point.y.try_cmp_with_work(&end.point.y, budget)?;
             match bank {
-                super::emission::ChartSide::East => vertical.is_lt(),
-                super::emission::ChartSide::West => vertical.is_gt(),
+                super::super::super::emission::ChartSide::East => vertical.is_lt(),
+                super::super::super::emission::ChartSide::West => vertical.is_gt(),
             }
         } else {
             orientation == ExactSign::Positive
@@ -353,7 +353,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_seam_bands_from_assigne
             west_queries.get(index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native west seam query is unknown".into())
             })?,
-            super::emission::ChartSide::West,
+            super::super::super::emission::ChartSide::West,
             west_hit,
             frame,
             budget,
@@ -364,7 +364,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_seam_bands_from_assigne
             east_queries.get(index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native east seam query is unknown".into())
             })?,
-            super::emission::ChartSide::East,
+            super::super::super::emission::ChartSide::East,
             east_hit,
             frame,
             budget,
@@ -523,6 +523,47 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_boundary_walks
             )
             .into());
         }
+    }
+    Ok(())
+}
+
+pub(in crate::geometry::topology::q_embedding) fn assign_selected_pole_seam_band(
+    bands: &mut [SelectedNativeSeamBand],
+    frame: GeographicFrame,
+    region: usize,
+    pole: ChartPole,
+    budget: &mut impl Work,
+) -> Result<()> {
+    let band_index = match pole {
+        ChartPole::South => 0,
+        ChartPole::North => bands.len().checked_sub(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("selected pole has no native seam band".into())
+        })?,
+    };
+    let band = bands.get_mut(band_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected pole has no adjacent native seam band".into())
+    })?;
+    let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
+    let adjacent_pole = match pole {
+        ChartPole::South => &band.low,
+        ChartPole::North => &band.high,
+    };
+    if !adjacent_pole.try_cmp_with_work(&latitude, budget)?.is_eq() {
+        return Err(GeometryErrorKind::Invalid(
+            "native seam band does not meet its selected chart pole".into(),
+        )
+        .into());
+    }
+    for selected in [&mut band.west_region, &mut band.east_region] {
+        if let Some(existing) = *selected
+            && existing != region
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "selected pole sector conflicts with its adjacent seam band".into(),
+            )
+            .into());
+        }
+        *selected = Some(region);
     }
     Ok(())
 }

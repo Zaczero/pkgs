@@ -1,4 +1,6 @@
 #[cfg(test)]
+use super::nary;
+#[cfg(test)]
 use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::Polygon;
@@ -30,3 +32,28 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     let (_, _, polygons) = inventory.overlay_parts(&partition, op)?;
     Ok(polygons)
 }
+
+#[cfg(test)]
+#[path = "areal/tests/axes.rs"]
+mod axes_tests;
+#[cfg(test)]
+#[path = "areal/tests/contacts.rs"]
+mod contact_tests;
+#[cfg(test)]
+#[path = "areal/tests/disjoint.rs"]
+mod disjoint_tests;
+#[cfg(test)]
+#[path = "areal/tests/folds.rs"]
+mod fold_tests;
+#[cfg(test)]
+#[path = "areal/tests/lower_dimensional.rs"]
+mod lower_dimensional_tests;
+#[cfg(test)]
+#[path = "areal/tests/partition.rs"]
+mod partition_tests;
+#[cfg(test)]
+#[path = "areal/tests/points.rs"]
+mod point_tests;
+#[cfg(test)]
+#[path = "areal/tests/support.rs"]
+mod test_support;

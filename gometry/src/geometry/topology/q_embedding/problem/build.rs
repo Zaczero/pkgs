@@ -112,9 +112,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         })
                 },
             };
-            if sample.family.producer != super::super::emission::SampleProducerKind::Publication
+            if sample.family.producer
+                != super::super::super::emission::SampleProducerKind::Publication
                 || sample.family.occurrence != *occurrence
-                || !super::super::exact::in_unit_interval_with_work(&sample.parameter, budget)?
+                || !super::super::super::exact::in_unit_interval_with_work(
+                    &sample.parameter,
+                    budget,
+                )?
                 || !source_trace_valid
             {
                 return Err(GeometryErrorKind::Invalid(
@@ -237,8 +241,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     })?;
                 has_areal_owner |= matches!(edge.kind, SourceEdgeKind::Ring { .. });
                 if edge.id != range.source_edge
-                    || !super::super::exact::in_unit_interval_with_work(&range.range.start, budget)?
-                    || !super::super::exact::in_unit_interval_with_work(&range.range.end, budget)?
+                    || !super::super::super::exact::in_unit_interval_with_work(
+                        &range.range.start,
+                        budget,
+                    )?
+                    || !super::super::super::exact::in_unit_interval_with_work(
+                        &range.range.end,
+                        budget,
+                    )?
                 {
                     return Err(GeometryErrorKind::Invalid(
                         "Q fragment recipe has an invalid directed source range".into(),
@@ -247,8 +257,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
                 for producer_parameter in [&range.producer_start, &range.producer_end] {
                     budget.charge_into_error(1)?;
-                    if !super::super::exact::in_unit_interval_with_work(producer_parameter, budget)?
-                    {
+                    if !super::super::super::exact::in_unit_interval_with_work(
+                        producer_parameter,
+                        budget,
+                    )? {
                         return Err(GeometryErrorKind::Invalid(
                             "Q source range has an invalid affine producer parameter".into(),
                         )
@@ -258,8 +270,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             if matches!(
                 recipe.use_kind,
-                super::super::emission::SelectedUse::AreaBoundary
-                    | super::super::emission::SelectedUse::ArealBoundaryLine
+                super::super::super::emission::SelectedUse::AreaBoundary
+                    | super::super::super::emission::SelectedUse::ArealBoundaryLine
             ) && !has_areal_owner
             {
                 return Err(GeometryErrorKind::Invalid(
@@ -344,10 +356,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 None
             } else {
                 match topology.canonical_node_key(node.id)? {
-                    super::super::q::CanonicalQNodeKey::Chart(key) => {
+                    super::super::super::q::CanonicalQNodeKey::Chart(key) => {
                         exact_node_position_from_key_with_work(frame, key, budget)?
                     },
-                    super::super::q::CanonicalQNodeKey::Cut { .. } => None,
+                    super::super::super::q::CanonicalQNodeKey::Cut { .. } => None,
                 }
             };
             let axes = match &exact {

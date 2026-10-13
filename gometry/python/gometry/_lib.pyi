@@ -2217,7 +2217,10 @@ class Geometry:
         """
 
     def minimum_rotated_rectangle(self) -> Point | LineString | Polygon:
-        """Minimum-area rotated bounding rectangle, returned in XY.
+        """Minimum-area rotated bounding rectangle. A computed areal rectangle is
+        returned in XY. A degenerate geographic result that follows source-edge support
+        can retain resolvable Z/M by the original edge's ellipsoidal arclength; see the
+        geometry guide's ``Z/M under operations`` section.
 
         Returns
         -------
@@ -3349,7 +3352,10 @@ class Geometry:
         representable rectangular cut is divided between source vertices. Parts cover
         the input up to binary64 rounding at constructed cut vertices. Source
         ordinates are carried where meaningful; synthesized clip vertices use the
-        operation's natural XY result.
+        operation's natural XY result. On geographic input, recursively generated cut
+        vertices remain traced to their original source edges, including across seam
+        pieces; they are not re-interpolated from an edge fragment created by an earlier
+        cut.
 
         Parameters
         ----------
@@ -4097,9 +4103,11 @@ class Geometry:
     def convex_hull(self) -> Point | LineString | Polygon:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
-        ordinates are preserved. When several input vertices share an XY position, the
-        first in storage order is the survivor.
+        ``split_antimeridian`` first. Source vertices retained by the hull keep their
+        ordinates. Geographic hull construction can add chart-support vertices on
+        producer root edges; see the geometry guide's ``Z/M under operations`` section
+        for how their ordinates are carried. When several input vertices share an XY
+        position, the first in storage order is the copied survivor.
 
         Returns
         -------
@@ -8742,7 +8750,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def minimum_rotated_rectangle(
         self: GeometryArray[Geometry | None],
     ) -> GeometryArray[Point | LineString | Polygon | None]:
-        """Minimum-area rotated bounding rectangle, returned in XY.
+        """Minimum-area rotated bounding rectangle. A computed areal rectangle is
+        returned in XY. A degenerate geographic result that follows source-edge support
+        can retain resolvable Z/M by the original edge's ellipsoidal arclength; see the
+        geometry guide's ``Z/M under operations`` section.
 
         Returns
         -------
@@ -10141,7 +10152,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         representable rectangular cut is divided between source vertices. Parts cover
         the input up to binary64 rounding at constructed cut vertices. Source
         ordinates are carried where meaningful; synthesized clip vertices use the
-        operation's natural XY result.
+        operation's natural XY result. On geographic input, recursively generated cut
+        vertices remain traced to their original source edges, including across seam
+        pieces; they are not re-interpolated from an edge fragment created by an earlier
+        cut.
 
         Parameters
         ----------
@@ -11268,9 +11282,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point | LineString | Polygon | None]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
-        ordinates are preserved. When several input vertices share an XY position, the
-        first in storage order is the survivor.
+        ``split_antimeridian`` first. Source vertices retained by the hull keep their
+        ordinates. Geographic hull construction can add chart-support vertices on
+        producer root edges; see the geometry guide's ``Z/M under operations`` section
+        for how their ordinates are carried. When several input vertices share an XY
+        position, the first in storage order is the copied survivor.
 
         Returns
         -------

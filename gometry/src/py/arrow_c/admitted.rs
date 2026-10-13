@@ -5,7 +5,7 @@
 //! non-`Send` RAII (`MovedArrowShell`); only owned trees escape admission.
 use std::ffi::CStr;
 use std::marker::PhantomData;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
-use crate::py::arrow_c::native::{checked_byte_span, drop_moved_arrow, move_arrow_shell};
+use crate::py::arrow_c::native::buffers::checked_byte_span;
 use crate::py::arrow_c::{
     ArrowReleaseSlot, ArrowSchema, arc_from_str, arc_from_string, arc_from_vec,
 };
@@ -102,6 +102,47 @@ impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
     fn drop(&mut self) {
         // SAFETY: unique ownership of the moved shell.
         unsafe { drop_moved_arrow(self.ptr.as_ptr()) }
+    }
+}
+
+/// Shallow-move one Arrow base structure, leaving the producer's source shell
+/// released without invoking its callback.
+///
+/// # Safety
+///
+/// `source` must be a live producer-owned base structure. The caller takes
+/// ownership of the returned shell and must pass it to `drop_moved_arrow`.
+unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *mut T {
+    // SAFETY: the caller guarantees a live base structure. A bytewise copy is
+    // the Arrow-specified move operation; nulling source release leaves its
+    // capsule-owned shell inert.
+    unsafe {
+        let moved = Box::new(ptr::read(source));
+        *T::release_slot(source) = None;
+        Box::into_raw(moved)
+    }
+}
+
+/// Release and deallocate the one consumer-owned shell returned by
+/// `move_arrow_shell`.
+///
+/// # Safety
+///
+/// `shell` must be owned exactly once by this consumer.
+unsafe fn drop_moved_arrow<T: ArrowReleaseSlot>(shell: *mut T) {
+    // SAFETY: the caller transfers the single moved-shell allocation here.
+    // Arrow requires the producer release callback to receive the LIVE structure
+    // (with `release` still non-null) and mark it released itself. Clearing the
+    // slot before the call made a conforming observing callback see NULL.
+    unsafe {
+        let release = *T::release_slot(shell);
+        if let Some(release) = release {
+            release(shell);
+            // Conforming producers null the slot. Defensively clear so a
+            // non-conforming callback cannot be observed twice from this shell.
+            *T::release_slot(shell) = None;
+        }
+        drop(Box::from_raw(shell));
     }
 }
 

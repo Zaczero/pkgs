@@ -35,7 +35,7 @@ pub(in crate::geometry::topology::q_embedding) enum NativeCycleStartLookup {
 }
 
 #[derive(Clone, Copy, Default)]
-enum NativeCycleStartCandidates {
+pub(in crate::geometry::topology::q_embedding) enum NativeCycleStartCandidates {
     #[default]
     None,
     One(NativeCycleStartCandidate),
@@ -43,14 +43,17 @@ enum NativeCycleStartCandidates {
 }
 
 impl NativeCycleStartCandidates {
-    const fn insert(&mut self, candidate: NativeCycleStartCandidate) {
+    pub(in crate::geometry::topology::q_embedding) const fn insert(
+        &mut self,
+        candidate: NativeCycleStartCandidate,
+    ) {
         *self = match *self {
             Self::None => Self::One(candidate),
             Self::One(_) | Self::Multiple => Self::Multiple,
         };
     }
 
-    const fn lookup(self) -> NativeCycleStartLookup {
+    pub(in crate::geometry::topology::q_embedding) const fn lookup(self) -> NativeCycleStartLookup {
         match self {
             Self::None => NativeCycleStartLookup::None,
             Self::One(candidate) => NativeCycleStartLookup::Unique(candidate),
@@ -60,24 +63,26 @@ impl NativeCycleStartCandidates {
 }
 
 #[derive(Default)]
-struct NativeCycleStartSpellingIndex {
-    exact: NativeCycleStartCandidates,
-    singleton_count: usize,
-    last_cycle_index: Option<usize>,
+pub(in crate::geometry::topology::q_embedding) struct NativeCycleStartSpellingIndex {
+    pub(in crate::geometry::topology::q_embedding) exact: NativeCycleStartCandidates,
+    pub(in crate::geometry::topology::q_embedding) singleton_count: usize,
+    pub(in crate::geometry::topology::q_embedding) last_cycle_index: Option<usize>,
 }
 
 #[derive(Default)]
-struct NativeCycleStartBucket {
-    any_spelling: NativeCycleStartCandidates,
-    singleton_count: usize,
+pub(in crate::geometry::topology::q_embedding) struct NativeCycleStartBucket {
+    pub(in crate::geometry::topology::q_embedding) any_spelling: NativeCycleStartCandidates,
+    pub(in crate::geometry::topology::q_embedding) singleton_count: usize,
     // These two candidates answer a unique-node fallback after excluding one
     // exact spelling, without walking the remaining singleton cycles.
-    first_singleton: Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
-    first_other_singleton: Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
+    pub(in crate::geometry::topology::q_embedding) first_singleton:
+        Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
+    pub(in crate::geometry::topology::q_embedding) first_other_singleton:
+        Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
 }
 
 impl NativeCycleStartBucket {
-    fn insert_singleton(
+    pub(in crate::geometry::topology::q_embedding) fn insert_singleton(
         &mut self,
         spelling: NativeChartSpellingKey,
         candidate: NativeCycleStartCandidate,
@@ -98,7 +103,7 @@ impl NativeCycleStartBucket {
         Ok(())
     }
 
-    fn unique_singleton_other_than(
+    pub(in crate::geometry::topology::q_embedding) fn unique_singleton_other_than(
         &self,
         spelling: NativeChartSpellingKey,
     ) -> Result<NativeCycleStartCandidate> {
@@ -119,17 +124,18 @@ impl NativeCycleStartBucket {
 }
 
 pub(in crate::geometry::topology::q_embedding) struct NativeCycleStartIndex {
-    by_region_role_node: HashMap<(usize, bool, EmissionNodeId), NativeCycleStartBucket>,
-    by_region_role_node_spelling: HashMap<
+    pub(in crate::geometry::topology::q_embedding) by_region_role_node:
+        HashMap<(usize, bool, EmissionNodeId), NativeCycleStartBucket>,
+    pub(in crate::geometry::topology::q_embedding) by_region_role_node_spelling: HashMap<
         (usize, bool, EmissionNodeId, NativeChartSpellingKey),
         NativeCycleStartSpellingIndex,
     >,
 }
 
-struct NativeCycleLocalNodeStart {
-    first: usize,
-    spelling: NativeChartSpellingKey,
-    count: u8,
+pub(in crate::geometry::topology::q_embedding) struct NativeCycleLocalNodeStart {
+    pub(in crate::geometry::topology::q_embedding) first: usize,
+    pub(in crate::geometry::topology::q_embedding) spelling: NativeChartSpellingKey,
+    pub(in crate::geometry::topology::q_embedding) count: u8,
 }
 
 pub(in crate::geometry::topology::q_embedding) struct NativeGraphPart {
@@ -755,7 +761,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_reference_cycles_and_pa
 }
 
 #[cfg(test)]
-fn exhaustive_native_cycle_start_vertex_index(
+pub(in crate::geometry::topology::q_embedding) fn exhaustive_native_cycle_start_vertex_index(
     edge_nodes: &[[u32; 2]],
     vertex_keys: &[NativeChartVertexKey],
     cycle: &NativeGraphCycle,
@@ -793,7 +799,7 @@ fn exhaustive_native_cycle_start_vertex_index(
     Ok(exact_match.or_else(|| (node_match_count == 1).then_some(node_match).flatten()))
 }
 
-fn native_drawing_start_spelling(
+pub(in crate::geometry::topology::q_embedding) fn native_drawing_start_spelling(
     frame: GeographicFrame,
     vertex: EmittedVertex<'_>,
     budget: &mut impl Work,
@@ -978,7 +984,7 @@ impl NativeCycleStartIndex {
     }
 }
 
-fn native_cycle_rotations_for_queries(
+pub(in crate::geometry::topology::q_embedding) fn native_cycle_rotations_for_queries(
     queries: &[NativeCycleStartQuery],
     cycles: &[NativeGraphCycle],
     edge_nodes: &[[u32; 2]],
@@ -1026,7 +1032,7 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_cycle_starts(
     frame: GeographicFrame,
     topology: &ExactGeographicTopology,
     drawing: &QEmissionDrawing<'_>,
-    ring_roles: &[bool],
+    ring_roles: &QRingRoleCheck,
     nodes: &EmissionNodeRegistry,
     graph: &NativeReferenceGraph,
     cycles: &mut [NativeGraphCycle],
@@ -1036,7 +1042,7 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_cycle_starts(
     let DrawnPolygons::Regions { rings, .. } = &drawing.polygons else {
         return Ok(());
     };
-    if rings.len() != ring_roles.len() {
+    if ring_roles.role_count() != Some(rings.len()) {
         return Err(GeometryErrorKind::Invalid(
             "Native cycle starts do not match the certified Q ring roles".into(),
         )
@@ -1045,6 +1051,14 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_cycle_starts(
     let mut queries = Vec::with_capacity(rings.len());
     for (ring_index, ring) in rings.iter().enumerate() {
         budget.charge_into_error(1)?;
+        let Some(role) = ring_roles.role_at(ring_index) else {
+            return Err(
+                GeometryErrorKind::Invalid("Native ring-order role is unknown".into()).into(),
+            );
+        };
+        let QRingRoleStatus::Classified(is_hole) = role else {
+            continue;
+        };
         let Some(port_id) = ring.native_start_port else {
             continue;
         };
@@ -1063,9 +1077,6 @@ pub(in crate::geometry::topology::q_embedding) fn align_native_cycle_starts(
         })?;
         let target = nodes.source_node(q_port.node)?;
         let spelling = native_drawing_start_spelling(frame, vertex, budget)?;
-        let is_hole = *ring_roles.get(ring_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Native ring-order role is unknown".into())
-        })?;
         queries.push(NativeCycleStartQuery {
             region: ring.region,
             shell: !is_hole,

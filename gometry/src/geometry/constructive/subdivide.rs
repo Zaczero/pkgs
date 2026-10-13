@@ -17,7 +17,7 @@ use crate::geometry::overlay::{
     ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,
     rect_polygon,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::overlay::prepare_native_source_lines;
 use crate::geometry::topology::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};

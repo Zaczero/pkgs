@@ -261,7 +261,7 @@ mod tests {
                 SideAxis::FixedX => (XY::new(value, -1.0e9), XY::new(value, 1.0e9)),
                 SideAxis::FixedY => (XY::new(-1.0e9, value), XY::new(1.0e9, value)),
             };
-            let hit = exact::line_intersection(
+            let hit = exact::incidence::line_intersection(
                 &exact::ExactLine::perpendicular_bisector(a, b).unwrap(),
                 &exact::ExactLine::through_points(
                     &exact::ExactPoint::from_xy(side.0),

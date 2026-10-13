@@ -1218,6 +1218,41 @@ def test_dissolve_is_order_independent_for_all_live_grid_dissolvers() -> None:
         rebuilt = gm.CellArray(shuffled, type=cell_type).to_polygon()
         assert gm.equals(rebuilt, canonical)
 
+        removed_cell = values[0]
+        reduced = gm.CellArray(values[1:], type=cell_type).to_polygon()
+        assert gm.contains(canonical, removed_cell.center)
+        assert not gm.contains(reduced, removed_cell.center)
+
+
+def test_mixed_depth_s2_and_rect_outlines_keep_the_parent_cell() -> None:
+    parents = [
+        (gm.S2Cell(21.0, 52.0, level=5), gm.S2Cell),
+        (gm.GeohashCell(21.0, 52.0, precision=3), gm.GeohashCell),
+        (gm.Tile(lon=21.0, lat=52.0, zoom=5), gm.Tile),
+    ]
+    for parent, cell_type in parents:
+        child = parent.children()[0]
+        mixed = gm.CellArray([parent, child], type=cell_type)
+        assert gm.equals(mixed.to_polygon(), parent.polygon)
+
+
+@pytest.mark.parametrize(
+    ('cover', 'depth'),
+    [
+        pytest.param(gm.geohash_cover, {'precision': 3}, id='geohash'),
+        pytest.param(gm.tile_cover, {'zoom': 3}, id='tile'),
+    ],
+)
+def test_rectangular_to_polygon_keeps_both_sides_of_the_seam(cover, depth) -> None:
+    source = gm.box(179.0, -2.0, -179.0, 2.0, crs=4326, wrap='split')
+    cells = cover(source, max_cells=None, **depth)
+    outline = cells.to_polygon()
+
+    assert outline.is_valid
+    assert gm.contains(outline, gm.Point(179.5, 0.0, crs=4326))
+    assert gm.contains(outline, gm.Point(-179.5, 0.0, crs=4326))
+    assert not gm.contains(outline, gm.Point(0.0, 0.0, crs=4326))
+
 
 def test_s2_to_polygon_pole_cap_matches_chart_edge_area_reference() -> None:
     geod = Geod(ellps='WGS84')

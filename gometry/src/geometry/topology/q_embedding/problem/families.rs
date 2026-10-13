@@ -17,9 +17,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let mut families = Vec::with_capacity(pole_closures.len());
         for &(region, pole) in pole_closures {
             budget.charge_into_error(1)?;
-            families.push(super::super::emission::FeatureFamily {
-                parent: super::super::emission::FeatureFamilyParent::Region(region),
-                producer: super::super::emission::SampleProducerKind::PolePresentation(pole),
+            families.push(super::super::super::emission::FeatureFamily {
+                parent: super::super::super::emission::FeatureFamilyParent::Region(region),
+                producer: super::super::super::emission::SampleProducerKind::PolePresentation(pole),
                 occurrence: 0,
             });
         }
@@ -37,7 +37,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     fn native_region_family_universe(
         &self,
         budget: &mut impl Work,
-    ) -> Result<Vec<super::super::emission::FeatureFamily>> {
+    ) -> Result<Vec<super::super::super::emission::FeatureFamily>> {
         let whole_sphere_region = if self.emission.plan.is_whole_sphere() {
             Some(
                 self.emission
@@ -79,9 +79,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         if let Some(region) = whole_sphere_region {
             for occurrence in 0..10_u32 {
                 budget.charge_into_error(1)?;
-                families.push(super::super::emission::FeatureFamily {
-                    parent: super::super::emission::FeatureFamilyParent::Region(region),
-                    producer: super::super::emission::SampleProducerKind::WholeSphereCover,
+                families.push(super::super::super::emission::FeatureFamily {
+                    parent: super::super::super::emission::FeatureFamilyParent::Region(region),
+                    producer: super::super::super::emission::SampleProducerKind::WholeSphereCover,
                     occurrence,
                 });
             }
@@ -90,13 +90,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 for pole in [ChartPole::South, ChartPole::North] {
                     budget.charge_into_error(1)?;
                     if region.poles.includes(pole) {
-                        families.push(super::super::emission::FeatureFamily {
-                            parent: super::super::emission::FeatureFamilyParent::Region(
+                        families.push(super::super::super::emission::FeatureFamily {
+                            parent: super::super::super::emission::FeatureFamilyParent::Region(
                                 region.root,
                             ),
-                            producer: super::super::emission::SampleProducerKind::PolePresentation(
-                                pole,
-                            ),
+                            producer:
+                                super::super::super::emission::SampleProducerKind::PolePresentation(
+                                    pole,
+                                ),
                             occurrence: 0,
                         });
                     }

@@ -169,6 +169,12 @@
         let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
         let ring_roles = match check_q_ring_roles(&topology, &drawing, &mut budget)? {
             QRingRoleCheck::Pass(roles) => roles,
+            QRingRoleCheck::NativeRequired(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Native-demand control unexpectedly needs region assembly".into(),
+                )
+                .into());
+            },
             QRingRoleCheck::Reject { .. } => {
                 return Err(GeometryErrorKind::Invalid(
                     "Native-demand fixture has an invalid selected ring role".into(),

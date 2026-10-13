@@ -382,9 +382,98 @@ pub(crate) fn unary_scalar_shape(
     unit: Option<DistanceUnit>,
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send,
 ) -> PyResult<Typed> {
+    if op == Operation::SplitAntimeridian {
+        return unary_scalar_split_antimeridian(py, geometry);
+    }
     let frame = geometry.frame.clone();
     let shape = unary_scalar(py, geometry, op, unit, kernel)?;
     Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+fn split_drawing(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<crate::geometry::SplitDrawing> {
+    let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
+    if ctx.frame.crs_ref().is_none() {
+        return data.shape().split_antimeridian_captured_in_frame(frame);
+    }
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic antimeridian source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    data.shape()
+        .split_antimeridian_captured_in_frame_with_metric(frame, Some(&metric_access))
+}
+
+fn unary_scalar_split_antimeridian(py: Python<'_>, geometry: &PyGeometry) -> PyResult<Typed> {
+    let frame = geometry.frame.clone();
+    let shape = unary_scalar(
+        py,
+        geometry,
+        Operation::SplitAntimeridian,
+        None,
+        |data, ctx| {
+            let drawing = split_drawing(data, ctx)?;
+            let finished = drawing.finish_scalar(ctx.frame.clone())?;
+            let (shape, _) = finished.into_scalar()?;
+            Ok(shape)
+        },
+    )?;
+    Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+fn unary_array_split_antimeridian(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+) -> PyResult<PyGeometryArray> {
+    let frame = array.frame.clone();
+    let mut metric_scratch = MetricScratch::default();
+    let (domain, metric) = Operation::SplitAntimeridian
+        .resolver_with_unit(None)
+        .resolve_topology_ctx(&frame, &mut metric_scratch)?;
+    let array = array.clone();
+    let output_frame = frame.clone();
+    let finished = py
+        .detach(
+            move || -> std::result::Result<_, (usize, crate::error::Error)> {
+                let mut publication =
+                    crate::geometry::SplitArrayPublisher::with_capacity(array.len());
+                let rows = array.row_operation();
+                for row in rows.rows_with_missing(Shape::empty_point) {
+                    match row {
+                        ArrayRow::Missing { logical, .. } => {
+                            publication
+                                .push_missing()
+                                .map_err(|error| (logical, error))?;
+                        },
+                        ArrayRow::Present(present) => {
+                            let logical = present.logical();
+                            let data = crate::array::PreparedRow::transient(present.row())
+                                .map_err(|error| (logical, error))?;
+                            let ctx = CachelessRowContext {
+                                frame: &array.frame,
+                                domain,
+                                metric,
+                                lane: Lane::Array(logical),
+                            };
+                            let drawing =
+                                split_drawing(&data, &ctx).map_err(|error| (logical, error))?;
+                            publication
+                                .push(logical, drawing)
+                                .map_err(|error| (logical, error))?;
+                        },
+                    }
+                }
+                publication.finish(output_frame).map_err(|error| (0, error))
+            },
+        )
+        .map_err(rows_err);
+    drop(metric_scratch);
+    PyGeometryArray::from_finished(finished?).map_err(PyErr::from)
 }
 
 /// Array geometry method returning a `GeometryArray` — natively, without the
@@ -402,6 +491,9 @@ pub(crate) fn unary_array_shapes(
     packed: Option<&PackedUnary>,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
+    if op == Operation::SplitAntimeridian {
+        return unary_array_split_antimeridian(py, array);
+    }
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;

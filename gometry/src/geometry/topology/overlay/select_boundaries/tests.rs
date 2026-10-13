@@ -240,6 +240,35 @@ fn boundary_certificate_rejects_a_reversed_constructed_hole_triangle() -> Result
         .into());
     };
 
+    let mut omitted_areal_spans =
+        build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
+    omitted_areal_spans.areal_spans.clear();
+    let drawing = draw_q_plan_unmetered(&plan, &topology, &reversed, &source_points)?;
+    let mut omission_budget = EvaluationBudget::new("geographic boundary", 0)?;
+    let Err(error) = certify_q_embedding_nearest_xy(
+        &topology,
+        &omitted_areal_spans,
+        &reversed,
+        &live,
+        drawing,
+        "geographic boundary",
+        &mut omission_budget,
+    ) else {
+        return Err(GeometryErrorKind::Invalid(
+            "the boundary certificate accepted areal linework without its source-face projection"
+                .into(),
+        )
+        .into());
+    };
+    assert!(
+        matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(message))
+                if message.as_ref() == "assigned areal-line producer has no source-face projection"
+        ),
+        "omitting areal-origin admission must fail at its source-face projection guard"
+    );
+
     let accepted = resolve_q_embedding_xy(
         &topology,
         &plan,

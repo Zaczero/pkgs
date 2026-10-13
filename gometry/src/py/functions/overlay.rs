@@ -755,19 +755,32 @@ pub(crate) fn coverage_invalid_edges(
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, _) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
-    let edges = py.detach(move || {
-        geometry::coverage_invalid_edges_with_domain(
-            &shapes,
-            gap_width,
-            domain,
-            "coverage_invalid_edges",
-        )
-    })?;
-    let result = PyGeometryArray::from_shapes(edges, metadata)?;
-    Ok(match source {
-        None => result,
-        Some(array) => array.scatter_present_result(result)?,
-    })
+    let result = match domain {
+        geometry::TopologyDomain::Cartesian => {
+            let edges =
+                py.detach(move || geometry::coverage_invalid_edges_cartesian(&shapes, gap_width))?;
+            let result = PyGeometryArray::from_shapes(edges, metadata)?;
+            match source {
+                None => result,
+                Some(array) => array.scatter_present_result(result)?,
+            }
+        },
+        geometry::TopologyDomain::Geographic(frame) => {
+            let missing = source.as_ref().and_then(|array| array.missing().cloned());
+            let finished = py.detach(move || {
+                geometry::coverage_invalid_edges_geographic_finished(
+                    &shapes,
+                    frame,
+                    gap_width,
+                    "coverage_invalid_edges",
+                    metadata,
+                    missing,
+                )
+            })?;
+            PyGeometryArray::from_finished(finished)?
+        },
+    };
+    Ok(result)
 }
 
 /// Simplify a VALID polygonal coverage's boundaries, preserving its

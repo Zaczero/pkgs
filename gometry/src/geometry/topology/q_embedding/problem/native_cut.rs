@@ -43,7 +43,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("native producer trace is unknown".into())
                 })?;
-            let features = super::super::emission::native_cut_features(
+            let features = super::super::super::emission::native_cut_features(
                 self.topology,
                 recipe,
                 &fragment.trace,
@@ -339,42 +339,38 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
         let variable_count = points.len();
         let no_variables = variable_count == 0;
-        let complete =
-            |candidates: &[QCandidate],
-             budget: &mut EvaluationBudget|
-             -> Result<GlobalCheck<super::super::emission::CompletedNativeDrawing>> {
-                if candidates.len() != variable_count {
-                    return Err(GeometryErrorKind::Invalid(
-                        "native cut completion candidates do not match their variable table".into(),
-                    )
-                    .into());
-                }
-                let mut feature_candidates = Vec::with_capacity(feature_sites.len());
-                for &site in &feature_sites {
-                    budget.charge_into_error(1)?;
-                    let candidate = match site {
-                        NativeCutOrderSite::Variable(variable) => {
-                            *candidates.get(variable).ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "native cut completion omitted a variable".into(),
-                                )
-                            })?
-                        },
-                        NativeCutOrderSite::Fixed(candidate) => candidate,
-                    };
-                    feature_candidates.push(candidate);
-                }
-                match self.complete_native_drawing(
-                    reference,
-                    features,
-                    &feature_candidates,
-                    budget,
-                )? {
-                    Some(drawing) => Ok(GlobalCheck::Pass(drawing)),
-                    None if no_variables => Ok(GlobalCheck::Reject(Vec::new())),
-                    None => Ok(GlobalCheck::Reject(vec![0])),
-                }
-            };
+        let complete = |candidates: &[QCandidate],
+                        budget: &mut EvaluationBudget|
+         -> Result<
+            GlobalCheck<super::super::super::emission::CompletedNativeDrawing>,
+        > {
+            if candidates.len() != variable_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "native cut completion candidates do not match their variable table".into(),
+                )
+                .into());
+            }
+            let mut feature_candidates = Vec::with_capacity(feature_sites.len());
+            for &site in &feature_sites {
+                budget.charge_into_error(1)?;
+                let candidate = match site {
+                    NativeCutOrderSite::Variable(variable) => {
+                        *candidates.get(variable).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native cut completion omitted a variable".into(),
+                            )
+                        })?
+                    },
+                    NativeCutOrderSite::Fixed(candidate) => candidate,
+                };
+                feature_candidates.push(candidate);
+            }
+            match self.complete_native_drawing(reference, features, &feature_candidates, budget)? {
+                Some(drawing) => Ok(GlobalCheck::Pass(drawing)),
+                None if no_variables => Ok(GlobalCheck::Reject(Vec::new())),
+                None => Ok(GlobalCheck::Reject(vec![0])),
+            }
+        };
         if no_variables {
             return match complete(&[], budget)? {
                 GlobalCheck::Pass(drawing) => Ok(NativeCutSearchOutcome::Pass(drawing)),
@@ -402,12 +398,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     }
     fn native_endpoint_data(
         &self,
-        builder: &super::super::emission::EmissionBuilder<'topology>,
+        builder: &super::super::super::emission::EmissionBuilder<'topology>,
         endpoint: &PublishedEndpoint,
         assigned_point: &ExactChartPoint,
         source_requests: &[RootRequest],
         sites: &[Option<AssignedSite>],
-        bank: Option<super::super::emission::ChartSide>,
+        bank: Option<super::super::super::emission::ChartSide>,
         budget: &mut impl Work,
     ) -> Result<NativePortData> {
         let (node, candidate, source_record, occurrences) = match endpoint {
@@ -430,73 +426,74 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     })?;
                 let candidate = candidate_from_emission_site(*site);
                 if let Some(record) = source_record {
-                    super::super::emission::native_source_record_quotient_key(
+                    super::super::super::emission::native_source_record_quotient_key(
                         self.topology.sources.frame,
                         *record,
                         assigned_point,
                         budget,
                     )?;
                 }
-                let occurrences =
-                    if let Some(sample) = sample {
-                        if let Some(sample_index) = sample.publication_sample
-                            && self
-                                .publication_sample_source_ports
-                                .get(sample_index)
-                                .copied()
-                                .flatten()
-                                != Some(*port)
-                        {
-                            return Err(GeometryErrorKind::Invalid(
-                                "Native source sample changed its Q-port authority".into(),
-                            )
-                            .into());
-                        }
-                        if q_port.cut {
-                            native_source_sample_occurrences(
-                                sample
-                                    .trace
-                                    .as_ref()
-                                    .map(|trace| trace.try_clone_with_work(budget))
-                                    .transpose()?,
-                                source_requests,
-                                budget,
-                            )?
-                        } else {
-                            budget.charge_into_error(2)?;
-                            let mut occurrences = Vec::with_capacity(2);
-                            if sample.trace.is_some() && !sample.endpoint_only {
-                                occurrences.push(OccurrenceSource {
-                                    origin: super::super::emission::VertexOrigin::SourceNode(
-                                        q_port.node,
-                                    ),
-                                    source_trace: None,
-                                });
-                            }
-                            occurrences.push(OccurrenceSource {
-                                origin: sample.trace.as_ref().map_or(
-                                    super::super::emission::VertexOrigin::Presentation,
-                                    |_| super::super::emission::VertexOrigin::SourceSample,
-                                ),
-                                source_trace: sample
-                                    .trace
-                                    .as_ref()
-                                    .map(|trace| trace.try_clone_with_work(budget))
-                                    .transpose()?,
-                            });
-                            occurrences
-                        }
-                    } else if q_port.cut {
+                let occurrences = if let Some(sample) = sample {
+                    if let Some(sample_index) = sample.publication_sample
+                        && self
+                            .publication_sample_source_ports
+                            .get(sample_index)
+                            .copied()
+                            .flatten()
+                            != Some(*port)
+                    {
                         return Err(GeometryErrorKind::Invalid(
-                            "cut publication endpoint has no authenticated source row".into(),
+                            "Native source sample changed its Q-port authority".into(),
                         )
                         .into());
+                    }
+                    if q_port.cut {
+                        native_source_sample_occurrences(
+                            sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
+                            source_requests,
+                            budget,
+                        )?
                     } else {
-                        vec![OccurrenceSource {
-                            origin: super::super::emission::VertexOrigin::SourceNode(q_port.node),
-                            source_trace: None,
-                        }]
-                    };
+                        budget.charge_into_error(2)?;
+                        let mut occurrences = Vec::with_capacity(2);
+                        if sample.trace.is_some() && !sample.endpoint_only {
+                            occurrences.push(OccurrenceSource {
+                                origin: super::super::super::emission::VertexOrigin::SourceNode(
+                                    q_port.node,
+                                ),
+                                source_trace: None,
+                            });
+                        }
+                        occurrences.push(OccurrenceSource {
+                            origin: sample.trace.as_ref().map_or(
+                                super::super::super::emission::VertexOrigin::Presentation,
+                                |_| super::super::super::emission::VertexOrigin::SourceSample,
+                            ),
+                            source_trace: sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
+                        });
+                        occurrences
+                    }
+                } else if q_port.cut {
+                    return Err(GeometryErrorKind::Invalid(
+                        "cut publication endpoint has no authenticated source row".into(),
+                    )
+                    .into());
+                } else {
+                    vec![OccurrenceSource {
+                        origin: super::super::super::emission::VertexOrigin::SourceNode(
+                            q_port.node,
+                        ),
+                        source_trace: None,
+                    }]
+                };
                 (node, candidate, *source_record, occurrences)
             },
             PublishedEndpoint::Published { node, sample } => {
@@ -526,12 +523,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     })?;
                 let candidate = candidate_from_emission_site(*site);
                 let occurrence = OccurrenceSource {
-                    origin: sample
-                        .source_trace
-                        .as_ref()
-                        .map_or(super::super::emission::VertexOrigin::Presentation, |_| {
-                            super::super::emission::VertexOrigin::SourceSample
-                        }),
+                    origin: sample.source_trace.as_ref().map_or(
+                        super::super::super::emission::VertexOrigin::Presentation,
+                        |_| super::super::super::emission::VertexOrigin::SourceSample,
+                    ),
                     source_trace: sample
                         .source_trace
                         .as_ref()
@@ -574,9 +569,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     }
     fn native_cut_port_data(
         &self,
-        builder: &mut super::super::emission::EmissionBuilder<'topology>,
+        builder: &mut super::super::super::emission::EmissionBuilder<'topology>,
         feature: &NativeCutFeature,
-        side: super::super::emission::ChartSide,
+        side: super::super::super::emission::ChartSide,
         source_requests: &[RootRequest],
         budget: &mut impl Work,
     ) -> Result<NativePortData> {
@@ -591,10 +586,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget,
         )?;
         let longitude = match side {
-            super::super::emission::ChartSide::East => {
+            super::super::super::emission::ChartSide::East => {
                 ExactRational::from_f64(self.topology.sources.frame.longitude().half_period())
             },
-            super::super::emission::ChartSide::West => ExactRational::zero()
+            super::super::super::emission::ChartSide::West => ExactRational::zero()
                 .try_subtract_with_work(
                     &ExactRational::from_f64(self.topology.sources.frame.longitude().half_period()),
                     budget,
@@ -606,14 +601,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 longitude,
                 feature.point.y.try_clone_with_work(budget)?,
             ),
-            spelling: super::super::emission::PortSpelling::Seam(side),
+            spelling: super::super::super::emission::PortSpelling::Seam(side),
             source_record: None,
             occurrences,
         })
     }
     fn native_chord_pieces(
         &self,
-        builder: &mut super::super::emission::EmissionBuilder<'topology>,
+        builder: &mut super::super::super::emission::EmissionBuilder<'topology>,
         chord: &QPublishedChord,
         assigned_endpoints: &[ExactChartPoint; 2],
         source_trace: &SourceTrace,
@@ -682,9 +677,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
                 seam_wall_source_spans = Some(source_spans);
                 Some(if vertical.is_gt() {
-                    super::super::emission::ChartSide::West
+                    super::super::super::emission::ChartSide::West
                 } else {
-                    super::super::emission::ChartSide::East
+                    super::super::super::emission::ChartSide::East
                 })
             }
         } else {
@@ -695,9 +690,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 if !start_is_seam {
                     None
                 } else if direction.is_gt() {
-                    Some(super::super::emission::ChartSide::West)
+                    Some(super::super::super::emission::ChartSide::West)
                 } else if direction.is_lt() {
-                    Some(super::super::emission::ChartSide::East)
+                    Some(super::super::super::emission::ChartSide::East)
                 } else {
                     None
                 }
@@ -709,9 +704,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 if !end_is_seam {
                     None
                 } else if direction.is_gt() {
-                    Some(super::super::emission::ChartSide::East)
+                    Some(super::super::super::emission::ChartSide::East)
                 } else if direction.is_lt() {
-                    Some(super::super::emission::ChartSide::West)
+                    Some(super::super::super::emission::ChartSide::West)
                 } else {
                     None
                 }
@@ -802,7 +797,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 chart,
                 source_requests,
                 sites,
-                Some(super::super::emission::ChartSide::East),
+                Some(super::super::super::emission::ChartSide::East),
                 budget,
             )?;
             let west = self.native_endpoint_data(
@@ -811,7 +806,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 chart,
                 source_requests,
                 sites,
-                Some(super::super::emission::ChartSide::West),
+                Some(super::super::super::emission::ChartSide::West),
                 budget,
             )?;
             output.seam_events.push(NativeSeamEventData {
@@ -842,13 +837,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let (entry_side, exit_side) = if direction.is_gt() {
                 (
-                    super::super::emission::ChartSide::East,
-                    super::super::emission::ChartSide::West,
+                    super::super::super::emission::ChartSide::East,
+                    super::super::super::emission::ChartSide::West,
                 )
             } else {
                 (
-                    super::super::emission::ChartSide::West,
-                    super::super::emission::ChartSide::East,
+                    super::super::super::emission::ChartSide::West,
+                    super::super::super::emission::ChartSide::East,
                 )
             };
             let source_requests =
@@ -860,14 +855,14 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let east = self.native_cut_port_data(
                 builder,
                 feature,
-                super::super::emission::ChartSide::East,
+                super::super::super::emission::ChartSide::East,
                 &source_requests,
                 budget,
             )?;
             let west = self.native_cut_port_data(
                 builder,
                 feature,
-                super::super::emission::ChartSide::West,
+                super::super::super::emission::ChartSide::West,
                 &source_requests,
                 budget,
             )?;
@@ -916,15 +911,19 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         if !matches!(
             &current.spelling,
-            super::super::emission::PortSpelling::Seam(_)
-        ) && matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
-        {
+            super::super::super::emission::PortSpelling::Seam(_)
+        ) && matches!(
+            &end.spelling,
+            super::super::super::emission::PortSpelling::Seam(_)
+        ) {
             align_native_port_to_seam(self.topology.sources.frame, &mut current, &end, budget)?;
         } else if matches!(
             &current.spelling,
-            super::super::emission::PortSpelling::Seam(_)
-        ) && !matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
-        {
+            super::super::super::emission::PortSpelling::Seam(_)
+        ) && !matches!(
+            &end.spelling,
+            super::super::super::emission::PortSpelling::Seam(_)
+        ) {
             align_native_port_to_seam(self.topology.sources.frame, &mut end, &current, budget)?;
         }
         output.edges.push(NativeAreaEdge {

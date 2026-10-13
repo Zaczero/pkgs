@@ -51,7 +51,7 @@ pub(in crate::geometry::topology::q_embedding) struct NativeReference<'topology>
 }
 pub(in crate::geometry::topology::q_embedding) struct NativeSelectedPoleSector {
     pub(in crate::geometry::topology::q_embedding) region: usize,
-    pub(in crate::geometry::topology::q_embedding) sector: super::q::PoleSector,
+    pub(in crate::geometry::topology::q_embedding) sector: super::super::super::q::PoleSector,
 }
 pub(in crate::geometry::topology::q_embedding) type NativePoleClosure = (usize, ChartPole);
 pub(in crate::geometry::topology::q_embedding) struct NativeSelectedPoleSectors {

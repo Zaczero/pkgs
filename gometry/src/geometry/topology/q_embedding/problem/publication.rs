@@ -131,9 +131,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if distinct.len() > 1 {
                 let mut has_source = false;
                 let mut computed_count = 0_usize;
+                let mut movable_conflicts = Vec::new();
                 for node in distinct {
                     budget.charge_into_error(1)?;
-                    match &nodes
+                    let variable = match &nodes
                         .nodes()
                         .get(node.0 as usize)
                         .ok_or_else(|| {
@@ -145,19 +146,36 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     {
                         NodeAuthority::Source(source) => {
                             has_source = true;
-                            conflicting_nodes.push(QVariableNode::Source(*source));
+                            QVariableNode::Source(*source)
                         },
                         NodeAuthority::Computed(_) => {
-                            conflicting_nodes.push(QVariableNode::Published(node));
                             computed_count = computed_count
                                 .checked_add(1)
                                 .ok_or(ResourceError::SizeOverflow)?;
+                            QVariableNode::Published(node)
                         },
+                    };
+                    let location = match variable {
+                        QVariableNode::Source(node) => {
+                            self.node_location.get(node.0 as usize).copied().flatten()
+                        },
+                        QVariableNode::Published(node) => self
+                            .publication_location
+                            .get(node.0 as usize)
+                            .copied()
+                            .flatten(),
+                    };
+                    if location.is_some() {
+                        movable_conflicts.push(variable);
                     }
                 }
                 if !has_source || computed_count > 1 {
                     unrepresentable = true;
                 }
+                if movable_conflicts.is_empty() {
+                    unrepresentable = true;
+                }
+                conflicting_nodes.extend(movable_conflicts);
             }
             start = end;
         }
@@ -562,6 +580,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         source_faces: Option<&QFaceStructure>,
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
+        let frame = self.topology.sources.frame;
         let q = &self.topology.q;
         budget.charge_into_error(
             u64::try_from(self.publication_chords.len())
@@ -835,19 +854,37 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         longitude.half_period(),
                         budget,
                     )?;
-                    let (_, output_lift) = split_rational_native_site_with_work(
+                    let (output_native, output_lift) = split_rational_native_site_with_work(
                         &target.x,
                         longitude.period(),
                         longitude.half_period(),
                         budget,
                     )?;
                     let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
-                    let longitude_shift = ExactRational::from_f64(longitude.period())
-                        .try_product_with_work(&ExactRational::from_dyadic(lift_delta), budget)?;
-                    let mut aligned_target = target.clone();
-                    aligned_target.x = aligned_target
-                        .x
-                        .try_add_with_work(&longitude_shift, budget)?;
+                    let negative_half = ExactRational::from_f64(-longitude.half_period());
+                    let aligned_target = if output_native
+                        .as_ref()
+                        .try_cmp_with_work(&negative_half, budget)?
+                        .is_eq()
+                    {
+                        align_producer_fan_target(
+                            &target,
+                            target_source_point,
+                            lift_delta,
+                            frame,
+                            budget,
+                        )?
+                    } else {
+                        let longitude_shift = ExactRational::from_f64(longitude.period())
+                            .try_product_with_work(
+                                &ExactRational::from_dyadic(lift_delta),
+                                budget,
+                            )?;
+                        ExactChartPoint::from_rationals(
+                            target.x.try_add_with_work(&longitude_shift, budget)?,
+                            target.y.try_clone_with_work(budget)?,
+                        )
+                    };
                     budget.charge_into_error(1)?;
                     let ray = rays_by_port
                         .entry(port)
@@ -1003,4 +1040,18 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             rejections: rejected,
         })
     }
+}
+
+pub(in crate::geometry::topology::q_embedding) fn publication_leaf_replaces_source_span(
+    source: &QChord,
+    published: &QPublishedChord,
+    work: &mut impl Work,
+) -> Result<bool> {
+    for range in &published.source_ranges {
+        work.charge_into_error(1)?;
+        if range.ports == source.ports || range.ports == [source.ports[1], source.ports[0]] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

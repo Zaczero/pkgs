@@ -5,9 +5,8 @@
 use crate::error::Result;
 use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
 use crate::geometry::exact_arith::{binary_zero, dd_add, dd_mul, two_product_exact, two_sum};
-use crate::geometry::segments::{
-    Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
-};
+use crate::geometry::segments::interpolation::{interpolate_f64, interpolate_segment_point};
+use crate::geometry::segments::{Orientation, Segment, XY};
 use crate::geometry::tessellation::exact::{ExactDyadic, Interval, round_ratio};
 use crate::geometry::{Ordering, Unmetered, Work};
 

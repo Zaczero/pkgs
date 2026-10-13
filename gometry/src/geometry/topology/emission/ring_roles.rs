@@ -142,14 +142,16 @@ where
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
 {
     let mut work = Unmetered;
-    exact_q_ring_role_with_work(frame, exact_ports, &mut work)
+    exact_q_ring_role_with_work(frame, exact_ports, &mut work)?.ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
+    })
 }
 
 pub(in crate::geometry::topology) fn exact_q_ring_role_with_work<'a, I>(
     frame: GeographicFrame,
     exact_ports: I,
     work: &mut impl Work,
-) -> Result<bool>
+) -> Result<Option<bool>>
 where
     I: IntoIterator<Item = &'a ExactChartPoint>,
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
@@ -177,7 +179,7 @@ where
     if let Some(proof) = exact_q_ring_winding_filter(frame, exact_ports.clone())
         && !proof.quotient_closure
     {
-        return Ok(proof.winding == RingWinding::Clockwise);
+        return Ok(Some(proof.winding == RingWinding::Clockwise));
     }
 
     let mut owned_ports = Vec::with_capacity(exact_ports.len());
@@ -188,8 +190,10 @@ where
     let exact_ports = owned_ports;
     let lifted = continuously_lift_exact_ring_with_work(frame, &exact_ports, work)?;
     let exact_published = rounded_canonical_exact_ring_with_work(frame, &exact_ports, work)?;
-    if let Some(role) = quotient_ring_role(frame, &exact_published)? {
-        return Ok(role);
+    match quotient_ring_role_status(frame, &exact_published)? {
+        QuotientRingRoleStatus::Classified(role) => return Ok(Some(role)),
+        QuotientRingRoleStatus::Unbounded => return Ok(None),
+        QuotientRingRoleStatus::Unclassifiable => {},
     }
     let winding = exact_ring_winding_with_work(&lifted, work)?;
     match winding {
@@ -199,7 +203,7 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(false)
+            Ok(Some(false))
         },
         RingWinding::Clockwise => {
             for point in &lifted {
@@ -207,11 +211,11 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(true)
+            Ok(Some(true))
         },
         RingWinding::Degenerate => {
             let exact_ring = rounded_exact_ring_with_work(&lifted, work)?;
-            ring_role_from_winding(frame, winding, &exact_ring, true)
+            ring_role_from_winding(frame, winding, &exact_ring, true).map(Some)
         },
     }
 }
@@ -221,53 +225,19 @@ pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
 ) -> Result<bool> {
-    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)?.ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
+    })
 }
 
 pub(in crate::geometry::topology) fn quotient_ring_role(
     frame: GeographicFrame,
     ring: &Ring,
 ) -> Result<Option<bool>> {
-    let axis = frame.longitude();
-    if ring
-        .coords()
-        .xs()
-        .array_windows::<2>()
-        .all(|&[from, to]| axis.ordinary_chart_edge(from, to))
-    {
-        return Ok(None);
-    }
-    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    if summary.exact_axis_band {
-        let south = canonical_bits(summary.south.get());
-        let mut previous: Option<Point> = None;
-        let mut south_turn = 0_i64;
-        for point in ring.coords().points() {
-            if let Some(previous) = previous
-                && canonical_bits(previous.y) == south
-                && canonical_bits(point.y) == south
-            {
-                let connection = axis
-                    .chart_connection(previous.x, point.x)
-                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-                south_turn = south_turn
-                    .checked_add(i64::from(connection.source_lift))
-                    .ok_or(ResourceError::SizeOverflow)?;
-            }
-            previous = Some(point);
-        }
-        if south_turn != 0 {
-            return Ok(Some(south_turn < 0));
-        }
-    }
-    if summary.chart_turn == 0 {
-        return Ok(None);
-    }
-    match summary.bounded_pole() {
-        Some(ChartPole::North) => Ok(Some(summary.chart_turn < 0)),
-        Some(ChartPole::South) => Ok(Some(summary.chart_turn > 0)),
-        None => Err(GeometryErrorKind::Invalid(
+    match quotient_ring_role_status(frame, ring)? {
+        QuotientRingRoleStatus::Unclassifiable => Ok(None),
+        QuotientRingRoleStatus::Classified(role) => Ok(Some(role)),
+        QuotientRingRoleStatus::Unbounded => Err(GeometryErrorKind::Invalid(
             "selected Q area boundary has no bounded pole".into(),
         )
         .into()),
@@ -549,4 +519,57 @@ pub(in crate::geometry::topology) fn round_canonical_longitude_with_work(
     axis.canonicalize(canonical.round_with_work(work)?)
         .map(|longitude| longitude.get())
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()).into())
+}
+
+pub(in crate::geometry::topology) enum QuotientRingRoleStatus {
+    Unclassifiable,
+    Classified(bool),
+    Unbounded,
+}
+
+pub(in crate::geometry::topology) fn quotient_ring_role_status(
+    frame: GeographicFrame,
+    ring: &Ring,
+) -> Result<QuotientRingRoleStatus> {
+    let axis = frame.longitude();
+    if ring
+        .coords()
+        .xs()
+        .array_windows::<2>()
+        .all(|&[from, to]| axis.ordinary_chart_edge(from, to))
+    {
+        return Ok(QuotientRingRoleStatus::Unclassifiable);
+    }
+    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    if summary.exact_axis_band {
+        let south = canonical_bits(summary.south.get());
+        let mut previous: Option<Point> = None;
+        let mut south_turn = 0_i64;
+        for point in ring.coords().points() {
+            if let Some(previous) = previous
+                && canonical_bits(previous.y) == south
+                && canonical_bits(point.y) == south
+            {
+                let connection = axis
+                    .chart_connection(previous.x, point.x)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+                south_turn = south_turn
+                    .checked_add(i64::from(connection.source_lift))
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+            previous = Some(point);
+        }
+        if south_turn != 0 {
+            return Ok(QuotientRingRoleStatus::Classified(south_turn < 0));
+        }
+    }
+    if summary.chart_turn == 0 {
+        return Ok(QuotientRingRoleStatus::Unclassifiable);
+    }
+    match summary.bounded_pole() {
+        Some(ChartPole::North) => Ok(QuotientRingRoleStatus::Classified(summary.chart_turn < 0)),
+        Some(ChartPole::South) => Ok(QuotientRingRoleStatus::Classified(summary.chart_turn > 0)),
+        None => Ok(QuotientRingRoleStatus::Unbounded),
+    }
 }

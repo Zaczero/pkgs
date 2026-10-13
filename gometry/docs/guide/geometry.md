@@ -579,25 +579,44 @@ Constructive operations resolve `Z` and `M` independently wherever they are
 derivable and drop only the axis that cannot be sourced:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
-  [`simplify`][gometry.Geometry.simplify], [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], and
-  [`reverse`][gometry.Geometry.reverse] and the triangulations keep every
-  surviving vertex's ordinates. The geometric XY hull is independent of input
-  point order (±0.0 compares as the same ordinate).
-  When several input vertices share an XY position, hulls copy the first vertex
-  in storage order, including its Z/M and signed-zero spelling.
+  [`simplify`][gometry.Geometry.simplify], [`concave_hull`][gometry.Geometry.concave_hull],
+  [`reverse`][gometry.Geometry.reverse], the triangulations, and source vertices
+  retained by [`convex_hull`][gometry.Geometry.convex_hull] keep their ordinates.
+  The convex hull's XY shape is independent of input point order (±0.0 compares
+  as the same ordinate). When several input vertices share an XY position, a
+  copied hull vertex comes from the first vertex in storage order, including its
+  Z/M and signed-zero spelling.
 - Operations whose new vertices are **resolvable against the input** — overlay,
-  [`clip_by_rect`][gometry.Geometry.clip_by_rect], [`split`][gometry.split], and
-  linear referencing — interpolate Z/M along source segments. They retain
-  active-distinct source vertices even when consecutive X/Y positions match;
-  distance-based linear referencing gives zero-length X/Y segments no length.
+  [`clip_by_rect`][gometry.Geometry.clip_by_rect], [`split`][gometry.split],
+  [`snap`][gometry.snap], and linear referencing — interpolate Z/M along source
+  segments. They retain active-distinct source vertices even when consecutive
+  X/Y positions match; distance-based linear referencing gives zero-length X/Y
+  segments no length.
   If an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
   corner entering the output), or conflicting source values, that axis is
   dropped while the other axis may remain.
+- On geographic input, [`split`][gometry.split], [`snap`][gometry.snap],
+  [`convex_hull`][gometry.Geometry.convex_hull],
+  [`nearest_points`][gometry.nearest_points],
+  [`shortest_line`][gometry.shortest_line],
+  [`minimum_clearance_line`][gometry.Geometry.minimum_clearance_line],
+  and [`subdivide`][gometry.Geometry.subdivide] carry eligible Z/M at an
+  inserted vertex when its producer traces it to a root edge. They interpolate
+  from that edge's original endpoints by its ellipsoidal arclength fraction, not
+  its longitude/latitude parameter or a later cut fragment. A planar `unit=`
+  choice for a nearest witness does not change how its geographic root-edge
+  ordinates are carried. A computed point with no sourceable root has no source
+  Z/M. Recursive subdivision retains original input-edge traces through later
+  cuts, including seam vertices (±180° in EPSG:4326).
+- A degenerate [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle]
+  that follows geographic source-edge support carries resolvable Z/M by the
+  same original-edge arclength rule. A computed areal rectangle is a new
+  XY construction and is returned in XY.
 - Empty overlay results retain the axes declared by the operation: `difference`
   follows its first operand, while the other set operations use the union of
   their operands' axes.
 - Operations that **compute brand-new points** — [`centroid`][gometry.Geometry.centroid], [`point_on_surface`][gometry.Geometry.point_on_surface], [`envelope`][gometry.Geometry.envelope],
-  [`buffer`][gometry.Geometry.buffer], [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
+  [`buffer`][gometry.Geometry.buffer], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
   [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.
 
 ```python exec="on" source="block" result="text"

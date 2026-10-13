@@ -9,7 +9,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         features: &[NativeCutFeature],
         feature_candidates: &[QCandidate],
         budget: &mut EvaluationBudget,
-    ) -> Result<Option<super::super::emission::CompletedNativeDrawing>> {
+    ) -> Result<Option<super::super::super::emission::CompletedNativeDrawing>> {
         if reference.feature_nodes.len() != feature_candidates.len()
             || features.len() != feature_candidates.len()
         {
@@ -61,7 +61,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 GeometryErrorKind::Invalid("native reference node has no assigned site".into())
             })?);
         }
-        let (ordinates, axes) = super::super::emission::resolve_emission_ordinates(
+        let (ordinates, axes) = super::super::super::emission::resolve_emission_ordinates(
             &reference.plan,
             self.emission.publication,
             &self.ordinates,
@@ -72,7 +72,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             self.metric_access,
             budget,
         )?;
-        let parts = super::super::emission::materialize_native_parts(
+        let parts = super::super::super::emission::materialize_native_parts(
             &reference.plan,
             &assigned_sites,
             &ordinates,
@@ -116,12 +116,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ),
             StorageTarget::Scalar,
         )? {
-            PublicationOutcome::Pass(sealed) => {
-                Ok(Some(super::super::emission::CompletedNativeDrawing {
+            PublicationOutcome::Pass(sealed) => Ok(Some(
+                super::super::super::emission::CompletedNativeDrawing {
                     sealed,
                     line_traces,
-                }))
-            },
+                },
+            )),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
                 PublicationRejection::SourceOnly(_)
@@ -268,9 +268,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             return Ok(GlobalCheck::Reject(Vec::new()));
         }
         if !identity_conflicts.is_empty() {
-            return Ok(GlobalCheck::Reject(
-                self.classes_for_variables(identity_conflicts, budget)?,
-            ));
+            let classes = self.classes_for_variables(identity_conflicts, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
         }
         let source_faces = if let Some(exact_faces) = &self.exact_faces {
             let chart = subgraph_chart(
@@ -286,7 +285,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 &emitted_faces,
                 &self.emission.selected_nodes,
             ) {
-                return Ok(GlobalCheck::Reject(self.classes_for_nodes(nodes, budget)?));
+                let classes = self.classes_for_nodes(nodes, budget)?;
+                return Ok(GlobalCheck::Reject(classes));
             }
             Some(emitted_faces)
         } else {
@@ -304,198 +304,203 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let publication_rejections =
             self.publication_graph_rejections(&producer_projection, budget)?;
         if !publication_rejections.is_empty() {
-            return Ok(GlobalCheck::Reject(
-                self.classes_for_variables(publication_rejections, budget)?,
-            ));
+            let classes = self.classes_for_variables(publication_rejections, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
         }
-        match check_q_ring_roles(self.topology, &drawing, budget)? {
-            QRingRoleCheck::Pass(ring_roles) => {
-                if !producer_projection.rejections.is_empty() {
-                    let rejections = std::mem::take(&mut producer_projection.rejections);
-                    return Ok(GlobalCheck::Reject(
-                        self.classes_for_variables(rejections, budget)?,
-                    ));
-                }
-                let native_required = self.actual_native_demand(
-                    &drawing,
-                    &ring_roles,
-                    &producer_projection,
-                    coordinates,
-                    publication_coordinates,
+        let ring_roles = match check_q_ring_roles(self.topology, &drawing, budget)? {
+            QRingRoleCheck::Reject { nodes, .. } => {
+                let classes = self.classes_for_nodes(nodes, budget)?;
+                return Ok(GlobalCheck::Reject(classes));
+            },
+            roles @ (QRingRoleCheck::Pass(_) | QRingRoleCheck::NativeRequired(_)) => roles,
+        };
+        if !producer_projection.rejections.is_empty() {
+            let rejections = std::mem::take(&mut producer_projection.rejections);
+            let classes = self.classes_for_variables(rejections, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
+        }
+        let native_required = match &ring_roles {
+            QRingRoleCheck::Pass(roles) => self.actual_native_demand(
+                &drawing,
+                roles,
+                &producer_projection,
+                coordinates,
+                publication_coordinates,
+                budget,
+            )?,
+            QRingRoleCheck::NativeRequired(_) => true,
+            QRingRoleCheck::Reject { .. } => unreachable!("rejected roles returned above"),
+        };
+        let sealed = if native_required {
+            let budget = budget.budget_mut();
+            self.freeze_native_families(budget)?;
+            let native_cut_features =
+                self.materialize_native_cut_features(&producer_projection, budget)?;
+            let prepared_reference = self.prepare_native_reference(
+                &drawing,
+                &ring_roles,
+                &producer_projection,
+                coordinates,
+                publication_coordinates,
+                &native_cut_features,
+                budget,
+            );
+            let reference = match native_reference_global_check(prepared_reference, || {
+                self.all_outer_repair_classes(budget)
+            })? {
+                GlobalCheck::Pass(reference) => reference,
+                GlobalCheck::Reject(classes) => {
+                    return Ok(GlobalCheck::Reject(classes));
+                },
+            };
+            let native = match self.search_native_cut_candidates(
+                &reference,
+                &native_cut_features,
+                coordinates,
+                publication_coordinates,
+                budget,
+            )? {
+                NativeCutSearchOutcome::Pass(drawing) => drawing,
+                NativeCutSearchOutcome::Reject(classes) => {
+                    return Ok(GlobalCheck::Reject(classes));
+                },
+            };
+            super::super::super::emission::SealedQDrawing::Native(native)
+        } else {
+            let QRingRoleCheck::Pass(ring_roles) = &ring_roles else {
+                return Err(GeometryErrorKind::Invalid(
+                    "an unclassified Q cycle reached source publication".into(),
+                )
+                .into());
+            };
+            let live_publication_samples =
+                super::super::super::overlay::source_live_publication_samples(
+                    self.emission.plan,
+                    self.emission.publication,
                     budget,
                 )?;
-                let sealed = if native_required {
-                    let budget = budget.budget_mut();
-                    self.freeze_native_families(budget)?;
-                    let native_cut_features =
-                        self.materialize_native_cut_features(&producer_projection, budget)?;
-                    let prepared_reference = self.prepare_native_reference(
-                        &drawing,
-                        &ring_roles,
-                        &producer_projection,
-                        coordinates,
-                        publication_coordinates,
-                        &native_cut_features,
-                        budget,
-                    );
-                    let reference = match native_reference_global_check(prepared_reference, || {
-                        self.all_outer_repair_classes(budget)
-                    })? {
-                        GlobalCheck::Pass(reference) => reference,
-                        GlobalCheck::Reject(classes) => {
-                            return Ok(GlobalCheck::Reject(classes));
-                        },
-                    };
-                    let native = match self.search_native_cut_candidates(
-                        &reference,
-                        &native_cut_features,
-                        coordinates,
-                        publication_coordinates,
-                        budget,
-                    )? {
-                        NativeCutSearchOutcome::Pass(drawing) => drawing,
-                        NativeCutSearchOutcome::Reject(classes) => {
-                            return Ok(GlobalCheck::Reject(classes));
-                        },
-                    };
-                    super::super::emission::SealedQDrawing::Native(native)
-                } else {
-                    let live_publication_samples =
-                        super::super::emission::source_publication::source_live_publication_samples(
-                            self.emission.plan,
-                            self.emission.publication,
-                            budget,
-                        )?;
-                    let publication_chart_points =
-                        self.assigned_publication_chart_points(&producer_projection, budget)?;
-                    let publication_points = publication_chart_points
-                        .iter()
-                        .map(rounded_chart_point)
-                        .collect::<Result<Vec<_>>>()?;
-                    let publication_ordinates =
-                        super::super::emission::resolve_publication_ordinates(
-                            self.topology,
-                            self.emission.publication,
-                            &live_publication_samples,
-                            self.declared_axes,
-                            self.metric_access,
-                            budget,
-                        )?;
-                    let source_publication =
-                        super::super::emission::source_publication::SourcePublication {
-                            inventory: self.emission.publication,
-                            points: &publication_points,
-                            ordinates: &publication_ordinates,
-                            live_samples: &live_publication_samples,
-                        };
-                    let source = self.emission.plan.seal_source_drawing(
-                        drawing,
-                        &ring_roles,
-                        &self.ordinates,
-                        Some(source_publication),
-                        Some(&producer_projection.source_ports),
-                        self.declared_axes,
-                        self.strict_axes,
-                        self.operation,
-                        budget,
-                    )?;
-                    let receipt = SourceOnlyPublication {
-                        source,
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        source_ordinates: &self.ordinates,
-                        publication: Some(self.emission.publication),
-                        publication_images: &publication_chart_points,
-                        publication_points: &publication_points,
-                        publication_ordinates: &publication_ordinates,
-                    };
-                    let sealed = match finish_geographic(
-                        PublicationCall::new(
-                            ProducerReceipt::QSourceOnly(receipt),
-                            self.topology.publication_frame().clone(),
-                            budget,
-                        ),
-                        StorageTarget::Scalar,
-                    )? {
-                        PublicationOutcome::Pass(finished) => finished,
-                        PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
-                            let mut variables = Vec::with_capacity(images.len());
-                            for image in images {
-                                budget.charge_into_error(1)?;
-                                variables.push(match image {
-                                    image @ (QSourceImage::Port(_)
-                                    | QSourceImage::SourcePoint(_)
-                                    | QSourceImage::SourceRingStart(_)
-                                    | QSourceImage::SourceRingEnd(_)
-                                    | QSourceImage::CollapsedStart(_)
-                                    | QSourceImage::CollapsedEnd(_)) => {
-                                        let port = q_source_image_port(self.topology, image)?;
-                                        let node = self
-                                            .topology
-                                            .q
-                                            .ports
-                                            .get(port.0 as usize)
-                                            .map(|port| port.node)
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected source literal port is unknown"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Source(node)
-                                    },
-                                    QSourceImage::PublicationSample(sample) => {
-                                        let node = self
-                                            .publication_sample_nodes
-                                            .get(sample as usize)
-                                            .copied()
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected publication literal has no node"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Published(node)
-                                    },
-                                });
-                            }
-                            return Ok(GlobalCheck::Reject(
-                                self.classes_for_variables(variables, budget)?,
-                            ));
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Native) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned native rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned array batch rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned producer-drawn rejection".into(),
-                            )
-                            .into());
-                        },
-                    };
-                    super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
-                        sealed,
-                        line_traces: Vec::new(),
-                    })
-                };
-                Ok(GlobalCheck::Pass(QEmbeddingOutput {
-                    sealed,
-                    family_state: None,
-                }))
-            },
-            QRingRoleCheck::Reject { nodes, .. } => {
-                Ok(GlobalCheck::Reject(self.classes_for_nodes(nodes, budget)?))
-            },
-        }
+            let publication_chart_points =
+                self.assigned_publication_chart_points(&producer_projection, budget)?;
+            let publication_points = publication_chart_points
+                .iter()
+                .map(rounded_chart_point)
+                .collect::<Result<Vec<_>>>()?;
+            let publication_ordinates =
+                super::super::super::emission::resolve_publication_ordinates(
+                    self.topology,
+                    self.emission.publication,
+                    &live_publication_samples,
+                    self.declared_axes,
+                    self.metric_access,
+                    budget,
+                )?;
+            let source_publication = super::super::super::overlay::SourcePublication {
+                inventory: self.emission.publication,
+                points: &publication_points,
+                ordinates: &publication_ordinates,
+                live_samples: &live_publication_samples,
+            };
+            let source = self.emission.plan.seal_source_drawing(
+                drawing,
+                ring_roles,
+                &self.ordinates,
+                Some(source_publication),
+                Some(&producer_projection.source_ports),
+                self.declared_axes,
+                self.strict_axes,
+                self.operation,
+                budget,
+            )?;
+            let receipt = SourceOnlyPublication {
+                source,
+                topology: self.topology,
+                source_ports: Some(&producer_projection.source_ports),
+                source_ordinates: &self.ordinates,
+                publication: Some(self.emission.publication),
+                publication_images: &publication_chart_points,
+                publication_points: &publication_points,
+                publication_ordinates: &publication_ordinates,
+            };
+            let sealed = match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::QSourceOnly(receipt),
+                    self.topology.publication_frame().clone(),
+                    budget,
+                ),
+                StorageTarget::Scalar,
+            )? {
+                PublicationOutcome::Pass(finished) => finished,
+                PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
+                    let mut variables = Vec::with_capacity(images.len());
+                    for image in images {
+                        budget.charge_into_error(1)?;
+                        variables.push(match image {
+                            image @ (QSourceImage::Port(_)
+                            | QSourceImage::SourcePoint(_)
+                            | QSourceImage::SourceRingStart(_)
+                            | QSourceImage::SourceRingEnd(_)
+                            | QSourceImage::CollapsedStart(_)
+                            | QSourceImage::CollapsedEnd(_)) => {
+                                let port = q_source_image_port(self.topology, image)?;
+                                let node = self
+                                    .topology
+                                    .q
+                                    .ports
+                                    .get(port.0 as usize)
+                                    .map(|port| port.node)
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "rejected source literal port is unknown".into(),
+                                        )
+                                    })?;
+                                QVariableNode::Source(node)
+                            },
+                            QSourceImage::PublicationSample(sample) => {
+                                let node = self
+                                    .publication_sample_nodes
+                                    .get(sample as usize)
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "rejected publication literal has no node".into(),
+                                        )
+                                    })?;
+                                QVariableNode::Published(node)
+                            },
+                        });
+                    }
+                    return Ok(GlobalCheck::Reject(
+                        self.classes_for_variables(variables, budget)?,
+                    ));
+                },
+                PublicationOutcome::Reject(PublicationRejection::Native) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned native rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned array batch rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned producer-drawn rejection".into(),
+                    )
+                    .into());
+                },
+            };
+            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
+                sealed,
+                line_traces: Vec::new(),
+            })
+        };
+        Ok(GlobalCheck::Pass(QEmbeddingOutput {
+            sealed,
+            family_state: None,
+        }))
     }
 }
 

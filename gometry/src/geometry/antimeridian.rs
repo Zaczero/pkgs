@@ -20,6 +20,7 @@ mod crs;
 mod linestring;
 mod normalize;
 mod polygon;
+mod publication;
 
 pub(crate) use crs::{
     GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
@@ -38,3 +39,4 @@ pub(crate) use normalize::{
     self_intersections_data_in_frame, unary_antimeridian_centroid, unary_antimeridian_derived,
     unwrap_contact_chart, validate_data_in_frame, validate_shape_in_frame,
 };
+pub(crate) use publication::{SplitArrayPublisher, SplitDrawing};

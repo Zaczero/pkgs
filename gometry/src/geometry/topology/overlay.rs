@@ -71,7 +71,7 @@ use crate::geometry::overlay::{
     build_certified_overlay_shape_with_axes_and_order,
 };
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,

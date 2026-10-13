@@ -17,14 +17,18 @@ pub(in crate::geometry::topology) struct CutNodePorts {
 }
 
 #[derive(Clone)]
-struct CutOwnerHalf {
-    source_edge: SourceEdgeId,
-    parameter: ExactRational,
-    far_port: QPortId,
+pub(in crate::geometry::topology::q_embedding) struct CutOwnerHalf {
+    pub(in crate::geometry::topology::q_embedding) source_edge: SourceEdgeId,
+    pub(in crate::geometry::topology::q_embedding) parameter: ExactRational,
+    pub(in crate::geometry::topology::q_embedding) far_port: QPortId,
 }
 
 impl CutOwnerHalf {
-    fn same_key(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
+    pub(in crate::geometry::topology::q_embedding) fn same_key(
+        &self,
+        other: &Self,
+        work: &mut impl Work,
+    ) -> Result<bool> {
         Ok(self.source_edge == other.source_edge
             && self
                 .parameter
@@ -34,14 +38,14 @@ impl CutOwnerHalf {
 }
 
 #[derive(Default)]
-struct CutSides {
-    west: Option<QPortId>,
-    east: Option<QPortId>,
-    west_halves: Vec<CutOwnerHalf>,
-    east_halves: Vec<CutOwnerHalf>,
+pub(in crate::geometry::topology::q_embedding) struct CutSides {
+    pub(in crate::geometry::topology::q_embedding) west: Option<QPortId>,
+    pub(in crate::geometry::topology::q_embedding) east: Option<QPortId>,
+    pub(in crate::geometry::topology::q_embedding) west_halves: Vec<CutOwnerHalf>,
+    pub(in crate::geometry::topology::q_embedding) east_halves: Vec<CutOwnerHalf>,
 }
 
-fn compare_cut_owner_half_key(
+pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half_key(
     left: &CutOwnerHalf,
     right: &CutOwnerHalf,
     work: &mut impl Work,
@@ -54,7 +58,7 @@ fn compare_cut_owner_half_key(
     })
 }
 
-fn compare_cut_owner_half(
+pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half(
     left: &CutOwnerHalf,
     right: &CutOwnerHalf,
     work: &mut impl Work,
@@ -67,7 +71,7 @@ fn compare_cut_owner_half(
     })
 }
 
-fn deduplicate_cut_owner_halves(
+pub(in crate::geometry::topology::q_embedding) fn deduplicate_cut_owner_halves(
     halves: &mut Vec<CutOwnerHalf>,
     work: &mut impl Work,
 ) -> Result<()> {

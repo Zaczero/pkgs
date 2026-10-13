@@ -47,6 +47,8 @@ pub(crate) use dispatch_axes;
 
 mod access;
 mod frame;
+#[cfg(test)]
+mod test_support;
 pub(crate) use frame::{
     AxisFrame, axis_extent, axis_pow2_scale, power_of_two_exponent, scale_by_power_of_two,
     scaled_residual, unscale_area,
@@ -74,7 +76,8 @@ pub(crate) use area::{
 pub(crate) use geographic_area::{
     GeographicAreaDensity, MAX_AUTHALIC_HARMONICS, polygon_area as geographic_polygon_area,
 };
-pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
+pub(crate) use segments::interpolation::held_axis_interpolate;
+pub(crate) use segments::{Orientation, orientation};
 pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use types::{
@@ -95,28 +98,33 @@ mod boundary;
 #[cfg(test)]
 pub(crate) use antimeridian::self_intersections_in_frame;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
-    chain_crosses_antimeridian, classify_geographic_chart, classify_geographic_validity_chart,
-    crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_crossing_bounds,
-    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
-    repair_data_in_frame, repair_shape_in_frame, self_intersections_data_in_frame, topology_domain,
-    topology_domain_at, unary_antimeridian_centroid, unary_antimeridian_derived,
-    unwrap_contact_chart, validate_data_in_frame, validate_shape_in_frame,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, SplitArrayPublisher,
+    SplitDrawing, antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
+    classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
+    geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_data_in_frame, topology_domain, topology_domain_at,
+    unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
+    validate_data_in_frame, validate_shape_in_frame,
 };
 pub(crate) use boundary::boundary_with_metric;
 mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
     PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
-    publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
-    publish_mesh_publication_for_domain, publish_native_computed_chain,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
-    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_capture,
-    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
-    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
-    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
-    publish_voronoi_edge_column_with_budget, publish_voronoi_polygon_outputs,
+    publish_cdt_triangle_vertex_stream_budgeted, publish_changed_raw_computed_shape,
+    publish_computed_point_or_raw_shape, publish_mesh_publication_for_domain,
+    publish_native_computed_chain, publish_polygon_parts_with_edge_roles,
+    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
+    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
+    publish_raw_computed_shape_with_capture, publish_raw_computed_shape_with_context,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
+    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
+    publish_triangle_vertex_stream_budgeted, publish_voronoi_edge_column_with_budget,
+    publish_voronoi_polygon_outputs,
+};
+pub(in crate::geometry) use computed_shape::{
+    publish_voronoi_edge_column, publish_voronoi_polygon_shape,
 };
 mod arrangement;
 mod bvh_code;
@@ -140,10 +148,13 @@ pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch}
 pub(crate) use types::coordinate_columns_eq;
 pub(crate) mod embedding_completion;
 mod embedding_search;
+mod exact_point;
+mod grid_outline;
 pub(crate) mod publication;
 #[cfg(test)]
 pub(crate) use embedding_search::work_product_ticks;
 pub(crate) use embedding_search::{Unmetered, Work, WorkResult};
+pub(crate) use grid_outline::finish_grid_outline;
 mod facet_bvh;
 mod generated_budget;
 mod line_index;
@@ -169,6 +180,7 @@ pub(crate) use overlay::{
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;
+pub(crate) mod predicate_spec;
 mod predicates;
 mod provenance;
 pub(crate) use provenance::{
@@ -181,7 +193,7 @@ pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 pub(in crate::geometry) use segment_index::{OrderTree, PersistentOrder};
-mod segments;
+pub(crate) mod segments;
 pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
@@ -191,8 +203,8 @@ pub(crate) use source_support::{
 mod tessellation;
 mod topology;
 pub(crate) use topology::{
-    ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
-    analyze_geographic_coverage, analyze_geographic_coverage_with_work,
+    ExactGeographicRectangleLocation, ExactGeographicTopology, GeographicCoverageAnalysis,
+    TopologyDomain, VertexKey, analyze_geographic_coverage, analyze_geographic_coverage_with_work,
 };
 mod util;
 use std::borrow::Borrow;
@@ -219,16 +231,16 @@ use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
     snap_ring_to_reference_with_context,
 };
-#[cfg(test)]
-pub(crate) use coverage::coverage_invalid_edges;
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_with_domain,
-    coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
-    coverage_union_topo,
+    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_cartesian,
+    coverage_invalid_edges_geographic_finished, coverage_is_valid, coverage_is_valid_with_domain,
+    coverage_simplify_with_context, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{
     TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
 };
+#[cfg(test)]
+pub(crate) use coverage::{coverage_invalid_edges, coverage_invalid_edges_geographic_analysis};
 use distance::line_length_3d;
 pub(crate) use distance::{
     ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
@@ -275,9 +287,10 @@ pub(crate) use predicates::{
     shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
     validate_ring,
 };
-pub(in crate::geometry) use segments::{
-    DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
+pub(in crate::geometry) use segments::clip::{
+    SegmentParameter, clip_segment_parameter, exact_crossing_parameter,
 };
+pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
 #[cfg(test)]
 pub(crate) use util::dedup_consecutive_xy;
 pub(crate) use util::{
@@ -364,46 +377,44 @@ pub(in crate::geometry) use segment_index::{
     for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
     single_chain,
 };
-#[cfg(test)]
-use segments::point_segment_distance_key;
-use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, clearance_aabb_filter,
-    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
-    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, undirected_segment_edge_key,
+use segments::contact::{
+    Contact, ON_SEGMENT_EPSILON, segment_contact_exact, segment_cross_point,
+    segment_envelopes_disjoint, segments_intersect, shared_segment_part,
+    undirected_segment_edge_key,
 };
+pub(crate) use segments::contact::{RectContact, line_segments, point_on_segment, segment_vs_rect};
 #[cfg(test)]
-pub(crate) use segments::{
-    CLEARANCE_AABB_COMPARE_DECISIONS, CLEARANCE_AABB_COMPARE_DECLINES,
-    CLEARANCE_AABB_FILTER_DECLINES, CLEARANCE_AABB_FILTERS, CLEARANCE_DOT_BINARY64_DECISIONS,
-    CLEARANCE_DOT_BINARY64_DECLINES, CLEARANCE_STRIP_BINARY64_DECISIONS,
-    CLEARANCE_STRIP_BINARY64_DECLINES, CLEARANCE_STRIP_EXACT_FALLBACKS,
-    CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS, POINT_SEGMENT_BINARY64_DECISIONS,
-    POINT_SEGMENT_BINARY64_DECLINES,
+pub(crate) use segments::distance::CLEARANCE_STRIP_SUPPORT_FALLBACKS;
+use segments::distance::{
+    clearance_aabb_filter, point_pair_distance_key, point_segment_distance_squared,
+    point_segment_exact_distance_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
-pub(crate) use segments::{
-    RectContact, WitnessRole, clearance_strip_exceeds, finish_planar_squared_min, lerp_point,
-    line_segments, point_distance, point_distance_squared, point_on_segment, points_dwithin,
-    segment_vs_rect, source_dot_cmp, squared_norm_is_trustworthy,
-};
-pub(crate) use segments::{
-    SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
+pub(crate) use segments::distance::{
+    clearance_strip_exceeds, finish_planar_squared_min, point_distance, point_distance_squared,
+    point_segment_distance, point_segment_selection, points_dwithin, source_dot_cmp,
+    squared_norm_is_trustworthy,
 };
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
-pub(crate) use segments::{
+pub(crate) use segments::interpolation::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
-    interpolate_subdivision_ordinate,
+    interpolate_subdivision_ordinate, lerp_point,
 };
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
+use segments::{CCW_ERRBOUND_A, SquaredDistanceKey, orientation_xy, ray_crossing_is_right};
+pub(crate) use segments::{SegmentProjection, WitnessRole};
+#[expect(
+    unused_imports,
+    reason = "the geographic CDT preparation and finalization functions share this internal drawing type"
+)]
+pub(crate) use tessellation::PreparedCdtDrawing;
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
-    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
-    row_sample_seed,
+    CdtGroupsDrawingWriter, CdtRefinement, PreparedMeshPublication, PreparedSampling,
+    VoronoiDrawingWriter, VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs,
+    prepare_geographic_cdt_drawing, publish_cdt_array, publish_sampling_array,
+    publish_sampling_groups, row_sample_seed,
 };
 #[expect(
     unused_imports,

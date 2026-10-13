@@ -350,7 +350,10 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
         }
     }
 }
-fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
+pub(in crate::geometry::topology::q_embedding) fn search_q_embedding<
+    M: ChartMetric,
+    A: SearchAccount,
+>(
     mut problem: QEmbeddingProblem<'_, '_, '_, '_, M>,
     budget: &mut A,
 ) -> Result<SearchOutcome<QEmbeddingPass>> {
@@ -412,7 +415,6 @@ pub(in crate::geometry::topology) fn certify_and_search_q_embedding<
         .certify_and_search(live_keys, drawing, budget)
 }
 
-#[cfg(test)]
 #[cfg(test)]
 pub(in crate::geometry::topology) fn certify_q_embedding_nearest<
     'topology,

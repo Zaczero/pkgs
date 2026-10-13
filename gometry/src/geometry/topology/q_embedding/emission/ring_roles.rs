@@ -48,6 +48,7 @@ pub(in crate::geometry::topology::q_embedding) enum QRingRoleFailure {
 }
 pub(in crate::geometry::topology::q_embedding) enum QRingRoleCheck {
     Pass(Vec<bool>),
+    NativeRequired(Vec<QRingRoleStatus>),
     Reject {
         nodes: Vec<QNodeId>,
         failure: QRingRoleFailure,
@@ -73,6 +74,7 @@ pub(in crate::geometry::topology::q_embedding) fn check_q_ring_roles(
         return Ok(QRingRoleCheck::Pass(Vec::new()));
     };
     let mut roles = Vec::with_capacity(area_rings.len());
+    let mut region_roles: Option<Vec<QRingRoleStatus>> = None;
     for ring in area_rings {
         work.charge_into_error(1)?;
         let nodes = || {
@@ -108,6 +110,22 @@ pub(in crate::geometry::topology::q_embedding) fn check_q_ring_roles(
             work,
         )?
         else {
+            if !is_source
+                && matches!(
+                    quotient_ring_role_status(topology.sources.frame, &emitted_chart)?,
+                    QuotientRingRoleStatus::Unbounded
+                )
+            {
+                let region_roles = region_roles.get_or_insert_with(|| {
+                    std::mem::take(&mut roles)
+                        .into_iter()
+                        .map(QRingRoleStatus::Classified)
+                        .collect()
+                });
+                // Final shell/hole roles belong to the selected region's assembled chart.
+                region_roles.push(QRingRoleStatus::Unclassified);
+                continue;
+            }
             return Ok(QRingRoleCheck::Reject {
                 nodes: nodes(),
                 failure: if is_source {
@@ -127,17 +145,25 @@ pub(in crate::geometry::topology::q_embedding) fn check_q_ring_roles(
                 },
             });
         }
-        roles.push(role.emitted_is_hole);
+        if let Some(region_roles) = &mut region_roles {
+            region_roles.push(QRingRoleStatus::Classified(role.emitted_is_hole));
+        } else {
+            roles.push(role.emitted_is_hole);
+        }
     }
-    Ok(QRingRoleCheck::Pass(roles))
+    Ok(region_roles.map_or(QRingRoleCheck::Pass(roles), QRingRoleCheck::NativeRequired))
 }
-pub(in crate::geometry::topology::q_embedding) fn certify_nearest_ring_roles(
+pub(in crate::geometry::topology) fn certify_nearest_ring_roles(
     topology: &ExactGeographicTopology,
     drawing: &QEmissionDrawing<'_>,
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
     match check_q_ring_roles(topology, drawing, work)? {
         QRingRoleCheck::Pass(roles) => Ok(roles),
+        QRingRoleCheck::NativeRequired(_) => Err(GeometryErrorKind::Invalid(
+            "selected Q cycle needs Native region assembly".into(),
+        )
+        .into()),
         QRingRoleCheck::Reject { failure, .. } => {
             let message = match failure {
                 QRingRoleFailure::CycleConstruction => {
@@ -158,5 +184,32 @@ pub(in crate::geometry::topology::q_embedding) fn certify_nearest_ring_roles(
             };
             Err(GeometryErrorKind::Invalid(message.into()).into())
         },
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::geometry::topology::q_embedding) enum QRingRoleStatus {
+    Classified(bool),
+    Unclassified,
+}
+
+impl QRingRoleCheck {
+    pub(in crate::geometry::topology::q_embedding) const fn role_count(&self) -> Option<usize> {
+        match self {
+            Self::Pass(roles) => Some(roles.len()),
+            Self::NativeRequired(roles) => Some(roles.len()),
+            Self::Reject { .. } => None,
+        }
+    }
+
+    pub(in crate::geometry::topology::q_embedding) fn role_at(
+        &self,
+        index: usize,
+    ) -> Option<QRingRoleStatus> {
+        match self {
+            Self::Pass(roles) => roles.get(index).copied().map(QRingRoleStatus::Classified),
+            Self::NativeRequired(roles) => roles.get(index).copied(),
+            Self::Reject { .. } => None,
+        }
     }
 }

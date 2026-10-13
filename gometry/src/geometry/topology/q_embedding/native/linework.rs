@@ -134,13 +134,13 @@ pub(in crate::geometry::topology::q_embedding) fn append_native_line_edge(
     Ok(())
 }
 pub(in crate::geometry::topology::q_embedding) fn finish_native_line_run(
-    builder: &mut super::emission::EmissionBuilder<'_>,
+    builder: &mut super::super::super::emission::EmissionBuilder<'_>,
     run: NativeLineRun,
     reference_ports: &mut Vec<NativePortData>,
     trace_line: usize,
     literal_chord_uses: &mut Vec<NativeLiteralChordUse>,
     budget: &mut impl Work,
-) -> Result<super::emission::TracedLine> {
+) -> Result<super::super::super::emission::TracedLine> {
     if run.vertices.len() < 2 || run.chords.len().checked_add(1) != Some(run.vertices.len()) {
         return Err(GeometryErrorKind::Invalid(
             "native line run has incomplete endpoint or recipe rows".into(),
@@ -204,34 +204,21 @@ pub(in crate::geometry::topology::q_embedding) fn finish_native_line_run(
         chords.push(chord);
     }
     builder.line(chords)?;
-    let trace = super::emission::SourceTrace::from_edge_rows(trace_rows, budget)?;
+    let trace = super::super::super::emission::SourceTrace::from_edge_rows(trace_rows, budget)?;
     let member = run.member.ok_or_else(|| {
         GeometryErrorKind::Invalid("native line run has no source member identity".into())
     })?;
-    Ok(super::emission::TracedLine { member, trace })
+    Ok(super::super::super::emission::TracedLine { member, trace })
 }
 pub(in crate::geometry::topology::q_embedding) fn native_area_facts(
     drawing: &QEmissionDrawing<'_>,
-    ring_roles: &[bool],
     selected_face_roots: &[Option<usize>],
-) -> Result<BTreeMap<RecipeWalkOwner, (usize, bool)>> {
+) -> Result<BTreeMap<RecipeWalkOwner, usize>> {
     let mut facts = BTreeMap::new();
     match &drawing.polygons {
         DrawnPolygons::Regions { rings, .. } => {
-            if ring_roles.len() != rings.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "native area roles do not match the selected ring table".into(),
-                )
-                .into());
-            }
-            for (index, ring) in rings.iter().enumerate() {
-                let hole = *ring_roles.get(index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("native area ring role is unknown".into())
-                })?;
-                if facts
-                    .insert(ring.recipe_walk, (ring.region, hole))
-                    .is_some()
-                {
+            for ring in rings {
+                if facts.insert(ring.recipe_walk, ring.region).is_some() {
                     return Err(GeometryErrorKind::Invalid(
                         "native area recipe walk appears more than once".into(),
                     )
@@ -312,15 +299,15 @@ pub(in crate::geometry::topology::q_embedding) fn native_pole_closure_regions(
     for selected in sectors {
         budget.charge_into_error(1)?;
         let pole = match selected.sector {
-            super::q::PoleSector::Terminal { pole, .. }
-            | super::q::PoleSector::Isolated { pole, .. } => Some(pole),
-            super::q::PoleSector::Fan {
+            super::super::super::q::PoleSector::Terminal { pole, .. }
+            | super::super::super::q::PoleSector::Isolated { pole, .. } => Some(pole),
+            super::super::super::q::PoleSector::Fan {
                 pole,
                 clockwise,
                 counterclockwise,
                 ..
             } if clockwise == counterclockwise => Some(pole),
-            super::q::PoleSector::Fan { .. } => None,
+            super::super::super::q::PoleSector::Fan { .. } => None,
         };
         if let Some(pole) = pole {
             budget.charge_into_error(1)?;

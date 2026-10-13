@@ -306,8 +306,13 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_materialized_p
     if !record.x.is_finite() || !record.y.is_finite() {
         return Ok(false);
     }
-    let expected =
-        super::emission::native_port_point(&reference.plan, sites, ordinates, port_id, axes)?;
+    let expected = super::super::super::emission::native_port_point(
+        &reference.plan,
+        sites,
+        ordinates,
+        port_id,
+        axes,
+    )?;
     if expected != record {
         return Ok(false);
     }

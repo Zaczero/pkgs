@@ -24,7 +24,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, ChartSpanGuard};
 use crate::geometry::embedding_search::Work;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{GeometryErrorKind, SimplifyMethod, XY, simplify_chain_kept_with_try_remove};
 

@@ -12,12 +12,8 @@ pub(crate) use chart_restriction::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };
 pub(crate) use finish::FinishedGeometry;
-pub(in crate::geometry) use finish::finish_geographic;
+pub(in crate::geometry) use finish::{finish_geographic, finish_producer_drawing};
 pub(crate) use receipt::{GeometryOutput, PendingPublicationRow};
-#[expect(
-    unused_imports,
-    reason = "non-Q producers use the generic source-root receipt in their follow-up migrations"
-)]
 pub(in crate::geometry) use receipt::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
     ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,

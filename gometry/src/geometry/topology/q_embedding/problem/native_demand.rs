@@ -11,8 +11,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         publication_coordinates: &[Option<QCandidate>],
         budget: &mut impl Work,
     ) -> Result<BTreeSet<FragmentRecipeId>> {
-        let walks =
-            super::super::emission::index_recipe_walks(self.emission.fragment_walks, budget)?;
+        let walks = super::super::super::emission::index_recipe_walks(
+            self.emission.fragment_walks,
+            budget,
+        )?;
         let mut cursors = BTreeMap::new();
         let mut reused = BTreeSet::new();
         match &drawing.polygons {
@@ -20,7 +22,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 for polygon in polygons {
                     for ring in polygon {
                         budget.charge_into_error(1)?;
-                        let walk = super::super::emission::next_recipe_walk(
+                        let walk = super::super::super::emission::next_recipe_walk(
                             &walks,
                             &mut cursors,
                             ring.recipe_walk,
@@ -76,7 +78,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             DrawnPolygons::Regions { rings, .. } => {
                 for (ring_index, ring) in rings.iter().enumerate() {
                     budget.charge_into_error(1)?;
-                    let walk = super::super::emission::next_recipe_walk(
+                    let walk = super::super::super::emission::next_recipe_walk(
                         &walks,
                         &mut cursors,
                         ring.recipe_walk,
@@ -159,7 +161,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         for line in &drawing.lines {
             budget.charge_into_error(1)?;
-            let walk = super::super::emission::next_recipe_walk(
+            let walk = super::super::super::emission::next_recipe_walk(
                 &walks,
                 &mut cursors,
                 line.recipe_walk,
