@@ -1,8 +1,7 @@
 use super::{
     CertifiedQEmission, CoordinateAxes, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
     ExpansionBudget, OverlayOp, QCoordinates, QEmissionPlan, Result, SealedQDrawing, Shape,
-    SourceArcMetricAccess, finish_certified_q_emission, resolve_q_embedding,
-    source_point_coordinates_with_work,
+    SourceArcMetricAccess, resolve_q_embedding, source_point_coordinates_with_work,
 };
 use crate::geometry::publication::PendingPublicationRow;
 
@@ -29,7 +28,7 @@ pub(super) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetr
     let (embedding, budget) =
         certify_geographic_overlay(topology, operation, declared_axes, strict, metric_access)?;
     pending_q_array_row(
-        finish_certified_q_emission(embedding).0,
+        embedding.sealed,
         logical_row,
         budget,
         topology.publication_frame(),

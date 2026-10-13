@@ -4,11 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 use super::emission::{
-    DirectedSpan, EmissionNodeRegistry, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint,
-    LiteralPolygon, LiteralSequence, NativeMaterializedParts, PreparedNativeSource,
-    PublicationInventory, QSourceImage, RecipeWalk, RecipeWalkIndex, RecipeWalkOwner,
-    SealedQDrawing, SealedSourceDrawing, SelectedUse, SourceFrozenDrawing, index_recipe_walks,
-    next_recipe_walk, write_completed_native,
+    DirectedSpan, EmissionNodeRegistry, FragmentRecipes, LiteralPoint, LiteralPolygon,
+    LiteralSequence, NativeMaterializedParts, PublicationInventory, QSourceImage, RecipeWalk,
+    RecipeWalkIndex, RecipeWalkOwner, SealedQDrawing, SealedSourceDrawing, SelectedUse,
+    SourceFrozenDrawing, index_recipe_walks, next_recipe_walk, write_completed_native,
 };
 use super::exact::{
     ExactChartPoint, ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId,
@@ -68,14 +67,6 @@ pub(super) struct LineStep {
 #[derive(Clone, Copy)]
 struct SelectedLineSpan {
     owner: usize,
-}
-
-struct SourceLineSpan {
-    low: ExactRational,
-    high: ExactRational,
-    span: usize,
-    owner: usize,
-    reversed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,7 +140,6 @@ impl SelectedRegionPoles {
 pub(in crate::geometry) enum QProducer {
     Overlay,
     Boundary,
-    SourceLines,
     Node,
     Polygonize,
     BuildArea,
@@ -167,7 +157,6 @@ impl QProducer {
             Self::BuildArea => "build_area",
             Self::Overlay => "overlay",
             Self::Boundary => "boundary",
-            Self::SourceLines => "source lines",
         }
     }
 }
@@ -422,17 +411,10 @@ enum QEmbeddingChoice {
 
 struct CertifiedQEmission {
     sealed: SealedQDrawing,
-    family_state: Option<FeatureFamilyRegistry>,
     #[cfg(test)]
     choice: QEmbeddingChoice,
     #[cfg(test)]
     coordinates: QCoordinates,
-}
-
-struct WrittenQDrawing {
-    shape: Shape,
-    line_traces: Vec<super::emission::TracedLine>,
-    family_state: Option<FeatureFamilyRegistry>,
 }
 
 struct WrittenDrawingParts {
@@ -442,32 +424,15 @@ struct WrittenDrawingParts {
     layout: ShapeLiteralLayout<QSourceImage>,
 }
 
-fn finish_certified_q_emission(
-    embedding: CertifiedQEmission,
-) -> (SealedQDrawing, Option<FeatureFamilyRegistry>) {
-    (embedding.sealed, embedding.family_state)
-}
-
-fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
-    let (sealed, family_state) = finish_certified_q_emission(embedding);
-    let (shape, line_traces) = match sealed {
-        SealedQDrawing::Source(source) => (source.sealed.into_scalar()?.0, source.line_traces),
-        SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native)?;
-            (written.shape, written.line_traces)
-        },
-    };
-    Ok(WrittenQDrawing {
-        shape,
-        line_traces,
-        family_state,
-    })
+fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<Shape> {
+    match embedding.sealed {
+        SealedQDrawing::Source(source) => Ok(source.sealed.into_scalar()?.0),
+        SealedQDrawing::Native(native) => write_completed_native(native),
+    }
 }
 
 fn into_finished_q_emission(embedding: CertifiedQEmission) -> FinishedGeometry {
-    let sealed = embedding.sealed;
-    drop(embedding.family_state);
-    match sealed {
+    match embedding.sealed {
         SealedQDrawing::Source(source) => source.sealed,
         SealedQDrawing::Native(native) => native.sealed,
     }
@@ -507,7 +472,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     let mut choice = QEmbeddingChoice::Nearest;
     #[cfg(test)]
     let mut test_coordinates = nearest.clone();
-    let (sealed, family_state) = if needs_q_certificate {
+    let sealed = if needs_q_certificate {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
             topology,
@@ -561,7 +526,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             test_coordinates = pass.coordinates.clone();
         }
         let output = pass.output;
-        (output.sealed, output.family_state)
+        output.sealed
     } else {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, preparation_work)?;
@@ -680,17 +645,10 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                 },
             }
         };
-        (
-            SealedQDrawing::Source(SealedSourceDrawing {
-                sealed,
-                line_traces: Vec::new(),
-            }),
-            None,
-        )
+        SealedQDrawing::Source(SealedSourceDrawing { sealed })
     };
     Ok(CertifiedQEmission {
         sealed,
-        family_state,
         #[cfg(test)]
         choice,
         #[cfg(test)]
@@ -728,82 +686,8 @@ pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geomet
     )
 }
 
-pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
-    topology: &ExactGeographicTopology,
-    line_members: &[usize],
-    declared_axes: CoordinateAxes,
-    strict: bool,
-    operation: &'static str,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-    expansion_budget: &mut ExpansionBudget,
-    budget: &mut EvaluationBudget,
-) -> Result<PreparedNativeSource> {
-    let plan = QEmissionPlan::build_source_lines(topology, line_members, budget)?;
-    if plan.line_paths.is_empty() {
-        return Ok(PreparedNativeSource {
-            shape: Shape::typed_empty(GeometryKind::MultiLineString, declared_axes),
-            line_traces: Vec::new(),
-            source_members: Vec::new(),
-            family_state: None,
-        });
-    }
-    let mut source_members = Vec::with_capacity(plan.line_paths.len());
-    for line in &plan.line_paths {
-        let RecipeWalkOwner::Line(member) = line.recipe_walk else {
-            return Err(GeometryErrorKind::Invalid(
-                "native source-line plan contains a non-line producer".into(),
-            )
-            .into());
-        };
-        source_members.push(member);
-    }
-    let nearest = QCoordinates::build_with_work(topology, budget)?;
-    let source_points = source_point_coordinates_with_work(topology, budget)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        strict,
-        operation,
-        metric_access,
-        expansion_budget,
-        budget,
-    )?;
-    let written = write_certified_q_emission(embedding)?;
-    let line_count = match &written.shape {
-        Shape::LineString(_) => 1,
-        Shape::MultiLineString(lines) => lines.len(),
-        Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => 0,
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_)
-        | Shape::GeometryCollection(_)
-        | Shape::Empty(..) => {
-            return Err(GeometryErrorKind::Invalid(
-                "native line preparation emitted a non-lineal shape".into(),
-            )
-            .into());
-        },
-    };
-    if line_count != written.line_traces.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line preparation lost its written trace rows".into(),
-        )
-        .into());
-    }
-    Ok(PreparedNativeSource {
-        shape: written.shape,
-        line_traces: written.line_traces,
-        source_members,
-        family_state: written.family_state,
-    })
-}
-
 fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
-    Ok(write_certified_q_emission(embedding)?.shape)
+    write_certified_q_emission(embedding)
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -1040,7 +924,7 @@ impl QEmissionPlan {
             QProducer::Node => Self::build_node(topology, work)?,
             QProducer::Polygonize => Self::build_polygonize(topology, diagnostics, work)?,
             QProducer::BuildArea => Self::build_area(topology, work)?,
-            QProducer::Overlay | QProducer::Boundary | QProducer::SourceLines => {
+            QProducer::Overlay | QProducer::Boundary => {
                 return Err(GeometryErrorKind::Invalid(
                     "pooled linework emitter received a non-linework producer".into(),
                 )
@@ -1223,156 +1107,6 @@ impl QEmissionPlan {
             },
             support,
         ))
-    }
-
-    pub(super) fn build_source_lines(
-        topology: &ExactGeographicTopology,
-        line_members: &[usize],
-        work: &mut impl Work,
-    ) -> Result<Self> {
-        let q = &topology.q;
-        work.charge_into_error(
-            u64::try_from(topology.sources.edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut spans_by_source = Vec::with_capacity(topology.sources.edges.len());
-        spans_by_source.resize_with(topology.sources.edges.len(), Vec::<SourceLineSpan>::new);
-        for (span_index, span) in q.spans.iter().enumerate() {
-            work.charge_into_error(1)?;
-            for (owner_index, owner) in span.owners.iter().enumerate() {
-                work.charge_into_error(1)?;
-                let row = spans_by_source
-                    .get_mut(owner.source_edge.0 as usize)
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q span has an unknown source edge".into())
-                    })?;
-                let (low, high) = if owner
-                    .source_range
-                    .start
-                    .try_cmp(&owner.source_range.end)?
-                    .is_le()
-                {
-                    (
-                        owner.source_range.start.clone(),
-                        owner.source_range.end.clone(),
-                    )
-                } else {
-                    (
-                        owner.source_range.end.clone(),
-                        owner.source_range.start.clone(),
-                    )
-                };
-                row.push(SourceLineSpan {
-                    low,
-                    high,
-                    span: span_index,
-                    owner: owner_index,
-                    reversed: owner.reversed,
-                });
-            }
-        }
-
-        work.charge_into_error(
-            u64::try_from(line_members.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut line_paths = Vec::with_capacity(line_members.len());
-        for &member in line_members {
-            let line = topology.sources.lines.get(member).ok_or_else(|| {
-                GeometryErrorKind::Invalid("native source line member is unknown".into())
-            })?;
-            let mut path = Vec::new();
-            for source_edge in line.source_edges.clone() {
-                work.charge_into_error(1)?;
-                let edge = topology.sources.edges.get(source_edge).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("native source line edge is unknown".into())
-                })?;
-                if !matches!(
-                    edge.kind,
-                    SourceEdgeKind::Line { line: source_line } if source_line.0 as usize == member
-                ) {
-                    return Err(GeometryErrorKind::Invalid(
-                        "native source line range contains another component".into(),
-                    )
-                    .into());
-                }
-                let spans = spans_by_source.get_mut(source_edge).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("native source line span row is unknown".into())
-                })?;
-                try_sort_by_with_work(spans, work, |left, right, work| {
-                    work.charge_into_error(1)?;
-                    Ok(left
-                        .low
-                        .try_cmp(&right.low)?
-                        .then(left.high.try_cmp(&right.high)?)
-                        .then(left.span.cmp(&right.span))
-                        .then(left.owner.cmp(&right.owner)))
-                })?;
-                if spans.is_empty() {
-                    continue;
-                }
-                let zero = ExactRational::zero();
-                let one = ExactRational::one();
-                let mut covered_to = zero;
-                for source_span in spans.iter() {
-                    work.charge_into_error(1)?;
-                    if source_span.low.try_cmp(&covered_to)?.is_gt() {
-                        return Err(GeometryErrorKind::Invalid(
-                            "native source line has a gap in its Q span coverage".into(),
-                        )
-                        .into());
-                    }
-                    if source_span.high.try_cmp(&covered_to)?.is_gt() {
-                        covered_to = source_span.high.clone();
-                    }
-                    path.push(LineStep {
-                        span: source_span.span,
-                        from_endpoint: if source_span.reversed {
-                            SpanEndpoint::End
-                        } else {
-                            SpanEndpoint::Start
-                        },
-                        owner: source_span.owner,
-                    });
-                }
-                if covered_to.try_cmp(&one)?.is_lt() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "native source line Q spans do not reach their endpoint".into(),
-                    )
-                    .into());
-                }
-            }
-            if path.is_empty() {
-                continue;
-            }
-            line_paths.push(QLinePrimitive {
-                origin: QLineOrigin::Curve,
-                recipe_walk: RecipeWalkOwner::Line(member),
-                source_row: None,
-                close: false,
-                path,
-            });
-        }
-        let polygons = PolygonPlan::Regions {
-            rings: Vec::new(),
-            region_count: q.global_face_count,
-        };
-        let fragment_recipes = build_fragment_recipes(topology, &polygons, &[], &line_paths, work)?;
-        work.charge_into_error(
-            u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        Ok(Self {
-            whole_sphere: false,
-            force_native: true,
-            boundary_support: None,
-            producer: QProducer::SourceLines,
-            retain_literals_for_republication: false,
-            polygons,
-            cycles: Vec::new(),
-            selected_regions: Vec::new(),
-            selected_face_roots: vec![None; q.global_face_count],
-            fragment_recipes,
-            line_paths,
-            point_nodes: Vec::new(),
-        })
     }
 
     pub(super) fn build_node(
@@ -1650,7 +1384,6 @@ impl QEmissionPlan {
             points,
             lines,
             polygons,
-            line_traces,
             literal_uses,
         } = parts;
         let (shape, order) = seal_output_parts(
@@ -1663,21 +1396,13 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let (literal_uses, line_traces) = {
-            let order = order.ok_or_else(|| {
-                GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
-            })?;
-            super::emission::native_literal_uses_in_output_order(
-                literal_uses,
-                line_traces,
-                &order,
-                work,
-            )?
-        };
+        let order = order.ok_or_else(|| {
+            GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
+        })?;
+        let literal_uses = literal_uses.in_output_order(&order, work)?;
         Ok(super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
-            line_traces,
         })
     }
 
@@ -7139,8 +6864,7 @@ mod tests {
             assert_eq!(certified_coordinates.xy(*node)?, nearest.xy(*node)?);
         }
 
-        let written = write_certified_q_emission(certified)?;
-        let expected = written.shape;
+        let expected = write_certified_q_emission(certified)?;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
             OverlayOp::Intersection,
@@ -8636,20 +8360,18 @@ mod tests {
         let written = write_certified_q_emission(embedding)?;
         let mut line_members = 0_usize;
         let mut polygon_members = 0_usize;
-        written
-            .shape
-            .try_for_each_component(&mut |component| -> Result<()> {
-                match component {
-                    crate::geometry::Component::LineString(_) => {
-                        line_members = line_members.saturating_add(1);
-                    },
-                    crate::geometry::Component::Polygon(_) => {
-                        polygon_members = polygon_members.saturating_add(1);
-                    },
-                    crate::geometry::Component::Point(_) => {},
-                }
-                Ok(())
-            })?;
+        written.try_for_each_component(&mut |component| -> Result<()> {
+            match component {
+                crate::geometry::Component::LineString(_) => {
+                    line_members = line_members.saturating_add(1);
+                },
+                crate::geometry::Component::Polygon(_) => {
+                    polygon_members = polygon_members.saturating_add(1);
+                },
+                crate::geometry::Component::Point(_) => {},
+            }
+            Ok(())
+        })?;
         assert!(
             line_members > 0,
             "the repaired areal boundary publishes linework"

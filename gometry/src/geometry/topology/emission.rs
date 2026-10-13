@@ -16,9 +16,7 @@ use crate::geographic::{
     ChartPole, ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, ShapeLiteralLayout, reorder_rows,
-};
+use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
 };
@@ -32,6 +30,7 @@ use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowId, RequestRowInput, RootCatalog, RootId, RootRange, RootRequest,
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
+#[cfg(test)]
 use crate::geometry::overlay::CertifiedOverlayOrder;
 pub(super) use crate::geometry::publication::ChartCutSide as ChartSide;
 use crate::geometry::publication::{
@@ -1440,13 +1439,11 @@ impl<'topology> EmissionBuilder<'topology> {
 
 pub(super) struct CompletedNativeDrawing {
     pub(super) sealed: FinishedGeometry,
-    pub(super) line_traces: Vec<TracedLine>,
 }
 
 pub(super) struct NativeFrozenDrawing {
     pub(super) shape: Shape,
     pub(super) literal_uses: NativeLiteralUses,
-    pub(super) line_traces: Vec<TracedLine>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1475,29 +1472,11 @@ pub(super) struct SourceFrozenDrawing {
 pub(super) type NativePolygonLiteralUses = LiteralPolygon<EmissionPortId>;
 pub(super) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 
-pub(super) fn native_literal_uses_in_output_order(
-    literal_uses: NativeLiteralUses,
-    line_traces: Vec<TracedLine>,
-    order: &CertifiedOverlayOrder,
-    work: &mut impl Work,
-) -> Result<(NativeLiteralUses, Vec<TracedLine>)> {
-    if literal_uses.lines.len() != line_traces.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line traces and literal line rows lost their shared order".into(),
-        )
-        .into());
-    }
-    let line_traces = reorder_rows(line_traces, &order.lines, work)?;
-    let literal_uses = literal_uses.in_output_order(order, work)?;
-    Ok((literal_uses, line_traces))
-}
-
 pub(super) struct NativeMaterializedParts {
     pub(super) axes: CoordinateAxes,
     pub(super) points: Vec<Point>,
     pub(super) lines: Vec<CoordSeq>,
     pub(super) polygons: Vec<Polygon>,
-    pub(super) line_traces: Vec<TracedLine>,
     pub(super) literal_uses: NativeLiteralUses,
 }
 
@@ -1599,23 +1578,8 @@ pub(super) fn materialize_native_parts(
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
     axes: CoordinateAxes,
-    line_traces: &[TracedLine],
     budget: &mut impl Work,
 ) -> Result<NativeMaterializedParts> {
-    if line_traces.len() != plan.lines.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line traces do not match the written line table".into(),
-        )
-        .into());
-    }
-    budget.charge_into_error(
-        u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut cloned_line_traces = Vec::with_capacity(line_traces.len());
-    for line in line_traces {
-        cloned_line_traces.push(line.try_clone_with_work(budget)?);
-    }
-    let line_traces = cloned_line_traces;
     budget.charge_into_error(
         u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -1712,7 +1676,6 @@ pub(super) fn materialize_native_parts(
         points,
         lines,
         polygons,
-        line_traces,
         literal_uses: NativeLiteralUses {
             points: point_uses,
             lines: line_uses,
@@ -1721,20 +1684,8 @@ pub(super) fn materialize_native_parts(
     })
 }
 
-pub(super) fn write_completed_native(
-    drawing: CompletedNativeDrawing,
-) -> Result<WrittenNativeDrawing> {
-    let CompletedNativeDrawing {
-        sealed,
-        line_traces,
-    } = drawing;
-    let (shape, _frame) = sealed.into_scalar()?;
-    Ok(WrittenNativeDrawing { shape, line_traces })
-}
-
-pub(super) struct WrittenNativeDrawing {
-    pub(super) shape: Shape,
-    pub(super) line_traces: Vec<TracedLine>,
+pub(super) fn write_completed_native(drawing: CompletedNativeDrawing) -> Result<Shape> {
+    Ok(drawing.sealed.into_scalar()?.0)
 }
 
 pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
@@ -2021,7 +1972,6 @@ pub(super) fn native_port_point(
 
 pub(super) struct SealedSourceDrawing {
     pub(super) sealed: FinishedGeometry,
-    pub(super) line_traces: Vec<TracedLine>,
 }
 
 pub(super) enum SealedQDrawing {
@@ -2798,52 +2748,10 @@ pub(in crate::geometry) struct SourceTrace {
     pub(super) samples: Vec<TracedSourceSample>,
 }
 
-impl SourceTrace {
-    pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        work.charge_into_error(
-            u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let rows = self.rows.try_clone_with_work(work)?;
-        let mut samples = Vec::with_capacity(self.samples.len());
-        for sample in &self.samples {
-            samples.push(TracedSourceSample {
-                written_vertex: sample.written_vertex,
-                edge: sample.edge,
-                parameter: sample.parameter.try_clone_with_work(work)?,
-                request_row: sample.request_row,
-                has_source: sample.has_source,
-                endpoint_only: sample.endpoint_only,
-            });
-        }
-        Ok(Self { rows, samples })
-    }
-}
-
 struct SourceTraceSample {
     edge_index: usize,
     local_parameter: ExactRational,
     written_vertex: usize,
-}
-
-pub(in crate::geometry) struct TracedLine {
-    pub(in crate::geometry) member: usize,
-    pub(in crate::geometry) trace: SourceTrace,
-}
-
-impl TracedLine {
-    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        Ok(Self {
-            member: self.member,
-            trace: self.trace.try_clone_with_work(work)?,
-        })
-    }
-}
-
-pub(in crate::geometry) struct PreparedNativeSource {
-    pub(in crate::geometry) shape: Shape,
-    pub(in crate::geometry) line_traces: Vec<TracedLine>,
-    pub(in crate::geometry) source_members: Vec<usize>,
-    pub(in crate::geometry) family_state: Option<FeatureFamilyRegistry>,
 }
 
 impl SourceTrace {
@@ -5053,13 +4961,7 @@ mod tests {
             points: Vec::new(),
             whole_sphere: false,
         };
-        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut setup_work)?;
-        let line_traces = if closed {
-            Vec::new()
-        } else {
-            vec![TracedLine { member: 0, trace }]
-        };
-        materialize_native_parts(&plan, &sites, &ordinates, axes, &line_traces, work)
+        materialize_native_parts(&plan, &sites, &ordinates, axes, work)
     }
 
     fn literal_test_sequence(count: usize) -> LiteralSequence<EmissionPortId> {
@@ -5078,7 +4980,6 @@ mod tests {
             points: Vec::new(),
             lines: Vec::new(),
             polygons: Vec::new(),
-            line_traces: Vec::new(),
             literal_uses: NativeLiteralUses {
                 points: Vec::new(),
                 lines: Vec::new(),
@@ -6823,16 +6724,7 @@ mod tests {
             polygons: Vec::new(),
         };
         let mut work = Unmetered;
-        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap();
-        let line_traces = vec![
-            TracedLine {
-                member: 20,
-                trace: trace.try_clone_with_work(&mut work).unwrap(),
-            },
-            TracedLine { member: 30, trace },
-        ];
-        let (ordered, ordered_traces) =
-            native_literal_uses_in_output_order(uses, line_traces, &order, &mut work).unwrap();
+        let ordered = uses.in_output_order(&order, &mut work).unwrap();
         assert_eq!(
             ordered
                 .points
@@ -6861,13 +6753,6 @@ mod tests {
                 images: vec![EmissionPortId(20), EmissionPortId(21)],
             },
         ],);
-        assert_eq!(
-            ordered_traces
-                .iter()
-                .map(|line| line.member)
-                .collect::<Vec<_>>(),
-            [30, 20],
-        );
         assert!(ordered.polygons.is_empty());
     }
 

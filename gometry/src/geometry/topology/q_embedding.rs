@@ -16,7 +16,7 @@ use super::emission::{
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
     PortSpelling, PublicationInventory, RecipeWalk, RecipeWalkOwner, SealedSourceDrawing,
     SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing, SourceSampleOccurrence, SourceTrace,
-    TraceRequestLocation, TracedLine, merge_native_port_data, native_pole_edges, native_seam_edges,
+    TraceRequestLocation, merge_native_port_data, native_pole_edges, native_seam_edges,
     native_source_sample_occurrences,
 };
 use super::exact::{
@@ -102,7 +102,6 @@ pub(super) struct QCandidate {
 
 #[derive(Default)]
 struct NativeLineRun {
-    member: Option<usize>,
     vertices: Vec<NativePortData>,
     chords: Vec<NativeLineChordSource>,
 }
@@ -147,7 +146,7 @@ struct NativeReference<'topology> {
     sites: Vec<Option<AssignedSite>>,
     feature_nodes: Vec<EmissionNodeId>,
     publication_sample_nodes: Vec<EmissionNodeId>,
-    line_traces: Vec<TracedLine>,
+    line_traces: Vec<SourceTrace>,
     literal_chord_uses: Vec<NativeLiteralChordUse>,
     line_graph_edges: Vec<NativeAreaEdge>,
     area_edges: Vec<NativeAreaEdge>,
@@ -4171,7 +4170,7 @@ fn validate_native_written_chord_transport(
                 let trace = reference.line_traces.get(*line_trace).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native line chord has no trace owner".into())
                 })?;
-                let parent_ranges = trace.trace.rows.row(*trace_row)?;
+                let parent_ranges = trace.rows.row(*trace_row)?;
                 let key = NativeProducerUseKey {
                     recipe: *recipe,
                     trace_edge: *trace_edge,
@@ -5901,7 +5900,7 @@ fn finish_native_line_run(
     trace_line: usize,
     literal_chord_uses: &mut Vec<NativeLiteralChordUse>,
     budget: &mut impl Work,
-) -> Result<super::emission::TracedLine> {
+) -> Result<SourceTrace> {
     if run.vertices.len() < 2 || run.chords.len().checked_add(1) != Some(run.vertices.len()) {
         return Err(GeometryErrorKind::Invalid(
             "native line run has incomplete endpoint or recipe rows".into(),
@@ -5965,11 +5964,7 @@ fn finish_native_line_run(
         chords.push(chord);
     }
     builder.line(chords)?;
-    let trace = super::emission::SourceTrace::from_edge_rows(trace_rows, budget)?;
-    let member = run.member.ok_or_else(|| {
-        GeometryErrorKind::Invalid("native line run has no source member identity".into())
-    })?;
-    Ok(super::emission::TracedLine { member, trace })
+    SourceTrace::from_edge_rows(trace_rows, budget)
 }
 
 fn native_area_facts(
@@ -14242,7 +14237,6 @@ pub(super) enum NearestQCertificate {
 
 pub(super) struct QEmbeddingOutput {
     pub(super) sealed: super::emission::SealedQDrawing,
-    pub(super) family_state: Option<FeatureFamilyRegistry>,
 }
 
 #[derive(Clone, Copy)]
@@ -16467,10 +16461,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let nearest = self.nearest.clone();
         let publication_nearest = self.publication_nearest.clone();
         match self.check_global_candidate(&nearest, &publication_nearest, drawing, budget)? {
-            GlobalCheck::Pass(mut output) => {
-                output.family_state = self.take_native_families();
-                Ok(NearestQCertificate::Pass(Box::new(output)))
-            },
+            GlobalCheck::Pass(output) => Ok(NearestQCertificate::Pass(Box::new(output))),
             GlobalCheck::Reject(classes) => {
                 if classes.is_empty() {
                     Ok(NearestQCertificate::Unrepresentable)
@@ -19297,25 +19288,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         Ok(())
     }
 
-    fn take_native_families(&mut self) -> Option<FeatureFamilyRegistry> {
-        let QFamilyState::Native(_) = &self.family_state else {
-            return None;
-        };
-        match std::mem::replace(&mut self.family_state, QFamilyState::Shared {
-            original_source_base: 0,
-        }) {
-            QFamilyState::Native(registry) => Some(registry),
-            QFamilyState::Shared {
-                original_source_base,
-            } => {
-                self.family_state = QFamilyState::Shared {
-                    original_source_base,
-                };
-                None
-            },
-        }
-    }
-
     fn native_family_endpoint_domain(
         &self,
         chord: &QPublishedChord,
@@ -19829,14 +19801,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     })?)
                 },
             };
-            let line_member = match walk.owner {
-                RecipeWalkOwner::Line(member) => Some(member),
-                RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_) => None,
-            };
-            let mut line_run = NativeLineRun {
-                member: line_member,
-                ..NativeLineRun::default()
-            };
+            let mut line_run = NativeLineRun::default();
             for &recipe_id in &walk.fragments {
                 let fragment = self
                     .emission
@@ -19956,7 +19921,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                     &mut literal_chord_uses,
                                     budget,
                                 )?);
-                                line_run.member = line_member;
                             }
                         }
                     }
@@ -20641,7 +20605,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             &assigned_sites,
             &ordinates,
             axes,
-            &reference.line_traces,
             budget,
         )?;
         let Some(mut candidate) = validate_native_materialized_candidate(
@@ -20661,7 +20624,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
-            line_traces,
         } = frozen;
         if !std::ptr::eq(candidate.assignment.reference, reference) {
             return Err(GeometryErrorKind::Invalid(
@@ -20734,10 +20696,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 StorageTarget::Scalar,
             )? {
                 PublicationOutcome::Pass(sealed) => {
-                    Ok(Some(super::emission::CompletedNativeDrawing {
-                        sealed,
-                        line_traces,
-                    }))
+                    Ok(Some(super::emission::CompletedNativeDrawing { sealed }))
                 },
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
                     Err(GeometryErrorKind::Invalid(
@@ -20770,10 +20729,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ),
             StorageTarget::Scalar,
         )? {
-            PublicationOutcome::Pass(sealed) => Ok(Some(super::emission::CompletedNativeDrawing {
-                sealed,
-                line_traces,
-            })),
+            PublicationOutcome::Pass(sealed) => {
+                Ok(Some(super::emission::CompletedNativeDrawing { sealed }))
+            },
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
                 PublicationRejection::SourceOnly(_)
@@ -21214,15 +21172,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     },
                 }
             };
-            super::emission::SealedQDrawing::Source(SealedSourceDrawing {
-                sealed,
-                line_traces: Vec::new(),
-            })
+            super::emission::SealedQDrawing::Source(SealedSourceDrawing { sealed })
         };
-        Ok(GlobalCheck::Pass(QEmbeddingOutput {
-            sealed,
-            family_state: None,
-        }))
+        Ok(GlobalCheck::Pass(QEmbeddingOutput { sealed }))
     }
 
     fn local_candidate(
@@ -22770,10 +22722,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
             drawing,
             budget,
         )? {
-            GlobalCheck::Pass(mut output) => {
-                output.family_state = self.take_native_families();
-                Ok(GlobalCheck::Pass(output))
-            },
+            GlobalCheck::Pass(output) => Ok(GlobalCheck::Pass(output)),
             GlobalCheck::Reject(classes) => Ok(GlobalCheck::Reject(classes)),
         }
     }
@@ -25545,14 +25494,6 @@ mod canonical_coordinate_tests {
             )
             .into());
         };
-        assert!(
-            !native.line_traces.is_empty()
-                && native
-                    .line_traces
-                    .iter()
-                    .all(|line| line.trace.rows.edge_count() > 0),
-            "Native completion must retain final producer leaf records"
-        );
         let shape = native.sealed.into_scalar()?.0;
         let mut crossing_leaf_ends = 0;
         let mut fixed_records = Vec::new();
