@@ -30,6 +30,7 @@ pub(crate) use crs::{
     topology_domain, topology_domain_at,
 };
 use linestring::{SeamRing, collect_points, ring_follows_seam};
+pub(super) use linestring::{same_coordinate_values, segment_coords_with_occurrences};
 pub(crate) use linestring::{segment_coords_with_metric, split_ring_at_seam_with_metric};
 #[cfg(test)]
 pub(crate) use normalize::self_intersections_in_frame;

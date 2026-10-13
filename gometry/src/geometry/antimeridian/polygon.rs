@@ -8,7 +8,7 @@ use crate::geographic::{
 use crate::geometry::antimeridian::publication::SplitCapture;
 use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords_with_metric,
-    split_ring_at_seam_with_metric,
+    segment_coords_with_occurrences, split_ring_at_seam_with_metric,
 };
 use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
@@ -36,7 +36,7 @@ use chart_shape::{chart_shape, map_xy_with_shared_owners};
 use split::{split_polygon, split_polygon_with_lineage};
 
 use super::lineage::{LineageCatalog, LineageSequence, MemberId, ShapeLineage};
-use super::normalize;
+use super::{normalize, same_coordinate_values};
 
 #[derive(Default)]
 struct ShapeTransformMemo {
@@ -241,7 +241,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
             ))
         },
         (Shape::LineString(line), Some(ShapeLineage::LineString(source))) => {
-            let pieces = segment_coords_with_metric(
+            let pieces = segment_coords_with_occurrences(
                 &collect_points(line),
                 GeographicFrame::crs84(),
                 metric_access,
@@ -249,16 +249,23 @@ fn split_shape_with_lineage<M: ChartMetric>(
             if pieces.is_empty() {
                 return Ok((shape.clone(), lineage.cloned()));
             }
-            let member = source.member;
-            let lines = pieces
-                .into_iter()
-                .map(|piece| CoordSeq::try_from_points(&piece))
-                .map(|coords| coords.map(LineSeq::from_proven))
-                .collect::<Result<Vec<_>>>()?;
-            let lineages = lines
-                .iter()
-                .map(|line| Some(empty_lineage(member, line.len())))
-                .collect();
+            let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured line lineage has no event catalog".into())
+            })?;
+            let source_closed = line_sequence_is_closed(line);
+            let mut lines = Vec::with_capacity(pieces.len());
+            let mut lineages = Vec::with_capacity(pieces.len());
+            for piece in pieces {
+                lineages.push(Some(split::seam_piece_lineage(
+                    &piece,
+                    source,
+                    source_closed,
+                    catalog,
+                )?));
+                lines.push(LineSeq::from_proven(CoordSeq::try_from_points(
+                    &piece.points,
+                )?));
+            }
             Ok((
                 Shape::multi_line_string(line.as_coords().axes(), lines),
                 Some(ShapeLineage::MultiLineString {
@@ -307,6 +314,9 @@ fn split_shape_with_lineage<M: ChartMetric>(
         ) => {
             let mut split = Vec::with_capacity(lines.member_count());
             let mut lineages = Vec::with_capacity(lines.member_count());
+            let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured multiline lineage has no event catalog".into())
+            })?;
             for (source, source_lineage) in lines.members_with_values().zip(source_members) {
                 match (source, source_lineage) {
                     (MultiMember::Empty, None) => {
@@ -314,7 +324,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                         lineages.push(None);
                     },
                     (MultiMember::Value(line), Some(source_lineage)) => {
-                        let pieces = segment_coords_with_metric(
+                        let pieces = segment_coords_with_occurrences(
                             &collect_points(line),
                             GeographicFrame::crs84(),
                             metric_access,
@@ -323,10 +333,17 @@ fn split_shape_with_lineage<M: ChartMetric>(
                             split.push(MultiMember::Value(line.clone()));
                             lineages.push(Some(source_lineage.clone()));
                         } else {
+                            let source_closed = line_sequence_is_closed(line);
                             for piece in pieces {
-                                let line = LineSeq::from_proven(CoordSeq::try_from_points(&piece)?);
-                                lineages
-                                    .push(Some(empty_lineage(source_lineage.member, line.len())));
+                                let lineage = split::seam_piece_lineage(
+                                    &piece,
+                                    source_lineage,
+                                    source_closed,
+                                    catalog,
+                                )?;
+                                let line =
+                                    LineSeq::from_proven(CoordSeq::try_from_points(&piece.points)?);
+                                lineages.push(Some(lineage));
                                 split.push(MultiMember::Value(line));
                             }
                         }
@@ -526,12 +543,8 @@ fn split_shape_with_lineage<M: ChartMetric>(
     }
 }
 
-fn empty_lineage(member: MemberId, coordinate_count: usize) -> LineageSequence {
-    LineageSequence {
-        member,
-        vertices: vec![Vec::new(); coordinate_count],
-        edges: Vec::new(),
-    }
+fn line_sequence_is_closed(line: &LineSeq) -> bool {
+    line.len() > 1 && same_coordinate_values(line.point_at(0), line.point_at(line.len() - 1))
 }
 
 fn split_view_error(error: &GeographicViewError) -> crate::error::Error {

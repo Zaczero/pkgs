@@ -66,20 +66,22 @@ pub(super) fn split_polygon<M: ChartMetric>(
     Ok(polygons)
 }
 
-fn seam_piece_lineage(
+pub(super) fn seam_piece_lineage(
     piece: &SeamPiece,
     source: &super::super::lineage::LineageSequence,
+    source_closed: bool,
     catalog: &mut super::super::lineage::LineageCatalog,
 ) -> Result<super::super::lineage::LineageSequence> {
     fn source_parameters(
         sources: &[SeamVertexSource],
         edge_count: usize,
+        source_closed: bool,
         work: &mut impl crate::geometry::Work,
     ) -> Result<Vec<(usize, ExactRational)>> {
         let mut parameters = Vec::new();
         for source in sources {
             match source {
-                SeamVertexSource::InputVertex(index) if *index == edge_count => {
+                SeamVertexSource::InputVertex(index) if source_closed && *index == edge_count => {
                     parameters.push((edge_count - 1, ExactRational::one()));
                     parameters.push((0, ExactRational::zero()));
                 },
@@ -151,6 +153,7 @@ fn seam_piece_lineage(
                 .get(index)
                 .ok_or_else(|| GeometryErrorKind::Invalid("seam vertex is unavailable".into()))?,
             edge_count,
+            source_closed,
             &mut work,
         );
         let ends = source_parameters(
@@ -158,6 +161,7 @@ fn seam_piece_lineage(
                 GeometryErrorKind::Invalid("seam edge end vertex is unavailable".into())
             })?,
             edge_count,
+            source_closed,
             &mut work,
         )?;
         let starts = starts?;
@@ -550,7 +554,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
         let points = collect_points(hole.coords());
         match split_ring_at_seam_with_metric(&points, GeographicFrame::crs84(), metric_access)? {
             SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
-                let hole_lineage = seam_piece_lineage(&spelled, lineage, catalog)?;
+                let hole_lineage = seam_piece_lineage(&spelled, lineage, true, catalog)?;
                 stationary_holes.push((
                     Ring::try_from_closed(CoordSeq::try_from_points(&spelled.points)?)?,
                     hole_lineage,
@@ -685,7 +689,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
     let shell_points = collect_points(polygon.shell.coords());
     match split_ring_at_seam_with_metric(&shell_points, GeographicFrame::crs84(), metric_access)? {
         SeamRing::Whole(shell) => {
-            let shell_lineage = seam_piece_lineage(&shell, &source_lineage.shell, catalog)?;
+            let shell_lineage = seam_piece_lineage(&shell, &source_lineage.shell, true, catalog)?;
             let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell.points)?)?;
             let (holes, hole_lineages): (Vec<_>, Vec<_>) = stationary_holes.into_iter().unzip();
             let polygon = Polygon::new(shell, holes);
@@ -705,7 +709,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                 .map(|piece| {
                     Ok((
                         piece.points.clone(),
-                        seam_piece_lineage(piece, &source_lineage.shell, catalog)?,
+                        seam_piece_lineage(piece, &source_lineage.shell, true, catalog)?,
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
