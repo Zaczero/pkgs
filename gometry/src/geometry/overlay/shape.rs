@@ -1,4 +1,4 @@
-use super::exact_partition::ResolvedNodePoints;
+use super::exact_partition::ordinates::ResolvedNodePoints;
 use crate::error::Result;
 use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{
