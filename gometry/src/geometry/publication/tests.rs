@@ -427,6 +427,36 @@ fn producer_drawing_rejects_final_storage_readback_mismatch() {
 }
 
 #[test]
+fn minimum_clearance_line_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let shape = crate::io::parse_wkt("MULTIPOINT ((0 0), (1 0))").unwrap();
+    let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+    let output =
+        crate::broadcast::metric_minimum_clearance_line(&model, Some("OGC:CRS84"), &shape)
+            .unwrap();
+    let mut receipt = ProducerDrawingReceipt::line(output).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("minimum-clearance line literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("minimum-clearance line omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
 fn coverage_invalid_edge_binder_omission_fails_on_final_readback() {
     let input = [
         crate::io::parse_wkt("POLYGON ((170 0, -170 0, -170 10, 170 10, 170 0))")

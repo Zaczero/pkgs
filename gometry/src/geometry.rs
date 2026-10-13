@@ -448,6 +448,31 @@ pub(crate) fn geographic_node_pending_row<M: ChartMetric>(
     )
 }
 
+pub(crate) fn finish_geographic_line_drawing(
+    shape: Shape,
+    frame: crate::Frame,
+) -> Result<publication::FinishedGeometry> {
+    let receipt = publication::ProducerDrawingReceipt::line(shape)?;
+    publication::finish_producer_drawing(receipt, frame, publication::StorageTarget::Scalar)
+}
+
+pub(crate) fn finish_geographic_line(shape: Shape, frame: crate::Frame) -> Result<Shape> {
+    finish_geographic_line_drawing(shape, frame)?
+        .into_scalar()
+        .map(|(shape, _)| shape)
+}
+
+pub(crate) fn geographic_line_pending_row(
+    shape: Shape,
+    frame: &crate::Frame,
+    logical_row: usize,
+    operation: &'static str,
+) -> Result<publication::PendingPublicationRow> {
+    let finished = finish_geographic_line_drawing(shape, frame.clone())?;
+    let work = embedding_search::EvaluationBudget::new(operation, finished.output_literal_count())?;
+    finished.into_pending_row(logical_row, work, frame)
+}
+
 pub(crate) fn geographic_build_area_pending_row<M: ChartMetric>(
     shape: &Shape,
     context: &SourceArcContext<'_, '_, M>,

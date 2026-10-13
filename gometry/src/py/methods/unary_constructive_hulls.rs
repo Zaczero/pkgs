@@ -65,7 +65,8 @@ unary_shape_method!(
     (Metric MinimumClearanceLine),
     doc_minimum_clearance_line,
     kernels::unary_minimum_clearance_line,
-    unit_shape
+    kernels::unary_minimum_clearance_line_array,
+    synthesized
 );
 
 #[pymethods]

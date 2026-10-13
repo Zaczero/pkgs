@@ -2,7 +2,7 @@ use super::DirectedChartRestrictionUse;
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout,
+    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_search::{EvaluationBudget, Work};
 use crate::geometry::ordinates::RootRange;
@@ -12,7 +12,7 @@ use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
 use crate::geometry::topology::{EmissionPortId, ExactChartPoint, QSourceImage};
-use crate::geometry::{GeometryErrorKind, Shape};
+use crate::geometry::{Coordinates as _, GeometryErrorKind, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry) enum PublicationImage {
@@ -70,6 +70,62 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
 }
 
 impl ProducerDrawingReceipt {
+    pub(in crate::geometry) fn line(shape: Shape) -> Result<Self> {
+        let (layout, literals) = match &shape {
+            Shape::LineString(line) => {
+                let mut images = Vec::with_capacity(line.len());
+                let mut literals = Vec::with_capacity(line.len());
+                for (index, point) in line.iter_coords().enumerate() {
+                    let image = ProducerImageId::new(index);
+                    images.push(image);
+                    literals.push(ProducerLiteral::from_point(
+                        LiteralAddress {
+                            operation: 0,
+                            logical_row: 0,
+                            group_row: None,
+                            value_row: None,
+                            output: 0,
+                        },
+                        image,
+                        point,
+                    ));
+                }
+                (
+                    ShapeLiteralLayout {
+                        points: Vec::new(),
+                        lines: vec![LiteralSequence {
+                            output: 0,
+                            axes: line.as_coords().axes(),
+                            images,
+                        }],
+                        polygons: Vec::new(),
+                    },
+                    literals,
+                )
+            },
+            Shape::Empty(crate::geometry::GeometryKind::LineString, _) => (
+                ShapeLiteralLayout {
+                    points: Vec::new(),
+                    lines: Vec::new(),
+                    polygons: Vec::new(),
+                },
+                Vec::new(),
+            ),
+            _ => {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "producer line receipt requires a LineString output".into(),
+                )
+                .into());
+            },
+        };
+        Ok(Self::new(
+            FrozenLiteralBuffers::shapes(shape, layout),
+            literals,
+            Vec::new(),
+            Vec::new(),
+        ))
+    }
+
     pub(in crate::geometry) const fn new(
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,

@@ -1202,7 +1202,32 @@ pub(crate) fn unary_minimum_clearance_line(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MinimumClearanceLine)?;
-    metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())
+    let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => {
+            crate::geometry::finish_geographic_line(output, ctx.frame.clone())
+        },
+    }
+}
+
+pub(crate) fn unary_minimum_clearance_line_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let model = ctx.metric.require_model(MetricOp::MinimumClearanceLine)?;
+    let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            crate::geometry::geographic_line_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "minimum_clearance_line",
+            )?,
+        )),
+    }
 }
 
 /// Distance kernel shared by the spine-routed free function.
