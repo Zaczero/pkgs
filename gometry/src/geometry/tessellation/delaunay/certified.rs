@@ -15,7 +15,7 @@ pub(in crate::geometry::tessellation) struct Site {
 }
 
 impl Site {
-    pub(in crate::geometry::tessellation) fn raw(
+    pub(in crate::geometry::tessellation) const fn raw(
         id: usize,
         point: Point,
         source_ordinal: usize,
