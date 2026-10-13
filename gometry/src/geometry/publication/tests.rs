@@ -503,10 +503,11 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
         crate::geometry::CoverageOverlapRule::MinIndex,
         &mut work,
     )?;
-    let context = crate::geometry::SourceArcContext::new(
-        crate::geometry::TopologyDomain::Geographic(frame),
-        None,
-    );
+    let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            None,
+        );
     analysis.cleaning_drawing_receipt(&assignment, CoordinateAxes::XY, &context, &mut work)
 }
 
@@ -590,7 +591,7 @@ fn producer_polygon_shape_layout(
             literal_cursor,
         )?;
         let mut holes = Vec::with_capacity(polygon.holes.len());
-        for hole in &polygon.holes {
+        for hole in polygon.holes.iter() {
             holes.push(producer_polygon_ring_layout(
                 hole,
                 logical_row,
@@ -655,10 +656,11 @@ fn geographic_coverage_clean_rejects_corrupted_final_storage() {
         crate::io::parse_wkt("POLYGON ((175 0, -160 0, -160 10, 175 10, 175 0))")
             .expect("second seam coverage row"),
     ];
-    let context = crate::geometry::SourceArcContext::new(
-        crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
-        None,
-    );
+    let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            None,
+        );
     let expected = crate::geometry::coverage_clean(
         &input,
         0.0,
