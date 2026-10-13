@@ -24550,11 +24550,11 @@ mod canonical_coordinate_tests {
         let shapes = [
             line(
                 Point::new_raw_xy(half - ulp, 0.0),
-                Point::new_raw_xy(half, 2.0),
+                Point::new_raw_xy(half + ulp, 4.0),
             )?,
             line(
                 Point::new_raw_xy(half - ulp, 2.0),
-                Point::new_raw_xy(half, 0.0),
+                Point::new_raw_xy(half + ulp, -2.0),
             )?,
             crate::geometry::Shape::Point(Point::new_raw_xy(half - ulp, 1.0)),
         ];
@@ -24570,8 +24570,10 @@ mod canonical_coordinate_tests {
             OverlayOp::Union.name(),
             &mut budget,
         )?;
-        let emission =
+        let mut emission =
             plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+        // The line-only union is source-reusable; exercise Native completion explicitly.
+        emission.force_native = true;
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
         let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
             None;
@@ -24672,6 +24674,83 @@ mod canonical_coordinate_tests {
                 &mut fixed_work,
             )?;
         assert!(fixed_keys.contains(&emitted_node_key(frame, XY::new(half - ulp, 1.0),)?));
+
+        let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+        let live_keys = drawing.live_node_keys(frame, &mut budget)?;
+        let certification = QEmbeddingCertification::<crate::crs::GeodesicMetric> {
+            topology: &topology,
+            emission: &emission,
+            nearest: &nearest,
+            ordinates: &ordinates,
+            declared_axes: crate::geometry::CoordinateAxes::XY,
+            strict_axes: false,
+            operation: "q native domain",
+            metric_access: None,
+        };
+        let pass =
+            match certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget)?
+            {
+                SearchOutcome::Pass(pass) => pass,
+                SearchOutcome::Exhausted => {
+                    return Err(GeometryErrorKind::unrepresentable_output("q native domain"));
+                },
+            };
+        assert!(
+            pass.searched,
+            "the nearest seam site is outside the admitted domain"
+        );
+        let assigned = pass.coordinates.candidate(target)?;
+        assert_eq!(assigned.native.x.to_bits(), right.native.x.to_bits());
+        assert_eq!(assigned.native.y.to_bits(), right.native.y.to_bits());
+        assert_eq!(assigned.periods, right.periods);
+
+        let super::super::emission::SealedQDrawing::Native(native) = pass.output.sealed else {
+            return Err(GeometryErrorKind::Invalid(
+                "the seam witness did not run Native completion".into(),
+            )
+            .into());
+        };
+        assert!(
+            !native.line_traces.is_empty()
+                && native
+                    .line_traces
+                    .iter()
+                    .all(|line| line.trace.rows.edge_count() > 0),
+            "Native completion must retain final producer leaf records"
+        );
+        let shape = native.sealed.into_scalar()?.0;
+        let mut crossing_leaf_ends = 0;
+        let mut fixed_records = Vec::new();
+        shape.try_for_each_component(&mut |component| -> Result<()> {
+            match component {
+                crate::geometry::Component::LineString(line) => {
+                    let points = line.points().collect::<Vec<_>>();
+                    for pair in points.windows(2) {
+                        crossing_leaf_ends += pair
+                            .iter()
+                            .filter(|point| {
+                                point.x.to_bits() == assigned.native.x.to_bits()
+                                    && point.y.to_bits() == assigned.native.y.to_bits()
+                            })
+                            .count();
+                    }
+                },
+                crate::geometry::Component::Point(point) => fixed_records.push(point),
+                crate::geometry::Component::Polygon(_) => {},
+            }
+            Ok(())
+        })?;
+        assert!(
+            crossing_leaf_ends >= 4,
+            "both crossing lines must retain their incident final leaves at the right site"
+        );
+        assert!(
+            fixed_records.iter().any(|point| {
+                point.x.to_bits() == (half - ulp).to_bits()
+                    && point.y.to_bits() == 1.0_f64.to_bits()
+            }),
+            "the fixed left-site point must remain in the final Native part records"
+        );
         Ok(())
     }
 }
