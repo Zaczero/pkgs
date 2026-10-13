@@ -1,5 +1,5 @@
 use super::{
-    ChartEdge, ChartEdgePart, ChartMetric, LineSegments, Point, Result, Segment, lerp_point,
+    ChartEdge, ChartEdgePart, ChartMetric, LineSegments as _, Point, Result, Segment, lerp_point,
     point_distance, point_segment_distance_and_projection, push_distinct_active_position,
 };
 

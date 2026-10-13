@@ -1,8 +1,4 @@
-use std::sync::OnceLock;
-
 use crate::array::PyGeometryArray;
-#[cfg(test)]
-use crate::broadcast::metrics::ShapeData;
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, crs,
@@ -17,8 +13,6 @@ use crate::geometry::{
     FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, SourceArcCapture,
     SourceArcContext, TopologyDomain, emit_from_original, storage,
 };
-#[cfg(test)]
-use crate::test_support::binary_dispatch_counters;
 use crate::{NonNegative, validate_lonlat_shape};
 
 mod clearance;

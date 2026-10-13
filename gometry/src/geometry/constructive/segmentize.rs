@@ -1,7 +1,6 @@
 //! Route-aware subdivision of coordinate sequences.
 
 use std::num::NonZeroUsize;
-use std::ops::Range;
 use std::sync::Arc;
 
 use crate::geographic::GeographicFrame;

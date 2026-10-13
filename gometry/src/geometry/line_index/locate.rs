@@ -1,8 +1,7 @@
 use super::{
-    ChartEdgePart, ChartLineIndex, CoordSeq, DistanceParts, GeometryErrorKind, LineIndex,
-    LineSegments, NearestCandidate, Point, Result, Segment, XY, coordinate_squared_safe,
-    point_distance, point_segment_selection, segment_projection, squared_space_safe,
-    update_nearest_candidate,
+    CoordSeq, DistanceParts, GeometryErrorKind, LineIndex, LineSegments as _, NearestCandidate,
+    Point, Result, Segment, XY, coordinate_squared_safe, point_distance, point_segment_selection,
+    segment_projection, squared_space_safe, update_nearest_candidate,
 };
 
 /// Locate one query while measuring its route, without a reusable prefix index.
