@@ -402,7 +402,7 @@ fn dissolve_edge_incidences(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{Point, Polygon, Ring, XY, overlay};
+    use crate::geometry::{CoordinateAxes, Point, Polygon, Ring, XY, overlay};
 
     fn rectangle_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         let points = [
