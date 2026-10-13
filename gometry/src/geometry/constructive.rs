@@ -5,6 +5,7 @@
 use crate::error::Result;
 mod buffer;
 mod edit;
+mod linework;
 mod offset;
 mod ring;
 mod segmentize;
