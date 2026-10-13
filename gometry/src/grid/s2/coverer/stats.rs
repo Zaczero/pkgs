@@ -1,4 +1,4 @@
-use super::*;
+use super::{BinaryHeap, Candidate, CellId, Reverse};
 
 /// Per-cover observations used by the native traversal tests.
 ///

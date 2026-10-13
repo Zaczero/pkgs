@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    BinaryHeap, Candidate, CellClass, CellId, CoverBudgetExceeded, CoverContext, CoverError,
+    CoverRule, CoverStats, Coverer, Face, MAX_LEVEL, Reverse, admit_visible_candidate,
+    classify_one, cover_total, debug_assert_budget, ensure_cover_budget, is_visible,
+    productive_state, retain_productive, stage_children_at,
+};
 
 impl Coverer {
     /// Classify the six face roots into the phase-1 DFS stack or phase-2 queue.

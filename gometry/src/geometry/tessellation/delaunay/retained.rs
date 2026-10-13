@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CertifiedDelaunay, ChartPointSite, ChartPole, GeographicFrame, Ordering, Result,
+    RetainedLongitudeSite, RingOwner, XY, cdt, certified_delaunay_with_coordinates, exact,
+    exact_delaunay, retained_site_longitude, retained_site_orientation,
+};
 
 /// Borrowed exact coordinates for one already admitted geographic point chart.
 /// Mesh ordinals index `sites`; source ordinals remain untouched in each site.

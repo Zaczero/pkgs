@@ -1,5 +1,8 @@
 use super::refine::fan_size;
-use super::*;
+use super::{
+    BinaryHeap, CellClass, CellId, CoverContext, CoverError, CoverRule, CoverStats, Coverer,
+    Reverse, cover_total, ensure_cover_budget, stage_children_at,
+};
 
 /// One classified S2 candidate.  The membership facts are carried with the
 /// candidate so visibility never has to ask the source tester a second time.

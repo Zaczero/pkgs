@@ -1,4 +1,4 @@
-use super::*;
+use super::{ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, Result, exact};
 
 /// Optional CDT mesh-refinement controls. Active when either quality constraint
 /// is set. Ruppert-style refinement is bounded; incomplete meshes are rejected

@@ -1,5 +1,7 @@
 use super::super::earcut_bridges::BridgeArena;
-use super::*;
+use super::{
+    EarcutCornerId, EarcutCycle, GeometryErrorKind, HoleList, Point, Result, RingVertexId,
+};
 
 pub(super) fn eliminate_holes_with_ids(
     ring: &mut Vec<Point>,

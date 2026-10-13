@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use super::refine::fan_size;
-use super::*;
+use super::{
+    AffineRectClass, Candidate, CandidateCertificate, CellClass, CellId, CoverError, CoverStats,
+    GeographicCoverageSource, PointMembership, Productivity, Shape, WorkingShapeRelation,
+};
 use crate::geometry::{Bounds, Coordinates as _, Point, PointBatchTester, same_point};
 use crate::grid::affine_source::RectangularCandidate;
 use crate::grid::coverer::{NativeRectClassifier, RectClass};

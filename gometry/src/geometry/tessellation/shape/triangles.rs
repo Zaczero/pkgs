@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CdtRefinement, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, Point,
+    PointSelectionChart, Polygon, Polygonal, Result, Ring, RingOwner, Shape, TopologyDomain,
+    earcut_polygon_with, try_triangle_shape,
+};
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.

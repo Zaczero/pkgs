@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use ahash::HashMapExt as _;
 
 use super::super::exact::orient2d_normal_components;
-use super::*;
+use super::{
+    Bounds, EarcutCornerId, EarcutTriangle, ExactSign, GeometryErrorKind, HashMap, Orientation,
+    Point, PointKey, Result, XY, orientation, point_in_ccw_triangle, same_point, wrap_index,
+};
 
 #[expect(
     clippy::indexing_slicing,

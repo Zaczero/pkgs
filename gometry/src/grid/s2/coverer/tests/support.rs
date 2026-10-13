@@ -1,4 +1,6 @@
 use super::*;
+use crate::grid::s2::cell::LatLngRect;
+use crate::grid::s2::projection::lonlat_to_point;
 
 /// Independent reference coverer: classifies each cell with gometry's
 /// general native DE-9IM relate engine (a DIFFERENT code path from the
@@ -20,7 +22,7 @@ pub(super) fn point_leaves(source: &Shape) -> Option<Vec<CellId>> {
     (!ShapeCountQuery::default().has_segments(source)).then(|| {
         let mut leaves = Vec::new();
         source.for_each_point(|point| {
-            let xyz = crate::grid::s2::projection::lonlat_to_point(point.x, point.y);
+            let xyz = lonlat_to_point(point.x, point.y);
             let leaf = CellId::from_point(xyz);
             leaves.push(leaf);
             for neighbor in leaf.edge_neighbors() {
@@ -212,10 +214,7 @@ pub(super) fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass
     CellClass::Boundary
 }
 
-pub(super) fn relate_wrapped_rect_is_interior(
-    ctx: &RelateCoverContext,
-    rect: crate::grid::s2::cell::LatLngRect,
-) -> bool {
+pub(super) fn relate_wrapped_rect_is_interior(ctx: &RelateCoverContext, rect: LatLngRect) -> bool {
     if rect.is_full_lng() {
         let full = box_shape(-180.0, rect.lat_lo, 180.0, rect.lat_hi);
         return ctx.source.covers(&full).unwrap();
