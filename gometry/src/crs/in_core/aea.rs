@@ -109,12 +109,14 @@ impl ProjectionKernel for Aea {
         let es = eccentricity_squared(e);
         let (s1, c1) = p1.sin_cos();
         let m1 = msfn(s1, c1, es);
+        let m1_squared = m1 * m1;
         let q1 = auth.q(s1);
         let n = if (p1 - p2).abs() >= EPS10 {
             let (s2, c2) = p2.sin_cos();
             let m2 = msfn(s2, c2, es);
+            let m2_squared = m2 * m2;
             let q2 = auth.q(s2);
-            (m1 * m1 - m2 * m2) / (q2 - q1)
+            (m1_squared - m2_squared) / (q2 - q1)
         } else {
             s1
         };
@@ -123,7 +125,7 @@ impl ProjectionKernel for Aea {
                 "invalid Albers Equal Area parameters",
             ));
         }
-        let c = m1 * m1 + n * q1;
+        let c = m1_squared + n * q1;
         let dd = 1.0 / n;
         let r = c - n * auth.q(p0.sin());
         if r < 0.0 {
