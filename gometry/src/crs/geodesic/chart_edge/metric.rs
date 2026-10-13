@@ -2,10 +2,10 @@ use super::ChartEdge;
 use super::derivatives::{chart_edge_differential, chart_edge_differential_bounds};
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
-use crate::geometry::types::ChartMetric;
 use crate::geometry::{
-    ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
-    GeographicAreaDensity, Point, PointEdgeQuery, PointEdgeQueryResult, Work,
+    ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
+    ChartPointDistanceSample, GeographicAreaDensity, Point, PointEdgeQuery, PointEdgeQueryResult,
+    Work,
 };
 
 impl ChartMetric for super::GeodesicMetric {
