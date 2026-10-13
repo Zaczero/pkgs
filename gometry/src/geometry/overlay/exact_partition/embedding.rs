@@ -37,6 +37,8 @@ use crate::geometry::embedding_search::{
 #[cfg(test)]
 use crate::geometry::graph::shoot_left;
 use crate::geometry::graph::{RayAxis as Axis, visit_component_faces};
+#[cfg(test)]
+use crate::geometry::graph::prefix_contact_offsets;
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
