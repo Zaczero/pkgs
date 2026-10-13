@@ -25,7 +25,7 @@ use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, GeometryErrorKind, MOrdinate, Point, Polygon, Ring,
-    Shape, Work, ZOrdinate,
+    Shape, Work, ZOrdinate, same_topological_coordinate,
 };
 
 struct RootParameter {
@@ -199,7 +199,7 @@ impl GeographicCoverageAnalysis {
                     let mut cycles = region.cycles.iter().collect::<Vec<_>>();
                     cycles.sort_unstable_by_key(|cycle| cycle.cycle_index);
                     for cycle in cycles {
-                        let ring = output_ring(
+                        let mut ring = output_ring(
                             plans.topology,
                             cycle,
                             region.poles,
@@ -208,6 +208,18 @@ impl GeographicCoverageAnalysis {
                             &live_spans,
                             work,
                         )?;
+                        if !ring.hole {
+                            let pole = if region.poles.includes(ChartPole::North) {
+                                Some(ChartPole::North)
+                            } else if region.poles.includes(ChartPole::South) {
+                                Some(ChartPole::South)
+                            } else {
+                                None
+                            };
+                            if let Some(pole) = pole {
+                                close_full_turn_at_pole(&mut ring.vertices, pole, frame);
+                            }
+                        }
                         if ring.hole {
                             holes.push(ring);
                         } else {
@@ -621,6 +633,42 @@ fn whole_sphere_vertices(frame: GeographicFrame) -> Vec<OutputVertex> {
         request_row: 0,
     })
     .collect()
+}
+
+fn close_full_turn_at_pole(
+    vertices: &mut Vec<OutputVertex>,
+    pole: ChartPole,
+    frame: GeographicFrame,
+) {
+    let Some(first) = vertices.first().copied() else {
+        return;
+    };
+    let Some(last) = vertices.get(vertices.len().saturating_sub(2)).copied() else {
+        return;
+    };
+    if !same_topological_coordinate(
+        (last.point.x - first.point.x).abs(),
+        frame.longitude().period(),
+    ) {
+        return;
+    }
+
+    let pole_y = frame.chart_pole_latitude(pole);
+    // A closed source ring can wind a full longitude turn while its stored
+    // endpoint aliases the start. The pole edge makes that winding explicit
+    // to later geometry admission without assigning invented source ordinates.
+    vertices.pop();
+    vertices.push(OutputVertex {
+        point: Point::new_raw_xy(last.point.x, pole_y),
+        node: None,
+        request_row: 0,
+    });
+    vertices.push(OutputVertex {
+        point: Point::new_raw_xy(first.point.x, pole_y),
+        node: None,
+        request_row: 0,
+    });
+    vertices.push(first);
 }
 
 fn port_point(
