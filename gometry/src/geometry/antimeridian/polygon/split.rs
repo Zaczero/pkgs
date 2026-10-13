@@ -727,30 +727,58 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let original_segments = segments.clone();
             let (segments, capped) =
                 super::assemble::extend_over_poles_with_lineage(segments, preferred, catalog)?;
-            if capped {
-                let polygons = split_polygon(source, polygon, preferred, metric_access)?;
-                return Ok(polygons
-                    .into_iter()
-                    .map(|polygon| {
-                        let member = source_lineage.member;
-                        let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
-                            member,
-                            vertices: vec![Vec::new(); ring.coords().len()],
-                            edges: Vec::new(),
-                        };
-                        let lineage = super::super::lineage::LineagePolygon {
-                            member,
-                            shell: empty_sequence(&polygon.shell),
-                            holes: polygon.holes.iter().map(empty_sequence).collect(),
-                        };
-                        super::super::lineage::PolygonWithLineage { polygon, lineage }
-                    })
-                    .collect());
-            }
             let kept_holes = stationary_holes;
-            assemble_polygons_with_lineage(segments, &kept_holes, catalog)
+            let mut polygons = assemble_polygons_with_lineage(segments, &kept_holes, catalog)?;
+            if capped
+                && preferred == PoleClosure::Auto
+                && !polygons.iter().try_fold(true, |valid, part| {
+                    Ok::<_, crate::error::Error>(valid && polygon_is_valid(&part.polygon)?)
+                })?
+            {
+                let mut candidates = Vec::new();
+                for closure in [
+                    PoleClosure::Chart(ChartPole::North),
+                    PoleClosure::Chart(ChartPole::South),
+                ] {
+                    let (forced, _) = super::assemble::extend_over_poles_with_lineage(
+                        original_segments.clone(),
+                        closure,
+                        catalog,
+                    )?;
+                    if let Ok(candidate) =
+                        assemble_polygons_with_lineage(forced, &kept_holes, catalog)
+                        && candidate.iter().try_fold(true, |valid, part| {
+                            Ok::<_, crate::error::Error>(valid && polygon_is_valid(&part.polygon)?)
+                        })?
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+                polygons = match <[Vec<_>; 1]>::try_from(candidates) {
+                    Ok([winner]) => winner,
+                    Err(candidates) if candidates.is_empty() => {
+                        return Err(GeometryErrorKind::antimeridian_split_failed(
+                            "neither pole closure produces valid polygon rings",
+                        ));
+                    },
+                    Err(_) => {
+                        return Err(GeometryErrorKind::antimeridian_split_failed(
+                            "pole closure is ambiguous: both directions produce valid rings",
+                        ));
+                    },
+                };
+            }
+            reject_fabricated_pole_ordinates(
+                source,
+                &polygons
+                    .iter()
+                    .map(|part| part.polygon.clone())
+                    .collect::<Vec<_>>(),
+            )?;
+            Ok(polygons)
         },
     }
 }

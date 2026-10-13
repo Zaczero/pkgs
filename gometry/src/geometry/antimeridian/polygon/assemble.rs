@@ -8,6 +8,15 @@ use crate::geometry::antimeridian::publication::restriction_for_edge;
 
 pub(super) type SeamSegmentsWithLineage = Vec<(Vec<Point>, LineageSequence)>;
 
+#[derive(Clone, Copy)]
+struct PoleCap {
+    segment: usize,
+    start: Point,
+    first: Point,
+    second: Point,
+    reverse: bool,
+}
+
 pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     match shape {
         Shape::Polygon(polygon) => Ok(vec![polygon]),
@@ -335,8 +344,8 @@ pub(super) fn extend_over_poles(
     segments: Vec<Vec<Point>>,
     closure: PoleClosure,
 ) -> Result<(Vec<Vec<Point>>, bool)> {
-    let (segments, capped, _) = extend_over_poles_with_direction(segments, closure)?;
-    Ok((segments, capped))
+    let (segments, caps, _) = extend_over_poles_with_direction(segments, closure)?;
+    Ok((segments, !caps.is_empty()))
 }
 
 pub(super) fn extend_over_poles_with_lineage(
@@ -345,10 +354,7 @@ pub(super) fn extend_over_poles_with_lineage(
     catalog: &mut LineageCatalog,
 ) -> Result<(SeamSegmentsWithLineage, bool)> {
     let plain_segments = segments.iter().map(|(points, _)| points.clone()).collect();
-    let (stitched, capped, reversed) = extend_over_poles_with_direction(plain_segments, closure)?;
-    if capped {
-        return Ok((segments, true));
-    }
+    let (stitched, caps, reversed) = extend_over_poles_with_direction(plain_segments, closure)?;
     if stitched.len() != segments.len() {
         return Err(GeometryErrorKind::Invalid(
             "pole extension changed the seam fragment count".into(),
@@ -364,7 +370,55 @@ pub(super) fn extend_over_poles_with_lineage(
         };
         result.push((points, lineage));
     }
-    Ok((result, false))
+    let capped = !caps.is_empty();
+    for cap in caps {
+        let (_, lineage) = result.get_mut(cap.segment).ok_or_else(|| {
+            GeometryErrorKind::Invalid("pole cap references an unknown seam fragment".into())
+        })?;
+        let member = lineage.member;
+        let first_event = catalog.event(member, Vec::new())?;
+        let second_event = catalog.event(member, Vec::new())?;
+        if cap.reverse {
+            let reversed = catalog.reverse_sequence(lineage)?;
+            let mut cap_vertices = vec![vec![second_event], vec![first_event]];
+            cap_vertices.extend(reversed.vertices);
+            let mut cap_edges = vec![
+                catalog.push_edge_use(
+                    member,
+                    Vec::new(),
+                    restriction_for_edge(cap.second, cap.first),
+                )?,
+                catalog.push_edge_use(
+                    member,
+                    Vec::new(),
+                    restriction_for_edge(cap.first, cap.start),
+                )?,
+            ];
+            cap_edges.extend(reversed.edges);
+            *lineage = LineageSequence {
+                member,
+                vertices: cap_vertices,
+                edges: cap_edges,
+            };
+        } else {
+            lineage
+                .vertices
+                .extend([vec![first_event], vec![second_event]]);
+            lineage.edges.extend([
+                catalog.push_edge_use(
+                    member,
+                    Vec::new(),
+                    restriction_for_edge(cap.start, cap.first),
+                )?,
+                catalog.push_edge_use(
+                    member,
+                    Vec::new(),
+                    restriction_for_edge(cap.first, cap.second),
+                )?,
+            ]);
+        }
+    }
+    Ok((result, capped))
 }
 
 #[expect(
@@ -374,7 +428,7 @@ pub(super) fn extend_over_poles_with_lineage(
 fn extend_over_poles_with_direction(
     mut segments: Vec<Vec<Point>>,
     closure: PoleClosure,
-) -> Result<(Vec<Vec<Point>>, bool, bool)> {
+) -> Result<(Vec<Vec<Point>>, Vec<PoleCap>, bool)> {
     let chart_frame = GeographicFrame::crs84();
     let north_pole = chart_frame.chart_pole_latitude(ChartPole::North);
     let south_pole = chart_frame.chart_pole_latitude(ChartPole::South);
@@ -407,6 +461,7 @@ fn extend_over_poles_with_direction(
         }
     }
     let original = segments.clone();
+    let mut caps = Vec::new();
     let mut over_north = false;
     let mut over_south = false;
     if let Some((index, latitude)) = left_end {
@@ -420,9 +475,18 @@ fn extend_over_poles_with_direction(
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
             let like = *segment.last().expect("segments are non-empty");
-            segment.push(pole_vertex(like, -180.0, north_pole)?);
-            segment.push(pole_vertex(like, 180.0, north_pole)?);
+            let first = pole_vertex(like, -180.0, north_pole)?;
+            let second = pole_vertex(like, 180.0, north_pole)?;
+            segment.push(first);
+            segment.push(second);
             segment.reverse();
+            caps.push(PoleCap {
+                segment: index,
+                start: like,
+                first,
+                second,
+                reverse: true,
+            });
         } else if closure == PoleClosure::Chart(ChartPole::South)
             || left_start.is_none_or(|start| latitude < start)
         {
@@ -431,8 +495,17 @@ fn extend_over_poles_with_direction(
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
             let like = *segment.last().expect("segments are non-empty");
-            segment.push(pole_vertex(like, -180.0, south_pole)?);
-            segment.push(pole_vertex(like, 180.0, south_pole)?);
+            let first = pole_vertex(like, -180.0, south_pole)?;
+            let second = pole_vertex(like, 180.0, south_pole)?;
+            segment.push(first);
+            segment.push(second);
+            caps.push(PoleCap {
+                segment: index,
+                start: like,
+                first,
+                second,
+                reverse: false,
+            });
         }
     }
     if let Some((index, latitude)) = right_end {
@@ -445,9 +518,18 @@ fn extend_over_poles_with_direction(
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
             let like = *segment.last().expect("segments are non-empty");
-            segment.push(pole_vertex(like, 180.0, south_pole)?);
-            segment.push(pole_vertex(like, -180.0, south_pole)?);
+            let first = pole_vertex(like, 180.0, south_pole)?;
+            let second = pole_vertex(like, -180.0, south_pole)?;
+            segment.push(first);
+            segment.push(second);
             segment.reverse();
+            caps.push(PoleCap {
+                segment: index,
+                start: like,
+                first,
+                second,
+                reverse: true,
+            });
         } else if closure == PoleClosure::Chart(ChartPole::North)
             || right_start.is_none_or(|start| latitude > start)
         {
@@ -456,11 +538,19 @@ fn extend_over_poles_with_direction(
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
             let like = *segment.last().expect("segments are non-empty");
-            segment.push(pole_vertex(like, 180.0, north_pole)?);
-            segment.push(pole_vertex(like, -180.0, north_pole)?);
+            let first = pole_vertex(like, 180.0, north_pole)?;
+            let second = pole_vertex(like, -180.0, north_pole)?;
+            segment.push(first);
+            segment.push(second);
+            caps.push(PoleCap {
+                segment: index,
+                start: like,
+                first,
+                second,
+                reverse: false,
+            });
         }
     }
-    let capped = over_north || over_south;
     if closure == PoleClosure::Auto && over_north && over_south {
         // Both poles implied: the input ring was wound backwards. Reverse
         // every original segment instead.
@@ -468,9 +558,9 @@ fn extend_over_poles_with_direction(
         for segment in &mut reversed {
             segment.reverse();
         }
-        return Ok((reversed, false, true));
+        return Ok((reversed, Vec::new(), true));
     }
-    Ok((segments, capped, false))
+    Ok((segments, caps, false))
 }
 
 #[expect(

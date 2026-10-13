@@ -1429,6 +1429,30 @@ mod tests {
     }
 
     #[test]
+    fn captured_pole_cap_keeps_edge_lineage_aligned_for_publication() {
+        let shell = Ring::closed_coordseq(
+            CoordSeq::try_from_vecs(vec![170.0, -70.0, 50.0, 170.0], vec![80.0; 4], None, None)
+                .unwrap(),
+        )
+        .unwrap();
+        let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
+        let drawing = source
+            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .unwrap();
+        let mut pole_cap = false;
+        drawing.shape.for_each_point(|point| {
+            pole_cap |= point.y.to_bits() == 90.0_f64.to_bits();
+        });
+        assert!(pole_cap, "the fixture must publish a north-pole cap");
+
+        let finished = drawing
+            .finish_scalar(Frame::None)
+            .expect("the pole-cap fallback keeps an edge lineage for every ring edge");
+        let (published, _) = finished.into_scalar().unwrap();
+        assert_eq!(published.validate().unwrap(), None, "{published:?}");
+    }
+
+    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
