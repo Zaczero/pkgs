@@ -173,9 +173,10 @@ pub(crate) use ordinates::{
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
 mod overlay;
+pub(in crate::geometry) use overlay::overlay_all_geographic_chart_with_sources;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
-    overlay_all_geographic_chart_with_sources, overlay_all_geographic_output_with_metric_and_frame,
+    overlay_all_geographic_output_with_metric_and_frame,
     overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
