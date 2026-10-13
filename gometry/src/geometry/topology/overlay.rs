@@ -407,6 +407,15 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             expansion_budget,
             preparation_work,
         )?;
+        // Each fragment contributes one base leaf; each inserted sample adds one more.
+        let published_leaves = published_inventory
+            .fragments
+            .len()
+            .checked_add(published_inventory.samples.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        preparation_work
+            .budget_mut()
+            .set_published_leaves(published_leaves)?;
         let emission = plan.embedding_emission(
             topology,
             source_points,
