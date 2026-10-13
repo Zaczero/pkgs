@@ -539,11 +539,6 @@ use self::native::cycles::{
     NativeCycleStartCandidate, NativeCycleStartQuery, NativeGraphCycleEdge,
     exhaustive_native_cycle_start_vertex_index, native_cycle_rotations_for_queries,
 };
-#[cfg(test)]
-use self::native::cycles::{
-    NativeCycleStartCandidate, NativeCycleStartQuery, NativeGraphCycleEdge,
-    exhaustive_native_cycle_start_vertex_index, native_cycle_rotations_for_queries,
-};
 use self::native::cycles::{
     NativeGraphCycle, NativeGraphPart, align_native_cycle_starts, native_graph_cycle_recipe,
     native_graph_cycle_vertex, native_reference_cycles_and_parts,
@@ -558,6 +553,8 @@ use self::native::seam_bands::*;
 use self::native::source_ranges::*;
 use self::native::transport::*;
 use self::native::whole_sphere::*;
+use self::problem::completion::native_reference_global_check;
+#[cfg(test)]
 use self::problem::completion::native_reference_global_check;
 use self::problem::publication::publication_leaf_replaces_source_span;
 use self::problem::search::search_q_embedding;
@@ -577,3 +574,11 @@ use super::emission::ring_roles::*;
 use super::emission::sites::*;
 use super::emission::source_reuse::*;
 use crate::geometry::exact_point::exact_orientation_with_work;
+
+use self::dependencies::{chords::*, classes::*, proximity::*};
+use self::publication::{chords::*, fans::*, model::*, tracing::*, witness::*};
+use self::native::cycles::{NativeGraphCycle, NativeGraphPart, align_native_cycle_starts, native_graph_cycle_recipe, native_graph_cycle_vertex, native_reference_cycles_and_parts};
+use self::emission::ring_roles::{assigned_emitted_ring, check_q_ring_roles, planned_area_rings, QRingRoleCheck, QRingRoleFailure, QRingRoleStatus};
+use self::problem::{completion::native_reference_global_check, publication::publication_leaf_replaces_source_span, search::search_q_embedding};
+pub(in crate::geometry::topology) use self::problem::search::{certify_and_search_q_embedding, certify_q_embedding_nearest};
+#[cfg(test)] use self::native::cycles::{NativeGraphCycleEdge, NativeCycleStartQuery, NativeCycleStartCandidate, exhaustive_native_cycle_start_vertex_index, native_cycle_rotations_for_queries};

@@ -1,6 +1,7 @@
-use super::super::exact::{SourceEdgeKind, source_edge_at};
+use super::super::exact::SourceEdgeKind;
 use super::plan::*;
 use super::sites::*;
+use super::source_reuse::source_edge_at;
 use super::*;
 
 pub(in crate::geometry::topology) fn boundary_cycle_line_paths(

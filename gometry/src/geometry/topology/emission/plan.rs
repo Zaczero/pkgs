@@ -279,7 +279,8 @@ pub(in crate::geometry::topology) enum PlannedAreaRing {
 pub(in crate::geometry::topology) struct QEmbeddingEmission<'topology, 'emission> {
     pub(in crate::geometry::topology) plan: &'emission QEmissionPlan,
     pub(in crate::geometry::topology) force_native: bool,
-    pub(in crate::geometry::topology) source_points: &'emission [Option<EmittedVertex<'topology>>],
+    pub(in crate::geometry::topology) source_points:
+        &'emission [Option<EmittedVertex<'topology>>],
     pub(in crate::geometry::topology) selected_regions: &'emission [SelectedRegionFact],
     pub(in crate::geometry::topology) selected_face_roots: &'emission [Option<usize>],
     pub(in crate::geometry::topology) fragment_recipes: &'emission [FragmentRecipe],

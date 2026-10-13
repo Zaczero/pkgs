@@ -24,7 +24,11 @@ pub(in crate::geometry::topology) struct CutOwnerHalf {
 }
 
 impl CutOwnerHalf {
-    pub(in crate::geometry::topology) fn same_key(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
+    pub(in crate::geometry::topology) fn same_key(
+        &self,
+        other: &Self,
+        work: &mut impl Work,
+    ) -> Result<bool> {
         Ok(self.source_edge == other.source_edge
             && self
                 .parameter

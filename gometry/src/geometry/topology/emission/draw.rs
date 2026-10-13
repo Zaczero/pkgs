@@ -4,6 +4,7 @@ use super::super::q::*;
 use super::line_paths::*;
 use super::plan::*;
 use super::sites::*;
+use super::source_reuse::source_edge_at;
 use super::*;
 use crate::geographic::SeamIdentity;
 

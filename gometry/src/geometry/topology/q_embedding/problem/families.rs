@@ -1,7 +1,7 @@
 use super::super::*;
 
-impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
-    QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
+impl<M: ChartMetric>
+    QEmbeddingProblem<'_, '_, '_, '_, M>
 {
     fn register_native_pole_families(
         &mut self,

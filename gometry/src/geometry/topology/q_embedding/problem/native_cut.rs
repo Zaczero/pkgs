@@ -1,7 +1,7 @@
 use super::super::*;
 
-impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
-    QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
+impl<'topology, M: ChartMetric>
+    QEmbeddingProblem<'topology, '_, '_, '_, M>
 {
     fn materialize_native_cut_features(
         &mut self,

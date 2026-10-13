@@ -332,7 +332,10 @@ pub(in crate::geometry::topology) const fn canonical_bits(value: f64) -> u64 {
     }
 }
 
-pub(in crate::geometry::topology) fn emitted_node_key(frame: GeographicFrame, point: XY) -> Result<EmittedNodeKey> {
+pub(in crate::geometry::topology) fn emitted_node_key(
+    frame: GeographicFrame,
+    point: XY,
+) -> Result<EmittedNodeKey> {
     let longitude = frame
         .longitude()
         .canonicalize(point.x)
@@ -410,7 +413,9 @@ pub(in crate::geometry::topology) fn node_injectivity_collisions_with_work(
 }
 
 #[cfg(test)]
-pub(in crate::geometry::topology) fn certify_node_injectivity(live: &mut Vec<(EmittedNodeKey, QNodeId)>) -> Result<()> {
+pub(in crate::geometry::topology) fn certify_node_injectivity(
+    live: &mut Vec<(EmittedNodeKey, QNodeId)>,
+) -> Result<()> {
     if !node_injectivity_collisions(live)?.is_empty() {
         for pair in live.windows(2) {
             let [(left_key, left_node), (right_key, right_node)] = pair else {

@@ -1,8 +1,8 @@
 use super::super::*;
 use super::search::search_q_embedding;
 
-impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
-    QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
+impl<'topology, M: ChartMetric>
+    QEmbeddingProblem<'topology, '_, '_, '_, M>
 {
     fn certify_nearest(
         &mut self,

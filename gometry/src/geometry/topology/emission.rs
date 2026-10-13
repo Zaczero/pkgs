@@ -45,16 +45,23 @@ use crate::geometry::{
 };
 
 mod builder;
+pub(in crate::geometry::topology) mod cut_ports;
 pub(in crate::geometry::topology) mod draw;
 mod families;
 pub(in crate::geometry::topology) mod line_paths;
 mod materialize;
 mod nodes;
+pub(in crate::geometry::topology) mod ordinates;
+pub(in crate::geometry::topology) mod plan;
 mod port_authority;
+pub(in crate::geometry::topology) mod prepare;
 mod presentation;
 mod publication;
 mod recipes;
 pub(in crate::geometry::topology) mod ring_roles;
+pub(in crate::geometry::topology) mod sites;
+pub(in crate::geometry::topology) mod source_publication;
+pub(in crate::geometry::topology) mod source_reuse;
 mod trace;
 pub(in crate::geometry::topology) mod write;
 pub(super) use self::builder::{EmissionBuilder, ExpandedEmissionPlan};
