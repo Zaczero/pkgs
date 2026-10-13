@@ -374,6 +374,19 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_reference(
         )
         .into());
     }
+    let mut previous_diagnostic_line = None;
+    for &(line_index, _) in &reference.diagnostic_line_tags {
+        budget.charge_into_error(1)?;
+        if line_index >= reference.plan.lines.len()
+            || previous_diagnostic_line.is_some_and(|previous| previous >= line_index)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "native Q diagnostic line tags are not ordered within the line plan".into(),
+            )
+            .into());
+        }
+        previous_diagnostic_line = Some(line_index);
+    }
     for (port_index, port) in reference.plan.ports.iter().enumerate() {
         budget.charge_into_error(1)?;
         let vertex = *reference.port_vertices.get(port_index).ok_or_else(|| {

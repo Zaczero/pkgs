@@ -70,7 +70,7 @@ pub(super) use self::materialize::NativePolygonLiteralUses;
 pub(in crate::geometry) use self::materialize::QSourceImage;
 pub(super) use self::materialize::{
     CompletedNativeDrawing, NativeFrozenDrawing, NativeMaterializedParts, SourceFrozenDrawing,
-    materialize_native_parts, write_completed_native,
+    materialize_native_diagnostic_lines, materialize_native_parts, write_completed_native,
 };
 pub(in crate::geometry) use self::nodes::EmissionPortId;
 pub(super) use self::nodes::{

@@ -6,8 +6,7 @@ use std::collections::BTreeSet;
 use super::exact::{
     ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceRange,
     FallibleAvl, NodedExactChart, QuotientNodeId, SourceEdgeId, SourceEdgeKind, SourcePolygonId,
-    SourceRingId, SourceRowId, point_on_exact_segment, point_on_exact_segment_with_work,
-    vector_cross, vector_difference,
+    SourceRingId, SourceRowId, point_on_exact_segment, vector_cross, vector_difference,
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
