@@ -127,7 +127,7 @@ impl FrameSide {
         self.next().start_xy(rectangle)
     }
 
-    fn endpoints_xy(self, rectangle: &[XY; 4]) -> [XY; 2] {
+    const fn endpoints_xy(self, rectangle: &[XY; 4]) -> [XY; 2] {
         [self.start_xy(rectangle), self.end_xy(rectangle)]
     }
 

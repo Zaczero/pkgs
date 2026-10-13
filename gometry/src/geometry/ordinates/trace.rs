@@ -145,7 +145,7 @@ impl RootRange {
     }
 
     #[cfg(test)]
-    pub(crate) fn whole(root: RootId) -> Self {
+    pub(crate) const fn whole(root: RootId) -> Self {
         Self {
             root,
             source_start: ExactRational::zero(),

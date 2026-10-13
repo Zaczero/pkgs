@@ -115,7 +115,7 @@ struct SearchContext<'a> {
 }
 
 impl<'a> SearchContext<'a> {
-    fn new(accuracy: &'a Accuracy) -> Self {
+    const fn new(accuracy: &'a Accuracy) -> Self {
         Self {
             accuracy,
             budget: ExpansionBudget::new("hausdorff_distance", "max_error"),

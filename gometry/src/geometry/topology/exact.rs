@@ -153,7 +153,7 @@ impl ExactChartPoint {
         clippy::arithmetic_side_effects,
         reason = "HeapSize sums the two already-owned chart-coordinate rationals"
     )]
-    pub(super) fn heap_bytes(&self) -> usize {
+    pub(super) const fn heap_bytes(&self) -> usize {
         rational_heap_bytes(&self.x) + rational_heap_bytes(&self.y)
     }
 }
@@ -669,7 +669,7 @@ impl ExactSourceRange {
         clippy::arithmetic_side_effects,
         reason = "HeapSize sums the two rational parameters owned by this range"
     )]
-    pub(super) fn heap_bytes(&self) -> usize {
+    pub(super) const fn heap_bytes(&self) -> usize {
         rational_heap_bytes(&self.start) + rational_heap_bytes(&self.end)
     }
 }

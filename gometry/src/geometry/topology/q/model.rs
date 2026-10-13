@@ -416,7 +416,7 @@ pub(in crate::geometry::topology::q) fn point_heap_bytes(point: &ExactChartPoint
     point.heap_bytes()
 }
 
-pub(in crate::geometry::topology::q) fn rational_heap_bytes(value: &ExactRational) -> usize {
+pub(in crate::geometry::topology::q) const fn rational_heap_bytes(value: &ExactRational) -> usize {
     super::super::exact::rational_heap_bytes(value)
 }
 
