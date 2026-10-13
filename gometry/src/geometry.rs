@@ -140,6 +140,7 @@ pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch}
 pub(crate) use types::coordinate_columns_eq;
 pub(crate) mod embedding_completion;
 mod embedding_search;
+mod exact_point;
 pub(crate) mod publication;
 #[cfg(test)]
 pub(crate) use embedding_search::work_product_ticks;
