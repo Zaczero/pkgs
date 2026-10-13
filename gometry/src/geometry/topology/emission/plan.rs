@@ -1,9 +1,15 @@
 use super::super::exact::SourceRowId;
-use super::super::linework::DiagnosticKind;
 use super::cut_ports::CutNodePorts;
 use super::sites::{EmittedNodeKey, EmittedVertex, record_emitted_node};
 use super::*;
 use crate::geometry::{HasM, HasZ};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::geometry::topology) enum DiagnosticKind {
+    Cut,
+    Dangle,
+    InvalidRing,
+}
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct LineStep {
@@ -288,4 +294,10 @@ pub(in crate::geometry::topology) struct QEmbeddingEmission<'topology, 'emission
     pub(in crate::geometry::topology) selected_ports: Vec<(QNodeId, QPortId)>,
     pub(in crate::geometry::topology) selected_nodes: Vec<QNodeId>,
     pub(in crate::geometry::topology) cut_nodes: Vec<CutNodePorts>,
+}
+
+impl QEmissionPlan {
+    pub(in crate::geometry::topology) const fn is_whole_sphere(&self) -> bool {
+        self.whole_sphere
+    }
 }

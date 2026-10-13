@@ -9,18 +9,12 @@
 
 use std::collections::VecDeque;
 
+use super::emission::plan::DiagnosticKind;
 use super::exact::SourceRowId;
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, Work};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DiagnosticKind {
-    Cut,
-    Dangle,
-    InvalidRing,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NodedSpan {
@@ -109,13 +103,11 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        roles.push(
-            super::q_embedding::emission::ring_roles::exact_q_ring_role_for_linework(
-                topology.sources.frame,
-                &points,
-                work,
-            )?,
-        );
+        roles.push(super::emission::ring_roles::exact_q_ring_role_for_linework(
+            topology.sources.frame,
+            &points,
+            work,
+        )?);
     }
     Ok(roles)
 }

@@ -91,8 +91,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     budget.charge_into_error(1)?;
                     if region.poles.includes(pole) {
                         families.push(super::super::emission::FeatureFamily {
-                            parent: super::super::emission::FeatureFamilyParent::Region(region.root),
-                            producer: super::super::emission::SampleProducerKind::PolePresentation(pole),
+                            parent: super::super::emission::FeatureFamilyParent::Region(
+                                region.root,
+                            ),
+                            producer: super::super::emission::SampleProducerKind::PolePresentation(
+                                pole,
+                            ),
                             occurrence: 0,
                         });
                     }

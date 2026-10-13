@@ -318,7 +318,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         GeometryErrorKind::Invalid("native recipe walk is unknown".into())
                     })?;
                 if area_region.is_some()
-                    != matches!(recipe.use_kind, super::super::emission::SelectedUse::AreaBoundary)
+                    != matches!(
+                        recipe.use_kind,
+                        super::super::emission::SelectedUse::AreaBoundary
+                    )
                 {
                     return Err(GeometryErrorKind::Invalid(
                         "native recipe use does not match its selected walk".into(),

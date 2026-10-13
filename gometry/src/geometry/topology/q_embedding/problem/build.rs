@@ -247,7 +247,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
                 for producer_parameter in [&range.producer_start, &range.producer_end] {
                     budget.charge_into_error(1)?;
-                    if !super::super::exact::in_unit_interval_with_work(producer_parameter, budget)? {
+                    if !super::super::exact::in_unit_interval_with_work(producer_parameter, budget)?
+                    {
                         return Err(GeometryErrorKind::Invalid(
                             "Q source range has an invalid affine producer parameter".into(),
                         )

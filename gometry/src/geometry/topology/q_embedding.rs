@@ -125,6 +125,7 @@ use self::publication::model::*;
 use self::publication::tracing::*;
 use self::publication::witness::*;
 use self::source_binding::*;
+use super::emission::ring_roles::*;
 
 type NativeCutPeriodRange = (i64, i64);
 type NativeChordCutRanges = Vec<NativeCutPeriodRange>;
@@ -518,7 +519,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     }
 }
 
-
 #[cfg(test)]
 mod canonical_coordinate_tests {
     include!("q_embedding/native/tests/support.rs");
@@ -531,7 +531,7 @@ mod canonical_coordinate_tests {
 
 #[cfg(test)]
 mod ring_filter_tests {
-    include!("q_embedding/emission/ring_roles/tests.rs");
+    include!("emission/ring_roles/tests.rs");
 }
 
 #[cfg(test)]
@@ -559,5 +559,11 @@ mod native_cycle_start_tests {
     include!("q_embedding/native/cycles/tests.rs");
 }
 
-use self::dependencies::{chords::*, classes::*, proximity::*};
-use self::publication::{chords::*, fans::*, model::*, tracing::*, witness::*};
+use self::dependencies::chords::*;
+use self::dependencies::classes::*;
+use self::dependencies::proximity::*;
+use self::publication::chords::*;
+use self::publication::fans::*;
+use self::publication::model::*;
+use self::publication::tracing::*;
+use self::publication::witness::*;

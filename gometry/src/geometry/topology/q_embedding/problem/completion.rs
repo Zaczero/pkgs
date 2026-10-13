@@ -116,10 +116,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             ),
             StorageTarget::Scalar,
         )? {
-            PublicationOutcome::Pass(sealed) => Ok(Some(super::super::emission::CompletedNativeDrawing {
-                sealed,
-                line_traces,
-            })),
+            PublicationOutcome::Pass(sealed) => {
+                Ok(Some(super::super::emission::CompletedNativeDrawing {
+                    sealed,
+                    line_traces,
+                }))
+            },
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
                 PublicationRejection::SourceOnly(_)
@@ -370,14 +372,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         .iter()
                         .map(rounded_chart_point)
                         .collect::<Result<Vec<_>>>()?;
-                    let publication_ordinates = super::super::emission::resolve_publication_ordinates(
-                        self.topology,
-                        self.emission.publication,
-                        &live_publication_samples,
-                        self.declared_axes,
-                        self.metric_access,
-                        budget,
-                    )?;
+                    let publication_ordinates =
+                        super::super::emission::resolve_publication_ordinates(
+                            self.topology,
+                            self.emission.publication,
+                            &live_publication_samples,
+                            self.declared_axes,
+                            self.metric_access,
+                            budget,
+                        )?;
                     let source_publication =
                         super::super::emission::source_publication::SourcePublication {
                             inventory: self.emission.publication,

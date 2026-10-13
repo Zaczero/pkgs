@@ -339,36 +339,42 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
         let variable_count = points.len();
         let no_variables = variable_count == 0;
-        let complete = |candidates: &[QCandidate],
-                        budget: &mut EvaluationBudget|
-         -> Result<GlobalCheck<super::super::emission::CompletedNativeDrawing>> {
-            if candidates.len() != variable_count {
-                return Err(GeometryErrorKind::Invalid(
-                    "native cut completion candidates do not match their variable table".into(),
-                )
-                .into());
-            }
-            let mut feature_candidates = Vec::with_capacity(feature_sites.len());
-            for &site in &feature_sites {
-                budget.charge_into_error(1)?;
-                let candidate = match site {
-                    NativeCutOrderSite::Variable(variable) => {
-                        *candidates.get(variable).ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "native cut completion omitted a variable".into(),
-                            )
-                        })?
-                    },
-                    NativeCutOrderSite::Fixed(candidate) => candidate,
-                };
-                feature_candidates.push(candidate);
-            }
-            match self.complete_native_drawing(reference, features, &feature_candidates, budget)? {
-                Some(drawing) => Ok(GlobalCheck::Pass(drawing)),
-                None if no_variables => Ok(GlobalCheck::Reject(Vec::new())),
-                None => Ok(GlobalCheck::Reject(vec![0])),
-            }
-        };
+        let complete =
+            |candidates: &[QCandidate],
+             budget: &mut EvaluationBudget|
+             -> Result<GlobalCheck<super::super::emission::CompletedNativeDrawing>> {
+                if candidates.len() != variable_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native cut completion candidates do not match their variable table".into(),
+                    )
+                    .into());
+                }
+                let mut feature_candidates = Vec::with_capacity(feature_sites.len());
+                for &site in &feature_sites {
+                    budget.charge_into_error(1)?;
+                    let candidate = match site {
+                        NativeCutOrderSite::Variable(variable) => {
+                            *candidates.get(variable).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "native cut completion omitted a variable".into(),
+                                )
+                            })?
+                        },
+                        NativeCutOrderSite::Fixed(candidate) => candidate,
+                    };
+                    feature_candidates.push(candidate);
+                }
+                match self.complete_native_drawing(
+                    reference,
+                    features,
+                    &feature_candidates,
+                    budget,
+                )? {
+                    Some(drawing) => Ok(GlobalCheck::Pass(drawing)),
+                    None if no_variables => Ok(GlobalCheck::Reject(Vec::new())),
+                    None => Ok(GlobalCheck::Reject(vec![0])),
+                }
+            };
         if no_variables {
             return match complete(&[], budget)? {
                 GlobalCheck::Pass(drawing) => Ok(NativeCutSearchOutcome::Pass(drawing)),
@@ -431,65 +437,66 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         budget,
                     )?;
                 }
-                let occurrences = if let Some(sample) = sample {
-                    if let Some(sample_index) = sample.publication_sample
-                        && self
-                            .publication_sample_source_ports
-                            .get(sample_index)
-                            .copied()
-                            .flatten()
-                            != Some(*port)
-                    {
+                let occurrences =
+                    if let Some(sample) = sample {
+                        if let Some(sample_index) = sample.publication_sample
+                            && self
+                                .publication_sample_source_ports
+                                .get(sample_index)
+                                .copied()
+                                .flatten()
+                                != Some(*port)
+                        {
+                            return Err(GeometryErrorKind::Invalid(
+                                "Native source sample changed its Q-port authority".into(),
+                            )
+                            .into());
+                        }
+                        if q_port.cut {
+                            native_source_sample_occurrences(
+                                sample
+                                    .trace
+                                    .as_ref()
+                                    .map(|trace| trace.try_clone_with_work(budget))
+                                    .transpose()?,
+                                source_requests,
+                                budget,
+                            )?
+                        } else {
+                            budget.charge_into_error(2)?;
+                            let mut occurrences = Vec::with_capacity(2);
+                            if sample.trace.is_some() && !sample.endpoint_only {
+                                occurrences.push(OccurrenceSource {
+                                    origin: super::super::emission::VertexOrigin::SourceNode(
+                                        q_port.node,
+                                    ),
+                                    source_trace: None,
+                                });
+                            }
+                            occurrences.push(OccurrenceSource {
+                                origin: sample.trace.as_ref().map_or(
+                                    super::super::emission::VertexOrigin::Presentation,
+                                    |_| super::super::emission::VertexOrigin::SourceSample,
+                                ),
+                                source_trace: sample
+                                    .trace
+                                    .as_ref()
+                                    .map(|trace| trace.try_clone_with_work(budget))
+                                    .transpose()?,
+                            });
+                            occurrences
+                        }
+                    } else if q_port.cut {
                         return Err(GeometryErrorKind::Invalid(
-                            "Native source sample changed its Q-port authority".into(),
+                            "cut publication endpoint has no authenticated source row".into(),
                         )
                         .into());
-                    }
-                    if q_port.cut {
-                        native_source_sample_occurrences(
-                            sample
-                                .trace
-                                .as_ref()
-                                .map(|trace| trace.try_clone_with_work(budget))
-                                .transpose()?,
-                            source_requests,
-                            budget,
-                        )?
                     } else {
-                        budget.charge_into_error(2)?;
-                        let mut occurrences = Vec::with_capacity(2);
-                        if sample.trace.is_some() && !sample.endpoint_only {
-                            occurrences.push(OccurrenceSource {
-                                origin: super::super::emission::VertexOrigin::SourceNode(q_port.node),
-                                source_trace: None,
-                            });
-                        }
-                        occurrences.push(OccurrenceSource {
-                            origin: sample
-                                .trace
-                                .as_ref()
-                                .map_or(super::super::emission::VertexOrigin::Presentation, |_| {
-                                    super::super::emission::VertexOrigin::SourceSample
-                                }),
-                            source_trace: sample
-                                .trace
-                                .as_ref()
-                                .map(|trace| trace.try_clone_with_work(budget))
-                                .transpose()?,
-                        });
-                        occurrences
-                    }
-                } else if q_port.cut {
-                    return Err(GeometryErrorKind::Invalid(
-                        "cut publication endpoint has no authenticated source row".into(),
-                    )
-                    .into());
-                } else {
-                    vec![OccurrenceSource {
-                        origin: super::super::emission::VertexOrigin::SourceNode(q_port.node),
-                        source_trace: None,
-                    }]
-                };
+                        vec![OccurrenceSource {
+                            origin: super::super::emission::VertexOrigin::SourceNode(q_port.node),
+                            source_trace: None,
+                        }]
+                    };
                 (node, candidate, *source_record, occurrences)
             },
             PublishedEndpoint::Published { node, sample } => {
@@ -587,10 +594,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             super::super::emission::ChartSide::East => {
                 ExactRational::from_f64(self.topology.sources.frame.longitude().half_period())
             },
-            super::super::emission::ChartSide::West => ExactRational::zero().try_subtract_with_work(
-                &ExactRational::from_f64(self.topology.sources.frame.longitude().half_period()),
-                budget,
-            )?,
+            super::super::emission::ChartSide::West => ExactRational::zero()
+                .try_subtract_with_work(
+                    &ExactRational::from_f64(self.topology.sources.frame.longitude().half_period()),
+                    budget,
+                )?,
         };
         Ok(NativePortData {
             node,
@@ -906,12 +914,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             current = exit;
             previous_parameter = feature.edge_parameter.clone();
         }
-        if !matches!(&current.spelling, super::super::emission::PortSpelling::Seam(_))
-            && matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
+        if !matches!(
+            &current.spelling,
+            super::super::emission::PortSpelling::Seam(_)
+        ) && matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
         {
             align_native_port_to_seam(self.topology.sources.frame, &mut current, &end, budget)?;
-        } else if matches!(&current.spelling, super::super::emission::PortSpelling::Seam(_))
-            && !matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
+        } else if matches!(
+            &current.spelling,
+            super::super::emission::PortSpelling::Seam(_)
+        ) && !matches!(&end.spelling, super::super::emission::PortSpelling::Seam(_))
         {
             align_native_port_to_seam(self.topology.sources.frame, &mut end, &current, budget)?;
         }

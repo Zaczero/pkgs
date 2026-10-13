@@ -277,3 +277,136 @@ impl super::plan::QEmissionPlan {
         })
     }
 }
+
+use super::write::{seal_output_parts, write_drawing};
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "producer builders are exercised before F4 and routed after its receiver lands"
+    )
+)]
+impl QEmissionPlan {
+    pub(in crate::geometry::topology) fn seal_source_drawing(
+        &self,
+        drawing: QEmissionDrawing<'_>,
+        ring_roles: &[bool],
+        ordinates: &[NodeOrdinates],
+        publication: Option<SourcePublication<'_>>,
+        source_ports: Option<&[Option<ExactChartPoint>]>,
+        declared_axes: CoordinateAxes,
+        strict_axes: bool,
+        operation: &'static str,
+        work: &mut impl Work,
+    ) -> Result<SourceFrozenDrawing> {
+        let walks = publication
+            .map(|_| index_recipe_walks(self.fragment_recipes.walks(), work))
+            .transpose()?;
+        if let Some(publication) = publication
+            && (publication.points.len() != publication.inventory.samples.len()
+                || publication.ordinates.len() != publication.inventory.samples.len()
+                || publication.live_samples.len() != publication.inventory.samples.len())
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "source publication buffers do not match their sample rows".into(),
+            )
+            .into());
+        }
+        let source_axes = drawing.axes(declared_axes, ordinates, work)?;
+        let mut has_z = source_axes.has_z();
+        let mut has_m = source_axes.has_m();
+        if let Some(publication) = publication {
+            for (sample, &live) in publication.live_samples.iter().enumerate() {
+                if !live {
+                    continue;
+                }
+                work.charge_into_error(1)?;
+                let sample_ordinates = publication.ordinates.get(sample).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("live publication sample has no ordinate row".into())
+                })?;
+                has_z &= sample_ordinates.z.value().is_some();
+                has_m &= sample_ordinates.m.value().is_some();
+            }
+        }
+        let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
+        if strict_axes && axes != declared_axes {
+            return Err(GeometryErrorKind::ordinate_dropped(operation));
+        }
+        let WrittenDrawingParts {
+            points,
+            lines,
+            polygons,
+            layout,
+        } = write_drawing(
+            drawing,
+            ring_roles,
+            ordinates,
+            publication,
+            source_ports,
+            walks.as_ref(),
+            axes,
+            work,
+        )?;
+        let (shape, order) = seal_output_parts(
+            self,
+            points,
+            lines,
+            polygons,
+            axes,
+            declared_axes,
+            true,
+            work,
+        )?;
+        let layout = {
+            let order = order.ok_or_else(|| {
+                GeometryErrorKind::Invalid("source shape lost its literal output ordering".into())
+            })?;
+            layout.in_output_order(&order, work)?
+        };
+        Ok(SourceFrozenDrawing {
+            buffers: FrozenLiteralBuffers::shapes(shape, layout),
+        })
+    }
+    pub(in crate::geometry::topology) fn seal_native_parts(
+        &self,
+        parts: NativeMaterializedParts,
+        declared_axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<super::super::emission::NativeFrozenDrawing> {
+        parts.validate_literal_uses(work)?;
+        let NativeMaterializedParts {
+            axes,
+            points,
+            lines,
+            polygons,
+            line_traces,
+            literal_uses,
+        } = parts;
+        let (shape, order) = seal_output_parts(
+            self,
+            points,
+            lines,
+            polygons,
+            axes,
+            declared_axes,
+            true,
+            work,
+        )?;
+        let (literal_uses, line_traces) = {
+            let order = order.ok_or_else(|| {
+                GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
+            })?;
+            super::super::emission::native_literal_uses_in_output_order(
+                literal_uses,
+                line_traces,
+                &order,
+                work,
+            )?
+        };
+        Ok(super::super::emission::NativeFrozenDrawing {
+            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
+            line_traces,
+        })
+    }
+}
