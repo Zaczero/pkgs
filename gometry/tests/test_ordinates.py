@@ -6,6 +6,39 @@ import gometry as gm
 import pytest
 
 
+def _ellipsoid_chart_fraction(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    parameter: float,
+    semimajor: float,
+    inverse_flattening: float,
+) -> float:
+    flattening = 1.0 / inverse_flattening
+    eccentricity_squared = flattening * (2.0 - flattening)
+    longitude_delta = math.radians(end[0] - start[0])
+    latitude_delta = math.radians(end[1] - start[1])
+
+    def speed(t: float) -> float:
+        latitude = math.radians(start[1] + (end[1] - start[1]) * t)
+        denominator = 1.0 - eccentricity_squared * math.sin(latitude) ** 2
+        meridional_radius = semimajor * (1.0 - eccentricity_squared) / denominator**1.5
+        prime_vertical_radius = semimajor / math.sqrt(denominator)
+        return math.hypot(
+            meridional_radius * latitude_delta,
+            prime_vertical_radius * math.cos(latitude) * longitude_delta,
+        )
+
+    def length(end_parameter: float) -> float:
+        intervals = 4096
+        step = end_parameter / intervals
+        weighted = speed(0.0) + speed(end_parameter)
+        weighted += 4.0 * sum(speed(index * step) for index in range(1, intervals, 2))
+        weighted += 2.0 * sum(speed(index * step) for index in range(2, intervals, 2))
+        return weighted * step / 3.0
+
+    return length(parameter) / length(1.0)
+
+
 def test_derived_and_preserving_operation_axes() -> None:
     line_z = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)], z=[0.0, 1.0, 2.0])
     line_xy = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)])
@@ -91,17 +124,30 @@ def test_geographic_delaunay_publisher_carries_inserted_zm_by_ellipsoidal_arclen
         (1035.0, 72.5, 49.5, 726.0),
         (900.0, 90.0, 61.0, 901.0),
     ]
+    source_start, source_end = sites[2], sites[0]
+    # The selected mesh chart uses the C→A edge from -180° to 40°.
+    chart_start = (-180.0, source_start[1])
+    chart_end = (40.0, source_end[1])
+    fraction = _ellipsoid_chart_fraction(
+        chart_start, chart_end, 0.5, semimajor=7_000_000.0, inverse_flattening=150.0
+    )
     source = gm.MultiPoint(sites, crs=crs)
     triangles = source.triangulate(method='delaunay')
     assert len(triangles) == 1
     coordinates = list(triangles[0].exterior.coords)
     sample = next(
-        coordinate for coordinate in coordinates if coordinate[:2] == (177.5, 58.75)
+        coordinate for coordinate in coordinates if coordinate[:2] == (-70.0, 67.5)
     )
-    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
-    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
-    assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
-    assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
+    expected_z = source_start[2] + (source_end[2] - source_start[2]) * fraction
+    expected_m = source_start[3] + (source_end[3] - source_start[3]) * fraction
+    assert math.isclose(sample[2], expected_z, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], expected_m, abs_tol=2.0e-7)
+    assert not math.isclose(
+        sample[2], (source_start[2] + source_end[2]) / 2, abs_tol=1.0e-6
+    )
+    assert not math.isclose(
+        sample[3], (source_start[3] + source_end[3]) / 2, abs_tol=1.0e-6
+    )
     assert (40.0, 45.0, 35.25, 551.0) in coordinates
     assert (-45.0, 72.5, 49.5, 726.0) in coordinates
     assert (-180.0, 90.0, 61.0, 901.0) in coordinates
