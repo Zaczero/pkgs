@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
+mod cdt_publication;
 mod earcut;
 mod earcut_bridges;
 mod earcut_sweep;
@@ -19,14 +20,10 @@ mod voronoi;
 mod voronoi_dcel;
 mod voronoi_publication;
 mod voronoi_receipt;
-#[expect(
-    unused_imports,
-    reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
-)]
-pub(crate) use delaunay::{
-    CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
-    RefinementConstruction, SourceConstraint, SourcePiece,
+pub(crate) use cdt_publication::{
+    CdtGroupsDrawingWriter, PreparedCdtDrawing, prepare_geographic_cdt_drawing, publish_cdt_array,
 };
+pub(crate) use delaunay::{CdtSideBoundaryUse, ConstrainedMeshPlan, publish_constrained_plan};
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,

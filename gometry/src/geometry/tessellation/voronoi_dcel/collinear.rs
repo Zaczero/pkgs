@@ -71,11 +71,8 @@ pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
             same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
         }
         if same_x || same_y {
-            let receipt = std::sync::Arc::new(site_receipts(
-                VoronoiProducer::Collinear,
-                sites,
-                chart,
-            )?);
+            let receipt =
+                std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites, chart)?);
             return Ok(EmbeddedVoronoi {
                 polygons: Vec::new(),
                 edges: EmbeddedEdges {

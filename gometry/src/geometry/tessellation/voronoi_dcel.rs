@@ -1237,10 +1237,10 @@ pub(super) fn build_edges_with_chart(
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 #[path = "voronoi_dcel/chart_cut_receipt_tests.rs"]
 mod chart_cut_receipt_tests;
+#[cfg(test)]
+mod tests;
 
 // =====================================================================
 // The certified combinatorial dual.

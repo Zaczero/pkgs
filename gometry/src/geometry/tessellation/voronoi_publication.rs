@@ -12,9 +12,8 @@ use crate::geometry::embedding_search::Work;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry,
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
-    ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
-    StorageTarget, SyntheticChartVertex, finish_geographic,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
+    SyntheticChartVertex, finish_producer_drawing,
 };
 use crate::geometry::storage::{PackedRow, RowSelection, ShapeRow, ValidityMask};
 use crate::geometry::tessellation::exact::ExactRational;
@@ -286,25 +285,7 @@ impl VoronoiDrawingWriter {
         };
         let receipt =
             ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
-        match finish_geographic(
-            PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
-            target,
-        )? {
-            PublicationOutcome::Pass(finished) => Ok(finished),
-            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-                Err(crate::geometry::GeometryErrorKind::Invalid(
-                    format!(
-                        "final Voronoi storage changed {} checked output records",
-                        images.len()
-                    )
-                    .into(),
-                )
-                .into())
-            },
-            PublicationOutcome::Reject(_) => Err(voronoi_publication_error(
-                "Voronoi finisher returned another producer's rejection",
-            )),
-        }
+        finish_producer_drawing(receipt, frame, target)
     }
 
     fn polygon_ring_literals(

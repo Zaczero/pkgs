@@ -6,11 +6,12 @@ use crate::geographic::{
     ComputedEdgeIntent, ComputedLongitudeRelation, ComputedVertexIntent, GeographicFrame,
     RetainedChartDisplacement, publish_computed_chain, publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_samples,
+    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges,
 };
 use crate::geometry::exact_arith::select_transformed_chart_displacement;
 use crate::geometry::tessellation::{
-    VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin, VoronoiPolygonOutput,
-    VoronoiPolygonOutputs,
+    ConstrainedMeshPlan, VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_constrained_plan,
 };
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder,
@@ -655,6 +656,116 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
     })
 }
 
+/// Publish selected CDT faces while retaining the written positions of their
+/// four ring occurrences. The map is derived as each source edge is expanded,
+/// so root and restriction uses never need a rounded-coordinate lookup.
+pub(crate) fn publish_cdt_triangle_vertex_stream_budgeted(
+    plan: &ConstrainedMeshPlan,
+    frame: GeographicFrame,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<(PublishedTriangleVertices, Vec<[usize; 4]>)> {
+    let source_vertices = publish_constrained_plan(plan, budget)?;
+    if !source_vertices.len().is_multiple_of(4)
+        || plan.faces.len() != source_vertices.len() / 4
+        || plan.face_uses.len() != plan.faces.len()
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "prepared CDT faces do not match their triangle vertex stream".into(),
+        )
+        .into());
+    }
+
+    let mut points = Vec::with_capacity(source_vertices.len());
+    let mut ring_ends = Vec::with_capacity(plan.faces.len());
+    let mut face_vertex_indices = Vec::with_capacity(plan.faces.len());
+    let mut edge_ranges = Vec::with_capacity(3);
+    for (ring, face_uses) in source_vertices
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(&plan.face_uses)
+    {
+        let edge_intent =
+            |output_side: usize, _: crate::geometry::Point, _: crate::geometry::Point| {
+                let side = face_uses.sides.get(output_side).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("published CDT face has a missing side use".into())
+                })?;
+                let start = plan.site_chart_location(side.start_site);
+                let end = plan.site_chart_location(side.end_site);
+                if let (Some(start), Some(end)) = (start, end) {
+                    Ok(ComputedEdgeIntent::retained_native(
+                        start.displacement_to(end),
+                    ))
+                } else {
+                    let start = plan.chart_proposal(side.start_site);
+                    let end = plan.chart_proposal(side.end_site);
+                    ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+                }
+            };
+        edge_ranges.clear();
+        let published = publish_native_computed_chain_with_edge_ranges(
+            frame,
+            ring.as_slice(),
+            true,
+            budget,
+            source_context,
+            edge_intent,
+            |_, _| ComputedVertexIntent::Canonical,
+            &mut edge_ranges,
+        )?;
+        let output = published.as_deref().unwrap_or(ring);
+        if edge_ranges.len() != 3 {
+            return Err(GeometryErrorKind::Invalid(
+                "geographic CDT publisher lost an input side range".into(),
+            )
+            .into());
+        }
+        let spans = edge_ranges.as_slice();
+        let first = *spans.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("geographic CDT ring has no first side range".into())
+        })?;
+        let second = *spans.get(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("geographic CDT ring has no second side range".into())
+        })?;
+        let last = *spans.get(2).ok_or_else(|| {
+            GeometryErrorKind::Invalid("geographic CDT ring has no closing side range".into())
+        })?;
+        if first.0 != 0
+            || first.1 != second.0
+            || second.1 != last.0
+            || last.1.checked_add(1) != Some(output.len())
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "geographic CDT side ranges do not form one closed triangle ring".into(),
+            )
+            .into());
+        }
+        let base = points.len();
+        face_vertex_indices.push([
+            base.checked_add(first.0)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            base.checked_add(first.1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            base.checked_add(second.1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            base.checked_add(last.1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        ]);
+        points.extend_from_slice(output);
+        ring_ends.push(points.len());
+    }
+
+    Ok((
+        PublishedTriangleVertices {
+            points,
+            ring_ends,
+            mesh_publication: None,
+        },
+        face_vertex_indices,
+    ))
+}
+
 pub(crate) fn publish_mesh_triangle_vertex_stream_budgeted(
     mut publication: crate::geometry::PreparedMeshPublication,
     frame: GeographicFrame,
@@ -982,6 +1093,66 @@ where
     P: crate::geometry::Coordinates + ?Sized,
     M: ChartMetric + 'metric,
 {
+    publish_native_computed_chain_inner(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        source_context,
+        intent,
+        vertex_intent,
+        None,
+    )
+}
+
+pub(crate) fn publish_native_computed_chain_with_edge_ranges<'intent, 'metric, P, M>(
+    frame: GeographicFrame,
+    points: &P,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    source_context: &SourceArcContext<'_, 'metric, M>,
+    intent: impl Fn(
+        usize,
+        crate::geometry::Point,
+        crate::geometry::Point,
+    ) -> Result<ComputedEdgeIntent<'intent>>,
+    vertex_intent: impl Fn(usize, crate::geometry::Point) -> ComputedVertexIntent,
+    edge_ranges: &mut Vec<(usize, usize)>,
+) -> Result<Option<Vec<crate::geometry::Point>>>
+where
+    P: crate::geometry::Coordinates + ?Sized,
+    M: ChartMetric + 'metric,
+{
+    publish_native_computed_chain_inner(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        source_context,
+        intent,
+        vertex_intent,
+        Some(edge_ranges),
+    )
+}
+
+fn publish_native_computed_chain_inner<'intent, 'metric, P, M>(
+    frame: GeographicFrame,
+    points: &P,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    source_context: &SourceArcContext<'_, 'metric, M>,
+    intent: impl Fn(
+        usize,
+        crate::geometry::Point,
+        crate::geometry::Point,
+    ) -> Result<ComputedEdgeIntent<'intent>>,
+    vertex_intent: impl Fn(usize, crate::geometry::Point) -> ComputedVertexIntent,
+    edge_ranges: Option<&mut Vec<(usize, usize)>>,
+) -> Result<Option<Vec<crate::geometry::Point>>>
+where
+    P: crate::geometry::Coordinates + ?Sized,
+    M: ChartMetric + 'metric,
+{
     #[cfg(test)]
     crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NativeChainEntry);
     let metric_access = source_context.metric_access();
@@ -991,7 +1162,7 @@ where
     let mut active_root = None;
     let mut root_metric_state = RootMetricState::default();
     let mut work = Unmetered;
-    publish_computed_chain_with_vertex_intents_and_samples(
+    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges(
         frame,
         points,
         closed_ring,
@@ -1027,6 +1198,7 @@ where
             )
         },
         |_, _, _, _, _, _| Ok(()),
+        edge_ranges,
     )
 }
 

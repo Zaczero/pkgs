@@ -12,7 +12,7 @@ pub(crate) use chart_restriction::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };
 pub(crate) use finish::FinishedGeometry;
-pub(in crate::geometry) use finish::finish_geographic;
+pub(in crate::geometry) use finish::{finish_geographic, finish_producer_drawing};
 pub(crate) use receipt::{GeometryOutput, PendingPublicationRow};
 pub(in crate::geometry) use receipt::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,

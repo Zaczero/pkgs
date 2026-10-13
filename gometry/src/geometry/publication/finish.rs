@@ -75,6 +75,16 @@ pub(crate) struct FinishedGeometry {
 }
 
 impl FinishedGeometry {
+    #[cfg(test)]
+    pub(super) fn producer_source_root_uses(&self) -> &[ProducerSourceRootUse] {
+        &self.source_root_uses
+    }
+
+    #[cfg(test)]
+    pub(super) fn producer_chart_restrictions(&self) -> &[DirectedChartRestrictionUse] {
+        &self.chart_restrictions
+    }
+
     pub(super) fn from_sealed<I: Copy>(
         sealed: SealedOutput<I>,
         frame: Frame,
@@ -368,5 +378,35 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
                 )),
             }
         },
+    }
+}
+
+pub(in crate::geometry) fn finish_producer_drawing(
+    receipt: ProducerDrawingReceipt,
+    frame: Frame,
+    target: StorageTarget,
+) -> Result<FinishedGeometry> {
+    use crate::geometry::Unmetered;
+
+    let mut work = Unmetered;
+    match finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        target,
+    )? {
+        PublicationOutcome::Pass(finished) => Ok(finished),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final producer storage changed {} checked output records",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "producer finisher returned a different rejection family".into(),
+        )
+        .into()),
     }
 }

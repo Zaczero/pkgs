@@ -5,7 +5,7 @@ use rstar::AABB;
 use super::super::exact_delaunay::MeshCoordinates;
 use super::{CdtCoordinateModel, CdtCoordinates, CdtKey, CdtPosition, CdtQuery, opposite_nonzero};
 use crate::error::Result;
-use crate::geographic::{ChartPointSite, GeographicFrame};
+use crate::geographic::{ChartPointSite, GeographicFrame, RetainedLongitudeSite};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
@@ -40,6 +40,28 @@ impl CdtPosition {
         })
     }
 
+    fn retained_generated(
+        frame: GeographicFrame,
+        longitude: RetainedLongitudeSite,
+        latitude: f64,
+    ) -> Result<Self> {
+        let exact_x = retained_site_longitude(frame.longitude(), longitude)?;
+        let native_x = longitude.native().get();
+        let chart_x = native_x + frame.longitude().period() * longitude.periods() as f64;
+        Ok(Self {
+            exact: [exact_x, exact::ExactDyadic::from_f64(latitude)],
+            proposal: XY::new(
+                if chart_x.is_finite() {
+                    chart_x
+                } else {
+                    native_x
+                },
+                latitude,
+            ),
+            retained: None,
+        })
+    }
+
     fn from_point(point: XY) -> Self {
         Self {
             exact: [
@@ -68,17 +90,32 @@ impl CdtCoordinates {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::geometry::tessellation::delaunay) fn retained(
         frame: GeographicFrame,
         sites: &[ChartPointSite],
         source_occurrences: &[ChartPointSite],
     ) -> Result<Self> {
+        Self::retained_with_generated(frame, sites, source_occurrences, &[])
+    }
+
+    pub(in crate::geometry::tessellation::delaunay) fn retained_with_generated(
+        frame: GeographicFrame,
+        sites: &[ChartPointSite],
+        source_occurrences: &[ChartPointSite],
+        generated: &[(RetainedLongitudeSite, f64)],
+    ) -> Result<Self> {
+        let mut site_positions = sites
+            .iter()
+            .copied()
+            .map(|site| CdtPosition::retained(frame, site))
+            .collect::<Result<Vec<_>>>()?;
+        site_positions.reserve(generated.len());
+        for &(longitude, latitude) in generated {
+            site_positions.push(CdtPosition::retained_generated(frame, longitude, latitude)?);
+        }
         Ok(Self {
-            sites: sites
-                .iter()
-                .copied()
-                .map(|site| CdtPosition::retained(frame, site))
-                .collect::<Result<_>>()?,
+            sites: site_positions,
             source_occurrences: source_occurrences
                 .iter()
                 .copied()
