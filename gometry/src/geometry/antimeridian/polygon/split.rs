@@ -140,6 +140,8 @@ pub(super) fn seam_piece_lineage(
         }
         if events.is_empty() {
             events.push(catalog.event(member, Vec::new())?);
+        } else if events.len() > 1 {
+            events = vec![catalog.combine_events(member, &events)?];
         }
         vertices.push(events);
     }

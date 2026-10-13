@@ -1304,13 +1304,10 @@ mod tests {
             .iter()
             .filter(|source| source.address == sample.address && source.image == sample.image)
             .collect::<Vec<_>>();
-        assert!(
-            uses.iter().any(|source| {
-                source.range.root() == RootId::from_index(5)
-                    && source.range.source_start() == &parameter
-                    && source.range.source_end() == &parameter
-            }),
-            "the later overlay sample must retain hole edge root 5 at t=1/2; found roots {:?}",
+        assert_eq!(
+            uses.len(),
+            1,
+            "the seam sample has one source edge use, found {:?}",
             uses.iter()
                 .map(|source| (
                     source.range.root(),
@@ -1319,6 +1316,12 @@ mod tests {
                 ))
                 .collect::<Vec<_>>()
         );
+        let sample_use = uses
+            .first()
+            .expect("the sample has exactly one source edge use");
+        assert_eq!(sample_use.range.root(), RootId::from_index(5));
+        assert_eq!(sample_use.range.source_start(), &parameter);
+        assert_eq!(sample_use.range.source_end(), &parameter);
 
         let point_image = row.layout.layout.points[0].image;
         let point_uses = row

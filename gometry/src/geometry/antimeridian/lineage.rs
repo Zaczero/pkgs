@@ -243,6 +243,48 @@ impl LineageCatalog {
             .member
     }
 
+    pub(super) fn vertex_roots(
+        &self,
+        events: &[EventId],
+        work: &mut impl crate::geometry::Work,
+    ) -> crate::error::Result<Vec<RootRange>> {
+        let mut roots: Vec<RootRange> = Vec::new();
+        for &event in events {
+            for range in self.event_uses(event) {
+                let mut found = false;
+                for existing in &roots {
+                    if existing.try_eq_with_work(range, work)? {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    roots.push(range.try_clone_with_work(work)?);
+                }
+            }
+        }
+        Ok(roots)
+    }
+
+    pub(super) fn combine_events(
+        &mut self,
+        member: MemberId,
+        events: &[EventId],
+    ) -> crate::error::Result<EventId> {
+        if events
+            .iter()
+            .any(|&event| self.event_member(event) != member)
+        {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "combined split events belong to different members".into(),
+            )
+            .into());
+        }
+        let mut work = crate::geometry::Unmetered;
+        let roots = self.vertex_roots(events, &mut work)?;
+        self.event(member, roots)
+    }
+
     pub(super) fn edge_use_at(&self, edge: EdgeUseId) -> &SplitEdgeUse {
         self.edge_uses
             .get(edge.0 as usize)
