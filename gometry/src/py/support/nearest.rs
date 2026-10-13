@@ -1,8 +1,11 @@
 use crate::array::ArrayRow;
+use crate::geometry::publication::{
+    finish_geographic_nearest_point_columns, geographic_line_pending_row,
+};
 use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::py::support::{
-    CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
-    Shape, metric_nearest_points_resolved, rows_err,
+    CollectRows as _, CoordinateAxes, Frame, Point, PyErr, PyGeometry, PyGeometryArray, PyResult,
+    Python, Shape, metric_nearest_points_resolved, rows_err,
 };
 
 /// Build the `(left, right)` witness point columns from per-row nearest
@@ -14,6 +17,7 @@ pub(crate) fn nearest_point_columns_masked(
     pairs: Vec<(Option<(Point, Point)>, CoordinateAxes)>,
     frame: Frame,
     missing: Option<ValidityMask>,
+    domain: crate::geometry::TopologyDomain,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let pair_count = pairs.len();
     let mut left = Vec::with_capacity(pair_count);
@@ -27,6 +31,10 @@ pub(crate) fn nearest_point_columns_masked(
         let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair.as_ref(), common);
         left.push(left_shape);
         right.push(right_shape);
+    }
+    if domain.is_geographic() {
+        return finish_geographic_nearest_point_columns(left, right, &frame, missing.as_ref())
+            .map_err(PyErr::from);
     }
     Ok((
         PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
@@ -93,7 +101,12 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
             )
         })?;
         let pairs = rows.map_err(rows_err)?;
-        return nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned());
+        return nearest_point_columns_masked(
+            pairs,
+            array.frame.clone(),
+            array.missing().cloned(),
+            domain,
+        );
     }
     let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
     let source_frame = fixed.frame.clone();
@@ -141,7 +154,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
             )
         })
         .map_err(crate::broadcast::rows_err)?;
-    nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned())
+    nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned(), domain)
 }
 
 /// One fixed geometry against every array element, emitting geodesic shortest
@@ -164,9 +177,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
-    let present_count = array
-        .missing()
-        .map_or(array.len(), ValidityMask::present_count);
     let rows = py.detach(move || {
         let mut array_rows = array_owned.row_operation();
         crate::crs::with_resolved_ellipsoid_metric_at(
@@ -181,69 +191,92 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     crate::geometry::TopologyDomain::Geographic(frame),
                     Some(&metric_access),
                 );
-                let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-                    let mut shapes = Vec::with_capacity(present_count);
-                    for row in array_rows.present_rows() {
-                        let logical = row.logical();
-                        let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
-                        let element_cache = array_rows.frame_cache(logical);
-                        let witness = if fixed_is_left {
-                            fixed_plan
-                                .geodesic_nearest_line_cached(
-                                    &fixed_cache,
-                                    &element,
-                                    &element_cache,
-                                    crs,
-                                    semi_major,
-                                    flattening,
-                                    metric,
-                                )
-                                .map_err(|error| (logical, error))?
-                        } else {
-                            element
-                                .geodesic_nearest_line_cached(
-                                    &element_cache,
-                                    &fixed_plan,
-                                    &fixed_cache,
-                                    crs,
-                                    semi_major,
-                                    flattening,
-                                    metric,
-                                )
-                                .map_err(|error| (logical, error))?
+                let present = (|| -> std::result::Result<
+                    PyGeometryArray,
+                    (usize, crate::error::Error),
+                > {
+                    use crate::geometry::publication::{GeometryOutput, PublicationRows};
+
+                    let mut publication = PublicationRows::with_capacity(array_owned.len());
+                    for row in array_rows.rows_with_missing(Shape::empty_point) {
+                        let (logical, result) = match row {
+                            ArrayRow::Missing { logical, .. } => {
+                                (logical, publication.try_push_missing())
+                            },
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let result = (|| {
+                                    let element = array_rows.prepared(row)?;
+                                    let element_cache = array_rows.frame_cache(logical);
+                                    let witness = if fixed_is_left {
+                                        fixed_plan.geodesic_nearest_line_cached(
+                                            &fixed_cache,
+                                            &element,
+                                            &element_cache,
+                                            crs,
+                                            semi_major,
+                                            flattening,
+                                            metric,
+                                        )?
+                                    } else {
+                                        element.geodesic_nearest_line_cached(
+                                            &element_cache,
+                                            &fixed_plan,
+                                            &fixed_cache,
+                                            crs,
+                                            semi_major,
+                                            flattening,
+                                            metric,
+                                        )?
+                                    };
+                                    let common = crate::geometry::common_axes(
+                                        fixed_plan.shape(),
+                                        element.shape(),
+                                    );
+                                    let source_capture =
+                                        crate::geometry::SourceArcCapture::for_output_axes(
+                                            common,
+                                            &source_context,
+                                        );
+                                    let line = match witness {
+                                        Some((start, end, step)) => {
+                                            crate::geometry::nearest_line_with_intent(
+                                                Some(&(start, end)),
+                                                common,
+                                                frame,
+                                                crate::geographic::ComputedEdgeIntent::retained_chart_witness(
+                                                    frame,
+                                                    [start.x, end.x],
+                                                    step,
+                                                )?,
+                                                &source_capture,
+                                            )?
+                                        },
+                                        None => crate::geometry::nearest_line(None, common)?,
+                                    };
+                                    let pending =
+                                        geographic_line_pending_row(
+                                            line,
+                                            &output_frame,
+                                            logical,
+                                            "shortest_line",
+                                        )?;
+                                    publication.try_push(GeometryOutput::Pending(pending))
+                                })();
+                                (logical, result)
+                            },
                         };
-                        let common =
-                            crate::geometry::common_axes(fixed_plan.shape(), element.shape());
-                        let source_capture = crate::geometry::SourceArcCapture::for_output_axes(
-                            common,
-                            &source_context,
-                        );
-                        let line = match witness {
-                            Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
-                                Some(&(start, end)),
-                                common,
-                                frame,
-                                crate::geographic::ComputedEdgeIntent::retained_chart_witness(
-                                    frame,
-                                    [start.x, end.x],
-                                    step,
-                                )
-                                .map_err(|error| (logical, error))?,
-                                &source_capture,
-                            ),
-                            None => crate::geometry::nearest_line(None, common),
-                        }
-                        .map_err(|error| (logical, error))?;
-                        shapes.push(line);
+                        result.map_err(|error| (logical, error))?;
                     }
-                    Ok(shapes)
+                    publication
+                        .finish(output_frame)
+                        .map_err(|error| (array_owned.len().saturating_sub(1), error))
                 })();
                 Ok(present)
             },
         )
     })?;
-    let present = PyGeometryArray::from_shapes(rows.map_err(rows_err)?, output_frame)?;
-    Ok(array.scatter_present_result(present)?)
+    rows.map_err(rows_err)
 }
 
 /// The query point of a linear-referencing locate. POINT EMPTY becomes the

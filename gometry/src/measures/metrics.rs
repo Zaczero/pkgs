@@ -1,6 +1,9 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::{MetricCtx, MetricOp, MetricResolver, kernels};
+use crate::geometry::publication::{
+    GeometryOutput, finish_geographic_snap, geographic_snap_pending_row,
+};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
 pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult<Py<PyAny>> {
@@ -295,6 +298,29 @@ fn snap_prepared(
     }
 }
 
+fn snap_output(
+    left: &crate::geometry::PreparedPlan,
+    right: &crate::geometry::PreparedPlan,
+    tolerance: f64,
+    context: &crate::dispatch::CachelessRowContext<'_>,
+) -> crate::error::Result<GeometryOutput> {
+    let output = snap_prepared(left, right, tolerance, context)?;
+    match context.domain {
+        crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        crate::geometry::TopologyDomain::Geographic(_) if context.lane.is_array() => {
+            Ok(GeometryOutput::Pending(geographic_snap_pending_row(
+                output,
+                context.frame,
+                context.lane.row(),
+                "snap",
+            )?))
+        },
+        crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Shape(
+            finish_geographic_snap(output, context.frame.clone())?,
+        )),
+    }
+}
+
 /// Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.
 ///
 /// Each source vertex snaps independently to its nearest reference vertex at
@@ -360,54 +386,29 @@ pub(crate) fn snap(
     let Some(len) = geom_array.or(ref_array).map(PyGeometryArray::len) else {
         let tolerance = finite_f64_required("tolerance", tolerance)?;
         return Python::attach(|py| {
-            crate::dispatch::dispatch_binary(
+            crate::dispatch::dispatch_binary_geometry(
                 py,
                 geom,
                 reference,
                 crate::dispatch::Operation::Snap.name(),
                 resolver,
-                move |left, right, context| snap_prepared(left, right, tolerance, context),
+                true,
+                move |left, right, context| snap_output(left, right, tolerance, context),
             )
         });
     };
     let tolerance = crate::F64Param::parse(tolerance, "tolerance", len)?;
     Python::attach(|py| {
-        let Some(scalar) = tolerance.as_scalar() else {
-            use crate::broadcast::{GeometryInput, classify_required};
-            let left_in = classify_required(geom)?;
-            if let GeometryInput::Many(left) = left_in {
-                let right = classify_required(reference)?;
-                let array = crate::dispatch::geometry_kernel_over_array(
-                    py,
-                    left,
-                    right,
-                    "snap",
-                    resolver,
-                    move |left, right, context| {
-                        snap_prepared(left, right, tolerance.get(context.lane.row()), context)
-                    },
-                )?;
-                return Ok(array.into_pyobject(py)?.unbind().into());
-            }
-            return crate::dispatch::dispatch_binary_geometry(
-                py,
-                geom,
-                reference,
-                "snap",
-                resolver,
-                true,
-                move |left, right, context| {
-                    snap_prepared(left, right, tolerance.get(context.lane.row()), context)
-                },
-            );
-        };
-        crate::dispatch::dispatch_binary(
+        crate::dispatch::dispatch_binary_geometry(
             py,
             geom,
             reference,
-            crate::dispatch::Operation::Snap.name(),
+            "snap",
             resolver,
-            move |left, right, context| snap_prepared(left, right, scalar, context),
+            true,
+            move |left, right, context| {
+                snap_output(left, right, tolerance.get(context.lane.row()), context)
+            },
         )
     })
 }

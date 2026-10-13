@@ -15,7 +15,10 @@ use crate::geographic::PointSelectionChart;
 use crate::geographic::chart::{
     point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
 };
-use crate::geometry::publication::GeometryOutput;
+use crate::geometry::publication::{
+    GeometryOutput, finish_geographic_line, finish_geographic_point_selection,
+    geographic_line_pending_row, geographic_point_selection_pending_row,
+};
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -173,6 +176,34 @@ pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
+    let output = convex_hull_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => {
+            finish_geographic_point_selection(output, ctx.frame.clone())
+        },
+    }
+}
+
+pub(crate) fn unary_convex_hull_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let output = convex_hull_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            geographic_point_selection_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "convex_hull",
+            )?,
+        )),
+    }
+}
+
+fn convex_hull_shape(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     let shape = data.shape();
     ctx.with_source_arc_capture_for_axes(shape.axes(), |source_capture| {
         if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
@@ -456,6 +487,37 @@ pub(crate) fn unary_minimum_bounding_radius(
 
 /// Minimum-rotated-rectangle kernel shared by the spine-routed free function.
 pub(crate) fn unary_minimum_rotated_rectangle(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
+    let output = minimum_rotated_rectangle_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => {
+            finish_geographic_point_selection(output, ctx.frame.clone())
+        },
+    }
+}
+
+pub(crate) fn unary_minimum_rotated_rectangle_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let output = minimum_rotated_rectangle_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            geographic_point_selection_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "minimum_rotated_rectangle",
+            )?,
+        )),
+    }
+}
+
+fn minimum_rotated_rectangle_shape(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
@@ -1202,7 +1264,28 @@ pub(crate) fn unary_minimum_clearance_line(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MinimumClearanceLine)?;
-    metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())
+    let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => finish_geographic_line(output, ctx.frame.clone()),
+    }
+}
+
+pub(crate) fn unary_minimum_clearance_line_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let model = ctx.metric.require_model(MetricOp::MinimumClearanceLine)?;
+    let output = metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(geographic_line_pending_row(
+            output,
+            ctx.frame,
+            ctx.lane.row(),
+            "minimum_clearance_line",
+        )?)),
+    }
 }
 
 /// Distance kernel shared by the spine-routed free function.

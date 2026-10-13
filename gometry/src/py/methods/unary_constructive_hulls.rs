@@ -29,7 +29,9 @@ unary_shape_method!(
     convex_hull,
     ConvexHull,
     doc_convex_hull,
-    kernels::unary_convex_hull
+    kernels::unary_convex_hull,
+    kernels::unary_convex_hull_array,
+    synthesized
 );
 unary_shape_method!(
     polylabel,
@@ -65,6 +67,7 @@ unary_shape_method!(
     (Metric MinimumClearanceLine),
     doc_minimum_clearance_line,
     kernels::unary_minimum_clearance_line,
+    kernels::unary_minimum_clearance_line_array,
     unit_shape
 );
 
@@ -229,7 +232,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::MinimumRotatedRectangle,
             None,
             default,
-            kernels::unary_minimum_rotated_rectangle
+            kernels::unary_minimum_rotated_rectangle_array
         )
     }
 }

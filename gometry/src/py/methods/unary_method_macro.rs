@@ -203,6 +203,45 @@ macro_rules! unary_shape_method {
             }
         }
     };
+    ($name:ident, $op:tt, $doc:ident, $scalar_kernel:path, $array_kernel:path, unit_shape) => {
+        #[pymethods]
+        impl PyGeometry {
+            #[doc = $doc!(scalar)]
+            #[pyo3(signature = (*, unit = None))]
+            pub fn $name(
+                &self,
+                py: Python<'_>,
+                unit: Option<DistanceUnit>,
+            ) -> PyResult<crate::Typed> {
+                unary_spine_shapes!(
+                    scalar,
+                    py,
+                    self,
+                    unary_operation!($op),
+                    unit,
+                    default,
+                    $scalar_kernel
+                )
+            }
+        }
+
+        #[pymethods]
+        impl PyGeometryArray {
+            #[doc = $doc!(array)]
+            #[pyo3(signature = (*, unit = None))]
+            pub fn $name(&self, py: Python<'_>, unit: Option<DistanceUnit>) -> PyResult<Self> {
+                unary_spine_shapes!(
+                    array,
+                    py,
+                    self,
+                    unary_operation!($op),
+                    unit,
+                    default,
+                    $array_kernel
+                )
+            }
+        }
+    };
     ($name:ident, $op:tt, $doc:ident, $kernel:path, unit_shape) => {
         #[pymethods]
         impl PyGeometry {
