@@ -1,7 +1,7 @@
 use super::{
-    EMPTY, ExactSign, Point, Result, Site, Triangulation, certified_delaunay, exact_delaunay,
-    next_halfedge,
+    EMPTY, Point, Result, Site, Triangulation, certified_delaunay, exact_delaunay, next_halfedge,
 };
+use crate::geometry::numerics::product::ExactSign;
 
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
     let mut sites = Vec::with_capacity(points.len());

@@ -2,6 +2,8 @@ use super::super::earcut_bridges::BridgeArena;
 use super::{
     EarcutCornerId, EarcutCycle, GeometryErrorKind, HoleList, Point, Result, RingVertexId,
 };
+#[cfg(test)]
+use crate::geometry::{Orientation, orientation_xy, same_point};
 
 pub(super) fn eliminate_holes_with_ids(
     ring: &mut Vec<Point>,

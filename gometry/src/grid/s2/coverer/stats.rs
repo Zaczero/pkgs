@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::S2_LEVEL_COUNT;
 use super::{BinaryHeap, Candidate, CellId, Reverse};
 
 /// Per-cover observations used by the native traversal tests.

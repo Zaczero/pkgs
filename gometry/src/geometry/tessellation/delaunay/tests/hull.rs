@@ -1,5 +1,6 @@
 use super::super::hull::delaunay_euler_complete;
 use super::*;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::{Orientation, orientation};
 
 #[test]

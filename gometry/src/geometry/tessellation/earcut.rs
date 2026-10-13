@@ -3,11 +3,7 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::error::Result;
-#[cfg(test)]
-use crate::geometry::dedup_consecutive_points;
 use crate::geometry::numerics::product::ExactSign;
-#[cfg(test)]
-use crate::geometry::orientation_xy;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ,
     HashMap, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
@@ -31,11 +27,11 @@ pub(super) use bridges::point_in_triangle;
 pub(crate) use linked::earcut_linked_ring_with_ids;
 #[cfg(test)]
 pub(super) use linked::{count_ear_candidates, ear_scan_steps};
+#[cfg(test)]
+pub(crate) use normalize::cleaned_earcut_ring;
 use normalize::cleaned_earcut_ring_with_ids;
 #[cfg(test)]
 pub(crate) use normalize::open_ring;
-#[cfg(test)]
-pub(crate) use normalize::{cleaned_earcut_ring, filter_earcut_ring_points, orient_earcut_ring};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct EarcutSiteId {

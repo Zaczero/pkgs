@@ -16,7 +16,6 @@ use crate::geographic::{
     ChartPointSite, ChartPole, GeographicFrame, GeographicRing, PointSelectionChart,
     RetainedLongitudeSite, RingDomain, RingSummary, SeamIdentity,
 };
-use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };

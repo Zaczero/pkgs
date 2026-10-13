@@ -1,3 +1,4 @@
+use super::super::normalize::{filter_earcut_ring_points, orient_earcut_ring};
 use super::*;
 
 #[test]

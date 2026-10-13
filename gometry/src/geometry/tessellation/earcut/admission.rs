@@ -5,9 +5,9 @@ use rstar::primitives::{GeomWithData, Rectangle};
 use super::super::earcut_sweep::ring_has_contact;
 use super::normalize::closed_ring;
 use super::{
-    Bounds, BulkRTree, EarcutCycle, GeometryErrorKind, HashSet, HoleList, Orientation, Point,
-    PointKey, Result, RingVertexId, Segment, SegmentIndex, orientation, point_on_segment,
-    ring_contains_interior, segments_intersect, wrap_index,
+    Bounds, BulkRTree, GeometryErrorKind, HashSet, Orientation, Point, PointKey, Result, Segment,
+    SegmentIndex, orientation, point_on_segment, ring_contains_interior, segments_intersect,
+    wrap_index,
 };
 
 pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {

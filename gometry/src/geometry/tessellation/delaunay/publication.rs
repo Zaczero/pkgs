@@ -4,9 +4,12 @@ use super::{
     MOrdinate, MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, Point, PointSelectionChart,
     PreparedMeshBoundaryUse, PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite, Result,
     RetainedPointCoordinates, Ring, RingOwner, Site, ZOrdinate, cdt, certified_delaunay,
-    certified_delaunay_for_retained_points, constrained_source_plan, effective_refinement, exact,
+    certified_delaunay_for_retained_points, constrained_source_plan, effective_refinement,
     exact_delaunay, validate_refinement_request,
 };
+#[cfg(test)]
+use super::{note_constrained_output_reserve, note_delaunay_output_reserve};
+use crate::geometry::numerics::product::ExactSign;
 
 pub(in crate::geometry::tessellation) fn prepare_retained_delaunay_publication(
     frame: GeographicFrame,

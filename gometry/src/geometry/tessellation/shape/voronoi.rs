@@ -3,6 +3,8 @@ use super::{
     NonNegative, Point, PointKey, PointSelectionChart, Result, Shape, Site, VoronoiBoundary,
     certified_delaunay, certified_delaunay_for_retained_points, snap_sites, voronoi_dcel,
 };
+#[cfg(test)]
+use crate::geometry::CoordSeq;
 
 /// Canonical sites: signed zeros normalized, coincident points merged, and
 /// snapping applied once at the public boundary, so the tessellators always
