@@ -204,7 +204,7 @@ pub(crate) fn graph_intersects_data_geographic(
         [left.view(), right.view()].into_iter(),
     )?
     .relate_pair()
-    .map(|relation| relation.is_intersects())
+    .map(crate::geometry::De9im::is_intersects)
 }
 
 fn graph_relate_data_geographic_q(

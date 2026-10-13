@@ -469,7 +469,9 @@ pub(crate) struct MeasuredLineIndex {
 
 impl MeasuredLineIndex {
     pub(crate) fn points(&self) -> impl Iterator<Item = Point> {
-        self.parts.iter().flat_map(|part| part.into_iter())
+        self.parts
+            .iter()
+            .flat_map(std::iter::IntoIterator::into_iter)
     }
 
     pub(crate) fn chart_locate<M>(

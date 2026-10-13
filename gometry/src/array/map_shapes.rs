@@ -18,11 +18,10 @@ fn try_map_shape_rows<T, E>(
 where
     E: From<crate::error::Error>,
 {
-    let mut output = Vec::with_capacity(
-        array
-            .missing()
-            .map_or(array.len(), |mask| mask.present_count()),
-    );
+    let mut output = Vec::with_capacity(array.missing().map_or(
+        array.len(),
+        crate::geometry::storage::validity::ValidityMask::present_count,
+    ));
     for row in array.row_operation().present_rows() {
         let logical = row.logical();
         let value = row

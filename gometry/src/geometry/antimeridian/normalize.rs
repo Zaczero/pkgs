@@ -795,7 +795,7 @@ fn wrap_longitude(lon: f64, frame: GeographicFrame) -> Result<f64> {
     frame
         .longitude()
         .canonicalize(lon)
-        .map(|longitude| longitude.get())
+        .map(crate::geographic::CanonicalLongitude::get)
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 

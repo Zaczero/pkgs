@@ -341,9 +341,10 @@ impl GridSourceAdmission {
         self,
         array: &PyGeometryArray,
     ) -> Result<Vec<Result<Option<Shape>, GridCoverError>>, GridCoverError> {
-        let present_count = array
-            .missing()
-            .map_or_else(|| array.len(), |mask| mask.present_count());
+        let present_count = array.missing().map_or_else(
+            || array.len(),
+            crate::geometry::storage::validity::ValidityMask::present_count,
+        );
         let mut source_rows = Vec::with_capacity(present_count);
         for row in array.row_operation().present_rows() {
             let logical = row.logical();
@@ -429,9 +430,10 @@ impl GridSourceAdmission {
     ) -> Result<(Vec<f64>, Vec<f64>), GridCoverError> {
         let points = array.storage().point_rows().ok_or(GridCoverError::Type)?;
         let admission = Self::new_for_array(array)?;
-        let present_count = array
-            .missing()
-            .map_or_else(|| array.len(), |mask| mask.present_count());
+        let present_count = array.missing().map_or_else(
+            || array.len(),
+            crate::geometry::storage::validity::ValidityMask::present_count,
+        );
         let mut xs = Vec::with_capacity(present_count);
         let mut ys = Vec::with_capacity(present_count);
         if admission.transformer.is_none() {

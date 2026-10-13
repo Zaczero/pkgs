@@ -111,9 +111,10 @@ fn packed_index_payload(
     array: &PyGeometryArray,
     domain: TopologyDomain,
 ) -> PyResult<(Vec<IndexEntry>, LiveHandles, usize, PackedRowAddressing)> {
-    let present_count = array
-        .missing()
-        .map_or(array.len(), |mask| mask.present_count());
+    let present_count = array.missing().map_or(
+        array.len(),
+        crate::geometry::storage::validity::ValidityMask::present_count,
+    );
     let mut entries = Vec::with_capacity(present_count);
     let mut live_handles = LiveHandles::default();
     let mut non_prunable_live = 0_usize;
@@ -311,9 +312,10 @@ pub(crate) fn restore_spatial_index(
     } else {
         crate::geometry::topology_domain(&values.frame)?
     };
-    let present_count = values
-        .missing()
-        .map_or(values.len(), |missing| missing.present_count());
+    let present_count = values.missing().map_or(
+        values.len(),
+        crate::geometry::storage::validity::ValidityMask::present_count,
+    );
     let mut entries = Vec::with_capacity(present_count);
     let mut non_prunable_live = 0_usize;
     for logical in 0..values.len() {

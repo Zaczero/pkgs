@@ -1888,11 +1888,11 @@ impl Shape {
             Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()?),
             Self::LineString(points) => Self::LineString(points.force_2d()?),
             Self::MultiLineString(lines) => Self::MultiLineString(
-                lines.try_map_values(CoordinateAxes::XY, |line| line.force_2d())?,
+                lines.try_map_values(CoordinateAxes::XY, crate::geometry::LineSeq::force_2d)?,
             ),
             Self::Polygon(polygon) => Self::Polygon(polygon.force_2d()?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons.try_map_values(CoordinateAxes::XY, |polygon| polygon.force_2d())?,
+                polygons.try_map_values(CoordinateAxes::XY, crate::geometry::Polygon::force_2d)?,
             ),
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(Self::force_2d)?)
@@ -2499,9 +2499,9 @@ impl Shape {
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             // Columnar reverse-copies — no AoS `Vec<Point>` round-trip.
             Self::LineString(points) => Self::LineString(points.reversed()?),
-            Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| line.reversed())?)
-            },
+            Self::MultiLineString(lines) => Self::MultiLineString(
+                lines.try_map_values(lines.axes(), crate::geometry::LineSeq::reversed)?,
+            ),
             Self::Polygon(polygon) => Self::Polygon(polygon.reverse()?),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), Polygon::reverse)?)

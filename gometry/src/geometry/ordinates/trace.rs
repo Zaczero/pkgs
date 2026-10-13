@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|request| request.root())
+                .map(super::RootRequest::root)
                 .collect::<Vec<_>>(),
             [first, second, third]
         );

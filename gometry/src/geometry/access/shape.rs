@@ -407,7 +407,7 @@ impl OrdinateExtremaMemo {
             Shape::MultiPolygon(polygons) => merge_ordinate_extrema(
                 polygons
                     .iter()
-                    .flat_map(|polygon| polygon.rings())
+                    .flat_map(crate::geometry::Polygon::rings)
                     .filter_map(|ring| self.run_extrema(ring.coords(), ordinate)),
             ),
             Shape::GeometryCollection(_) => unreachable!("handled above"),

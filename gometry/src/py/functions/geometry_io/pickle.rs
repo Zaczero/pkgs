@@ -171,7 +171,9 @@ pub(crate) fn _unpickle_geometry_array_v1(
     let missing_bytes = missing
         .map(|value| pickle_bytes_like(py, value))
         .transpose()?;
-    let missing = missing_bytes.as_ref().map(|bytes| bytes.as_bytes());
+    let missing = missing_bytes
+        .as_ref()
+        .map(pyo3::types::PyBytesMethods::as_bytes);
     py.detach(move || unpickle_geometry_array_detached(&rows, crs, epoch, missing))
         .map_err(PyErr::from)
 }
@@ -229,10 +231,10 @@ pub(crate) fn _unpickle_packed_array_v1(
     let columns = (
         xs.as_bytes(),
         ys.as_bytes(),
-        zs.as_ref().map(|bytes| bytes.as_bytes()),
-        ms.as_ref().map(|bytes| bytes.as_bytes()),
+        zs.as_ref().map(pyo3::types::PyBytesMethods::as_bytes),
+        ms.as_ref().map(pyo3::types::PyBytesMethods::as_bytes),
     );
-    let missing = missing.as_ref().map(|bytes| bytes.as_bytes());
+    let missing = missing.as_ref().map(pyo3::types::PyBytesMethods::as_bytes);
     py.detach(move || unpickle_packed_array_detached(columns, levels, crs, epoch, missing))
         .map_err(PyErr::from)
 }

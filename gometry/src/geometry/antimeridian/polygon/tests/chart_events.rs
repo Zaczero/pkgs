@@ -280,7 +280,7 @@ fn tilted_full_turn_seam_and_witnesses_use_the_original_root() {
         let longitude = frame
             .longitude()
             .chart_connection(piece[0].x, piece[1].x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| {
                 GeometryErrorKind::antimeridian_split_failed(error.to_string())
             })?;
@@ -426,7 +426,7 @@ fn seam_piece_ordinate_composition_matches_independent_root_arclength() {
         let retained = frame
             .longitude()
             .chart_connection(piece[0].x, piece[1].x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
         let parameter = ExactRational::new(ExactDyadic::from_i64(1), ExactDyadic::from_i64(2))?;
         let request = SourceArcRequest::new(

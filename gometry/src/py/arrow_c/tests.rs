@@ -532,7 +532,7 @@ fn stream_export_release_is_idempotent_after_batch_move() {
 fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
     let _test_lock = NATIVE_SIGNAL_STREAM_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     NATIVE_SIGNAL_ARRAY_RELEASES.store(0, Ordering::Relaxed);
     crate::test_support::initialize_python();
     Python::attach(|py| -> PyResult<()> {

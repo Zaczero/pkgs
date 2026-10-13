@@ -205,7 +205,7 @@ impl PyGeometry {
             1 => args.get_item(0)?.is_none(),
             _ => false,
         };
-        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+        if no_matrix && kwargs.is_none_or(pyo3::types::PyDictMethods::is_empty) {
             return Ok(Typed(self.clone()));
         }
         let measure = measure_shape(py, self.shape.shape())?;

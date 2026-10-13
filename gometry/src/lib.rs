@@ -1,7 +1,3 @@
-#![expect(
-    clippy::redundant_closure_for_method_calls,
-    reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
-)]
 #![feature(
     once_cell_try,
     portable_simd,
