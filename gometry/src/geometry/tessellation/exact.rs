@@ -5,7 +5,6 @@
 //! constructed vertices never depend on a lossy coordinate frame.
 
 #![expect(
-    clippy::missing_const_for_fn,
     clippy::useless_conversion,
     reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"
 )]
@@ -248,7 +247,7 @@ impl ExactRational {
         }
     }
 
-    pub(in crate::geometry) fn is_zero(&self) -> bool {
+    pub(in crate::geometry) const fn is_zero(&self) -> bool {
         self.numerator.is_zero()
     }
 
@@ -260,7 +259,7 @@ impl ExactRational {
         self.denominator.is_one() && (self.numerator.is_zero() || self.numerator.exponent >= 0)
     }
 
-    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 
@@ -432,7 +431,7 @@ impl ExactRational {
         left.cmp_with_work(&right, work)
     }
 
-    pub(in crate::geometry) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
+    pub(in crate::geometry) const fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
         (&self.numerator, &self.denominator)
     }
 

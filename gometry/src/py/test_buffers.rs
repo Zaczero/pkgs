@@ -20,11 +20,6 @@
 //! wrong side of that bargain. If this is ever revisited, the replacement must
 //! keep those tests *running*, not merely keep them present.
 
-#![expect(
-    clippy::missing_const_for_fn,
-    reason = "buffer-protocol slots document safety at the method level; PyO3 pymethods cannot be const"
-)]
-
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
@@ -197,7 +192,7 @@ impl RaisingBuffer {
 
     /// # Safety
     /// `__getbuffer__` always returns an error and never acquires a view.
-    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+    const unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
 }
 
 #[pymethods]
@@ -263,7 +258,7 @@ impl MalformedBuffer {
 
     /// # Safety
     /// Paired with `__getbuffer__`; the exporter retains all view storage.
-    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+    const unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
 }
 
 /// Build an intentionally malformed numeric buffer for admission tests.
@@ -402,7 +397,7 @@ impl IndirectFloat64Buffer {
 
     /// # Safety
     /// Paired with `__getbuffer__`; no view-private allocation to free.
-    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+    const unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
 
     /// Number of stored `f64` values (not pointer-table entries).
     fn __len__(&self) -> usize {
@@ -417,7 +412,7 @@ impl IndirectFloat64Buffer {
 
     /// True when the export sets a non-null `suboffsets` pointer table.
     #[getter]
-    fn is_indirect(&self) -> bool {
+    const fn is_indirect(&self) -> bool {
         true
     }
 }

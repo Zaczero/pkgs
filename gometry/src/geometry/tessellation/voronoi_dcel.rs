@@ -4,7 +4,6 @@
     clippy::float_cmp,
     clippy::inconsistent_struct_constructor,
     clippy::items_after_statements,
-    clippy::missing_const_for_fn,
     clippy::needless_range_loop,
     clippy::unnecessary_semicolon,
     clippy::unwrap_used,
@@ -103,7 +102,7 @@ impl FrameSide {
         }
     }
 
-    fn start(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+    const fn start(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
         let [bottom_left, bottom_right, top_right, top_left] = rectangle;
         match self {
             Self::Bottom => bottom_left,
@@ -117,7 +116,7 @@ impl FrameSide {
         self.next().start(rectangle)
     }
 
-    fn start_xy(self, rectangle: &[XY; 4]) -> XY {
+    const fn start_xy(self, rectangle: &[XY; 4]) -> XY {
         let [bottom_left, bottom_right, top_right, top_left] = rectangle;
         match self {
             Self::Bottom => *bottom_left,
@@ -506,7 +505,7 @@ fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     clippy::indexing_slicing,
     reason = "the ordinal comes from CertifiedDelaunay built against this admitted canonical site slice"
 )]
-pub(super) fn site_at(sites: &[Site], ordinal: usize) -> &Site {
+pub(super) const fn site_at(sites: &[Site], ordinal: usize) -> &Site {
     &sites[ordinal]
 }
 
@@ -518,7 +517,7 @@ fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
     clippy::indexing_slicing,
     reason = "VertexId was assigned from the lexicographically interned event_points that produced this NodedVertex column"
 )]
-fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
+const fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
     &vertices[id.0 as usize]
 }
 
@@ -993,7 +992,7 @@ impl VoronoiOwnerPoints<'_, '_> {
         clippy::indexing_slicing,
         reason = "owner-local node IDs are dense ordinals paired with this graph's global-vertex column"
     )]
-    fn global(&self, node: u32) -> u32 {
+    const fn global(&self, node: u32) -> u32 {
         self.vertices[node as usize]
     }
 }

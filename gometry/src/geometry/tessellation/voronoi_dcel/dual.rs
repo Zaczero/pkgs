@@ -47,7 +47,7 @@ const fn dual_next_halfedge(edge: usize) -> usize {
     if edge % 3 == 2 { edge - 2 } else { edge + 1 }
 }
 
-fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) -> bool {
+const fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) -> bool {
     left.low == right.low && left.high == right.high
 }
 
@@ -203,7 +203,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     clippy::indexing_slicing,
     reason = "each certified Delaunay face owns exactly three consecutive half-edge origins"
 )]
-fn dual_site_at_halfedge(triangles: &[[usize; 3]], halfedge: usize) -> usize {
+const fn dual_site_at_halfedge(triangles: &[[usize; 3]], halfedge: usize) -> usize {
     triangles[halfedge / 3][halfedge % 3]
 }
 

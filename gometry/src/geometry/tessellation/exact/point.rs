@@ -67,7 +67,7 @@ impl ExactPoint {
     /// A circumcenter whose nearest-even rounding is certified: the exact
     /// value lies within half an ulp of `center.rounded`, so within its two
     /// binary64 neighbours, which are the bounds every comparison reads first.
-    pub(super) fn certified_circumcenter(sites: [XY; 3], center: &CertifiedCenter) -> Self {
+    pub(super) const fn certified_circumcenter(sites: [XY; 3], center: &CertifiedCenter) -> Self {
         Self {
             coords: Coords::Certified {
                 recipe: Recipe::Circumcenter(sites),
@@ -130,7 +130,7 @@ impl ExactPoint {
 
     /// The stored double behind a point made from one, `None` for any other
     /// construction.
-    pub(in crate::geometry::tessellation) fn as_double(&self) -> Option<XY> {
+    pub(in crate::geometry::tessellation) const fn as_double(&self) -> Option<XY> {
         match &self.coords {
             Coords::Double { xy, .. } => Some(*xy),
             Coords::Exact(_) | Coords::Certified { .. } => None,
@@ -240,7 +240,7 @@ pub(super) fn verify_interval(
 }
 
 impl ExactPoint {
-    pub(in crate::geometry) fn from_xy(point: XY) -> Self {
+    pub(in crate::geometry) const fn from_xy(point: XY) -> Self {
         Self {
             coords: Coords::Double {
                 xy: point,
@@ -312,7 +312,7 @@ impl ExactPoint {
     }
 
     /// The certified outward bounds on `x` and `y`.
-    pub(in crate::geometry::tessellation) fn bounds(&self) -> [Interval; 2] {
+    pub(in crate::geometry::tessellation) const fn bounds(&self) -> [Interval; 2] {
         self.bounds
     }
 
