@@ -376,6 +376,7 @@ impl PyGeometry {
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
+        let output_frame = self.frame.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
@@ -388,7 +389,7 @@ impl PyGeometry {
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.polygonize_with_context(false, &context)
+            shape.polygonize_with_publication_frame(false, &context, output_frame)
         })?;
         self.parts_to_array(polygons)
     }

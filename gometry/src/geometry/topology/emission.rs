@@ -1126,6 +1126,7 @@ pub(super) struct ExpandedEmissionPlan<'topology> {
     pub(super) selected_face_roots: Vec<Option<usize>>,
     pub(super) node_registry: EmissionNodeRegistry,
     pub(super) ports: Vec<EmissionPort>,
+    pub(super) source_port_images: Vec<(QPortId, EmissionPortId)>,
     pub(super) occurrences: Vec<WrittenOccurrence>,
     pub(super) chords: Vec<EmissionChord>,
     pub(super) parts: Vec<EmissionPart>,
@@ -1134,11 +1135,141 @@ pub(super) struct ExpandedEmissionPlan<'topology> {
     pub(super) whole_sphere: bool,
 }
 
+impl ExpandedEmissionPlan<'_> {
+    pub(super) fn source_root_ranges_by_port(
+        &self,
+        selected_recipes: &[FragmentRecipe],
+        publication: &PublicationInventory,
+        work: &mut impl Work,
+    ) -> Result<Vec<Vec<RootRange>>> {
+        let mut selected_ranges = BTreeMap::<SourceEdgeId, Vec<&ExactSourceRange>>::new();
+        for recipe in selected_recipes {
+            work.charge_into_error(1)?;
+            for range in recipe.ranges.iter().filter(|range| range.emitted) {
+                work.charge_into_error(1)?;
+                selected_ranges
+                    .entry(range.source_edge)
+                    .or_default()
+                    .push(&range.range);
+            }
+        }
+        work.charge_into_error(
+            u64::try_from(self.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut output = Vec::with_capacity(self.ports.len());
+        for port in &self.ports {
+            work.charge_into_error(1)?;
+            let occurrences = self
+                .occurrences
+                .get(port.occurrence_range.clone())
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "emission port source-use range is outside its occurrence table".into(),
+                    )
+                })?;
+            let mut ranges = Vec::new();
+            for occurrence in occurrences {
+                work.charge_into_error(1)?;
+                let Some(location) = &occurrence.source_trace else {
+                    continue;
+                };
+                for request in source_requests_at_location(publication, location, work)? {
+                    work.charge_into_error(1)?;
+                    ranges.push(RootRange::point_with_work(
+                        request.root(),
+                        request.parameter().try_clone_with_work(work)?,
+                        ExactRational::zero(),
+                        work,
+                    )?);
+                }
+            }
+            output.push(ranges);
+        }
+        work.charge_into_error(
+            u64::try_from(self.topology.q.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut emissions_by_source_port = Vec::with_capacity(self.topology.q.ports.len());
+        emissions_by_source_port.resize_with(self.topology.q.ports.len(), Vec::new);
+        for &(source_port, emission_port) in &self.source_port_images {
+            work.charge_into_error(1)?;
+            emissions_by_source_port
+                .get_mut(source_port.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source-port image has an unknown Q port".into())
+                })?
+                .push(emission_port);
+        }
+        for span in &self.topology.q.spans {
+            work.charge_into_error(1)?;
+            for (endpoint, port) in span.ports.into_iter().enumerate() {
+                work.charge_into_error(1)?;
+                for owner in span.owners.iter() {
+                    work.charge_into_error(1)?;
+                    let Some(ranges) = selected_ranges.get(&owner.source_edge) else {
+                        continue;
+                    };
+                    let parameter = match (owner.reversed, endpoint) {
+                        (false, 0) | (true, 1) => &owner.source_range.start,
+                        (false, 1) | (true, 0) => &owner.source_range.end,
+                        (..) => {
+                            return Err(GeometryErrorKind::Invalid(
+                                "source span endpoint index is unknown".into(),
+                            )
+                            .into());
+                        },
+                    };
+                    let mut selected = false;
+                    for range in ranges {
+                        work.charge_into_error(1)?;
+                        let (lower, upper) =
+                            if range.start.try_cmp_with_work(&range.end, work)?.is_gt() {
+                                (&range.end, &range.start)
+                            } else {
+                                (&range.start, &range.end)
+                            };
+                        if parameter.try_cmp_with_work(lower, work)?.is_ge()
+                            && parameter.try_cmp_with_work(upper, work)?.is_le()
+                        {
+                            selected = true;
+                            break;
+                        }
+                    }
+                    if selected {
+                        for &emission_port in emissions_by_source_port
+                            .get(port.0 as usize)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "source span endpoint has no Q-port image row".into(),
+                                )
+                            })?
+                        {
+                            let port_ranges =
+                                output.get_mut(emission_port.0 as usize).ok_or_else(|| {
+                                    GeometryErrorKind::Invalid(
+                                        "source-port image is outside the emission plan".into(),
+                                    )
+                                })?;
+                            port_ranges.push(RootRange::point_with_work(
+                                RootId::from_index(owner.source_edge.0),
+                                parameter.try_clone_with_work(work)?,
+                                ExactRational::zero(),
+                                work,
+                            )?);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
 pub(super) struct EmissionBuilder<'topology> {
     topology: &'topology ExactGeographicTopology,
     selected_face_roots: Vec<Option<usize>>,
     nodes: EmissionNodeRegistry,
     ports: Vec<EmissionPort>,
+    source_port_images: Vec<(QPortId, EmissionPortId)>,
     occurrences: Vec<WrittenOccurrence>,
     chords: Vec<EmissionChord>,
     parts: Vec<EmissionPart>,
@@ -1160,6 +1291,7 @@ impl<'topology> EmissionBuilder<'topology> {
             selected_face_roots: selected.selected_face_roots.clone(),
             nodes: EmissionNodeRegistry::with_sources(topology, live_nodes, work)?,
             ports: Vec::new(),
+            source_port_images: Vec::new(),
             occurrences: Vec::new(),
             chords: Vec::new(),
             parts: Vec::new(),
@@ -1188,7 +1320,7 @@ impl<'topology> EmissionBuilder<'topology> {
         }
         let node = self.nodes.source_node(source.node)?;
         self.validate_port_origin(node, origin)?;
-        self.push_port(
+        let image = self.push_port(
             EmissionPort {
                 node,
                 position: PortPosition::Source { spelling },
@@ -1199,7 +1331,9 @@ impl<'topology> EmissionBuilder<'topology> {
                 origin,
                 source_trace: None,
             }],
-        )
+        )?;
+        self.source_port_images.push((port, image));
+        Ok(image)
     }
 
     pub(super) fn source_node(&self, node: QNodeId) -> Result<EmissionNodeId> {
@@ -1318,6 +1452,7 @@ impl<'topology> EmissionBuilder<'topology> {
             selected_face_roots: self.selected_face_roots,
             node_registry: self.nodes,
             ports: self.ports,
+            source_port_images: self.source_port_images,
             occurrences: self.occurrences,
             chords: self.chords,
             parts: self.parts,
@@ -1383,7 +1518,8 @@ pub(super) struct CompletedNativeDrawing {
 }
 
 pub(super) struct NativeFrozenDrawing {
-    pub(super) buffers: FrozenLiteralBuffers<EmissionPortId>,
+    pub(super) shape: Shape,
+    pub(super) literal_uses: NativeLiteralUses,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
@@ -4526,6 +4662,7 @@ mod tests {
                     occurrence_range: 2..3,
                 },
             ],
+            source_port_images: Vec::new(),
             occurrences,
             chords: Vec::new(),
             parts: Vec::new(),
@@ -4932,6 +5069,7 @@ mod tests {
             selected_face_roots: Vec::new(),
             node_registry,
             ports,
+            source_port_images: Vec::new(),
             occurrences: Vec::new(),
             chords,
             parts,
@@ -5080,6 +5218,7 @@ mod tests {
                 source_record: None,
                 occurrence_range: 0..occurrence_count,
             }],
+            source_port_images: Vec::new(),
             occurrences: written_occurrences,
             chords: Vec::new(),
             parts: Vec::new(),
@@ -6334,6 +6473,7 @@ mod tests {
                 source_record: Some(source_record),
                 occurrence_range: 0..2,
             }],
+            source_port_images: Vec::new(),
             occurrences: vec![
                 WrittenOccurrence {
                     origin: VertexOrigin::SourceNode(source_node),

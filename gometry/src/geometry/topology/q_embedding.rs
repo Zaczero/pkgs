@@ -43,9 +43,9 @@ use crate::geographic::{
 };
 use crate::geometry::embedding_completion::{
     AdmittedGraph, AdmittedLayout, CheckedAssignment, CheckedImages,
-    ExactPoints as NativeReferencePoints, FrozenLiteralBuffers, LiteralChart, LiteralCheck,
-    LogicalArealWalk, SealedOutput, ShapeLiteralLayout, admit_candidate, admit_known_graph,
-    admit_logical_layout, bind_literals, exact_chord_fraction,
+    ExactPoints as NativeReferencePoints, FrozenLiteralBuffers, LiteralAddress, LiteralChart,
+    LiteralCheck, LogicalArealWalk, SealedOutput, ShapeLiteralLayout, admit_candidate,
+    admit_known_graph, admit_logical_layout, bind_literals, exact_chord_fraction,
 };
 use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, SearchAccount, SearchOutcome,
@@ -6506,13 +6506,6 @@ where
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
-    )
-)]
 pub(super) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],
@@ -15315,6 +15308,31 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
+        budget.charge_into_error(
+            u64::try_from(emission.fragment_recipes.len())
+                .map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut selected_area_recipes = vec![false; emission.fragment_recipes.len()];
+        if matches!(
+            emission.plan.producer,
+            super::overlay::QProducer::Polygonize | super::overlay::QProducer::BuildArea
+        ) {
+            for walk in emission.fragment_walks {
+                if !matches!(walk.owner, RecipeWalkOwner::Cycle(_)) {
+                    continue;
+                }
+                for &recipe in &walk.fragments {
+                    budget.charge_into_error(1)?;
+                    *selected_area_recipes
+                        .get_mut(recipe.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "selected Q cycle references an unknown source recipe".into(),
+                            )
+                        })? = true;
+                }
+            }
+        }
         for (index, recipe) in emission.fragment_recipes.iter().enumerate() {
             budget.charge_into_error(1)?;
             if recipe.id.0 as usize != index {
@@ -15381,11 +15399,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     }
                 }
             }
+            let selected_linework_cycle = recipe.use_kind
+                == super::emission::SelectedUse::AreaBoundary
+                && selected_area_recipes.get(index).copied().unwrap_or(false);
             if matches!(
                 recipe.use_kind,
                 super::emission::SelectedUse::AreaBoundary
                     | super::emission::SelectedUse::ArealBoundaryLine
             ) && !has_areal_owner
+                && !selected_linework_cycle
             {
                 return Err(GeometryErrorKind::Invalid(
                     "areal Q recipe lost its source-face ownership".into(),
@@ -20075,16 +20097,105 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .emission
             .plan
             .seal_native_parts(parts, self.declared_axes, budget)?;
+        let super::emission::NativeFrozenDrawing {
+            shape,
+            literal_uses,
+            line_traces,
+        } = frozen;
         if !std::ptr::eq(candidate.assignment.reference, reference) {
             return Err(GeometryErrorKind::Invalid(
                 "native completion assignment belongs to another reference".into(),
             )
             .into());
         }
-        let line_traces = frozen.line_traces;
+        if self.emission.plan.producer.is_pooled_linework() {
+            if !validate_native_sealed_layout(
+                reference,
+                &literal_uses,
+                &mut candidate.port_records,
+                candidate.assignment.points(),
+                budget,
+            )? {
+                return Ok(None);
+            }
+            let source_ranges_by_port = reference.plan.source_root_ranges_by_port(
+                self.emission.fragment_recipes,
+                self.emission.publication,
+                budget,
+            )?;
+            let mut chart_restrictions = Vec::new();
+            for edge in reference
+                .area_edges
+                .iter()
+                .chain(&reference.line_graph_edges)
+            {
+                budget.charge_into_error(1)?;
+                if let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind {
+                    chart_restrictions.push(*restriction);
+                }
+            }
+            let producer_receipt = super::overlay::producer_drawing::receipt_from_shape_layout(
+                shape,
+                literal_uses,
+                |port: EmissionPortId, work: &mut EvaluationBudget| {
+                    let ranges = source_ranges_by_port.get(port.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native producer source-use port is unknown".into(),
+                        )
+                    })?;
+                    work.charge_into_error(
+                        u64::try_from(ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                    )?;
+                    let mut output = Vec::with_capacity(ranges.len());
+                    for range in ranges {
+                        work.charge_into_error(1)?;
+                        output.push(range.try_clone_with_work(work)?);
+                    }
+                    Ok(output)
+                },
+                chart_restrictions,
+                LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                },
+                budget,
+            )?;
+            return match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::ProducerDrawing(producer_receipt),
+                    self.topology.publication_frame().clone(),
+                    budget,
+                ),
+                StorageTarget::Scalar,
+            )? {
+                PublicationOutcome::Pass(sealed) => {
+                    Ok(Some(super::emission::CompletedNativeDrawing {
+                        sealed,
+                        line_traces,
+                    }))
+                },
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                    Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "pooled Q producer readback changed {} literal images",
+                            images.len()
+                        )
+                        .into(),
+                    )
+                    .into())
+                },
+                PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+                    "pooled Q producer finisher returned a different rejection family".into(),
+                )
+                .into()),
+            };
+        }
         let receipt = NativeCandidatePublication {
             assignment: &candidate.assignment,
-            buffers: frozen.buffers,
+            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
             sites: &assigned_sites,
             ordinates: &ordinates,
             port_records: &mut candidate.port_records,

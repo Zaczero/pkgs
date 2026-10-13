@@ -53,6 +53,7 @@ use crate::geometry::{
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
 };
 
+pub(in crate::geometry) mod producer_drawing;
 mod publication;
 
 #[derive(Clone, Copy)]
@@ -149,15 +150,8 @@ impl SelectedRegionPoles {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer-specific selection is consumed when F4 receiver routing lands"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum QProducer {
+pub(in crate::geometry) enum QProducer {
     Overlay,
     Boundary,
     SourceLines,
@@ -166,17 +160,27 @@ pub(super) enum QProducer {
     BuildArea,
 }
 
+impl QProducer {
+    pub(super) const fn is_pooled_linework(self) -> bool {
+        matches!(self, Self::Node | Self::Polygonize | Self::BuildArea)
+    }
+
+    pub(super) const fn operation(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Polygonize => "polygonize",
+            Self::BuildArea => "build_area",
+            Self::Overlay => "overlay",
+            Self::Boundary => "boundary",
+            Self::SourceLines => "source lines",
+        }
+    }
+}
+
 pub(super) struct QEmissionPlan {
     whole_sphere: bool,
     force_native: bool,
     boundary_support: Option<BoundarySupport>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the final producer sink consumes this selection tag after F4 lands"
-        )
-    )]
     pub(super) producer: QProducer,
     pub(super) polygons: PolygonPlan,
     pub(super) cycles: Vec<BoundaryCycle>,
@@ -185,6 +189,46 @@ pub(super) struct QEmissionPlan {
     pub(super) fragment_recipes: FragmentRecipes,
     pub(super) line_paths: Vec<PlannedQLine>,
     pub(super) point_nodes: Vec<QNodeId>,
+}
+
+pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &crate::geometry::SourceArcContext<'_, '_, M>,
+    publication_frame: crate::Frame,
+) -> Result<Shape> {
+    let crate::geometry::TopologyDomain::Geographic(frame) = context.domain() else {
+        return Err(GeometryErrorKind::Invalid(
+            "exact Q linework requires a geographic source context".into(),
+        )
+        .into());
+    };
+    let inputs =
+        crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter().copied())
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let topology = ExactGeographicTopology::from_views_with_publication_frame(
+        frame,
+        publication_frame,
+        inputs.views().iter().copied(),
+    )?;
+    let declared_axes = shapes
+        .iter()
+        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
+    let mut budget = EvaluationBudget::new(producer.operation(), 0)?;
+    let mut work = EvaluationOnly::new(&mut budget);
+    QEmissionPlan::build_pooled_linework(
+        &topology,
+        producer,
+        diagnostics,
+        strict,
+        declared_axes,
+        context.metric_access(),
+        &mut work,
+    )
 }
 
 pub(super) enum PolygonPlan {
@@ -453,68 +497,115 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     } else {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, preparation_work)?;
-        let source = plan.seal_source_drawing(
-            drawing,
-            &ring_roles,
-            &ordinates,
-            None,
-            None,
-            declared_axes,
-            strict,
-            operation,
-            preparation_work,
-        )?;
-        let receipt = super::q_embedding::publication::SourceOnlyPublication::new(
-            source,
-            topology,
-            None,
-            &ordinates,
-            None,
-            &[],
-            &[],
-            &[],
-        );
-        let sealed = match finish_geographic(
-            super::super::publication::PublicationCall::new(
-                super::super::publication::ProducerReceipt::QSourceOnly(receipt),
-                topology.publication_frame().clone(),
+        let sealed = if plan.producer.is_pooled_linework() {
+            let (shape, layout) = plan.write_source_drawing_parts(
+                drawing,
+                &ring_roles,
+                &ordinates,
+                None,
+                None,
+                declared_axes,
+                strict,
+                operation,
                 preparation_work,
-            ),
-            super::super::publication::StorageTarget::Scalar,
-        )? {
-            super::super::publication::PublicationOutcome::Pass(finished) => finished,
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::SourceOnly(_),
-            ) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "unchanged Q source output failed its literal binding".into(),
-                )
-                .into());
-            },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::Native,
-            ) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q source-only finisher returned native rejection".into(),
-                )
-                .into());
-            },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::Batch(_),
-            ) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q source-only finisher returned array batch rejection".into(),
-                )
-                .into());
-            },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::ProducerDrawing(_),
-            ) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q source-only finisher returned producer-drawn rejection".into(),
-                )
-                .into());
-            },
+            )?;
+            let ranges_by_port =
+                producer_drawing::source_root_ranges_by_q_port(topology, plan, preparation_work)?;
+            let receipt = producer_drawing::receipt_from_shape_layout(
+                shape,
+                layout,
+                |image, work| {
+                    producer_drawing::source_root_ranges_for_q_image(
+                        topology,
+                        &ranges_by_port,
+                        image,
+                        work,
+                    )
+                },
+                Vec::new(),
+                crate::geometry::embedding_completion::LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                },
+                preparation_work,
+            )?;
+            match finish_geographic(
+                super::super::publication::PublicationCall::new(
+                    super::super::publication::ProducerReceipt::ProducerDrawing(receipt),
+                    topology.publication_frame().clone(),
+                    preparation_work,
+                ),
+                super::super::publication::StorageTarget::Scalar,
+            )? {
+                super::super::publication::PublicationOutcome::Pass(finished) => finished,
+                super::super::publication::PublicationOutcome::Reject(
+                    super::super::publication::PublicationRejection::ProducerDrawing(images),
+                ) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "pooled Q source drawing readback changed {} literal images",
+                            images.len()
+                        )
+                        .into(),
+                    )
+                    .into());
+                },
+                super::super::publication::PublicationOutcome::Reject(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "pooled Q source finisher returned a different rejection family".into(),
+                    )
+                    .into());
+                },
+            }
+        } else {
+            let source = plan.seal_source_drawing(
+                drawing,
+                &ring_roles,
+                &ordinates,
+                None,
+                None,
+                declared_axes,
+                strict,
+                operation,
+                preparation_work,
+            )?;
+            let receipt = super::q_embedding::publication::SourceOnlyPublication::new(
+                source,
+                topology,
+                None,
+                &ordinates,
+                None,
+                &[],
+                &[],
+                &[],
+            );
+            match finish_geographic(
+                super::super::publication::PublicationCall::new(
+                    super::super::publication::ProducerReceipt::QSourceOnly(receipt),
+                    topology.publication_frame().clone(),
+                    preparation_work,
+                ),
+                super::super::publication::StorageTarget::Scalar,
+            )? {
+                super::super::publication::PublicationOutcome::Pass(finished) => finished,
+                super::super::publication::PublicationOutcome::Reject(
+                    super::super::publication::PublicationRejection::SourceOnly(_),
+                ) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "unchanged Q source output failed its literal binding".into(),
+                    )
+                    .into());
+                },
+                super::super::publication::PublicationOutcome::Reject(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Q source-only finisher returned a non-source rejection".into(),
+                    )
+                    .into());
+                },
+            }
         };
         (
             SealedQDrawing::Source(SealedSourceDrawing {
@@ -854,14 +945,51 @@ pub(super) fn source_ring_reuse_matches(
     Ok(true)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer builders are exercised before F4 and routed after its receiver lands"
-    )
-)]
 impl QEmissionPlan {
+    pub(in crate::geometry) fn build_pooled_linework<M: crate::geometry::ChartMetric>(
+        topology: &ExactGeographicTopology,
+        producer: QProducer,
+        diagnostics: bool,
+        strict: bool,
+        declared_axes: CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        work: &mut impl SearchAccount,
+    ) -> Result<Shape> {
+        if !producer.is_pooled_linework() {
+            return Err(GeometryErrorKind::Invalid(
+                "pooled linework emitter received a non-linework producer".into(),
+            )
+            .into());
+        }
+        let mut expansion_budget = ExpansionBudget::new(producer.operation(), "computed edges");
+        let plan = match producer {
+            QProducer::Node => Self::build_node(topology, work)?,
+            QProducer::Polygonize => Self::build_polygonize(topology, diagnostics, work)?,
+            QProducer::BuildArea => Self::build_area(topology, work)?,
+            QProducer::Overlay | QProducer::Boundary | QProducer::SourceLines => {
+                return Err(GeometryErrorKind::Invalid(
+                    "pooled linework emitter received a non-linework producer".into(),
+                )
+                .into());
+            },
+        };
+        let nearest = QCoordinates::build_with_work(topology, work)?;
+        let source_points = source_point_coordinates_with_work(topology, work)?;
+        let embedding = resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            strict,
+            producer.operation(),
+            metric_access,
+            &mut expansion_budget,
+            work,
+        )?;
+        Ok(write_certified_q_emission(embedding)?.shape)
+    }
+
     pub(super) const fn is_whole_sphere(&self) -> bool {
         self.whole_sphere
     }
@@ -1322,7 +1450,7 @@ impl QEmissionPlan {
         })
     }
 
-    pub(super) fn seal_source_drawing(
+    pub(super) fn write_source_drawing_parts(
         &self,
         drawing: QEmissionDrawing<'_>,
         ring_roles: &[bool],
@@ -1333,7 +1461,7 @@ impl QEmissionPlan {
         strict_axes: bool,
         operation: &'static str,
         work: &mut impl Work,
-    ) -> Result<SourceFrozenDrawing> {
+    ) -> Result<(Shape, ShapeLiteralLayout<QSourceImage>)> {
         let walks = publication
             .map(|_| index_recipe_walks(self.fragment_recipes.walks(), work))
             .transpose()?;
@@ -1398,6 +1526,32 @@ impl QEmissionPlan {
             })?;
             layout.in_output_order(&order, work)?
         };
+        Ok((shape, layout))
+    }
+
+    pub(super) fn seal_source_drawing(
+        &self,
+        drawing: QEmissionDrawing<'_>,
+        ring_roles: &[bool],
+        ordinates: &[NodeOrdinates],
+        publication: Option<SourcePublication<'_>>,
+        source_ports: Option<&[Option<ExactChartPoint>]>,
+        declared_axes: CoordinateAxes,
+        strict_axes: bool,
+        operation: &'static str,
+        work: &mut impl Work,
+    ) -> Result<SourceFrozenDrawing> {
+        let (shape, layout) = self.write_source_drawing_parts(
+            drawing,
+            ring_roles,
+            ordinates,
+            publication,
+            source_ports,
+            declared_axes,
+            strict_axes,
+            operation,
+            work,
+        )?;
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
         })
@@ -1440,7 +1594,8 @@ impl QEmissionPlan {
             )?
         };
         Ok(super::emission::NativeFrozenDrawing {
-            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
+            shape,
+            literal_uses,
             line_traces,
         })
     }

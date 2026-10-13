@@ -3,7 +3,9 @@
     reason = "Result-returning tests use assertions for their behavior checks"
 )]
 
-use super::{DiagnosticKind, ExactGeographicTopology, QEmissionPlan, QLineOrigin, SourceRowId};
+use super::{
+    DiagnosticKind, ExactGeographicTopology, QEmissionPlan, QLineOrigin, QProducer, SourceRowId,
+};
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, GeographicInputs};
 use crate::geometry::{GeometryErrorKind, Shape, Unmetered};
@@ -74,5 +76,48 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
         })
         .count();
     assert_eq!(shared_node_count, 1);
+    Ok(())
+}
+
+#[test]
+fn geographic_q_node_and_build_area_bind_through_producer_drawing() -> Result<()> {
+    let frame = GeographicFrame::crs84();
+    let crossing = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;
+    let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
+    let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            None,
+        );
+
+    let noded = super::exact_geographic_linework_from_shapes(
+        &[&crossing],
+        QProducer::Node,
+        false,
+        false,
+        &context,
+        crate::Frame::None,
+    )?;
+    assert!(matches!(noded, Shape::MultiLineString(_)));
+    assert!(!noded.is_empty());
+    assert!(noded.any_point(|point| {
+        point.y.to_bits() == 0.0_f64.to_bits()
+            && (point.x.to_bits() == 180.0_f64.to_bits()
+                || point.x.to_bits() == (-180.0_f64).to_bits())
+    }));
+
+    let area = super::exact_geographic_linework_from_shapes(
+        &[&boundary],
+        QProducer::BuildArea,
+        false,
+        false,
+        &context,
+        crate::Frame::None,
+    )?;
+    assert!(matches!(area, Shape::Polygon(_) | Shape::MultiPolygon(_)));
+    assert!(!area.is_empty());
+    assert!(area.any_point(|point| {
+        point.x.to_bits() == 0.0_f64.to_bits() && point.y.to_bits() == 0.0_f64.to_bits()
+    }));
     Ok(())
 }

@@ -143,12 +143,28 @@ impl Shape {
         strictness: Strictness,
         context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Self> {
+        self.node_with_publication_frame(strictness, context, crate::Frame::None)
+    }
+
+    pub(crate) fn node_with_publication_frame<M: crate::geometry::ChartMetric>(
+        &self,
+        strictness: Strictness,
+        context: &SourceArcContext<'_, '_, M>,
+        publication_frame: crate::Frame,
+    ) -> Result<Self> {
+        if context.domain().is_geographic() {
+            return crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
+                &[self],
+                crate::geometry::topology::overlay::QProducer::Node,
+                false,
+                strictness.is_strict(),
+                context,
+                publication_frame,
+            );
+        }
         let inventory = ExactSourceInventory::from_shapes(&[self])?;
         let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
-        let mut partition = inventory.partition(&mut budget)?;
-        if let TopologyDomain::Geographic(frame) = context.domain() {
-            partition.set_geographic_frame(frame);
-        }
+        let partition = inventory.partition(&mut budget)?;
         inventory.node_shape(&partition, self.axes(), strictness.is_strict(), context)
     }
 

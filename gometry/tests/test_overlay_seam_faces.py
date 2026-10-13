@@ -220,6 +220,63 @@ def test_ordinary_geographic_node_uses_the_operation_metric_for_interior_sources
         assert m == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
 
 
+def test_geographic_node_uses_the_seam_junction_not_greenwich() -> None:
+    seam = gm.MultiLineString(
+        [[(170, 0), (-170, 0)], [(180, -1), (180, 1)]], crs='OGC:CRS84'
+    )
+    greenwich = gm.MultiLineString(
+        [[(170, 0), (-170, 0)], [(0, -1), (0, 1)]], crs='OGC:CRS84'
+    )
+
+    seam_nodes = seam.node()
+    greenwich_nodes = greenwich.node()
+    array_nodes = gm.GeometryArray([seam, None, greenwich]).node()
+
+    seam_points = np.asarray(seam_nodes.coords, dtype=np.float64)
+    greenwich_points = np.asarray(greenwich_nodes.coords, dtype=np.float64)
+    assert any(row[:2] in ([180.0, 0.0], [-180.0, 0.0]) for row in seam_points.tolist())
+    assert not any(row[:2] == [0.0, 0.0] for row in greenwich_points.tolist())
+    assert array_nodes[1] is None
+    assert array_nodes[0] == seam_nodes
+    assert array_nodes[2] == greenwich_nodes
+
+
+def test_geographic_polygonize_closes_six_rows_across_the_longitude_alias() -> None:
+    parts = [
+        [(170, 0), (180, 0)],
+        [(-180, 0), (-170, 0)],
+        [(-170, 0), (-170, 10)],
+        [(-170, 10), (-180, 10)],
+        [(180, 10), (170, 10)],
+        [(170, 10), (170, 0)],
+    ]
+    linework = [gm.LineString(part, crs='OGC:CRS84') for part in parts]
+
+    polygons = gm.polygonize_all(linework)
+    groups = gm.GeometryArray(linework).polygonize()
+
+    assert len(polygons) == 1
+    assert gm.covers(polygons[0], gm.Point(179, 5, crs='OGC:CRS84'))
+    assert not gm.covers(polygons[0], gm.Point(0, 5, crs='OGC:CRS84'))
+    assert len(groups[0]) == 1
+    assert len(groups[1]) == 0
+    assert groups[0][0].to_wkb() == polygons[0].to_wkb()
+
+
+def test_geographic_build_area_selects_the_cap_named_by_its_winding() -> None:
+    linework = gm.LineString(
+        [(-135, 80), (-45, 80), (45, 80), (135, 80), (-135, 80)],
+        crs='OGC:CRS84',
+    )
+
+    area = linework.build_area()
+    array_area = gm.GeometryArray([linework]).build_area()[0]
+
+    assert gm.covers(area, gm.Point(0, 85, crs='OGC:CRS84'))
+    assert not gm.covers(area, gm.Point(0, 0, crs='OGC:CRS84'))
+    assert array_area.to_wkb() == area.to_wkb()
+
+
 def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() -> None:
     crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
     polygon = gm.Polygon(

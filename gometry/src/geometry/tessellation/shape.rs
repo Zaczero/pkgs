@@ -18,6 +18,23 @@ use crate::geometry::{
     VoronoiBoundary, axis_extent, line_segments,
 };
 
+fn polygonal_parts(shape: Shape) -> crate::error::Result<Vec<Shape>> {
+    match shape {
+        Shape::Polygon(polygon) => Ok(vec![Shape::Polygon(polygon)]),
+        Shape::MultiPolygon(polygons) => Ok(polygons
+            .as_slice()
+            .iter()
+            .cloned()
+            .map(Shape::Polygon)
+            .collect()),
+        Shape::Empty(..) => Ok(Vec::new()),
+        _ => Err(GeometryErrorKind::Invalid(
+            "Q linework polygon producer emitted a non-polygonal shape".into(),
+        )
+        .into()),
+    }
+}
+
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.
 pub(super) struct BudgetedTriangleSink<'budget> {
@@ -988,12 +1005,13 @@ impl Shape {
         Self::polygonize_all(&[self], strict)
     }
 
-    pub(crate) fn polygonize_with_context(
+    pub(crate) fn polygonize_with_publication_frame(
         &self,
         strict: bool,
         context: &SourceArcContext<'_, '_>,
+        publication_frame: crate::Frame,
     ) -> Result<Vec<Self>> {
-        Self::polygonize_all_with_context(&[self], strict, context)
+        Self::polygonize_all_with_publication_frame(&[self], strict, context, publication_frame)
     }
 
     /// Polygonize many shapes as one noding universe: every line part from
@@ -1015,6 +1033,31 @@ impl Shape {
         strict: bool,
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
+        Self::polygonize_all_with_publication_frame(shapes, strict, context, crate::Frame::None)
+    }
+
+    pub(crate) fn polygonize_all_with_publication_frame<S: Borrow<Self>>(
+        shapes: &[S],
+        strict: bool,
+        context: &SourceArcContext<'_, '_>,
+        publication_frame: crate::Frame,
+    ) -> Result<Vec<Self>> {
+        if context.domain().is_geographic() {
+            let shapes = shapes
+                .iter()
+                .map(Borrow::<Self>::borrow)
+                .collect::<Vec<_>>();
+            let selected =
+                crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
+                    &shapes,
+                    crate::geometry::topology::overlay::QProducer::Polygonize,
+                    false,
+                    strict,
+                    context,
+                    publication_frame,
+                )?;
+            return polygonal_parts(selected);
+        }
         let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
             axes.union(Borrow::<Self>::borrow(shape).axes())
         });
@@ -1052,6 +1095,27 @@ impl Shape {
         strict: bool,
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
+        Self::build_area_all_with_publication_frame(shapes, strict, context, crate::Frame::None)
+    }
+
+    pub(crate) fn build_area_all_with_publication_frame(
+        shapes: &[&Self],
+        strict: bool,
+        context: &SourceArcContext<'_, '_>,
+        publication_frame: crate::Frame,
+    ) -> Result<Vec<Self>> {
+        if context.domain().is_geographic() {
+            let selected =
+                crate::geometry::topology::overlay::exact_geographic_linework_from_shapes(
+                    shapes,
+                    crate::geometry::topology::overlay::QProducer::BuildArea,
+                    false,
+                    strict,
+                    context,
+                    publication_frame,
+                )?;
+            return polygonal_parts(selected);
+        }
         let declared_axes = shapes
             .iter()
             .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));

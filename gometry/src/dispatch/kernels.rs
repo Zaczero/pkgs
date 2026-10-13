@@ -614,8 +614,11 @@ pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
         })
     };
     let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
-    data.shape()
-        .node_with_context(Strictness::Lenient, &source_context)
+    data.shape().node_with_publication_frame(
+        Strictness::Lenient,
+        &source_context,
+        ctx.frame.clone(),
+    )
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
@@ -631,7 +634,38 @@ pub(crate) fn unary_build_area(
         })
     };
     let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
-    data.shape().build_area_with_context(false, &source_context)
+    let polygons = crate::geometry::Shape::build_area_all_with_publication_frame(
+        &[data.shape()],
+        false,
+        &source_context,
+        ctx.frame.clone(),
+    )?;
+    match polygons.len() {
+        0 => Ok(crate::geometry::Shape::empty_polygon()),
+        1 => polygons.into_iter().next().ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "build-area selected one polygon but returned no value".into(),
+            )
+            .into()
+        }),
+        _ => {
+            let polygons = polygons
+                .into_iter()
+                .map(|shape| match shape {
+                    crate::geometry::Shape::Polygon(polygon) => {
+                        Ok(crate::geometry::MultiMember::Value(polygon))
+                    },
+                    _ => Err(crate::geometry::GeometryErrorKind::Invalid(
+                        "build-area selected a non-polygonal result".into(),
+                    )
+                    .into()),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(crate::geometry::Shape::MultiPolygon(
+                crate::geometry::MultiPolygon::try_new(data.shape().axes(), polygons)?,
+            ))
+        },
+    }
 }
 
 /// Smooth kernel shared by the spine-routed free function.

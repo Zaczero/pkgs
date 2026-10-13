@@ -532,6 +532,7 @@ pub(crate) fn polygonize_all(
         drop(metric_scratch);
         crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
     } else {
+        let output_frame = metadata.clone();
         let polygons = py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -540,10 +541,11 @@ pub(crate) fn polygonize_all(
                     )
                 })
             };
-            Shape::polygonize_all_with_context(
+            Shape::polygonize_all_with_publication_frame(
                 &shapes,
                 false,
                 &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                output_frame,
             )
         })?;
         drop(metric_scratch);

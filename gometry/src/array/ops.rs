@@ -813,6 +813,7 @@ impl PyGeometryArray {
     /// with the free function ``polygonize_all``; passing a GeometryArray there
     /// pools its present rows.
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<Groups> {
+        let output_frame = self.frame.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
@@ -824,9 +825,10 @@ impl PyGeometryArray {
                     )
                 })
             };
-            shape.polygonize_with_context(
+            shape.polygonize_with_publication_frame(
                 false,
                 &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                output_frame.clone(),
             )
         })
     }
