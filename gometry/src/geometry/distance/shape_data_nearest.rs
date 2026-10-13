@@ -189,7 +189,7 @@ fn resolve_nearest_source_projection(
             source_frame
                 .longitude()
                 .chart_connection(source[0].x, source[1].x)
-                .map(|connection| connection.retained())
+                .map(crate::geographic::ChartConnection::retained)
                 .map_err(|error| {
                     crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()).into()
                 })

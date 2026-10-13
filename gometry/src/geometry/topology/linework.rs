@@ -31,9 +31,12 @@ pub(super) struct FaceBoundaryCycle {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FaceCycleRole {
-    pub(super) is_hole: bool,
-    pub(super) named_pole: Option<ChartPole>,
+pub(super) enum FaceCycleRole {
+    Classified {
+        is_hole: bool,
+        named_pole: Option<ChartPole>,
+    },
+    Unbounded,
 }
 
 pub(super) struct MinimalFaceSelection {
@@ -127,15 +130,19 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        let (is_hole, named_pole) = super::emission::ring_roles::exact_q_ring_role_for_linework(
-            topology.sources.frame,
-            &points,
-            work,
-        )?;
-        roles.push(FaceCycleRole {
-            is_hole,
-            named_pole,
-        });
+        roles.push(
+            match super::emission::ring_roles::exact_q_ring_role_for_linework(
+                topology.sources.frame,
+                &points,
+                work,
+            )? {
+                Some((is_hole, named_pole)) => FaceCycleRole::Classified {
+                    is_hole,
+                    named_pole,
+                },
+                None => FaceCycleRole::Unbounded,
+            },
+        );
     }
     Ok(roles)
 }
@@ -171,7 +178,14 @@ pub(super) fn even_odd_face_selection(
     let mut parent = vec![None; face_count];
     for (cycle, &role) in cycles.iter().zip(cycle_roles) {
         work.charge_into_error(1)?;
-        if role.named_pole.is_some() || !role.is_hole {
+        let FaceCycleRole::Classified {
+            is_hole,
+            named_pole,
+        } = role
+        else {
+            continue;
+        };
+        if named_pole.is_some() || !is_hole {
             continue;
         }
         if cycle.face == exterior {
@@ -302,9 +316,14 @@ fn exterior_face_for_pole_caps(
     let mut exterior = None;
     for role in cycle_roles {
         work.charge_into_error(1)?;
-        let Some(named_pole) = role.named_pole else {
+        let FaceCycleRole::Classified {
+            named_pole: Some(named_pole),
+            ..
+        } = role
+        else {
             continue;
         };
+        let named_pole = *named_pole;
         let Some(cap) = pole_sector_face(topology, named_pole, work)? else {
             return Ok(None);
         };
@@ -715,10 +734,6 @@ fn dart_global_face(q: &super::q::ExactGeographicQ, dart: QDartId) -> Result<Glo
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "Result-returning tests use assertions for their behavioral checks"
-    )]
 
     use std::collections::BTreeSet;
 
@@ -821,6 +836,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn node_selection_uses_the_seam_junction_not_a_greenwich_crossing() -> Result<()> {
         let seam = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;
         let greenwich = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (0 -1, 0 1))")?;
@@ -846,6 +865,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn node_selection_keeps_all_directed_roots_on_a_shared_span() -> Result<()> {
         let first = crate::io::parse_wkt("LINESTRING (0 0, 2 0)")?;
         let second = crate::io::parse_wkt("LINESTRING (2 0, 0 0)")?;
@@ -886,6 +909,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn alias_closed_ring_keeps_all_six_source_rows_for_both_producers() -> Result<()> {
         let edges = [
             "LINESTRING (170 0, 180 0)",
@@ -937,6 +964,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn once_winding_polygonize_selects_the_named_north_pole_cap() -> Result<()> {
         let linework =
             crate::io::parse_wkt("LINESTRING (-135 80, -45 80, 45 80, 135 80, -135 80)")?;
@@ -955,6 +986,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn once_winding_build_area_selects_the_named_north_pole_cap() -> Result<()> {
         let linework =
             crate::io::parse_wkt("LINESTRING (-135 80, -45 80, 45 80, 135 80, -135 80)")?;
@@ -973,6 +1008,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn polygonize_keeps_minimal_nested_faces_while_build_area_fills_even_odd() -> Result<()> {
         let linework = crate::io::parse_wkt(
             "MULTILINESTRING (\
@@ -992,6 +1031,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn build_area_fills_adjacent_faces_at_one_component_depth() -> Result<()> {
         let linework = crate::io::parse_wkt(
             "MULTILINESTRING (\
@@ -1006,6 +1049,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn build_area_keeps_a_bridge_connected_inner_ring_as_a_hole_with_an_interior_chord()
     -> Result<()> {
         let linework = crate::io::parse_wkt(
@@ -1032,6 +1079,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
     fn polygonize_diagnostics_keep_shared_span_rows_and_roles() -> Result<()> {
         let first = crate::io::parse_wkt("LINESTRING (0 0, 2 0)")?;
         let second = crate::io::parse_wkt("LINESTRING (2 0, 0 0)")?;

@@ -184,9 +184,10 @@ pub(crate) fn publish_sampling_array(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::{
-        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
     use crate::work::Unmetered;
 
@@ -242,9 +243,10 @@ pub(crate) fn publish_sampling_groups(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::{
-        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
     use crate::work::Unmetered;
 

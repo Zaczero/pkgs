@@ -172,7 +172,8 @@ fn component_covers(left: &Shape, right: &Shape) -> crate::error::Result<bool> {
     let right_cache = crate::geometry::FrameDependentCaches::default();
     let left = crate::geometry::GeographicPrepared::try_new(&left_plan, &left_cache, frame)?;
     let right = crate::geometry::GeographicPrepared::try_new(&right_plan, &right_cache, frame)?;
-    crate::geometry::graph_relate_data_geographic(left, right).map(|relation| relation.is_covers())
+    crate::geometry::graph_relate_data_geographic(left, right)
+        .map(crate::geometry::De9im::is_covers)
 }
 
 /// Canonical components of one grid source.

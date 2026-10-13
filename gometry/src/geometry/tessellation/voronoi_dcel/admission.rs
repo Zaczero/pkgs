@@ -11,8 +11,8 @@ use super::{
     OwnerShellPosition, Point, PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result,
     Ring, SearchAccount, Segment, SegmentParameter, Site, VertexId, VoronoiBoundary,
     VoronoiClipSourceRoot, XY, YStabbingIndex, ensure_coordseq_vertex_capacity, exact,
-    polygon_is_valid, polygon_output_baseline, retained_site_longitude, sort_unique_along,
-    try_dedup_by, try_hash_map_with_capacity, try_sort_by, uf_union, voronoi_error,
+    polygon_is_valid, polygon_output_baseline, sort_unique_along, try_dedup_by,
+    try_hash_map_with_capacity, try_sort_by, uf_union, voronoi_error,
 };
 
 mod clip;
@@ -465,7 +465,7 @@ impl ClipRingParity {
         Ok(())
     }
 
-    fn covers(&self) -> bool {
+    const fn covers(&self) -> bool {
         self.shell_inside && self.holes_inside == 0
     }
 

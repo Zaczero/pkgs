@@ -144,7 +144,7 @@ impl<'a> OwnerRayPoints<'a> {
         clippy::indexing_slicing,
         reason = "owner-local vertex IDs are collected from the admitted subdivision"
     )]
-    fn point(&self, local: u32) -> &exact::ExactPoint {
+    const fn point(&self, local: u32) -> &exact::ExactPoint {
         &self.vertices[self.global_vertices[local as usize].0 as usize].point
     }
 }

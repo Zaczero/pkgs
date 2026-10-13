@@ -26,6 +26,10 @@ use super::{
 /// rounded edge cancellation proves that the valid cells have exactly the
 /// rectangular clip boundary, and exact point membership checks each canonical
 /// site's rounded cell. Polygon clips remain on the exact arrangement lane.
+#[expect(
+    clippy::float_cmp,
+    reason = "rounded dual edges must match the certified clip frame exactly before side coverage is accepted"
+)]
 pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     rings: &DualRings,
     clip: &NormalizedClip<'_>,
@@ -34,37 +38,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     budget: &mut ExpansionBudget,
     chart: Option<&PointSelectionChart>,
 ) -> std::result::Result<EmbeddedVoronoi, DualEmbeddingError> {
-    if rings.rings.len() != sites.len() {
-        return Err(DualEmbeddingError::Unrepresentable);
-    }
-    // Vertex identity WITHOUT an exact positional sort.
-    //
-    // A `Center` vertex IS its component, so its rounding is memoised once per
-    // component. Everything else is hashed on its ROUNDED key, and a key
-    // collision is then resolved EXACTLY: two exact points that share a rounded
-    // key are the same vertex only if `same_position` says so, and otherwise the
-    // rounding is not injective and the diagram is refused. That is the same
-    // verdict the sort produced -- rounding is a function, so equal exact points
-    // always land in the same bucket -- reached in O(V) instead of O(V log V)
-    // exact comparisons.
-    // Every distinct exact vertex gets one dense id. Center component IDs
-    // remain separate producer identities and map to these interned vertices;
-    // a clip hit may be the first occurrence of a center's exact position.
-    if let Some(last) = rings.centers.len().checked_sub(1) {
-        u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-    }
-    let total = rings.rings.iter().try_fold(0_usize, |count, ring| {
-        count
-            .checked_add(ring.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)
-    })?;
-    let mut center_rounded: Vec<Option<(XY, u32)>> = Vec::with_capacity(rings.centers.len());
-    center_rounded.resize(rings.centers.len(), None);
-    let mut exact_by_id = Vec::new();
-    // Distinct vertices are the centers plus a boundary's worth of generated
-    // points; sizing for every ring reference would triple the table.
-    let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
-    let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
     #[expect(
         clippy::collapsible_if,
         reason = "keep the center-only memo lookup on its measured base instruction path"
@@ -115,6 +88,38 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
         }
         Ok((xy, id))
     }
+
+    if rings.rings.len() != sites.len() {
+        return Err(DualEmbeddingError::Unrepresentable);
+    }
+    // Vertex identity WITHOUT an exact positional sort.
+    //
+    // A `Center` vertex IS its component, so its rounding is memoised once per
+    // component. Everything else is hashed on its ROUNDED key, and a key
+    // collision is then resolved EXACTLY: two exact points that share a rounded
+    // key are the same vertex only if `same_position` says so, and otherwise the
+    // rounding is not injective and the diagram is refused. That is the same
+    // verdict the sort produced -- rounding is a function, so equal exact points
+    // always land in the same bucket -- reached in O(V) instead of O(V log V)
+    // exact comparisons.
+    // Every distinct exact vertex gets one dense id. Center component IDs
+    // remain separate producer identities and map to these interned vertices;
+    // a clip hit may be the first occurrence of a center's exact position.
+    if let Some(last) = rings.centers.len().checked_sub(1) {
+        u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    }
+    let total = rings.rings.iter().try_fold(0_usize, |count, ring| {
+        count
+            .checked_add(ring.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut center_rounded: Vec<Option<(XY, u32)>> = Vec::with_capacity(rings.centers.len());
+    center_rounded.resize(rings.centers.len(), None);
+    let mut exact_by_id = Vec::new();
+    // Distinct vertices are the centers plus a boundary's worth of generated
+    // points; sizing for every ring reference would triple the table.
+    let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
+    let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
     let mut offsets = Vec::new();
     let mut rounded_all: Vec<XY> = Vec::new();
     let mut ids_all: Vec<u32> = Vec::new();

@@ -112,6 +112,7 @@ fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
 fn coincident_frame_separator_emits_one_packed_chain_and_excludes_frame_only() {
     let (sites, polygon) = coincident_frame_fixture();
     let mut budget = ExpansionBudget::new("test", "coincident packed");

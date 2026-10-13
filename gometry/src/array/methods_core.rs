@@ -371,7 +371,7 @@ impl PyGeometryArray {
         // present items participate in coercion and frame resolution. The
         // native row builder restores their logical positions on publication.
         let mut mask = Vec::with_capacity(raw_items.len());
-        mask.extend(raw_items.iter().map(|item| item.is_none()));
+        mask.extend(raw_items.iter().map(pyo3::types::PyAnyMethods::is_none));
         let explicit_crs = parse_crs(crs)?;
         let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
         let coerced = coerce_present_geometry_items(
@@ -753,9 +753,10 @@ impl PyGeometryArray {
                 ArrayRow::Missing { .. } => None,
                 ArrayRow::Present(row) => Some(query.row(py, row.row())?),
             };
-            let narrow = measure
-                .as_ref()
-                .map_or(Some(0), |measure| measure.count_i64());
+            let narrow = measure.as_ref().map_or(
+                Some(0),
+                super::super::boundary::coordinates::count::CoordinateMeasure::count_i64,
+            );
             if let Some(value) = narrow {
                 if let Some(values) = &mut object_values {
                     values.push(PyInt::new(py, value).into_any().unbind());
@@ -829,7 +830,7 @@ impl PyGeometryArray {
             1 => args.get_item(0)?.is_none(),
             _ => false,
         };
-        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+        if no_matrix && kwargs.is_none_or(pyo3::types::PyDictMethods::is_empty) {
             return Ok(self.clone());
         }
         // Union axes of the coordinate view (NaN-padded for members that lack
@@ -876,7 +877,7 @@ impl PyGeometryArray {
         // reject when uniform_axes() is None.
         let array = slf.borrow();
         let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
-        let replacement = map_coordinates_callback(py, coords, func)?;
+        let replacement = map_coordinates_callback(py, &coords, func)?;
         replace_array_coordinates(&array, py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``

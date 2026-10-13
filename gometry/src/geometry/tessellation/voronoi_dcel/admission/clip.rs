@@ -7,10 +7,11 @@ use super::{
     PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result, Ring, SearchAccount,
     Segment, SegmentParameter, Site, VertexId, VoronoiBoundary, VoronoiClipSourceRoot, XY,
     YStabbingIndex, clip_source_trace_error, ensure_coordseq_vertex_capacity, exact,
-    exact_cycle_error, polygon_output_baseline, retained_site_longitude, sort_unique_along,
-    try_dedup_by, try_hash_map_with_capacity, try_sort_by, validate_exact_contact_graph,
+    exact_cycle_error, polygon_output_baseline, sort_unique_along, try_dedup_by,
+    try_hash_map_with_capacity, try_sort_by, validate_exact_contact_graph,
     validate_exact_rectangle, voronoi_error,
 };
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 
 pub(in crate::geometry::tessellation::voronoi_dcel) fn exact_chart_point(
     chart: Option<&PointSelectionChart>,
@@ -73,7 +74,7 @@ pub(super) fn open_ring(ring: &Ring, chart: Option<&PointSelectionChart>) -> Res
     Ok((exact_points, fixed, chart_fixed, source_edges))
 }
 
-fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY], chart_fixed: &mut [XY]) {
+const fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY], chart_fixed: &mut [XY]) {
     points.reverse();
     fixed.reverse();
     chart_fixed.reverse();
@@ -113,7 +114,12 @@ pub(super) fn rotate_ring(
     clippy::arithmetic_side_effects,
     reason = "source edge and rotation are admitted ring ordinals modulo its nonzero length"
 )]
-fn normalized_source_edge(edge: usize, count: usize, rotation: usize, reversed: bool) -> usize {
+const fn normalized_source_edge(
+    edge: usize,
+    count: usize,
+    rotation: usize,
+    reversed: bool,
+) -> usize {
     // Source edges are ordinals modulo the admitted nonempty ring length.
     let oriented = if reversed {
         count

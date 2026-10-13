@@ -48,10 +48,9 @@ use super::q_embedding::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 #[cfg(test)]
-use crate::geometry::embedding_completion::LiteralCheck;
-use crate::geometry::embedding_search::{
-    EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
-};
+use crate::geometry::embedding_completion::storage::LiteralCheck;
+use crate::geometry::embedding_search::SearchOutcome;
+use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly, SearchAccount};
 use crate::geometry::ordinates::SourceArcMetricAccess;
 use crate::geometry::overlay::OverlayOp;
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
@@ -60,6 +59,21 @@ use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{CoordinateAxes, ExpansionBudget, GeometryErrorKind, Loc, Shape};
 #[cfg(test)]
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
+
+#[cfg(test)]
+std::thread_local! {
+    static Q_OVERLAY_PLAN_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::geometry::topology) fn take_q_overlay_plan_build_count() -> usize {
+    Q_OVERLAY_PLAN_BUILDS.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+fn record_q_overlay_plan_build() {
+    Q_OVERLAY_PLAN_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
+}
 
 mod publish;
 pub(in crate::geometry) use self::producer_drawing::{
@@ -172,7 +186,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::geometry::LineSeq;
-    use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
+    use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::ordinates::NodeOrdinates;
     use crate::geometry::topology::emission::draw::{
         boundary_source_points, source_point_coordinates,

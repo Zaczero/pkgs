@@ -202,7 +202,7 @@ impl RootCatalog for OriginalPointRoots<'_> {
             .frame
             .longitude()
             .chart_connection(source[0].x, source[1].x)
-            .map(|connection| connection.retained())
+            .map(crate::geographic::ChartConnection::retained)
             .map_err(|error| {
                 crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
             })?;

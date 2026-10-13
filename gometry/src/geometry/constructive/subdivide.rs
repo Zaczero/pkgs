@@ -1,9 +1,5 @@
 //! Recursively split shapes while carrying source traces through each cut.
 
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 #[cfg(test)]
 use std::cell::Cell;
 

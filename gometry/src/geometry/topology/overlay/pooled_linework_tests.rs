@@ -1,8 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "Result-returning tests use assertions for their behavior checks"
-)]
-
 use super::{
     DiagnosticKind, ExactGeographicTopology, QEmissionPlan, QLineOrigin, QProducer, SourceRowId,
 };
@@ -19,6 +14,10 @@ fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result<()> {
     let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
     let dangle = crate::io::parse_wkt("LINESTRING (5 0, 5 -3)")?;
@@ -81,6 +80,10 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_q_node_and_build_area_bind_through_producer_drawing() -> Result<()> {
     let frame = GeographicFrame::crs84();
     let crossing = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;

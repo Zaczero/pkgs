@@ -1,4 +1,4 @@
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::work::Work;
 
 pub(crate) struct RecordingWork {

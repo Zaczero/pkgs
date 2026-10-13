@@ -478,10 +478,13 @@ impl PreparedIndexQuery {
                     return Ok(None);
                 }
                 let cover = index_envelopes(shape, bounds, TopologyDomain::Geographic(*frame))?;
-                let boxes = cover.entries().to_vec();
                 crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    Ok(GeodesicBoxPruner::new(semi_major, flattening, boxes))
+                    Ok(GeodesicBoxPruner::new(
+                        semi_major,
+                        flattening,
+                        cover.entries(),
+                    ))
                 })
                 .map(Some)
                 .map_err(pyo3::PyErr::from)

@@ -11,7 +11,8 @@ use super::super::{
     quotient_key_for_chart_position_with_work, require_q_source_image_port, rounded_chart_point,
     subgraph_chart, validate_native_materialized_candidate, validate_native_sealed_layout,
 };
-use crate::geometry::embedding_completion::{FrozenLiteralBuffers, LiteralAddress};
+use crate::geometry::embedding_completion::literals::LiteralAddress;
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::work::Work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {

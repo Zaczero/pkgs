@@ -113,6 +113,8 @@ pub(crate) fn dispatch_overlay(
         right,
         operation.name(),
         operation.resolver(),
+        // The overlay kernel selects on original Q inputs and owns pole closure.
+        false,
         move |left, right, ctx| kernels::binary_overlay(left, right, ctx, op, strictness),
     )
 }

@@ -29,7 +29,7 @@ pub(super) fn point_cell_input(values: &Bound<'_, PyAny>) -> PyResult<Option<Poi
     let Some(items) = collect_iterable(values)? else {
         return Ok(None);
     };
-    if items.is_empty() || items.iter().all(|item| item.is_none()) {
+    if items.is_empty() || items.iter().all(pyo3::types::PyAnyMethods::is_none) {
         return Ok(Some(PointCellInput::MissingRows(items.len())));
     }
     if items

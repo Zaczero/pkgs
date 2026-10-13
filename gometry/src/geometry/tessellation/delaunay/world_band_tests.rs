@@ -1,3 +1,4 @@
+use super::source::retained_constrained_source_plan;
 use super::*;
 
 fn geographic_ring(points: &[(f64, f64)]) -> Ring {

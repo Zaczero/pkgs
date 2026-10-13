@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Bulk result containers and internal PEP-3118 buffer holders.
 //!
 //! Public numeric lanes return read-only NumPy ndarrays; [`Groups`] is the
@@ -347,7 +343,7 @@ impl Groups {
     fn row_pyobject(
         &self,
         py: Python<'_>,
-        slf: Bound<'_, Self>,
+        slf: &Bound<'_, Self>,
         row: usize,
     ) -> PyResult<Py<PyAny>> {
         if self.row_is_missing(row) {
@@ -542,7 +538,7 @@ impl RowContainer for Groups {
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
         let bound = Bound::new(py, self.clone())?;
-        self.row_pyobject(py, bound, row)
+        self.row_pyobject(py, &bound, row)
     }
 }
 
@@ -615,7 +611,7 @@ impl Groups {
     ///     The selected flat payload window. Numeric values are read-only int64;
     ///     geometry and cell payloads retain their immutable array types.
     #[getter]
-    fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+    fn values(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| {
                 let GroupsValues::Int64(values) = &this.values else {
@@ -695,7 +691,7 @@ impl Groups {
     ///     A read-only int64 array of row boundaries. Slices are rebased to
     ///     start at zero; a slice starting after row zero owns a rebased copy.
     #[getter]
-    fn offsets(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+    fn offsets(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         if slf.borrow().rows.start == 0 {
             return frozen_i64_view(slf, |this| {
                 this.offsets
@@ -727,7 +723,7 @@ impl Groups {
     /// numpy.ndarray
     ///     A materialized, read-only int64 count for each group in row order.
     #[getter]
-    fn counts(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+    fn counts(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();
         let mut counts = Vec::with_capacity(this.rows.len());
         let offsets = this
@@ -750,7 +746,7 @@ impl Groups {
     /// numpy.ndarray
     ///     A read-only boolean mask in group order.
     #[getter]
-    fn is_missing(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+    fn is_missing(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();
         bool_array(
             slf.py(),
@@ -786,7 +782,7 @@ impl Groups {
     /// ... ).to_pairs()
     /// >>> (row_ids.tolist(), values.tolist())
     /// ([0, 0, 1], [0, 1, 2])
-    fn to_pairs(slf: Bound<'_, Self>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    fn to_pairs(slf: &Bound<'_, Self>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         if !matches!(slf.borrow().values, GroupsValues::Int64(_)) {
             return Err(PyTypeError::new_err(
                 "to_pairs is only available for integer Groups",
@@ -842,8 +838,8 @@ impl Groups {
     /// Returns
     /// -------
     /// iterator
-    fn __iter__(slf: PyRef<'_, Self>) -> GroupsIter {
-        GroupsIter::new((*slf).clone(), false)
+    fn __iter__(&self) -> GroupsIter {
+        GroupsIter::new((*self).clone(), false)
     }
 
     /// Iterate row groups in reverse order.
@@ -851,8 +847,8 @@ impl Groups {
     /// Returns
     /// -------
     /// iterator
-    fn __reversed__(slf: PyRef<'_, Self>) -> GroupsIter {
-        GroupsIter::new((*slf).clone(), true)
+    fn __reversed__(&self) -> GroupsIter {
+        GroupsIter::new((*self).clone(), true)
     }
 
     /// Select groups by integer or slice.
@@ -864,7 +860,7 @@ impl Groups {
     /// Returns
     /// -------
     /// Group values, None, or Groups
-    fn __getitem__(slf: Bound<'_, Self>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    fn __getitem__(slf: &Bound<'_, Self>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let parsed = {
             let this = slf.borrow();
             parse_row_index_or_slice(index, this.rows.len(), Self::LABEL)?
@@ -1280,6 +1276,10 @@ pub(crate) fn _unpickle_int64_groups_v1(
     clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 owns the pickled array handle while this entry point borrows it for reconstruction"
+)]
 #[pyfunction]
 #[pyo3(signature = (values, offsets, missing = None))]
 pub(crate) fn _unpickle_geometry_groups_v1(
@@ -1297,6 +1297,10 @@ pub(crate) fn _unpickle_geometry_groups_v1(
 #[expect(
     clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 owns the pickled array handle while this entry point borrows it for reconstruction"
 )]
 #[pyfunction]
 #[pyo3(signature = (values, offsets, missing = None))]

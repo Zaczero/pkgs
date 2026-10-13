@@ -189,6 +189,10 @@ impl PyTile {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     fn zoom(&self) -> u8 {
         self.cell.depth()
     }
@@ -200,6 +204,10 @@ impl PyTile {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     fn id(&self) -> u64 {
         self.cell.id()
     }
@@ -210,6 +218,10 @@ impl PyTile {
     /// -------
     /// str
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     fn token(&self) -> String {
         self.cell.token()
     }
@@ -220,6 +232,10 @@ impl PyTile {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     const fn x(&self) -> u32 {
         self.cell.x
     }
@@ -230,6 +246,10 @@ impl PyTile {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     const fn y(&self) -> u32 {
         self.cell.y
     }
@@ -240,6 +260,10 @@ impl PyTile {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 exposes this immutable tile cell property through a borrowed receiver"
+    )]
     fn morton(&self) -> u64 {
         morton_interleave(self.cell.x, self.cell.y)
     }

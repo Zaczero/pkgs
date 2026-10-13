@@ -4,7 +4,7 @@ use super::*;
 #[cfg(test)]
 mod work_funded_constructor_tests {
     use super::*;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::test_support::RecordingWork;
 
     fn search_limit(error: &crate::error::Error) -> bool {

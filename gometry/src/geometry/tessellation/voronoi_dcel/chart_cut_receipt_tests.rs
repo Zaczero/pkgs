@@ -1,4 +1,5 @@
-use super::{chart_vertex_origins, exact, retained_site_longitude};
+use super::{chart_vertex_origins, exact};
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 use crate::geometry::tessellation::{
     VoronoiChartCutSide, VoronoiDiagramReceipt, VoronoiProducer, VoronoiVertexOrigin,
 };
@@ -233,6 +234,10 @@ fn empty_envelope_receipt_has_no_selected_chart_cut() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn chart_cut_origins_follow_selected_longitudes_and_retain_poles() {
     let frame = crate::geographic::GeographicFrame::crs84();
     let chart = crate::geographic::PointSelectionChart::try_from_points(frame, &[

@@ -106,7 +106,7 @@ pub(crate) fn crs_catalog(
     py: Python<'_>,
     name: Option<&str>,
     authority: Option<&str>,
-    kind: Option<String>,
+    kind: Option<&str>,
     area_of_interest: Option<&Bound<'_, PyAny>>,
     contains_area_of_interest: bool,
     allow_deprecated: bool,
@@ -134,7 +134,6 @@ pub(crate) fn crs_catalog(
         })
         .transpose()?;
     let kind = kind
-        .as_deref()
         .map(|kind| crs::CrsObjectKind::parse_crs(Some(kind)))
         .transpose()?;
     let options = crs::CrsCatalogOptions {

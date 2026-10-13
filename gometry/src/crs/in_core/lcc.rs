@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Ellipsoidal Lambert Conformal Conic (EPSG methods 9801/9802).
 
 use crate::crs::in_core::adjlon;

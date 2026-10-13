@@ -4,12 +4,6 @@
 //! that representation for tessellation so topology decisions and shared
 //! constructed vertices never depend on a lossy coordinate frame.
 
-#![expect(
-    clippy::missing_const_for_fn,
-    clippy::useless_conversion,
-    reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"
-)]
-
 use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -184,14 +178,14 @@ impl ExactRational {
         Ok(rational_exponent(self) == rational_exponent(other))
     }
 
-    pub(crate) fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self {
             numerator: ExactDyadic::zero(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(crate) fn one() -> Self {
+    pub(crate) const fn one() -> Self {
         Self {
             numerator: ExactDyadic::one(),
             denominator: ExactDyadic::one(),
@@ -212,7 +206,7 @@ impl ExactRational {
         }
     }
 
-    pub(crate) fn is_zero(&self) -> bool {
+    pub(crate) const fn is_zero(&self) -> bool {
         self.numerator.is_zero()
     }
 
@@ -224,7 +218,7 @@ impl ExactRational {
         self.denominator.is_one() && (self.numerator.is_zero() || self.numerator.exponent >= 0)
     }
 
-    pub(crate) fn sign(&self) -> ExactSign {
+    pub(crate) const fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 
@@ -392,7 +386,7 @@ impl ExactRational {
         left.cmp_with_work(&right, work)
     }
 
-    pub(crate) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
+    pub(crate) const fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
         (&self.numerator, &self.denominator)
     }
 

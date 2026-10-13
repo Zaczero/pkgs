@@ -242,10 +242,10 @@ impl StaticStrTree {
         out: &mut Vec<usize>,
     ) {
         self.descend(
-            |envelope| distance_2(envelope, &point) <= max_distance_2,
+            |envelope| distance_2(envelope, point) <= max_distance_2,
             |entries| {
                 append_live(entries, live, out, |entry| {
-                    distance_2(&entry.envelope, &point) <= max_distance_2
+                    distance_2(&entry.envelope, point) <= max_distance_2
                 });
             },
         );
@@ -321,7 +321,7 @@ fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
         && left_upper[1] >= right_lower[1]
 }
 
-fn distance_2(envelope: &AABB<[f64; 2]>, point: &[f64; 2]) -> f64 {
+fn distance_2(envelope: &AABB<[f64; 2]>, point: [f64; 2]) -> f64 {
     let lower = envelope.lower();
     let upper = envelope.upper();
     let dx = if point[0] < lower[0] {
@@ -976,7 +976,7 @@ mod tests {
             let mut expected: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
-                    live.contains(entry.idx) && distance_2(&entry.envelope, &point) <= radius_2
+                    live.contains(entry.idx) && distance_2(&entry.envelope, point) <= radius_2
                 })
                 .map(|entry| entry.idx)
                 .collect();

@@ -118,6 +118,10 @@ fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
 /// Implying both poles under `Auto` means the winding was inverted, so the
 /// original segments come back reversed. Returns the segments and whether any
 /// pole closure was applied.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 pub(super) fn extend_over_poles(
     mut segments: Vec<Vec<Point>>,
     closure: PoleClosure,
@@ -220,6 +224,10 @@ pub(super) fn extend_over_poles(
     Ok((segments, capped))
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn is_self_closing(segment: &[Point]) -> bool {
     let start = *segment.first().expect("segments are non-empty");
     let end = *segment.last().expect("segments are non-empty");
@@ -230,6 +238,10 @@ fn is_self_closing(segment: &[Point]) -> bool {
 /// Build polygons iteratively: pop a segment, find the closest seam start
 /// toward the pole on the same side (including the donut clause), join and
 /// repeat; a segment with no candidate closes on itself.
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
     let mut rings = Vec::new();
     while let Some(mut segment) = segments.pop() {

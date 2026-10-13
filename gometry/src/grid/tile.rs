@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! XYZ web-mercator tiles: the slippy-map `z/x/y` addressing scheme.
 //!
 //! A `Tile` is `(z, x, y)` with mercantile-compatible math; the packed

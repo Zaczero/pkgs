@@ -1,7 +1,3 @@
-#![expect(
-    clippy::many_single_char_names,
-    reason = "EPSG Gauss-sphere equations use conventional C, K, R, and e notation"
-)]
 //! Ellipsoidal double oblique stereographic (EPSG method 9809).
 
 use crate::crs::in_core::adjlon;
