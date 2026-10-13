@@ -5,7 +5,10 @@ fn rotate(ring: &[(f64, f64)], offset: usize) -> Vec<(f64, f64)> {
     let (_, open) = ring
         .split_last()
         .expect("the ring corpus stores an explicit closure");
-    let offset = offset % open.len();
+    if open.is_empty() {
+        return Vec::new();
+    }
+    let offset = offset.checked_rem(open.len()).unwrap_or(0);
     let mut rotated = open
         .iter()
         .cycle()
@@ -106,7 +109,7 @@ fn ring_group(row: &RingRow) -> u8 {
     if row.name.contains("lat80") {
         u8::from(!first_cap)
     } else if row.name.contains("lat-80") {
-        2 + u8::from(!first_cap)
+        if first_cap { 2 } else { 3 }
     } else if row.name.starts_with("band") {
         4
     } else if row.periodic {

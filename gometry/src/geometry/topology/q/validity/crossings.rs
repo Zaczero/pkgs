@@ -18,9 +18,12 @@ pub(super) fn crossing_issues(
             .outgoing_offsets
             .get(node_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no fan start".into()))?;
+        let end_index = node_index
+            .checked_add(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q node fan-end index overflows".into()))?;
         let end = *q
             .outgoing_offsets
-            .get(node_index + 1)
+            .get(end_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no fan end".into()))?;
         if end.saturating_sub(start) < 4 {
             continue;
@@ -29,7 +32,8 @@ pub(super) fn crossing_issues(
             q.nodes.get(node_index).map(|node| node.id).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q node fan has no node record".into())
             })?;
-        let mut rings_by_ray = Vec::<BTreeSet<SourceRingId>>::with_capacity(end - start);
+        let mut rings_by_ray =
+            Vec::<BTreeSet<SourceRingId>>::with_capacity(end.saturating_sub(start));
         let mut all_rings = BTreeSet::new();
         for dart_id in q.outgoing.get(start..end).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q node fan has an invalid dart range".into())
