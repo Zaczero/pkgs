@@ -4,11 +4,6 @@
 //! that representation for tessellation so topology decisions and shared
 //! constructed vertices never depend on a lossy coordinate frame.
 
-#![expect(
-    clippy::useless_conversion,
-    reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"
-)]
-
 use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};

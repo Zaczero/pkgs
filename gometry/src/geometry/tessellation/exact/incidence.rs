@@ -127,8 +127,7 @@ pub(in crate::geometry::tessellation) fn angle_ccw_cmp(
             ExactSign::Negative => Ok(Ordering::Greater),
             ExactSign::Zero => Err(GeometryErrorKind::voronoi(
                 "exact angular tie proves an un-noded overlap or T-junction",
-            )
-            .into()),
+            )),
         },
     }
 }
@@ -179,7 +178,9 @@ where
 {
     let open_cycle = open_cycle.into_iter();
     if open_cycle.len() < 3 {
-        return Err(GeometryErrorKind::voronoi("exact cycle has fewer than three vertices").into());
+        return Err(GeometryErrorKind::voronoi(
+            "exact cycle has fewer than three vertices",
+        ));
     }
     if let Some(sign) = cycle_orientation_filtered(open_cycle.clone()) {
         if VERIFY_INTERVALS {
@@ -187,8 +188,7 @@ where
             if sign != exact {
                 return Err(GeometryErrorKind::voronoi(
                     "filtered cycle orientation disagrees with exact orientation",
-                )
-                .into());
+                ));
             }
         }
         return Ok(sign);
@@ -215,9 +215,9 @@ fn cycle_orientation_exact<'a>(
         denominator = denominator.try_product(&term_d)?;
     }
     match numerator.sign() {
-        ExactSign::Zero => {
-            Err(GeometryErrorKind::voronoi("exact cycle has zero orientation").into())
-        },
+        ExactSign::Zero => Err(GeometryErrorKind::voronoi(
+            "exact cycle has zero orientation",
+        )),
         sign @ (ExactSign::Negative | ExactSign::Positive) => {
             Ok(sign.weighted_by(denominator.sign()))
         },
