@@ -183,7 +183,26 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
 
     let source_points = source_point_coordinates(&topology)?;
     let nearest = QCoordinates::build(&topology)?;
-    let embedding = resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, "polygonize")?;
+    let operation = "polygonize";
+    let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
+        axes.union(shape.axes())
+    });
+    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
+    let mut budget = EvaluationBudget::new(operation, 0)?;
+    let mut preparation_work = EvaluationOnly::new(&mut budget);
+    let mut expansion_budget = ExpansionBudget::new(operation, "computed edges");
+    let embedding = resolve_q_embedding(
+        &topology,
+        &plan,
+        &source_points,
+        &nearest,
+        declared_axes,
+        false,
+        operation,
+        metric_access,
+        &mut expansion_budget,
+        &mut preparation_work,
+    )?;
     let super::super::emission::SealedQDrawing::Native(native) = embedding.sealed else {
         panic!("the forced native polygonize plan produces a native drawing");
     };

@@ -9,10 +9,10 @@ use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, FullTurnPole, GeographicFrame, Latitude};
 use crate::geometry::area::{AreaSign, exact_ring_area_sign_columns};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
     SourceArcMetricAccess, resolve_request_rows, resolve_source_root,

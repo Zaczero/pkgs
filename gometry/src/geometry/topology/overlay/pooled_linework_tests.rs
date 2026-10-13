@@ -80,6 +80,10 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn polygonize_full_does_not_diagnose_a_span_used_by_a_selected_face() -> Result<()> {
     let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
     let shared_boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0)")?;
@@ -96,6 +100,10 @@ fn polygonize_full_does_not_diagnose_a_span_used_by_a_selected_face() -> Result<
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_polygonize_full_source_dangle_keeps_its_own_axes() -> Result<()> {
     let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
     let dangle = crate::io::parse_wkt("LINESTRING ZM (20 0 1 10, 20 1 2 20)")?;

@@ -43,6 +43,8 @@ pub(in crate::geometry::topology) struct QDiagnosticLineTag {
     pub(in crate::geometry::topology) axes: CoordinateAxes,
 }
 
+pub(in crate::geometry::topology) type QDiagnosticLineTags = Vec<(usize, QDiagnosticLineTag)>;
+
 #[derive(Clone)]
 pub(in crate::geometry::topology) struct QDiagnosticLine {
     pub(in crate::geometry::topology) tag: QDiagnosticLineTag,
@@ -188,7 +190,7 @@ pub(in crate::geometry::topology) enum DrawnAreaOrigin {
 pub(in crate::geometry::topology) struct QEmissionDrawing<'topology> {
     pub(in crate::geometry::topology) polygons: DrawnPolygons<'topology>,
     pub(in crate::geometry::topology) lines: Vec<DrawnQLine<'topology>>,
-    pub(in crate::geometry::topology) diagnostic_line_tags: Vec<(usize, QDiagnosticLineTag)>,
+    pub(in crate::geometry::topology) diagnostic_line_tags: QDiagnosticLineTags,
     pub(in crate::geometry::topology) points: Vec<EmittedVertex<'topology>>,
 }
 

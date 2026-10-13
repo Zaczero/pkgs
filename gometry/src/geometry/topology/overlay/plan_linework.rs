@@ -143,8 +143,13 @@ impl QEmissionPlan {
     ) -> Result<Self> {
         let q = &topology.q;
         let selection = minimal_face_selection(topology, work)?;
-        let selected_faces =
-            even_odd_face_selection(topology, &selection.cycles, &selection.cycle_roles, work)?;
+        let selected_faces = even_odd_face_selection(
+            topology,
+            &selection.cycles,
+            &selection.cycle_roles,
+            selection.exterior_face,
+            work,
+        )?;
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
         work.charge_into_error(

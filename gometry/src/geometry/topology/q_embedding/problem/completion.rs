@@ -13,7 +13,6 @@ use super::super::{
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::topology::emission::plan::QDiagnosticLine;
 use crate::work::Work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {

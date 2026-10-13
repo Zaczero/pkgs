@@ -3,9 +3,7 @@ use super::super::q::QPortId;
 use super::ordinates::{
     source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
 };
-use super::plan::{
-    DrawnPolygons, QDiagnosticLine, QDiagnosticLineTag, QEmissionDrawing, QLineOrigin,
-};
+use super::plan::{DrawnPolygons, QDiagnosticLine, QEmissionDrawing, QLineOrigin};
 use super::sites::EmittedVertex;
 use super::source_publication::SourcePublication;
 use super::{
@@ -511,22 +509,21 @@ pub(in crate::geometry::topology) fn write_drawing(
     let mut lines = Vec::with_capacity(drawing.lines.len());
     let mut line_locations = Vec::with_capacity(drawing.lines.len());
     let mut diagnostic_lines = Vec::new();
-    let mut diagnostic_tag_index = 0;
+    let mut diagnostic_tags = drawing.diagnostic_line_tags.iter().peekable();
     for (line_index, line) in drawing.lines.iter().enumerate() {
         let output = u32::try_from(line_index).map_err(|_| ResourceError::SizeOverflow)?;
-        let diagnostic_tag = match drawing.diagnostic_line_tags.get(diagnostic_tag_index) {
-            Some((tagged_line, tag)) if *tagged_line == line_index => {
-                diagnostic_tag_index += 1;
-                Some(*tag)
-            },
-            Some((tagged_line, _)) if *tagged_line < line_index => {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q diagnostic source tags are not ordered with their emitted lines".into(),
-                )
-                .into());
-            },
-            _ => None,
-        };
+        let diagnostic_tag = diagnostic_tags
+            .next_if(|(tagged_line, _)| *tagged_line == line_index)
+            .map(|(_, tag)| *tag);
+        if diagnostic_tags
+            .peek()
+            .is_some_and(|(tagged_line, _)| *tagged_line < line_index)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "Q diagnostic source tags are not ordered with their emitted lines".into(),
+            )
+            .into());
+        }
         if matches!(line.origin, QLineOrigin::Diagnostic(_)) != diagnostic_tag.is_some() {
             return Err(GeometryErrorKind::Invalid(
                 "Q diagnostic source tags do not match their emitted lines".into(),
@@ -567,7 +564,7 @@ pub(in crate::geometry::topology) fn write_drawing(
         lines.push(coordinates);
         line_locations.push(locations);
     }
-    if diagnostic_tag_index != drawing.diagnostic_line_tags.len() {
+    if diagnostic_tags.peek().is_some() {
         return Err(GeometryErrorKind::Invalid(
             "Q diagnostic source tags have no emitted line".into(),
         )
@@ -608,12 +605,12 @@ pub(in crate::geometry::topology) fn write_drawing(
         points,
         lines,
         polygons,
-        diagnostic_lines,
         layout: ShapeLiteralLayout {
             points: point_locations,
             lines: line_locations,
             polygons: polygon_locations,
         },
+        diagnostic_lines,
     })
 }
 pub(in crate::geometry::topology) fn identity_output_order(

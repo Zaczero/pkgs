@@ -240,9 +240,7 @@ pub(crate) use coverage::{
     coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
     coverage_union_topo,
 };
-pub(in crate::geometry) use coverage::{
-    TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
-};
+pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 #[cfg(test)]
 pub(crate) use coverage::{coverage_invalid_edges, coverage_invalid_edges_geographic_analysis};
 use distance::line_length_3d;

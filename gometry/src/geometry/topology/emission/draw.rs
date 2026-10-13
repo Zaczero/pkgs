@@ -3,8 +3,8 @@ use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
 use super::line_paths::boundary_owner_index;
 use super::plan::{
     BoundaryCycle, DrawnAreaOrigin, DrawnAreaRing, DrawnPolygons, DrawnQLine, DrawnSourceRing,
-    PlannedAreaRing, PlannedQLine, PolygonPlan, QDiagnosticLineTag, QEmissionDrawing, QLineOrigin,
-    QLinePrimitive, SpanEndpoint,
+    PlannedAreaRing, PlannedQLine, PolygonPlan, QDiagnosticLineTag, QDiagnosticLineTags,
+    QEmissionDrawing, QLineOrigin, QLinePrimitive, SpanEndpoint,
 };
 use super::sites::{
     EmittedNodeKey, EmittedVertex, QCoordinates, emitted_node_key, for_each_q_cycle_vertex,
@@ -156,7 +156,7 @@ pub(in crate::geometry::topology) fn draw_lines<'topology>(
     paths: &[PlannedQLine],
     coordinates: &QCoordinates,
     work: &mut impl Work,
-) -> Result<(Vec<DrawnQLine<'topology>>, Vec<(usize, QDiagnosticLineTag)>)> {
+) -> Result<(Vec<DrawnQLine<'topology>>, QDiagnosticLineTags)> {
     let q = &topology.q;
     let mut output = Vec::new();
     let mut diagnostic_line_tags = Vec::new();

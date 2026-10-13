@@ -4,7 +4,7 @@ use super::super::{
     NativePortData, NativeReferenceGraph, NativeSeamEventData, RootRange,
 };
 use crate::geometry::topology::emission::SourceTrace;
-use crate::geometry::topology::emission::plan::QDiagnosticLineTag;
+use crate::geometry::topology::emission::plan::QDiagnosticLineTags;
 
 #[derive(Default)]
 pub(in crate::geometry::topology::q_embedding) struct NativeLineRun {
@@ -48,8 +48,7 @@ pub(in crate::geometry::topology::q_embedding) struct NativeReference<'topology>
     pub(in crate::geometry::topology::q_embedding) feature_nodes: Vec<EmissionNodeId>,
     pub(in crate::geometry::topology::q_embedding) publication_sample_nodes: Vec<EmissionNodeId>,
     pub(in crate::geometry::topology::q_embedding) line_traces: Vec<SourceTrace>,
-    pub(in crate::geometry::topology::q_embedding) diagnostic_line_tags:
-        Vec<(usize, QDiagnosticLineTag)>,
+    pub(in crate::geometry::topology::q_embedding) diagnostic_line_tags: QDiagnosticLineTags,
     pub(in crate::geometry::topology::q_embedding) literal_chord_uses: Vec<NativeLiteralChordUse>,
     pub(in crate::geometry::topology::q_embedding) line_graph_edges: Vec<NativeAreaEdge>,
     pub(in crate::geometry::topology::q_embedding) area_edges: Vec<NativeAreaEdge>,

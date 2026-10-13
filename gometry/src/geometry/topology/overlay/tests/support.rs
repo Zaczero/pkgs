@@ -79,7 +79,7 @@ fn source_sink<'topology>(
         lines,
         polygons,
         layout,
-        diagnostic_lines: _,
+        ..
     } = write_drawing(
         drawing,
         &ring_roles,
