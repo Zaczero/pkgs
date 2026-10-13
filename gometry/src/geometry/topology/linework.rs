@@ -1,19 +1,13 @@
 //! Geographic linework selection over one exact quotient chart.
 use std::collections::VecDeque;
 
+use super::emission::plan::DiagnosticKind;
 use super::exact::SourceRowId;
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, Work};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DiagnosticKind {
-    Cut,
-    Dangle,
-    InvalidRing,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NodedSpan {
@@ -132,7 +126,7 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        let (is_hole, named_pole) = super::q_embedding::exact_q_ring_role_for_linework(
+        let (is_hole, named_pole) = super::emission::ring_roles::exact_q_ring_role_for_linework(
             topology.sources.frame,
             &points,
             work,
@@ -730,8 +724,10 @@ mod tests {
     use super::*;
     use crate::geographic::{GeographicFrame, GeographicInputs};
     use crate::geometry::topology::emission::RecipeWalkOwner;
+    use crate::geometry::topology::emission::plan::{
+        PolygonPlan, QEmissionPlan, QLineOrigin, QProducer,
+    };
     use crate::geometry::topology::exact::{SourceEdgeId, SourceEdgeKind};
-    use crate::geometry::topology::overlay::{PolygonPlan, QEmissionPlan, QLineOrigin, QProducer};
     use crate::geometry::{Shape, Unmetered};
 
     fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
