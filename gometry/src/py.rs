@@ -1,8 +1,3 @@
-#![expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "PyO3 extractors and method signatures intentionally follow Python ownership and call shapes"
-)]
-
 mod methods;
 
 pub(crate) mod arrow;
