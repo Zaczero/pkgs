@@ -6,7 +6,15 @@ use super::exact::{
     compare_quotient_keys, compare_quotient_keys_with_work, quotient_key_for_chart_position,
     quotient_key_for_chart_position_with_work,
 };
-use super::overlay::QEmissionPlan;
+pub(in crate::geometry::topology) mod cut_ports;
+pub(in crate::geometry::topology) mod ordinates;
+pub(in crate::geometry::topology) mod plan;
+pub(in crate::geometry::topology) mod prepare;
+pub(in crate::geometry::topology) mod sites;
+pub(in crate::geometry::topology) mod source_publication;
+pub(in crate::geometry::topology) mod source_reuse;
+
+use self::plan::QEmissionPlan;
 use super::q::{
     CanonicalQNodeKey, ChartSpan, ChartSpanId, ExactGeographicTopology, GlobalFaceId, QDartId,
     QNodeId, QPortId,
@@ -3712,7 +3720,7 @@ impl FragmentRecipes {
     pub(super) fn publish(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &super::q_embedding::QCoordinates,
+        coordinates: &sites::QCoordinates,
         operation: &'static str,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {
@@ -3723,7 +3731,7 @@ impl FragmentRecipes {
     pub(super) fn publish_with_expansion_budget(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &super::q_embedding::QCoordinates,
+        coordinates: &sites::QCoordinates,
         budget: &mut ExpansionBudget,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {
@@ -5492,7 +5500,7 @@ mod tests {
             exact_displacement: displacement,
             use_kind: SelectedUse::Curve,
         };
-        let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
+        let coordinates = super::super::emission::sites::QCoordinates::build(&topology).unwrap();
         let recipes = FragmentRecipes {
             values: vec![recipe],
             walks: Vec::new(),
@@ -7412,7 +7420,7 @@ mod tests {
             values: vec![recipe],
             walks: Vec::new(),
         };
-        let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
+        let coordinates = super::super::emission::sites::QCoordinates::build(&topology).unwrap();
         let mut work = Unmetered;
         let publication = recipes
             .publish(&topology, &coordinates, "source trace test", &mut work)

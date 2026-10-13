@@ -650,8 +650,10 @@ mod tests {
     use super::*;
     use crate::geographic::{GeographicFrame, GeographicInputs};
     use crate::geometry::topology::emission::RecipeWalkOwner;
+    use crate::geometry::topology::emission::plan::{
+        PolygonPlan, QEmissionPlan, QLineOrigin, QProducer,
+    };
     use crate::geometry::topology::exact::{SourceEdgeId, SourceEdgeKind};
-    use crate::geometry::topology::overlay::{PolygonPlan, QEmissionPlan, QLineOrigin, QProducer};
     use crate::geometry::{Shape, Unmetered};
 
     fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {

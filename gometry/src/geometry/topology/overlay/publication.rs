@@ -1,8 +1,9 @@
+use super::super::emission::plan::QEmissionPlan;
+use super::super::emission::sites::QCoordinates;
 use super::{
     CertifiedQEmission, CoordinateAxes, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
-    ExpansionBudget, OverlayOp, QCoordinates, QEmissionPlan, Result, SealedQDrawing, Shape,
-    SourceArcMetricAccess, finish_certified_q_emission, resolve_q_embedding,
-    source_point_coordinates_with_work,
+    ExpansionBudget, OverlayOp, Result, SealedQDrawing, Shape, SourceArcMetricAccess,
+    finish_certified_q_emission, resolve_q_embedding, source_point_coordinates_with_work,
 };
 use crate::geometry::publication::PendingPublicationRow;
 
