@@ -7,7 +7,7 @@ use super::regions::{GeographicCoverageBoundaryCycle, GeographicCoverageRootUse}
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geographic::{ChartPole, GeographicFrame, Latitude};
+use crate::geographic::{ChartPole, FullTurnPole, GeographicFrame, Latitude};
 use crate::geometry::area::{AreaSign, exact_ring_area_sign_columns};
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
@@ -200,7 +200,7 @@ impl GeographicCoverageAnalysis {
                     let mut cycles = region.cycles.iter().collect::<Vec<_>>();
                     cycles.sort_unstable_by_key(|cycle| cycle.cycle_index);
                     for cycle in cycles {
-                        let mut ring = output_ring(
+                        let ring = output_ring(
                             plans.topology,
                             cycle,
                             region.poles,
@@ -209,18 +209,6 @@ impl GeographicCoverageAnalysis {
                             &live_spans,
                             work,
                         )?;
-                        if !ring.hole {
-                            let pole = if region.poles.includes(ChartPole::North) {
-                                Some(ChartPole::North)
-                            } else if region.poles.includes(ChartPole::South) {
-                                Some(ChartPole::South)
-                            } else {
-                                None
-                            };
-                            if let Some(pole) = pole {
-                                close_full_turn_at_pole(&mut ring.vertices, pole, frame);
-                            }
-                        }
                         if ring.hole {
                             holes.push(ring);
                         } else {
@@ -490,6 +478,8 @@ fn output_ring(
     let mut last_port = first_port;
     let mut has_shell_source = false;
     let mut has_hole_source = false;
+    let mut source_north_pole = false;
+    let mut source_south_pole = false;
     for use_ in &cycle.uses {
         if !live_spans
             .get(use_.span.0 as usize)
@@ -532,11 +522,29 @@ fn output_ring(
                         "coverage boundary source root is outside its inventory".into(),
                     )
                 })?;
-            if let SourceEdgeKind::Ring { hole, .. } = edge.kind {
+            if let SourceEdgeKind::Ring { ring, hole, .. } = edge.kind {
                 if hole {
                     has_hole_source = true;
                 } else {
                     has_shell_source = true;
+                }
+                if root_use.emitted
+                    && let Some(FullTurnPole::Bounded(pole)) = topology
+                        .sources
+                        .rings
+                        .get(ring.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "coverage boundary source ring is outside its inventory".into(),
+                            )
+                        })?
+                        .summary
+                        .full_turn_pole()
+                {
+                    match pole {
+                        ChartPole::North => source_north_pole = true,
+                        ChartPole::South => source_south_pole = true,
+                    }
                 }
             }
         }
@@ -617,6 +625,16 @@ fn output_ring(
         )
         .into());
     }
+    let closure_pole = match (source_north_pole, source_south_pole) {
+        (true, false) => Some(ChartPole::North),
+        (false, true) => Some(ChartPole::South),
+        (false, false) | (true, true) => [ChartPole::North, ChartPole::South]
+            .into_iter()
+            .find(|&pole| poles.includes(pole)),
+    };
+    if let Some(pole) = closure_pole {
+        close_full_turn_at_pole(&mut vertices, &mut xs, &mut ys, pole, frame);
+    }
     let pole_boundary = poles.includes(ChartPole::North) || poles.includes(ChartPole::South);
     let hole = match (
         exact_ring_area_sign_columns(&xs, &ys, vertices.len().saturating_sub(1)),
@@ -676,38 +694,85 @@ fn whole_sphere_vertices(frame: GeographicFrame) -> Vec<OutputVertex> {
 
 fn close_full_turn_at_pole(
     vertices: &mut Vec<OutputVertex>,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
     pole: ChartPole,
     frame: GeographicFrame,
 ) {
+    let period = frame.longitude().period();
     let Some(first) = vertices.first().copied() else {
         return;
     };
     let Some(last) = vertices.get(vertices.len().saturating_sub(2)).copied() else {
         return;
     };
-    if !same_topological_coordinate(
-        (last.point.x - first.point.x).abs(),
-        frame.longitude().period(),
-    ) {
-        return;
+    if !same_topological_coordinate((last.point.x - first.point.x).abs(), period) {
+        let ring_len = vertices.len().saturating_sub(1);
+        let seam_start = (1..ring_len).find(|&start| {
+            let previous = start.saturating_sub(1);
+            vertices
+                .get(previous)
+                .zip(vertices.get(start))
+                .is_some_and(|(before, after)| {
+                    before.node.is_some()
+                        && before.node == after.node
+                        && before.point.y.to_bits() == after.point.y.to_bits()
+                        && same_topological_coordinate(
+                            (after.point.x - before.point.x).abs(),
+                            period,
+                        )
+                })
+        });
+        let Some(seam_start) = seam_start else {
+            return;
+        };
+        vertices.truncate(ring_len);
+        xs.truncate(ring_len);
+        ys.truncate(ring_len);
+        vertices.rotate_left(seam_start);
+        xs.rotate_left(seam_start);
+        ys.rotate_left(seam_start);
+        let Some(first) = vertices.first().copied() else {
+            return;
+        };
+        vertices.push(first);
+        xs.push(first.point.x);
+        ys.push(first.point.y);
     }
 
+    let Some(first) = vertices.first().copied() else {
+        return;
+    };
+    let Some(last) = vertices.get(vertices.len().saturating_sub(2)).copied() else {
+        return;
+    };
+    if !same_topological_coordinate((last.point.x - first.point.x).abs(), period) {
+        return;
+    }
     let pole_y = frame.chart_pole_latitude(pole);
     // A closed source ring can wind a full longitude turn while its stored
     // endpoint aliases the start. The pole edge makes that winding explicit
     // to later geometry admission without assigning invented source ordinates.
     vertices.pop();
+    xs.pop();
+    ys.pop();
     vertices.push(OutputVertex {
         point: Point::new_raw_xy(last.point.x, pole_y),
         node: None,
         request_row: 0,
     });
+    xs.push(last.point.x);
+    ys.push(pole_y);
     vertices.push(OutputVertex {
         point: Point::new_raw_xy(first.point.x, pole_y),
         node: None,
         request_row: 0,
     });
+    xs.push(first.point.x);
+    ys.push(pole_y);
     vertices.push(first);
+    xs.push(first.point.x);
+    ys.push(first.point.y);
 }
 
 fn port_point(
