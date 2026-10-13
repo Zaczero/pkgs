@@ -10,25 +10,16 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use super::embedding::{Embedding, Emission};
-use super::rays::RayPoints;
-use super::{
-    ArealCells, Axis, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied,
-};
+use super::{ArealCells, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied};
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::graph::{GlobalFaces, RayAxis as Axis, RayPoints};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::contact::point_on_segment;
 use crate::geometry::segments::{stored_cross_sign, stored_orientation_sign};
 use crate::geometry::tessellation::exact::{ExactPoint, ExactRational};
-use crate::geometry::{
-    CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Unmetered, Work, XY, same_point,
-};
-
-pub(in crate::geometry) struct GlobalFaces {
-    pub(in crate::geometry) walk_faces: Vec<u32>,
-    pub(in crate::geometry) component_hosts: Vec<u32>,
-    pub(in crate::geometry) count: u32,
-}
+use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, XY, same_point};
+use crate::work::{Unmetered, Work};
 
 pub(super) struct CellFacts {
     pub(super) face_membership: Vec<bool>,

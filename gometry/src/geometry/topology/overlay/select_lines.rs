@@ -1,8 +1,9 @@
 use super::{
     AreaSupport, ExactGeographicTopology, GeometryErrorKind, OverlayOp, QNodeId, ResourceError,
-    Result, SelectedLineSpan, SourceRowId, Work, append_unique_rows, line_owner_index,
-    selects_support, try_sort_by_with_work,
+    Result, SelectedLineSpan, SourceRowId, append_unique_rows, line_owner_index, selects_support,
+    try_sort_by_with_work,
 };
+use crate::work::Work;
 
 #[expect(
     clippy::indexing_slicing,

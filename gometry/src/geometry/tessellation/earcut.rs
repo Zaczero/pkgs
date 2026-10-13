@@ -5,7 +5,7 @@
 use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::dedup_consecutive_points;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(test)]
 use crate::geometry::orientation_xy;
 use crate::geometry::{

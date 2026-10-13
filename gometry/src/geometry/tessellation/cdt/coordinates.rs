@@ -5,8 +5,9 @@ use rstar::AABB;
 use super::super::exact_delaunay::MeshCoordinates;
 use super::{CdtCoordinateModel, CdtCoordinates, CdtKey, CdtPosition, CdtQuery, opposite_nonzero};
 use crate::error::Result;
+use crate::geographic::retained_exact::sites::retained_site_longitude;
 use crate::geographic::{ChartPointSite, GeographicFrame, RetainedLongitudeSite};
-use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 

@@ -1,10 +1,11 @@
 use super::super::{
     BTreeMap, ChartMetric, ExactChartPoint, ExactRational, GeometryErrorKind,
     LocalPublicationChord, PublishedEndpoint, QCandidate, QEmbeddingProblem, QGraphNode, QNodeId,
-    QPortId, QPublicationChordId, QPublicationPair, Result, Work, assigned_port_point,
+    QPortId, QPublicationChordId, QPublicationPair, Result, assigned_port_point,
     candidate_chart_point_with_work, cut_intersection_y, pair_preserves_incidence_with_work,
     translated_exact_point_with_work,
 };
+use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
     fn local_candidate(

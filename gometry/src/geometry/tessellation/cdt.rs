@@ -29,7 +29,7 @@ use super::exact_delaunay::{FaceId, Located, Mesh};
 use super::{CdtRefinement, exact_delaunay};
 use crate::collections::HashMap;
 use crate::geographic::ChartPointSite;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::publication::DirectedChartRestrictionUse;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};

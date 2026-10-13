@@ -4,7 +4,7 @@
 use super::round_sqrt_ratio;
 use super::{ExactDyadic, ExactPoint, circumcenter, orient2d, same_xy, try_circle_contains};
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::{GeometryErrorKind, XY};
 
 struct ExactSupportCircle {

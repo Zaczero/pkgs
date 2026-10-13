@@ -184,11 +184,11 @@ pub(crate) fn publish_sampling_array(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::Unmetered;
     use crate::geometry::embedding_completion::{
         FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
+    use crate::work::Unmetered;
 
     validate_prepared_sampling(&prepared, prepared.logical_row)?;
     let output_count = prepared.draws.len();
@@ -242,11 +242,11 @@ pub(crate) fn publish_sampling_groups(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::Unmetered;
     use crate::geometry::embedding_completion::{
         FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
+    use crate::work::Unmetered;
 
     let output_count = rows.iter().try_fold(0_usize, |total, row| {
         total

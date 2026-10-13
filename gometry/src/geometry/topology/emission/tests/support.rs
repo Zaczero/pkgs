@@ -1,8 +1,9 @@
+use crate::work::Work;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use super::*;
-use crate::geometry::Unmetered;
+use crate::work::Unmetered;
 use crate::geometry::embedding_completion::{
     ExactPoints, LiteralRowAddress, admit_known_graph, visit_shape_literals,
 };
@@ -163,7 +164,7 @@ impl Work for RecordingWork {
     }
 
     fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-        self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+        self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
     }
 }
 

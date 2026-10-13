@@ -10,7 +10,7 @@ use crate::geometry::constructive::{
     WalkJoinRule, reset_walk_plan_construction_count, walk_plan_construction_count, winding_buffer,
     winding_erosion, winding_stroke,
 };
-use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::overlay::{partition_calls, reset_partition_calls};
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq,

@@ -2,8 +2,9 @@ use super::{
     AssignedSite, CoordSeq, CoordinateAxes, EmissionPortId, ExpandedEmissionPlan, FinishedGeometry,
     FrozenLiteralBuffers, GeometryErrorKind, LiteralPoint, LiteralPolygon, LiteralSequence,
     NodeOrdinates, Point, Polygon, QPortId, ResourceError, Result, Ring, Shape, ShapeLiteralLayout,
-    SourceEdgeId, Work, native_chord_points, native_port_point,
+    SourceEdgeId, native_chord_points, native_port_point,
 };
+use crate::work::Work;
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
 }

@@ -1,9 +1,9 @@
 use super::ChartEdge;
 use crate::error::Result;
-use crate::geometry::exact_arith::{
+use crate::geographic::retained_exact::edges::{
     retained_source_interval_initial_piece_count, retained_source_interval_reads_as,
-    retained_source_sheet_site,
 };
+use crate::geographic::retained_exact::sites::retained_source_sheet_site;
 use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{GeometryErrorKind, Point, Segment, SegmentProjection, XY};
 

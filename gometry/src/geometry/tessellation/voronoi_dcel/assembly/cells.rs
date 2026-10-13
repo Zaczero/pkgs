@@ -5,10 +5,11 @@ use super::update_owner_local_work;
 use super::{
     BoundaryFaceId, EdgeId, ExactCellPart, ExactSign, ExactSimpleRing, ExactSubdivision,
     IndexedTopology, IndexedTopologyScratch, NodedExactCycle, OwnerCycleContainment,
-    OwnerRayPoints, OwnerShellPosition, RayAxis, RayPoints as _, Result, SiteId, VertexId, exact,
-    inverse_edge_slots, selected_cell_label, shoot_left, split_boundary_face, try_sort_by,
-    validate_assembled_exact_cycles, validate_owner_cycle_facts, voronoi_error, walk_label,
+    OwnerRayPoints, OwnerShellPosition, Result, SiteId, VertexId, exact, inverse_edge_slots,
+    selected_cell_label, split_boundary_face, try_sort_by, validate_assembled_exact_cycles,
+    validate_owner_cycle_facts, voronoi_error, walk_label,
 };
+use crate::geometry::graph::{RayAxis, RayPoints as _, shoot_left};
 
 pub(in crate::geometry::tessellation::voronoi_dcel) struct OwnerLocalFaces {
     slots: Vec<u32>,

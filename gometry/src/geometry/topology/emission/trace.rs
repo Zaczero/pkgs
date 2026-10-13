@@ -1,8 +1,9 @@
 use super::{
     BTreeMap, ChartSpanId, ExactRational, FragmentRecipeId, GeometryErrorKind, OccurrenceSource,
     QPortId, RequestRowId, ResourceError, Result, RootId, RootRange, RootRequest, TraceRows,
-    TraceRowsBuilder, VertexOrigin, Work, try_sort_by_with_work,
+    TraceRowsBuilder, VertexOrigin, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 impl SourceTrace {
     pub(super) fn split_at_samples(

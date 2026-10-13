@@ -1,9 +1,10 @@
 //! Fallible stable ordering and adjacent deduplication for geometry work.
 
 use crate::error::Result;
-use crate::geometry::{Ordering, Unmetered, Work};
+use crate::geometry::Ordering;
 #[cfg(test)]
 use crate::geometry::{Segment, XY};
+use crate::work::{Unmetered, Work};
 
 /// Stable sort by a fallible comparison; the first error ends it. Runs of
 /// `RUN` items sort by insertion in place. Longer inputs merge those runs as

@@ -14,7 +14,7 @@ use super::{
     validate_owner_cycle_facts, voronoi_error, walk_label,
 };
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
-use crate::geometry::overlay::{RayAxis, RayPoints, shoot_left};
+use crate::geometry::graph::{RayAxis, RayPoints};
 
 mod cells;
 mod edges;
