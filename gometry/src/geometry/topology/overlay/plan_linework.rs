@@ -1,9 +1,9 @@
 use super::{
-    BoundaryCycle, ExactGeographicTopology, FaceUnion, LineStep, PlannedAreaRing, PolygonPlan,
-    QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer, RecipeWalkOwner, ResourceError, Result,
-    SpanEndpoint, build_fragment_recipes, diagnostic_line_paths, even_odd_face_selection,
-    face_regions, minimal_face_selection, noded_spans, selected_area_boundaries,
-    selected_face_roots, selected_region_facts,
+    BoundaryCycle, ExactGeographicTopology, FaceUnion, GeometryErrorKind, LineStep,
+    PlannedAreaRing, PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer,
+    RecipeWalkOwner, ResourceError, Result, SpanEndpoint, build_fragment_recipes,
+    diagnostic_line_paths, even_odd_face_selection, face_regions, minimal_face_selection,
+    noded_spans, selected_area_boundaries, selected_face_roots, selected_region_facts,
 };
 use crate::work::Work;
 
@@ -95,7 +95,28 @@ impl QEmissionPlan {
             region_count: q.global_face_count,
         };
         let line_paths = if diagnostics {
-            diagnostic_line_paths(topology, work)?
+            work.charge_into_error(
+                u64::try_from(q.spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let mut selected_boundary_spans = vec![false; q.spans.len()];
+            for cycle in &cycles {
+                for &dart_id in &cycle.darts {
+                    work.charge_into_error(1)?;
+                    let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "Q polygonize face cycle references an unknown dart".into(),
+                        )
+                    })?;
+                    *selected_boundary_spans
+                        .get_mut(dart.span.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q polygonize face cycle references an unknown span".into(),
+                            )
+                        })? = true;
+                }
+            }
+            diagnostic_line_paths(topology, &selected_boundary_spans, work)?
         } else {
             Vec::new()
         };

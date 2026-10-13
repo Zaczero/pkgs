@@ -1,3 +1,4 @@
+use super::plan::QDiagnosticLine;
 use super::{
     ChartSpan, CompletedNativeDrawing, DirectedSpan, ExactChartPoint, ExactGeographicTopology,
     ExactQuotientKey, ExactRational, ExactSourceRange, FeatureFamily, FinishedGeometry,
@@ -10,6 +11,7 @@ use crate::work::Work;
 
 pub(in crate::geometry::topology) struct SealedSourceDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 pub(in crate::geometry::topology) enum SealedQDrawing {

@@ -6,7 +6,7 @@ use super::{
     GeometryErrorKind, NodeOrdinates, PublicationInventory, QDartId, QNodeId, QPortId, RecipeWalk,
     RecipeWalkOwner, Result,
 };
-use crate::geometry::{HasM, HasZ};
+use crate::geometry::{CoordSeq, HasM, HasZ};
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +34,19 @@ pub(in crate::geometry::topology) enum QLineOrigin {
     ArealBoundary,
     Noded,
     Diagnostic(DiagnosticKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::geometry::topology) struct QDiagnosticLineTag {
+    pub(in crate::geometry::topology) kind: DiagnosticKind,
+    pub(in crate::geometry::topology) source_row: SourceRowId,
+    pub(in crate::geometry::topology) axes: CoordinateAxes,
+}
+
+#[derive(Clone)]
+pub(in crate::geometry::topology) struct QDiagnosticLine {
+    pub(in crate::geometry::topology) tag: QDiagnosticLineTag,
+    pub(in crate::geometry::topology) coordinates: CoordSeq,
 }
 
 pub(in crate::geometry::topology) struct QLinePrimitive<T> {
@@ -175,6 +188,7 @@ pub(in crate::geometry::topology) enum DrawnAreaOrigin {
 pub(in crate::geometry::topology) struct QEmissionDrawing<'topology> {
     pub(in crate::geometry::topology) polygons: DrawnPolygons<'topology>,
     pub(in crate::geometry::topology) lines: Vec<DrawnQLine<'topology>>,
+    pub(in crate::geometry::topology) diagnostic_line_tags: Vec<(usize, QDiagnosticLineTag)>,
     pub(in crate::geometry::topology) points: Vec<EmittedVertex<'topology>>,
 }
 

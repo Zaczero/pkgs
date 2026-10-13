@@ -13,6 +13,7 @@ use super::super::{
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::topology::emission::plan::QDiagnosticLine;
 use crate::work::Work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
@@ -85,7 +86,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             self.metric_access,
             budget,
         )?;
-        let parts = super::super::super::emission::materialize_native_parts(
+        let mut parts = super::super::super::emission::materialize_native_parts(
             &reference.plan,
             &assigned_sites,
             &ordinates,
@@ -102,6 +103,16 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         else {
             return Ok(None);
         };
+        let diagnostic_lines = super::super::super::emission::materialize_native_diagnostic_lines(
+            &reference.plan,
+            &assigned_sites,
+            &ordinates,
+            &parts.lines,
+            axes,
+            &reference.diagnostic_line_tags,
+            budget,
+        )?;
+        parts.diagnostic_lines = diagnostic_lines;
         let frozen = self
             .emission
             .plan
@@ -109,6 +120,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let super::super::super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
+            diagnostic_lines,
         } = frozen;
         if !std::ptr::eq(candidate.assignment.reference, reference) {
             return Err(GeometryErrorKind::Invalid(
@@ -183,7 +195,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 StorageTarget::Scalar,
             )? {
                 PublicationOutcome::Pass(sealed) => Ok(Some(
-                    super::super::super::emission::CompletedNativeDrawing { sealed },
+                    super::super::super::emission::CompletedNativeDrawing {
+                        sealed,
+                        diagnostic_lines,
+                    },
                 )),
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
                     Err(GeometryErrorKind::Invalid(
@@ -217,7 +232,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             StorageTarget::Scalar,
         )? {
             PublicationOutcome::Pass(sealed) => Ok(Some(
-                super::super::super::emission::CompletedNativeDrawing { sealed },
+                super::super::super::emission::CompletedNativeDrawing {
+                    sealed,
+                    diagnostic_lines,
+                },
             )),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
@@ -498,18 +516,21 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     ordinates: &publication_ordinates,
                     live_samples: &live_publication_samples,
                 };
+            let mut diagnostic_lines = Vec::new();
             let sealed = if self.emission.plan.producer.is_pooled_linework() {
-                let (shape, layout) = self.emission.plan.write_source_drawing_parts(
-                    drawing,
-                    ring_roles,
-                    &self.ordinates,
-                    Some(source_publication),
-                    Some(&producer_projection.source_ports),
-                    self.declared_axes,
-                    self.strict_axes,
-                    self.operation,
-                    budget,
-                )?;
+                let (shape, layout, source_diagnostic_lines) =
+                    self.emission.plan.write_source_drawing_parts(
+                        drawing,
+                        ring_roles,
+                        &self.ordinates,
+                        Some(source_publication),
+                        Some(&producer_projection.source_ports),
+                        self.declared_axes,
+                        self.strict_axes,
+                        self.operation,
+                        budget,
+                    )?;
+                diagnostic_lines = source_diagnostic_lines;
                 let ranges_by_port =
                     super::super::super::overlay::producer_drawing::source_root_ranges_by_q_port(
                         self.topology,
@@ -578,6 +599,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     self.operation,
                     budget,
                 )?;
+                diagnostic_lines.clone_from(&source.diagnostic_lines);
                 let receipt = SourceOnlyPublication {
                     source,
                     topology: self.topology,
@@ -660,7 +682,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     },
                 }
             };
-            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing { sealed })
+            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
+                sealed,
+                diagnostic_lines,
+            })
         };
         Ok(GlobalCheck::Pass(QEmbeddingOutput { sealed }))
     }

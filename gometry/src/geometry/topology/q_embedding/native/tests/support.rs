@@ -115,7 +115,10 @@ use crate::work::Work;
                 }
             },
         };
-        Ok(SourceFrozenDrawing { buffers })
+        Ok(SourceFrozenDrawing {
+            buffers,
+            diagnostic_lines: Vec::new(),
+        })
     }
 
     fn read_finished_point(
@@ -549,6 +552,7 @@ use crate::work::Work;
             feature_nodes: Vec::new(),
             publication_sample_nodes: vec![sample_node],
             line_traces: Vec::new(),
+            diagnostic_line_tags: Vec::new(),
             literal_chord_uses: Vec::new(),
             line_graph_edges: Vec::new(),
             area_edges: Vec::new(),

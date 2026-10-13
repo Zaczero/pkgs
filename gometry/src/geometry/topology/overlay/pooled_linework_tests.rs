@@ -81,6 +81,79 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
 }
 
 #[test]
+fn polygonize_full_does_not_diagnose_a_span_used_by_a_selected_face() -> Result<()> {
+    let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
+    let shared_boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0)")?;
+    let topology = topology(&[boundary, shared_boundary])?;
+    let mut work = Unmetered;
+    let plan = QEmissionPlan::build_polygonize(&topology, true, &mut work)?;
+
+    assert!(
+        !plan.cycles.is_empty(),
+        "the shared boundary encloses a face"
+    );
+    assert!(plan.line_paths.is_empty());
+    Ok(())
+}
+
+#[test]
+fn geographic_polygonize_full_source_dangle_keeps_its_own_axes() -> Result<()> {
+    let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
+    let dangle = crate::io::parse_wkt("LINESTRING ZM (20 0 1 10, 20 1 2 20)")?;
+    let frame = GeographicFrame::crs84();
+    let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            None,
+        );
+
+    let full = super::exact_geographic_polygonize_full_from_shapes(
+        &[&boundary, &dangle],
+        false,
+        &context,
+    )?;
+
+    assert_eq!(full.polygons.len(), 1);
+    assert_eq!(full.dangles.len(), 2);
+    assert!(full.dangles[0].is_empty());
+    let Some(Shape::LineString(line)) = full.dangles[1].first() else {
+        return Err(
+            GeometryErrorKind::Invalid("Q geographic source dangle is missing".into()).into(),
+        );
+    };
+    let coordinates = line.as_coords();
+    assert!(coordinates.axes().has_z());
+    assert!(coordinates.axes().has_m());
+    let mut points = coordinates
+        .iter()
+        .map(|point| {
+            (
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z().map(f64::to_bits),
+                point.m().map(f64::to_bits),
+            )
+        })
+        .collect::<Vec<_>>();
+    points.sort_unstable();
+    assert_eq!(points, [
+        (
+            20.0_f64.to_bits(),
+            0.0_f64.to_bits(),
+            Some(1.0_f64.to_bits()),
+            Some(10.0_f64.to_bits()),
+        ),
+        (
+            20.0_f64.to_bits(),
+            1.0_f64.to_bits(),
+            Some(2.0_f64.to_bits()),
+            Some(20.0_f64.to_bits()),
+        ),
+    ]);
+    Ok(())
+}
+
+#[test]
 fn geographic_q_node_and_build_area_bind_through_producer_drawing() -> Result<()> {
     let frame = GeographicFrame::crs84();
     let crossing = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;

@@ -1,7 +1,8 @@
 use super::super::exact::ExactSourceRing;
 use super::cut_ports::build_cut_node_ports;
 use super::plan::{
-    PlannedAreaRing, PolygonPlan, QEmbeddingEmission, QEmissionDrawing, QLineOrigin,
+    PlannedAreaRing, PolygonPlan, QDiagnosticLine, QEmbeddingEmission, QEmissionDrawing,
+    QLineOrigin,
 };
 use super::sites::EmittedVertex;
 use super::source_publication::SourcePublication;
@@ -304,7 +305,11 @@ impl QEmissionPlan {
         strict_axes: bool,
         operation: &'static str,
         work: &mut impl Work,
-    ) -> Result<(Shape, ShapeLiteralLayout<QSourceImage>)> {
+    ) -> Result<(
+        Shape,
+        ShapeLiteralLayout<QSourceImage>,
+        Vec<QDiagnosticLine>,
+    )> {
         let walks = publication
             .map(|_| index_recipe_walks(self.fragment_recipes.walks(), work))
             .transpose()?;
@@ -343,6 +348,7 @@ impl QEmissionPlan {
             lines,
             polygons,
             layout,
+            diagnostic_lines,
         } = write_drawing(
             drawing,
             ring_roles,
@@ -369,7 +375,7 @@ impl QEmissionPlan {
             })?;
             layout.in_output_order(&order, work)?
         };
-        Ok((shape, layout))
+        Ok((shape, layout, diagnostic_lines))
     }
 
     pub(in crate::geometry::topology) fn seal_source_drawing(
@@ -384,7 +390,7 @@ impl QEmissionPlan {
         operation: &'static str,
         work: &mut impl Work,
     ) -> Result<SourceFrozenDrawing> {
-        let (shape, layout) = self.write_source_drawing_parts(
+        let (shape, layout, diagnostic_lines) = self.write_source_drawing_parts(
             drawing,
             ring_roles,
             ordinates,
@@ -397,6 +403,7 @@ impl QEmissionPlan {
         )?;
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
+            diagnostic_lines,
         })
     }
     pub(in crate::geometry::topology) fn seal_native_parts(
@@ -412,6 +419,7 @@ impl QEmissionPlan {
             lines,
             polygons,
             literal_uses,
+            diagnostic_lines,
         } = parts;
         let (shape, order) = seal_output_parts(
             self,
@@ -430,6 +438,7 @@ impl QEmissionPlan {
         Ok(super::super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
+            diagnostic_lines,
         })
     }
 }

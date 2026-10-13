@@ -172,6 +172,68 @@ fn geographic_face_certificate_rejects_a_collision_free_neighbor_with_changed_ro
 }
 
 #[test]
+fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
+    let boundary = crate::io::parse_wkt("LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")?;
+    let dangle = crate::io::parse_wkt("LINESTRING ZM (5 0 1 10, 5 -3 2 20)")?;
+    let shapes = [boundary, dangle];
+    let topology = test_topology(&shapes);
+    let mut work = crate::work::Unmetered;
+    let mut plan = QEmissionPlan::build_polygonize(&topology, true, &mut work)?;
+    plan.force_native = true;
+
+    let source_points = source_point_coordinates(&topology)?;
+    let nearest = QCoordinates::build(&topology)?;
+    let embedding = resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, "polygonize")?;
+    let super::super::emission::SealedQDrawing::Native(native) = embedding.sealed else {
+        panic!("the forced native polygonize plan produces a native drawing");
+    };
+
+    assert_eq!(native.diagnostic_lines.len(), 1);
+    let diagnostic = native
+        .diagnostic_lines
+        .first()
+        .ok_or_else(|| GeometryErrorKind::Invalid("native Q dangle tag was lost".into()))?;
+    assert_eq!(
+        diagnostic.tag.kind,
+        super::super::emission::plan::DiagnosticKind::Dangle
+    );
+    assert_eq!(diagnostic.tag.source_row, SourceRowId(1));
+    assert!(diagnostic.coordinates.axes().has_z());
+    assert!(diagnostic.coordinates.axes().has_m());
+    let mut coordinates = diagnostic
+        .coordinates
+        .iter()
+        .map(|point| {
+            (
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z().map(f64::to_bits),
+                point.m().map(f64::to_bits),
+            )
+        })
+        .collect::<Vec<_>>();
+    coordinates.sort_unstable();
+    assert_eq!(
+        coordinates,
+        [
+            (
+                5.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                Some(1.0_f64.to_bits()),
+                Some(10.0_f64.to_bits()),
+            ),
+            (
+                5.0_f64.to_bits(),
+                (-3.0_f64).to_bits(),
+                Some(2.0_f64.to_bits()),
+                Some(20.0_f64.to_bits()),
+            ),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<()> {
     let shapes = [
         q_grid_parallelogram((30, -22), (-10, 27))?,

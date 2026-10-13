@@ -25,8 +25,9 @@ use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, GeometryErrorKind, MOrdinate, Point, Polygon, Ring,
-    Shape, Work, ZOrdinate, same_topological_coordinate,
+    Shape, ZOrdinate, same_topological_coordinate,
 };
+use crate::work::Work;
 
 struct RootParameter {
     root: RootId,

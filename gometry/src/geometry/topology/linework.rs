@@ -517,9 +517,16 @@ fn walk_minimal_face_boundaries(
 
 pub(super) fn diagnostic_spans(
     topology: &ExactGeographicTopology,
+    selected_boundary_spans: &[bool],
     work: &mut impl Work,
 ) -> Result<Vec<DiagnosticSpan>> {
     let q = &topology.q;
+    if selected_boundary_spans.len() != q.spans.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q diagnostic boundary mask does not match its span table".into(),
+        )
+        .into());
+    }
     work.charge_into_error(
         u64::try_from(
             q.spans
@@ -596,6 +603,15 @@ pub(super) fn diagnostic_spans(
     let mut output = Vec::new();
     for (span_index, span) in q.spans.iter().enumerate() {
         work.charge_into_error(1)?;
+        if selected_boundary_spans
+            .get(span_index)
+            .copied()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q diagnostic boundary mask has no span".into())
+            })?
+        {
+            continue;
+        }
         let kind = if span.owners.len() > 1 {
             Some(DiagnosticKind::InvalidRing)
         } else if dangles.get(span_index).copied().unwrap_or(false) {

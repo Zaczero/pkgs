@@ -526,17 +526,16 @@ pub(crate) fn polygonize_all(
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            let mut full = Shape::polygonize_full_all_with_context(
-                &shapes,
-                false,
-                &context,
-            )?;
             if q_polygon_product {
-                // The partition path owns diagnostic row classification; geographic
-                // polygon faces come from the pooled Q emitter.
-                full.polygons = Shape::polygonize_all_with_context(&shapes, false, &context)?;
+                let shape_refs = shapes.iter().collect::<Vec<_>>();
+                crate::geometry::exact_geographic_polygonize_full_from_shapes(
+                    &shape_refs,
+                    false,
+                    &context,
+                )
+            } else {
+                Shape::polygonize_full_all_with_context(&shapes, false, &context)
             }
-            Ok::<_, crate::error::Error>(full)
         })?;
         drop(metric_scratch);
         crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)

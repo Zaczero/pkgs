@@ -3,7 +3,9 @@ use super::super::q::QPortId;
 use super::ordinates::{
     source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
 };
-use super::plan::{DrawnPolygons, QEmissionDrawing};
+use super::plan::{
+    DrawnPolygons, QDiagnosticLine, QDiagnosticLineTag, QEmissionDrawing, QLineOrigin,
+};
 use super::sites::EmittedVertex;
 use super::source_publication::SourcePublication;
 use super::{
@@ -22,11 +24,13 @@ pub(in crate::geometry::topology) struct WrittenDrawingParts {
     pub(in crate::geometry::topology) lines: Vec<CoordSeq>,
     pub(in crate::geometry::topology) polygons: Vec<Polygon>,
     pub(in crate::geometry::topology) layout: ShapeLiteralLayout<QSourceImage>,
+    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 pub(in crate::geometry::topology) struct SourceWrittenPath {
     pub(in crate::geometry::topology) points: Vec<Point>,
     pub(in crate::geometry::topology) locations: LiteralSequence<QSourceImage>,
+    pub(in crate::geometry::topology) diagnostic_points: Option<Vec<Point>>,
 }
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct SourcePathContext<'a, 'walk> {
@@ -35,6 +39,7 @@ pub(in crate::geometry::topology) struct SourcePathContext<'a, 'walk> {
     pub(in crate::geometry::topology) publication: Option<SourcePublication<'a>>,
     pub(in crate::geometry::topology) walks: Option<&'a RecipeWalkIndex<'walk>>,
     pub(in crate::geometry::topology) axes: CoordinateAxes,
+    pub(in crate::geometry::topology) diagnostic_axes: Option<CoordinateAxes>,
 }
 pub(in crate::geometry::topology) fn write_source_path(
     vertices: &[EmittedVertex<'_>],
@@ -51,6 +56,7 @@ pub(in crate::geometry::topology) fn write_source_path(
         publication,
         walks,
         axes,
+        diagnostic_axes,
     } = *context;
     let walk = match (publication, walks) {
         (Some(_), Some(walks)) => Some(next_recipe_walk(walks, cursors, owner, work)?),
@@ -109,6 +115,10 @@ pub(in crate::geometry::topology) fn write_source_path(
     }
     work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut points = Vec::with_capacity(capacity);
+    if diagnostic_axes.is_some() {
+        work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    }
+    let mut diagnostic_points = diagnostic_axes.map(|_| Vec::with_capacity(capacity));
     let mut images = Vec::with_capacity(capacity);
     if let Some(&first) = vertices.first() {
         points.push(with_assigned_source_vertex_axes(
@@ -118,6 +128,22 @@ pub(in crate::geometry::topology) fn write_source_path(
             axes,
             work,
         )?);
+        if let Some(diagnostic_axes) = diagnostic_axes {
+            diagnostic_points
+                .as_mut()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "diagnostic source path lost its ordinate buffer".into(),
+                    )
+                })?
+                .push(with_assigned_source_vertex_axes(
+                    first,
+                    ordinates,
+                    source_ports,
+                    diagnostic_axes,
+                    work,
+                )?);
+        }
         images.push(source_literal_image(first, source_ports));
     }
     for (edge_index, pair) in vertices.array_windows::<2>().enumerate() {
@@ -174,6 +200,20 @@ pub(in crate::geometry::topology) fn write_source_path(
                         )
                     })?;
                 points.push(with_publication_axes(point, sample_ordinates, axes)?);
+                if let Some(diagnostic_axes) = diagnostic_axes {
+                    diagnostic_points
+                        .as_mut()
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "diagnostic source path lost its ordinate buffer".into(),
+                            )
+                        })?
+                        .push(with_publication_axes(
+                            point,
+                            sample_ordinates,
+                            diagnostic_axes,
+                        )?);
+                }
                 images.push(QSourceImage::PublicationSample(
                     u32::try_from(sample_index).map_err(|_| ResourceError::SizeOverflow)?,
                 ));
@@ -186,6 +226,22 @@ pub(in crate::geometry::topology) fn write_source_path(
             axes,
             work,
         )?);
+        if let Some(diagnostic_axes) = diagnostic_axes {
+            diagnostic_points
+                .as_mut()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "diagnostic source path lost its ordinate buffer".into(),
+                    )
+                })?
+                .push(with_assigned_source_vertex_axes(
+                    *end,
+                    ordinates,
+                    source_ports,
+                    diagnostic_axes,
+                    work,
+                )?);
+        }
         images.push(source_literal_image(*end, source_ports));
     }
     Ok(SourceWrittenPath {
@@ -195,6 +251,7 @@ pub(in crate::geometry::topology) fn write_source_path(
             axes,
             images,
         },
+        diagnostic_points,
     })
 }
 pub(in crate::geometry::topology) fn write_ring(
@@ -276,6 +333,7 @@ pub(in crate::geometry::topology) fn write_drawing(
         publication,
         walks,
         axes,
+        diagnostic_axes: None,
     };
     let (polygons, polygon_locations) = match drawing.polygons {
         DrawnPolygons::WholeSphere(source_polygons) => {
@@ -452,19 +510,68 @@ pub(in crate::geometry::topology) fn write_drawing(
     )?;
     let mut lines = Vec::with_capacity(drawing.lines.len());
     let mut line_locations = Vec::with_capacity(drawing.lines.len());
+    let mut diagnostic_lines = Vec::new();
+    let mut diagnostic_tag_index = 0;
     for (line_index, line) in drawing.lines.iter().enumerate() {
         let output = u32::try_from(line_index).map_err(|_| ResourceError::SizeOverflow)?;
+        let diagnostic_tag = match drawing.diagnostic_line_tags.get(diagnostic_tag_index) {
+            Some((tagged_line, tag)) if *tagged_line == line_index => {
+                diagnostic_tag_index += 1;
+                Some(*tag)
+            },
+            Some((tagged_line, _)) if *tagged_line < line_index => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q diagnostic source tags are not ordered with their emitted lines".into(),
+                )
+                .into());
+            },
+            _ => None,
+        };
+        if matches!(line.origin, QLineOrigin::Diagnostic(_)) != diagnostic_tag.is_some() {
+            return Err(GeometryErrorKind::Invalid(
+                "Q diagnostic source tags do not match their emitted lines".into(),
+            )
+            .into());
+        }
+        let diagnostic_axes = diagnostic_tag.and_then(|tag| (tag.axes != axes).then_some(tag.axes));
+        let line_path_context = SourcePathContext {
+            diagnostic_axes,
+            ..path_context
+        };
         let path = write_source_path(
             &line.path,
             output,
             line.recipe_walk,
             0,
-            &path_context,
+            &line_path_context,
             &mut walk_cursors,
             work,
         )?;
-        lines.push(CoordSeq::try_from_points(&path.points)?);
-        line_locations.push(path.locations);
+        let SourceWrittenPath {
+            points,
+            locations,
+            diagnostic_points,
+        } = path;
+        let coordinates = CoordSeq::try_from_points(&points)?;
+        if let Some(tag) = diagnostic_tag {
+            work.charge_into_error(1)?;
+            let diagnostic_coordinates = match diagnostic_points {
+                Some(points) => CoordSeq::try_from_points(&points)?,
+                None => coordinates.clone(),
+            };
+            diagnostic_lines.push(QDiagnosticLine {
+                tag,
+                coordinates: diagnostic_coordinates,
+            });
+        }
+        lines.push(coordinates);
+        line_locations.push(locations);
+    }
+    if diagnostic_tag_index != drawing.diagnostic_line_tags.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q diagnostic source tags have no emitted line".into(),
+        )
+        .into());
     }
     work.charge_into_error(
         u64::try_from(drawing.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
@@ -501,6 +608,7 @@ pub(in crate::geometry::topology) fn write_drawing(
         points,
         lines,
         polygons,
+        diagnostic_lines,
         layout: ShapeLiteralLayout {
             points: point_locations,
             lines: line_locations,

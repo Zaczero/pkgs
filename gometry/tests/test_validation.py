@@ -861,20 +861,7 @@ def test_geographic_polar_polygonize_full_keeps_cap_face() -> None:
     assert not gm.covers(cap, gm.Point(45, 75, crs=crs))
     assert all(len(row) == 0 for row in result.cut_edges)
     assert all(len(row) == 0 for row in result.dangles)
-    # Polygon faces use geographic Q assembly; diagnostics retain the
-    # partition classifier's source-row grouping.
-    assert [
-        [line.coords.to_nested() for line in row] for row in result.invalid_rings
-    ] == [
-        [[(0.0, 80.0), (90.0, 80.0), (0.0, 80.0)]],
-        [[(90.0, 80.0), (180.0, 80.0), (90.0, 80.0)]],
-        [[(180.0, 80.0), (270.0, 80.0), (180.0, 80.0)]],
-        [
-            [(0.0, 80.0), (90.0, 80.0), (0.0, 80.0)],
-            [(90.0, 80.0), (180.0, 80.0), (90.0, 80.0)],
-            [(180.0, 80.0), (270.0, 80.0), (180.0, 80.0)],
-        ],
-    ]
+    assert all(len(row) == 0 for row in result.invalid_rings)
 
 
 def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() -> None:

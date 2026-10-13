@@ -205,6 +205,7 @@ pub(crate) use source_support::{
 };
 mod tessellation;
 mod topology;
+pub(crate) use topology::overlay::exact_geographic_polygonize_full_from_shapes;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, GeographicCoverageAnalysis,
     TopologyDomain, VertexKey, analyze_geographic_coverage, analyze_geographic_coverage_with_work,
