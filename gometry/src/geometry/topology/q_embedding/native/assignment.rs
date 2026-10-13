@@ -1,12 +1,13 @@
 use super::super::{
     AssignedSite, CheckedAssignment, ExactChartPoint, ExactRational, GeometryErrorKind,
     NativeAreaEdgeKind, NativeChartSpellingKey, NativeGraphEdgeOwner, NativeReference,
-    NativeReferencePoints, NodeOrdinates, Point, ResourceError, Result, Work, XY, admit_candidate,
+    NativeReferencePoints, NodeOrdinates, Point, ResourceError, Result, XY, admit_candidate,
     native_emission_port_key, native_graph_sewing_matches, native_reference_written_edge,
     validate_native_graph_face_source_table, validate_native_graph_sewing,
     validate_native_materialized_chord_row, validate_native_materialized_port,
     validate_native_whole_sphere_cover, validate_native_written_chord_transport,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) struct NativeCandidateAssignment<
     'reference,

@@ -7,7 +7,8 @@ use crate::geometry::publication::{
     FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
     PublicationCall, PublicationOutcome, PublicationRejection, StorageTarget, finish_geographic,
 };
-use crate::geometry::{GeometryErrorKind, Polygon, Ring, Shape, Unmetered};
+use crate::geometry::{GeometryErrorKind, Polygon, Ring, Shape};
+use crate::work::Unmetered;
 
 pub(crate) fn finish_grid_outline(shape: Shape, frame: Frame) -> Result<FinishedGeometry> {
     let (layout, literals) = scalar_polygon_literals(&shape)?;
@@ -134,12 +135,13 @@ fn ring_literals(
 mod tests {
     use super::{finish_grid_outline, scalar_polygon_literals};
     use crate::Frame;
+    use crate::geometry::Shape;
     use crate::geometry::embedding_completion::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, ProducerReceipt, PublicationCall, PublicationOutcome,
         PublicationRejection, StorageTarget, finish_geographic,
     };
-    use crate::geometry::{Shape, Unmetered};
+    use crate::work::Unmetered;
 
     #[test]
     fn producer_drawing_rejects_grid_outline_storage_readback_mismatch() {

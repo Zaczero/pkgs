@@ -7,7 +7,7 @@ use super::{
     VERIFY_INTERVALS,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::{GeometryErrorKind, XY};
 
 fn on_segment(a: &ExactPoint, b: &ExactPoint, point: &ExactPoint) -> Result<bool> {

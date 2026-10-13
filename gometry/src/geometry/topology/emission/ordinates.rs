@@ -5,10 +5,11 @@ use super::{
     GeometryErrorKind, MOrdinate, NativeChordPoints, NodeOrdinates, Point, PortPosition,
     PortSpelling, PublicationInventory, PublishedFragment, QSourceImage, RequestRowInput,
     ResourceError, Result, RootCatalog, RootId, RootRange, RootRequest, SourceArcMetricAccess,
-    TraceRequestLocation, VertexOrigin, Work, ZOrdinate, resolve_request_rows,
+    TraceRequestLocation, VertexOrigin, ZOrdinate, resolve_request_rows,
 };
 use crate::geometry::XY;
 use crate::geometry::tessellation::exact::ExactRational;
+use crate::work::Work;
 
 pub(in crate::geometry::topology) fn with_publication_axes(
     point: XY,

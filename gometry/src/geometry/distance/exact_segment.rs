@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{GeometryErrorKind, Segment, XY};
 

@@ -1,13 +1,15 @@
+use crate::work::{Unmetered, Work};
     use std::cmp::Ordering;
 
-    use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints, RayAxis};
+    use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints};
+    use crate::geometry::graph::RayAxis;
     use crate::error::{ErrorKind, Result};
     use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
-    use crate::geometry::exact_arith::ExactSign;
-    use crate::geometry::overlay::RayPointsWithWork;
+    use crate::geometry::numerics::product::ExactSign;
+    use crate::geometry::graph::RayPointsWithWork;
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::topology::ExactChartPoint;
-    use crate::geometry::{GeometryErrorKind, Unmetered, Work, XY};
+    use crate::geometry::{GeometryErrorKind, XY};
 
 
 

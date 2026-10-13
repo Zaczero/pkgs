@@ -1015,7 +1015,7 @@ fn metric_minimum_clearance_line_impl(
                         axes,
                         source_frame,
                         Some(&metric_access),
-                        &mut crate::geometry::Unmetered,
+                        &mut crate::work::Unmetered,
                     )
                 },
                 |points| {

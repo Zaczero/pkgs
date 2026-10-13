@@ -17,9 +17,9 @@ use crate::crs::{
     to_projjson_with_options_at, transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
+use crate::geographic::retained_exact::sites::compare_three_f64_products;
 use crate::geographic::{AngularFactor, GeodeticPole};
 use crate::geometry::ShapeCountQuery;
-use crate::geometry::exact_arith::compare_three_f64_products;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;

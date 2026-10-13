@@ -11,10 +11,11 @@ use super::{
     CoordinateAxes, EmissionNodeRegistry, ExactChartPoint, ExactGeographicTopology,
     FrozenLiteralBuffers, GeometryErrorKind, NativeMaterializedParts, NodeOrdinates,
     PublicationInventory, QEmissionPlan, QNodeId, QSourceImage, ResourceError, Result,
-    SourceFrozenDrawing, Work, index_recipe_walks, try_sort_by_with_work,
+    SourceFrozenDrawing, index_recipe_walks, try_sort_by_with_work,
 };
 use crate::geometry::embedding_completion::ShapeLiteralLayout;
 use crate::geometry::{HasM, HasZ, Shape};
+use crate::work::Work;
 
 fn append_source_ring_live_nodes(
     topology: &ExactGeographicTopology,

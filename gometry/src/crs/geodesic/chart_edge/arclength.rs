@@ -1,6 +1,7 @@
 use geographiclib_rs::Geodesic;
 
-use super::{ChartEdge, GeometryErrorKind, Result, Unmetered, Work};
+use super::{ChartEdge, GeometryErrorKind, Result};
+use crate::work::{Unmetered, Work};
 
 const GL4_NODES: [f64; 4] = [
     0.069_431_844_202_973_71,

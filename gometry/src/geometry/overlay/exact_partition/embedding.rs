@@ -23,25 +23,29 @@ use std::cmp::Ordering;
 use std::mem;
 use std::ops::ControlFlow;
 
-#[cfg(test)]
-use super::rays::shoot_left;
-use super::rays::{EmittedPoints, visit_component_faces};
-use super::{Axis, ExactPartition, NodeId};
+use super::rays::EmittedPoints;
+use super::{ExactPartition, NodeId};
 use crate::collections::try_hash_map_with_capacity;
 use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::{
     ClassAssignment, GlobalCheck, Problem, ProximityChord, ProximityClasses, Search, SearchAccount,
-    SearchAssignment, Work, build_proximity_classes as build_search_proximity_classes,
+    SearchAssignment, build_proximity_classes as build_search_proximity_classes,
     exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
+#[cfg(test)]
+use crate::geometry::graph::prefix_contact_offsets;
+#[cfg(test)]
+use crate::geometry::graph::shoot_left;
+use crate::geometry::graph::{RayAxis as Axis, visit_component_faces};
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair,
     for_each_overlapping_bounds_cross_pair, segment_contact_exact, single_chain,
 };
+use crate::work::Work;
 
 /// The coordinate domain of a partition's output embedding.
 #[derive(Clone, Copy, Debug)]
@@ -1949,7 +1953,7 @@ fn visit_faces_legacy<S: Sink>(
         }
         parents[left.max(right) as usize] = left.min(right);
     }
-    super::construction::prefix_contact_offsets(&mut incident_starts);
+    prefix_contact_offsets(&mut incident_starts);
     let incident_count = incident_starts[node_count];
     let mut incident = vec![0_usize; incident_count];
     {

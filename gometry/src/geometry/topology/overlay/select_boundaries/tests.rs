@@ -104,10 +104,10 @@ fn boundary_certificate_rejects_a_reversed_constructed_hole_triangle() -> Result
         &topology,
         &nearest,
         "geographic boundary",
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let mut witness_found = false;
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     for recipe in plan.fragment_recipes.as_slice() {
         let references = recipe.reference_endpoints(&topology, &mut work)?;
         let start_x = references[0].x.round_with_work(&mut work)?;
@@ -199,7 +199,7 @@ fn boundary_certificate_rejects_a_reversed_constructed_hole_triangle() -> Result
         &emission,
         &nearest,
         None,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let exact_faces = QFaceStructure::build(&topology, &emission, exact_chart)?;
     let reversed_chart = subgraph_chart(
@@ -207,7 +207,7 @@ fn boundary_certificate_rejects_a_reversed_constructed_hole_triangle() -> Result
         &emission,
         &nearest,
         Some(&reversed),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let reversed_faces = QFaceStructure::build(&topology, &emission, reversed_chart)?;
     let witnesses =
@@ -281,7 +281,7 @@ fn boundary_certificate_rejects_a_reversed_constructed_hole_triangle() -> Result
         &emission,
         &nearest,
         Some(&accepted.coordinates),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let accepted_faces = QFaceStructure::build(&topology, &emission, accepted_chart)?;
     assert!(
@@ -309,7 +309,7 @@ fn geographic_boundary_repairs_a_nearest_embedding_before_writing() -> Result<()
         &topology,
         &nearest,
         "geographic boundary",
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let exact_chart = subgraph_chart(
@@ -317,7 +317,7 @@ fn geographic_boundary_repairs_a_nearest_embedding_before_writing() -> Result<()
         &emission,
         &nearest,
         None,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let exact_faces = QFaceStructure::build(&topology, &emission, exact_chart)?;
     assert!(
@@ -326,7 +326,7 @@ fn geographic_boundary_repairs_a_nearest_embedding_before_writing() -> Result<()
             &emission,
             &nearest,
             Some(&nearest),
-            &mut crate::geometry::Unmetered,
+            &mut crate::work::Unmetered,
         )
         .and_then(|chart| QFaceStructure::build(&topology, &emission, chart))
         .err()
@@ -350,7 +350,7 @@ fn geographic_boundary_repairs_a_nearest_embedding_before_writing() -> Result<()
         &emission,
         &nearest,
         Some(&embedding.coordinates),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let accepted_faces = QFaceStructure::build(&topology, &emission, accepted_chart)?;
     assert!(

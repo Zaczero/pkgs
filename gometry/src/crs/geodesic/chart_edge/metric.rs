@@ -5,8 +5,8 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
     ChartPointDistanceSample, GeographicAreaDensity, Point, PointEdgeQuery, PointEdgeQueryResult,
-    Work,
 };
+use crate::work::Work;
 
 impl ChartMetric for super::GeodesicMetric {
     type PointEdgeScratch = super::edge_distance::PointEdgeScratch;

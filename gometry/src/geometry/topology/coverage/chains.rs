@@ -14,8 +14,8 @@ use super::super::q::{
 use super::GeographicCoverageAnalysis;
 use crate::error::{ResourceError, Result};
 use crate::geometry::GeometryErrorKind;
-use crate::geometry::embedding_search::Work;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::work::Work;
 
 const JUNCTION: u8 = 1;
 const INCIDENCE_CHANGE: u8 = 2;
@@ -1070,9 +1070,9 @@ mod tests {
     use super::super::analyze_geographic_coverage;
     use super::*;
     use crate::geographic::GeographicFrame;
-    use crate::geometry::Unmetered;
     use crate::geometry::embedding_search::EvaluationBudget;
     use crate::geometry::tessellation::exact::ExactRational;
+    use crate::work::Unmetered;
 
     #[test]
     fn shared_chain_keeps_opposite_row_uses_and_exact_subspan_roots() {

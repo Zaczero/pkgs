@@ -7,7 +7,7 @@
             ExactRational::from_f64(10.0).try_add(&half_ulp)?,
             ExactRational::from_f64(1.0).try_add(&half_ulp)?,
         );
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let mut nodes = EmissionNodeRegistry::with_sources(&topology, &[], &mut work)?;
         let node = nodes.intern_computed(frame, &exact, &mut work)?;
         let mut publication = PublicationInventory {

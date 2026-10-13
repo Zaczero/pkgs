@@ -17,7 +17,7 @@ use std::ops::Range;
 use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::Ring;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::tessellation::exact::{

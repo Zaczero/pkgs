@@ -24,7 +24,7 @@ fn meridian_recipe_uses_latitude_for_its_producer_parameter() -> Result<()> {
     assert_eq!(range.producer_start, ExactRational::zero());
     assert_eq!(range.producer_end, ExactRational::one());
 
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let trace = plan
         .fragment_recipes
         .source_trace_fragment(recipe.id, &mut work)?;

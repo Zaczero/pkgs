@@ -16,15 +16,16 @@ use std::cmp::Ordering;
 #[cfg(test)]
 use super::monotone_chain_hull;
 use crate::error::Result;
+use crate::geographic::retained_exact::edges::retained_exact_site_sample;
+use crate::geographic::retained_exact::sites::{RetainedComputedSample, retained_site_longitude};
 use crate::geographic::{
     ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
 };
-use crate::geometry::exact_arith::product_sum::{ExactSum, LIMBS, PRODUCT_MIN_EXP, cmp_magnitude};
-use crate::geometry::exact_arith::{
-    ExactSign, RetainedComputedSample, checked_dd_mul as double_double_mul,
-    checked_two_product as two_product, dd_add as double_double_add, dd_sub as double_double_sub,
-    retained_exact_site_sample, retained_site_longitude, two_sum,
+use crate::geometry::numerics::product::{
+    ExactSign, checked_dd_mul as double_double_mul, checked_two_product as two_product,
+    dd_add as double_double_add, dd_sub as double_double_sub, two_sum,
 };
+use crate::geometry::numerics::product_sum::{ExactSum, LIMBS, PRODUCT_MIN_EXP, cmp_magnitude};
 use crate::geometry::{
     CoordSeq, ExactRational, ExpansionBudget, GeometryErrorKind, MOrdinate, Orientation, Point,
     ZOrdinate, axis_pow2_scale, orientation, point_distance,

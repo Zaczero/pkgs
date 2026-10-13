@@ -9,14 +9,13 @@ use super::source_publication::SourcePublication;
 use super::{
     BTreeMap, CoordSeq, CoordinateAxes, GeometryErrorKind, LiteralPoint, LiteralPolygon,
     LiteralSequence, NodeOrdinates, Point, Polygon, QEmissionPlan, QSourceImage, RecipeWalkIndex,
-    RecipeWalkOwner, ResourceError, Result, Ring, Shape, ShapeLiteralLayout, Work,
-    next_recipe_walk,
+    RecipeWalkOwner, ResourceError, Result, Ring, Shape, ShapeLiteralLayout, next_recipe_walk,
 };
-use crate::geometry::overlay::{
-    CertifiedOverlayOrder, build_certified_overlay_shape_with_axes,
-    build_certified_overlay_shape_with_axes_and_order,
+use crate::geometry::output::{
+    CertifiedShapeOrder, build_certified_shape_with_axes, build_certified_shape_with_axes_and_order,
 };
 use crate::geometry::{CoordSeqBuilder, GeometryKind, LineSeq};
+use crate::work::Work;
 
 pub(in crate::geometry::topology) struct WrittenDrawingParts {
     pub(in crate::geometry::topology) points: Vec<Point>,
@@ -514,13 +513,13 @@ pub(in crate::geometry::topology) fn identity_output_order(
     line_count: usize,
     polygon_count: usize,
     work: &mut impl Work,
-) -> Result<CertifiedOverlayOrder> {
+) -> Result<CertifiedShapeOrder> {
     let count = point_count
         .checked_add(line_count)
         .and_then(|count| count.checked_add(polygon_count))
         .ok_or(ResourceError::SizeOverflow)?;
     work.charge_into_error(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
-    Ok(CertifiedOverlayOrder {
+    Ok(CertifiedShapeOrder {
         points: identity_output_indices(point_count, work)?,
         lines: identity_output_indices(line_count, work)?,
         polygons: identity_output_indices(polygon_count, work)?,
@@ -547,7 +546,7 @@ pub(in crate::geometry::topology) fn seal_output_parts(
     declared_axes: CoordinateAxes,
     track_order: bool,
     work: &mut impl Work,
-) -> Result<(Shape, Option<CertifiedOverlayOrder>)> {
+) -> Result<(Shape, Option<CertifiedShapeOrder>)> {
     let output_count = points
         .len()
         .checked_add(lines.len())
@@ -658,11 +657,11 @@ pub(in crate::geometry::topology) fn seal_output_parts(
 
     if track_order {
         let (shape, order) =
-            build_certified_overlay_shape_with_axes_and_order(points, lines, polygons, axes, work)?;
+            build_certified_shape_with_axes_and_order(points, lines, polygons, axes, work)?;
         Ok((shape, Some(order)))
     } else {
         Ok((
-            build_certified_overlay_shape_with_axes(points, lines, polygons, axes)?,
+            build_certified_shape_with_axes(points, lines, polygons, axes)?,
             None,
         ))
     }

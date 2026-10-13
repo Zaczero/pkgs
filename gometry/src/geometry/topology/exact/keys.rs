@@ -2,10 +2,11 @@ use std::cmp::Ordering;
 
 use super::{ChartPort, ChartPortId, ExactChartPiece, ExactChartPoint};
 use crate::error::Result;
-#[cfg(test)]
-use crate::geometry::Unmetered;
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{Bounds, GeometryErrorKind, Segment, Work, XY};
+use crate::geometry::{Bounds, GeometryErrorKind, Segment, XY};
+#[cfg(test)]
+use crate::work::Unmetered;
+use crate::work::Work;
 
 impl ExactChartPiece {
     pub(in crate::geometry::topology::exact) fn outward_proxy(&self) -> Result<Option<Segment>> {

@@ -2,8 +2,9 @@ use std::cmp::Ordering;
 
 use super::{
     ExactGeographicTopology, ExactRational, GeometryErrorKind, QNodeId, QPortId, ResourceError,
-    Result, SourceEdgeId, Work, try_sort_by_with_work,
+    Result, SourceEdgeId, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology) struct CutChordPair {
