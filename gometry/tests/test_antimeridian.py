@@ -1160,6 +1160,42 @@ def test_split_antimeridian_preserves_north_pole_ownership() -> None:
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
 
+def test_t2_split_reused_notched_overlay_keeps_pole_free_strip_support() -> None:
+    source = gm.Polygon(
+        [
+            (-180, 5),
+            (-90, 5),
+            (-10, 5),
+            (-10, -10),
+            (0, -10),
+            (10, -10),
+            (10, 5),
+            (90, 5),
+            (180, 5),
+            (180, 90),
+            (90, 90),
+            (0, 90),
+            (-90, 90),
+            (-180, 90),
+            (-180, 5),
+        ],
+        crs=4326,
+    )
+    band = gm.box(-180, -30, 180, 30, crs=4326)
+    strip = gm.intersection(source, band)
+    split = strip.split_antimeridian()
+
+    assert split.is_valid
+    assert split.validate().valid
+    for point in ((0, -5), (0, 20), (180, 20), (-180, 20)):
+        assert gm.covers(split, gm.Point(*point, crs=4326)), point
+    for point in ((50, 0), (0, 60), (0, 90), (0, -90)):
+        assert not gm.contains(split, gm.Point(*point, crs=4326)), point
+    assert split.area == pytest.approx(strip.area)
+    assert split.length == pytest.approx(strip.length)
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+
 def test_split_antimeridian_both_poles_reverse_winding() -> None:
     """Inverted winding that implies both poles reverses segments instead of capping."""
     source = gm.from_geojson(

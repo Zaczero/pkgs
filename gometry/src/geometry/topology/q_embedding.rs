@@ -82,6 +82,10 @@ use self::endpoint_point_cache::{NativeEndpointPointCache, NativeEndpointPointKe
 pub(in crate::geometry) mod publication;
 use publication::{NativeCandidatePublication, SourceOnlyPublication};
 
+#[cfg(test)]
+#[path = "q_embedding/polar_tests.rs"]
+mod polar_tests;
+
 #[derive(Clone, Debug)]
 pub(super) struct QCoordinates {
     pub(super) node: Vec<XY>,
@@ -3104,7 +3108,7 @@ fn align_native_cycle_starts(
     frame: GeographicFrame,
     topology: &ExactGeographicTopology,
     drawing: &QEmissionDrawing<'_>,
-    ring_roles: &[bool],
+    ring_roles: &QRingRoleCheck,
     nodes: &EmissionNodeRegistry,
     graph: &NativeReferenceGraph,
     cycles: &mut [NativeGraphCycle],
@@ -3114,7 +3118,7 @@ fn align_native_cycle_starts(
     let DrawnPolygons::Regions { rings, .. } = &drawing.polygons else {
         return Ok(());
     };
-    if rings.len() != ring_roles.len() {
+    if ring_roles.role_count() != Some(rings.len()) {
         return Err(GeometryErrorKind::Invalid(
             "Native cycle starts do not match the certified Q ring roles".into(),
         )
@@ -3123,6 +3127,14 @@ fn align_native_cycle_starts(
     let mut queries = Vec::with_capacity(rings.len());
     for (ring_index, ring) in rings.iter().enumerate() {
         budget.charge_into_error(1)?;
+        let Some(role) = ring_roles.role_at(ring_index) else {
+            return Err(
+                GeometryErrorKind::Invalid("Native ring-order role is unknown".into()).into(),
+            );
+        };
+        let QRingRoleStatus::Classified(is_hole) = role else {
+            continue;
+        };
         let Some(port_id) = ring.native_start_port else {
             continue;
         };
@@ -3141,9 +3153,6 @@ fn align_native_cycle_starts(
         })?;
         let target = nodes.source_node(q_port.node)?;
         let spelling = native_drawing_start_spelling(frame, vertex, budget)?;
-        let is_hole = *ring_roles.get(ring_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Native ring-order role is unknown".into())
-        })?;
         queries.push(NativeCycleStartQuery {
             region: ring.region,
             shell: !is_hole,
@@ -5948,26 +5957,13 @@ fn finish_native_line_run(
 
 fn native_area_facts(
     drawing: &QEmissionDrawing<'_>,
-    ring_roles: &[bool],
     selected_face_roots: &[Option<usize>],
-) -> Result<BTreeMap<RecipeWalkOwner, (usize, bool)>> {
+) -> Result<BTreeMap<RecipeWalkOwner, usize>> {
     let mut facts = BTreeMap::new();
     match &drawing.polygons {
         DrawnPolygons::Regions { rings, .. } => {
-            if ring_roles.len() != rings.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "native area roles do not match the selected ring table".into(),
-                )
-                .into());
-            }
-            for (index, ring) in rings.iter().enumerate() {
-                let hole = *ring_roles.get(index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("native area ring role is unknown".into())
-                })?;
-                if facts
-                    .insert(ring.recipe_walk, (ring.region, hole))
-                    .is_some()
-                {
+            for ring in rings {
+                if facts.insert(ring.recipe_walk, ring.region).is_some() {
                     return Err(GeometryErrorKind::Invalid(
                         "native area recipe walk appears more than once".into(),
                     )
@@ -6066,6 +6062,47 @@ fn native_pole_closure_regions(
         }
     }
     Ok(closures)
+}
+
+fn assign_selected_pole_seam_band(
+    bands: &mut [SelectedNativeSeamBand],
+    frame: GeographicFrame,
+    region: usize,
+    pole: ChartPole,
+    budget: &mut impl Work,
+) -> Result<()> {
+    let band_index = match pole {
+        ChartPole::South => 0,
+        ChartPole::North => bands.len().checked_sub(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("selected pole has no native seam band".into())
+        })?,
+    };
+    let band = bands.get_mut(band_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected pole has no adjacent native seam band".into())
+    })?;
+    let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
+    let adjacent_pole = match pole {
+        ChartPole::South => &band.low,
+        ChartPole::North => &band.high,
+    };
+    if !adjacent_pole.try_cmp_with_work(&latitude, budget)?.is_eq() {
+        return Err(GeometryErrorKind::Invalid(
+            "native seam band does not meet its selected chart pole".into(),
+        )
+        .into());
+    }
+    for selected in [&mut band.west_region, &mut band.east_region] {
+        if let Some(existing) = *selected
+            && existing != region
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "selected pole sector conflicts with its adjacent seam band".into(),
+            )
+            .into());
+        }
+        *selected = Some(region);
+    }
+    Ok(())
 }
 
 fn native_whole_sphere_cell_edges(
@@ -6567,7 +6604,9 @@ where
     work.charge_into_error(
         u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let exact_is_hole = exact_q_ring_role_with_work(frame, exact_ports, work)?;
+    let Some(exact_is_hole) = exact_q_ring_role_with_work(frame, exact_ports, work)? else {
+        return Ok(None);
+    };
     work.charge_into_error(
         u64::try_from(
             emitted_chart
@@ -6722,14 +6761,16 @@ where
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
 {
     let mut work = Unmetered;
-    exact_q_ring_role_with_work(frame, exact_ports, &mut work)
+    exact_q_ring_role_with_work(frame, exact_ports, &mut work)?.ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
+    })
 }
 
 fn exact_q_ring_role_with_work<'a, I>(
     frame: GeographicFrame,
     exact_ports: I,
     work: &mut impl Work,
-) -> Result<bool>
+) -> Result<Option<bool>>
 where
     I: IntoIterator<Item = &'a ExactChartPoint>,
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
@@ -6757,7 +6798,7 @@ where
     if let Some(proof) = exact_q_ring_winding_filter(frame, exact_ports.clone())
         && !proof.quotient_closure
     {
-        return Ok(proof.winding == RingWinding::Clockwise);
+        return Ok(Some(proof.winding == RingWinding::Clockwise));
     }
 
     let mut owned_ports = Vec::with_capacity(exact_ports.len());
@@ -6768,8 +6809,10 @@ where
     let exact_ports = owned_ports;
     let lifted = continuously_lift_exact_ring_with_work(frame, &exact_ports, work)?;
     let exact_published = rounded_canonical_exact_ring_with_work(frame, &exact_ports, work)?;
-    if let Some(role) = quotient_ring_role(frame, &exact_published)? {
-        return Ok(role);
+    match quotient_ring_role_status(frame, &exact_published)? {
+        QuotientRingRoleStatus::Classified(role) => return Ok(Some(role)),
+        QuotientRingRoleStatus::Unbounded => return Ok(None),
+        QuotientRingRoleStatus::Unclassifiable => {},
     }
     let winding = exact_ring_winding_with_work(&lifted, work)?;
     match winding {
@@ -6779,7 +6822,7 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(false)
+            Ok(Some(false))
         },
         RingWinding::Clockwise => {
             for point in &lifted {
@@ -6787,11 +6830,11 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(true)
+            Ok(Some(true))
         },
         RingWinding::Degenerate => {
             let exact_ring = rounded_exact_ring_with_work(&lifted, work)?;
-            ring_role_from_winding(frame, winding, &exact_ring, true)
+            ring_role_from_winding(frame, winding, &exact_ring, true).map(Some)
         },
     }
 }
@@ -6808,10 +6851,32 @@ pub(super) fn exact_q_ring_role_for_linework(
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
 ) -> Result<bool> {
-    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)?.ok_or_else(|| {
+        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
+    })
 }
 
 pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<Option<bool>> {
+    match quotient_ring_role_status(frame, ring)? {
+        QuotientRingRoleStatus::Unclassifiable => Ok(None),
+        QuotientRingRoleStatus::Classified(role) => Ok(Some(role)),
+        QuotientRingRoleStatus::Unbounded => Err(GeometryErrorKind::Invalid(
+            "selected Q area boundary has no bounded pole".into(),
+        )
+        .into()),
+    }
+}
+
+enum QuotientRingRoleStatus {
+    Unclassifiable,
+    Classified(bool),
+    Unbounded,
+}
+
+fn quotient_ring_role_status(
+    frame: GeographicFrame,
+    ring: &Ring,
+) -> Result<QuotientRingRoleStatus> {
     let axis = frame.longitude();
     if ring
         .coords()
@@ -6819,7 +6884,7 @@ pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<
         .array_windows::<2>()
         .all(|&[from, to]| axis.ordinary_chart_edge(from, to))
     {
-        return Ok(None);
+        return Ok(QuotientRingRoleStatus::Unclassifiable);
     }
     let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
@@ -6842,19 +6907,16 @@ pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<
             previous = Some(point);
         }
         if south_turn != 0 {
-            return Ok(Some(south_turn < 0));
+            return Ok(QuotientRingRoleStatus::Classified(south_turn < 0));
         }
     }
     if summary.chart_turn == 0 {
-        return Ok(None);
+        return Ok(QuotientRingRoleStatus::Unclassifiable);
     }
     match summary.bounded_pole() {
-        Some(ChartPole::North) => Ok(Some(summary.chart_turn < 0)),
-        Some(ChartPole::South) => Ok(Some(summary.chart_turn > 0)),
-        None => Err(GeometryErrorKind::Invalid(
-            "selected Q area boundary has no bounded pole".into(),
-        )
-        .into()),
+        Some(ChartPole::North) => Ok(QuotientRingRoleStatus::Classified(summary.chart_turn < 0)),
+        Some(ChartPole::South) => Ok(QuotientRingRoleStatus::Classified(summary.chart_turn > 0)),
+        None => Ok(QuotientRingRoleStatus::Unbounded),
     }
 }
 
@@ -13695,6 +13757,59 @@ fn candidate_chart_point_with_work(
     ))
 }
 
+fn align_producer_fan_target(
+    target: &ExactChartPoint,
+    source_span_target: &ExactChartPoint,
+    base_lift: ExactDyadic,
+    frame: GeographicFrame,
+    work: &mut impl Work,
+) -> Result<ExactChartPoint> {
+    let period = ExactRational::from_f64(frame.longitude().period());
+    // Resolve seam aliases against the retained source-span target so they
+    // preserve the fan ray rather than defaulting to the opposite chart bank.
+    let base_shift = period.try_product_with_work(&ExactRational::from_dyadic(base_lift), work)?;
+    let base_x = target.x.try_add_with_work(&base_shift, work)?;
+    let mut best_offset = 0_i64;
+    let mut best_distance = None;
+    // Split-site normalization has already selected the base image; only an
+    // adjacent image can be nearer after resolving the seam occurrence.
+    for offset in [0_i64, -1, 1] {
+        work.charge_into_error(1)?;
+        let shifted_x = if offset == 0 {
+            base_x.try_clone_with_work(work)?
+        } else {
+            let shift = period.try_product_with_work(
+                &ExactRational::from_dyadic(ExactDyadic::from_i64(offset)),
+                work,
+            )?;
+            base_x.try_add_with_work(&shift, work)?
+        };
+        let difference = shifted_x.try_subtract_with_work(&source_span_target.x, work)?;
+        let distance = difference.try_product_with_work(&difference, work)?;
+        let improves = match &best_distance {
+            Some(best) => distance.try_cmp_with_work(best, work)?.is_lt(),
+            None => true,
+        };
+        if improves {
+            best_offset = offset;
+            best_distance = Some(distance);
+        }
+    }
+    let x = if best_offset == 0 {
+        base_x
+    } else {
+        let shift = period.try_product_with_work(
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(best_offset)),
+            work,
+        )?;
+        base_x.try_add_with_work(&shift, work)?
+    };
+    Ok(ExactChartPoint::from_rationals(
+        x,
+        target.y.try_clone_with_work(work)?,
+    ))
+}
+
 fn assigned_emission_site(
     frame: GeographicFrame,
     candidate: QCandidate,
@@ -16964,6 +17079,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         source_faces: Option<&QFaceStructure>,
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
+        let frame = self.topology.sources.frame;
         let q = &self.topology.q;
         budget.charge_into_error(
             u64::try_from(self.publication_chords.len())
@@ -17237,19 +17353,37 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         longitude.half_period(),
                         budget,
                     )?;
-                    let (_, output_lift) = split_rational_native_site_with_work(
+                    let (output_native, output_lift) = split_rational_native_site_with_work(
                         &target.x,
                         longitude.period(),
                         longitude.half_period(),
                         budget,
                     )?;
                     let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
-                    let longitude_shift = ExactRational::from_f64(longitude.period())
-                        .try_product_with_work(&ExactRational::from_dyadic(lift_delta), budget)?;
-                    let mut aligned_target = target.clone();
-                    aligned_target.x = aligned_target
-                        .x
-                        .try_add_with_work(&longitude_shift, budget)?;
+                    let negative_half = ExactRational::from_f64(-longitude.half_period());
+                    let aligned_target = if output_native
+                        .as_ref()
+                        .try_cmp_with_work(&negative_half, budget)?
+                        .is_eq()
+                    {
+                        align_producer_fan_target(
+                            &target,
+                            target_source_point,
+                            lift_delta,
+                            frame,
+                            budget,
+                        )?
+                    } else {
+                        let longitude_shift = ExactRational::from_f64(longitude.period())
+                            .try_product_with_work(
+                                &ExactRational::from_dyadic(lift_delta),
+                                budget,
+                            )?;
+                        ExactChartPoint::from_rationals(
+                            target.x.try_add_with_work(&longitude_shift, budget)?,
+                            target.y.try_clone_with_work(budget)?,
+                        )
+                    };
                     budget.charge_into_error(1)?;
                     let ray = rays_by_port
                         .entry(port)
@@ -19339,7 +19473,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     fn prepare_native_reference(
         &mut self,
         drawing: &QEmissionDrawing<'topology>,
-        ring_roles: &[bool],
+        ring_roles: &QRingRoleCheck,
         producer: &AssignedProducerProjection,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
@@ -19352,7 +19486,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let area_facts = native_area_facts(drawing, ring_roles, self.emission.selected_face_roots)?;
+        let area_facts = native_area_facts(drawing, self.emission.selected_face_roots)?;
         let whole_sphere = matches!(&drawing.polygons, DrawnPolygons::WholeSphere(_));
         let has_area = whole_sphere || !area_facts.is_empty();
         let whole_sphere_region = if whole_sphere {
@@ -19389,7 +19523,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     continue;
                 }
                 let mut area_region = whole_sphere;
-                for &(candidate, _) in area_facts.values() {
+                for &candidate in area_facts.values() {
                     budget.charge_into_error(1)?;
                     area_region |= candidate == region;
                     if area_region {
@@ -19613,16 +19747,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => Some(
-                    area_facts
-                        .get(&owner)
-                        .map(|(region, _)| *region)
-                        .ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "native area walk has no selected-region fact".into(),
-                            )
-                        })?,
-                ),
+                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => {
+                    Some(area_facts.get(&owner).copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native area walk has no selected-region fact".into(),
+                        )
+                    })?)
+                },
             };
             let line_member = match walk.owner {
                 RecipeWalkOwner::Line(member) => Some(member),
@@ -19872,19 +20003,44 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let mut graph_builder =
             new_native_reference_graph_builder(&area_edges, &reference_ports, budget)?;
+        let pole_path_port_count = if has_area && !whole_sphere {
+            [ChartPole::South, ChartPole::North]
+                .iter()
+                .filter(|&&pole| pole_closures.iter().any(|&(_, selected)| selected == pole))
+                .count()
+                .checked_mul(3)
+                .ok_or(ResourceError::SizeOverflow)?
+        } else {
+            0
+        };
+        budget.charge_into_error(
+            u64::try_from(pole_path_port_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        reference_ports.reserve(pole_path_port_count);
         let mut graph = if has_area {
             if !whole_sphere {
                 let mut band_events = seam_events
                     .iter()
                     .map(|event| event.event.clone())
                     .collect::<Vec<_>>();
-                let bands = native_seam_bands_from_assigned_graph(
+                let mut bands = native_seam_bands_from_assigned_graph(
                     &graph_builder,
                     &area_edges,
                     self.topology.sources.frame,
                     &mut band_events,
                     budget,
                 )?;
+                // A selected polar sector can be the unbounded side of the open
+                // chart graph; its terminal seam band still bounds the cap.
+                for &(region, pole) in &pole_closures {
+                    assign_selected_pole_seam_band(
+                        &mut bands,
+                        self.topology.sources.frame,
+                        region,
+                        pole,
+                        budget,
+                    )?;
+                }
                 for (pole, band) in [
                     (ChartPole::South, bands.first()),
                     (ChartPole::North, bands.last()),
@@ -20008,6 +20164,38 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         Some(super::emission::ChartSide::West),
                         budget,
                     )?;
+                    // Seam aliases alone carry no chart turn; ordinary pole spellings make
+                    // the named hemisphere explicit without a half-period edge.
+                    let quarter_period =
+                        self.topology.sources.frame.longitude().half_period() / 2.0;
+                    for longitude in [-quarter_period, 0.0, quarter_period] {
+                        budget.charge_into_error(1)?;
+                        let point = ExactChartPoint::from_rationals(
+                            ExactRational::from_f64(longitude),
+                            chart_point.y.try_clone_with_work(budget)?,
+                        );
+                        let [_, nearest, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &point.x,
+                            budget,
+                        )?;
+                        reference_ports.push(native_port_data(
+                            self.topology.sources.frame,
+                            node,
+                            QCandidate {
+                                native: XY::new(nearest.native, point.y.round_with_work(budget)?),
+                                periods: nearest.periods,
+                            },
+                            &point,
+                            None,
+                            vec![OccurrenceSource {
+                                origin: super::emission::VertexOrigin::Presentation,
+                                source_trace: None,
+                            }],
+                            None,
+                            budget,
+                        )?);
+                    }
                     seam_events.push(NativeSeamEventData {
                         event: NativeSeamEvent {
                             latitude: latitude.clone(),
@@ -20571,9 +20759,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             return Ok(GlobalCheck::Reject(Vec::new()));
         }
         if !identity_conflicts.is_empty() {
-            return Ok(GlobalCheck::Reject(
-                self.classes_for_variables(identity_conflicts, budget)?,
-            ));
+            let classes = self.classes_for_variables(identity_conflicts, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
         }
         let source_faces = if let Some(exact_faces) = &self.exact_faces {
             let chart = subgraph_chart(
@@ -20589,7 +20776,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 &emitted_faces,
                 &self.emission.selected_nodes,
             ) {
-                return Ok(GlobalCheck::Reject(self.classes_for_nodes(nodes, budget)?));
+                let classes = self.classes_for_nodes(nodes, budget)?;
+                return Ok(GlobalCheck::Reject(classes));
             }
             Some(emitted_faces)
         } else {
@@ -20607,195 +20795,201 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let publication_rejections =
             self.publication_graph_rejections(&producer_projection, budget)?;
         if !publication_rejections.is_empty() {
-            return Ok(GlobalCheck::Reject(
-                self.classes_for_variables(publication_rejections, budget)?,
-            ));
+            let classes = self.classes_for_variables(publication_rejections, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
         }
-        match check_q_ring_roles(self.topology, &drawing, budget)? {
-            QRingRoleCheck::Pass(ring_roles) => {
-                if !producer_projection.rejections.is_empty() {
-                    let rejections = std::mem::take(&mut producer_projection.rejections);
-                    return Ok(GlobalCheck::Reject(
-                        self.classes_for_variables(rejections, budget)?,
-                    ));
-                }
-                let native_required = self.actual_native_demand(
-                    &drawing,
-                    &ring_roles,
-                    &producer_projection,
-                    coordinates,
-                    publication_coordinates,
-                    budget,
-                )?;
-                let sealed = if native_required {
-                    let budget = budget.budget_mut();
-                    self.freeze_native_families(budget)?;
-                    let native_cut_features =
-                        self.materialize_native_cut_features(&producer_projection, budget)?;
-                    let prepared_reference = self.prepare_native_reference(
-                        &drawing,
-                        &ring_roles,
-                        &producer_projection,
-                        coordinates,
-                        publication_coordinates,
-                        &native_cut_features,
-                        budget,
-                    );
-                    let reference = match native_reference_global_check(prepared_reference, || {
-                        self.all_outer_repair_classes(budget)
-                    })? {
-                        GlobalCheck::Pass(reference) => reference,
-                        GlobalCheck::Reject(classes) => {
-                            return Ok(GlobalCheck::Reject(classes));
-                        },
-                    };
-                    let native = match self.search_native_cut_candidates(
-                        &reference,
-                        &native_cut_features,
-                        coordinates,
-                        publication_coordinates,
-                        budget,
-                    )? {
-                        NativeCutSearchOutcome::Pass(drawing) => drawing,
-                        NativeCutSearchOutcome::Reject(classes) => {
-                            return Ok(GlobalCheck::Reject(classes));
-                        },
-                    };
-                    super::emission::SealedQDrawing::Native(native)
-                } else {
-                    let live_publication_samples = super::overlay::source_live_publication_samples(
-                        self.emission.plan,
-                        self.emission.publication,
-                        budget,
-                    )?;
-                    let publication_chart_points =
-                        self.assigned_publication_chart_points(&producer_projection, budget)?;
-                    let publication_points = publication_chart_points
-                        .iter()
-                        .map(rounded_chart_point)
-                        .collect::<Result<Vec<_>>>()?;
-                    let publication_ordinates = super::emission::resolve_publication_ordinates(
-                        self.topology,
-                        self.emission.publication,
-                        &live_publication_samples,
-                        self.declared_axes,
-                        self.metric_access,
-                        budget,
-                    )?;
-                    let source_publication = super::overlay::SourcePublication {
-                        inventory: self.emission.publication,
-                        points: &publication_points,
-                        ordinates: &publication_ordinates,
-                        live_samples: &live_publication_samples,
-                    };
-                    let source = self.emission.plan.seal_source_drawing(
-                        drawing,
-                        &ring_roles,
-                        &self.ordinates,
-                        Some(source_publication),
-                        Some(&producer_projection.source_ports),
-                        self.declared_axes,
-                        self.strict_axes,
-                        self.operation,
-                        budget,
-                    )?;
-                    let receipt = SourceOnlyPublication {
-                        source,
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        source_ordinates: &self.ordinates,
-                        publication: Some(self.emission.publication),
-                        publication_images: &publication_chart_points,
-                        publication_points: &publication_points,
-                        publication_ordinates: &publication_ordinates,
-                    };
-                    let sealed = match finish_geographic(
-                        PublicationCall::new(
-                            ProducerReceipt::QSourceOnly(receipt),
-                            self.topology.publication_frame().clone(),
-                            budget,
-                        ),
-                        StorageTarget::Scalar,
-                    )? {
-                        PublicationOutcome::Pass(finished) => finished,
-                        PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
-                            let mut variables = Vec::with_capacity(images.len());
-                            for image in images {
-                                budget.charge_into_error(1)?;
-                                variables.push(match image {
-                                    image @ (QSourceImage::Port(_)
-                                    | QSourceImage::SourcePoint(_)
-                                    | QSourceImage::SourceRingStart(_)
-                                    | QSourceImage::SourceRingEnd(_)
-                                    | QSourceImage::CollapsedStart(_)
-                                    | QSourceImage::CollapsedEnd(_)) => {
-                                        let port = q_source_image_port(self.topology, image)?;
-                                        let node = self
-                                            .topology
-                                            .q
-                                            .ports
-                                            .get(port.0 as usize)
-                                            .map(|port| port.node)
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected source literal port is unknown"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Source(node)
-                                    },
-                                    QSourceImage::PublicationSample(sample) => {
-                                        let node = self
-                                            .publication_sample_nodes
-                                            .get(sample as usize)
-                                            .copied()
-                                            .ok_or_else(|| {
-                                                GeometryErrorKind::Invalid(
-                                                    "rejected publication literal has no node"
-                                                        .into(),
-                                                )
-                                            })?;
-                                        QVariableNode::Published(node)
-                                    },
-                                });
-                            }
-                            return Ok(GlobalCheck::Reject(
-                                self.classes_for_variables(variables, budget)?,
-                            ));
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Native) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned native rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned array batch rejection".into(),
-                            )
-                            .into());
-                        },
-                        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "source-only Q finisher returned producer-drawn rejection".into(),
-                            )
-                            .into());
-                        },
-                    };
-                    super::emission::SealedQDrawing::Source(SealedSourceDrawing {
-                        sealed,
-                        line_traces: Vec::new(),
-                    })
-                };
-                Ok(GlobalCheck::Pass(QEmbeddingOutput {
-                    sealed,
-                    family_state: None,
-                }))
-            },
+        let ring_roles = match check_q_ring_roles(self.topology, &drawing, budget)? {
             QRingRoleCheck::Reject { nodes, .. } => {
-                Ok(GlobalCheck::Reject(self.classes_for_nodes(nodes, budget)?))
+                let classes = self.classes_for_nodes(nodes, budget)?;
+                return Ok(GlobalCheck::Reject(classes));
             },
+            roles @ (QRingRoleCheck::Pass(_) | QRingRoleCheck::NativeRequired(_)) => roles,
+        };
+        if !producer_projection.rejections.is_empty() {
+            let rejections = std::mem::take(&mut producer_projection.rejections);
+            let classes = self.classes_for_variables(rejections, budget)?;
+            return Ok(GlobalCheck::Reject(classes));
         }
+        let native_required = match &ring_roles {
+            QRingRoleCheck::Pass(roles) => self.actual_native_demand(
+                &drawing,
+                roles,
+                &producer_projection,
+                coordinates,
+                publication_coordinates,
+                budget,
+            )?,
+            QRingRoleCheck::NativeRequired(_) => true,
+            QRingRoleCheck::Reject { .. } => unreachable!("rejected roles returned above"),
+        };
+        let sealed = if native_required {
+            let budget = budget.budget_mut();
+            self.freeze_native_families(budget)?;
+            let native_cut_features =
+                self.materialize_native_cut_features(&producer_projection, budget)?;
+            let prepared_reference = self.prepare_native_reference(
+                &drawing,
+                &ring_roles,
+                &producer_projection,
+                coordinates,
+                publication_coordinates,
+                &native_cut_features,
+                budget,
+            );
+            let reference = match native_reference_global_check(prepared_reference, || {
+                self.all_outer_repair_classes(budget)
+            })? {
+                GlobalCheck::Pass(reference) => reference,
+                GlobalCheck::Reject(classes) => {
+                    return Ok(GlobalCheck::Reject(classes));
+                },
+            };
+            let native = match self.search_native_cut_candidates(
+                &reference,
+                &native_cut_features,
+                coordinates,
+                publication_coordinates,
+                budget,
+            )? {
+                NativeCutSearchOutcome::Pass(drawing) => drawing,
+                NativeCutSearchOutcome::Reject(classes) => {
+                    return Ok(GlobalCheck::Reject(classes));
+                },
+            };
+            super::emission::SealedQDrawing::Native(native)
+        } else {
+            let QRingRoleCheck::Pass(ring_roles) = &ring_roles else {
+                return Err(GeometryErrorKind::Invalid(
+                    "an unclassified Q cycle reached source publication".into(),
+                )
+                .into());
+            };
+            let live_publication_samples = super::overlay::source_live_publication_samples(
+                self.emission.plan,
+                self.emission.publication,
+                budget,
+            )?;
+            let publication_chart_points =
+                self.assigned_publication_chart_points(&producer_projection, budget)?;
+            let publication_points = publication_chart_points
+                .iter()
+                .map(rounded_chart_point)
+                .collect::<Result<Vec<_>>>()?;
+            let publication_ordinates = super::emission::resolve_publication_ordinates(
+                self.topology,
+                self.emission.publication,
+                &live_publication_samples,
+                self.declared_axes,
+                self.metric_access,
+                budget,
+            )?;
+            let source_publication = super::overlay::SourcePublication {
+                inventory: self.emission.publication,
+                points: &publication_points,
+                ordinates: &publication_ordinates,
+                live_samples: &live_publication_samples,
+            };
+            let source = self.emission.plan.seal_source_drawing(
+                drawing,
+                ring_roles,
+                &self.ordinates,
+                Some(source_publication),
+                Some(&producer_projection.source_ports),
+                self.declared_axes,
+                self.strict_axes,
+                self.operation,
+                budget,
+            )?;
+            let receipt = SourceOnlyPublication {
+                source,
+                topology: self.topology,
+                source_ports: Some(&producer_projection.source_ports),
+                source_ordinates: &self.ordinates,
+                publication: Some(self.emission.publication),
+                publication_images: &publication_chart_points,
+                publication_points: &publication_points,
+                publication_ordinates: &publication_ordinates,
+            };
+            let sealed = match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::QSourceOnly(receipt),
+                    self.topology.publication_frame().clone(),
+                    budget,
+                ),
+                StorageTarget::Scalar,
+            )? {
+                PublicationOutcome::Pass(finished) => finished,
+                PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
+                    let mut variables = Vec::with_capacity(images.len());
+                    for image in images {
+                        budget.charge_into_error(1)?;
+                        variables.push(match image {
+                            image @ (QSourceImage::Port(_)
+                            | QSourceImage::SourcePoint(_)
+                            | QSourceImage::SourceRingStart(_)
+                            | QSourceImage::SourceRingEnd(_)
+                            | QSourceImage::CollapsedStart(_)
+                            | QSourceImage::CollapsedEnd(_)) => {
+                                let port = q_source_image_port(self.topology, image)?;
+                                let node = self
+                                    .topology
+                                    .q
+                                    .ports
+                                    .get(port.0 as usize)
+                                    .map(|port| port.node)
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "rejected source literal port is unknown".into(),
+                                        )
+                                    })?;
+                                QVariableNode::Source(node)
+                            },
+                            QSourceImage::PublicationSample(sample) => {
+                                let node = self
+                                    .publication_sample_nodes
+                                    .get(sample as usize)
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "rejected publication literal has no node".into(),
+                                        )
+                                    })?;
+                                QVariableNode::Published(node)
+                            },
+                        });
+                    }
+                    return Ok(GlobalCheck::Reject(
+                        self.classes_for_variables(variables, budget)?,
+                    ));
+                },
+                PublicationOutcome::Reject(PublicationRejection::Native) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned native rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned array batch rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only Q finisher returned producer-drawn rejection".into(),
+                    )
+                    .into());
+                },
+            };
+            super::emission::SealedQDrawing::Source(SealedSourceDrawing {
+                sealed,
+                line_traces: Vec::new(),
+            })
+        };
+        Ok(GlobalCheck::Pass(QEmbeddingOutput {
+            sealed,
+            family_state: None,
+        }))
     }
 
     fn local_candidate(
@@ -21574,7 +21768,7 @@ fn assigned_emitted_ring(
     Ok((chart_ring, published_ring, quotient_closure))
 }
 
-pub(super) enum QRingRoleFailure {
+enum QRingRoleFailure {
     CycleConstruction,
     CycleUnclassifiable,
     CycleChanged,
@@ -21582,12 +21776,37 @@ pub(super) enum QRingRoleFailure {
     SourceChanged,
 }
 
-pub(super) enum QRingRoleCheck {
+enum QRingRoleCheck {
     Pass(Vec<bool>),
+    NativeRequired(Vec<QRingRoleStatus>),
     Reject {
         nodes: Vec<QNodeId>,
         failure: QRingRoleFailure,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum QRingRoleStatus {
+    Classified(bool),
+    Unclassified,
+}
+
+impl QRingRoleCheck {
+    const fn role_count(&self) -> Option<usize> {
+        match self {
+            Self::Pass(roles) => Some(roles.len()),
+            Self::NativeRequired(roles) => Some(roles.len()),
+            Self::Reject { .. } => None,
+        }
+    }
+
+    fn role_at(&self, index: usize) -> Option<QRingRoleStatus> {
+        match self {
+            Self::Pass(roles) => roles.get(index).copied().map(QRingRoleStatus::Classified),
+            Self::NativeRequired(roles) => roles.get(index).copied(),
+            Self::Reject { .. } => None,
+        }
+    }
 }
 
 fn planned_area_rings(plan: &QEmissionPlan) -> &[PlannedAreaRing] {
@@ -21609,6 +21828,7 @@ fn check_q_ring_roles(
         return Ok(QRingRoleCheck::Pass(Vec::new()));
     };
     let mut roles = Vec::with_capacity(area_rings.len());
+    let mut region_roles: Option<Vec<QRingRoleStatus>> = None;
     for ring in area_rings {
         work.charge_into_error(1)?;
         let nodes = || {
@@ -21644,6 +21864,22 @@ fn check_q_ring_roles(
             work,
         )?
         else {
+            if !is_source
+                && matches!(
+                    quotient_ring_role_status(topology.sources.frame, &emitted_chart)?,
+                    QuotientRingRoleStatus::Unbounded
+                )
+            {
+                let region_roles = region_roles.get_or_insert_with(|| {
+                    std::mem::take(&mut roles)
+                        .into_iter()
+                        .map(QRingRoleStatus::Classified)
+                        .collect()
+                });
+                // Final shell/hole roles belong to the selected region's assembled chart.
+                region_roles.push(QRingRoleStatus::Unclassified);
+                continue;
+            }
             return Ok(QRingRoleCheck::Reject {
                 nodes: nodes(),
                 failure: if is_source {
@@ -21663,9 +21899,13 @@ fn check_q_ring_roles(
                 },
             });
         }
-        roles.push(role.emitted_is_hole);
+        if let Some(region_roles) = &mut region_roles {
+            region_roles.push(QRingRoleStatus::Classified(role.emitted_is_hole));
+        } else {
+            roles.push(role.emitted_is_hole);
+        }
     }
-    Ok(QRingRoleCheck::Pass(roles))
+    Ok(region_roles.map_or(QRingRoleCheck::Pass(roles), QRingRoleCheck::NativeRequired))
 }
 
 pub(super) fn certify_nearest_ring_roles(
@@ -21675,6 +21915,10 @@ pub(super) fn certify_nearest_ring_roles(
 ) -> Result<Vec<bool>> {
     match check_q_ring_roles(topology, drawing, work)? {
         QRingRoleCheck::Pass(roles) => Ok(roles),
+        QRingRoleCheck::NativeRequired(_) => Err(GeometryErrorKind::Invalid(
+            "selected Q cycle needs Native region assembly".into(),
+        )
+        .into()),
         QRingRoleCheck::Reject { failure, .. } => {
             let message = match failure {
                 QRingRoleFailure::CycleConstruction => {
@@ -22545,6 +22789,12 @@ mod canonical_coordinate_tests {
         let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
         let ring_roles = match check_q_ring_roles(&topology, &drawing, &mut budget)? {
             QRingRoleCheck::Pass(roles) => roles,
+            QRingRoleCheck::NativeRequired(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Native-demand control unexpectedly needs region assembly".into(),
+                )
+                .into());
+            },
             QRingRoleCheck::Reject { .. } => {
                 return Err(GeometryErrorKind::Invalid(
                     "Native-demand fixture has an invalid selected ring role".into(),
@@ -23029,6 +23279,12 @@ mod canonical_coordinate_tests {
         let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
         let ring_roles = match check_q_ring_roles(&topology, &drawing, &mut budget)? {
             QRingRoleCheck::Pass(roles) => roles,
+            QRingRoleCheck::NativeRequired(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "source reuse control unexpectedly needs Native region assembly".into(),
+                )
+                .into());
+            },
             QRingRoleCheck::Reject { .. } => {
                 return Err(GeometryErrorKind::Invalid(
                     "difference source rings did not retain their selected roles".into(),
@@ -25150,6 +25406,13 @@ mod canonical_coordinate_tests {
             QRingRoleCheck::Pass(roles) => {
                 return Err(GeometryErrorKind::Invalid(
                     format!("QC-R accepted the complementary source role {roles:?}").into(),
+                )
+                .into());
+            },
+            QRingRoleCheck::NativeRequired(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "the complementary source drawing incorrectly required Native role assembly"
+                        .into(),
                 )
                 .into());
             },
