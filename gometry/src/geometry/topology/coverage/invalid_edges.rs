@@ -21,9 +21,6 @@ use crate::geometry::{
 type OwnersBySource<'a> = BTreeMap<SourceEdgeId, Vec<&'a QSpanOwner>>;
 type SegmentOwners = BTreeMap<(usize, PointKey, PointKey), VecDeque<SourceEdgeId>>;
 
-// `line_merge` only reverses and concatenates original segments. PointKey uses
-// the same exact XY identity, so each written segment consumes one captured
-// source-edge occurrence without recovering identity from rounded coordinates.
 fn undirected_point_pair(start: crate::Point, end: crate::Point) -> (PointKey, PointKey) {
     let start = PointKey::new(start);
     let end = PointKey::new(end);
@@ -212,6 +209,11 @@ pub(super) fn producer_drawing_receipt(
             .or_default()
             .push(owner);
     }
+    // Projection appends source edges in ID order, and these queues retain that
+    // order. The shared line merger consumes input ordinals once, seeds open paths
+    // and cycles by the first unused edge, and follows the unique continuation at
+    // degree-two nodes; duplicate row/XY occurrences therefore leave FIFO, including
+    // the two-edge cycle. PointKey is only the occurrence key, never provenance.
     let mut segment_owners = SegmentOwners::new();
     for &source_edge in owners_by_source.keys() {
         work.charge_into_error(1)?;

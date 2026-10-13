@@ -409,6 +409,96 @@ fn coverage_invalid_edge_binder_omission_fails_on_final_readback() {
 }
 
 #[test]
+fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
+    let input = [
+        crate::io::parse_wkt(
+            "POLYGON ZM ((0 0 0 0, 2 0 20 200, 2 2 22 220, 2 0 24 240, 0 0 2 20, 0 -2 4 40, -2 -2 6 60, 0 0 0 0))",
+        )
+        .expect("one row repeats two edges in reverse with distinct ZM records"),
+        crate::io::parse_wkt(
+            "POLYGON ((0.5 -0.5, 1.5 -0.5, 1.5 0.5, 0.5 0.5, 0.5 -0.5))",
+        )
+        .expect("overlap marks the repeated horizontal source occurrences"),
+    ];
+    let source_points = input
+        .first()
+        .expect("first source row")
+        .points_vec()
+        .expect("ZM source coordinates are retained");
+    let [
+        first_start,
+        first_end,
+        _,
+        reverse_start,
+        reverse_end,
+        _,
+        _,
+        _,
+    ] = source_points.as_slice()
+    else {
+        panic!("the source ring retains its eight ZM records");
+    };
+    assert_ne!(first_start.z(), reverse_end.z());
+    assert_ne!(first_end.z(), reverse_start.z());
+    assert_ne!(first_start.m(), reverse_end.m());
+    assert_ne!(first_end.m(), reverse_start.m());
+
+    let (analysis, shapes) = crate::geometry::coverage_invalid_edges_geographic_analysis(
+        &input,
+        crate::geographic::GeographicFrame::crs84(),
+        0.0,
+        "coverage_invalid_edges",
+    )
+    .unwrap();
+    let [Shape::LineString(line), _] = shapes.as_slice() else {
+        panic!("the repeated source edges merge into one diagnostic cycle");
+    };
+    let source_start = Point::new_raw_xy(0.0, 0.0);
+    let source_end = Point::new_raw_xy(2.0, 0.0);
+    assert_eq!(line.iter().collect::<Vec<_>>(), [
+        source_start,
+        source_end,
+        source_start
+    ]);
+
+    let mut work = Unmetered;
+    let receipt = analysis
+        .invalid_edges_drawing_receipt(None, &mut work)
+        .unwrap();
+    for (root_index, expected_image, expected_record) in [
+        (0, ProducerImageId::new(0), source_start),
+        (3, ProducerImageId::new(1), source_end),
+    ] {
+        let uses = receipt
+            .source_root_uses
+            .iter()
+            .filter(|source_use| {
+                source_use.address.logical_row == 0
+                    && source_use.range.root() == RootId::from_index(root_index)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !uses.is_empty(),
+            "source edge {root_index} retains at least one exact Q interval",
+        );
+        for source_use in uses {
+            assert_eq!(
+                source_use.image, expected_image,
+                "source edge {root_index} keeps its occurrence through line_merge",
+            );
+            let literal = receipt
+                .literals
+                .iter()
+                .find(|literal| {
+                    literal.address == source_use.address && literal.image == source_use.image
+                })
+                .expect("source use names a retained line literal");
+            assert_eq!(literal.record, expected_record);
+        }
+    }
+}
+
+#[test]
 fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
