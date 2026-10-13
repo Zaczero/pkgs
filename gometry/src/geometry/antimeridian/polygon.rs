@@ -5,6 +5,7 @@ use crate::geographic::{
     ChartConnection, ChartPole, GeodeticPole, GeographicFrame, GeographicRing, GeographicViewError,
     Latitude, RetainedChartDisplacement, RingDomain, RingSummary, ScalarGeographicView,
 };
+use crate::geometry::antimeridian::publication::SplitCapture;
 use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords_with_metric,
     split_ring_at_seam_with_metric,
@@ -25,7 +26,9 @@ mod chart_shape;
 mod split;
 
 #[cfg(test)]
-use chart_events::{certified_no_chart_events, line_has_certified_no_chart_events};
+use chart_events::{
+    certified_no_chart_events, chart_connection, line_has_certified_no_chart_events, seam_event,
+};
 use chart_events::{chart_latitude, lineal_shape_has_certified_no_chart_events};
 #[cfg(test)]
 use chart_shape::{chart_line, chart_polygon, chart_ring};
@@ -79,6 +82,36 @@ impl Shape {
         let view =
             ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
         split_geographic_view(view, metric_access)
+    }
+
+    pub(crate) fn split_antimeridian_captured_in_frame(
+        &self,
+        frame: GeographicFrame,
+    ) -> Result<super::publication::SplitDrawing> {
+        if frame == GeographicFrame::crs84() {
+            let metric = std::sync::OnceLock::new();
+            let metric_access = || {
+                metric.get_or_try_init(|| {
+                    let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
+                    crate::crs::GeodesicMetric::from_model(&model)
+                })
+            };
+            return self
+                .split_antimeridian_captured_in_frame_with_metric(frame, Some(&metric_access));
+        }
+        self.split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+            frame, None,
+        )
+    }
+
+    pub(crate) fn split_antimeridian_captured_in_frame_with_metric<M: ChartMetric>(
+        &self,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<super::publication::SplitDrawing> {
+        let view =
+            ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
+        split_geographic_view_captured(view, metric_access)
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
@@ -277,9 +310,33 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
+    split_geographic_view_with_capture(view, metric_access, None)
+}
+
+fn split_geographic_view_captured<M: ChartMetric>(
+    view: ScalarGeographicView<'_>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<super::publication::SplitDrawing> {
+    let frame = view.frame();
+    let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
+    let latitude_scale =
+        frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
+    let mut capture = SplitCapture::enabled();
+    let shape = split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
+    Ok(capture.into_drawing(shape, frame, longitude_scale, latitude_scale))
+}
+
+fn split_geographic_view_with_capture<M: ChartMetric>(
+    view: ScalarGeographicView<'_>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mut capture: Option<&mut SplitCapture>,
+) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
     if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
     }
     let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
@@ -287,6 +344,9 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
     if canonical && lineal_shape_has_certified_no_chart_events(view.shape(), frame, longitude_scale)
     {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
     }
     let chart = chart_shape(
@@ -295,13 +355,20 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         longitude_scale,
         latitude_scale,
         metric_access,
+        capture.as_deref_mut(),
         &mut ShapeTransformMemo::default(),
     )?;
     if canonical
         && !crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame)
         && !chart.crosses_antimeridian()
     {
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.mark_identity();
+        }
         return Ok(view.shape().clone());
+    }
+    if let Some(capture) = capture {
+        capture.capture_source_edges(&chart);
     }
     let split =
         chart.split_antimeridian_chart(&mut ShapeTransformMemo::default(), metric_access)?;

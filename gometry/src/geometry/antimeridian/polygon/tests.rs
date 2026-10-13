@@ -1,6 +1,6 @@
 use super::{
-    PoleClosure, certified_no_chart_events, chart_line, chart_polygon, chart_ring,
-    line_has_certified_no_chart_events, split_polygon,
+    PoleClosure, certified_no_chart_events, chart_connection, chart_line, chart_polygon,
+    chart_ring, line_has_certified_no_chart_events, seam_event, split_polygon,
 };
 use crate::geographic::{
     AngularFactor, ChartPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
