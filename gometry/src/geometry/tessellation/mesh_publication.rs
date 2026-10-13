@@ -264,6 +264,408 @@ fn append_earcut_polygon(
     Ok(())
 }
 
+pub(in crate::geometry) fn mesh_publication_array_receipt(
+    published: crate::geometry::PublishedTriangleVertices,
+) -> Result<crate::geometry::publication::ProducerDrawingReceipt> {
+    use std::sync::Arc;
+
+    use crate::geometry::Unmetered;
+    use crate::geometry::embedding_completion::FrozenLiteralBuffers;
+    use crate::geometry::publication::ProducerDrawingReceipt;
+    use crate::geometry::storage::StorageLayout;
+
+    let mut points = Vec::new();
+    let mut ring_ends = Vec::new();
+    let mut row_map = Vec::new();
+    let mut literals = Vec::new();
+    let mut next_image = 0_usize;
+    append_mesh_outputs(
+        published,
+        None,
+        &mut points,
+        &mut ring_ends,
+        &mut row_map,
+        &mut literals,
+        &mut next_image,
+    )?;
+    let storage = mesh_triangle_storage(points, &ring_ends)?;
+    let mut work = Unmetered;
+    let buffers = FrozenLiteralBuffers::rows(
+        Arc::new(storage),
+        None,
+        StorageLayout::LogicalRows,
+        row_map,
+        &mut work,
+    )?;
+    Ok(ProducerDrawingReceipt::new(
+        buffers,
+        literals,
+        Vec::new(),
+        Vec::new(),
+    ))
+}
+
+pub(crate) fn finish_mesh_publication_array(
+    published: crate::geometry::PublishedTriangleVertices,
+    frame: crate::Frame,
+) -> Result<crate::geometry::publication::FinishedGeometry> {
+    let receipt = mesh_publication_array_receipt(published)?;
+    finish_mesh_receipt(
+        receipt,
+        frame,
+        crate::geometry::publication::StorageTarget::Array,
+    )
+}
+
+pub(crate) fn finish_mesh_publication_groups(
+    rows: Vec<Option<crate::geometry::PublishedTriangleVertices>>,
+    frame: crate::Frame,
+    missing: Option<crate::geometry::storage::ValidityMask>,
+) -> Result<crate::geometry::publication::FinishedGeometry> {
+    use std::sync::Arc;
+
+    use crate::geometry::Unmetered;
+    use crate::geometry::embedding_completion::FrozenLiteralBuffers;
+    use crate::geometry::publication::ProducerDrawingReceipt;
+    use crate::geometry::storage::StorageLayout;
+
+    if missing
+        .as_ref()
+        .is_some_and(|mask| mask.len() != rows.len())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "mesh group validity does not match its logical rows".into(),
+        )
+        .into());
+    }
+
+    let mut points = Vec::new();
+    let mut ring_ends = Vec::new();
+    let mut value_map = Vec::new();
+    let mut literals = Vec::new();
+    let mut offsets = Vec::with_capacity(
+        rows.len()
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?,
+    );
+    let mut next_image = 0_usize;
+    offsets.push(0_i64);
+    for (group_row, published) in rows.into_iter().enumerate() {
+        let is_missing = missing
+            .as_ref()
+            .is_some_and(|mask| mask.is_missing(group_row));
+        if is_missing != published.is_none() {
+            return Err(GeometryErrorKind::Invalid(
+                "mesh group receipt does not match its source-row validity".into(),
+            )
+            .into());
+        }
+        if let Some(published) = published {
+            append_mesh_outputs(
+                published,
+                Some(group_row),
+                &mut points,
+                &mut ring_ends,
+                &mut value_map,
+                &mut literals,
+                &mut next_image,
+            )?;
+        }
+        offsets.push(
+            i64::try_from(value_map.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        );
+    }
+
+    let storage = mesh_triangle_storage(points, &ring_ends)?;
+    let mut work = Unmetered;
+    let buffers = FrozenLiteralBuffers::groups(
+        Arc::new(storage),
+        None,
+        StorageLayout::LogicalRows,
+        value_map,
+        offsets,
+        missing,
+        &mut work,
+    )?;
+    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    finish_mesh_receipt(
+        receipt,
+        frame,
+        crate::geometry::publication::StorageTarget::Groups,
+    )
+}
+
+fn finish_mesh_receipt(
+    receipt: crate::geometry::publication::ProducerDrawingReceipt,
+    frame: crate::Frame,
+    target: crate::geometry::publication::StorageTarget,
+) -> Result<crate::geometry::publication::FinishedGeometry> {
+    use crate::geometry::Unmetered;
+    use crate::geometry::publication::{
+        ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+        finish_geographic,
+    };
+
+    let mut work = Unmetered;
+    match finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        target,
+    )? {
+        PublicationOutcome::Pass(finished) => Ok(finished),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final mesh storage changed {} checked output records",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "mesh finisher returned a different producer rejection family".into(),
+        )
+        .into()),
+    }
+}
+
+fn append_mesh_outputs(
+    published: crate::geometry::PublishedTriangleVertices,
+    group_row: Option<usize>,
+    points: &mut Vec<crate::geometry::Point>,
+    ring_ends: &mut Vec<usize>,
+    row_map: &mut Vec<
+        Option<
+            crate::geometry::embedding_completion::LiteralRowLayout<
+                crate::geometry::publication::ProducerImageId,
+            >,
+        >,
+    >,
+    literals: &mut Vec<crate::geometry::publication::ProducerLiteral>,
+    next_image: &mut usize,
+) -> Result<()> {
+    use crate::geometry::embedding_completion::{
+        LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    };
+    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
+
+    validate_published_mesh(&published)?;
+    if group_row.is_none() && !row_map.is_empty() {
+        return Err(GeometryErrorKind::Invalid(
+            "a scalar mesh array receipt was appended to existing rows".into(),
+        )
+        .into());
+    }
+    let output_base = points.len();
+    let mut source_points = published.points;
+    let source_ring_ends = published.ring_ends;
+    let mut start = 0_usize;
+    for &end in &source_ring_ends {
+        let ring = source_points.get(start..end).ok_or_else(|| {
+            GeometryErrorKind::Invalid("mesh triangle range is outside its published points".into())
+        })?;
+        let first = ring.first().copied().ok_or_else(|| {
+            GeometryErrorKind::Invalid("published mesh triangle has no ring points".into())
+        })?;
+        if ring.iter().any(|point| point.axes != first.axes) {
+            return Err(GeometryErrorKind::Invalid(
+                "published mesh triangle changes coordinate axes within one ring".into(),
+            )
+            .into());
+        }
+
+        let value_row = row_map.len();
+        let logical_row = group_row.unwrap_or(value_row);
+        let value_row_address = group_row.map(|_| value_row);
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row,
+            value_row: value_row_address,
+            output: 0,
+        };
+        let mut images = Vec::with_capacity(ring.len());
+        for &point in ring {
+            let image = ProducerImageId::new(*next_image);
+            *next_image = (*next_image)
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            images.push(image);
+            literals.push(ProducerLiteral::from_point(address, image, point));
+        }
+        let sequence = LiteralSequence {
+            output: 0,
+            axes: first.axes,
+            images,
+        };
+        row_map.push(Some(LiteralRowLayout {
+            operation: 0,
+            logical_row,
+            group_row,
+            value_row: value_row_address,
+            layout: ShapeLiteralLayout {
+                points: Vec::new(),
+                lines: Vec::new(),
+                polygons: vec![LiteralPolygon {
+                    output: 0,
+                    axes: first.axes,
+                    shell: sequence,
+                    holes: Vec::new(),
+                }],
+            },
+        }));
+        ring_ends.push(
+            output_base
+                .checked_add(end)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        );
+        start = end;
+    }
+    if start != source_points.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "mesh triangle ranges leave published points unused".into(),
+        )
+        .into());
+    }
+    points.append(&mut source_points);
+    Ok(())
+}
+
+fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertices) -> Result<()> {
+    let mesh = published.mesh_publication.as_ref().ok_or_else(|| {
+        GeometryErrorKind::Invalid("geographic mesh output lost its prepared records".into())
+    })?;
+    if mesh.faces.len() != published.ring_ends.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "published mesh rings differ from their prepared face map".into(),
+        )
+        .into());
+    }
+    let site_locations_match = mesh.sites.iter().all(|site| {
+        matches!(
+            (mesh.producer, site.location),
+            (MeshProducer::Delaunay, MeshSiteLocation::Retained(_))
+                | (MeshProducer::Earcut, MeshSiteLocation::Cartesian)
+        )
+    });
+    if !site_locations_match {
+        return Err(GeometryErrorKind::Invalid(
+            "prepared mesh producer disagrees with its site locations".into(),
+        )
+        .into());
+    }
+
+    let mut ring_start = 0_usize;
+    let mut source_start = 0_usize;
+    for (&ring_end, face) in published.ring_ends.iter().zip(&mesh.faces) {
+        let ring_len = ring_end.checked_sub(ring_start).ok_or_else(|| {
+            GeometryErrorKind::Invalid("published mesh ring offsets are decreasing".into())
+        })?;
+        let source_end = source_start
+            .checked_add(4)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if ring_len < 4 || face.output_vertices != (source_start..source_end) {
+            return Err(GeometryErrorKind::Invalid(
+                "published mesh ring lost its prepared face order".into(),
+            )
+            .into());
+        }
+        for side in 0..3 {
+            let boundary = face.boundary_uses.get(side).ok_or_else(|| {
+                GeometryErrorKind::Invalid("prepared mesh face is missing a side use".into())
+            })?;
+            let end_side = (side + 1) % 3;
+            let selected_side = face.output_to_selected.get(side).copied();
+            let selected_site =
+                selected_side.and_then(|selected| face.selected_sites.get(usize::from(selected)));
+            let role_matches = matches!(
+                (mesh.producer, boundary.role),
+                (MeshProducer::Delaunay, MeshEdgeRole::Delaunay)
+                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutBoundary)
+                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutDiagonal)
+                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutBridge)
+            );
+            let twin_matches_role = matches!(
+                (boundary.role, boundary.reverse),
+                (MeshEdgeRole::Delaunay, _)
+                    | (MeshEdgeRole::EarcutBoundary, None)
+                    | (MeshEdgeRole::EarcutDiagonal, Some(_))
+                    | (MeshEdgeRole::EarcutBridge, Some(_))
+            );
+            if usize::from(boundary.output_side) != side
+                || boundary.selected_use.face != face.selected_face
+                || selected_side != Some(boundary.selected_use.side)
+                || boundary.reversed_for_output != face.reversed
+                || !role_matches
+                || !twin_matches_role
+                || selected_site != face.output_sites.get(side)
+                || face.output_sites.get(side) != Some(&boundary.start_site)
+                || face.output_sites.get(end_side) != Some(&boundary.end_site)
+                || mesh.sites.get(boundary.start_site).is_none()
+                || mesh.sites.get(boundary.end_site).is_none()
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "prepared mesh side no longer matches its selected face".into(),
+                )
+                .into());
+            }
+        }
+        source_start = source_end;
+        ring_start = ring_end;
+    }
+    if ring_start != published.points.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "published mesh face map does not cover its point stream".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn mesh_triangle_storage(
+    points: Vec<crate::geometry::Point>,
+    ring_ends: &[usize],
+) -> Result<crate::geometry::storage::GeometryArrayStorage> {
+    use std::sync::Arc;
+
+    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
+
+    let Some(first) = points.first() else {
+        if !ring_ends.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "empty mesh points have nonempty ring offsets".into(),
+            )
+            .into());
+        }
+        return Ok(GeometryArrayStorage::Mixed(Vec::new()));
+    };
+    let axes = first.axes;
+    if points.iter().any(|point| point.axes != axes) {
+        let shapes = Shape::triangle_shapes_from_published_rings(&points, ring_ends)?;
+        return Ok(GeometryArrayStorage::Mixed(shapes));
+    }
+
+    let mut ring_offsets = crate::geometry::CsrOffsetBuilder::with_capacity(ring_ends.len());
+    let mut polygon_offsets = crate::geometry::CsrOffsetBuilder::with_capacity(ring_ends.len());
+    for (index, &end) in ring_ends.iter().enumerate() {
+        ring_offsets.push_end(end, points.len())?;
+        polygon_offsets.push_end(index.wrapping_add(1), ring_ends.len())?;
+    }
+    let ring_offsets = ring_offsets
+        .finish(points.len())?
+        .cast_level::<crate::geometry::RingLevel>();
+    let polygon_offsets = polygon_offsets
+        .finish(ring_ends.len())?
+        .cast_level::<crate::geometry::PolygonLevel>();
+    Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+        coords: Arc::new(crate::geometry::CoordSeq::try_from_points(&points)?),
+        ring_offsets,
+        polygon_offsets,
+        row_map: RowSelection::Identity,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::prepare_earcut_publication;
@@ -314,7 +716,7 @@ mod tests {
         assert_eq!(publication.producer, MeshProducer::Earcut);
         assert_eq!(publication.faces.len(), 8);
         assert_eq!(publication.points.len(), publication.faces.len() * 4);
-        let output_shapes = Shape::earcut_triangle_shapes_from_publication(&publication)
+        let output_shapes = Shape::triangle_shapes_from_vertices(&publication.points)
             .expect("published ears retain their per-face common axes");
         assert_eq!(output_shapes.len(), publication.faces.len());
         let mut bridge_uses = 0;

@@ -522,52 +522,6 @@ impl Shape {
         super::mesh_publication::prepare_earcut_publication(self, budget)
     }
 
-    pub(crate) fn earcut_triangle_shapes_from_publication(
-        publication: &super::PreparedMeshPublication,
-    ) -> Result<Vec<Self>> {
-        if publication.producer != super::MeshProducer::Earcut
-            || publication.faces.len().checked_mul(4) != Some(publication.points.len())
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "prepared Earcut faces do not match their emitted vertex stream".into(),
-            )
-            .into());
-        }
-        let mut shapes = Vec::with_capacity(publication.faces.len());
-        for (face_index, face) in publication.faces.iter().enumerate() {
-            let start = face_index
-                .checked_mul(4)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            let end = start
-                .checked_add(4)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            if face.output_vertices != (start..end) {
-                return Err(GeometryErrorKind::Invalid(
-                    "prepared Earcut face ranges are not in output order".into(),
-                )
-                .into());
-            }
-            let [a, b, c, closure] = publication
-                .points
-                .get(start..end)
-                .and_then(|ring| <&[Point; 4]>::try_from(ring).ok())
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "prepared Earcut face range is outside its vertex stream".into(),
-                    )
-                })?;
-            if a != closure {
-                return Err(GeometryErrorKind::Invalid(
-                    "prepared Earcut face is not closed on its full record".into(),
-                )
-                .into());
-            }
-            shapes.push(try_triangle_shape(a, b, c)?);
-        }
-        Ok(shapes)
-    }
-
     fn earcut_with(&self, emit: &mut impl FnMut(Point, Point, Point) -> Result<()>) -> Result<()> {
         match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
             Polygonal::Polygon(polygon) => earcut_polygon_with(polygon, emit),

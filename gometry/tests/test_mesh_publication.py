@@ -69,6 +69,19 @@ def test_geographic_earcut_receipt_paths_keep_selected_records() -> None:
             assert all(tuple(coordinate) in source_records for coordinate in ring)
 
 
+def test_geographic_earcut_groups_keep_mixed_axes_and_missing_rows() -> None:
+    xy = gm.Polygon([(0, 0), (4, 0), (0, 3)], crs=4326)
+    xyz = gm.Polygon([(10, 0, 1), (14, 0, 2), (10, 3, 3)], crs=4326)
+
+    groups = gm.GeometryArray([xy, None, xyz]).triangulate(method='earcut')
+
+    assert len(groups[0]) == 1
+    assert groups[0][0].coordinate_axes == 'XY'
+    assert groups[1] is None
+    assert len(groups[2]) == 1
+    assert groups[2][0].coordinate_axes == 'XYZ'
+
+
 def test_mixed_axis_delaunay_keeps_retained_generated_roots() -> None:
     records = [
         (-170.0, -10.0, 1.0, 101.0),

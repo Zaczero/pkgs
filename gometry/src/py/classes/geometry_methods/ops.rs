@@ -45,6 +45,28 @@ fn publish_triangle_shapes_for_domain(
     }
 }
 
+fn publish_earcut_publication_for_domain(
+    publication: geometry::PreparedMeshPublication,
+    domain: geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
+    budget: &mut geometry::ExpansionBudget,
+) -> crate::error::Result<geometry::PublishedTriangleVertices> {
+    let metric_access = || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic triangulation requires the operation's CRS metric",
+            )
+        })
+    };
+    let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+    geometry::publish_earcut_mesh_publication_for_domain(
+        publication,
+        domain,
+        &source_context,
+        budget,
+    )
+}
+
 enum SamplePublication {
     Geographic(geometry::PreparedSampling),
     Cartesian(Vec<geometry::Point>),
@@ -172,11 +194,8 @@ impl PyGeometry {
     }
 
     pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
-        // Build the packed `Polygons` layout straight from the triangulation's
-        // flat vertex stream — one coords column + arithmetic CSR offsets — so a
-        // 1000-triangle result skips 1000 per-triangle `Polygon`/`CoordSeq`
-        // allocations and the re-pack scan (measured ~50% of the op).
         let shape = Arc::clone(&self.shape);
+        let frame = self.frame.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
@@ -192,31 +211,25 @@ impl PyGeometry {
                 })
             };
             let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
-            geometry::publish_mesh_publication_for_domain(
+            let published = geometry::publish_mesh_publication_for_domain(
                 publication,
                 domain,
                 &source_context,
                 &mut budget,
-            )
+            )?;
+            Ok::<_, crate::error::Error>(published)
         })?;
-        let vertices = publication.points.as_slice();
-        if vertices.is_empty() {
-            return Ok(PyGeometryArray::from_shapes(
-                Vec::new(),
+        if domain.is_geographic() {
+            let finished =
+                py.detach(move || geometry::finish_mesh_publication_array(publication, frame))?;
+            Ok(PyGeometryArray::from_finished(finished)?)
+        } else {
+            PyGeometryArray::packed_triangles_with_ring_ends(
+                &publication.points,
+                &publication.ring_ends,
                 self.frame.clone(),
-            )?);
+            )
         }
-        let axes = vertices.first().map(|point| point.axes);
-        if vertices.iter().any(|point| Some(point.axes) != axes) {
-            let triangles =
-                Shape::triangle_shapes_from_published_rings(vertices, &publication.ring_ends)?;
-            return self.parts_to_array(triangles);
-        }
-        PyGeometryArray::packed_triangles_with_ring_ends(
-            vertices,
-            &publication.ring_ends,
-            self.frame.clone(),
-        )
     }
 
     pub(crate) fn constrained_delaunay_triangles_impl(
@@ -256,35 +269,21 @@ impl PyGeometry {
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
-        if shape.earcut_packed_axes().is_some() {
-            // The common receipt is a geographic sink input; Cartesian rows
-            // keep the direct emitter.
-            if !matches!(
+        let packed = shape.earcut_packed_axes().is_some();
+        if packed
+            && !matches!(
                 geometry::topology_domain(&self.frame),
                 Ok(geometry::TopologyDomain::Geographic(_))
-            ) {
-                let vertices = py.detach(move || shape.polygon_triangle_vertices())?;
-                return if vertices.is_empty() {
-                    Ok(PyGeometryArray::from_shapes(
-                        Vec::new(),
-                        self.frame.clone(),
-                    )?)
-                } else {
-                    PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
-                };
-            }
-            let publication = py.detach(move || {
-                let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
-                shape.earcut_mesh_publication_budgeted(&mut budget)
-            })?;
-            let vertices = publication.points.as_slice();
+            )
+        {
+            let vertices = py.detach(move || shape.polygon_triangle_vertices())?;
             return if vertices.is_empty() {
                 Ok(PyGeometryArray::from_shapes(
                     Vec::new(),
                     self.frame.clone(),
                 )?)
             } else {
-                PyGeometryArray::packed_triangles(vertices, self.frame.clone())
+                PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
         }
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
@@ -297,19 +296,27 @@ impl PyGeometry {
                 return Err(error);
             },
         };
-        let triangles = match domain {
-            geometry::TopologyDomain::Cartesian => py.detach(move || shape.polygon_triangles())?,
-            geometry::TopologyDomain::Geographic(_) => {
-                let publication = py.detach(move || {
-                    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
-                    shape.earcut_mesh_publication_budgeted(&mut budget)
-                })?;
-                Shape::earcut_triangle_shapes_from_publication(&publication)?
+        match domain {
+            geometry::TopologyDomain::Cartesian => {
+                let triangles = py.detach(move || shape.polygon_triangles())?;
+                self.parts_to_array(triangles)
             },
-        };
-        self.parts_to_array(publish_triangle_shapes_for_domain(
-            triangles, domain, metric,
-        )?)
+            geometry::TopologyDomain::Geographic(_) => {
+                let frame = self.frame.clone();
+                let finished = py.detach(move || {
+                    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+                    let publication = shape.earcut_mesh_publication_budgeted(&mut budget)?;
+                    let published = publish_earcut_publication_for_domain(
+                        publication,
+                        domain,
+                        metric,
+                        &mut budget,
+                    )?;
+                    geometry::finish_mesh_publication_array(published, frame)
+                })?;
+                Ok(PyGeometryArray::from_finished(finished)?)
+            },
+        }
     }
 
     pub(crate) fn sample_points_impl(

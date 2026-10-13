@@ -109,13 +109,14 @@ pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
     PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
-    publish_mesh_publication_for_domain, publish_polygon_parts_with_edge_roles,
-    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
-    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
-    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
-    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
-    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
-    publish_voronoi_edge_column_with_budget, publish_voronoi_polygon_outputs,
+    publish_earcut_mesh_publication_for_domain, publish_mesh_publication_for_domain,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
+    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
+    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
+    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
+    publish_triangle_vertex_stream_budgeted, publish_voronoi_edge_column_with_budget,
+    publish_voronoi_polygon_outputs,
 };
 mod arrangement;
 mod bvh_code;
@@ -393,9 +394,12 @@ pub(crate) use segments::{
 };
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
+#[cfg(test)]
+pub(in crate::geometry) use tessellation::mesh_publication_array_receipt;
 pub(crate) use tessellation::{
     CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, finish_mesh_publication_array,
+    finish_mesh_publication_groups, publish_sampling_array, publish_sampling_groups,
     row_sample_seed,
 };
 #[expect(

@@ -200,6 +200,53 @@ fn producer_drawing_rejects_final_storage_readback_mismatch() {
 }
 
 #[test]
+fn mesh_receipt_omission_is_rejected_by_final_storage_readback() {
+    let shape = Shape::Polygon(Polygon::new(
+        Ring::try_from_closed(
+            crate::geometry::CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(4.0, 0.0),
+                Point::new_raw_xy(0.0, 3.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+        Vec::new(),
+    ));
+    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+    let mut mesh = shape.earcut_mesh_publication_budgeted(&mut budget).unwrap();
+    let mut published =
+        crate::geometry::PublishedTriangleVertices::uniform(mesh.take_points()).unwrap();
+    published.mesh_publication = Some(mesh);
+    let mut receipt = crate::geometry::mesh_publication_array_receipt(published).unwrap();
+    assert_eq!(receipt.literals.len(), 4);
+    receipt.literals.remove(0);
+
+    let mut work = Unmetered;
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::default(),
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [ProducerImageId::new(0)]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("a mesh literal omitted from the receipt must fail its storage readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("mesh literal omission returns the producer-drawing rejection")
+        },
+    }
+}
+
+#[test]
 fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();

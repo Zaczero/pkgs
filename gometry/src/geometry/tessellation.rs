@@ -28,6 +28,9 @@ pub(crate) use delaunay::{
     CdtFaceUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
     RefinementConstruction, SourceConstraint, SourcePiece,
 };
+#[cfg(test)]
+pub(in crate::geometry) use mesh_publication::mesh_publication_array_receipt;
+pub(crate) use mesh_publication::{finish_mesh_publication_array, finish_mesh_publication_groups};
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,

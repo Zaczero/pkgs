@@ -20,7 +20,7 @@ pub(crate) enum MeshSiteLocation {
     not(test),
     expect(
         dead_code,
-        reason = "the shared storage adapter consumes source ordinals when binding retained sites to output rows"
+        reason = "mesh publishers use source ordinals and retained locations to select emitted records; final binding validates site references"
     )
 )]
 pub(crate) struct PreparedMeshSite {
@@ -114,7 +114,7 @@ impl PreparedMeshBoundaryUse {
     not(test),
     expect(
         dead_code,
-        reason = "the shared storage adapter consumes face permutations and directed uses when binding output rings"
+        reason = "final binding validates prepared face order, site permutations, and directed side uses against output rings"
     )
 )]
 pub(crate) struct PreparedMeshFace {
