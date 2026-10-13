@@ -1,5 +1,6 @@
 use super::assemble::{assemble_polygons, extend_over_poles, polygons_from_shape};
 use super::*;
+use crate::geometry::antimeridian::linestring::{SeamPiece, SeamVertexSource};
 
 /// A pole-closure cap fabricates ±90 vertices with no source segment, so a
 /// measured/3D input cannot honestly keep its ordinates there. Reject Z/M only
@@ -63,6 +64,162 @@ pub(super) fn split_polygon<M: ChartMetric>(
     Ok(polygons)
 }
 
+fn seam_piece_lineage(
+    piece: &SeamPiece,
+    source: &super::super::lineage::LineageSequence,
+    catalog: &mut super::super::lineage::LineageCatalog,
+) -> Result<super::super::lineage::LineageSequence> {
+    fn source_parameters(
+        sources: &[SeamVertexSource],
+        edge_count: usize,
+        work: &mut impl crate::geometry::Work,
+    ) -> Result<Vec<(usize, ExactRational)>> {
+        let mut parameters = Vec::new();
+        for source in sources {
+            match source {
+                SeamVertexSource::InputVertex(index) if *index == edge_count => {
+                    parameters.push((edge_count - 1, ExactRational::one()));
+                    parameters.push((0, ExactRational::zero()));
+                },
+                SeamVertexSource::InputVertex(index) => {
+                    if *index < edge_count {
+                        parameters.push((*index, ExactRational::zero()));
+                    }
+                    if *index > 0 {
+                        parameters.push((*index - 1, ExactRational::one()));
+                    }
+                },
+                SeamVertexSource::InputEdge { edge, parameter } => {
+                    parameters.push((*edge, parameter.try_clone_with_work(work)?));
+                },
+            }
+        }
+        Ok(parameters)
+    }
+
+    fn append_event(
+        output: &mut Vec<super::super::lineage::EventId>,
+        event: super::super::lineage::EventId,
+    ) {
+        if !output.contains(&event) {
+            output.push(event);
+        }
+    }
+
+    let member = source.member;
+    let edge_count = source.edges.len();
+    let mut vertices = Vec::with_capacity(piece.points.len());
+    for sources in &piece.vertices {
+        let mut events = Vec::new();
+        for source_use in sources {
+            match source_use {
+                SeamVertexSource::InputVertex(index) => {
+                    let source_events = source.vertices.get(*index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "seam fragment references an unknown source vertex".into(),
+                        )
+                    })?;
+                    for &event in source_events {
+                        append_event(&mut events, event);
+                    }
+                },
+                SeamVertexSource::InputEdge { edge, parameter } => {
+                    let source_edge = source.edges.get(*edge).copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "seam fragment references an unknown source edge".into(),
+                        )
+                    })?;
+                    let event = catalog.event_on_edge(member, source_edge, parameter)?;
+                    append_event(&mut events, event);
+                },
+            }
+        }
+        if events.is_empty() {
+            events.push(catalog.event(member, Vec::new())?);
+        }
+        vertices.push(events);
+    }
+
+    let mut edges = Vec::with_capacity(piece.points.len().saturating_sub(1));
+    let mut work = Unmetered;
+    for index in 0..piece.points.len().saturating_sub(1) {
+        let starts = source_parameters(
+            piece
+                .vertices
+                .get(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("seam vertex is unavailable".into()))?,
+            edge_count,
+            &mut work,
+        );
+        let ends = source_parameters(
+            piece.vertices.get(index + 1).ok_or_else(|| {
+                GeometryErrorKind::Invalid("seam edge end vertex is unavailable".into())
+            })?,
+            edge_count,
+            &mut work,
+        )?;
+        let starts = starts?;
+        let mut source_uses = Vec::new();
+        for (edge, start) in &starts {
+            for (end_edge, end) in &ends {
+                if edge == end_edge && !start.try_eq_with_work(end, &mut work)? {
+                    let use_id = source.edges.get(*edge).copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "seam edge references an unknown source interval".into(),
+                        )
+                    })?;
+                    source_uses.push((
+                        use_id,
+                        start.try_clone_with_work(&mut work)?,
+                        end.try_clone_with_work(&mut work)?,
+                    ));
+                }
+            }
+        }
+        let restriction = if source_uses.is_empty() {
+            crate::geometry::antimeridian::publication::restriction_for_edge(
+                piece.points[index],
+                piece.points[index + 1],
+            )
+        } else {
+            None
+        };
+        edges.push(catalog.compose_edge_uses(member, &source_uses, restriction)?);
+    }
+    Ok(super::super::lineage::LineageSequence {
+        member,
+        vertices,
+        edges,
+    })
+}
+
+pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
+    source: &Shape,
+    polygon: &Polygon,
+    source_lineage: &super::super::lineage::LineagePolygon,
+    preferred: PoleClosure,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
+    let polygons = split_polygon(source, polygon, preferred, metric_access)?;
+    Ok(polygons
+        .into_iter()
+        .map(|polygon| {
+            let member = source_lineage.member;
+            let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
+                member,
+                vertices: vec![Vec::new(); ring.coords().len()],
+                edges: Vec::new(),
+            };
+            let lineage = super::super::lineage::LineagePolygon {
+                member,
+                shell: empty_sequence(&polygon.shell),
+                holes: polygon.holes.iter().map(empty_sequence).collect(),
+            };
+            super::super::lineage::PolygonWithLineage { polygon, lineage }
+        })
+        .collect())
+}
+
 fn split_polygon_inner<M: ChartMetric>(
     polygon: &Polygon,
     preferred: PoleClosure,
@@ -95,7 +252,9 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
         let points = collect_points(hole.coords());
         match split_ring_at_seam_with_metric(&points, GeographicFrame::crs84(), metric_access)? {
             SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
-                stationary_holes.push(Ring::try_from_closed(CoordSeq::try_from_points(&spelled)?)?);
+                stationary_holes.push(Ring::try_from_closed(CoordSeq::try_from_points(
+                    &spelled.points,
+                )?)?);
             },
             SeamRing::Pieces(_) | SeamRing::Whole(_) => crossing_holes.push(hole.clone()),
         }
@@ -177,10 +336,10 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
         metric_access,
     )? {
         SeamRing::Whole(shell) => {
-            let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
+            let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell.points)?)?;
             return Ok(vec![Polygon::new(shell, stationary_holes)]);
         },
-        SeamRing::Pieces(pieces) => pieces,
+        SeamRing::Pieces(pieces) => pieces.into_iter().map(|piece| piece.points).collect(),
     };
     let kept_holes: Vec<&Ring> = stationary_holes.iter().collect();
     if preferred != PoleClosure::Auto {

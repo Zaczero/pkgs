@@ -1,8 +1,10 @@
+use super::super::lineage::{LineageCatalog, LineagePolygon, LineageSequence, PolygonWithLineage};
 use super::split::ring_is_ccw;
 use super::{
     ChartPole, CoordSeq, GeographicFrame, GeometryErrorKind, MOrdinate, Point, PoleClosure,
     Polygon, Result, Ring, Shape, ZOrdinate, same_point,
 };
+use crate::geometry::antimeridian::publication::restriction_for_edge;
 
 pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     match shape {
@@ -103,6 +105,220 @@ pub(super) fn assemble_polygons(
         *polygon = Polygon::new(polygon.shell.clone(), combined);
     }
     Ok(polygons)
+}
+
+pub(super) fn assemble_polygons_with_lineage(
+    segments: Vec<(Vec<Point>, LineageSequence)>,
+    kept_holes: &[(Ring, LineageSequence)],
+    catalog: &mut LineageCatalog,
+) -> Result<Vec<PolygonWithLineage>> {
+    let mut shells = build_rings_with_lineage(segments, catalog)?;
+    if shells.is_empty() {
+        return Err(GeometryErrorKind::antimeridian_split_failed(
+            "no ring could be stitched along the seam",
+        ));
+    }
+    if let [shell] = shells.as_slice()
+        && !ring_is_ccw(&shell.0)
+    {
+        let like = shell.0.first().copied().unwrap_or(Point::new(0.0, 0.0)?);
+        let corner = |lon: f64, lat: f64| {
+            Point::new_axes(lon, lat, ZOrdinate(like.z()), MOrdinate(like.m()))
+        };
+        let world = vec![
+            corner(-180.0, 90.0)?,
+            corner(-180.0, -90.0)?,
+            corner(180.0, -90.0)?,
+            corner(180.0, 90.0)?,
+            corner(-180.0, 90.0)?,
+        ];
+        let member = shell.1.member;
+        let (hole_points, hole_lineage) =
+            close_ring_with_lineage(shell.0.clone(), shell.1.clone(), catalog)?;
+        let world_lineage = synthetic_lineage_ring(member, &world, catalog)?;
+        let polygon = Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
+            vec![Ring::try_from_closed(CoordSeq::try_from_points(
+                &hole_points,
+            )?)?],
+        );
+        return Ok(vec![PolygonWithLineage {
+            polygon,
+            lineage: LineagePolygon {
+                member,
+                shell: world_lineage,
+                holes: vec![hole_lineage],
+            },
+        }]);
+    }
+
+    let mut candidates = Vec::with_capacity(shells.len());
+    let mut polygons = Vec::with_capacity(shells.len());
+    let mut lineages = Vec::with_capacity(shells.len());
+    for (shell, lineage) in shells.drain(..) {
+        let (shell, lineage) = close_ring_with_lineage(shell, lineage, catalog)?;
+        let ring = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
+        candidates.push(Shape::Polygon(Polygon::new(ring.clone(), Vec::new())));
+        polygons.push(Polygon::new(ring, Vec::new()));
+        lineages.push(lineage);
+    }
+
+    let mut assigned = vec![Vec::<(Ring, LineageSequence)>::new(); polygons.len()];
+    for (hole, lineage) in kept_holes {
+        let hole_shape = Shape::LineString(hole.as_line());
+        let mut owner = None;
+        for (candidate, assigned_holes) in candidates.iter().zip(&mut assigned) {
+            if candidate.contains(&hole_shape)? {
+                owner = Some(assigned_holes);
+                break;
+            }
+        }
+        match owner {
+            Some(assigned_holes) => assigned_holes.push((hole.clone(), lineage.clone())),
+            None => {
+                return Err(GeometryErrorKind::antimeridian_split_failed(
+                    "a hole does not lie inside any split part",
+                ));
+            },
+        }
+    }
+
+    let mut output = Vec::with_capacity(polygons.len());
+    for ((mut polygon, shell_lineage), mut holes) in
+        polygons.into_iter().zip(lineages).zip(assigned)
+    {
+        let hole_rings = holes
+            .iter()
+            .map(|(ring, _)| ring.clone())
+            .collect::<Vec<_>>();
+        polygon = Polygon::new(polygon.shell.clone(), hole_rings);
+        let hole_lineages = holes.drain(..).map(|(_, lineage)| lineage).collect();
+        output.push(PolygonWithLineage {
+            polygon,
+            lineage: LineagePolygon {
+                member: shell_lineage.member,
+                shell: shell_lineage,
+                holes: hole_lineages,
+            },
+        });
+    }
+    Ok(output)
+}
+
+fn build_rings_with_lineage(
+    mut segments: Vec<(Vec<Point>, LineageSequence)>,
+    catalog: &mut LineageCatalog,
+) -> Result<Vec<(Vec<Point>, LineageSequence)>> {
+    let mut rings = Vec::new();
+    while let Some((mut segment, mut lineage)) = segments.pop() {
+        let end = *segment.last().expect("segments are non-empty");
+        let start = *segment.first().expect("segments are non-empty");
+        let is_right = end.x == 180.0;
+        let mut best: Option<(usize, f64)> = None;
+        let self_candidate = is_self_closing(&segment).then_some(start.y);
+        for (index, (candidate, _)) in segments.iter().enumerate() {
+            let candidate_start = *candidate.first().expect("segments are non-empty");
+            let candidate_end = *candidate.last().expect("segments are non-empty");
+            if candidate_start.x != end.x {
+                continue;
+            }
+            let toward_pole = if is_right {
+                candidate_start.y > end.y
+                    && (!is_self_closing(candidate) || candidate_end.y < start.y)
+            } else {
+                candidate_start.y < end.y
+                    && (!is_self_closing(candidate) || candidate_end.y > start.y)
+            };
+            if toward_pole {
+                let better = best.is_none_or(|(_, latitude)| {
+                    if is_right {
+                        candidate_start.y < latitude
+                    } else {
+                        candidate_start.y > latitude
+                    }
+                });
+                if better {
+                    best = Some((index, candidate_start.y));
+                }
+            }
+        }
+        let join = match (best, self_candidate) {
+            (Some((index, latitude)), Some(own)) => {
+                let self_wins = if is_right {
+                    own < latitude
+                } else {
+                    own > latitude
+                };
+                if self_wins { None } else { Some(index) }
+            },
+            (Some((index, _)), None) => Some(index),
+            (None, _) => None,
+        };
+        if let Some(index) = join {
+            let (joined, joined_lineage) = segments.remove(index);
+            let restriction = restriction_for_edge(
+                *segment.last().expect("segments are non-empty"),
+                *joined.first().expect("segments are non-empty"),
+            );
+            let edge = catalog.push_edge_use(lineage.member, Vec::new(), restriction)?;
+            segment.extend(joined);
+            lineage.edges.push(edge);
+            lineage.edges.extend(joined_lineage.edges);
+            lineage.vertices.extend(joined_lineage.vertices);
+            segments.push((segment, lineage));
+            continue;
+        }
+        if !segment.iter().all(|point| same_point(*point, start)) {
+            rings.push((segment, lineage));
+        }
+    }
+    Ok(rings)
+}
+
+fn close_ring_with_lineage(
+    mut points: Vec<Point>,
+    mut lineage: LineageSequence,
+    catalog: &mut LineageCatalog,
+) -> Result<(Vec<Point>, LineageSequence)> {
+    if let (Some(first), Some(last)) = (points.first().copied(), points.last().copied())
+        && !same_point(first, last)
+    {
+        let restriction = restriction_for_edge(last, first);
+        let edge = catalog.push_edge_use(lineage.member, Vec::new(), restriction)?;
+        lineage.edges.push(edge);
+        let first_events =
+            lineage.vertices.first().cloned().ok_or_else(|| {
+                GeometryErrorKind::Invalid("ring lineage has no first vertex".into())
+            })?;
+        lineage.vertices.push(first_events);
+        points.push(first);
+    }
+    Ok((points, lineage))
+}
+
+fn synthetic_lineage_ring(
+    member: super::super::lineage::MemberId,
+    points: &[Point],
+    catalog: &mut LineageCatalog,
+) -> Result<LineageSequence> {
+    let mut vertices = Vec::with_capacity(points.len());
+    for _ in points {
+        let event = catalog.event(member, Vec::new())?;
+        vertices.push(vec![event]);
+    }
+    let mut edges = Vec::with_capacity(points.len().saturating_sub(1));
+    for pair in points.windows(2) {
+        edges.push(catalog.push_edge_use(
+            member,
+            Vec::new(),
+            restriction_for_edge(pair[0], pair[1]),
+        )?);
+    }
+    Ok(LineageSequence {
+        member,
+        vertices,
+        edges,
+    })
 }
 
 fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {

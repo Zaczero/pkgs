@@ -41,12 +41,23 @@ pub(super) struct ChartEdgeEvent {
 
 pub(super) struct ChartSourceCapture<'a> {
     root: Option<RootId>,
+    member: Option<super::super::lineage::MemberId>,
     capture: Option<&'a mut SplitCapture>,
+    records: Vec<(super::super::lineage::EventId, ExactRational)>,
 }
 
 impl<'a> ChartSourceCapture<'a> {
-    pub(super) const fn new(root: Option<RootId>, capture: Option<&'a mut SplitCapture>) -> Self {
-        Self { root, capture }
+    pub(super) const fn new(
+        root: Option<RootId>,
+        member: Option<super::super::lineage::MemberId>,
+        capture: Option<&'a mut SplitCapture>,
+    ) -> Self {
+        Self {
+            root,
+            member,
+            capture,
+            records: Vec::new(),
+        }
     }
 
     pub(super) fn record(
@@ -54,11 +65,39 @@ impl<'a> ChartSourceCapture<'a> {
         source_root: Option<RootId>,
         point: Point,
         parameter: &ExactRational,
-    ) -> Result<()> {
-        if let (Some(capture), Some(root)) = (self.capture.as_deref_mut(), source_root) {
-            capture.record_root_point(root, point, parameter)?;
+    ) -> Result<Option<super::super::lineage::EventId>> {
+        if let (Some(capture), Some(root), Some(member)) =
+            (self.capture.as_deref_mut(), source_root, self.member)
+        {
+            let event = capture.record_root_point(root, member, point, parameter)?;
+            self.records.push((
+                event,
+                parameter.try_clone_with_work(&mut crate::geometry::Unmetered)?,
+            ));
+            Ok(Some(event))
+        } else {
+            Ok(None)
         }
-        Ok(())
+    }
+
+    pub(super) fn records(&self) -> &[(super::super::lineage::EventId, ExactRational)] {
+        &self.records
+    }
+
+    pub(super) fn event_ids(&self) -> Vec<super::super::lineage::EventId> {
+        self.records.iter().map(|(event, _)| *event).collect()
+    }
+
+    pub(super) fn edge_uses(&mut self) -> Result<Vec<super::super::lineage::EdgeUseId>> {
+        let (Some(root), Some(member), Some(capture)) =
+            (self.root, self.member, self.capture.as_deref_mut())
+        else {
+            return Ok(Vec::new());
+        };
+        self.records
+            .array_windows::<2>()
+            .map(|[(_, start), (_, end)]| capture.source_edge_use(member, root, start, end))
+            .collect()
     }
 }
 

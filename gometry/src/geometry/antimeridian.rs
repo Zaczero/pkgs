@@ -17,6 +17,7 @@
 )]
 
 mod crs;
+mod lineage;
 mod linestring;
 mod normalize;
 mod polygon;
