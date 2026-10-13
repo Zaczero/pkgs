@@ -35,8 +35,8 @@ use chart_shape::{chart_line, chart_polygon, chart_ring};
 use chart_shape::{chart_shape, map_xy_with_shared_owners};
 use split::{split_polygon, split_polygon_with_lineage};
 
-use super::lineage::{LineageCatalog, LineageSequence, MemberId, ShapeLineage};
-use super::{normalize, same_coordinate_values};
+use super::lineage::{LineageCatalog, ShapeLineage};
+use super::normalize;
 
 #[derive(Default)]
 struct ShapeTransformMemo {
@@ -544,7 +544,15 @@ fn split_shape_with_lineage<M: ChartMetric>(
 }
 
 fn line_sequence_is_closed(line: &LineSeq) -> bool {
-    line.len() > 1 && same_coordinate_values(line.point_at(0), line.point_at(line.len() - 1))
+    if line.len() < 2 {
+        return false;
+    }
+    let first = line.point_at(0);
+    let last = line.point_at(line.len() - 1);
+    first.x.to_bits() == last.x.to_bits()
+        && first.y.to_bits() == last.y.to_bits()
+        && first.z() == last.z()
+        && first.m() == last.m()
 }
 
 fn split_view_error(error: &GeographicViewError) -> crate::error::Error {

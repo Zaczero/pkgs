@@ -32,7 +32,7 @@ fn resolve_seam_aliases(coords: &mut [Point]) {
 
 /// Drop exact consecutive duplicates. One-ULP neighbors are distinct source
 /// vertices; Z/M differences also retain the source segment boundary.
-pub(super) fn same_coordinate_values(left: Point, right: Point) -> bool {
+fn same_coordinate_values(left: Point, right: Point) -> bool {
     left.x.to_bits() == right.x.to_bits()
         && left.y.to_bits() == right.y.to_bits()
         && left.z() == right.z()
@@ -236,7 +236,7 @@ pub(crate) enum SeamRing {
     Whole(SeamPiece),
 }
 
-pub(super) fn segment_coords_with_occurrences<M: ChartMetric>(
+pub(in crate::geometry) fn segment_coords_with_occurrences<M: ChartMetric>(
     points: &[Point],
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,

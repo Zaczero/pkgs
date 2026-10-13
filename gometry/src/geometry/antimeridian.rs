@@ -29,8 +29,8 @@ pub(crate) use crs::{
     crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_topology_route,
     topology_domain, topology_domain_at,
 };
+pub(in crate::geometry) use linestring::segment_coords_with_occurrences;
 use linestring::{SeamRing, collect_points, ring_follows_seam};
-pub(super) use linestring::{same_coordinate_values, segment_coords_with_occurrences};
 pub(crate) use linestring::{segment_coords_with_metric, split_ring_at_seam_with_metric};
 #[cfg(test)]
 pub(crate) use normalize::self_intersections_in_frame;
