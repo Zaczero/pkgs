@@ -1,7 +1,3 @@
-#![expect(
-    clippy::suspicious_operation_groupings,
-    reason = "EPSG Albers equations use conventional m, q, n, c, and rho notation"
-)]
 //! Ellipsoidal Albers Equal Area (EPSG method 9822).
 
 use crate::crs::in_core::adjlon;
