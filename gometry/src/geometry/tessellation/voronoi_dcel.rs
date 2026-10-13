@@ -5,7 +5,6 @@
     clippy::inconsistent_struct_constructor,
     clippy::items_after_statements,
     clippy::needless_range_loop,
-    clippy::unnecessary_semicolon,
     clippy::unwrap_used,
     reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"
 )]
