@@ -26,6 +26,10 @@ use super::{
 /// rounded edge cancellation proves that the valid cells have exactly the
 /// rectangular clip boundary, and exact point membership checks each canonical
 /// site's rounded cell. Polygon clips remain on the exact arrangement lane.
+#[expect(
+    clippy::float_cmp,
+    reason = "rounded dual edges must match the certified clip frame exactly before side coverage is accepted"
+)]
 pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     rings: &DualRings,
     clip: &NormalizedClip<'_>,

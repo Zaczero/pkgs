@@ -184,7 +184,7 @@ macro_rules! scan_ring_edge {
         if infer_kind
             && !state.non_collinear
             && let Some(first) = state.first
-            && (end.x != first.x || end.y != first.y)
+            && !same_point(end, first)
         {
             if let Some(second) = state.distinct {
                 state.non_collinear =
