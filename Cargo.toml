@@ -109,6 +109,8 @@ string_lit_chars_any = "warn"
 string_slice = "warn"
 suspicious_xor_used_as_pow = "warn"
 todo = "warn"
+# Cohesive single-flow algorithms should not be split merely to meet a line cap.
+too_many_lines = "allow"
 try_err = "warn"
 undocumented_unsafe_blocks = "warn"
 unimplemented = "warn"

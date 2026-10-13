@@ -2,10 +2,6 @@
     clippy::redundant_closure_for_method_calls,
     reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
 )]
-#![expect(
-    clippy::too_many_lines,
-    reason = "a flow reads best in one place; the long functions here are single pipelines whose phases share state, and splitting them would smear one operation across helpers"
-)]
 #![feature(
     once_cell_try,
     portable_simd,
