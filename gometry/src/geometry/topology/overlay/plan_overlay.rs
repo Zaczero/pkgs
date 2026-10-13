@@ -153,6 +153,9 @@ impl QEmissionPlan {
         operation: OverlayOp,
         work: &mut impl Work,
     ) -> Result<Self> {
+        #[cfg(test)]
+        super::record_q_overlay_plan_build();
+
         let q = &topology.q;
         let row_count = topology.sources.row_count;
         let faces = select_faces(q, row_count, operation, work)?;
