@@ -520,7 +520,7 @@ pub(super) fn node_scaffold_and_separators(
         event_points
             .into_iter()
             .zip(fixed)
-            .map(|(point, fixed_xy)| NodedVertex { fixed_xy, point }),
+            .map(|(point, fixed_xy)| NodedVertex { point, fixed_xy }),
     );
     let mut edges = Vec::new();
     let mut frame_owner = SiteId(0);

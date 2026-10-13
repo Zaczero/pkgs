@@ -2,7 +2,6 @@
 
 #![expect(
     clippy::float_cmp,
-    clippy::inconsistent_struct_constructor,
     clippy::items_after_statements,
     clippy::needless_range_loop,
     clippy::unwrap_used,
