@@ -2,10 +2,6 @@
     clippy::similar_names,
     reason = "paired axis and formula names in the segment kernels intentionally identify corresponding operands"
 )]
-#![expect(
-    clippy::self_named_module_files,
-    reason = "segments.rs is the module entry point and owns types shared across the segment concerns"
-)]
 //! Shared segment types and kernels for projection, distance, contact,
 //! clipping, interpolation, and ordering.
 
