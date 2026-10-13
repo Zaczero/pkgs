@@ -465,7 +465,7 @@ impl ClipRingParity {
         Ok(())
     }
 
-    fn covers(&self) -> bool {
+    const fn covers(&self) -> bool {
         self.shell_inside && self.holes_inside == 0
     }
 

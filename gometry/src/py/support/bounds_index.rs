@@ -172,7 +172,7 @@ fn margin(envelope: &AABB<[f64; 2]>) -> f64 {
     (upper[0] - lower[0]) + (upper[1] - lower[1])
 }
 
-fn geographic_view_py_error(error: GeographicViewError) -> pyo3::PyErr {
+fn geographic_view_py_error(error: &GeographicViewError) -> pyo3::PyErr {
     InvalidGeometryError::new_err(error.to_string())
 }
 
@@ -186,7 +186,7 @@ fn geographic_index_envelopes(
 ) -> pyo3::PyResult<Vec<AABB<[f64; 2]>>> {
     let support =
         GeographicSupportEnvelope::try_from_shape(frame, shape).map_err(|error| match error {
-            GeographicAdmissionError::Geographic(error) => geographic_view_py_error(error),
+            GeographicAdmissionError::Geographic(error) => geographic_view_py_error(&error),
             GeographicAdmissionError::Resource(error) => error.into(),
         })?;
     let Some((south, north)) = support.latitude_bounds() else {

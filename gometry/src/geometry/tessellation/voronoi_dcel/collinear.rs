@@ -255,15 +255,16 @@ fn clip_to_half_plane_with_origins(
     keep: ExactSign,
     cut_origin: VoronoiEdgeOrigin,
 ) -> Result<(Vec<exact::ExactPoint>, Vec<Vec<VoronoiEdgeOrigin>>)> {
-    if ring.len() != edge_origins.len() {
-        return Err(voronoi_error(
-            "collinear strip edge origins do not match the exact ring",
-        ));
-    }
     struct Piece {
         start: exact::ExactPoint,
         end: exact::ExactPoint,
         origins: Vec<VoronoiEdgeOrigin>,
+    }
+
+    if ring.len() != edge_origins.len() {
+        return Err(voronoi_error(
+            "collinear strip edge origins do not match the exact ring",
+        ));
     }
     let mut pieces = Vec::new();
     for (index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
@@ -313,9 +314,7 @@ fn clip_to_half_plane_with_origins(
             piece.origins.clone(),
         ));
         if !piece.end.same_position(&next.start)? {
-            edges.push((piece.end.clone(), next.start.clone(), vec![
-                cut_origin.clone(),
-            ]));
+            edges.push((piece.end.clone(), next.start.clone(), vec![cut_origin]));
         }
     }
     let vertices = edges.iter().map(|(start, ..)| start.clone()).collect();
@@ -348,7 +347,7 @@ fn rounded_ring_with_origins(
     {
         for origin in edge_origin {
             if !pending.contains(origin) {
-                pending.push(origin.clone());
+                pending.push(*origin);
             }
         }
         let next = next_vertex.round_nearest_even()?;
@@ -436,7 +435,7 @@ fn collinear_overlay_edge_roles(
                             .ok_or_else(|| voronoi_error("collinear strip edge role is unknown"))?;
                         for origin in strip_origins {
                             if !origins.contains(origin) {
-                                origins.push(origin.clone());
+                                origins.push(*origin);
                             }
                         }
                         source_uses.push(VoronoiEdgeSourceUse {

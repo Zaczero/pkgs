@@ -39,10 +39,6 @@ pub(super) use row::affine_ordinate_simd;
 /// Affine map with power-of-two pre-scale of the input coordinates so
 /// cancelling huge products (`2*1e308 + (-2)*1e308`) stay finite. Ordinary
 /// mid-range inputs take the classic multiply-add (bit-identical).
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a,b,d,e,x,y are the canonical affine matrix and point coordinates"
-)]
 pub(crate) fn stable_affine_xy(
     a: f64,
     b: f64,

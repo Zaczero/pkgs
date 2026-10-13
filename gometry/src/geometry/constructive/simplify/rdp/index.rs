@@ -130,7 +130,7 @@ fn choose_pair(
     if best.map_or(Ok(true), |incumbent| {
         point_pair_distance_key(query, source.at(winner))
             .cmp_distance(&point_pair_distance_key(query, source.at(incumbent)))
-            .map(|order| order.is_gt())
+            .map(std::cmp::Ordering::is_gt)
     })? {
         *best = Some(winner);
     }
@@ -440,7 +440,7 @@ impl<'a> Index<'a> {
                         self.source.at(incumbent),
                         chord,
                     ))
-                    .map(|order| order.is_gt())
+                    .map(std::cmp::Ordering::is_gt)
             })? {
                 *best = Some(winner);
             }
@@ -457,7 +457,7 @@ impl<'a> Index<'a> {
                             self.source.at(incumbent),
                             chord,
                         ))
-                        .map(|order| order.is_gt())
+                        .map(std::cmp::Ordering::is_gt)
                 })? {
                     *best = Some(winner);
                 }

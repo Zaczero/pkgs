@@ -47,6 +47,10 @@ impl PointQuery for StoredQuery {
         (start < self.0.y && end < self.0.y) || (start > self.0.y && end > self.0.y)
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+    )]
     fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
         let query = match axis {
             QueryAxis::X => self.0.x,
@@ -104,6 +108,10 @@ impl<'a> ExactQuery<'a> {
 }
 
 impl PointQuery for ExactQuery<'_> {
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
+    )]
     fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
         let (lower, upper) = match axis {
             QueryAxis::X => self.x_bounds,

@@ -106,8 +106,8 @@ impl Groups {
 
     pub(crate) fn polygonize_full_parts(
         full: crate::geometry::PolygonizeFull,
-        frame: crate::Frame,
-        missing: Option<ValidityMask>,
+        frame: &crate::Frame,
+        missing: Option<&ValidityMask>,
     ) -> PyResult<(PyGeometryArray, Self, Self, Self)> {
         fn diagnostic_csr(
             rows: Vec<Vec<Shape>>,
@@ -141,7 +141,7 @@ impl Groups {
                     rows: 0..row_count,
                     missing: None,
                 }
-                .with_row_missing(missing.clone()))
+                .with_row_missing(missing.cloned()))
             };
         Ok((
             PyGeometryArray::from_shapes(polygons, frame.clone())?,
@@ -156,14 +156,14 @@ impl Groups {
     pub(crate) fn from_point_builder(
         frame: crate::Frame,
         builder: CsrBuilder<crate::Point>,
-        ring_ends: Vec<usize>,
+        ring_ends: &[usize],
         missing: Option<ValidityMask>,
     ) -> PyResult<Self> {
         let (vertices, offsets) = builder.finish();
         let values = if vertices.is_empty() {
             PyGeometryArray::from_shapes(Vec::new(), frame)?
         } else {
-            PyGeometryArray::packed_triangles_with_ring_ends(&vertices, &ring_ends, frame)?
+            PyGeometryArray::packed_triangles_with_ring_ends(&vertices, ring_ends, frame)?
         };
         Ok(Self::from_geometry_csr(values, offsets)?.with_row_missing(missing))
     }
@@ -238,7 +238,7 @@ mod self_intersection_csr_tests {
             invalid_rings: vec![Vec::new(), Vec::new(), Vec::new()],
         };
         let (polygons, cuts, dangles, invalid) =
-            Groups::polygonize_full_parts(full, Frame::None, None).unwrap();
+            Groups::polygonize_full_parts(full, &Frame::None, None).unwrap();
         assert_eq!(polygons.len(), 0);
         assert_eq!(cuts.offsets.as_ref(), &[0, 0, 1, 1]);
         assert_eq!(dangles.offsets.as_ref(), &[0, 0, 0, 0]);

@@ -42,6 +42,10 @@ impl PointRecordKey {
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn chart_edge(point: Point) -> Self {
         let mut key = Self::new(point);
         if point.x.abs() == 180.0 {
@@ -103,6 +107,10 @@ impl SplitCapture {
         Ok(root)
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     pub(super) fn record_root_point(
         &mut self,
         root: RootId,
@@ -584,6 +592,10 @@ impl<'a> ShapeLayoutBuilder<'a> {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn unmap_chart_point(
     point: Point,
     frame: GeographicFrame,
@@ -691,6 +703,10 @@ fn chart_side(point: Point) -> ChartCutSide {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn synthetic_vertex(
     native_point: Point,
     chart_point: Point,
@@ -712,6 +728,10 @@ fn synthetic_vertex(
     None
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 fn restriction_for_edge(start: Point, end: Point) -> Option<ChartRestriction> {
     let start_cut = start.x.abs() == 180.0;
     let end_cut = end.x.abs() == 180.0;
@@ -931,6 +951,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn split_receipt_keeps_both_seam_banks_on_the_exact_source_root() {
         let row = measured_crossing_line()
             .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
@@ -960,6 +984,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn split_receipt_maps_native_unit_roots_after_chart_conversion() {
         let grad = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
         let frame = GeographicFrame::try_new(grad, grad, 0.0).unwrap();
@@ -1035,6 +1063,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+    )]
     fn omitted_synthetic_pole_literal_is_rejected_by_final_readback() {
         let shell = Ring::closed_coordseq(
             CoordSeq::try_from_vecs(

@@ -87,6 +87,7 @@ fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
 
 /// Every spelling of the seam vertices names one polygon, so each must
 /// split into valid parts covering the same chart area.
+#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn assert_seam_spellings_split_alike(
     shell: &[(f64, f64)],
     holes: &[&[(f64, f64)]],

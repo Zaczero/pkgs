@@ -16,7 +16,7 @@ pub(super) struct GrowableCentroidSums {
 }
 
 impl GrowableCentroidSums {
-    pub(super) fn zero() -> Self {
+    pub(super) const fn zero() -> Self {
         Self {
             measure: ExactDyadic::zero(),
             moment_x: ExactDyadic::zero(),

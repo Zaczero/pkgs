@@ -67,6 +67,10 @@ impl PyH3Cell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn resolution(&self) -> u8 {
         self.cell.depth()
     }
@@ -77,6 +81,10 @@ impl PyH3Cell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn id(&self) -> u64 {
         u64::from(self.cell)
     }
@@ -87,6 +95,10 @@ impl PyH3Cell {
     /// -------
     /// str
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn token(&self) -> String {
         self.cell.token()
     }
@@ -97,6 +109,10 @@ impl PyH3Cell {
     /// -------
     /// bool
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn is_pentagon(&self) -> bool {
         self.cell.is_pentagon()
     }
@@ -126,6 +142,10 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> cell.center_child(resolution=8).token
     /// '8828308281fffff'
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn center_child(&self, resolution: &Bound<'_, PyAny>) -> PyResult<Self> {
         let resolution = parse_h3_resolution(resolution)?;
         self.cell
@@ -166,6 +186,10 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> cell.child_at(0, 8).token
     /// '8828308281fffff'
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn child_at(
         &self,
         position: &Bound<'_, PyAny>,
@@ -200,6 +224,10 @@ impl PyH3Cell {
     /// H3VertexArray
     ///     Five vertices for a pentagon, six for a hexagon.
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn vertices(&self) -> PyH3VertexArray {
         let ids: Vec<u64> = self.cell.vertexes().map(u64::from).collect();
         PyH3VertexArray::from_ids(ids)
@@ -232,6 +260,10 @@ impl PyH3Cell {
     /// >>> edge = cell.edge(neighbor)
     /// >>> (edge.origin == cell, edge.destination == neighbor)
     /// (True, True)
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn edge(&self, destination: &Bound<'_, PyAny>) -> PyResult<PyH3Edge> {
         let destination = h3_cell_index(destination)?;
         self.cell
@@ -251,6 +283,10 @@ impl PyH3Cell {
     /// -------
     /// H3EdgeArray
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn edges(&self) -> PyH3EdgeArray {
         let ids: Vec<u64> = self.cell.edges().map(u64::from).collect();
         PyH3EdgeArray::from_ids(ids)
@@ -282,6 +318,10 @@ impl PyH3Cell {
     /// >>> len(cell.grid_disk(1))
     /// 7
     #[pyo3(signature = (k, *, max_cells = Some(1_000_000)), text_signature = "($self, k, *, max_cells=1000000)")]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn grid_disk(
         &self,
         k: &Bound<'_, PyAny>,
@@ -323,6 +363,10 @@ impl PyH3Cell {
     /// >>> len(cell.grid_ring(1))
     /// 6
     #[pyo3(signature = (k, *, max_cells = Some(1_000_000)), text_signature = "($self, k, *, max_cells=1000000)")]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn grid_ring(
         &self,
         k: &Bound<'_, PyAny>,
@@ -365,6 +409,10 @@ impl PyH3Cell {
     /// >>> assert neighbor is not None
     /// >>> cell.is_neighbor(neighbor)
     /// True
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn is_neighbor(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         let other = h3_cell_index(other)?;
         self.cell
@@ -399,6 +447,10 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> cell.local_ij(cell)
     /// (160, 88)
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn local_ij(&self, origin: &Bound<'_, PyAny>) -> PyResult<(i32, i32)> {
         let origin = h3_cell_index(origin)?;
         let local = self
@@ -427,6 +479,10 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> cell.cell_from_local_ij(160, 88).token
     /// '872830828ffffff'
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn cell_from_local_ij(
         &self,
         #[pyo3(from_py_with = crate::strict_i32)] i: i32,
@@ -444,6 +500,10 @@ impl PyH3Cell {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn base_cell(&self) -> u8 {
         self.cell.base_cell().into()
     }
@@ -470,6 +530,10 @@ impl PyH3Cell {
     /// >>> assert child is not None
     /// >>> child.child_position(7)
     /// 0
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn child_position(&self, resolution: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
         let resolution = parse_h3_resolution(resolution)?;
         Ok(self.cell.child_position(resolution))
@@ -502,6 +566,10 @@ impl PyH3Cell {
     /// >>> assert neighbor is not None
     /// >>> cell.grid_distance(neighbor)
     /// 1
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn grid_distance(&self, other: &Bound<'_, PyAny>) -> PyResult<i32> {
         self.cell
             .grid_distance(h3_cell_index(other)?)
@@ -538,6 +606,10 @@ impl PyH3Cell {
     /// >>> len(cell.grid_path(nbr))
     /// 2
     #[pyo3(signature = (other, *, max_cells = Some(1_000_000)), text_signature = "($self, other, *, max_cells=1000000)")]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires borrowed receivers for these immutable H3 cell methods"
+    )]
     fn grid_path(
         &self,
         other: &Bound<'_, PyAny>,

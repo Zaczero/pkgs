@@ -291,7 +291,7 @@ fn refinement_keeps_construction_recipes_and_exact_boundary_roots() {
         certificate
             .parameter
             .try_cmp(&half)
-            .is_ok_and(|order| order.is_eq())
+            .is_ok_and(std::cmp::Ordering::is_eq)
     }));
 
     let plan = mesh.finish_plan(points, refinement, true).unwrap();
@@ -303,12 +303,12 @@ fn refinement_keeps_construction_recipes_and_exact_boundary_roots() {
     assert!(
         plan.constraint_pieces
             .iter()
-            .any(|piece| { piece.lo.try_cmp(&half).is_ok_and(|order| order.is_eq()) })
+            .any(|piece| { piece.lo.try_cmp(&half).is_ok_and(std::cmp::Ordering::is_eq) })
     );
     assert!(
         plan.constraint_pieces
             .iter()
-            .any(|piece| { piece.hi.try_cmp(&half).is_ok_and(|order| order.is_eq()) })
+            .any(|piece| { piece.hi.try_cmp(&half).is_ok_and(std::cmp::Ordering::is_eq) })
     );
     plan.validate_certificate().unwrap();
 }

@@ -444,7 +444,7 @@ impl PythonSignalTestGuard {
     pub(crate) fn new(py: Python<'_>) -> Self {
         let lock = PYTHON_SIGNAL_TEST_LOCK
             .lock_py_attached(py)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let signal = py.import("signal").expect("import signal for test");
         let sigint = signal.getattr("SIGINT").expect("read SIGINT");
         let default_handler = signal

@@ -624,7 +624,7 @@ fn polygon_shape(
         }
         let vertex_range = list_range(rings, ring_index)?;
         let coords = coordinates.coordseq(vertex_range.start, vertex_range.end, row)?;
-        let ring = io::admit_closed_ring(coords).map_err(arrow_ring_error)?;
+        let ring = io::admit_closed_ring(coords).map_err(|error| arrow_ring_error(&error))?;
         shell_and_holes.push(ring);
     }
     let mut rings = shell_and_holes.into_iter();
@@ -1045,7 +1045,7 @@ impl NativeCoordinates {
     /// boundary vertex appended by the shared ring-admission policy.
     fn ring_admission(&self, range: std::ops::Range<usize>, row: usize) -> DecodeResult<bool> {
         let coords = self.coordseq(range.start, range.end, row)?;
-        Ring::closure_requires_append(&coords).map_err(arrow_ring_error)
+        Ring::closure_requires_append(&coords).map_err(|error| arrow_ring_error(&error))
     }
 }
 
@@ -1075,7 +1075,7 @@ fn admitted_column_window(values: &[f64], start: usize, end: usize) -> &[f64] {
         .expect("CoordSeq ordinate columns share their admitted row range")
 }
 
-fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
+fn arrow_ring_error(error: &crate::error::Error) -> NativeArrowDecodeError {
     let message = error.to_string();
     if let crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::RingTooShort(n)) =
         error.kind()

@@ -159,7 +159,7 @@ impl ExactSourceInventory {
                                 source_frame
                                     .longitude()
                                     .chart_connection(start.x, end.x)
-                                    .map(|connection| connection.retained())
+                                    .map(crate::geographic::ChartConnection::retained)
                                     .map_err(|error| {
                                         GeometryErrorKind::Invalid(error.to_string().into()).into()
                                     })

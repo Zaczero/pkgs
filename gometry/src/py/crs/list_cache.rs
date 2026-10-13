@@ -137,7 +137,7 @@ fn freeze_nested<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Py
 /// lists kept as real lists of frozen elements (so `== []` and list.copy work).
 pub(crate) fn freeze_top_dict<'py>(
     py: Python<'py>,
-    dict: Bound<'py, PyDict>,
+    dict: &Bound<'py, PyDict>,
 ) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
     for (key, value) in dict.iter() {
@@ -298,7 +298,7 @@ pub(crate) fn crs_operation_py_dict<'py>(
             || {
                 let info = crs::operation_info_with_state(source, target, options, &state)?;
                 let built = info.into_pyobject(py)?;
-                let owned = freeze_top_dict(py, built)?;
+                let owned = freeze_top_dict(py, &built)?;
                 Ok(OperationPyEntry {
                     generation,
                     source: source.to_owned(),
@@ -334,7 +334,7 @@ pub(crate) fn crs_operations_py_list<'py>(
                 let list = PyList::empty(py);
                 for item in items {
                     let built = item.into_pyobject(py)?;
-                    list.append(freeze_top_dict(py, built)?)?;
+                    list.append(freeze_top_dict(py, &built)?)?;
                 }
                 Ok(OperationsPyEntry {
                     generation,

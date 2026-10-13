@@ -570,7 +570,7 @@ pub(super) fn exact_integer_i64(value: &ExactDyadic) -> crate::error::Result<i64
             Ok(i64::MIN)
         } else {
             i64::try_from(magnitude)
-                .map(|magnitude| magnitude.wrapping_neg())
+                .map(i64::wrapping_neg)
                 .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
         }
     } else {

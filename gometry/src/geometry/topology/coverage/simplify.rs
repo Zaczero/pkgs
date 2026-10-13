@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "the geographic coverage output stage consumes these guarded chain plans"
-)]
-
 use std::collections::BTreeSet;
 use std::ops::Range;
 

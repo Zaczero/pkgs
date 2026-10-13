@@ -147,13 +147,16 @@ pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
     for ([left, right], mut chain) in exact_chains {
         let ids = [SiteId(left as u32), SiteId(right as u32)];
         let separator = [ids[0].min(ids[1]), ids[0].max(ids[1])];
-        let (oriented_start, _) = orient_separator(
-            chain.first().unwrap().clone(),
-            chain.last().unwrap().clone(),
-            ids,
-            sites,
-        )?;
-        if !oriented_start.same_position(chain.first().unwrap())? {
+        let chain_start = chain
+            .first()
+            .cloned()
+            .ok_or_else(|| voronoi_error("collinear separator chain is empty"))?;
+        let chain_end = chain
+            .last()
+            .cloned()
+            .ok_or_else(|| voronoi_error("collinear separator chain is empty"))?;
+        let (oriented_start, _) = orient_separator(chain_start.clone(), chain_end, ids, sites)?;
+        if !oriented_start.same_position(&chain_start)? {
             chain.reverse();
         }
         let mut chain_edges = Vec::new();

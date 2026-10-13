@@ -42,10 +42,6 @@ impl CoordSeq {
     /// pure multiply-add into `f64x8` in the SAME left-to-right op order as the
     /// scalar form (`(a*x + b*y) + xoff`, no FMA contraction), so it is
     /// bit-identical. Finiteness validated once over the produced columns.
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a,b,d,e are the canonical affine matrix coefficients"
-    )]
     pub fn try_affine(&self, matrix: &[f64; 6]) -> Result<Self> {
         let [a, b, d, e, xoff, yoff] = *matrix;
         let x_identity = affine_x_row_identity(a, b, xoff);
@@ -419,11 +415,11 @@ impl Shape {
             Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()?),
             Self::LineString(points) => Self::LineString(points.force_2d()?),
             Self::MultiLineString(lines) => Self::MultiLineString(
-                lines.try_map_values(CoordinateAxes::XY, |line| line.force_2d())?,
+                lines.try_map_values(CoordinateAxes::XY, crate::geometry::LineSeq::force_2d)?,
             ),
             Self::Polygon(polygon) => Self::Polygon(polygon.force_2d()?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons.try_map_values(CoordinateAxes::XY, |polygon| polygon.force_2d())?,
+                polygons.try_map_values(CoordinateAxes::XY, crate::geometry::Polygon::force_2d)?,
             ),
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(Self::force_2d)?)

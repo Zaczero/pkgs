@@ -232,8 +232,8 @@ impl PackedColumnBuilder {
             .zip(column_window(xs, &window))
             .zip(column_window(ys, &window))
         {
-            let z = zs.as_mut().and_then(|column| column.next());
-            let m = ms.as_mut().and_then(|column| column.next());
+            let z = zs.as_mut().and_then(std::iter::Iterator::next);
+            let m = ms.as_mut().and_then(std::iter::Iterator::next);
             if kept {
                 self.xs.push(*x);
                 self.ys.push(*y);

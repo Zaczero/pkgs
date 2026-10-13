@@ -286,7 +286,7 @@ pub(crate) fn metric_minimum_bounding_circle(
                 None,
                 state,
                 &mut budget,
-                |shape, budget| shape.minimum_bounding_circle_budgeted(budget),
+                crate::geometry::Shape::minimum_bounding_circle_budgeted,
             )
         },
     }

@@ -527,7 +527,7 @@ pub(in crate::geometry::topology) fn round_canonical_longitude_with_work(
     // A rounded chart alias such as `122.427194 + 360` loses source low bits
     // before floating remainder can canonicalize it.
     axis.canonicalize(canonical.round_with_work(work)?)
-        .map(|longitude| longitude.get())
+        .map(crate::geographic::CanonicalLongitude::get)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()).into())
 }
 

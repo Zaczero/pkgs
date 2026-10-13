@@ -6,6 +6,7 @@ use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
     lonlat as geographic,
 };
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::{CoordSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
@@ -318,9 +319,9 @@ impl GridSourceAdmission {
             })
     }
 
-    fn normalize_shape(shape: Shape) -> Result<Shape, GridCoverError> {
-        crate::validate_lonlat_shape(&shape)?;
-        let normalized = normalize_grid_source(&shape);
+    fn normalize_shape(shape: &Shape) -> Result<Shape, GridCoverError> {
+        crate::validate_lonlat_shape(shape)?;
+        let normalized = normalize_grid_source(shape);
         ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized)?;
         Ok(normalized)
     }
@@ -334,7 +335,7 @@ impl GridSourceAdmission {
         } else {
             geometry.shape.shape().clone()
         };
-        Ok(PyGeometry::wgs84(Self::normalize_shape(shape)?))
+        Ok(PyGeometry::wgs84(Self::normalize_shape(&shape)?))
     }
 
     pub(crate) fn admit_array_shapes(
@@ -343,7 +344,7 @@ impl GridSourceAdmission {
     ) -> Result<Vec<Result<Option<Shape>, GridCoverError>>, GridCoverError> {
         let present_count = array
             .missing()
-            .map_or_else(|| array.len(), |mask| mask.present_count());
+            .map_or_else(|| array.len(), ValidityMask::present_count);
         let mut source_rows = Vec::with_capacity(present_count);
         for row in array.row_operation().present_rows() {
             let logical = row.logical();
@@ -374,7 +375,7 @@ impl GridSourceAdmission {
                         *output
                             .get_mut(*logical)
                             .expect("source logical row fits admission output") =
-                            Self::normalize_shape(shape)
+                            Self::normalize_shape(&shape)
                                 .map(Some)
                                 .map_err(|error| error.at_row(*logical));
                     }
@@ -395,7 +396,7 @@ impl GridSourceAdmission {
             });
             *output
                 .get_mut(logical)
-                .expect("source logical row fits admission output") = Self::normalize_shape(shape)
+                .expect("source logical row fits admission output") = Self::normalize_shape(&shape)
                 .map(Some)
                 .map_err(|error| error.at_row(logical));
         }
@@ -431,7 +432,7 @@ impl GridSourceAdmission {
         let admission = Self::new_for_array(array)?;
         let present_count = array
             .missing()
-            .map_or_else(|| array.len(), |mask| mask.present_count());
+            .map_or_else(|| array.len(), ValidityMask::present_count);
         let mut xs = Vec::with_capacity(present_count);
         let mut ys = Vec::with_capacity(present_count);
         if admission.transformer.is_none() {

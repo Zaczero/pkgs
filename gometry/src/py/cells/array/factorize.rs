@@ -13,7 +13,7 @@ impl PyCellArray {
             let id = self.id_at(row);
             crate::py::cells::record_first_seen_count!(slot_of, uniques, counts, id);
         }
-        Ok(sort_value_counts(uniques, counts))
+        Ok(sort_value_counts(&uniques, &counts))
     }
 
     fn factorize_identity_entries(

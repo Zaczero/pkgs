@@ -422,7 +422,7 @@ impl LocalExtent {
         }
         let mut counts = ShapeCountQuery::default();
         let coordinate_count =
-            counts.coordinates_for_shapes(sources.iter().map(|shape| shape.as_ref()))?;
+            counts.coordinates_for_shapes(sources.iter().map(std::convert::AsRef::as_ref))?;
         drop(counts);
         let capacity = if coordinate_count == 0 {
             0

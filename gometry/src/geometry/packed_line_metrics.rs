@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! CSR-native packed-line similarity metrics — shared column views, identity
 //! shortcuts, and batch execution for Hausdorff and Fréchet.
 //!

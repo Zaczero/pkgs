@@ -5,6 +5,10 @@ use super::support::{
 use super::*;
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_parallel_pole_plateaus_close_with_second_order_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 85.0), p(179.0, 85.0)]);
     let geodesic = Geodesic::wgs84();
@@ -77,6 +81,10 @@ fn geographic_hausdorff_near_antipodal_point_target_is_attained() -> Result<()> 
     )
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target =
@@ -92,6 +100,10 @@ fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target = Shape::geometry_collection(vec![
@@ -112,6 +124,10 @@ fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_closes_an_exact_polar_parallel_family() -> Result<()> {
     let source = line(vec![p(-45.0, 85.0), p(45.0, 85.0)]);
     let pole = Shape::Point(p(10.0, 90.0));
@@ -168,6 +184,10 @@ fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames() {
     }
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Result<()> {
     let original = line(vec![p(-10.0, 30.0), p(15.0, 40.0)]);
     let reversed = line(vec![p(15.0, 40.0), p(-10.0, 30.0)]);
@@ -178,6 +198,10 @@ fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Re
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 90.0), p(180.0, 90.0)]);
     let target = Shape::Point(p(0.0, 90.000_000_000_000_01));

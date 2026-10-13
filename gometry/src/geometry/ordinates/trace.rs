@@ -145,7 +145,7 @@ impl RootRange {
     }
 
     #[cfg(test)]
-    pub(crate) fn whole(root: RootId) -> Self {
+    pub(crate) const fn whole(root: RootId) -> Self {
         Self {
             root,
             source_start: ExactRational::zero(),
@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|request| request.root())
+                .map(super::RootRequest::root)
                 .collect::<Vec<_>>(),
             [first, second, third]
         );

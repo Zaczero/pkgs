@@ -151,7 +151,7 @@ impl FactorizationError {
     }
 }
 
-fn sort_value_counts(uniques: Vec<u64>, counts: Vec<i64>) -> (Vec<u64>, Vec<i64>) {
+fn sort_value_counts(uniques: &[u64], counts: &[i64]) -> (Vec<u64>, Vec<i64>) {
     let mut order: Vec<_> = (0..uniques.len()).collect();
     order.sort_unstable_by(|left, right| {
         let left_count = counts

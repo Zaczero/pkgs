@@ -582,7 +582,7 @@ fn certified_parts_serialize_polygon_line_and_isolated_point() {
     let (points, lines, polygons) = plan
         .emit_xy_parts(&partition, &topology, &edges, "test")
         .unwrap();
-    assert_eq!(points.iter().map(|point| point.xy()).collect::<Vec<_>>(), [
+    assert_eq!(points.iter().map(crate::geometry::Point::xy).collect::<Vec<_>>(), [
         XY::new(10.0, 3.0)
     ]);
     assert_eq!(lines.len(), 1);

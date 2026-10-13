@@ -7,6 +7,7 @@ use crate::py::classes::leaf_methods::{
 use crate::py::errors::geometry_type_err;
 use crate::{Bound, DistanceUnit, NavigationPath, Py, PyAny};
 
+#[derive(Clone, Copy)]
 enum PointAxis {
     X,
     Y,
@@ -86,6 +87,10 @@ impl PyPoint {
         signature = (bearing, distance, *, path = NavigationPath::Geodesic, unit = None),
         text_signature = "($self, bearing, distance, *, path='geodesic', unit=None)"
     )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     pub(crate) fn destination(
         slf: PyRef<'_, Self>,
         py: Python<'_>,
@@ -132,6 +137,10 @@ impl PyPoint {
     /// ------
     /// AttributeError
     ///     If the point is empty (``POINT EMPTY``).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn x(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::X)
@@ -148,6 +157,10 @@ impl PyPoint {
     /// ------
     /// AttributeError
     ///     If the point is empty (``POINT EMPTY``).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn y(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::Y)
@@ -166,6 +179,10 @@ impl PyPoint {
     ///     If the point has no Z ordinate.
     /// AttributeError
     ///     If the point is empty (``POINT EMPTY``).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn z(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::Z)
@@ -184,6 +201,10 @@ impl PyPoint {
     ///     If the point has no M ordinate.
     /// AttributeError
     ///     If the point is empty (``POINT EMPTY``).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn m(slf: PyRef<'_, Self>) -> PyResult<f64> {
         Self::point_ordinate(&slf, PointAxis::M)
@@ -216,6 +237,10 @@ impl PyPolygon {
     /// LineString
     ///     The closed exterior ring, or an axis-preserving empty line for
     ///     ``POLYGON EMPTY``. The result retains the polygon's CRS and epoch.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn exterior(slf: PyRef<'_, Self>) -> Typed {
         let base = slf.as_super();
@@ -232,6 +257,10 @@ impl PyPolygon {
     ///     A new list with one closed ring per hole, in polygon ring order.
     ///     Empty polygons return an empty list. Each ring retains the polygon's
     ///     declared axes, CRS, and epoch.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3's PyRef receiver is required to access the inherited PyGeometry"
+    )]
     #[getter]
     pub(crate) fn interiors(slf: PyRef<'_, Self>) -> Vec<Typed> {
         let base = slf.as_super();

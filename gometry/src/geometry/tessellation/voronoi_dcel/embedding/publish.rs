@@ -322,7 +322,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
                     "embedded Voronoi clip differs topologically from its source",
                 ));
             }
-        };
+        }
         if labelled.is_empty() {
             return Err(voronoi_error(
                 "exact Voronoi subdivision produced no labelled cells",

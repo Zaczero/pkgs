@@ -88,7 +88,7 @@ pub struct PyCoordinatesIter {
 
 impl PyCoordinatesIter {
     fn new(
-        view: coordinates::CoordinateView,
+        view: &coordinates::CoordinateView,
         layout: Option<CoordinateAxes>,
         reverse: bool,
     ) -> Self {

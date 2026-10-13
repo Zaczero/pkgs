@@ -526,7 +526,7 @@ pub(crate) fn slice_replacement_for_shape(
 
 pub(crate) fn map_coordinates_callback(
     py: Python<'_>,
-    coords: PyCoordinates,
+    coords: &PyCoordinates,
     func: &Bound<'_, PyAny>,
 ) -> PyResult<CoordinateReplacement> {
     let matrix = coords.__array__(py, None, None)?;

@@ -44,10 +44,6 @@ impl Shape {
     /// (Z/M untouched), validating finiteness once per column. This is the
     /// matrix-form affine path; origin-relative transforms use their exact
     /// pivot evaluator below.
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a,b,d,e are the canonical affine matrix coefficients"
-    )]
     fn affine(&self, matrix: &[f64; 6]) -> Result<Self> {
         let [a, b, d, e, xoff, yoff] = *matrix;
         self.try_map_coordseqs(

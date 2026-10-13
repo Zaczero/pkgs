@@ -93,10 +93,6 @@ fn intersection_native_point(
 }
 /// Exact raw-seed segment parameter with a positive denominator.  An
 /// arithmetic failure is an undecidable carrier, not wrapped lattice data.
-#[expect(
-    clippy::similar_names,
-    reason = "the determinant is defined over paired x/y edge, segment, and start deltas"
-)]
 fn rational_intersection_parameter(
     edge_dx: i128,
     edge_dy: i128,

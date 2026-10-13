@@ -210,7 +210,7 @@ impl Candidate {
             outward.0, outward.1,
         ]
         .into_iter()
-        .all(|value| value.is_finite())
+        .all(f64::is_finite)
         {
             return None;
         }
