@@ -27,15 +27,16 @@ def _countries(codes: tuple[str, ...]) -> dict[str, gm.Geometry]:
 
 def test_au_pg_union_keeps_its_known_public_wkb_digest() -> None:
     countries = _countries(('AU', 'PG'))
-
-    result = gm.union(countries['AU'], countries['PG'])
-
-    assert result.is_valid
-    # The public union follows the n-ary canonical-order path; the native Q
-    # receipt control pins a separate digest for its direct producer order.
-    assert hashlib.sha256(result.to_wkb()).hexdigest() == (
+    expected_digest = (
         'e5cd6a92943e8e13db66c64da5c8b9bd0d621ecd6bf1baa72aa5f393899bc6c0'
     )
+
+    for order in itertools.permutations(('AU', 'PG')):
+        result = gm.union(*(countries[code] for code in order))
+        assert result.is_valid, f'invalid public result for operand order {order!r}'
+        assert hashlib.sha256(result.to_wkb()).hexdigest() == expected_digest, (
+            f'public AU/PG digest changed for operand order {order!r}'
+        )
 
 
 def test_tv_ar_uy_nary_symmetric_difference_is_valid_in_all_six_orders() -> None:

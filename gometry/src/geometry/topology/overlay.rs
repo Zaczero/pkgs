@@ -7689,10 +7689,18 @@ mod tests {
     }
 
     #[test]
-    fn geographic_nearest_certificate_preserves_parent_au_pg_union_wkb() -> Result<()> {
+    fn geographic_nearest_certificate_preserves_direct_q_au_pg_union_wkb() -> Result<()> {
         use sha2::{Digest as _, Sha256};
 
         let shapes = b3_read_countries(&["AU", "PG"]);
+        let frame = GeographicFrame::crs84();
+        let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter())
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        assert_eq!(
+            crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
+            crate::geometry::GeographicTopologyRoute::ExactPartition,
+            "the public AU/PG binary union dispatches to exact partition"
+        );
         let topology = test_topology(&shapes);
         let plan = build_q_plan(&topology, OverlayOp::Union)?;
         let source_points = source_point_coordinates(&topology)?;
@@ -7720,7 +7728,7 @@ mod tests {
                 Sha256::digest(crate::io::to_wkb(&result, None, false)?)
             ),
             "3de292238e1cfcfa472ddd95548bb3ea28321182c2124f801d1fb63186fad206",
-            "nearest-even Q output must retain the exact-parent WKB bytes"
+            "direct Q retains its producer-order parent WKB"
         );
         Ok(())
     }
