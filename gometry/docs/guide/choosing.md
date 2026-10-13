@@ -90,9 +90,10 @@ DGGS cell covers and polygonal coverages use different representations:
   array methods named `coverage_*`.
 
 If you are bucketing geometry into a global grid, you want those `*_cover`
-factories. If you are validating or simplifying a parcel fabric, pass the rows
-to the `gm.coverage_*` functions —
-[`gm.coverage_is_valid(values)`][gometry.coverage_is_valid], [`gm.coverage_simplify(values, tolerance)`][gometry.coverage_simplify], and so on.
+factories. For a parcel fabric, validate with
+[`gm.coverage_is_valid(values)`][gometry.coverage_is_valid], simplify a valid
+coverage with [`gm.coverage_simplify(values, tolerance)`][gometry.coverage_simplify],
+or clean a near-coverage with [`gm.coverage_clean(values)`][gometry.coverage_clean].
 They take a [`GeometryArray`][gometry.GeometryArray] or any iterable of geometries:
 
 ```python exec="on" source="block" result="text"
@@ -105,10 +106,12 @@ print("same as free fn:", gm.coverage_is_valid(list(grid)))
 
 ### Validate, inspect, then clean
 
-Coverage operations validate their tiling precondition before processing.
-[`coverage_invalid_edges`][gometry.coverage_invalid_edges] returns diagnostic edges for a bad parcel fabric, and
-[`coverage_clean`][gometry.coverage_clean] applies the selected cleaning policy. Snapping is opt-in: the
-default `grid_size=0.0` preserves existing coordinates.
+[`coverage_simplify`][gometry.coverage_simplify] requires a valid coverage and
+preserves its shared boundaries. For overlaps or gaps in a near-coverage, use
+[`coverage_clean`][gometry.coverage_clean] to rebuild the faces according to
+`overlap_rule`; [`coverage_invalid_edges`][gometry.coverage_invalid_edges] shows
+the mismatched boundaries to inspect. Snapping is opt-in: the default
+`grid_size=0.0` preserves existing coordinates.
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
@@ -130,6 +133,42 @@ print(panels(
     ],
     labels={'source': 'input parcels', 'result': 'what the call returns'},
 ))
+```
+
+Geographic cleaning handles full-turn boundaries around a pole, including when
+the inner cap is listed before its surrounding cap. `overlap_rule` still
+determines which row owns an overlapping face:
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+crs = "+proj=longlat +a=7000000 +rf=150 +type=crs"
+
+def polar_cap(latitude: float) -> gm.Polygon:
+    return gm.Polygon(
+        [
+            (0, latitude),
+            (90, latitude),
+            (180, latitude),
+            (270, latitude),
+            (0, latitude),
+        ],
+        crs=crs,
+    )
+
+outer = polar_cap(80)
+inner = polar_cap(85)
+probes = [gm.Point(0, 89, crs=crs), gm.Point(45, 82, crs=crs)]
+
+for rows, expected in (
+    ((outer, inner), [[True, False], [True, False]]),
+    ((inner, outer), [[True, False], [False, True]]),
+):
+    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule="min_index")
+    assert gm.coverage_is_valid(cleaned)
+    observed = [[gm.covers(row, point) for row in cleaned] for point in probes]
+    assert observed == expected
+    print(observed)
 ```
 
 ## See also

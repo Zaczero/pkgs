@@ -632,20 +632,41 @@ On arrays, the radius method returns a read-only `float64` NumPy column.
     `method='constrained'` accepts `min_angle` and `max_area` for
     constrained refinement; `method='earcut'` is the direct polygon-interior
     triangulation; `method='delaunay'` needs only the input vertices.
-    [`voronoi`][gometry.Geometry.voronoi] with `output='edges'` returns internal
-    Voronoi edges, and
-    [`polygonize_all`][gometry.polygonize_all] with ``diagnostics=True`` also
-    reports dangles, cut edges, and invalid rings for pooled linework, grouped
-    by source row as [`Groups`][gometry.Groups].
-    [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize] is row-wise and returns
-    [`Groups`][gometry.Groups]; pass the array directly to `polygonize_all` to opt into one
-    pooled graph. Constrained
-    `min_angle`/`max_area` refinement is bounded at 16,000,000 generated
+    Constrained `min_angle`/`max_area` refinement is bounded at 16,000,000 generated
     vertices. A request whose estimated work exceeds that limit, or whose
     quality cannot be satisfied within it, raises a
     [`GeometryError`][gometry.GeometryError] naming the limit rather than
     returning an unconstrained result; relax the refinement targets when that
     happens.
+
+### Polygonize diagnostics
+
+[`polygonize_all(..., diagnostics=True)`][gometry.polygonize_all] returns the
+pooled polygons plus source-row groups for cut edges, dangles, and invalid
+rings. Geographic faces and diagnostics use one topology classification, so
+an edge of a returned face is not also reported as an invalid ring. A closed
+polar-cap ring with no leftover linework returns one polygon and empty
+diagnostic groups. Planar inputs retain their planar diagnostic classification.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+crs = "+proj=longlat +a=7000000 +rf=150 +type=crs"
+lines = gm.GeometryArray([
+    gm.LineString([(0, 80), (90, 80)], crs=crs),
+    gm.LineString([(90, 80), (180, 80)], crs=crs),
+    gm.LineString([(180, 80), (270, 80)], crs=crs),
+    gm.LineString([(270, 80), (0, 80)], crs=crs),
+])
+result = gm.polygonize_all(lines, diagnostics=True)
+assert len(result.polygons) == 1
+for group in (result.cut_edges, result.dangles, result.invalid_rings):
+    assert all(len(row) == 0 for row in group)
+print("polygons:", len(result.polygons))
+print("cut edges:", [len(row) for row in result.cut_edges])
+print("dangles:", [len(row) for row in result.dangles])
+print("invalid rings:", [len(row) for row in result.invalid_rings])
+```
 
 ## Z and M through constructive ops
 

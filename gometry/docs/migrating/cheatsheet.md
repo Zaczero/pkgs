@@ -104,7 +104,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |
 | Voronoi diagram output | [`g.voronoi()`][gometry.Geometry.voronoi] / `g.voronoi(output='edges')` | Use the `output` keyword to select cells or internal edges. |
-| `shapely.ops.polygonize(...)` / `shapely.ops.polygonize_full(...)` | [`gm.polygonize_all(values)`][gometry.polygonize_all], with `diagnostics=True` for pooled cut edges, dangles, and invalid rings; `array.polygonize()` for independent rows | The pooled function accepts a `GeometryArray` directly and pools its present rows. |
+| `shapely.ops.polygonize(...)` / `shapely.ops.polygonize_full(...)` | [`gm.polygonize_all(values)`][gometry.polygonize_all], with `diagnostics=True` for pooled cut edges, dangles, and invalid rings; `array.polygonize()` for independent rows | The pooled function accepts a `GeometryArray` directly and pools its present rows; see [geographic diagnostic semantics](../guide/constructive.md#polygonize-diagnostics). |
 | `build_area(...)` (GEOS) | `(...).build_area()` | Even-odd fill; unlike `polygonize`. |
 | `node(...)` (GEOS 3.7+) | `(...).node()` | Noded linework as `MultiLineString`. |
 | `line_merge(...)` | `(...).line_merge()` | |

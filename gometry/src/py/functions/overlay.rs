@@ -442,11 +442,16 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 
 /// Build polygons from pooled linework, optionally returning full diagnostics.
 ///
-/// All input geometries' edges are noded into one planar graph, so a ring can
+/// All input geometries' edges are pooled into one linework graph, so a ring can
 /// close across inputs. `diagnostics=False` returns the enclosed polygons;
 /// `diagnostics=True` returns those same polygons together with cut edges,
 /// dangles, and invalid rings grouped by source row. Missing source rows are
 /// `None` groups; present rows with no diagnostic linework are empty groups.
+/// For geographic input, polygon faces and diagnostic lines use the same
+/// classification, so an edge of a returned face is not also reported as an
+/// invalid ring. A closed polar-cap ring with no leftover linework returns a
+/// polygon with empty cut-edge, dangle, and invalid-ring groups. Planar inputs
+/// retain their planar diagnostic classification.
 /// `GeometryArray.polygonize()` instead preserves one result group per input
 /// row, so use this function when different rows' edges should close together.
 ///
@@ -836,7 +841,8 @@ pub(crate) fn coverage_invalid_edges(
 /// so the result stays an exact coverage (vector-identical interfaces, no
 /// new crossings — a conservative topology guard rejects any vertex removal
 /// that would intersect other linework or swallow a neighbor). Input must
-/// be a valid coverage; invalid rows raise with repair guidance.
+/// be a valid coverage; invalid rows raise with repair guidance. For a
+/// near-coverage that needs overlap or gap repair, use ``coverage_clean`` first.
 ///
 /// Parameters
 /// ----------
@@ -878,6 +884,7 @@ pub(crate) fn coverage_invalid_edges(
 /// --------
 /// Geometry.simplify : Per-geometry simplify (not coverage-topology-preserving).
 /// coverage_is_valid : Whether the rows form a valid polygonal coverage.
+/// coverage_clean : Rebuild a near-coverage before simplification.
 ///
 /// Examples
 /// --------
@@ -934,6 +941,9 @@ pub(crate) fn coverage_simplify(
 /// the neighbor with the longest shared border. Both sides of every
 /// interface come from the same noded linework, so the result is an exact
 /// coverage by construction.
+/// Geographic cleaning handles full-turn boundaries around a pole even when
+/// the inner cap row precedes its surrounding cap. Overlap assignment continues
+/// to follow ``overlap_rule``.
 ///
 /// Parameters
 /// ----------
