@@ -20508,7 +20508,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let classes = self.classes_for_nodes(nodes, budget)?;
                 return Ok(GlobalCheck::Reject(classes));
             },
-            roles @ QRingRoleCheck::Pass(_) | roles @ QRingRoleCheck::NativeRequired(_) => roles,
+            roles @ (QRingRoleCheck::Pass(_) | QRingRoleCheck::NativeRequired(_)) => roles,
         };
         if !producer_projection.rejections.is_empty() {
             let rejections = std::mem::take(&mut producer_projection.rejections);
