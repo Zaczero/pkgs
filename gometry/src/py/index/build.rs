@@ -443,7 +443,7 @@ pub(crate) fn restore_spatial_index_v2(
     }
 
     let live_handles = LiveHandles::from_sorted(handles.iter().copied());
-    let boxed = BoxedRows::from_pairs(&handles, rows, total_rows);
+    let boxed = BoxedRows::from_pairs(handles, rows, total_rows);
     let cover_counts = cover_count_exceptions(&entries);
     Ok(PySpatialIndex {
         rows: IndexRows {
