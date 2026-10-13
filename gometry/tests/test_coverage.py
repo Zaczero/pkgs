@@ -140,6 +140,108 @@ def test_geographic_clean_keeps_valid_disjoint_rows_as_identity() -> None:
     assert gm.coverage_is_valid(cleaned)
 
 
+def test_geographic_nonidentity_clean_assigns_seam_overlap_to_input_owner() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    first = gm.Polygon(
+        [
+            (170, 0, 1, 10),
+            (-165, 0, 11, 60),
+            (-165, 10, 21, 110),
+            (170, 10, 31, 160),
+            (170, 0, 1, 10),
+        ],
+        crs=crs,
+    )
+    second = gm.Polygon(
+        [(175, 0), (-160, 0), (-160, 10), (175, 10), (175, 0)],
+        crs=crs,
+    )
+
+    cleaned = gm.coverage_clean(
+        [first, second],
+        grid_size=0,
+        overlap_rule='min_index',
+    )
+
+    # In the continuous longitude chart, the source rows cover [170, 195]
+    # and [175, 200]. The overlap belongs to row zero, leaving row one only
+    # [195, 200].
+    probes = [
+        gm.Point(172.5, 5, crs=crs),
+        gm.Point(177, 5, crs=crs),
+        gm.Point(-172, 5, crs=crs),
+        gm.Point(-162.5, 5, crs=crs),
+        gm.Point(0, 5, crs=crs),
+    ]
+    assert [[gm.covers(row, point) for row in cleaned] for point in probes] == [
+        [True, False],
+        [True, False],
+        [True, False],
+        [False, True],
+        [False, False],
+    ]
+    assert gm.coverage_is_valid(cleaned)
+    assert cleaned[0].coordinate_axes == 'XYZM'
+
+    reversed_rows = gm.coverage_clean(
+        [second, first],
+        grid_size=0,
+        overlap_rule='min_index',
+    )
+    assert [[gm.covers(row, point) for row in reversed_rows] for point in probes] == [
+        [False, True],
+        [True, False],
+        [True, False],
+        [True, False],
+        [False, False],
+    ]
+    assert gm.coverage_is_valid(reversed_rows)
+
+    def polar_cap(latitude: float, offset: float) -> gm.Polygon:
+        return gm.Polygon(
+            [
+                (0, latitude, offset, 100 + offset),
+                (90, latitude, offset + 10, 200 + offset),
+                (180, latitude, offset + 20, 300 + offset),
+                (270, latitude, offset + 30, 400 + offset),
+                (0, latitude, offset, 100 + offset),
+            ],
+            crs=crs,
+        )
+
+    outer = polar_cap(80, 1)
+    inner = polar_cap(85, 10)
+    polar_probes = [
+        gm.Point(0, 89, crs=crs),
+        gm.Point(45, 82, crs=crs),
+        gm.Point(45, 79, crs=crs),
+    ]
+    polar_cleaned = gm.coverage_clean(
+        [outer, inner],
+        grid_size=0,
+        overlap_rule='min_index',
+    )
+    assert [
+        [gm.covers(row, point) for row in polar_cleaned] for point in polar_probes
+    ] == [
+        [True, False],
+        [True, False],
+        [False, False],
+    ]
+    reversed_polar = gm.coverage_clean(
+        [inner, outer],
+        grid_size=0,
+        overlap_rule='min_index',
+    )
+    assert [
+        [gm.covers(row, point) for row in reversed_polar] for point in polar_probes
+    ] == [
+        [True, False],
+        [False, True],
+        [False, False],
+    ]
+
+
 def test_geographic_zero_tolerance_simplify_keeps_valid_disjoint_rows_as_identity() -> (
     None
 ):
@@ -248,6 +350,55 @@ def test_nonzero_geographic_shared_seam_simplify_keeps_the_interface() -> None:
     assert gm.covers(simplified[1], gm.Point(-175, 5, crs='OGC:CRS84'))
 
 
+def test_nonzero_geographic_shared_seam_simplify_replays_reversed_zm_owners() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    west = gm.Polygon(
+        [
+            (170, 0, 1, 10),
+            (180, 0, 2, 20),
+            (180, 4, 3, 30),
+            (180, 6, 4, 40),
+            (180, 10, 5, 50),
+            (170, 10, 6, 60),
+            (170, 0, 1, 10),
+        ],
+        crs=crs,
+    )
+    east = gm.Polygon(
+        [
+            (-180, 0, 2, 20),
+            (-170, 0, 7, 70),
+            (-170, 10, 8, 80),
+            (-180, 10, 5, 50),
+            (-180, 7, 4.5, 45),
+            (-180, 6, 4, 40),
+            (-180, 4, 3, 30),
+            (-180, 0, 2, 20),
+        ],
+        crs=crs,
+    )
+
+    simplified = gm.coverage_simplify([west, east], 2.0, method='dp')
+
+    probes = [
+        gm.Point(175, 5, crs=crs),
+        gm.Point(-175, 5, crs=crs),
+        gm.Point(180, 5, crs=crs),
+        gm.Point(-180, 5, crs=crs),
+        gm.Point(0, 5, crs=crs),
+    ]
+    assert [[gm.covers(row, point) for row in simplified] for point in probes] == [
+        [True, False],
+        [False, True],
+        [True, True],
+        [True, True],
+        [False, False],
+    ]
+    assert [len(row.exterior.coords) for row in simplified] == [5, 5]
+    assert [row.coordinate_axes for row in simplified] == ['XYZM', 'XYZM']
+    assert gm.coverage_is_valid(simplified)
+
+
 def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
     seam = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 10), (170, 10)],
@@ -279,6 +430,74 @@ def test_geographic_seam_coverage_union_keeps_its_output_bytes() -> None:
         'MULTIPOLYGON (((170 0, 180 0, 180 10, 170 10, 170 0)), '
         '((-180 0, -170 0, -170 10, -180 10, -180 0)))'
     )
+
+
+def test_geographic_coverage_union_keeps_presplit_original_zm_arclength() -> None:
+    from math import cos, hypot, radians, sin, sqrt
+
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    crossing = gm.Polygon(
+        [
+            (165, -40, 10, 100),
+            (-175, 20, 70, 700),
+            (-170, 20, 80, 800),
+            (-170, -30, 90, 900),
+            (165, -40, 10, 100),
+        ],
+        crs=crs,
+    )
+    separate = gm.box(20, 0, 21, 1, crs=crs).with_coordinates(z=200, m=2000)
+    assert gm.coverage_is_valid([crossing, separate])
+
+    semi_major = 7_000_000.0
+    flattening = 1.0 / 150.0
+    eccentricity_squared = flattening * (2.0 - flattening)
+    latitude_rate = radians(60.0)
+    longitude_rate = radians(20.0)
+    intervals = 4096
+
+    def chart_edge_length(start: float, end: float) -> float:
+        step = (end - start) / intervals
+        weighted_speeds = []
+        for index in range(intervals + 1):
+            parameter = start + index * step
+            latitude = radians(-40.0 + 60.0 * parameter)
+            denominator = 1.0 - eccentricity_squared * sin(latitude) ** 2
+            meridian_radius = (
+                semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+            )
+            prime_vertical_radius = semi_major / sqrt(denominator)
+            speed = hypot(
+                meridian_radius * latitude_rate,
+                prime_vertical_radius * cos(latitude) * longitude_rate,
+            )
+            weight = 1 if index in (0, intervals) else 4 if index % 2 else 2
+            weighted_speeds.append(weight * speed)
+        return step * math.fsum(weighted_speeds) / 3.0
+
+    source_fraction = chart_edge_length(0.0, 0.75) / chart_edge_length(0.0, 1.0)
+    expected_z = 10.0 + 60.0 * source_fraction
+    expected_m = 100.0 + 600.0 * source_fraction
+
+    for rows in ([crossing, separate], [separate, crossing]):
+        union = gm.coverage_union_all(rows)
+        seam_records = [
+            tuple(float(value) for value in coordinate)
+            for polygon in union.parts
+            for coordinate in polygon.exterior.coords
+            if abs(float(coordinate[0])) == 180.0 and float(coordinate[1]) == 5.0
+        ]
+        assert len(seam_records) == 2
+        assert {record[0] for record in seam_records} == {-180.0, 180.0}
+        assert all(record[1] == 5.0 for record in seam_records)
+        assert all(
+            record[2:] == pytest.approx((expected_z, expected_m), abs=2e-9)
+            for record in seam_records
+        )
+        assert union.coordinate_axes == 'XYZM'
+        assert gm.covers(union, gm.Point(180, 0, crs=crs))
+        assert gm.covers(union, gm.Point(20.5, 0.5, crs=crs))
+        assert not gm.covers(union, gm.Point(0, 0, crs=crs))
 
 
 def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
