@@ -22,7 +22,7 @@ use crate::geometry::{
 };
 
 mod arcs;
-mod degenerate;
+pub(in crate::geometry::constructive) mod degenerate;
 mod loops;
 mod polygon;
 pub(in crate::geometry) mod stroke;
@@ -39,3 +39,6 @@ pub(in crate::geometry) use polygon::{
 #[cfg(test)]
 pub(crate) use stroke::winding_stroke;
 pub(in crate::geometry) use stroke::{winding_sided_stroke_budgeted, winding_stroke_budgeted};
+
+#[cfg(test)]
+mod tests;

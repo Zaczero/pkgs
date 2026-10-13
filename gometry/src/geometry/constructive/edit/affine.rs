@@ -48,3 +48,6 @@ pub(crate) fn stable_affine_xy(
     let ry = (d * xs + e * ys) / scale + yoff;
     (rx, ry)
 }
+
+#[cfg(test)]
+mod tests;

@@ -250,3 +250,6 @@ impl Shape {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

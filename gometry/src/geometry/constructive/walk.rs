@@ -769,3 +769,7 @@ mod tests {
         assert!(materialize_walk(&plan, 0.1, false, &mut budget, false).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "walk/tests.rs"]
+mod constructive_operation_tests;
