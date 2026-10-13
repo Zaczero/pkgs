@@ -13,7 +13,7 @@ use super::{
     PublicationInventory, QEmissionPlan, QNodeId, QSourceImage, ResourceError, Result,
     SourceFrozenDrawing, index_recipe_walks, try_sort_by_with_work,
 };
-use crate::geometry::embedding_completion::ShapeLiteralLayout;
+use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
 use crate::geometry::{HasM, HasZ, Shape};
 use crate::work::Work;
 

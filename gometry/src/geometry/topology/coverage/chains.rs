@@ -1070,7 +1070,7 @@ mod tests {
     use super::super::analyze_geographic_coverage;
     use super::*;
     use crate::geographic::GeographicFrame;
-    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::embedding_search::account::EvaluationBudget;
     use crate::geometry::tessellation::exact::ExactRational;
     use crate::work::Unmetered;
 

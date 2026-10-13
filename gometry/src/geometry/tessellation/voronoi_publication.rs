@@ -4,10 +4,10 @@ use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry,

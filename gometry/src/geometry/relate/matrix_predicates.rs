@@ -1,7 +1,7 @@
 use super::de9im::Loc;
+use crate::geometry::predicate_spec::Predicate;
 use crate::geometry::relate::De9im;
 use crate::geometry::{CompiledPattern, Dimension};
-use crate::predicates::Predicate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tri {

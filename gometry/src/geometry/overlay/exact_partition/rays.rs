@@ -297,7 +297,7 @@ mod tests {
     use super::{PointArena, RayWorkProgress, ray_work_progress, reset_ray_work_progress};
     use crate::error::{ErrorKind, Result};
     use crate::geometry::XY;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::geometry::graph::{
         RayAxis as Axis, RayPointsWithWork, compare_departures_with_work,
     };

@@ -5,6 +5,7 @@ use super::{
     exact_coordinate_matches_with_work, quotient_key_for_chart_position_with_work,
     rounded_chart_point_with_work,
 };
+use crate::geometry::embedding_completion::literals::LiteralAddress;
 #[cfg(test)]
 use crate::geometry::topology::q_embedding::{LiteralCheck, SourceFrozenDrawing, bind_literals};
 use crate::work::Work;
@@ -146,11 +147,7 @@ impl QSourceImages<'_> {
     }
 }
 impl CheckedImages<QSourceImage> for QSourceImages<'_> {
-    fn image(
-        &self,
-        _address: super::super::super::embedding_completion::LiteralAddress,
-        image: QSourceImage,
-    ) -> Result<&ExactChartPoint> {
+    fn image(&self, _address: LiteralAddress, image: QSourceImage) -> Result<&ExactChartPoint> {
         match image {
             QSourceImage::Port(_)
             | QSourceImage::SourcePoint(_)
@@ -180,7 +177,7 @@ pub(in crate::geometry::topology::q_embedding) struct AssignedSourceChart<'a> {
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
     fn read_point<W: Work>(
         &mut self,
-        _address: super::super::super::embedding_completion::LiteralAddress,
+        _address: LiteralAddress,
         image: QSourceImage,
         record: Point,
         _expected_axes: crate::geometry::CoordinateAxes,
@@ -331,11 +328,7 @@ pub(in crate::geometry::topology::q_embedding) struct SourceOnlyReceipt<'a> {
     pub(in crate::geometry::topology::q_embedding) publication: Option<&'a PublicationInventory>,
 }
 impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
-    fn image(
-        &self,
-        address: super::super::super::embedding_completion::LiteralAddress,
-        image: QSourceImage,
-    ) -> Result<&ExactChartPoint> {
+    fn image(&self, address: LiteralAddress, image: QSourceImage) -> Result<&ExactChartPoint> {
         if let QSourceImage::PublicationSample(sample) = image
             && self
                 .publication
@@ -353,7 +346,7 @@ impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
 impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
     fn read_point<W: Work>(
         &mut self,
-        address: super::super::super::embedding_completion::LiteralAddress,
+        address: LiteralAddress,
         image: QSourceImage,
         record: Point,
         expected_axes: crate::geometry::CoordinateAxes,

@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use super::*;
-use crate::geometry::embedding_search::{
-    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount,
-};
+use crate::geometry::embedding_search::account::SearchAccount;
+use crate::geometry::embedding_search::search::Search;
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem};
 use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
 use crate::geometry::graph::{
     GlobalFaces, RayAxis as Axis, RayPoints, prefix_contact_offsets, shoot_left,

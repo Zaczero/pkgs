@@ -15,7 +15,7 @@ use super::{
     validate_native_sealed_layout,
 };
 use crate::geometry::CoordinateAxes;
-use crate::geometry::embedding_completion::LiteralAddress;
+use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::work::Work;
 
 pub(in crate::geometry) struct NativeCandidatePublication<'call, 'reference, 'topology> {

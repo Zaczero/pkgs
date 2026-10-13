@@ -172,7 +172,7 @@ pub(crate) fn bounds_from_iter(bounds: impl IntoIterator<Item = Bounds>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
     use crate::geometry::{CoordinateAxes, GeometryErrorKind};
     use crate::work::Unmetered;
 

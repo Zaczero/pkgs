@@ -1,5 +1,16 @@
-use crate::geometry::Shape;
-use crate::geometry::relate::{line_has_nonzero_segment, multiline_has_nonzero_segment};
+use crate::geometry::{CoordSeq, Coordinates as _, Shape, same_point};
+
+fn line_has_nonzero_segment(coords: &CoordSeq) -> bool {
+    coords
+        .segment_pairs()
+        .any(|[start, end]| !same_point(start, end))
+}
+
+fn multiline_has_nonzero_segment<L: AsRef<CoordSeq>>(lines: &[L]) -> bool {
+    lines
+        .iter()
+        .any(|line| line_has_nonzero_segment(line.as_ref()))
+}
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     DirectedChartRestrictionUse, FinishedGeometry, ProducerDrawingReceipt, ProducerImageId,

@@ -15,9 +15,9 @@ use super::super::{
     native_reference_cycles_and_parts, native_seam_bands_from_assigned_graph, native_seam_edges,
     native_selected_pole_sectors, native_whole_sphere_cell_edges,
     new_native_reference_graph_builder, normalize_native_chart_lifts, normalize_native_seam_events,
-    rounded_native_neighbors_with_work, try_sort_by_with_work, validate_native_reference,
-    validate_native_source_ranges,
+    try_sort_by_with_work, validate_native_reference, validate_native_source_ranges,
 };
+use crate::geographic::retained_exact::sites::rounded_native_neighbors_with_work;
 use crate::work::Work as _;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {

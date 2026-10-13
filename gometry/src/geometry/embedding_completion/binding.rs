@@ -1,11 +1,14 @@
-use super::storage::FrozenStorage;
-use super::{
-    ArrayRows, CheckedLiteralRecord, CoordinateAxes, FinalGroupRows, FrozenLiteralBuffers,
-    GeometryErrorKind, LiteralAddress, LiteralCheck, LiteralReceiver, LiteralRowAddress,
-    LiteralRowBinding, LogicalRow, Point, ResourceError, Result, SealedOutput, ValidityMask,
-    validate_shape_layout, visit_shape_literals, visit_storage_row,
+use super::literals::{
+    LiteralAddress, LiteralRowAddress, validate_shape_layout, visit_shape_literals,
+    visit_storage_row,
 };
-use crate::work::Work;
+use super::storage::{
+    CheckedLiteralRecord, FinalGroupRows, FrozenLiteralBuffers, FrozenStorage, LiteralCheck,
+    LiteralReceiver, LiteralRowBinding, SealedOutput,
+};
+use super::{ResourceError, Result, Work};
+use crate::geometry::storage::{ArrayRows, LogicalRow, ValidityMask};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
 
 fn validate_group_storage(
     values: &ArrayRows,
