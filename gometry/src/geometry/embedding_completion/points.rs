@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 
-use crate::error::{ResourceError, Result};
+#[cfg(test)]
+use crate::error::ResourceError;
+use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{RayAxis, RayPoints, RayPointsWithWork};
 use crate::geometry::topology::{
