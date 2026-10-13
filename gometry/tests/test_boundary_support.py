@@ -1,3 +1,4 @@
+import math
 from collections import Counter
 from itertools import pairwise
 
@@ -428,6 +429,41 @@ def test_geographic_boundary_array_preserves_q_results_through_gathers_and_nulls
     assert _line_edges(gathered[2]) == Counter(
         _edge(left, right) for left, right in THREE_BOX_EDGES
     )
+
+
+def test_geographic_boundary_repairs_nearest_rings_for_scalar_and_gathered_rows() -> (
+    None
+):
+    unit = math.ulp(100.0)
+
+    def bar(vertices: list[tuple[int, int]]) -> gm.Polygon:
+        return gm.Polygon(
+            [(100.0 + x * unit, 80.0 + y * unit) for x, y in vertices],
+            crs=4326,
+        )
+
+    rings = [
+        [(-30, -20), (30, -20), (30, 0), (-30, 0), (-30, -20)],
+        [(-30, -10), (30, 11), (30, 31), (-30, 10), (-30, -10)],
+        [(-30, 11), (30, -10), (30, 10), (-30, 31), (-30, 11)],
+    ]
+    source = gm.GeometryCollection([bar(ring) for ring in rings])
+    expected = Counter(
+        _edge(
+            (100.0 + x0 * unit, 80.0 + y0 * unit),
+            (100.0 + x1 * unit, 80.0 + y1 * unit),
+        )
+        for ring in rings
+        for (x0, y0), (x1, y1) in pairwise(ring)
+    )
+
+    scalar = source.boundary()
+    gathered = gm.GeometryArray([None, source], crs=4326)[[1, 0]].boundary()
+
+    assert _line_edges(scalar) == expected
+    assert gathered.is_missing.tolist() == [False, True]
+    assert gathered[0].to_wkb() == scalar.to_wkb()
+    assert gathered[1] is None
 
 
 def test_q_boundary_polar_ring_does_not_add_a_cut_or_pole_edge() -> None:

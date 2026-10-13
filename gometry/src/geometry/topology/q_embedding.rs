@@ -11397,6 +11397,11 @@ fn build_q_publication_pairs(
             let published_chord = published
                 .get(published_index)
                 .expect("publication sweep ordinal belongs to the publication chord table");
+            // The emitted leaf replaces this rooted source span; it is not an
+            // independent edge whose contact with its own source constrains rounding.
+            if publication_leaf_replaces_source_span(source_chord, published_chord, work)? {
+                return Ok(ControlFlow::<std::convert::Infallible>::Continue(()));
+            }
             let translated = shifted_segment(published_chord.nearest, shift, period);
             let radius = *published_chord
                 .image_radii
@@ -11484,6 +11489,20 @@ fn build_q_publication_pairs(
         .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
     Ok(pairs)
+}
+
+fn publication_leaf_replaces_source_span(
+    source: &QChord,
+    published: &QPublishedChord,
+    work: &mut impl Work,
+) -> Result<bool> {
+    for range in &published.source_ranges {
+        work.charge_into_error(1)?;
+        if range.ports == source.ports || range.ports == [source.ports[1], source.ports[0]] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn compare_variable_nodes(
@@ -16428,9 +16447,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if distinct.len() > 1 {
                 let mut has_source = false;
                 let mut computed_count = 0_usize;
+                let mut movable_conflicts = Vec::new();
                 for node in distinct {
                     budget.charge_into_error(1)?;
-                    match &nodes
+                    let variable = match &nodes
                         .nodes()
                         .get(node.0 as usize)
                         .ok_or_else(|| {
@@ -16442,19 +16462,36 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     {
                         NodeAuthority::Source(source) => {
                             has_source = true;
-                            conflicting_nodes.push(QVariableNode::Source(*source));
+                            QVariableNode::Source(*source)
                         },
                         NodeAuthority::Computed(_) => {
-                            conflicting_nodes.push(QVariableNode::Published(node));
                             computed_count = computed_count
                                 .checked_add(1)
                                 .ok_or(ResourceError::SizeOverflow)?;
+                            QVariableNode::Published(node)
                         },
+                    };
+                    let location = match variable {
+                        QVariableNode::Source(node) => {
+                            self.node_location.get(node.0 as usize).copied().flatten()
+                        },
+                        QVariableNode::Published(node) => self
+                            .publication_location
+                            .get(node.0 as usize)
+                            .copied()
+                            .flatten(),
+                    };
+                    if location.is_some() {
+                        movable_conflicts.push(variable);
                     }
                 }
                 if !has_source || computed_count > 1 {
                     unrepresentable = true;
                 }
+                if movable_conflicts.is_empty() {
+                    unrepresentable = true;
+                }
+                conflicting_nodes.extend(movable_conflicts);
             }
             start = end;
         }
@@ -24859,11 +24896,11 @@ mod canonical_coordinate_tests {
         let shapes = [
             line(
                 Point::new_raw_xy(half - ulp, 0.0),
-                Point::new_raw_xy(half, 2.0),
+                Point::new_raw_xy(half + ulp, 4.0),
             )?,
             line(
                 Point::new_raw_xy(half - ulp, 2.0),
-                Point::new_raw_xy(half, 0.0),
+                Point::new_raw_xy(half + ulp, -2.0),
             )?,
             crate::geometry::Shape::Point(Point::new_raw_xy(half - ulp, 1.0)),
         ];
@@ -24879,8 +24916,10 @@ mod canonical_coordinate_tests {
             OverlayOp::Union.name(),
             &mut budget,
         )?;
-        let emission =
+        let mut emission =
             plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+        // The line-only union is source-reusable; exercise Native completion explicitly.
+        emission.force_native = true;
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
         let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
             None;
@@ -24981,6 +25020,144 @@ mod canonical_coordinate_tests {
                 &mut fixed_work,
             )?;
         assert!(fixed_keys.contains(&emitted_node_key(frame, XY::new(half - ulp, 1.0),)?));
+
+        let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+        let live_keys = drawing.live_node_keys(frame, &mut budget)?;
+        let certification = QEmbeddingCertification::<crate::crs::GeodesicMetric> {
+            topology: &topology,
+            emission: &emission,
+            nearest: &nearest,
+            ordinates: &ordinates,
+            declared_axes: crate::geometry::CoordinateAxes::XY,
+            strict_axes: false,
+            operation: "q native domain",
+            metric_access: None,
+        };
+        let pass =
+            match certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget)?
+            {
+                SearchOutcome::Pass(pass) => pass,
+                SearchOutcome::Exhausted => {
+                    return Err(GeometryErrorKind::unrepresentable_output("q native domain"));
+                },
+            };
+        assert!(
+            pass.searched,
+            "the nearest seam site is outside the admitted domain"
+        );
+        let assigned = pass.coordinates.candidate(target)?;
+        assert_eq!(assigned.native.x.to_bits(), right.native.x.to_bits());
+        assert_eq!(assigned.native.y.to_bits(), right.native.y.to_bits());
+        assert_eq!(assigned.periods, right.periods);
+
+        let super::super::emission::SealedQDrawing::Native(native) = pass.output.sealed else {
+            return Err(GeometryErrorKind::Invalid(
+                "the seam witness did not run Native completion".into(),
+            )
+            .into());
+        };
+        assert!(
+            !native.line_traces.is_empty()
+                && native
+                    .line_traces
+                    .iter()
+                    .all(|line| line.trace.rows.edge_count() > 0),
+            "Native completion must retain final producer leaf records"
+        );
+        let shape = native.sealed.into_scalar()?.0;
+        let mut crossing_leaf_ends = 0;
+        let mut fixed_records = Vec::new();
+        shape.try_for_each_component(&mut |component| -> Result<()> {
+            match component {
+                crate::geometry::Component::LineString(line) => {
+                    let points = line.points().collect::<Vec<_>>();
+                    for pair in points.windows(2) {
+                        crossing_leaf_ends += pair
+                            .iter()
+                            .filter(|point| {
+                                point.x.to_bits() == assigned.native.x.to_bits()
+                                    && point.y.to_bits() == assigned.native.y.to_bits()
+                            })
+                            .count();
+                    }
+                },
+                crate::geometry::Component::Point(point) => fixed_records.push(point),
+                crate::geometry::Component::Polygon(_) => {},
+            }
+            Ok(())
+        })?;
+        assert!(
+            crossing_leaf_ends >= 4,
+            "both crossing lines must retain their incident final leaves at the right site"
+        );
+        assert!(
+            fixed_records.iter().any(|point| {
+                point.x.to_bits() == (half - ulp).to_bits()
+                    && point.y.to_bits() == 1.0_f64.to_bits()
+            }),
+            "the fixed left-site point must remain in the final Native part records"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn production_q_ring_role_check_rejects_a_complementary_source_drawing() -> Result<()> {
+        let source = crate::io::parse_wkt("POLYGON ((0 10, 120 10, 240 10, 0 10))")?;
+        let topology = topology(std::slice::from_ref(&source))?;
+        let mut budget = EvaluationBudget::new("QC-R", 0)?;
+        let plan =
+            super::super::overlay::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let source_points = vec![None; topology.sources.points.len()];
+        let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+        let mut drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+        let super::super::overlay::DrawnPolygons::Regions { rings, .. } = &mut drawing.polygons
+        else {
+            return Err(GeometryErrorKind::Invalid(
+                "the cap did not produce a bounded source ring".into(),
+            )
+            .into());
+        };
+        let ring = rings
+            .first_mut()
+            .ok_or_else(|| GeometryErrorKind::Invalid("the cap source ring is missing".into()))?;
+        if !matches!(ring.origin, super::super::overlay::DrawnAreaOrigin::Source) {
+            return Err(GeometryErrorKind::Invalid(
+                "the cap source ring lost its source authority".into(),
+            )
+            .into());
+        }
+        let mut complementary_points = ring
+            .vertices
+            .iter()
+            .map(|vertex| vertex.point)
+            .collect::<Vec<_>>();
+        complementary_points.reverse();
+        for (vertex, point) in ring.vertices.iter_mut().zip(complementary_points) {
+            vertex.point = point;
+        }
+
+        match check_q_ring_roles(&topology, &drawing, &mut budget)? {
+            QRingRoleCheck::Reject {
+                failure: QRingRoleFailure::SourceChanged,
+                ..
+            } => {},
+            QRingRoleCheck::Reject { .. } => {
+                return Err(GeometryErrorKind::Invalid(
+                    "the complementary source drawing failed for a non-role reason".into(),
+                )
+                .into());
+            },
+            QRingRoleCheck::Pass(roles) => {
+                return Err(GeometryErrorKind::Invalid(
+                    format!("QC-R accepted the complementary source role {roles:?}").into(),
+                )
+                .into());
+            },
+        }
+        assert!(
+            certify_nearest_ring_roles(&topology, &drawing, &mut budget).is_err(),
+            "the production role certification must reject the complementary drawing"
+        );
         Ok(())
     }
 }
@@ -26529,3 +26706,6 @@ mod native_cycle_start_tests {
         Ok(())
     }
 }
+
+#[path = "q_embedding_acceptance_tests.rs"]
+mod acceptance_tests;
