@@ -30,6 +30,7 @@ use super::{CdtRefinement, exact_delaunay};
 use crate::collections::HashMap;
 use crate::geographic::ChartPointSite;
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::publication::DirectedChartRestrictionUse;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
 
@@ -118,6 +119,8 @@ pub(super) fn take_refinement_work_counters() -> RefinementWorkCounters {
 #[derive(Clone, Debug)]
 pub(crate) struct SourceConstraint {
     pub(crate) id: usize,
+    /// Original input segment ordinal, including skipped zero-length edges.
+    pub(crate) source_root: usize,
     pub(crate) start: Point,
     pub(crate) end: Point,
     pub(crate) start_site: usize,
@@ -160,11 +163,40 @@ pub(crate) struct SourcePiece {
     pub(crate) hi: exact::ExactRational,
 }
 
-/// A rounded boundary point whose exact source parameter and half-ULP error
-/// bound were checked before the point entered the mesh.
+#[derive(Clone, Debug)]
+pub(crate) struct RestrictionConstraint {
+    pub(crate) id: usize,
+    pub(crate) owner: RingOwner,
+    pub(crate) start_site: usize,
+    pub(crate) end_site: usize,
+    pub(crate) use_: DirectedChartRestrictionUse,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RestrictionPiece {
+    pub(crate) restriction: usize,
+    pub(crate) owner: RingOwner,
+    pub(crate) start_site: usize,
+    pub(crate) end_site: usize,
+    pub(crate) start: exact::ExactRational,
+    pub(crate) end: exact::ExactRational,
+    pub(crate) use_: DirectedChartRestrictionUse,
+}
+
+#[derive(Clone, Debug)]
+struct ConstraintPiece {
+    constraint: usize,
+    start_site: usize,
+    end_site: usize,
+    lo: exact::ExactRational,
+    hi: exact::ExactRational,
+}
+
+/// A rounded boundary point whose root parameter and half-ULP error bound
+/// were checked before the point entered the mesh.
 #[derive(Clone, Debug)]
 struct CertifiedBoundarySplit {
-    source: usize,
+    constraint: usize,
     parameter: exact::ExactRational,
     point: XY,
     half_ulp: [exact::ExactDyadic; 2],
@@ -174,6 +206,8 @@ struct CertifiedBoundarySplit {
 pub(crate) enum NodeProvenance {
     /// A vertex in the source point slice supplied to the mesh builder.
     SourceSite,
+    /// A producer-generated cut or pole vertex with no source record.
+    ChartRestrictionSite,
     ConstraintSplit {
         certificate: usize,
     },
@@ -201,14 +235,20 @@ pub(crate) struct CdtSourceUse {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum CdtSideBoundaryUse {
+    Source(usize),
+    /// Index into the plan's directed chart-restriction piece table.
+    Restriction(usize),
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct CdtSideUse {
     pub(crate) halfedge: usize,
     pub(crate) start_site: usize,
     pub(crate) end_site: usize,
     pub(crate) twin: Option<usize>,
     pub(crate) twin_selected: bool,
-    pub(crate) constrained: bool,
-    pub(crate) source: Option<CdtSourceUse>,
+    pub(crate) boundary: Option<CdtSideBoundaryUse>,
 }
 
 #[derive(Clone, Debug)]
@@ -221,9 +261,9 @@ pub(crate) struct CdtFaceUse {
 
 /// One constrained mesh and its checked publication inputs.
 ///
-/// The source points, faces, source intervals, and generated-node provenance
-/// are retained together so scalar and packed publishers cannot independently
-/// reconstruct a different mesh result.
+/// Selected faces, authored source intervals, chart-restriction uses, and
+/// generated-node provenance stay together so publishers cannot reconstruct a
+/// different mesh result from exported points.
 #[derive(Debug)]
 pub(crate) struct ConstrainedMeshPlan {
     pub(crate) vertices: Vec<Point>,
@@ -233,8 +273,11 @@ pub(crate) struct ConstrainedMeshPlan {
     face_slot_count: usize,
     pub(crate) provenance: Vec<NodeProvenance>,
     pub(crate) source_constraints: Vec<SourceConstraint>,
+    pub(crate) source_uses: Vec<CdtSourceUse>,
+    pub(crate) restrictions: Vec<RestrictionConstraint>,
     source_rings: Vec<SourceRingStart>,
     pub(crate) constraint_pieces: Vec<SourcePiece>,
+    pub(crate) restriction_pieces: Vec<RestrictionPiece>,
     split_certificates: Vec<CertifiedBoundarySplit>,
     pub(crate) refinement: super::CdtRefinement,
     pub(crate) force_xy: bool,
@@ -243,17 +286,17 @@ pub(crate) struct ConstrainedMeshPlan {
 struct PreparedSplit {
     candidate: XY,
     located: Located,
-    source: Option<PreparedSourceSplit>,
+    constraint: Option<PreparedConstraintSplit>,
     construction: Option<RefinementConstruction>,
 }
 
-struct PreparedSourceSplit {
-    piece: SourcePiece,
+struct PreparedConstraintSplit {
+    piece: ConstraintPiece,
     certificate: CertifiedBoundarySplit,
 }
 
 struct PieceNode {
-    piece: Option<SourcePiece>,
+    piece: Option<ConstraintPiece>,
     next: Option<usize>,
 }
 
@@ -262,9 +305,9 @@ enum PieceCursor {
     After(usize),
 }
 
-// Source IDs own the first slots. A split replaces its existing slot so
-// predecessors and source roots stay valid when the edge-index key changes.
-struct SourcePieces {
+// Constraint IDs own the first slots. A split replaces its existing slot so
+// predecessors remain valid when the edge-index key changes.
+struct ConstraintPieces {
     edges: HashMap<(usize, usize), usize>,
     nodes: Vec<PieceNode>,
 }
@@ -275,8 +318,9 @@ pub(super) struct ConstrainedMesh {
     pub(super) constrained: Vec<bool>,
     coordinates: CdtCoordinates,
     source_constraints: Vec<SourceConstraint>,
+    restrictions: Vec<RestrictionConstraint>,
     source_rings: Vec<SourceRingStart>,
-    source_pieces: SourcePieces,
+    constraint_pieces: ConstraintPieces,
     provenance: Vec<NodeProvenance>,
     split_certificates: Vec<CertifiedBoundarySplit>,
 }

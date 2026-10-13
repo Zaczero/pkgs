@@ -184,6 +184,38 @@ pub(crate) fn voronoi_flatten(
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         });
+    if let Some(geographic_frame) = geographic_frame {
+        let output_frame = frame.clone();
+        let mut finished = voronoi_outputs(
+            py,
+            shapes,
+            &frame,
+            Some(geographic_frame),
+            tolerance,
+            clip,
+            operation,
+            kernel,
+            move |outputs, boundary, budget| {
+                let source_clip = match boundary.as_borrowed() {
+                    VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                    VoronoiBoundary::Envelope | VoronoiBoundary::Padded => None,
+                };
+                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(source_clip)?;
+                writer.push_polygon_outputs(outputs, geographic_frame, budget)?;
+                writer.finish_array(output_frame.clone())
+            },
+        )?;
+        if finished.len() != 1 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "scalar Voronoi publication did not produce one finished array",
+            ));
+        }
+        return Ok(crate::PyGeometryArray::from_finished(
+            finished.pop().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("finished Voronoi array is absent")
+            })?,
+        )?);
+    }
     let cells = voronoi_outputs(
         py,
         shapes,
@@ -225,6 +257,38 @@ pub(crate) fn voronoi_edge_lines_flatten(
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         });
+    if let Some(geographic_frame) = geographic_frame {
+        let output_frame = frame.clone();
+        let mut finished = voronoi_outputs(
+            py,
+            shapes,
+            &frame,
+            Some(geographic_frame),
+            tolerance,
+            clip,
+            "voronoi_edge_lines",
+            Shape::voronoi_edge_column_in_frame_budgeted,
+            move |output, boundary, budget| {
+                let source_clip = match boundary.as_borrowed() {
+                    VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                    VoronoiBoundary::Envelope | VoronoiBoundary::Padded => None,
+                };
+                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(source_clip)?;
+                writer.push_edge_column(output, geographic_frame, budget)?;
+                writer.finish_array(output_frame.clone())
+            },
+        )?;
+        if finished.len() != 1 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "scalar Voronoi edge publication did not produce one finished array",
+            ));
+        }
+        return Ok(crate::PyGeometryArray::from_finished(
+            finished.pop().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("finished Voronoi edge array is absent")
+            })?,
+        )?);
+    }
     let columns = voronoi_outputs(
         py,
         shapes,

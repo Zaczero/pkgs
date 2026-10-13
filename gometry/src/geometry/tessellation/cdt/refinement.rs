@@ -15,8 +15,8 @@ use super::plan::{
 use super::update_work;
 use super::{
     BadTriangle, CdtCoordinates, CertifiedBoundarySplit, ConstrainedMesh, ConstraintCircle,
-    ConstraintIndex, FaceLabels, NodeProvenance, PreparedSourceSplit, PreparedSplit,
-    RefinementConstruction, SourcePiece, SourcePieces, ordered,
+    ConstraintIndex, ConstraintPiece, ConstraintPieces, FaceLabels, NodeProvenance,
+    PreparedConstraintSplit, PreparedSplit, RefinementConstruction, ordered,
 };
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
@@ -251,7 +251,7 @@ impl ConstraintCircle {
 }
 
 impl ConstraintIndex {
-    fn new(pieces: &SourcePieces, coordinates: &CdtCoordinates) -> Result<Self> {
+    fn new(pieces: &ConstraintPieces, coordinates: &CdtCoordinates) -> Result<Self> {
         let circles = pieces
             .values()
             .map(|piece| ConstraintCircle::new(coordinates, piece.start_site, piece.end_site))
@@ -295,7 +295,7 @@ impl ConstraintIndex {
             .transpose()
     }
 
-    fn remove(&mut self, coordinates: &CdtCoordinates, piece: &SourcePiece) -> Result<()> {
+    fn remove(&mut self, coordinates: &CdtCoordinates, piece: &ConstraintPiece) -> Result<()> {
         let circle = ConstraintCircle::new(coordinates, piece.start_site, piece.end_site)?;
         self.tree.remove(&circle);
         Ok(())
@@ -456,7 +456,7 @@ impl ConstrainedMesh {
             return Ok(true);
         }
         let mut faces = FaceLabels::from_inside(&self.mesh, &inside);
-        let mut circles = ConstraintIndex::new(&self.source_pieces, &self.coordinates)?;
+        let mut circles = ConstraintIndex::new(&self.constraint_pieces, &self.coordinates)?;
         let mut inserted = 0_usize;
         while let Some(entry) = bad.pop() {
             let face = entry.face;
@@ -501,7 +501,7 @@ impl ConstrainedMesh {
                     LocationOutcome::Located(located) => Some(PreparedSplit {
                         candidate: center,
                         located,
-                        source: None,
+                        constraint: None,
                         construction: Some(center_construction),
                     }),
                     LocationOutcome::Blocked(edge) => self.prepare_split(&circles, edge)?,
@@ -510,7 +510,7 @@ impl ConstrainedMesh {
             let Some(PreparedSplit {
                 candidate,
                 located,
-                source,
+                constraint,
                 construction,
             }) = placed
             else {
@@ -525,13 +525,13 @@ impl ConstrainedMesh {
                     "refinement coordinate table lost its mesh site alignment",
                 ));
             }
-            if let Some(split) = &source {
+            if let Some(split) = &constraint {
                 let edge = self
                     .mesh
                     .edge_slot(split.piece.start_site, split.piece.end_site)
                     .ok_or_else(|| {
                         GeometryErrorKind::triangulation(
-                            "constrained source edge disappeared before splitting",
+                            "constrained edge disappeared before splitting",
                         )
                     })?;
                 Self::set_constrained(&mut self.constrained, edge, false);
@@ -544,7 +544,7 @@ impl ConstrainedMesh {
                     );
                 }
                 circles.remove(&self.coordinates, &split.piece)?;
-                self.source_pieces.reserve(2);
+                self.constraint_pieces.reserve(2);
                 self.split_certificates.reserve(1);
             }
             points.reserve(1);
@@ -554,13 +554,15 @@ impl ConstrainedMesh {
             debug_assert_eq!(admitted_site, site);
             points.push(Point::new_raw_xy(candidate.x, candidate.y));
             self.mesh.admit_vertex(site);
-            let source = source.map(|split| {
+            let constraint = if let Some(split) = constraint {
                 let certificate = self.split_certificates.len();
                 let parameter = split.certificate.parameter.clone();
                 self.split_certificates.push(split.certificate);
-                (split.piece, parameter, certificate)
-            });
-            let provenance = if let Some((_, _, certificate)) = &source {
+                Some((split.piece, parameter, certificate))
+            } else {
+                None
+            };
+            let provenance = if let Some((_, _, certificate)) = &constraint {
                 NodeProvenance::ConstraintSplit {
                     certificate: *certificate,
                 }
@@ -599,14 +601,14 @@ impl ConstrainedMesh {
                     &mut self.constrained,
                 )?
             };
-            if let Some((piece, parameter, _)) = source {
+            if let Some((piece, parameter, _)) = constraint {
                 let mut cursor = self
-                    .source_pieces
+                    .constraint_pieces
                     .remove(ordered(piece.start_site, piece.end_site))
-                    .expect("the split owns an indexed source piece");
+                    .expect("the split owns an indexed constraint piece");
                 changed.extend(self.insert_constraint(
-                    SourcePiece {
-                        source: piece.source,
+                    ConstraintPiece {
+                        constraint: piece.constraint,
                         start_site: piece.start_site,
                         end_site: site,
                         lo: piece.lo.clone(),
@@ -615,8 +617,8 @@ impl ConstrainedMesh {
                     &mut cursor,
                 )?);
                 changed.extend(self.insert_constraint(
-                    SourcePiece {
-                        source: piece.source,
+                    ConstraintPiece {
+                        constraint: piece.constraint,
                         start_site: site,
                         end_site: piece.end_site,
                         lo: parameter,
@@ -661,13 +663,13 @@ impl ConstrainedMesh {
     ) -> Result<Option<PreparedSplit>> {
         let (start, end) = self.mesh.edge_vertices(e);
         if self.is_constrained(e) {
-            let Some(piece) = self.source_pieces.get(ordered(start, end)) else {
+            let Some(piece) = self.constraint_pieces.get(ordered(start, end)) else {
                 return Err(GeometryErrorKind::triangulation(
-                    "constrained edge has no source interval",
+                    "constrained edge has no retained root interval",
                 ));
             };
             let requested = piece.lo.try_midpoint(&piece.hi)?;
-            let certificate = self.certify_source_split(piece, &requested)?;
+            let certificate = self.certify_constraint_split(piece, &requested)?;
             let candidate = certificate.point;
             let start = self.coordinates.site_query(piece.start_site);
             let end = self.coordinates.site_query(piece.end_site);
@@ -683,7 +685,7 @@ impl ConstrainedMesh {
             return Ok(Some(PreparedSplit {
                 candidate,
                 located,
-                source: Some(PreparedSourceSplit {
+                constraint: Some(PreparedConstraintSplit {
                     piece: piece.clone(),
                     certificate,
                 }),
@@ -713,28 +715,28 @@ impl ConstrainedMesh {
         Ok(Some(PreparedSplit {
             candidate: midpoint,
             located,
-            source: None,
+            constraint: None,
             construction: Some(RefinementConstruction::EdgeMidpoint([start, end])),
         }))
     }
 
-    fn certify_source_split(
+    fn certify_constraint_split(
         &self,
-        piece: &SourcePiece,
+        piece: &ConstraintPiece,
         requested: &exact::ExactRational,
     ) -> Result<CertifiedBoundarySplit> {
-        let source = self.source(piece.source)?;
         if requested.try_cmp(&piece.lo)? != std::cmp::Ordering::Greater
             || requested.try_cmp(&piece.hi)? != std::cmp::Ordering::Less
         {
             return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
         }
+        let (root_start, root_end) = self.constraint_sites(piece.constraint)?;
         let [start_x, start_y] = self
             .coordinates
-            .exact_xy(self.coordinates.source_query(source.start_occurrence));
+            .exact_xy(self.coordinates.site_query(root_start));
         let [end_x, end_y] = self
             .coordinates
-            .exact_xy(self.coordinates.source_query(source.end_occurrence));
+            .exact_xy(self.coordinates.site_query(root_end));
         let candidate = XY::new(
             round_source_coordinate(&exact_source_coordinate(&start_x, &end_x, requested)?)?,
             round_source_coordinate(&exact_source_coordinate(&start_y, &end_y, requested)?)?,
@@ -742,13 +744,14 @@ impl ConstrainedMesh {
         let half_ulp = split_half_ulp_bounds(candidate)?;
         let candidate_query = self.coordinates.point_query(candidate);
         if self.coordinates.orient([
-            self.coordinates.source_query(source.start_occurrence),
-            self.coordinates.source_query(source.end_occurrence),
+            self.coordinates.site_query(root_start),
+            self.coordinates.site_query(root_end),
             candidate_query,
         ])? != ExactSign::Zero
             && !split_deviation_within(
                 &self.coordinates,
-                source,
+                self.coordinates.site_query(root_start),
+                self.coordinates.site_query(root_end),
                 requested,
                 candidate_query,
                 &half_ulp,
@@ -757,7 +760,7 @@ impl ConstrainedMesh {
             return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
         }
         Ok(CertifiedBoundarySplit {
-            source: piece.source,
+            constraint: piece.constraint,
             parameter: requested.clone(),
             point: candidate,
             half_ulp,
@@ -767,7 +770,7 @@ impl ConstrainedMesh {
     fn certify_split_incidence(
         &self,
         circles: &ConstraintIndex,
-        piece: &SourcePiece,
+        piece: &ConstraintPiece,
         candidate: XY,
     ) -> Result<()> {
         let start = self.coordinates.site_query(piece.start_site);

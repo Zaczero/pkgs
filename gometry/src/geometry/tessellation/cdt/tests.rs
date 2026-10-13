@@ -187,6 +187,7 @@ fn crossing_constraints_are_an_error() {
             .enumerate()
             .map(|(id, &[start_site, end_site])| SourceConstraint {
                 id,
+                source_root: id,
                 start: pts[start_site],
                 end: pts[end_site],
                 start_site,
@@ -339,6 +340,7 @@ fn constraint_recovery_composes_exact_root_parameters_through_a_site() {
     let end = *points.get(1).expect("fixture has its second source site");
     let source = SourceConstraint {
         id: 0,
+        source_root: 0,
         start,
         end,
         start_site: 0,
@@ -355,8 +357,8 @@ fn constraint_recovery_composes_exact_root_parameters_through_a_site() {
             .unwrap()
             .expect("the five source sites have a non-collinear mesh");
     let pieces = mesh
-        .source_pieces
-        .take_ordered(&sources, &source_rings, &mesh.coordinates)
+        .constraint_pieces
+        .take_ordered(&sources, &[], &source_rings, &mesh.coordinates)
         .unwrap();
     let third = exact::ExactRational::new(
         exact::ExactDyadic::from_f64(7.0),

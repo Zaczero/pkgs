@@ -1,6 +1,8 @@
 use super::{EarcutCornerId, EarcutTriangle, earcut_polygon_with_ids};
 use crate::error::{ResourceError, Result};
-use crate::geometry::publication::{FinishedGeometry, ProducerDrawingReceipt, StorageTarget};
+use crate::geometry::publication::{
+    ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
+};
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
 use crate::py::vectors::Groups;
@@ -175,40 +177,6 @@ fn validate_prepared_sampling(prepared: &PreparedSampling, logical_row: usize) -
     Ok(())
 }
 
-fn finish_sampling_drawing(
-    receipt: ProducerDrawingReceipt,
-    frame: Frame,
-    target: StorageTarget,
-) -> Result<FinishedGeometry> {
-    use crate::geometry::Unmetered;
-    use crate::geometry::publication::{
-        ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
-        finish_geographic,
-    };
-
-    let mut work = Unmetered;
-    match finish_geographic(
-        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
-        target,
-    )? {
-        PublicationOutcome::Pass(finished) => Ok(finished),
-        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-            Err(crate::geometry::GeometryErrorKind::Invalid(
-                format!(
-                    "final sampling storage changed {} checked output records",
-                    images.len()
-                )
-                .into(),
-            )
-            .into())
-        },
-        PublicationOutcome::Reject(_) => Err(crate::geometry::GeometryErrorKind::Invalid(
-            "sampling finisher returned a different producer rejection family".into(),
-        )
-        .into()),
-    }
-}
-
 pub(crate) fn publish_sampling_array(
     prepared: PreparedSampling,
     frame: Frame,
@@ -259,7 +227,7 @@ pub(crate) fn publish_sampling_array(
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
     let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
-    PyGeometryArray::from_finished(finish_sampling_drawing(
+    PyGeometryArray::from_finished(finish_producer_drawing(
         receipt,
         frame,
         StorageTarget::Array,
@@ -362,7 +330,7 @@ pub(crate) fn publish_sampling_groups(
         &mut work,
     )?;
     let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
-    Groups::from_finished(finish_sampling_drawing(
+    Groups::from_finished(finish_producer_drawing(
         receipt,
         frame,
         StorageTarget::Groups,

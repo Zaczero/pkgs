@@ -3,25 +3,28 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PyTuple};
 
-use super::receipt::ProducerSourceRootUse;
+use super::receipt::{
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
+    ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
+    StorageTarget,
+};
 use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::crs::frame::crs_arc_static;
 use crate::dispatch::MetricResolver;
 use crate::dispatch::kernels::binary_overlay;
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
+    LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
-    ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, ProducerDrawingReceipt,
-    ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall, PublicationOutcome,
-    PublicationRejection, StorageTarget, SyntheticChartVertex,
+    ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };
 use crate::geometry::{
-    CoordinateAxes, GeographicTopologyRoute, GeometryKind, LineSeq, OverlayOp, Point, Polygon,
-    Ring, Shape, Strictness, Unmetered, geographic_topology_route,
+    CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
+    LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, Unmetered,
+    geographic_topology_route,
 };
 
 fn point_literal_layout(
@@ -235,6 +238,82 @@ fn finish_producer_point(
         target,
     )
     .unwrap()
+}
+
+fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> ProducerDrawingReceipt {
+    let images = (0..stored.len())
+        .map(ProducerImageId::new)
+        .collect::<Vec<_>>();
+    let first_image = ProducerImageId::new(0);
+    let address = LiteralAddress {
+        operation: 0,
+        logical_row: 0,
+        group_row: None,
+        value_row: None,
+        output: 0,
+    };
+    let mut writer = StreamingShapes::with_capacity(stored.len(), 1);
+    writer
+        .try_push(Shape::Polygon(Polygon::new(
+            Ring::closed(stored.to_vec()).unwrap(),
+            Vec::new(),
+        )))
+        .unwrap();
+    let (storage, missing, layout) = writer.finish_parts().unwrap();
+    let mut work = Unmetered;
+    let buffers = FrozenLiteralBuffers::rows(
+        Arc::new(storage),
+        missing,
+        layout,
+        vec![Some(LiteralRowLayout {
+            operation: 0,
+            logical_row: 0,
+            group_row: None,
+            value_row: None,
+            layout: ShapeLiteralLayout {
+                points: Vec::new(),
+                lines: Vec::new(),
+                polygons: vec![LiteralPolygon {
+                    output: 0,
+                    axes: CoordinateAxes::XY,
+                    shell: LiteralSequence {
+                        output: 0,
+                        axes: CoordinateAxes::XY,
+                        images: images.clone(),
+                    },
+                    holes: Vec::new(),
+                }],
+            },
+        })],
+        &mut work,
+    )
+    .unwrap();
+    let literals = expected
+        .iter()
+        .copied()
+        .zip(images.iter().copied())
+        .map(|(point, image)| ProducerLiteral::from_point(address, image, point))
+        .collect();
+    ProducerDrawingReceipt::new(
+        buffers,
+        literals,
+        vec![ProducerSourceRootUse {
+            address,
+            image: first_image,
+            range: RootRange::whole(RootId::from_index(0)),
+        }],
+        vec![DirectedChartRestrictionUse {
+            restriction: ChartRestriction::CutChord,
+            start: SyntheticChartVertex::Cut {
+                node: 0,
+                side: ChartCutSide::East,
+            },
+            end: SyntheticChartVertex::Cut {
+                node: 1,
+                side: ChartCutSide::East,
+            },
+        }],
+    )
 }
 
 #[test]
@@ -496,6 +575,205 @@ fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
             assert_eq!(literal.record, expected_record);
         }
     }
+}
+
+#[test]
+fn producer_drawing_rejects_corrupted_cdt_triangle_readback() {
+    let first = Point::new_raw_xy(0.0, 0.0);
+    let second = Point::new_raw_xy(1.0, 0.0);
+    let third = Point::new_raw_xy(0.0, 1.0);
+    let expected = [first, second, third, first];
+    let corrupted = [first, Point::new_raw_xy(2.0, 0.0), third, first];
+    let receipt = producer_triangle_receipt(&corrupted, &expected);
+    let frame = Frame::default();
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [ProducerImageId::new(1)]);
+        },
+        PublicationOutcome::Pass(finished) => {
+            let (rows, _) = finished.into_array().unwrap();
+            let Some(crate::geometry::storage::LogicalRow::Present { row, .. }) =
+                rows.logical_row(0)
+            else {
+                panic!("the producer-drawn triangle row remains present");
+            };
+            let mut rings = row
+                .polygon_rings()
+                .expect("the producer-drawn triangle remains polygon storage");
+            let ring = rings.next().expect("one triangle shell remains");
+            let actual = (0..ring.coord_count())
+                .map(|index| ring.nth_coord(index))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual, expected,
+                "omitting the CDT producer binder must not publish changed coordinates"
+            );
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("CDT triangle storage returns the producer-drawing rejection family")
+        },
+    }
+}
+
+#[test]
+fn geographic_cdt_maps_compacted_constraints_to_authored_edge_roots() {
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+
+    Python::attach(|_| {
+        let repeated = Point::new_raw_xy(0.0, 0.0);
+        let shell = Ring::closed(vec![
+            repeated,
+            repeated,
+            Point::new_raw_xy(10.0, 0.0),
+            Point::new_raw_xy(10.0, 10.0),
+            Point::new_raw_xy(0.0, 10.0),
+            repeated,
+        ])
+        .unwrap();
+        let hole = Ring::closed(vec![
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(4.0, 2.0),
+            Point::new_raw_xy(4.0, 4.0),
+            Point::new_raw_xy(2.0, 4.0),
+            Point::new_raw_xy(2.0, 2.0),
+        ])
+        .unwrap();
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut metric_scratch)
+            .unwrap();
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+        let drawing = crate::geometry::prepare_geographic_cdt_drawing(
+            &shape,
+            crate::geometry::CdtRefinement::Off,
+            domain,
+            metric,
+            &mut budget,
+        )
+        .unwrap();
+        let mut writer = crate::geometry::CdtGroupsDrawingWriter::new(1, None).unwrap();
+        writer.append_row(0, Some(drawing)).unwrap();
+        let finished = writer.finish(frame).unwrap();
+
+        let mut roots = Vec::new();
+        for source_use in finished.producer_source_root_uses() {
+            let mut matched_root = None;
+            for root_index in 1_u32..=8 {
+                for reversed in [false, true] {
+                    let (source_start, source_end) = if reversed {
+                        (ExactRational::one(), ExactRational::zero())
+                    } else {
+                        (ExactRational::zero(), ExactRational::one())
+                    };
+                    let expected = RootRange::from_mapped(
+                        RootId::from_index(root_index),
+                        source_start,
+                        source_end,
+                        ExactRational::zero(),
+                        ExactRational::one(),
+                    )
+                    .unwrap();
+                    if source_use
+                        .range
+                        .try_eq_with_work(&expected, &mut Unmetered)
+                        .unwrap()
+                    {
+                        matched_root = Some(root_index);
+                        break;
+                    }
+                }
+                if matched_root.is_some() {
+                    break;
+                }
+            }
+            roots.push(matched_root.expect("each CDT source use retains its authored root"));
+        }
+        roots.sort_unstable();
+        assert_eq!(roots, (1_u32..=8).collect::<Vec<_>>());
+
+        let (groups, _) = finished.into_groups().unwrap();
+        assert_eq!(groups.offsets.len(), 2);
+        assert_eq!(groups.offsets.first(), Some(&0));
+        assert!(groups.values.len() > 0);
+    });
+}
+
+#[test]
+fn geographic_cdt_receipt_retains_selected_polar_restrictions() {
+    use crate::geographic::ChartPole;
+
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let ring = Ring::closed(
+        [
+            (0.0, -80.0),
+            (90.0, -80.0),
+            (180.0, -80.0),
+            (-90.0, -80.0),
+            (0.0, -80.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .collect(),
+    )
+    .unwrap();
+    let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&frame, &mut metric_scratch)
+        .unwrap();
+    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+    let drawing = crate::geometry::prepare_geographic_cdt_drawing(
+        &shape,
+        crate::geometry::CdtRefinement::Off,
+        domain,
+        metric,
+        &mut budget,
+    )
+    .unwrap();
+    let mut writer = crate::geometry::CdtGroupsDrawingWriter::new(1, None).unwrap();
+    writer.append_row(0, Some(drawing)).unwrap();
+    let finished = writer.finish(frame).unwrap();
+
+    let restrictions = finished.producer_chart_restrictions();
+    assert_eq!(restrictions.len(), 3);
+    assert_eq!(
+        restrictions
+            .iter()
+            .filter(|use_| use_.restriction == ChartRestriction::CutChord)
+            .count(),
+        2
+    );
+    assert!(restrictions.iter().any(|use_| {
+        use_.restriction
+            == ChartRestriction::PolarCap {
+                pole: ChartPole::South,
+            }
+            && matches!(
+                (use_.start, use_.end),
+                (
+                    SyntheticChartVertex::Pole {
+                        pole: ChartPole::South,
+                        ..
+                    },
+                    SyntheticChartVertex::Pole {
+                        pole: ChartPole::South,
+                        ..
+                    }
+                )
+            )
+    }));
+    let (groups, _) = finished.into_groups().unwrap();
+    assert_eq!(groups.offsets, [0, 5]);
 }
 
 #[test]

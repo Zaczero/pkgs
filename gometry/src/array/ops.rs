@@ -505,6 +505,52 @@ impl PyGeometryArray {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        if matches!(domain, crate::geometry::TopologyDomain::Geographic(_)) {
+            let array = self.clone();
+            let mut writer =
+                geometry::CdtGroupsDrawingWriter::new(self.len(), self.missing().cloned())?;
+            let frame = self.frame.clone();
+            let receipt = py
+                .detach(move || {
+                    for row in array.row_operation().rows_with_missing(Vec::<Shape>::new) {
+                        match row {
+                            ArrayRow::Missing { logical, .. } => {
+                                writer
+                                    .append_row(logical, None)
+                                    .map_err(|error| (logical, error))?;
+                            },
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = crate::geometry::ExpansionBudget::new(
+                                    "triangulate",
+                                    "min_angle/max_area",
+                                );
+                                let drawing = row
+                                    .row()
+                                    .try_with_shape(|shape| {
+                                        geometry::prepare_geographic_cdt_drawing(
+                                            shape,
+                                            *refinements
+                                                .get(logical)
+                                                .expect("CDT refinement values match input rows"),
+                                            domain,
+                                            metric,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                writer
+                                    .append_row(logical, Some(drawing))
+                                    .map_err(|error| (logical, error))?;
+                            },
+                        }
+                    }
+                    let final_row = array.len().saturating_sub(1);
+                    writer.finish(frame).map_err(|error| (final_row, error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(receipt)?);
+        }
         // Unrefined rows preserve the selected source-site axes while refined
         // rows are XY, so a batch carrying Z/M uses the shape collector.
         // Pure-XY batches retain the packed triangle builder; both consume the
@@ -710,6 +756,57 @@ impl PyGeometryArray {
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         };
+        if let Some(geographic_frame) = geographic_frame {
+            let array = self.clone();
+            let frame = self.frame.clone();
+            let missing = self.missing().cloned();
+            let row_count = array.len();
+            let finished = py
+                .detach(move || {
+                    let source_clip = match boundary.as_borrowed() {
+                        crate::geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                        crate::geometry::VoronoiBoundary::Envelope
+                        | crate::geometry::VoronoiBoundary::Padded => None,
+                    };
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
+                        .map_err(|error| (0, error))?;
+                    for row in array.row_operation().rows_with_missing(|| ()) {
+                        let logical = match row {
+                            ArrayRow::Missing { logical, .. } => logical,
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = crate::geometry::ExpansionBudget::new(
+                                    "voronoi_cells",
+                                    "sites/clip topology",
+                                );
+                                row.row()
+                                    .try_with_shape(|shape| {
+                                        let outputs = shape
+                                            .voronoi_polygon_outputs_in_frame_budgeted(
+                                                tolerance,
+                                                boundary.as_borrowed(),
+                                                Some(geographic_frame),
+                                                &mut budget,
+                                            )?;
+                                        writer.push_polygon_outputs(
+                                            outputs,
+                                            geographic_frame,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                logical
+                            },
+                        };
+                        writer.end_group().map_err(|error| (logical, error))?;
+                    }
+                    writer
+                        .finish_groups(frame, missing)
+                        .map_err(|error| (row_count.saturating_sub(1), error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(finished)?);
+        }
         self.flat_map_shapes_groups_budgeted(
             py,
             "voronoi_cells",
@@ -744,6 +841,57 @@ impl PyGeometryArray {
             geometry::TopologyDomain::Geographic(frame) => Some(frame),
             geometry::TopologyDomain::Cartesian => None,
         };
+        if let Some(geographic_frame) = geographic_frame {
+            let array = self.clone();
+            let frame = self.frame.clone();
+            let missing = self.missing().cloned();
+            let row_count = array.len();
+            let finished = py
+                .detach(move || {
+                    let source_clip = match boundary.as_borrowed() {
+                        geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                        geometry::VoronoiBoundary::Envelope | geometry::VoronoiBoundary::Padded => {
+                            None
+                        },
+                    };
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
+                        .map_err(|error| (0, error))?;
+                    for row in array.row_operation().rows_with_missing(|| ()) {
+                        let logical = match row {
+                            ArrayRow::Missing { logical, .. } => logical,
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = geometry::ExpansionBudget::new(
+                                    "voronoi_edge_lines",
+                                    "sites/clip topology",
+                                );
+                                row.row()
+                                    .try_with_shape(|shape| {
+                                        let output = shape.voronoi_edge_column_in_frame_budgeted(
+                                            tolerance,
+                                            boundary.as_borrowed(),
+                                            Some(geographic_frame),
+                                            &mut budget,
+                                        )?;
+                                        writer.push_edge_column(
+                                            output,
+                                            geographic_frame,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                logical
+                            },
+                        };
+                        writer.end_group().map_err(|error| (logical, error))?;
+                    }
+                    writer
+                        .finish_groups(frame, missing)
+                        .map_err(|error| (row_count.saturating_sub(1), error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(finished)?);
+        }
         let array = self.clone();
         let frame = self.frame.clone();
         let packed = py

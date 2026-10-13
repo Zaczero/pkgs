@@ -64,6 +64,38 @@ const fn required_limbs(
         / LIMB_BITS
 }
 
+macro_rules! signed_accumulator_methods {
+    ($limbs:ident $(, $visibility:vis)?) => {
+        $($visibility)? fn ordering(&self) -> Ordering {
+            cmp_magnitude(&self.positive, &self.negative)
+        }
+
+        $($visibility)? fn signed_magnitude(&self) -> (Ordering, [u64; $limbs]) {
+            match self.ordering() {
+                Ordering::Equal => (Ordering::Equal, [0; $limbs]),
+                Ordering::Greater => (
+                    Ordering::Greater,
+                    subtract_magnitude(&self.positive, &self.negative),
+                ),
+                Ordering::Less => (
+                    Ordering::Less,
+                    subtract_magnitude(&self.negative, &self.positive),
+                ),
+            }
+        }
+
+        fn merge_signed(&mut self, source: &Self, negate: bool) {
+            if negate {
+                add_words(&mut self.positive, &source.negative);
+                add_words(&mut self.negative, &source.positive);
+            } else {
+                add_words(&mut self.positive, &source.positive);
+                add_words(&mut self.negative, &source.negative);
+            }
+        }
+    };
+}
+
 const _: () = assert!(ADDRESS_BITS == 32 || ADDRESS_BITS == 64);
 
 pub(crate) const LIMBS: usize =
@@ -208,33 +240,7 @@ impl ExactSum {
         }
     }
 
-    pub(crate) fn ordering(&self) -> Ordering {
-        cmp_magnitude(&self.positive, &self.negative)
-    }
-
-    pub(crate) fn signed_magnitude(&self) -> (Ordering, [u64; LIMBS]) {
-        match self.ordering() {
-            Ordering::Equal => (Ordering::Equal, [0; LIMBS]),
-            Ordering::Greater => (
-                Ordering::Greater,
-                subtract_magnitude(&self.positive, &self.negative),
-            ),
-            Ordering::Less => (
-                Ordering::Less,
-                subtract_magnitude(&self.negative, &self.positive),
-            ),
-        }
-    }
-
-    fn merge_signed(&mut self, source: &Self, negate: bool) {
-        if negate {
-            add_words(&mut self.positive, &source.negative);
-            add_words(&mut self.negative, &source.positive);
-        } else {
-            add_words(&mut self.positive, &source.positive);
-            add_words(&mut self.negative, &source.negative);
-        }
-    }
+    signed_accumulator_methods!(LIMBS, pub(crate));
 }
 
 /// Exact signed centroid sums over stored binary64 coordinates.  Area is a
@@ -357,33 +363,7 @@ impl ExactCubicSum {
         );
     }
 
-    fn ordering(&self) -> Ordering {
-        cmp_magnitude(&self.positive, &self.negative)
-    }
-
-    fn signed_magnitude(&self) -> (Ordering, [u64; CUBIC_LIMBS]) {
-        match self.ordering() {
-            Ordering::Equal => (Ordering::Equal, [0; CUBIC_LIMBS]),
-            Ordering::Greater => (
-                Ordering::Greater,
-                subtract_magnitude(&self.positive, &self.negative),
-            ),
-            Ordering::Less => (
-                Ordering::Less,
-                subtract_magnitude(&self.negative, &self.positive),
-            ),
-        }
-    }
-
-    fn merge_signed(&mut self, source: &Self, negate: bool) {
-        if negate {
-            add_words(&mut self.positive, &source.negative);
-            add_words(&mut self.negative, &source.positive);
-        } else {
-            add_words(&mut self.positive, &source.positive);
-            add_words(&mut self.negative, &source.negative);
-        }
-    }
+    signed_accumulator_methods!(CUBIC_LIMBS);
 }
 
 fn multiply_three(a: u64, b: u64, c: u64) -> [u64; 3] {

@@ -42,10 +42,10 @@ pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
                 same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
             }
             if same_x || same_y {
-                return empty_packed_edges();
+                return empty_packed_edges(chart);
             }
         } else {
-            return empty_packed_edges();
+            return empty_packed_edges(chart);
         }
     }
     let clip = normalize_clip_with_chart(sites, boundary, false, chart)?;

@@ -9,8 +9,9 @@ use super::plan::{split_deviation_within, split_half_ulp_bounds};
 #[cfg(test)]
 use super::update_work;
 use super::{
-    CdtCoordinates, CdtQuery, ConstrainedMesh, FaceLabels, NodeProvenance, PieceCursor,
-    SourceConstraint, SourcePiece, SourcePieces, SourceRingStart, opposite_nonzero, ordered,
+    CdtCoordinates, CdtQuery, ConstrainedMesh, ConstraintPiece, ConstraintPieces, FaceLabels,
+    NodeProvenance, PieceCursor, RestrictionConstraint, SourceConstraint, SourceRingStart,
+    opposite_nonzero, ordered,
 };
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
@@ -44,6 +45,7 @@ impl ConstrainedMesh {
             .enumerate()
             .map(|(id, &[start_site, end_site])| SourceConstraint {
                 id,
+                source_root: id,
                 start: points[start_site],
                 end: points[end_site],
                 start_site,
@@ -62,9 +64,20 @@ impl ConstrainedMesh {
         .flatten()
     }
 
+    #[cfg(test)]
     pub(in crate::geometry::tessellation::delaunay) fn build_with_sources(
         points: &[Point],
         sources: &[SourceConstraint],
+        source_rings: Vec<SourceRingStart>,
+        coordinates: CdtCoordinates,
+    ) -> Result<Option<Self>> {
+        Self::build_with_restrictions(points, sources, &[], source_rings, coordinates)
+    }
+
+    pub(in crate::geometry::tessellation::delaunay) fn build_with_restrictions(
+        points: &[Point],
+        sources: &[SourceConstraint],
+        restrictions: &[RestrictionConstraint],
         source_rings: Vec<SourceRingStart>,
         coordinates: CdtCoordinates,
     ) -> Result<Option<Self>> {
@@ -73,30 +86,65 @@ impl ConstrainedMesh {
         };
         let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
-        let source_pieces = SourcePieces::new(sources.len())?;
-        // Initial mesh vertices and the source marker column share this domain;
-        // refinement appends its own provenance after this admission.
-        let provenance = points.iter().map(|_| NodeProvenance::SourceSite).collect();
+        let retained_restrictions = restrictions.to_vec();
+        let constraint_count = sources
+            .len()
+            .checked_add(retained_restrictions.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let constraint_pieces = ConstraintPieces::new(constraint_count)?;
+        let mut provenance = points
+            .iter()
+            .map(|_| NodeProvenance::SourceSite)
+            .collect::<Vec<_>>();
+        for restriction in restrictions {
+            for site in [restriction.start_site, restriction.end_site] {
+                if coordinates.retained_site_location(site).is_none() {
+                    let provenance = provenance.get_mut(site).ok_or_else(|| {
+                        GeometryErrorKind::triangulation(
+                            "chart restriction endpoint is outside the initial mesh sites",
+                        )
+                    })?;
+                    *provenance = NodeProvenance::ChartRestrictionSite;
+                }
+            }
+        }
         let mut this = Self {
             mesh,
             constrained,
             coordinates,
             source_constraints,
+            restrictions: retained_restrictions,
             source_rings,
-            source_pieces,
+            constraint_pieces,
             provenance,
             split_certificates: Vec::new(),
         };
         for source in sources {
             this.insert_constraint(
-                SourcePiece {
-                    source: source.id,
+                ConstraintPiece {
+                    constraint: source.id,
                     start_site: source.start_site,
                     end_site: source.end_site,
                     lo: exact::ExactRational::zero(),
                     hi: exact::ExactRational::one(),
                 },
                 &mut PieceCursor::Replace(source.id),
+            )?;
+        }
+        let restriction_base = sources.len();
+        for restriction in restrictions {
+            let slot = restriction_base
+                .checked_add(restriction.id)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            this.insert_constraint(
+                ConstraintPiece {
+                    constraint: slot,
+                    start_site: restriction.start_site,
+                    end_site: restriction.end_site,
+                    lo: exact::ExactRational::zero(),
+                    hi: exact::ExactRational::one(),
+                },
+                &mut PieceCursor::Replace(slot),
             )?;
         }
         Ok(Some(this))
@@ -106,7 +154,7 @@ impl ConstrainedMesh {
     /// passes through exactly, and flipping every edge it crosses.
     pub(super) fn insert_constraint(
         &mut self,
-        piece: SourcePiece,
+        piece: ConstraintPiece,
         cursor: &mut PieceCursor,
     ) -> Result<Vec<FaceId>> {
         let mut legalization = Vec::new();
@@ -126,12 +174,12 @@ impl ConstrainedMesh {
 
     fn recover_constraint(
         &mut self,
-        piece: SourcePiece,
+        piece: ConstraintPiece,
         cursor: &mut PieceCursor,
         legalization: &mut Vec<HalfedgeId>,
     ) -> Result<()> {
-        let SourcePiece {
-            source,
+        let ConstraintPiece {
+            constraint,
             start_site: u,
             end_site: v,
             lo,
@@ -141,9 +189,9 @@ impl ConstrainedMesh {
             return Ok(());
         }
         if let Some(slot) = self.mesh.edge_slot(u, v) {
-            self.source_pieces.record(
-                SourcePiece {
-                    source,
+            self.constraint_pieces.record(
+                ConstraintPiece {
+                    constraint,
                     start_site: u,
                     end_site: v,
                     lo,
@@ -176,10 +224,10 @@ impl ConstrainedMesh {
                 let split = self
                     .coordinates
                     .interpolate_source_parameter(&lo, &hi, pu, pv, qa)?;
-                self.certify_source_boundary_point(source, &split, qa)?;
+                self.certify_constraint_boundary_point(constraint, &split, qa)?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: u,
                         end_site: a,
                         lo,
@@ -189,8 +237,8 @@ impl ConstrainedMesh {
                     legalization,
                 )?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: a,
                         end_site: v,
                         lo: split,
@@ -205,10 +253,10 @@ impl ConstrainedMesh {
                 let split = self
                     .coordinates
                     .interpolate_source_parameter(&lo, &hi, pu, pv, qb)?;
-                self.certify_source_boundary_point(source, &split, qb)?;
+                self.certify_constraint_boundary_point(constraint, &split, qb)?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: u,
                         end_site: b,
                         lo,
@@ -218,8 +266,8 @@ impl ConstrainedMesh {
                     legalization,
                 )?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: b,
                         end_site: v,
                         lo: split,
@@ -274,13 +322,13 @@ impl ConstrainedMesh {
                 let split = self
                     .coordinates
                     .interpolate_source_parameter(&lo, &hi, pu, pv, pa)?;
-                self.certify_source_boundary_point(source, &split, pa)?;
+                self.certify_constraint_boundary_point(constraint, &split, pa)?;
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
                 self.flip_until_clear(u, apex, crossing, legalization)?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: u,
                         end_site: apex,
                         lo,
@@ -290,8 +338,8 @@ impl ConstrainedMesh {
                     legalization,
                 )?;
                 self.recover_constraint(
-                    SourcePiece {
-                        source,
+                    ConstraintPiece {
+                        constraint,
                         start_site: apex,
                         end_site: v,
                         lo: split,
@@ -313,9 +361,9 @@ impl ConstrainedMesh {
             };
         }
         self.flip_until_clear(u, v, crossing, legalization)?;
-        self.source_pieces.record(
-            SourcePiece {
-                source,
+        self.constraint_pieces.record(
+            ConstraintPiece {
+                constraint,
                 start_site: u,
                 end_site: v,
                 lo,
@@ -326,27 +374,21 @@ impl ConstrainedMesh {
         Ok(())
     }
 
-    pub(super) fn source(&self, id: usize) -> Result<&SourceConstraint> {
-        self.source_constraints.get(id).ok_or_else(|| {
-            GeometryErrorKind::triangulation("constraint references a missing source")
-        })
-    }
-
-    fn certify_source_boundary_point(
+    fn certify_constraint_boundary_point(
         &self,
-        source_id: usize,
+        constraint: usize,
         parameter: &exact::ExactRational,
         point: CdtQuery,
     ) -> Result<()> {
-        let source = self.source(source_id)?;
-        let start = self.coordinates.source_query(source.start_occurrence);
-        let end = self.coordinates.source_query(source.end_occurrence);
+        let (start_site, end_site) = self.constraint_sites(constraint)?;
+        let start = self.coordinates.site_query(start_site);
+        let end = self.coordinates.site_query(end_site);
         if self.coordinates.orient([start, end, point])? == ExactSign::Zero {
             return Ok(());
         }
         let point_xy = self.coordinates.proposal_xy(point);
         let half_ulp = split_half_ulp_bounds(point_xy)?;
-        if !split_deviation_within(&self.coordinates, source, parameter, point, &half_ulp)? {
+        if !split_deviation_within(&self.coordinates, start, end, parameter, point, &half_ulp)? {
             return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
         }
         Ok(())

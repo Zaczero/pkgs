@@ -5,6 +5,7 @@
 mod centroid;
 mod concave;
 mod hull;
+mod minimum_circle;
 mod minimum_rectangle;
 mod polylabel;
 mod shape;
@@ -21,11 +22,11 @@ pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_chart_hull, monotone_chain_hull, shape_from_open_hull,
     shape_from_selected_hull,
 };
+pub(crate) use minimum_circle::{emit_minimum_bounding_circle, smallest_enclosing_circle};
 pub(crate) use minimum_rectangle::{minimum_area_rectangle, minimum_area_rectangle_chart};
 pub(crate) use polylabel::{
-    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_minimum_bounding_circle,
-    emit_zero_radius_point, polylabel_point, scale_aware_default_tolerance,
-    smallest_enclosing_circle,
+    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_zero_radius_point,
+    polylabel_point, scale_aware_default_tolerance,
 };
 pub(crate) use surface::{
     collection_surface_point, lineal_surface_point, multipoint_surface_point,
