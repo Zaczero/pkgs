@@ -117,6 +117,9 @@ pub(crate) use computed_shape::{
     publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
     publish_voronoi_edge_column_with_budget, publish_voronoi_polygon_outputs,
 };
+pub(in crate::geometry) use computed_shape::{
+    publish_voronoi_edge_column, publish_voronoi_polygon_shape,
+};
 mod arrangement;
 mod bvh_code;
 mod chart_bvh;
@@ -394,9 +397,9 @@ pub(crate) use segments::{
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
-    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
-    row_sample_seed,
+    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiDrawingWriter,
+    VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array,
+    publish_sampling_groups, row_sample_seed,
 };
 #[expect(
     unused_imports,

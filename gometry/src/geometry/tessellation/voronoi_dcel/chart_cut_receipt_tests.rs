@@ -40,6 +40,40 @@ fn assert_selected_cut_longitudes(receipt: &VoronoiDiagramReceipt, west: f64) {
     assert_eq!(upper.periods(), 1);
 }
 
+fn finish_polygon_outputs(
+    outputs: crate::geometry::VoronoiPolygonOutputs,
+    clip: Option<&Polygon>,
+    frame: crate::geographic::GeographicFrame,
+    budget: &mut ExpansionBudget,
+) -> usize {
+    let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(clip).unwrap();
+    writer.push_polygon_outputs(outputs, frame, budget).unwrap();
+    writer
+        .finish_array(crate::Frame::None)
+        .unwrap()
+        .into_array()
+        .unwrap()
+        .0
+        .len()
+}
+
+fn finish_edge_column(
+    output: crate::geometry::VoronoiEdgeColumn,
+    clip: Option<&Polygon>,
+    frame: crate::geographic::GeographicFrame,
+    budget: &mut ExpansionBudget,
+) -> usize {
+    let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(clip).unwrap();
+    writer.push_edge_column(output, frame, budget).unwrap();
+    writer
+        .finish_array(crate::Frame::None)
+        .unwrap()
+        .into_array()
+        .unwrap()
+        .0
+        .len()
+}
+
 #[test]
 fn exact_receipt_retains_selected_cut_longitudes() {
     let source = seam_quadrilateral();
@@ -58,6 +92,7 @@ fn exact_receipt_retains_selected_cut_longitudes() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::Exact);
     assert_selected_cut_longitudes(&outputs.receipt, 160.0);
+    assert!(finish_polygon_outputs(outputs, Some(&clip), frame, &mut budget) > 0);
 }
 
 #[test]
@@ -77,6 +112,7 @@ fn dual_receipt_retains_selected_cut_longitudes() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::Dual);
     assert_selected_cut_longitudes(&outputs.receipt, 170.0);
+    assert!(finish_polygon_outputs(outputs, None, frame, &mut budget) > 0);
 }
 
 #[test]
@@ -103,6 +139,7 @@ fn collinear_receipt_retains_selected_cut_longitudes() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::Collinear);
     assert_selected_cut_longitudes(&outputs.receipt, 160.0);
+    assert!(finish_polygon_outputs(outputs, Some(&clip), frame, &mut budget) > 0);
 }
 
 #[test]
@@ -123,6 +160,10 @@ fn lone_site_receipt_retains_selected_cut_longitudes() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::LoneSite);
     assert_selected_cut_longitudes(&outputs.receipt, 160.0);
+    assert_eq!(
+        finish_polygon_outputs(outputs, Some(&clip), frame, &mut budget),
+        1
+    );
 }
 
 #[test]
@@ -146,6 +187,10 @@ fn empty_receipts_retain_clip_selected_chart_cuts() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::Empty);
     assert_selected_cut_longitudes(&outputs.receipt, 160.0);
+    assert_eq!(
+        finish_polygon_outputs(outputs, Some(&clip), frame, &mut budget),
+        0
+    );
 
     let mut edge_budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
     let edges = source
@@ -158,6 +203,10 @@ fn empty_receipts_retain_clip_selected_chart_cuts() {
         .unwrap();
     assert_eq!(edges.receipt.producer, VoronoiProducer::Empty);
     assert_selected_cut_longitudes(&edges.receipt, 160.0);
+    assert_eq!(
+        finish_edge_column(edges, Some(&clip), frame, &mut edge_budget),
+        0
+    );
 }
 
 #[test]
@@ -180,6 +229,7 @@ fn empty_envelope_receipt_has_no_selected_chart_cut() {
 
     assert_eq!(outputs.receipt.producer, VoronoiProducer::Empty);
     assert!(outputs.receipt.selected_chart_cuts.is_none());
+    assert_eq!(finish_polygon_outputs(outputs, None, frame, &mut budget), 0);
 }
 
 #[test]

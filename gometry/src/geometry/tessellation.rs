@@ -17,8 +17,8 @@ mod sampling;
 mod shape;
 mod voronoi;
 mod voronoi_dcel;
+mod voronoi_publication;
 mod voronoi_receipt;
-
 #[expect(
     unused_imports,
     reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
@@ -31,6 +31,7 @@ pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
+pub(crate) use voronoi_publication::VoronoiDrawingWriter;
 pub(in crate::geometry) use voronoi_receipt::{
     VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
     VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
