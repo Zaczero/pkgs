@@ -1,4 +1,3 @@
-
 use super::coverage_simplify_with_context;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{

@@ -1,4 +1,3 @@
-
 use super::{TopologyGuard, simplify_chain_guarded};
 use crate::geometry::{Segment, XY};
 
