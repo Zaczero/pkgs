@@ -1199,7 +1199,6 @@ where
             py,
             left,
             admission.right,
-            &admission.frame,
             admission.domain,
             metric,
             true,

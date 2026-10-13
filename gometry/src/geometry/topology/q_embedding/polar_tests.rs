@@ -1,5 +1,6 @@
 use super::*;
 use crate::geographic::{GeographicRing, RingSummary};
+use crate::geometry::topology::overlay::take_q_overlay_plan_build_count;
 use crate::geometry::topology::q_embedding::emission::ring_roles::assigned_emitted_ring;
 use crate::geometry::{CoordinateAxes, OverlayOp, Shape};
 
@@ -357,7 +358,7 @@ fn t2_mixed_winding_and_finite_hole_overlay_does_not_reenter_q() -> Result<()> {
         (20.0, 10.0),
     ])?;
     let inputs = [&shell, &winding_exclusion, &finite_exclusion];
-    let _ = crate::geometry::topology::overlay::take_q_overlay_plan_build_count();
+    let _ = take_q_overlay_plan_build_count();
 
     let output = crate::geometry::overlay_all(
         &inputs,
@@ -367,7 +368,7 @@ fn t2_mixed_winding_and_finite_hole_overlay_does_not_reenter_q() -> Result<()> {
     )?;
 
     assert_eq!(
-        crate::geometry::topology::overlay::take_q_overlay_plan_build_count(),
+        take_q_overlay_plan_build_count(),
         1,
         "the mixed winding and finite-hole overlay must complete in one Q plan"
     );
