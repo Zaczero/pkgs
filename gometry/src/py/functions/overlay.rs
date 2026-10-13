@@ -755,37 +755,31 @@ pub(crate) fn coverage_invalid_edges(
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, _) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
-    let (edges, analysis) = match domain {
+    let result = match domain {
         geometry::TopologyDomain::Cartesian => {
-            let edges = py.detach(move || {
-                geometry::coverage_invalid_edges_with_domain(
-                    &shapes,
-                    gap_width,
-                    geometry::TopologyDomain::Cartesian,
-                    "coverage_invalid_edges",
-                )
-            })?;
-            (edges, None)
+            let edges =
+                py.detach(move || geometry::coverage_invalid_edges_cartesian(&shapes, gap_width))?;
+            let result = PyGeometryArray::from_shapes(edges, metadata)?;
+            match source {
+                None => result,
+                Some(array) => array.scatter_present_result(result)?,
+            }
         },
         geometry::TopologyDomain::Geographic(frame) => {
-            let (analysis, edges) = py.detach(move || {
-                geometry::coverage_invalid_edges_geographic_analysis(
+            let missing = source.as_ref().and_then(|array| array.missing().cloned());
+            let finished = py.detach(move || {
+                geometry::coverage_invalid_edges_geographic_finished(
                     &shapes,
                     frame,
                     gap_width,
                     "coverage_invalid_edges",
+                    metadata,
+                    missing,
                 )
             })?;
-            (edges, Some(analysis))
+            PyGeometryArray::from_finished(finished)?
         },
     };
-    let result = PyGeometryArray::from_shapes(edges, metadata)?;
-    let result = match source {
-        None => result,
-        Some(array) => array.scatter_present_result(result)?,
-    };
-    // Keep original Q edge/range authority alive through nullable row scatter.
-    drop(analysis);
     Ok(result)
 }
 

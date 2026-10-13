@@ -212,16 +212,16 @@ pub(crate) use constructive::{
 use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
 };
-#[cfg(test)]
-pub(crate) use coverage::coverage_invalid_edges;
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_geographic_analysis,
-    coverage_invalid_edges_with_domain, coverage_is_valid, coverage_is_valid_with_domain,
+    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_cartesian,
+    coverage_invalid_edges_geographic_finished, coverage_is_valid, coverage_is_valid_with_domain,
     coverage_simplify_with_context, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{
     TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
 };
+#[cfg(test)]
+pub(crate) use coverage::{coverage_invalid_edges, coverage_invalid_edges_geographic_analysis};
 use distance::line_length_3d;
 pub(crate) use distance::{
     ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,

@@ -1,8 +1,331 @@
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
+
+use super::super::exact::SourceEdgeId;
 use super::super::q::{ExactGeographicTopology, QSpanOwner};
+use crate::array::StreamingShapes;
 use crate::error::Result;
-use crate::geometry::{
-    CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Segment, Shape, Work, XY,
+use crate::geometry::embedding_completion::{
+    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
+use crate::geometry::ordinates::{RootId, RootRange};
+use crate::geometry::publication::{
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse,
+};
+use crate::geometry::storage::{StorageLayout, ValidityMask};
+use crate::geometry::{
+    CoordinateAxes, ExactRational, GeometryErrorKind, GeometryKind, LineSeq, PointKey, Segment,
+    Shape, Work, XY,
+};
+
+type OwnersBySource<'a> = BTreeMap<SourceEdgeId, Vec<&'a QSpanOwner>>;
+type SegmentOwners = BTreeMap<(usize, PointKey, PointKey), VecDeque<SourceEdgeId>>;
+
+// `line_merge` only reverses and concatenates original segments. PointKey uses
+// the same exact XY identity, so each written segment consumes one captured
+// source-edge occurrence without recovering identity from rounded coordinates.
+fn undirected_point_pair(start: crate::Point, end: crate::Point) -> (PointKey, PointKey) {
+    let start = PointKey::new(start);
+    let end = PointKey::new(end);
+    if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
+fn draw_line_sequence<W: Work>(
+    line: &LineSeq,
+    present_row: usize,
+    logical_row: usize,
+    output: u32,
+    topology: &ExactGeographicTopology,
+    owners_by_source: &OwnersBySource<'_>,
+    segment_owners: &mut SegmentOwners,
+    literals: &mut Vec<ProducerLiteral>,
+    source_root_uses: &mut Vec<ProducerSourceRootUse>,
+    work: &mut W,
+) -> Result<LiteralSequence<ProducerImageId>> {
+    work.charge_into_error(
+        u64::try_from(line.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
+    let points = line.iter().collect::<Vec<_>>();
+    let mut images = Vec::with_capacity(points.len());
+    for &point in &points {
+        let image = ProducerImageId::new(literals.len());
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            output,
+        };
+        literals.push(ProducerLiteral::from_point(address, image, point));
+        images.push(image);
+    }
+
+    for (segment_index, pair) in points.windows(2).enumerate() {
+        work.charge_into_error(1)?;
+        let [start, end] = pair else {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage invalid-edge line lost a source segment".into(),
+            )
+            .into());
+        };
+        let (first, second) = undirected_point_pair(*start, *end);
+        let key = (present_row, first, second);
+        let source_edge = segment_owners
+            .get_mut(&key)
+            .and_then(VecDeque::pop_front)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "coverage invalid-edge output segment has no captured source edge".into(),
+                )
+            })?;
+        let edge = topology
+            .sources
+            .edges
+            .get(source_edge.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "coverage invalid-edge source use is outside its inventory".into(),
+                )
+            })?;
+        let source_start = PointKey::new(edge.source[0]);
+        let source_end = PointKey::new(edge.source[1]);
+        let output_start = PointKey::new(*start);
+        let output_end = PointKey::new(*end);
+        let reversed = if source_start == output_start && source_end == output_end {
+            false
+        } else if source_start == output_end && source_end == output_start {
+            true
+        } else {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage invalid-edge merge changed a source segment".into(),
+            )
+            .into());
+        };
+        let image_index = if reversed {
+            segment_index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        } else {
+            segment_index
+        };
+        let image = *images.get(image_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage invalid-edge source use has no output literal".into(),
+            )
+        })?;
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            output,
+        };
+        let owners = owners_by_source.get(&source_edge).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage invalid-edge segment has no captured Q source owner".into(),
+            )
+        })?;
+        for owner in owners {
+            work.charge_into_error(1)?;
+            let producer_start = if reversed {
+                ExactRational::one().try_subtract_with_work(&owner.source_range.start, work)?
+            } else {
+                owner.source_range.start.try_clone_with_work(work)?
+            };
+            let producer_end = if reversed {
+                ExactRational::one().try_subtract_with_work(&owner.source_range.end, work)?
+            } else {
+                owner.source_range.end.try_clone_with_work(work)?
+            };
+            let range = RootRange::from_mapped_with_work(
+                RootId::from_index(source_edge.0),
+                owner.source_range.start.try_clone_with_work(work)?,
+                owner.source_range.end.try_clone_with_work(work)?,
+                producer_start,
+                producer_end,
+                work,
+            )?;
+            source_root_uses.push(ProducerSourceRootUse {
+                address,
+                image,
+                range,
+            });
+        }
+    }
+
+    Ok(LiteralSequence {
+        output,
+        axes: line.as_coords().axes(),
+        images,
+    })
+}
+
+pub(super) fn producer_drawing_receipt(
+    analysis: &super::GeographicCoverageAnalysis,
+    missing: Option<ValidityMask>,
+    work: &mut impl Work,
+) -> Result<ProducerDrawingReceipt> {
+    let shapes = project_shapes(
+        &analysis.topology,
+        &analysis.invalid_source_edge_flags,
+        &analysis.invalid_source_owners,
+        work,
+    )?;
+    if missing
+        .as_ref()
+        .is_some_and(|mask| mask.present_count() != shapes.len())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage invalid-edge source validity does not match its present rows".into(),
+        )
+        .into());
+    }
+
+    let mut logical_rows = Vec::with_capacity(shapes.len());
+    match missing.as_ref() {
+        Some(mask) => {
+            for logical_row in 0..mask.len() {
+                work.charge_into_error(1)?;
+                if !mask.is_missing(logical_row) {
+                    logical_rows.push(logical_row);
+                }
+            }
+        },
+        None => logical_rows.extend(0..shapes.len()),
+    }
+    if logical_rows.len() != shapes.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage invalid-edge logical rows do not match their source inventory".into(),
+        )
+        .into());
+    }
+
+    let mut owners_by_source: OwnersBySource<'_> = BTreeMap::new();
+    for owner in &analysis.invalid_source_owners {
+        work.charge_into_error(1)?;
+        owners_by_source
+            .entry(owner.source_edge)
+            .or_default()
+            .push(owner);
+    }
+    let mut segment_owners = SegmentOwners::new();
+    for &source_edge in owners_by_source.keys() {
+        work.charge_into_error(1)?;
+        let edge = analysis
+            .topology
+            .sources
+            .edges
+            .get(source_edge.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "coverage invalid-edge source use is outside its inventory".into(),
+                )
+            })?;
+        let (start, end) = undirected_point_pair(edge.source[0], edge.source[1]);
+        segment_owners
+            .entry((edge.row.0 as usize, start, end))
+            .or_default()
+            .push_back(source_edge);
+    }
+
+    let mut writer = StreamingShapes::with_capacity(0, shapes.len());
+    let mut row_map = Vec::with_capacity(shapes.len());
+    let mut literals = Vec::new();
+    let mut source_root_uses = Vec::new();
+    for (present_row, (shape, logical_row)) in shapes.into_iter().zip(logical_rows).enumerate() {
+        let mut lines = Vec::new();
+        match &shape {
+            Shape::LineString(line) => lines.push(draw_line_sequence(
+                line,
+                present_row,
+                logical_row,
+                0,
+                &analysis.topology,
+                &owners_by_source,
+                &mut segment_owners,
+                &mut literals,
+                &mut source_root_uses,
+                work,
+            )?),
+            Shape::MultiLineString(multi_line) => {
+                for (line_output, line) in multi_line.as_slice().iter().enumerate() {
+                    lines.push(draw_line_sequence(
+                        line,
+                        present_row,
+                        logical_row,
+                        u32::try_from(line_output)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        &analysis.topology,
+                        &owners_by_source,
+                        &mut segment_owners,
+                        &mut literals,
+                        &mut source_root_uses,
+                        work,
+                    )?);
+                }
+            },
+            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage invalid-edge projection produced a non-lineal row".into(),
+                )
+                .into());
+            },
+        }
+        row_map.push(Some(LiteralRowLayout {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            layout: ShapeLiteralLayout {
+                points: Vec::new(),
+                lines,
+                polygons: Vec::new(),
+            },
+        }));
+        writer.try_push(shape)?;
+    }
+    for unwritten in segment_owners.values() {
+        work.charge_into_error(1)?;
+        if !unwritten.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage invalid-edge source owner has no written line segment".into(),
+            )
+            .into());
+        }
+    }
+
+    let (storage, ..) = writer.finish_parts()?;
+    let buffers = FrozenLiteralBuffers::rows(
+        Arc::new(storage),
+        missing,
+        StorageLayout::PresentOnly,
+        row_map,
+        work,
+    )?;
+    Ok(ProducerDrawingReceipt::new(
+        buffers,
+        literals,
+        source_root_uses,
+        Vec::new(),
+    ))
+}
 
 pub(super) fn capture(
     topology: &ExactGeographicTopology,

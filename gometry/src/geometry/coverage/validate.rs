@@ -6,6 +6,11 @@ use rstar::{AABB, Envelope as _};
 use crate::collections::{try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
 use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::publication::{
+    FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+    StorageTarget, finish_geographic,
+};
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     Bounds, BulkRTree, Contact, CoordinateAxes, ExactPoint, GeometryErrorKind, GeometryKind,
@@ -552,42 +557,79 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
     coverage_invalid_edge_shapes(invalid)
 }
 
-pub(crate) fn coverage_invalid_edges_with_domain<S: std::borrow::Borrow<Shape>>(
+pub(crate) fn coverage_invalid_edges_cartesian<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     gap_width: f64,
-    domain: crate::geometry::TopologyDomain,
-    operation: &'static str,
 ) -> Result<Vec<Shape>> {
-    let invalid = match domain {
-        crate::geometry::TopologyDomain::Cartesian => coverage_invalid_segments(rows, gap_width)?,
-        crate::geometry::TopologyDomain::Geographic(frame) => {
-            let (_, shapes) =
-                coverage_invalid_edges_geographic_analysis(rows, frame, gap_width, operation)?;
-            return Ok(shapes);
-        },
-    };
-    coverage_invalid_edge_shapes(invalid)
+    coverage_invalid_edge_shapes(coverage_invalid_segments(rows, gap_width)?)
 }
 
+#[cfg(test)]
 pub(crate) fn coverage_invalid_edges_geographic_analysis<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     frame: crate::geographic::GeographicFrame,
     gap_width: f64,
     operation: &'static str,
 ) -> Result<(crate::geometry::GeographicCoverageAnalysis, Vec<Shape>)> {
-    validate_gap_width(gap_width)?;
-    validate_polygonal_rows(rows)?;
     let mut budget = EvaluationBudget::new(operation, 0)?;
-    let mut analysis = crate::geometry::analyze_geographic_coverage_with_work(
-        rows,
-        frame,
-        gap_width,
-        operation,
-        &mut budget,
-    )?;
-    analysis.capture_invalid_source_owners(&mut budget)?;
+    let analysis =
+        analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut budget)?;
     let shapes = analysis.invalid_source_shapes(&mut budget)?;
     Ok((analysis, shapes))
+}
+
+pub(crate) fn coverage_invalid_edges_geographic_finished<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    frame: crate::geographic::GeographicFrame,
+    gap_width: f64,
+    operation: &'static str,
+    output_frame: crate::Frame,
+    missing: Option<ValidityMask>,
+) -> Result<FinishedGeometry> {
+    let mut budget = EvaluationBudget::new(operation, 0)?;
+    let analysis =
+        analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut budget)?;
+    let receipt = analysis.invalid_edges_drawing_receipt(missing, &mut budget)?;
+    match finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            output_frame,
+            &mut budget,
+        ),
+        StorageTarget::Array,
+    )? {
+        PublicationOutcome::Pass(finished) => Ok(finished),
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            Err(GeometryErrorKind::Invalid(
+                format!(
+                    "final coverage invalid-edge storage changed {} checked output records",
+                    images.len()
+                )
+                .into(),
+            )
+            .into())
+        },
+        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+            "coverage invalid-edge finisher returned a different producer rejection family".into(),
+        )
+        .into()),
+    }
+}
+
+fn analyze_geographic_invalid_edges<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    frame: crate::geographic::GeographicFrame,
+    gap_width: f64,
+    operation: &'static str,
+    work: &mut impl crate::geometry::Work,
+) -> Result<crate::geometry::GeographicCoverageAnalysis> {
+    validate_gap_width(gap_width)?;
+    validate_polygonal_rows(rows)?;
+    let mut analysis = crate::geometry::analyze_geographic_coverage_with_work(
+        rows, frame, gap_width, operation, work,
+    )?;
+    analysis.capture_invalid_source_owners(work)?;
+    Ok(analysis)
 }
 
 fn coverage_invalid_edge_shapes(invalid: Vec<Vec<Segment>>) -> Result<Vec<Shape>> {

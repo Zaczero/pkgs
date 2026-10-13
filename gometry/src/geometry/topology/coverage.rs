@@ -17,6 +17,8 @@ use crate::geometry::coverage::{
     scaled_point_distance,
 };
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::publication::ProducerDrawingReceipt;
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     BulkRTree, ExactRationalArea, ExpansionBudget, GeometryErrorKind, Loc, Shape, Unmetered, Work,
@@ -91,6 +93,7 @@ impl GeographicCoverageAnalysis {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn invalid_source_shapes(&self, work: &mut impl Work) -> Result<Vec<Shape>> {
         invalid_edges::project_shapes(
             &self.topology,
@@ -98,6 +101,14 @@ impl GeographicCoverageAnalysis {
             &self.invalid_source_owners,
             work,
         )
+    }
+
+    pub(in crate::geometry) fn invalid_edges_drawing_receipt(
+        &self,
+        missing: Option<ValidityMask>,
+        work: &mut impl Work,
+    ) -> Result<ProducerDrawingReceipt> {
+        invalid_edges::producer_drawing_receipt(self, missing, work)
     }
 
     pub(crate) fn has_shared_boundary(&self) -> bool {
