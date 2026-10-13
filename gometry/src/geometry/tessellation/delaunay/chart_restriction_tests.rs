@@ -1,3 +1,4 @@
+use super::source::retained_constrained_source_plan;
 use super::*;
 
 fn south_polar_fixture() -> (Ring, GeographicFrame, Option<PointSelectionChart>) {
