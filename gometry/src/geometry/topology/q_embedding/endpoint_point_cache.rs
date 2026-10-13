@@ -2,7 +2,7 @@ use super::super::emission::sites::QCandidate;
 use super::{ExactChartPoint, QPortId};
 use crate::collections::HashMap;
 use crate::error::Result;
-use crate::geometry::Work;
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct NativeEndpointPointKey {
@@ -60,7 +60,8 @@ mod tests {
     use super::super::{ExactChartPoint, ExactRational, QPortId};
     use super::{NativeEndpointPointCache, NativeEndpointPointKey, QCandidate};
     use crate::error::{ResourceError, Result};
-    use crate::geometry::{Work, XY};
+    use crate::geometry::XY;
+    use crate::work::Work;
 
     struct CountingWork(u64);
 

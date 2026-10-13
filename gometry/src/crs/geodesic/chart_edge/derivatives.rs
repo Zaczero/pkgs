@@ -3,7 +3,7 @@ use geographiclib_rs::Geodesic;
 use super::bounds::{lower_product, upper_hypot, upper_product, upper_ratio, upper_sum};
 use super::{ChartEdge, ChartEdgeDerivatives};
 use crate::geographic::RetainedChartDisplacement;
-use crate::geometry::exact_arith::retained_delta_scaled;
+use crate::geographic::retained_exact::sites::retained_delta_scaled;
 use crate::geometry::interval::Interval as CertifiedInterval;
 use crate::geometry::{ChartEdgeDifferential, ChartEdgeDifferentialBounds};
 

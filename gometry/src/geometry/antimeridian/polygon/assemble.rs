@@ -335,9 +335,45 @@ fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
 /// original segments come back reversed. Returns the segments and whether any
 /// pole closure was applied.
 pub(super) fn extend_over_poles(
-    mut segments: Vec<Vec<Point>>,
+    segments: Vec<Vec<Point>>,
     closure: PoleClosure,
 ) -> Result<(Vec<Vec<Point>>, bool)> {
+    let (segments, capped, _) = extend_over_poles_with_direction(segments, closure)?;
+    Ok((segments, capped))
+}
+
+pub(super) fn extend_over_poles_with_lineage(
+    segments: Vec<(Vec<Point>, LineageSequence)>,
+    closure: PoleClosure,
+    catalog: &mut LineageCatalog,
+) -> Result<(Vec<(Vec<Point>, LineageSequence)>, bool)> {
+    let plain_segments = segments.iter().map(|(points, _)| points.clone()).collect();
+    let (stitched, capped, reversed) = extend_over_poles_with_direction(plain_segments, closure)?;
+    if capped {
+        return Ok((segments, true));
+    }
+    if stitched.len() != segments.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "pole extension changed the seam fragment count".into(),
+        )
+        .into());
+    }
+    let mut result = Vec::with_capacity(segments.len());
+    for ((_, lineage), points) in segments.into_iter().zip(stitched) {
+        let lineage = if reversed {
+            catalog.reverse_sequence(&lineage)?
+        } else {
+            lineage
+        };
+        result.push((points, lineage));
+    }
+    Ok((result, false))
+}
+
+fn extend_over_poles_with_direction(
+    mut segments: Vec<Vec<Point>>,
+    closure: PoleClosure,
+) -> Result<(Vec<Vec<Point>>, bool, bool)> {
     let chart_frame = GeographicFrame::crs84();
     let north_pole = chart_frame.chart_pole_latitude(ChartPole::North);
     let south_pole = chart_frame.chart_pole_latitude(ChartPole::South);
@@ -431,9 +467,9 @@ pub(super) fn extend_over_poles(
         for segment in &mut reversed {
             segment.reverse();
         }
-        return Ok((reversed, false));
+        return Ok((reversed, false, true));
     }
-    Ok((segments, capped))
+    Ok((segments, capped, false))
 }
 
 fn is_self_closing(segment: &[Point]) -> bool {

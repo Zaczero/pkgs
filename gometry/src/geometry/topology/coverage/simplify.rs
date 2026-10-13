@@ -22,11 +22,11 @@ use super::chains::{
 use crate::collections::{HashMap, try_hash_map_with_capacity};
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, ChartSpanGuard};
-use crate::geometry::embedding_search::Work;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{GeometryErrorKind, SimplifyMethod, XY, simplify_chain_kept_with_try_remove};
+use crate::work::Work;
 
 type GeneratedEdgeIndex = RTree<GeomWithData<Rectangle<[f64; 2]>, (usize, i8)>>;
 
@@ -1476,7 +1476,7 @@ mod tests {
     use super::super::analyze_geographic_coverage;
     use super::*;
     use crate::geographic::GeographicFrame;
-    use crate::geometry::Unmetered;
+    use crate::work::Unmetered;
 
     fn source_endpoint_port(
         analysis: &GeographicCoverageAnalysis,

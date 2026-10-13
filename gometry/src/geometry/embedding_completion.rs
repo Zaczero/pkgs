@@ -14,11 +14,12 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
     IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
 };
-use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::overlay::{
-    CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
-    compare_departures_with_work, graph_global_faces_with_work,
+use crate::geometry::graph::{
+    GlobalFaces, RayAxis, RayPoints, RayPointsWithWork, compare_departures_with_work,
+    graph_global_faces_with_work,
 };
+use crate::geometry::numerics::product::ExactSign;
+use crate::geometry::output::CertifiedShapeOrder;
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::{
@@ -30,9 +31,10 @@ use crate::geometry::topology::{
     vector_cross_with_work, vector_difference_with_work,
 };
 use crate::geometry::{
-    Bounds, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape, Unmetered, Work, XY,
+    Bounds, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape, XY,
     for_each_overlapping_bounds_cross_pair_with_work,
 };
+use crate::work::{Unmetered, Work};
 
 mod binding;
 mod storage;
@@ -517,7 +519,7 @@ pub(super) struct LiteralRowLayout<I> {
 impl<I> ShapeLiteralLayout<I> {
     pub(super) fn in_output_order(
         self,
-        order: &CertifiedOverlayOrder,
+        order: &CertifiedShapeOrder,
         work: &mut impl Work,
     ) -> Result<Self> {
         Ok(Self {
@@ -2158,8 +2160,9 @@ mod tests {
     use crate::geometry::topology::ExactChartPoint;
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryErrorKind, LineSeq, MOrdinate, Point, Polygon, Ring,
-        Shape, Unmetered, Work, XY, ZOrdinate,
+        Shape, XY, ZOrdinate,
     };
+    use crate::work::{Unmetered, Work};
 
     #[derive(Clone, Copy)]
     struct SweepCharge {
@@ -2312,7 +2315,7 @@ mod tests {
     struct IdentityLiteralChart;
 
     impl LiteralChart<u32> for IdentityLiteralChart {
-        fn read_point<W: crate::geometry::Work>(
+        fn read_point<W: crate::work::Work>(
             &mut self,
             _address: super::LiteralAddress,
             _image: u32,
@@ -2396,7 +2399,7 @@ mod tests {
     }
 
     impl LiteralChart<u32> for TestLiteralReceiver {
-        fn read_point<W: crate::geometry::Work>(
+        fn read_point<W: crate::work::Work>(
             &mut self,
             address: super::LiteralAddress,
             image: u32,
@@ -2422,7 +2425,7 @@ mod tests {
     }
 
     impl LiteralChart<u32> for FullRecordReceiver {
-        fn read_point<W: crate::geometry::Work>(
+        fn read_point<W: crate::work::Work>(
             &mut self,
             address: LiteralAddress,
             image: u32,

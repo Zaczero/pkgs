@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
 
 use crate::error::{ResourceError, Result};
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{GeometryErrorKind, Unmetered, Work};
+use crate::work::{Unmetered, Work};
 
 /// Geometry-independent CSR topology. Rows are supplied in their final cyclic
 /// order; this type only derives reciprocal slots, components, and boundary

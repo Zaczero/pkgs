@@ -14,7 +14,7 @@ use super::{
     opposite_nonzero, ordered,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(test)]
 use crate::geometry::tessellation::RingOwner;
 use crate::geometry::tessellation::exact;

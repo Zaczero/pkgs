@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
 
 use super::GeographicError;
-use crate::geometry::exact_arith::product_sum::ExactSum;
-use crate::geometry::exact_arith::{
+use crate::geographic::retained_exact::sites::{
     nearest_periodic_alias, retained_delta_native, retained_lifted_native, retained_native_site,
 };
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::{Bounds, Point};
 
 #[derive(Clone, Copy, Debug, PartialEq)]

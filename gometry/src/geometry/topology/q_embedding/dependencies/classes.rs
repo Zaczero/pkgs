@@ -1,11 +1,11 @@
 use super::super::{
     BTreeMap, EmissionNodeId, ExactGeographicTopology, GeometryErrorKind, QCandidate, QDartId,
     QEmbeddingEmission, QGraphNode, QNodeId, QProximityPair, QPublicationChordId, QVariableNode,
-    ResourceError, Result, UnifiedQClassInputs, UnionFind, Work,
-    candidate_domains_share_emitted_key, chord_dependencies, compare_qnode_keys,
-    compare_variable_nodes, publication_pair_variables, q_graph_variable_domain,
-    try_sort_by_with_work, variable_class_rank,
+    ResourceError, Result, UnifiedQClassInputs, UnionFind, candidate_domains_share_emitted_key,
+    chord_dependencies, compare_qnode_keys, compare_variable_nodes, publication_pair_variables,
+    q_graph_variable_domain, try_sort_by_with_work, variable_class_rank,
 };
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology::q_embedding) struct QPublicationPair {

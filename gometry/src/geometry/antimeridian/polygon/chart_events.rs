@@ -1,5 +1,6 @@
 use super::*;
 use crate::geometry::ordinates::RootId;
+use crate::work::Unmetered;
 
 pub(super) fn chart_point(
     point: Point,
@@ -71,7 +72,7 @@ impl<'a> ChartSourceCapture<'a> {
             let event = capture.record_root_point(root, member, parameter)?;
             self.records.push((
                 event,
-                parameter.try_clone_with_work(&mut crate::geometry::Unmetered)?,
+                parameter.try_clone_with_work(&mut crate::work::Unmetered)?,
             ));
             Ok(Some(event))
         } else {

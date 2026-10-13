@@ -2,9 +2,10 @@ use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    ChartMetric, Coordinates, MOrdinate, Point, RootMetricState, SourceArcMetricAccess, Unmetered,
-    ZOrdinate, interpolate_subdivision_ordinate, same_point,
+    ChartMetric, Coordinates, MOrdinate, Point, RootMetricState, SourceArcMetricAccess, ZOrdinate,
+    interpolate_subdivision_ordinate, same_point,
 };
+use crate::work::Unmetered;
 
 pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     points.iter_coords().collect()
@@ -449,11 +450,6 @@ fn seam_side(neighbour: Point, vertex: Point) -> f64 {
     } else {
         vertex.x
     }
-}
-
-const fn spelled(mut point: Point, side: f64) -> Point {
-    point.x = side;
-    point
 }
 
 /// Close `piece` at the seam and open the next one when the chart edge from

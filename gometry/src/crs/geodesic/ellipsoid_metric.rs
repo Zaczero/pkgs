@@ -7,8 +7,9 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
     ChartPointDistanceSample, GeodesicMetric, GeodesicNumericalPolicy, Point, PointEdgeQuery,
-    PointEdgeQueryResult, Work,
+    PointEdgeQueryResult,
 };
+use crate::work::Work;
 
 pub(crate) fn inverse_distance(
     geodesic: &Geodesic,

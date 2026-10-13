@@ -3,6 +3,7 @@ use super::assemble::{
 };
 use super::*;
 use crate::geometry::antimeridian::linestring::{SeamPiece, SeamVertexSource};
+use crate::work::Unmetered;
 
 /// A pole-closure cap fabricates ±90 vertices with no source segment, so a
 /// measured/3D input cannot honestly keep its ordinates there. Reject Z/M only
@@ -76,7 +77,7 @@ pub(super) fn seam_piece_lineage(
         sources: &[SeamVertexSource],
         edge_count: usize,
         source_closed: bool,
-        work: &mut impl crate::geometry::Work,
+        work: &mut impl crate::work::Work,
     ) -> Result<Vec<(usize, ExactRational)>> {
         let mut parameters = Vec::new();
         for source in sources {
@@ -715,12 +716,9 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let plain_segments = segments
-                .iter()
-                .map(|(points, _)| points.clone())
-                .collect::<Vec<_>>();
-            let (stitched, capped) = extend_over_poles(plain_segments, preferred)?;
-            if capped || stitched.len() != segments.len() {
+            let (segments, capped) =
+                super::assemble::extend_over_poles_with_lineage(segments, preferred, catalog)?;
+            if capped {
                 let polygons = split_polygon(source, polygon, preferred, metric_access)?;
                 return Ok(polygons
                     .into_iter()
@@ -741,9 +739,6 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                         }
                     })
                     .collect());
-            }
-            for ((points, _), stitched_points) in segments.iter_mut().zip(stitched) {
-                *points = stitched_points;
             }
             let kept_holes = stationary_holes;
             assemble_polygons_with_lineage(segments, &kept_holes, catalog)

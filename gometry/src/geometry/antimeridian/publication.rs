@@ -22,8 +22,9 @@ use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MultiMember, Point, Polygon,
-    Ring, Shape, Unmetered,
+    Ring, Shape,
 };
+use crate::work::Unmetered;
 
 pub(super) struct SplitCapture {
     lineage: LineageCatalog,
@@ -207,29 +208,6 @@ impl SplitDrawing {
     }
 }
 
-fn reverse_lineage_sequence(
-    lineage: &LineageSequence,
-    catalog: &mut LineageCatalog,
-) -> Result<LineageSequence> {
-    if lineage.edges.len() != lineage.vertices.len().saturating_sub(1) {
-        return Err(GeometryErrorKind::Invalid(
-            "antimeridian ring coordinates and edge lineage disagree".into(),
-        )
-        .into());
-    }
-    let one = ExactRational::one();
-    let zero = ExactRational::zero();
-    let mut edges = Vec::with_capacity(lineage.edges.len());
-    for &edge in lineage.edges.iter().rev() {
-        edges.push(catalog.split_edge_use(lineage.member, edge, &one, &zero)?);
-    }
-    Ok(LineageSequence {
-        member: lineage.member,
-        vertices: lineage.vertices.iter().rev().cloned().collect(),
-        edges,
-    })
-}
-
 fn orient_lineage_sequence(
     ring: &Ring,
     lineage: &LineageSequence,
@@ -243,7 +221,7 @@ fn orient_lineage_sequence(
         .into());
     }
     if crate::geometry::ring_winding(ring).reverse_for_clockwise(clockwise) {
-        reverse_lineage_sequence(lineage, catalog)
+        catalog.reverse_sequence(lineage)
     } else {
         Ok(lineage.clone())
     }

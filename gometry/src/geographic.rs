@@ -6,6 +6,7 @@ mod computed_edge;
 mod envelope;
 mod interval;
 pub(crate) mod lonlat;
+pub(crate) mod retained_exact;
 mod value;
 mod view;
 

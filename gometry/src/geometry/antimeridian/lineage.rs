@@ -137,7 +137,7 @@ impl LineageCatalog {
                 let request =
                     SourceArcRequest::new(frame, points, axes, parameter, || Ok(*longitude))?;
                 let mut fraction = None;
-                let mut work = crate::geometry::Unmetered;
+                let mut work = crate::work::Unmetered;
                 let mut metric_state = metric.get();
                 let ordinates = source_arc_ordinates(
                     &request,
@@ -246,7 +246,7 @@ impl LineageCatalog {
     pub(super) fn vertex_roots(
         &self,
         events: &[EventId],
-        work: &mut impl crate::geometry::Work,
+        work: &mut impl crate::work::Work,
     ) -> crate::error::Result<Vec<RootRange>> {
         let mut roots: Vec<RootRange> = Vec::new();
         for &event in events {
@@ -280,7 +280,7 @@ impl LineageCatalog {
             )
             .into());
         }
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let roots = self.vertex_roots(events, &mut work)?;
         self.event(member, roots)
     }
@@ -297,7 +297,7 @@ impl LineageCatalog {
         edge: EdgeUseId,
         parameter: &crate::geometry::tessellation::exact::ExactRational,
     ) -> crate::error::Result<EventId> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let mut roots = Vec::new();
         if self.edge_use_at(edge).member != member {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -326,7 +326,7 @@ impl LineageCatalog {
             crate::geometry::tessellation::exact::ExactRational,
         )],
     ) -> crate::error::Result<EventId> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, parameter) in uses {
             let source = self.edge_use_at(*edge);
@@ -369,7 +369,7 @@ impl LineageCatalog {
         local_start: &crate::geometry::tessellation::exact::ExactRational,
         local_end: &crate::geometry::tessellation::exact::ExactRational,
     ) -> crate::error::Result<EdgeUseId> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let mut roots = Vec::new();
         if self.edge_use_at(edge).member != member {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -400,6 +400,29 @@ impl LineageCatalog {
         self.push_edge_use(member, roots, restriction)
     }
 
+    pub(super) fn reverse_sequence(
+        &mut self,
+        lineage: &LineageSequence,
+    ) -> crate::error::Result<LineageSequence> {
+        if lineage.edges.len() != lineage.vertices.len().saturating_sub(1) {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "split sequence coordinates and edge lineage disagree".into(),
+            )
+            .into());
+        }
+        let one = crate::geometry::tessellation::exact::ExactRational::one();
+        let zero = crate::geometry::tessellation::exact::ExactRational::zero();
+        let mut edges = Vec::with_capacity(lineage.edges.len());
+        for &edge in lineage.edges.iter().rev() {
+            edges.push(self.split_edge_use(lineage.member, edge, &one, &zero)?);
+        }
+        Ok(LineageSequence {
+            member: lineage.member,
+            vertices: lineage.vertices.iter().rev().cloned().collect(),
+            edges,
+        })
+    }
+
     pub(super) fn compose_edge_uses(
         &mut self,
         member: MemberId,
@@ -410,7 +433,7 @@ impl LineageCatalog {
         )],
         mut restriction: Option<ChartRestriction>,
     ) -> crate::error::Result<EdgeUseId> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, local_start, local_end) in source_uses {
             let source = self.edge_use_at(*edge);
