@@ -8,6 +8,10 @@ use pyo3::sync::MutexExt as _;
 
 use crate::geometry::storage::ValidityMask;
 
+mod recording_work;
+
+pub(crate) use recording_work::RecordingWork;
+
 pub(crate) fn nullable_polygon_typed_empty_fixture() -> crate::array::PyGeometryArray {
     let present = crate::array::PyGeometryArray::packed_polygons(
         crate::geometry::CoordSeq::try_from_vecs(

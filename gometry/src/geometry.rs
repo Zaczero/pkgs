@@ -78,6 +78,7 @@ pub(crate) use geographic_area::{
 };
 pub(crate) use segments::interpolation::held_axis_interpolate;
 pub(crate) use segments::{Orientation, orientation};
+mod metric;
 mod prepared;
 pub(crate) mod storage;
 pub(crate) mod types;

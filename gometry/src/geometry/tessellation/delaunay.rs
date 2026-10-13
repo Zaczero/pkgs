@@ -1128,19 +1128,11 @@ struct RetainedSiteKey {
     y: u64,
 }
 
-fn normalized_bits(value: f64) -> u64 {
-    if value == 0.0 {
-        0.0_f64.to_bits()
-    } else {
-        value.to_bits()
-    }
-}
-
 fn retained_site_key(site: ChartPointSite) -> RetainedSiteKey {
     RetainedSiteKey {
         periods: site.longitude().periods(),
-        native_x: normalized_bits(site.longitude().native().get()),
-        y: normalized_bits(site.source_y()),
+        native_x: crate::geometry::canonical_f64_bits(site.longitude().native().get()),
+        y: crate::geometry::canonical_f64_bits(site.source_y()),
     }
 }
 

@@ -174,46 +174,8 @@ mod tests {
     use super::*;
     use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
     use crate::geometry::{CoordinateAxes, GeometryErrorKind};
+    use crate::test_support::RecordingWork;
     use crate::work::Unmetered;
-
-    struct RecordingBudget {
-        budget: EvaluationBudget,
-        attempted: Vec<u64>,
-        accepted: Vec<u64>,
-    }
-
-    impl RecordingBudget {
-        fn with_remaining(remaining_ticks: u128) -> crate::error::Result<Self> {
-            Ok(Self {
-                budget: EvaluationBudget::with_remaining_ticks_for_test(
-                    "coordinate comparison",
-                    1,
-                    remaining_ticks,
-                )?,
-                attempted: Vec::new(),
-                accepted: Vec::new(),
-            })
-        }
-    }
-
-    impl Work for RecordingBudget {
-        type Error = crate::error::Error;
-
-        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
-            self.attempted.push(ticks);
-            self.budget.charge(ticks)?;
-            self.accepted.push(ticks);
-            Ok(())
-        }
-
-        fn charge_product(
-            &mut self,
-            count: usize,
-            ticks_per_item: usize,
-        ) -> crate::error::Result<()> {
-            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
-        }
-    }
 
     #[test]
     #[expect(
@@ -229,7 +191,7 @@ mod tests {
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(2.0, 0.0),
         ])?;
-        let mut work = RecordingBudget::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining("coordinate comparison", 0)?;
 
         let error = compare_point_slices_with_work(&left, &right, &mut work).unwrap_err();
 
@@ -254,7 +216,7 @@ mod tests {
     fn hole_prefix_refusal_precedes_nested_row_access() -> crate::error::Result<()> {
         let left = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
         let right = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
-        let mut work = RecordingBudget::with_remaining(0)?;
+        let mut work = RecordingWork::with_remaining("coordinate comparison", 0)?;
 
         let error = compare_nested_point_slices_with_work(&left, &right, &mut work).unwrap_err();
 
