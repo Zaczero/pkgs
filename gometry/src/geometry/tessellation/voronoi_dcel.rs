@@ -1,7 +1,6 @@
 //! Exact labelled Voronoi subdivision and its sole binary64 projection.
 
 #![expect(
-    clippy::explicit_iter_loop,
     clippy::float_cmp,
     clippy::inconsistent_struct_constructor,
     clippy::items_after_statements,
@@ -637,7 +636,7 @@ fn pack_separator_chains(
     let mut ends = Vec::with_capacity(offset_count);
     ends.push(0);
     for chain in chains {
-        for &vertex in chain.vertices.iter() {
+        for &vertex in &chain.vertices {
             let point = xy_of(vertex)?;
             xs.push(point.x);
             ys.push(point.y);
