@@ -757,7 +757,10 @@ coordinates (the PostGIS ``ST_Subdivide`` shape). Linework with no
 representable rectangular cut is divided between source vertices. Parts cover
 the input up to binary64 rounding at constructed cut vertices. Source
 ordinates are carried where meaningful; synthesized clip vertices use the
-operation's natural XY result.
+operation's natural XY result. On geographic input, recursively generated cut
+vertices remain traced to their original source edges, including across seam
+pieces; they are not re-interpolated from an edge fragment created by an earlier
+cut.
 
 Parameters
 ----------

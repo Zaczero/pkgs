@@ -223,9 +223,11 @@ passes the certificate, it raises [`GeometryError`][gometry.GeometryError] with
 `code == 'output_unrepresentable'` instead of returning geometry with changed
 topology. This is a refusal under that operation's drawing domain and
 preservation contract, not a claim that every possible binary64 drawing of the
-mathematical result is impossible. If the bounded search stops before it can
-certify an assignment, the error has `code == 'work_limit'`; that does not prove
-that no assignment exists. The `operation` attribute names the operation.
+mathematical result is impossible. For a geographic overlay, exhausting the
+bounded work budget raises [`GeometryError`][gometry.GeometryError] with
+`code == 'work_limit'` and `operation` naming the call. No geometry is returned;
+the error means the operation stopped before it could finish its checked
+construction, not that no valid output exists.
 Simplify the operands or [`snap`][gometry.snap] near-coincident borders to a
 common tolerance first. Overlaying a published result again is a new operation
 on its rounded coordinates and is not promised to reproduce the first result.
@@ -405,6 +407,16 @@ print(panels(
 ))
 
 ```
+
+## Subdivide
+
+[`Geometry.subdivide`][gometry.Geometry.subdivide] recursively clips a geometry
+until each part fits the requested coordinate bound. On geographic input, new
+cut vertices remain tied to their original input-edge trace through later
+recursive cuts, rather than being interpolated from an already-cut edge. This
+also holds where a source edge crosses the CRS-native longitude seam (±180° in
+EPSG:4326); the geographic Z/M interpolation rule is described in
+[Z/M under operations](geometry.md#zm-under-operations).
 
 ## Hulls and bounding shapes
 

@@ -232,9 +232,11 @@ method_doc! {
     doc_convex_hull;
     body: r"Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
 auto-split antimeridian-crossing geographic input; call
-``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
-ordinates are preserved. When several input vertices share an XY position, the
-first in storage order is the survivor.";
+``split_antimeridian`` first. Source vertices retained by the hull keep their
+ordinates. Geographic hull construction can add chart-support vertices on
+producer root edges; see the geometry guide's ``Z/M under operations`` section
+for how their ordinates are carried. When several input vertices share an XY
+position, the first in storage order is the copied survivor.";
     scalar: r"
 
 Returns
@@ -672,7 +674,10 @@ Examples
 
 method_doc! {
     doc_minimum_rotated_rectangle;
-    body: r"Minimum-area rotated bounding rectangle, returned in XY.";
+    body: r"Minimum-area rotated bounding rectangle. A computed areal rectangle is
+returned in XY. A degenerate geographic result that follows source-edge support
+can retain resolvable Z/M by the original edge's ellipsoidal arclength; see the
+geometry guide's ``Z/M under operations`` section.";
     scalar: r"
 
 Returns

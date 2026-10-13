@@ -894,9 +894,10 @@ coordinates in the CRS-native longitude quotient. Validity uses a faithful
 planar partition when the stored chart preserves source coordinates; otherwise
 it reads exact Q incidence without shifting stored longitudes. Operations that
 construct split output insert affine X/Y crossings into straight edges in the
-unwrapped longitude/latitude chart. Eligible Z/M at inserted crossings follow
-ellipsoidal arclength along the retained source edge; authored full-period
-edges keep their path through quarter witnesses. Geographic shape measures
+unwrapped longitude/latitude chart; see
+[Z/M under operations](geometry.md#zm-under-operations) for how inserted
+ordinates follow their source edges. Authored full-period edges keep their path
+through quarter witnesses. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding.
 Point-to-point [`distance`][gometry.distance] continues to use the shortest
@@ -916,6 +917,11 @@ rounding would change that chart, the overlay searches adjacent representable
 coordinates for constructed nodes only; stored input vertices and graph
 segmentation remain fixed. This is a topology-preserving repair, not a
 user-selected snap grid.
+On computed geographic edge chains, vertices in a zero-longitude-change
+meridian run use the stored longitude spelling when the run touches a preserved
+input vertex.
+If preserved vertices on one such run use conflicting spellings, the operation
+raises [`GeometryError`][gometry.GeometryError] rather than choosing one.
 
 The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
