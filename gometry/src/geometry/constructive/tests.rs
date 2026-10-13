@@ -5,7 +5,7 @@ use crate::geometry::constructive::offset::{line_intersection, offset_curve_poin
 use crate::geometry::constructive::walk::{
     WalkCount, WalkJoin, WalkPlan, close_xy_loop, convex_miter, materialize_walk, reflex_cross,
 };
-use crate::geometry::constructive::winding::raw_stroke_loop;
+use crate::geometry::constructive::winding::stroke::raw_stroke_loop;
 use crate::geometry::constructive::{
     WalkJoinRule, reset_walk_plan_construction_count, walk_plan_construction_count, winding_buffer,
     winding_erosion, winding_stroke,
