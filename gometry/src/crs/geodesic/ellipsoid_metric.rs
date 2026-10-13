@@ -1,6 +1,7 @@
 use geographiclib_rs::Geodesic;
 
-use super::chart_edge::{AuthalicSeries, ChartEdge};
+use super::chart_edge::ChartEdge;
+use super::chart_edge::authalic::AuthalicSeries;
 use crate::crs::geodesic::InverseGeodesic as _;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
@@ -308,11 +309,11 @@ impl ChartMetric for EllipsoidMetric<'_> {
     }
 
     fn chart_edge_differential(&self, edge: &ChartEdge, parameter: f64) -> ChartEdgeDifferential {
-        super::chart_edge::chart_edge_differential(edge, self.geodesic, parameter)
+        super::chart_edge::derivatives::chart_edge_differential(edge, self.geodesic, parameter)
     }
 
     fn chart_edge_differential_bounds(&self, edge: &ChartEdge) -> ChartEdgeDifferentialBounds {
-        super::chart_edge::chart_edge_differential_bounds(edge, self.geodesic)
+        super::chart_edge::derivatives::chart_edge_differential_bounds(edge, self.geodesic)
     }
 
     fn chart_edge_moving_correspondence_upper(

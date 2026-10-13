@@ -472,7 +472,8 @@ fn canonical_chart_crossing(xs: &[f64], limit: f64) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
+    use crate::geometry::test_support::{line, polygon};
+    use crate::geometry::{CoordSeq, LineSeq};
 
     #[test]
     fn canonical_crossing_scan_checks_every_shifted_pair_and_the_entire_chart() {
@@ -489,25 +490,6 @@ mod tests {
             *xs.last_mut().unwrap() = alias;
             assert_eq!(canonical_chart_crossing(&xs, 180.0), None);
         }
-    }
-
-    fn polygon(points: &[(f64, f64)]) -> Shape {
-        let points = points
-            .iter()
-            .map(|&(x, y)| Point::new_raw_xy(x, y))
-            .collect::<Vec<_>>();
-        Shape::Polygon(Polygon::new(
-            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-            Vec::new(),
-        ))
-    }
-
-    fn line(points: &[(f64, f64)]) -> Shape {
-        let points = points
-            .iter()
-            .map(|&(x, y)| Point::new_raw_xy(x, y))
-            .collect::<Vec<_>>();
-        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap())
     }
 
     fn route(shape: &Shape) -> GeographicTopologyRoute {

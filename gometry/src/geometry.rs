@@ -47,6 +47,8 @@ pub(crate) use dispatch_axes;
 
 mod access;
 mod frame;
+#[cfg(test)]
+mod test_support;
 pub(crate) use frame::{
     AxisFrame, axis_extent, axis_pow2_scale, power_of_two_exponent, scale_by_power_of_two,
     scaled_residual, unscale_area,
@@ -74,7 +76,8 @@ pub(crate) use area::{
 pub(crate) use geographic_area::{
     GeographicAreaDensity, MAX_AUTHALIC_HARMONICS, polygon_area as geographic_polygon_area,
 };
-pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
+pub(crate) use segments::interpolation::held_axis_interpolate;
+pub(crate) use segments::{Orientation, orientation};
 pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use types::{
@@ -181,7 +184,7 @@ pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 pub(in crate::geometry) use segment_index::{OrderTree, PersistentOrder};
-mod segments;
+pub(crate) mod segments;
 pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
@@ -275,9 +278,10 @@ pub(crate) use predicates::{
     shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
     validate_ring,
 };
-pub(in crate::geometry) use segments::{
-    DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
+pub(in crate::geometry) use segments::clip::{
+    SegmentParameter, clip_segment_parameter, exact_crossing_parameter,
 };
+pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
 #[cfg(test)]
 pub(crate) use util::dedup_consecutive_xy;
 pub(crate) use util::{
@@ -364,41 +368,33 @@ pub(in crate::geometry) use segment_index::{
     for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
     single_chain,
 };
-#[cfg(test)]
-use segments::point_segment_distance_key;
-use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, clearance_aabb_filter,
-    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
-    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, undirected_segment_edge_key,
+use segments::contact::{
+    Contact, ON_SEGMENT_EPSILON, segment_contact_exact, segment_cross_point,
+    segment_envelopes_disjoint, segments_intersect, shared_segment_part,
+    undirected_segment_edge_key,
 };
+pub(crate) use segments::contact::{RectContact, line_segments, point_on_segment, segment_vs_rect};
 #[cfg(test)]
-pub(crate) use segments::{
-    CLEARANCE_AABB_COMPARE_DECISIONS, CLEARANCE_AABB_COMPARE_DECLINES,
-    CLEARANCE_AABB_FILTER_DECLINES, CLEARANCE_AABB_FILTERS, CLEARANCE_DOT_BINARY64_DECISIONS,
-    CLEARANCE_DOT_BINARY64_DECLINES, CLEARANCE_STRIP_BINARY64_DECISIONS,
-    CLEARANCE_STRIP_BINARY64_DECLINES, CLEARANCE_STRIP_EXACT_FALLBACKS,
-    CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS, POINT_SEGMENT_BINARY64_DECISIONS,
-    POINT_SEGMENT_BINARY64_DECLINES,
+pub(crate) use segments::distance::CLEARANCE_STRIP_SUPPORT_FALLBACKS;
+use segments::distance::{
+    clearance_aabb_filter, point_pair_distance_key, point_segment_distance_squared,
+    point_segment_exact_distance_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
-pub(crate) use segments::{
-    RectContact, WitnessRole, clearance_strip_exceeds, finish_planar_squared_min, lerp_point,
-    line_segments, point_distance, point_distance_squared, point_on_segment, points_dwithin,
-    segment_vs_rect, source_dot_cmp, squared_norm_is_trustworthy,
-};
-pub(crate) use segments::{
-    SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
+pub(crate) use segments::distance::{
+    clearance_strip_exceeds, finish_planar_squared_min, point_distance, point_distance_squared,
+    point_segment_distance, point_segment_selection, points_dwithin, source_dot_cmp,
+    squared_norm_is_trustworthy,
 };
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
-pub(crate) use segments::{
+pub(crate) use segments::interpolation::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
-    interpolate_subdivision_ordinate,
+    interpolate_subdivision_ordinate, lerp_point,
 };
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
+use segments::{CCW_ERRBOUND_A, SquaredDistanceKey, orientation_xy, ray_crossing_is_right};
+pub(crate) use segments::{SegmentProjection, WitnessRole};
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
     CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,

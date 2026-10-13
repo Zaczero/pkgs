@@ -70,7 +70,7 @@ use crate::geometry::publication::{
     ChartRestriction, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, finish_geographic,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
 use crate::geometry::{
     Bounds, ChartMetric, CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Segment, Unmetered,

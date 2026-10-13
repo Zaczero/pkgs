@@ -372,11 +372,12 @@ pub(crate) use export_plan::{
 #[cfg(test)]
 pub(crate) use export_plan::{payload_events, reset_payload_events};
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c};
-pub(crate) use native::{
-    NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
-    NativeDecodedStorage, native_arrow_batch_from_capsules,
-    native_arrow_batch_from_capsules_with_classification, native_arrow_batch_from_raw_array,
+pub(crate) use native::capture::{
+    native_arrow_batch_from_capsules, native_arrow_batch_from_capsules_with_classification,
+    native_arrow_batch_from_raw_array,
 };
+pub(crate) use native::decode::{NativeArrowDecodeError, NativeDecodedBatch, NativeDecodedStorage};
+pub(crate) use native::{NativeArrowBatch, NativeArrowClassification};
 pub(crate) use release::{
     array_capsule_destructor, release_array, release_schema, release_stream,
     schema_capsule_destructor, stream_capsule_destructor, stream_get_last_error, stream_get_next,

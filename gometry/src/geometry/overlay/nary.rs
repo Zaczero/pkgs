@@ -2551,3 +2551,6 @@ mod geographic_chart_route_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod extracted_tests;

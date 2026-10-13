@@ -102,7 +102,7 @@ impl MinimumCircle {
     )]
     fn certificate(self, points: &[Point]) -> Result<bool> {
         let (support, count) = self.support_xy(points);
-        exact::try_certify_support(
+        exact::support_circle::try_certify_support(
             &support[..count],
             points.iter().copied().map(|point| point.xy()),
         )
@@ -128,7 +128,7 @@ impl MinimumCircle {
             mut center_w,
             radius_squared_numerator,
             radius_squared_denominator,
-        ) = exact::try_support_circle_components(&support[..count])?;
+        ) = exact::support_circle::try_support_circle_components(&support[..count])?;
         // A positive homogeneous scale makes the edge half-plane formula
         // below match the geometric CCW sign directly.
         if center_w.sign() == ExactSign::Negative {

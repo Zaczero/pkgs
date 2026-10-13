@@ -22,10 +22,11 @@ use crate::geometry::{
     segment_vs_rect,
 };
 use crate::grid::affine_source::{
-    GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
-    RectangularCandidate, SphericalGridTarget,
+    GeographicCoverageSource, RectClass as AffineRectClass, RectangularCandidate,
+    SphericalGridTarget,
 };
 use crate::grid::cell::HierarchicalCell;
+use crate::grid::spatial_index::{PackedBvh, PackedBvhEntry};
 use crate::grid::{CoverError, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 

@@ -9,11 +9,12 @@ use std::cmp::Ordering;
 
 use super::point;
 use crate::error::Result;
+use crate::geometry::XY;
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::segments::stored_cross_sign;
 use crate::geometry::tessellation::exact::{self, ExactLine, ExactPoint};
 use crate::geometry::tessellation::{EMPTY, next_halfedge, prev_halfedge};
-use crate::geometry::{XY, try_sort_by};
 
 struct Mesh {
     vertices: Vec<usize>,
@@ -372,7 +373,10 @@ impl Diagram {
             };
             if starts_below && ends_above {
                 let bisector = ExactLine::perpendicular_bisector(a, b)?;
-                active.push((boundary, exact::line_intersection(&bisector, &horizontal)?));
+                active.push((
+                    boundary,
+                    exact::incidence::line_intersection(&bisector, &horizontal)?,
+                ));
             }
             for (centre, entering) in [(lower, true), (upper, false)] {
                 if let Some(centre) = centre {
@@ -434,8 +438,10 @@ impl Diagram {
                 }
                 let [lu, lv] = boundaries.get(left).expect("sweep boundary").sites;
                 let [ru, rv] = boundaries.get(right).expect("sweep boundary").sites;
-                let left_side = exact::squared_distance_cmp_point(vertex, xy(lu), xy(lv))?;
-                let right_side = exact::squared_distance_cmp_point(vertex, xy(ru), xy(rv))?;
+                let left_side =
+                    exact::incidence::squared_distance_cmp_point(vertex, xy(lu), xy(lv))?;
+                let right_side =
+                    exact::incidence::squared_distance_cmp_point(vertex, xy(ru), xy(rv))?;
                 let x_order = if left_side.is_eq() {
                     right_side
                 } else if right_side.is_eq() {

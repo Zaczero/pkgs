@@ -16,7 +16,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootCatalog, RootId, RootMetricState, SourceArcMetricAccess, resolve_source_root,
 };
-use crate::geometry::segments::{try_sort_by, try_sort_by_with_work};
+use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{

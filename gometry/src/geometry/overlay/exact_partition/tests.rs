@@ -4,7 +4,10 @@ use crate::geometry::embedding_search::{
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
-use crate::geometry::segments::{SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation};
+use crate::geometry::segments::contact::{
+    SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation,
+};
+use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
 
 #[test]
 fn planar_embedding_domain_admits_finite_coordinates_only() {
@@ -501,7 +504,7 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
         2,
         "the fixed lattice fixture has two crossings"
     );
-    crate::geometry::try_sort_by(&mut crossings, |left, right| {
+    try_sort_by(&mut crossings, |left, right| {
         partition.compare_nodes(*left, *right)
     })
     .unwrap();
@@ -6584,7 +6587,7 @@ fn planar_candidate_values(
         .unwrap();
     let mut ordered = candidates.clone();
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut ordered, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut ordered, &mut work, |left, right, work| {
         problem.compare_candidates(node, *left, *right, work)
     })
     .unwrap();
@@ -6928,7 +6931,7 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
         .clone();
     assert_eq!(variables.len(), count);
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
         problem.compare_nodes(*left, *right, work)
     })
     .unwrap();
@@ -6941,7 +6944,7 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
             problem
                 .fill_candidates(node, &mut values, &mut Unmetered)
                 .unwrap();
-            crate::geometry::try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
+            try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
                 problem.compare_candidates(node, *left, *right, work)
             })
             .unwrap();
@@ -7036,7 +7039,7 @@ fn lattice_crossings_rounding_into_one_stored_vertex_are_repaired() {
     let partition = case.partition();
     assert_eq!(constructed_count(&partition), 2);
     let mut crossings = partition.crossings();
-    crate::geometry::try_sort_by(&mut crossings, |left, right| {
+    try_sort_by(&mut crossings, |left, right| {
         partition.compare_nodes(*left, *right)
     })
     .unwrap();
@@ -7142,7 +7145,7 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
     assert_eq!(classes.first().unwrap().len(), 3);
     let mut variables = classes.first().unwrap().clone();
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
         problem.compare_nodes(*left, *right, work)
     })
     .unwrap();
@@ -7153,7 +7156,7 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
         problem
             .fill_candidates(node, &mut values, &mut Unmetered)
             .unwrap();
-        crate::geometry::try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
+        try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
             problem.compare_candidates(node, *left, *right, work)
         })
         .unwrap();
@@ -7380,7 +7383,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
         .unwrap();
     assert_eq!(raw_candidates.len(), 9);
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut raw_candidates, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut raw_candidates, &mut work, |left, right, work| {
         problem.compare_candidates(point, *left, *right, work)
     })
     .unwrap();
@@ -7802,7 +7805,7 @@ fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
         .first()
         .expect("the selected line/area intersection has one chord");
     let mut endpoints = [source_start, source_end];
-    crate::geometry::try_sort_by(&mut endpoints, |left, right| {
+    try_sort_by(&mut endpoints, |left, right| {
         partition.compare_nodes(*left, *right)
     })
     .unwrap();
@@ -8315,7 +8318,7 @@ fn classify_fan_candidates(
     let mut candidates = Vec::new();
     problem.fill_candidates(center, &mut candidates, &mut Unmetered)?;
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
         problem.compare_candidates(center, *left, *right, work)
     })?;
     let mut seen: Vec<PointKey> = Vec::new();
@@ -8507,7 +8510,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
         .fill_candidates(center, &mut candidates, &mut Unmetered)
         .unwrap();
     let mut work = Unmetered;
-    crate::geometry::try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
+    try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
         problem.compare_candidates(center, *left, *right, work)
     })
     .unwrap();

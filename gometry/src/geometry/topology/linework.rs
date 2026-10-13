@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use super::exact::SourceRowId;
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, Work};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

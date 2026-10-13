@@ -37,7 +37,7 @@ pub(super) use crate::geometry::publication::ChartCutSide as ChartSide;
 use crate::geometry::publication::{
     ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry, SyntheticChartVertex,
 };
-use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, MOrdinate, Point,

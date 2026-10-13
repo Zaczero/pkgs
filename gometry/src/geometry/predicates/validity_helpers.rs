@@ -7,13 +7,14 @@ use crate::geometry::HashMap;
 use crate::geometry::PointKey;
 use crate::geometry::ordinates::{RootId, RootRange, RootRequest};
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
     ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, CoordinateAxes, Coordinates,
     ExactRational, FacetBvh, Ordering, Point, PointSetIndex, Polygon, PreparedLinework,
     RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
     SquaredDistanceKey, Unmetered, VertexProvenance, XY, point_distance, point_distance_squared,
     point_in_ccw_triangle, point_pair_distance_key, point_segment_distance,
-    point_segment_exact_distance_key, ring_winding, same_point, segment_projection,
+    point_segment_exact_distance_key, ring_winding, same_point,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the

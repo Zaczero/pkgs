@@ -38,18 +38,19 @@ use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
 };
 use crate::geometry::overlay::{build_certified_overlay_shape, ray_crossing};
-use crate::geometry::segments::{
-    RectContact, SegmentClipInterval, clip_segment_rect_interval, segment_vs_rect,
-    stored_cross_sign, stored_orientation_sign,
+use crate::geometry::segments::clip::{SegmentClipInterval, clip_segment_rect_interval};
+use crate::geometry::segments::contact::{
+    Contact, RectContact, segment_contact_exact, segment_vs_rect,
 };
+use crate::geometry::segments::{stored_cross_sign, stored_orientation_sign};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::topology::SourceTrace;
 use crate::geometry::{
-    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
+    Bounds, ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GeometryErrorKind, GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey,
     Polygon, PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape,
     SharedShapeOwners, Unmetered, Work, XY, ZOrdinate, line_segments, remove_antenna_vertices,
-    same_point, segment_contact_exact, storage,
+    same_point, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};

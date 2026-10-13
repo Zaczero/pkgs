@@ -8,9 +8,9 @@ use crate::collections::{
     HashMap, HashSet, UnionFind, try_hash_map_with_capacity, try_hash_set_with_capacity,
 };
 use crate::error::{ResourceError, Result};
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{
     Bounds, GeometryErrorKind, Segment, XY, for_each_overlapping_bounds_cross_pair_with_work,
-    try_sort_by_with_work,
 };
 
 const BASE_EVALUATION_LIMIT: u64 = 1 << 16;

@@ -187,7 +187,7 @@ impl HullSegments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::segments_intersect;
+    use crate::geometry::segments::contact::segments_intersect;
 
     #[test]
     fn hull_contact_candidates_retain_exact_contacts_across_scales() {

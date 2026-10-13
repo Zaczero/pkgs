@@ -978,20 +978,7 @@ mod validity_tests {
     use super::*;
     use crate::error::ErrorKind;
     use crate::geographic::AngularFactor;
-    use crate::geometry::Ring;
-
-    fn frame() -> GeographicFrame {
-        let degrees = AngularFactor::try_new("test degrees", std::f64::consts::PI / 180.0).unwrap();
-        GeographicFrame::try_new(degrees, degrees, 0.0).unwrap()
-    }
-
-    fn ring(points: &[(f64, f64)]) -> Ring {
-        let points = points
-            .iter()
-            .map(|&(x, y)| Point::new_raw_xy(x, y))
-            .collect::<Vec<_>>();
-        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap()
-    }
+    use crate::geometry::test_support::{frame, ring};
 
     #[test]
     fn out_of_domain_latitude_is_a_validity_issue_but_not_a_repairable_input() {

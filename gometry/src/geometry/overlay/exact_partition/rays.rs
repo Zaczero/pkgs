@@ -17,7 +17,8 @@ use super::construction::PointArena;
 use super::metrics::update as update_partition_metrics;
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::{stored_orientation_sign, try_sort_by_with_work};
+use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::tessellation::exact::{Interval, compare_ratios_with_work};
 use crate::geometry::{GeometryErrorKind, OrderTree, Result, Unmetered, Work, WorkResult, XY};
 

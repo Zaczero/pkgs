@@ -5,12 +5,12 @@ use crate::geometry::facet_bvh::{
     Facet, PreparedLinework, aabb_distance, aabb_distance_squared, aabb_distance_squared_lower,
     aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
     BvhCode, BvhNode, CoordinateAxes, Point, Segment, SegmentProjection, SquaredDistanceKey,
     axis_pow2_scale, clearance_aabb_filter, clearance_strip_exceeds, point_on_segment,
     point_pair_distance_key, point_segment_distance_squared, point_segment_exact_distance_key,
-    point_segment_selection, scaled_residual, segment_projection, segments_intersect,
-    source_dot_cmp,
+    point_segment_selection, scaled_residual, segments_intersect, source_dot_cmp,
 };
 
 #[cfg(test)]

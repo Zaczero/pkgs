@@ -22,18 +22,20 @@ use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
 pub(super) use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
+use crate::geometry::segments::clip::{SegmentClipInterval, SegmentClipPoint};
 #[cfg(test)]
-use crate::geometry::segments::TouchEndpoint;
+use crate::geometry::segments::contact::TouchEndpoint;
+use crate::geometry::segments::contact::{
+    Contact, SegmentEndpoint, TouchLocation, point_in_segment_envelope, segment_contact_exact_impl,
+    strictly_inside,
+};
 use crate::geometry::segments::{
-    SegmentClipInterval, SegmentClipPoint, SegmentEndpoint, TouchLocation, crossing_homogeneous,
-    crossing_homogeneous_with_work, crossing_point, point_in_segment_envelope,
-    segment_contact_exact_impl, stored_orientation_sign, strictly_inside,
+    crossing_homogeneous, crossing_homogeneous_with_work, crossing_point, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    Bounds, Contact, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment,
-    Unmetered, Work, XY, for_each_candidate_pair, same_point, same_topological_coordinate,
-    single_chain,
+    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, Unmetered,
+    Work, XY, for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
 };
 
 #[cfg(test)]
