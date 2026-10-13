@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::ordinates::RootId;
 
 pub(super) fn chart_point(
     point: Point,
@@ -30,12 +31,42 @@ pub(super) fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> 
 }
 
 #[derive(Clone)]
-struct ChartEdgeEvent {
-    parameter: ExactRational,
-    seam_longitude: Option<f64>,
+pub(super) struct ChartEdgeEvent {
+    pub(super) source: [Point; 2],
+    pub(super) longitude: RetainedChartDisplacement,
+    pub(super) parameter: ExactRational,
+    pub(super) seam_longitude: Option<f64>,
+    pub(super) source_root: Option<RootId>,
 }
 
-fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<ChartConnection> {
+pub(super) struct ChartSourceCapture<'a> {
+    root: Option<RootId>,
+    capture: Option<&'a mut SplitCapture>,
+}
+
+impl<'a> ChartSourceCapture<'a> {
+    pub(super) const fn new(root: Option<RootId>, capture: Option<&'a mut SplitCapture>) -> Self {
+        Self { root, capture }
+    }
+
+    pub(super) fn record(
+        &mut self,
+        source_root: Option<RootId>,
+        point: Point,
+        parameter: &ExactRational,
+    ) -> Result<()> {
+        if let (Some(capture), Some(root)) = (self.capture.as_deref_mut(), source_root) {
+            capture.record_root_point(root, point, parameter)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn chart_connection(
+    start: Point,
+    end: Point,
+    frame: GeographicFrame,
+) -> Result<ChartConnection> {
     chart_connection_at(start.x, end.x, frame)
 }
 
@@ -107,11 +138,12 @@ pub(super) fn lineal_shape_has_certified_no_chart_events(
     }
 }
 
-fn seam_event(
-    connection: ChartConnection,
+pub(super) fn seam_event(
+    source: &[Point; 2],
+    longitude: RetainedChartDisplacement,
     frame: GeographicFrame,
+    source_root: Option<RootId>,
 ) -> Result<Option<ChartEdgeEvent>> {
-    let longitude = connection.retained();
     let axis = frame.longitude();
     let [start, end] = longitude.endpoints();
     let start = ExactDyadic::from_f64(start.get());
@@ -139,8 +171,11 @@ fn seam_event(
             let numerator = seam.try_subtract(start)?;
             let parameter = ExactRational::new(numerator, delta)?;
             Ok(ChartEdgeEvent {
+                source: *source,
+                longitude,
                 parameter,
                 seam_longitude: Some(native_side * frame.longitude_orientation_sign()),
+                source_root,
             })
         })
         .transpose()
@@ -165,15 +200,15 @@ fn insert_chart_event(events: &mut Vec<ChartEdgeEvent>, event: ChartEdgeEvent) -
 }
 
 fn source_ordinates_at<M: ChartMetric>(
-    source: &[Point; 2],
+    event: &ChartEdgeEvent,
     frame: GeographicFrame,
-    longitude: RetainedChartDisplacement,
-    parameter: &ExactRational,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     root_metric: &mut RootMetricState,
 ) -> Result<(ZOrdinate, MOrdinate)> {
-    let axes = source[0].axes().union(source[1].axes());
-    let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
+    let axes = event.source[0].axes().union(event.source[1].axes());
+    let request = SourceArcRequest::new(frame, &event.source, axes, &event.parameter, || {
+        Ok(event.longitude)
+    })?;
     let mut fraction = None;
     let mut work = Unmetered;
     let ordinates = source_arc_ordinates(
@@ -206,6 +241,7 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
     include_seam: bool,
     circle_witnesses: bool,
     band: Option<(f64, f64, f64)>,
+    source_capture: &mut ChartSourceCapture<'_>,
 ) -> Result<()> {
     if include_seam && certified_no_chart_events(source[0].x, source[1].x, frame) {
         return Ok(());
@@ -229,15 +265,19 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
         events.reserve_exact(if include_seam { 4 } else { 3 });
         for quarter in 1_i64..=3 {
             insert_chart_event(&mut events, ChartEdgeEvent {
+                source: *source,
+                longitude,
                 parameter: ExactRational::new(
                     ExactDyadic::from_i64(quarter),
                     ExactDyadic::from_i64(4),
                 )?,
                 seam_longitude: None,
+                source_root: source_capture.root,
             })?;
         }
     }
-    if include_seam && let Some(event) = seam_event(connection, frame)? {
+    if include_seam && let Some(event) = seam_event(source, longitude, frame, source_capture.root)?
+    {
         insert_chart_event(&mut events, event)?;
     }
     if events.is_empty() {
@@ -253,24 +293,17 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
         } else if let Some(seam_longitude) = event.seam_longitude {
             seam_longitude
         } else {
-            let site = frame.longitude().native_site_at(&longitude, parameter)?;
+            let site = frame
+                .longitude()
+                .native_site_at(&event.longitude, parameter)?;
             chart_longitude(site.native().get(), frame, longitude_scale)?
         };
-        let latitude = interpolate_subdivision_ordinate(source[0].y, source[1].y, parameter);
-        let (z, m) = source_ordinates_at(
-            source,
-            frame,
-            longitude,
-            &event.parameter,
-            metric_access,
-            &mut root_metric,
-        )?;
-        output.push(Point::new_axes(
-            x,
-            chart_latitude(latitude, frame, latitude_scale)?,
-            z,
-            m,
-        )?);
+        let latitude =
+            interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
+        let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
+        let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
+        source_capture.record(event.source_root, point, &event.parameter)?;
+        output.push(point);
     }
     Ok(())
 }

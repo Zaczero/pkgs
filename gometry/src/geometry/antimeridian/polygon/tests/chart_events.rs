@@ -1,4 +1,34 @@
 #[test]
+fn chart_seam_event_retains_source_records_and_exact_branch() {
+    let frame = GeographicFrame::crs84();
+    let source = [
+        Point::new_axes(170.0, 10.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(100.0))).unwrap(),
+        Point::new_axes(-170.0, 30.0, ZOrdinate(Some(20.0)), MOrdinate(Some(300.0))).unwrap(),
+    ];
+    let longitude = chart_connection(source[0], source[1], frame)
+        .unwrap()
+        .retained();
+    let event = seam_event(&source, longitude, frame, None)
+        .unwrap()
+        .expect("the retained source edge crosses the seam");
+
+    assert_eq!(event.source[0].x.to_bits(), source[0].x.to_bits());
+    assert_eq!(event.source[0].y.to_bits(), source[0].y.to_bits());
+    assert_eq!(event.source[0].z().unwrap().to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(event.source[0].m(), source[0].m());
+    assert_eq!(event.source[1].x.to_bits(), source[1].x.to_bits());
+    assert_eq!(event.source[1].y.to_bits(), source[1].y.to_bits());
+    assert_eq!(event.source[1].z(), source[1].z());
+    assert_eq!(event.source[1].m(), source[1].m());
+    assert_eq!(event.longitude, longitude);
+    assert_eq!(
+        event.parameter,
+        ExactRational::new(ExactDyadic::from_i64(1), ExactDyadic::from_i64(2),).unwrap()
+    );
+    assert_eq!(event.seam_longitude, Some(180.0));
+}
+
+#[test]
 fn canonical_crs84_split_skips_retained_edge_admission() {
     let shapes = [
         line(&[10.0, 11.0, 12.0], &[0.0, 1.0, 0.0]),
