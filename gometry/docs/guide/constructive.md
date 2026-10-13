@@ -165,6 +165,23 @@ share a border intersect in that border (a [`LineString`][gometry.LineString]), 
 touch yields the corner [`Point`][gometry.Point] — so a non-empty [`intersects(a, b)`][gometry.intersects] always has
 a non-empty `intersection(a, b)`.
 
+When geographic overlay output closes across a pole, it closes over the pole
+selected by that region; a pole-free strip between regions remains pole-free.
+Reaching the seam alone does not add a polar cap.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+cap = gm.Polygon(
+    [(-180, 5), (-90, 5), (0, 5), (90, 5), (180, 5), (-180, 5)],
+    crs=4326,
+)
+connector = gm.box(-10, -20, 10, 10, crs=4326)
+merged = gm.union(cap, connector)
+print("selected north pole:", gm.contains(merged, gm.Point(0, 85, crs=4326)))
+print("opposite south pole:", gm.contains(merged, gm.Point(0, -85, crs=4326)))
+```
+
 When one operand is a point set (a `Point`, `MultiPoint`, or point-only
 collection) and the other has higher dimension, `intersection` returns the
 covered points and `difference(points, other)` returns the uncovered points.
@@ -504,13 +521,47 @@ explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
 keeps input edges as constraints. [`voronoi`][gometry.Geometry.voronoi] returns
 clipped cells by default; pass `output='edges'` for the internal Voronoi edges,
-which exclude the clip polygon's exterior boundary. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
+which exclude the clip polygon's exterior boundary. Geographic Voronoi charts
+both its sites and supplied clip polygon in the CRS-native longitude frame;
+Delaunay charts its input sites. Seam-crossing inputs do not require a
+preliminary [`split_antimeridian`][gometry.Geometry.split_antimeridian].
+Voronoi publication preserves chart cuts and polar-cap edge roles. Delaunay is
+a planar point-site triangulation, not a spherical mesh; use constrained
+triangulation when a polygon boundary or selected polar cap must remain part of
+the result. Geographic constrained triangulation carries seam constraints and
+closes only the pole selected by the polygon. All three remain planar
+longitude/latitude constructions, not geodesic operations.
+`method='earcut'` follows the polygon's stored XY ring, so split a geographic
+polygon first when it crosses the seam or encloses a pole. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
 polygonizes that geometry's own linework, automatically splitting crossings
 and overlaps. [`polygonize_all`][gometry.polygonize_all] pools all supplied
 geometries' linework into one graph before polygonization, so a ring can close
-across inputs. Both return a [`GeometryArray`][gometry.GeometryArray]; the
-row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
-returns [`Groups`][gometry.Groups], one result per row.
+across inputs; its default form returns one [`GeometryArray`][gometry.GeometryArray]
+of polygons. The row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
+returns [`Groups`][gometry.Groups], one polygon array per input row; missing
+rows yield `None` groups and present empty rows yield empty groups.
+[`GeometryArray.build_area()`][gometry.GeometryArray.build_area] likewise
+builds one areal result per input row without pooling linework between rows;
+missing rows remain missing.
+For BuildArea fill across several geometry values, combine the linework into
+one [`GeometryCollection`][gometry.GeometryCollection] before calling
+`build_area()`; `polygonize_all` is the pooled polygonizer and returns polygon
+faces instead of the single even-odd fill result.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+edges = [
+    gm.LineString([(0, 0), (1, 0)]),
+    gm.LineString([(1, 0), (1, 1)]),
+    gm.LineString([(1, 1), (0, 1)]),
+    gm.LineString([(0, 1), (0, 0)]),
+]
+pooled_area = gm.GeometryCollection(edges).build_area()
+row_areas = gm.GeometryArray(edges).build_area()
+print(pooled_area.geometry_type, "area:", pooled_area.area)
+print("independent empty rows:", [area.is_empty for area in row_areas])
+```
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -531,6 +582,34 @@ edges = [
 ]
 print("polygonized:", len(gm.polygonize_all(edges)))
 
+```
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+sites = gm.MultiPoint([(170, 0), (-170, 0), (-170, 10), (170, 8)], crs=4326)
+clip = gm.from_wkt(
+    "POLYGON ((160 -10, 200 -10, 200 20, 160 20, 160 -10))",
+    crs=4326,
+)
+print("Delaunay triangles:", len(sites.triangulate(method="delaunay")))
+print("Voronoi cells:", len(sites.voronoi(clip=clip)))
+
+seam_polygon = gm.Polygon(
+    [(170, 0), (-170, 0), (-170, 10), (170, 8)],
+    crs=4326,
+)
+print(
+    "constrained seam triangles:",
+    len(seam_polygon.triangulate(method="constrained")),
+)
+
+cap = gm.Polygon([(-45, 40), (45, 40), (135, 40), (-135, 40)], crs=4326)
+split_cap = cap.split_antimeridian()
+print(
+    "Earcut triangles after splitting the polar cap:",
+    len(split_cap.triangulate(method="earcut")),
+)
 ```
 
 [`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] returns the
