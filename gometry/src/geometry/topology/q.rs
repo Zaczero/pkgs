@@ -11,7 +11,7 @@ use super::exact::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootCatalog, RootId, RootMetricState, SourceArcMetricAccess, resolve_source_root,
 };
@@ -20,7 +20,7 @@ use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     Bounds, ChartMetric, De9im, Dimension, ExpansionBudget, GeometryErrorKind, Loc, Point, Segment,
-    SegmentIndex, Shape, ValidationIssue, Work,
+    SegmentIndex, Shape, ValidationIssue,
 };
 use crate::heap_size::HeapSize;
 

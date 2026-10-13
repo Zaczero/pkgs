@@ -2,9 +2,10 @@ use super::super::{
     ExactGeographicTopology, ExactRational, ExactSourceRange, GeometryErrorKind,
     PreparedProducerWitness, QEmbeddingEmission, QGraphNode, QNodeId, QProducerFaceGerm,
     QProducerGerm, QProducerJunction, QProducerLinework, QProducerPoint, QPublishedChord,
-    QSourceSpanRange, QVariableNode, ResourceError, Result, SelectedUse, SourceEdgeKind, Work,
+    QSourceSpanRange, QVariableNode, ResourceError, Result, SelectedUse, SourceEdgeKind,
     producer_range_touches_node, span_parameter_at_source, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 impl PreparedProducerWitness {
     pub(in crate::geometry::topology::q_embedding) fn validate_live_nodes(

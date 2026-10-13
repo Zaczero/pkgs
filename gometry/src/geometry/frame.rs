@@ -6,7 +6,7 @@
 //! topology.  Consumers that need an area undo the two exponents together;
 //! consumers that only need a robust predicate retain the framed values.
 
-use crate::geometry::exact_arith::{exact_power_of_two, floor_binary_exponent};
+use crate::geometry::numerics::product::{exact_power_of_two, floor_binary_exponent};
 use crate::geometry::{Point, XY};
 
 /// Positive power-of-two scale that maps a finite nonzero magnitude close to

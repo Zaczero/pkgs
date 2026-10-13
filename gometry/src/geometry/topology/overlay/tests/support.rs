@@ -13,14 +13,14 @@ fn build_q_plan(
     topology: &ExactGeographicTopology,
     operation: OverlayOp,
 ) -> Result<QEmissionPlan> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     QEmissionPlan::build(topology, operation, &mut work)
 }
 
 fn build_q_boundary_plan(
     topology: &ExactGeographicTopology,
 ) -> Result<(QEmissionPlan, BoundarySupport)> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     QEmissionPlan::build_boundary(topology, &mut work)
 }
 
@@ -30,7 +30,7 @@ fn build_q_emission_unmetered<'topology, 'emission>(
     source_points: &'emission [Option<EmittedVertex<'topology>>],
     publication: &'emission PublicationInventory,
 ) -> Result<QEmbeddingEmission<'topology, 'emission>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     plan.embedding_emission(topology, source_points, publication, &mut work)
 }
 
@@ -40,7 +40,7 @@ fn draw_q_plan_unmetered<'topology>(
     coordinates: &QCoordinates,
     source_points: &[Option<EmittedVertex<'topology>>],
 ) -> Result<QEmissionDrawing<'topology>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     plan.drawing(topology, coordinates, source_points, &mut work)
 }
 
@@ -68,7 +68,7 @@ fn source_sink<'topology>(
     plan: &QEmissionPlan,
     source_points: &[Option<EmittedVertex<'topology>>],
 ) -> Result<(Shape, ShapeLiteralLayout<QSourceImage>)> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let nearest = QCoordinates::build(topology)?;
     let drawing = plan.drawing(topology, &nearest, source_points, &mut work)?;
     let ring_roles = certify_nearest_ring_roles(topology, &drawing, &mut work)?;
@@ -105,7 +105,7 @@ fn bind_source_shape(
     shape: Shape,
     layout: ShapeLiteralLayout<QSourceImage>,
 ) -> Result<LiteralCheck<QSourceImage>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
     super::super::q_embedding::bind_source_only(
         super::super::emission::SourceFrozenDrawing {
@@ -123,7 +123,7 @@ fn bind_source_shape(
 }
 
 fn test_node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrdinates>> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     node_ordinates::<crate::crs::GeodesicMetric>(topology, CoordinateAxes::XY, None, &mut work)
 }
 
@@ -309,7 +309,7 @@ fn q_ring_chart_points(
         .iter()
         .map(|vertex| vertex.point)
         .collect::<Vec<_>>();
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     canonicalize_ring_vertices(frame, &vertices, &mut chart_points, &mut work)?;
     Ok(chart_points)
 }
@@ -529,7 +529,7 @@ fn b3_selected_subgraph(
     if plan.whole_sphere {
         return Ok(None);
     }
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let mut spans = BTreeSet::new();
     match &plan.polygons {
         PolygonPlan::WholeSphere(_) => return Ok(None),

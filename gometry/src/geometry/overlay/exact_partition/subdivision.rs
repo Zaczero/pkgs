@@ -1,6 +1,8 @@
 //! Preserve source-root traces while exact partitions emit subdivision children.
 
 use super::*;
+use crate::geometry::graph::GlobalFaces;
+use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Copy)]
 enum LineSource<'a> {

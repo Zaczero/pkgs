@@ -16,10 +16,10 @@ use std::ops::ControlFlow;
 
 #[cfg(test)]
 use super::metrics::{record_candidate_pair, record_overlap, update as update_partition_metrics};
-use super::rays::RayPointsWithWork;
-use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, OrdinateBindings};
+use super::{ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, OrdinateBindings};
 use crate::error::{Error, ResourceError};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::graph::{RayAxis as Axis, RayPointsWithWork, prefix_contact_offsets};
+use crate::geometry::numerics::product::ExactSign;
 pub(super) use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::clip::{SegmentClipInterval, SegmentClipPoint};
@@ -34,9 +34,10 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, Unmetered,
-    Work, XY, for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
+    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
+    for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
 };
+use crate::work::{Unmetered, Work};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,18 +325,6 @@ pub(super) fn point_id_for_append(current_count: usize) -> Result<u32> {
         return Err(ResourceError::SizeOverflow.into());
     }
     Ok(id)
-}
-
-/// Convert per-segment contact counts into native-vector offsets in place.
-pub(super) fn prefix_contact_offsets(offsets: &mut [usize]) {
-    let Some((first, rest)) = offsets.split_first_mut() else {
-        return;
-    };
-    let mut total = *first;
-    for offset in rest {
-        total = total.wrapping_add(*offset);
-        *offset = total;
-    }
 }
 
 /// The exact parameter of `node` along `segment`'s carrier, as `[num, den]`

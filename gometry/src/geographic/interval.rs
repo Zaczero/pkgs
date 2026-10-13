@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use super::{CanonicalLongitude, PeriodicAxis};
 #[cfg(test)]
 use super::{ChartConnection, ChartStep, EdgeDirection, TurnDirection};
-use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::numerics::product_sum::ExactSum;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CircularInterval {

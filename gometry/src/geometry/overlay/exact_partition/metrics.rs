@@ -6,6 +6,8 @@
 
 use std::cell::Cell;
 
+use crate::geometry::graph::{graph_ray_orientations, reset_graph_ray_orientations};
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(in crate::geometry) struct PartitionMetrics {
     pub partition_builds: usize,
@@ -72,7 +74,9 @@ pub(crate) fn partition_calls() -> usize {
 }
 
 pub(in crate::geometry) fn partition_metrics() -> PartitionMetrics {
-    PARTITION_METRICS.with(Cell::get)
+    let mut metrics = PARTITION_METRICS.with(Cell::get);
+    metrics.ray_orientations = graph_ray_orientations();
+    metrics
 }
 
 pub(super) fn record_candidate_pair() {
@@ -95,6 +99,7 @@ pub(super) fn record_partition_call() {
 
 pub(in crate::geometry) fn reset_partition_builds() {
     PARTITION_METRICS.with(|metrics| metrics.set(PartitionMetrics::ZERO));
+    reset_graph_ray_orientations();
 }
 
 pub(crate) fn reset_partition_calls() {

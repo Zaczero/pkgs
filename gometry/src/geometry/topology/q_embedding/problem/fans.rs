@@ -1,9 +1,10 @@
 use super::super::{
     BTreeMap, ChartMetric, EmissionNodeId, ExactChartPoint, ExactRational, GeometryErrorKind,
     NodeAuthority, QCandidate, QEmbeddingProblem, QFaceChart, QFanRow, QNodeId, QNodeLocation,
-    QPortId, QVariableNode, ResourceError, Result, Work, compare_q_darts_with_points,
+    QPortId, QVariableNode, ResourceError, Result, compare_q_darts_with_points,
     inexact_axes_with_work, rotation_row_matches, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
     pub(super) fn fan_matches(

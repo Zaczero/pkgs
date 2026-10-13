@@ -18,8 +18,9 @@ use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::SourceTrace;
 use crate::geometry::{
     Bounds, CoordWindow, ExpansionBudget, GeometryErrorKind, LineSeq, Shape, ShapeCountQuery,
-    SharedShapeOwners, SourceArcContext, Unmetered, Work,
+    SharedShapeOwners, SourceArcContext,
 };
+use crate::work::{Unmetered, Work};
 
 #[cfg(test)]
 thread_local! {

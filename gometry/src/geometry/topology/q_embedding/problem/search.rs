@@ -2,12 +2,13 @@ use super::super::{
     BTreeMap, ChartMetric, ClassAssignment, EmittedNodeKey, ExactRational, GeometryErrorKind,
     GlobalCheck, NodeAuthority, Ordering, Problem, QCandidate, QClassState,
     QEmbeddingCertification, QEmbeddingOutput, QEmbeddingPass, QEmbeddingProblem, QEmissionDrawing,
-    QNodeId, QVariableNode, ResourceError, Result, SearchAccount, SearchOutcome, Work,
+    QNodeId, QVariableNode, ResourceError, Result, SearchAccount, SearchOutcome,
     compare_qnode_keys_with_work, emitted_node_key, exact_squared_displacement,
     pair_preserves_incidence_with_work, run_with_budget, translated_exact_point_with_work,
 };
 #[cfg(test)]
 use crate::geometry::topology::q_embedding::NearestQCertificate;
+use crate::work::Work;
 
 impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
     type Node = QVariableNode;

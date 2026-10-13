@@ -6,7 +6,7 @@ use super::{
 };
 use crate::error::Result;
 use crate::geometry::XY;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 
 pub(super) fn bounds<C: MeshCoordinates>(coordinates: &C, site_count: usize) -> (XY, XY) {
     let mut min = XY::new(f64::INFINITY, f64::INFINITY);

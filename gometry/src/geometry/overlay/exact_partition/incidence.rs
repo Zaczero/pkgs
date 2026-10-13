@@ -1,10 +1,12 @@
-use super::{Axis, ExactPartition, ExactSign, NodeId, Ordering, Result};
 #[cfg(test)]
 use super::{
     ControlFlow, ExactSourceInventory, ExpansionBudget, GeometryErrorKind, HashMap, PointKey,
     ResourceError, Segment, emitted_pair_preserves_incidence, for_each_candidate_pair,
     single_chain,
 };
+use super::{ExactPartition, NodeId, Ordering, Result};
+use crate::geometry::graph::RayAxis as Axis;
+use crate::geometry::numerics::product::ExactSign;
 
 /// Certify a rounded embedding whose endpoint identities were decided by a
 /// different exact construction (currently Voronoi). ExactPartition owns the

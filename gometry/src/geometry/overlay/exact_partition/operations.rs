@@ -1,10 +1,11 @@
 use super::{
     Bounds, ChartMetric, CoordSeq, CoordinateAxes, ExactPartition, ExactSourceInventory,
-    ExpansionBudget, GeometryErrorKind, GeometryKind, GlobalFaces, IndexedTopology, KeptNodes,
-    LineSeq, OverlayPolygonPartWithSources, OverlaySourceLocation, Point, Polygon, PolygonizeFull,
+    ExpansionBudget, GeometryErrorKind, GeometryKind, IndexedTopology, KeptNodes, LineSeq,
+    OverlayPolygonPartWithSources, OverlaySourceLocation, Point, Polygon, PolygonizeFull,
     ResourceError, Result, Shape, SourceArcContext, assemble_node_parts, bucket_axes, embedding,
     emission, polygonize_full_emission, with_axes, xy_sequence_for_nodes,
 };
+use crate::geometry::graph::GlobalFaces;
 
 pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     polygons: &[P],

@@ -16,10 +16,10 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::error::ResourceError;
-use crate::geometry::embedding_search::{Unmetered, Work};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{GeometryErrorKind, Result, XY};
+use crate::work::{Unmetered, Work};
 
 mod dyadic;
 pub(in crate::geometry::tessellation) mod frame;
@@ -28,7 +28,8 @@ pub(in crate::geometry) mod point;
 mod predicates;
 pub(in crate::geometry) mod support_circle;
 
-pub(in crate::geometry) use dyadic::*;
+pub(crate) use dyadic::ExactDyadic;
+pub(in crate::geometry) use dyadic::{CompactLimbs, ExactLine, try_difference};
 use incidence::line_intersection;
 pub(in crate::geometry) use predicates::*;
 
@@ -44,36 +45,6 @@ pub(super) enum SegmentIntersection {
     None,
     Point(ExactPoint),
     Overlap { start: ExactPoint, end: ExactPoint },
-}
-
-impl ExactSign {
-    pub(super) const fn as_i8(self) -> i8 {
-        match self {
-            Self::Negative => -1,
-            Self::Zero => 0,
-            Self::Positive => 1,
-        }
-    }
-
-    /// Sign of an exact quotient. Zero absorbs the otherwise relative signs:
-    /// a homogeneous denominator's sign cannot leak into the rational zero.
-    const fn quotient(self, denominator: Self) -> Self {
-        match (self, denominator) {
-            (Self::Zero, _) | (_, Self::Zero) => Self::Zero,
-            (Self::Negative, Self::Positive) | (Self::Positive, Self::Negative) => Self::Negative,
-            (Self::Negative, Self::Negative) | (Self::Positive, Self::Positive) => Self::Positive,
-        }
-    }
-
-    /// The sign read through a homogeneous weight: a negative weight
-    /// reverses it, and a zero weight leaves it as computed.
-    const fn weighted_by(self, weight: Self) -> Self {
-        match (self, weight) {
-            (Self::Negative, Self::Negative) => Self::Positive,
-            (Self::Positive, Self::Negative) => Self::Negative,
-            (sign, _) => sign,
-        }
-    }
 }
 
 /// An exact ratio of dyadics.
@@ -126,14 +97,11 @@ fn slices_equal_with_work<W: Work>(left: &[u64], right: &[u64], work: &mut W) ->
 }
 
 impl ExactRational {
-    pub(in crate::geometry) fn new(
-        numerator: ExactDyadic,
-        denominator: ExactDyadic,
-    ) -> Result<Self> {
+    pub(crate) fn new(numerator: ExactDyadic, denominator: ExactDyadic) -> Result<Self> {
         Self::new_with_work(numerator, denominator, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn new_with_work<W: Work>(
+    pub(crate) fn new_with_work<W: Work>(
         numerator: ExactDyadic,
         denominator: ExactDyadic,
         work: &mut W,
@@ -185,18 +153,14 @@ impl ExactRational {
         })
     }
 
-    pub(in crate::geometry) fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
+    pub(crate) fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
         Ok(Self {
             numerator: self.numerator.try_clone_with_work(work)?,
             denominator: self.denominator.try_clone_with_work(work)?,
         })
     }
 
-    pub(in crate::geometry) fn try_eq_with_work<W: Work>(
-        &self,
-        other: &Self,
-        work: &mut W,
-    ) -> Result<bool> {
+    pub(crate) fn try_eq_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<bool> {
         work.charge_into_error(1)?;
         let sign = self.numerator.negative ^ self.denominator.negative;
         if sign != (other.numerator.negative ^ other.denominator.negative) {
@@ -220,25 +184,25 @@ impl ExactRational {
         Ok(rational_exponent(self) == rational_exponent(other))
     }
 
-    pub(in crate::geometry) fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Self {
             numerator: ExactDyadic::zero(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(in crate::geometry) fn one() -> Self {
+    pub(crate) fn one() -> Self {
         Self {
             numerator: ExactDyadic::one(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(in crate::geometry) fn from_f64(value: f64) -> Self {
+    pub(crate) fn from_f64(value: f64) -> Self {
         Self::from_dyadic(ExactDyadic::from_f64(value))
     }
 
-    pub(in crate::geometry) fn from_dyadic(value: ExactDyadic) -> Self {
+    pub(crate) fn from_dyadic(value: ExactDyadic) -> Self {
         if value.is_zero() {
             return Self::zero();
         }
@@ -248,31 +212,27 @@ impl ExactRational {
         }
     }
 
-    pub(in crate::geometry) fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.numerator.is_zero()
     }
 
-    pub(in crate::geometry) fn is_one(&self) -> bool {
+    pub(crate) fn is_one(&self) -> bool {
         self.numerator.is_one() && self.denominator.is_one()
     }
 
-    pub(in crate::geometry) fn is_integer(&self) -> bool {
+    pub(crate) fn is_integer(&self) -> bool {
         self.denominator.is_one() && (self.numerator.is_zero() || self.numerator.exponent >= 0)
     }
 
-    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+    pub(crate) fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 
-    pub(in crate::geometry) fn try_add(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_add(&self, other: &Self) -> Result<Self> {
         self.try_add_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_add_with_work<W: Work>(
-        &self,
-        other: &Self,
-        work: &mut W,
-    ) -> Result<Self> {
+    pub(crate) fn try_add_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             let numerator = if self.numerator.is_zero() {
                 other.numerator.try_clone_with_work(work)?
@@ -301,11 +261,11 @@ impl ExactRational {
         Self::new_with_work(numerator, denominator, work)
     }
 
-    pub(in crate::geometry) fn try_subtract(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_subtract(&self, other: &Self) -> Result<Self> {
         self.try_subtract_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_subtract_with_work<W: Work>(
+    pub(crate) fn try_subtract_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -329,11 +289,11 @@ impl ExactRational {
         Self::new_with_work(numerator, denominator, work)
     }
 
-    pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_product(&self, other: &Self) -> Result<Self> {
         self.try_product_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_product_with_work<W: Work>(
+    pub(crate) fn try_product_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -353,11 +313,11 @@ impl ExactRational {
         Self::new_with_work(numerator, denominator, work)
     }
 
-    pub(in crate::geometry) fn try_square(&self) -> Result<Self> {
+    pub(crate) fn try_square(&self) -> Result<Self> {
         self.try_square_with_work(&mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_square_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
+    pub(crate) fn try_square_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
         if self.denominator.is_one() {
             return Ok(Self::from_dyadic(
                 self.numerator
@@ -367,11 +327,11 @@ impl ExactRational {
         self.try_product_with_work(self, work)
     }
 
-    pub(in crate::geometry) fn try_quotient(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_quotient(&self, other: &Self) -> Result<Self> {
         self.try_quotient_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_quotient_with_work<W: Work>(
+    pub(crate) fn try_quotient_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -388,11 +348,11 @@ impl ExactRational {
         Self::new_with_work(numerator, denominator, work)
     }
 
-    pub(in crate::geometry) fn try_midpoint(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_midpoint(&self, other: &Self) -> Result<Self> {
         self.try_midpoint_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_midpoint_with_work<W: Work>(
+    pub(crate) fn try_midpoint_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -411,11 +371,11 @@ impl ExactRational {
         Self::new_with_work(numerator, denominator, work)
     }
 
-    pub(in crate::geometry) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+    pub(crate) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
         self.try_cmp_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_cmp_with_work<W: Work>(
+    pub(crate) fn try_cmp_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -432,34 +392,31 @@ impl ExactRational {
         left.cmp_with_work(&right, work)
     }
 
-    pub(in crate::geometry) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
+    pub(crate) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
         (&self.numerator, &self.denominator)
     }
 
-    pub(in crate::geometry) fn round(&self) -> Result<f64> {
+    pub(crate) fn round(&self) -> Result<f64> {
         self.round_with_work(&mut Unmetered)
     }
 
-    pub(in crate::geometry) fn round_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
+    pub(crate) fn round_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
         round_ratio_with_work(&self.numerator, &self.denominator, work)
     }
 
-    pub(in crate::geometry) fn outward_bounds(&self) -> Result<(f64, f64)> {
+    pub(crate) fn outward_bounds(&self) -> Result<(f64, f64)> {
         self.outward_bounds_with_work(&mut Unmetered)
     }
 
-    pub(in crate::geometry) fn outward_bounds_with_work<W: Work>(
-        &self,
-        work: &mut W,
-    ) -> Result<(f64, f64)> {
+    pub(crate) fn outward_bounds_with_work<W: Work>(&self, work: &mut W) -> Result<(f64, f64)> {
         outward_ratio_bounds_with_work(&self.numerator, &self.denominator, work)
     }
 
-    pub(in crate::geometry) fn round_sqrt(&self) -> Result<f64> {
+    pub(crate) fn round_sqrt(&self) -> Result<f64> {
         self.round_sqrt_with_work(&mut Unmetered)
     }
 
-    pub(in crate::geometry) fn round_sqrt_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
+    pub(crate) fn round_sqrt_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
         if self.sign() == ExactSign::Negative {
             return Err(
                 GeometryErrorKind::Invalid("negative exact squared distance".into()).into(),
@@ -1165,14 +1122,11 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     round_ratio_binary_with_work(numerator, denominator, &mut Unmetered)
 }
 
-pub(in crate::geometry) fn round_ratio(
-    numerator: &ExactDyadic,
-    denominator: &ExactDyadic,
-) -> Result<f64> {
+pub(crate) fn round_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
     round_ratio_with_work(numerator, denominator, &mut Unmetered)
 }
 
-pub(in crate::geometry) fn round_ratio_with_work<W: Work>(
+pub(crate) fn round_ratio_with_work<W: Work>(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     work: &mut W,
@@ -1487,6 +1441,7 @@ fn round_sqrt_ratio_binary_with_work<W: Work>(
 
 #[cfg(test)]
 mod sqrt_ratio_tests {
+    use super::dyadic::ExactOracle as _;
     use super::*;
 
     #[test]

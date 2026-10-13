@@ -5,22 +5,28 @@ use crate::geometry::embedding_search::{
     ClassAssignment, GlobalCheck, Problem, Search, SearchAccount,
 };
 use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
+use crate::geometry::graph::{
+    GlobalFaces, RayAxis as Axis, RayPoints, prefix_contact_offsets, shoot_left,
+    shoot_left_vector_reference,
+};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
 use crate::geometry::segments::contact::{
     SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation,
 };
 use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
+use crate::work::{Unmetered, Work};
 
 #[test]
 fn csr_prefix_offsets_use_the_native_index_domain_past_u32_max() {
     let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
     let mut over_u32 = [0, u32_max, 1];
-    construction::prefix_contact_offsets(&mut over_u32);
+    prefix_contact_offsets(&mut over_u32);
     assert_eq!(over_u32, [0, u32_max, u32_max.wrapping_add(1)]);
 
     let mut at_u32 = [0, u32_max.wrapping_sub(1), 1];
-    construction::prefix_contact_offsets(&mut at_u32);
+    prefix_contact_offsets(&mut at_u32);
     assert_eq!(at_u32, [0, u32_max.wrapping_sub(1), u32_max]);
 }
 
@@ -74,13 +80,9 @@ fn ray_status_matches_vector_at_crossing_height_and_preserves_query_order() {
         [span.start.0, span.end.0]
     };
     let tree = shoot_left(&partition.points, partition.spans.len(), edge, &queries).unwrap();
-    let vector = super::rays::shoot_left_vector_reference(
-        &partition.points,
-        partition.spans.len(),
-        edge,
-        &queries,
-    )
-    .unwrap();
+    let vector =
+        shoot_left_vector_reference(&partition.points, partition.spans.len(), edge, &queries)
+            .unwrap();
     assert_eq!(tree, vector);
     assert_eq!(tree, [Some(expected), None]);
 }

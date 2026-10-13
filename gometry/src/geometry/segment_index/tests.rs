@@ -6,7 +6,8 @@ use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
     for_each_overlapping_bounds_cross_pair, for_each_overlapping_bounds_pair, single_chain,
 };
-use crate::geometry::{Bounds, Segment, Unmetered, XY, segments_intersect};
+use crate::geometry::{Bounds, Segment, XY, segments_intersect};
+use crate::work::Unmetered;
 
 #[test]
 fn cross_bounds_sweep_preserves_each_side_ordinal() {
@@ -478,13 +479,8 @@ mod run_collapse_dispatch {
 
     fn runs_of(pool: &[Segment]) -> usize {
         let mut runs = Vec::new();
-        monotone_runs_with_work(
-            pool,
-            &single_chain,
-            &mut runs,
-            &mut crate::geometry::Unmetered,
-        )
-        .expect("run indexes fit u32");
+        monotone_runs_with_work(pool, &single_chain, &mut runs, &mut crate::work::Unmetered)
+            .expect("run indexes fit u32");
         runs.len()
     }
 

@@ -1,8 +1,8 @@
 use super::{
     Bounds, Contact, ExactPartition, ExactSourceInventory, ExpansionBudget, NodeId, Point,
-    PolygonOccupancy, Result, Segment, Shape, XY, build_certified_overlay_shape,
-    segment_contact_exact,
+    PolygonOccupancy, Result, Segment, Shape, XY, segment_contact_exact,
 };
+use crate::geometry::output::build_certified_shape;
 
 impl ExactSourceInventory {
     /// Measure the occupied Cartesian support without serializing rounded
@@ -79,7 +79,7 @@ impl ExactSourceInventory {
     ) -> Result<Shape> {
         let (points, lines, polygons) =
             self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, "area")?;
-        build_certified_overlay_shape(points, lines, polygons)
+        build_certified_shape(points, lines, polygons)
     }
 }
 

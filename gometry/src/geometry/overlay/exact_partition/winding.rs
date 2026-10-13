@@ -1,9 +1,11 @@
 use std::ops::Range;
 
 use super::{
-    Axis, Bounds, ExactDyadic, ExactPartition, ExactSign, ExactSourceInventory, GeometryErrorKind,
-    NodeId, Ordering, Result, RingKind, Segment,
+    Bounds, ExactDyadic, ExactPartition, ExactSourceInventory, GeometryErrorKind, NodeId, Ordering,
+    Result, RingKind, Segment,
 };
+use crate::geometry::graph::RayAxis as Axis;
+use crate::geometry::numerics::product::ExactSign;
 
 impl ExactSourceInventory {
     #[expect(

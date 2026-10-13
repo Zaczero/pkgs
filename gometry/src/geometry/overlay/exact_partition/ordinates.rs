@@ -1,9 +1,10 @@
 use super::{
     AxisValue, ChartMetric, CoordinateAxes, ExactLineEmission, ExactPartition, ExactRational,
     ExactSourceInventory, GeometryErrorKind, MOrdinate, NodeId, Point, Result, SourceArcContext,
-    SourceArcRequest, Unmetered, XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along,
+    SourceArcRequest, XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along,
     source_arc_ordinates,
 };
+use crate::work::Unmetered;
 
 pub(in crate::geometry) struct ResolvedNodePoints<'e, 'p> {
     embedding: &'e embedding::Embedding<'p>,
