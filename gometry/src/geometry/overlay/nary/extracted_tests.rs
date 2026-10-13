@@ -749,8 +749,35 @@ fn line(points: &[Point]) -> Shape {
     Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
 }
 
+fn polygon_with_axes(points: &[(f64, f64)], axes: CoordinateAxes, z: f64, m: f64) -> Shape {
+    let points = points
+        .iter()
+        .map(|&(x, y)| {
+            Point::new_axes(
+                x,
+                y,
+                ZOrdinate(axes.has_z().then_some(z)),
+                MOrdinate(axes.has_m().then_some(m)),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    Shape::Polygon(Polygon::new(
+        crate::geometry::Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap())
+            .unwrap(),
+        Vec::new(),
+    ))
+}
+
 fn exact_location(shape: &Shape, point: Point) -> Loc {
-    let frame = frame();
+    exact_location_in_frame(shape, point, frame())
+}
+
+fn exact_location_in_frame(
+    shape: &Shape,
+    point: Point,
+    frame: crate::geographic::GeographicFrame,
+) -> Loc {
     let plan = crate::geometry::PreparedPlan::transient(shape);
     let cache = crate::geometry::FrameDependentCaches::default();
     let prepared = crate::geometry::GeographicPrepared::try_new(&plan, &cache, frame).unwrap();
@@ -760,6 +787,47 @@ fn exact_location(shape: &Shape, point: Point) -> Loc {
         .locate_point(point)
         .unwrap()
         .geometry
+}
+
+fn assert_native_pole_path(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+    pole: crate::geographic::ChartPole,
+) {
+    let Shape::Polygon(polygon) = shape else {
+        panic!("the native pole closure has one shell: {shape:?}");
+    };
+    let pole_latitude = frame.chart_pole_latitude(pole);
+    let summary = crate::geographic::RingSummary::try_new(
+        frame,
+        &crate::geographic::GeographicRing::from_ring(&polygon.shell),
+    )
+    .unwrap();
+    assert_eq!(summary.chart_turn, 0, "{shape:?}");
+    let pole_longitudes: Vec<_> = polygon
+        .shell
+        .coords()
+        .xs()
+        .iter()
+        .zip(polygon.shell.coords().ys())
+        .filter_map(|(&longitude, &latitude)| {
+            (latitude.to_bits() == pole_latitude.to_bits()).then_some(longitude)
+        })
+        .collect();
+    let half = frame.longitude().half_period();
+    let mut sorted_pole_longitudes = pole_longitudes.clone();
+    sorted_pole_longitudes.sort_unstable_by(f64::total_cmp);
+    assert_eq!(
+        sorted_pole_longitudes,
+        [-half, -half / 2.0, 0.0, half / 2.0, half],
+        "{shape:?}"
+    );
+    assert!(
+        pole_longitudes
+            .windows(2)
+            .all(|pair| (pair[1] - pair[0]).abs() < half),
+        "pole path contains an ambiguous half-turn: {pole_longitudes:?}"
+    );
 }
 
 #[test]
@@ -1122,6 +1190,356 @@ fn nary_union_emits_a_source_owned_whole_sphere() {
         exact_location(&output, Point::new_raw_xy(40.0, 90.0)),
         Loc::Interior
     );
+}
+
+#[test]
+fn t2_notched_intersection_assembles_both_winding_boundaries() {
+    let source = polygon(&[
+        (-180.0, 5.0),
+        (-90.0, 5.0),
+        (-10.0, 5.0),
+        (-10.0, -10.0),
+        (0.0, -10.0),
+        (10.0, -10.0),
+        (10.0, 5.0),
+        (90.0, 5.0),
+        (180.0, 5.0),
+        (180.0, 90.0),
+        (90.0, 90.0),
+        (0.0, 90.0),
+        (-90.0, 90.0),
+        (-180.0, 90.0),
+        (-180.0, 5.0),
+    ]);
+    let band = polygon(&[
+        (-180.0, -30.0),
+        (-60.0, -30.0),
+        (60.0, -30.0),
+        (-180.0, -30.0),
+        (-180.0, 30.0),
+        (60.0, 30.0),
+        (-60.0, 30.0),
+        (-180.0, 30.0),
+        (-180.0, -30.0),
+    ]);
+    let output = super::super::nary::overlay_all(
+        &[&source, &band],
+        TopologyDomain::Geographic(frame()),
+        OverlayOp::Intersection,
+        Strictness::Strict,
+    )
+    .expect("the admitted explicit cap intersects the native-latitude band");
+    let Shape::Polygon(polygon) = &output else {
+        panic!("the connected strip has one shell: {output:?}");
+    };
+    assert!(polygon.holes.is_empty());
+    for (point, expected) in [
+        ((0.0, -5.0), Loc::Interior),
+        ((0.0, 20.0), Loc::Interior),
+        ((50.0, 0.0), Loc::Exterior),
+        ((0.0, 60.0), Loc::Exterior),
+        ((0.0, 90.0), Loc::Exterior),
+        ((0.0, -90.0), Loc::Exterior),
+        ((50.0, 5.0), Loc::Boundary),
+        ((50.0, 30.0), Loc::Boundary),
+        ((180.0, 20.0), Loc::Interior),
+        ((-180.0, 20.0), Loc::Interior),
+    ] {
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(point.0, point.1)),
+            expected,
+            "point={point:?}"
+        );
+    }
+    let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+    let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+    let crate::crs::ResolvedMetric::Geodesic(metric) = resolved else {
+        unreachable!("EPSG:4326 resolves to a geodesic chart metric")
+    };
+    let parts = crate::geometry::ChartParts::build(&output, &metric).unwrap();
+    assert!(
+        parts.bvh().is_some(),
+        "T2 strip with {} chart edges should enter ChartParts refinement",
+        parts.edges.len()
+    );
+}
+
+#[test]
+fn t2_two_ambiguous_selected_cycles_emit_one_pole_free_strip() {
+    let lower = polygon(&[
+        (-180.0, -20.0),
+        (-90.0, 10.0),
+        (0.0, -20.0),
+        (90.0, 10.0),
+        (180.0, -20.0),
+        (180.0, 90.0),
+        (90.0, 90.0),
+        (0.0, 90.0),
+        (-90.0, 90.0),
+        (-180.0, 90.0),
+        (-180.0, -20.0),
+    ]);
+    let upper = polygon(&[
+        (-180.0, -15.0),
+        (-90.0, 15.0),
+        (0.0, -15.0),
+        (90.0, 15.0),
+        (180.0, -15.0),
+        (180.0, 90.0),
+        (90.0, 90.0),
+        (0.0, 90.0),
+        (-90.0, 90.0),
+        (-180.0, 90.0),
+        (-180.0, -15.0),
+    ]);
+    let output = super::super::nary::overlay_all(
+        &[&lower, &upper],
+        TopologyDomain::Geographic(frame()),
+        OverlayOp::Difference,
+        Strictness::Strict,
+    )
+    .expect("the difference retains the bounded strip between both caps");
+    let Shape::Polygon(polygon) = &output else {
+        panic!("the selected strip has one shell: {output:?}");
+    };
+    assert!(polygon.holes.is_empty());
+    for point in [(0.0, -17.0), (90.0, 12.0), (-90.0, 12.0), (180.0, -17.0)] {
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(point.0, point.1)),
+            Loc::Interior,
+            "point={point:?}"
+        );
+    }
+    for point in [(0.0, 0.0), (0.0, -30.0), (0.0, 90.0), (0.0, -90.0)] {
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(point.0, point.1)),
+            Loc::Exterior,
+            "point={point:?}"
+        );
+    }
+}
+
+#[test]
+fn t2_equator_crossing_generated_boundary_closes_only_the_selected_pole() {
+    for (latitude, selected, opposite) in [(-5.0, -85.0, 85.0), (5.0, 85.0, -85.0)] {
+        let cap = polygon(&[
+            (-180.0, latitude),
+            (-90.0, latitude),
+            (0.0, latitude),
+            (90.0, latitude),
+            (180.0, latitude),
+            (-180.0, latitude),
+        ]);
+        let connector = polygon(&[
+            (-10.0, -20.0),
+            (10.0, -20.0),
+            (10.0, 10.0),
+            (-10.0, 10.0),
+            (-10.0, -20.0),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&cap, &connector],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .expect("the selected cap and connector have a valid union");
+        let pole = if latitude < 0.0 {
+            crate::geographic::ChartPole::South
+        } else {
+            crate::geographic::ChartPole::North
+        };
+        assert_native_pole_path(&output, frame(), pole);
+        for (point, expected) in [
+            ((0.0, selected), Loc::Interior),
+            ((0.0, 0.0), Loc::Interior),
+            ((50.0, 0.0), Loc::Exterior),
+            ((0.0, opposite), Loc::Exterior),
+        ] {
+            assert_eq!(
+                exact_location(&output, Point::new_raw_xy(point.0, point.1)),
+                expected,
+                "boundary latitude={latitude}, point={point:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn t2_synthetic_pole_closure_drops_unsourceable_axes_before_publication() {
+    let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+    let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+    let crate::crs::ResolvedMetric::Geodesic(metric) = resolved else {
+        unreachable!("EPSG:4326 resolves to a geodesic chart metric")
+    };
+    let metric_access = || Ok(&metric);
+    for axes in [
+        CoordinateAxes::XYZ,
+        CoordinateAxes::XYM,
+        CoordinateAxes::XYZM,
+    ] {
+        let cap = polygon_with_axes(
+            &[
+                (-180.0, -5.0),
+                (-90.0, -5.0),
+                (0.0, -5.0),
+                (90.0, -5.0),
+                (180.0, -5.0),
+                (-180.0, -5.0),
+            ],
+            axes,
+            7.0,
+            70.0,
+        );
+        let connector = polygon_with_axes(
+            &[
+                (-10.0, -20.0),
+                (10.0, -20.0),
+                (10.0, 10.0),
+                (-10.0, 10.0),
+                (-10.0, -20.0),
+            ],
+            axes,
+            11.0,
+            110.0,
+        );
+        let inputs = [&cap, &connector];
+        let strict = crate::geometry::overlay_all_with_metric(
+            &inputs,
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+            &metric_access,
+        );
+        assert!(
+            matches!(
+                &strict,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::OrdinateDropped(operation)
+                        )
+                        if operation.as_ref() == "union"
+                    ),
+            ),
+            "{axes:?}: {strict:?}"
+        );
+        let lenient = crate::geometry::overlay_all_with_metric(
+            &inputs,
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Lenient,
+            &metric_access,
+        )
+        .expect("lenient synthetic closures publish a consistent XY shape");
+        assert_eq!(lenient.axes(), CoordinateAxes::XY);
+    }
+}
+
+#[test]
+fn t2_selected_strip_support_uses_each_native_angular_frame() {
+    let radians = crate::geographic::AngularFactor::try_new("radian", 1.0).unwrap();
+    let grads =
+        crate::geographic::AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+    let frames = [
+        frame(),
+        crate::geographic::GeographicFrame::try_new(radians, radians, 0.0).unwrap(),
+        crate::geographic::GeographicFrame::try_new(grads, grads, 0.0).unwrap(),
+    ];
+    for frame in frames {
+        let half = frame.longitude().half_period();
+        let pole = frame.pole();
+        let source = polygon(&[
+            (-half, 0.125 * pole),
+            (-half / 2.0, 0.125 * pole),
+            (-half / 16.0, 0.125 * pole),
+            (-half / 16.0, -0.125 * pole),
+            (0.0, -0.125 * pole),
+            (half / 16.0, -0.125 * pole),
+            (half / 16.0, 0.125 * pole),
+            (half / 2.0, 0.125 * pole),
+            (half, 0.125 * pole),
+            (half, pole),
+            (half / 2.0, pole),
+            (0.0, pole),
+            (-half / 2.0, pole),
+            (-half, pole),
+            (-half, 0.125 * pole),
+        ]);
+        let band = polygon(&[
+            (-half, -0.25 * pole),
+            (-half / 2.0, -0.25 * pole),
+            (0.0, -0.25 * pole),
+            (half / 2.0, -0.25 * pole),
+            (-half, -0.25 * pole),
+            (-half, 0.25 * pole),
+            (half / 2.0, 0.25 * pole),
+            (0.0, 0.25 * pole),
+            (-half / 2.0, 0.25 * pole),
+            (-half, 0.25 * pole),
+            (-half, -0.25 * pole),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&source, &band],
+            TopologyDomain::Geographic(frame),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap_or_else(|error| panic!("Native frame {frame:?}: {error}"));
+        for (point, expected) in [
+            ((0.0, -0.0625 * pole), Loc::Interior),
+            ((0.0, 0.125 * pole), Loc::Interior),
+            ((half / 2.0, 0.0), Loc::Exterior),
+            ((0.0, 0.5 * pole), Loc::Exterior),
+            ((half, 0.1875 * pole), Loc::Interior),
+            ((-half, 0.1875 * pole), Loc::Interior),
+        ] {
+            assert_eq!(
+                exact_location_in_frame(&output, Point::new_raw_xy(point.0, point.1), frame),
+                expected,
+                "frame={frame:?}, point={point:?}"
+            );
+        }
+
+        let cap_latitude = -0.0625 * pole;
+        let cap = polygon(&[
+            (-half, cap_latitude),
+            (-half / 2.0, cap_latitude),
+            (0.0, cap_latitude),
+            (half / 2.0, cap_latitude),
+            (half, cap_latitude),
+            (-half, cap_latitude),
+        ]);
+        let connector_half = half / 18.0;
+        let connector = polygon(&[
+            (-connector_half, -0.25 * pole),
+            (connector_half, -0.25 * pole),
+            (connector_half, 0.125 * pole),
+            (-connector_half, 0.125 * pole),
+            (-connector_half, -0.25 * pole),
+        ]);
+        let cap_output = super::super::nary::overlay_all(
+            &[&cap, &connector],
+            TopologyDomain::Geographic(frame),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap_or_else(|error| panic!("Native pole frame {frame:?}: {error}"));
+        assert_native_pole_path(&cap_output, frame, crate::geographic::ChartPole::South);
+        for (point, expected) in [
+            ((0.0, -0.5 * pole), Loc::Interior),
+            ((0.0, 0.0), Loc::Interior),
+            ((half / 4.0, 0.0), Loc::Exterior),
+            ((0.0, 0.5 * pole), Loc::Exterior),
+        ] {
+            assert_eq!(
+                exact_location_in_frame(&cap_output, Point::new_raw_xy(point.0, point.1), frame),
+                expected,
+                "frame={frame:?}, point={point:?}"
+            );
+        }
+    }
 }
 
 #[test]
