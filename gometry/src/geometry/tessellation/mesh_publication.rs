@@ -3,9 +3,22 @@ use super::prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
+use crate::Frame;
 use crate::error::Result;
+use crate::geometry::embedding_completion::{
+    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
+    ShapeLiteralLayout,
+};
+use crate::geometry::publication::{
+    FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
+    PublicationCall, PublicationOutcome, PublicationRejection, StorageTarget, finish_geographic,
+};
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelection, StorageLayout, ValidityMask,
+};
 use crate::geometry::{
-    Coordinates as _, ExpansionBudget, GeometryErrorKind, HashMap, Polygon, Polygonal, Shape,
+    CoordSeq, Coordinates as _, CsrOffsetBuilder, ExpansionBudget, GeometryErrorKind, HashMap,
+    Point, Polygon, PolygonLevel, Polygonal, PublishedTriangleVertices, RingLevel, Shape,
 };
 
 pub(in crate::geometry::tessellation) fn prepare_earcut_publication(
@@ -265,14 +278,11 @@ fn append_earcut_polygon(
 }
 
 pub(in crate::geometry) fn mesh_publication_array_receipt(
-    published: crate::geometry::PublishedTriangleVertices,
-) -> Result<crate::geometry::publication::ProducerDrawingReceipt> {
+    published: PublishedTriangleVertices,
+) -> Result<ProducerDrawingReceipt> {
     use std::sync::Arc;
 
     use crate::geometry::Unmetered;
-    use crate::geometry::embedding_completion::FrozenLiteralBuffers;
-    use crate::geometry::publication::ProducerDrawingReceipt;
-    use crate::geometry::storage::StorageLayout;
 
     let mut points = Vec::new();
     let mut ring_ends = Vec::new();
@@ -288,7 +298,7 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
         &mut literals,
         &mut next_image,
     )?;
-    let storage = mesh_triangle_storage(points, &ring_ends)?;
+    let storage = mesh_triangle_storage(&points, &ring_ends)?;
     let mut work = Unmetered;
     let buffers = FrozenLiteralBuffers::rows(
         Arc::new(storage),
@@ -306,28 +316,21 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
 }
 
 pub(crate) fn finish_mesh_publication_array(
-    published: crate::geometry::PublishedTriangleVertices,
-    frame: crate::Frame,
-) -> Result<crate::geometry::publication::FinishedGeometry> {
+    published: PublishedTriangleVertices,
+    frame: Frame,
+) -> Result<FinishedGeometry> {
     let receipt = mesh_publication_array_receipt(published)?;
-    finish_mesh_receipt(
-        receipt,
-        frame,
-        crate::geometry::publication::StorageTarget::Array,
-    )
+    finish_mesh_receipt(receipt, frame, StorageTarget::Array)
 }
 
 pub(crate) fn finish_mesh_publication_groups(
-    rows: Vec<Option<crate::geometry::PublishedTriangleVertices>>,
-    frame: crate::Frame,
-    missing: Option<crate::geometry::storage::ValidityMask>,
-) -> Result<crate::geometry::publication::FinishedGeometry> {
+    rows: Vec<Option<PublishedTriangleVertices>>,
+    frame: Frame,
+    missing: Option<ValidityMask>,
+) -> Result<FinishedGeometry> {
     use std::sync::Arc;
 
     use crate::geometry::Unmetered;
-    use crate::geometry::embedding_completion::FrozenLiteralBuffers;
-    use crate::geometry::publication::ProducerDrawingReceipt;
-    use crate::geometry::storage::StorageLayout;
 
     if missing
         .as_ref()
@@ -377,7 +380,7 @@ pub(crate) fn finish_mesh_publication_groups(
         );
     }
 
-    let storage = mesh_triangle_storage(points, &ring_ends)?;
+    let storage = mesh_triangle_storage(&points, &ring_ends)?;
     let mut work = Unmetered;
     let buffers = FrozenLiteralBuffers::groups(
         Arc::new(storage),
@@ -389,23 +392,15 @@ pub(crate) fn finish_mesh_publication_groups(
         &mut work,
     )?;
     let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
-    finish_mesh_receipt(
-        receipt,
-        frame,
-        crate::geometry::publication::StorageTarget::Groups,
-    )
+    finish_mesh_receipt(receipt, frame, StorageTarget::Groups)
 }
 
 fn finish_mesh_receipt(
-    receipt: crate::geometry::publication::ProducerDrawingReceipt,
-    frame: crate::Frame,
-    target: crate::geometry::publication::StorageTarget,
-) -> Result<crate::geometry::publication::FinishedGeometry> {
+    receipt: ProducerDrawingReceipt,
+    frame: Frame,
+    target: StorageTarget,
+) -> Result<FinishedGeometry> {
     use crate::geometry::Unmetered;
-    use crate::geometry::publication::{
-        ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
-        finish_geographic,
-    };
 
     let mut work = Unmetered;
     match finish_geographic(
@@ -431,25 +426,14 @@ fn finish_mesh_receipt(
 }
 
 fn append_mesh_outputs(
-    published: crate::geometry::PublishedTriangleVertices,
+    published: PublishedTriangleVertices,
     group_row: Option<usize>,
-    points: &mut Vec<crate::geometry::Point>,
+    points: &mut Vec<Point>,
     ring_ends: &mut Vec<usize>,
-    row_map: &mut Vec<
-        Option<
-            crate::geometry::embedding_completion::LiteralRowLayout<
-                crate::geometry::publication::ProducerImageId,
-            >,
-        >,
-    >,
-    literals: &mut Vec<crate::geometry::publication::ProducerLiteral>,
+    row_map: &mut Vec<Option<LiteralRowLayout<ProducerImageId>>>,
+    literals: &mut Vec<ProducerLiteral>,
     next_image: &mut usize,
 ) -> Result<()> {
-    use crate::geometry::embedding_completion::{
-        LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
-    };
-    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
-
     validate_published_mesh(&published)?;
     if group_row.is_none() && !row_map.is_empty() {
         return Err(GeometryErrorKind::Invalid(
@@ -532,7 +516,7 @@ fn append_mesh_outputs(
     Ok(())
 }
 
-fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertices) -> Result<()> {
+fn validate_published_mesh(published: &PublishedTriangleVertices) -> Result<()> {
     let mesh = published.mesh_publication.as_ref().ok_or_else(|| {
         GeometryErrorKind::Invalid("geographic mesh output lost its prepared records".into())
     })?;
@@ -542,12 +526,13 @@ fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertice
         )
         .into());
     }
-    let site_locations_match = mesh.sites.iter().all(|site| {
-        matches!(
-            (mesh.producer, site.location),
-            (MeshProducer::Delaunay, MeshSiteLocation::Retained(_))
-                | (MeshProducer::Earcut, MeshSiteLocation::Cartesian)
-        )
+    let site_locations_match = mesh.sites.iter().enumerate().all(|(ordinal, site)| {
+        site.producer_ordinal == ordinal
+            && matches!(
+                (mesh.producer, site.location),
+                (MeshProducer::Delaunay, MeshSiteLocation::Retained(_))
+                    | (MeshProducer::Earcut, MeshSiteLocation::Cartesian)
+            )
     });
     if !site_locations_match {
         return Err(GeometryErrorKind::Invalid(
@@ -571,27 +556,35 @@ fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertice
             )
             .into());
         }
-        for side in 0..3 {
-            let boundary = face.boundary_uses.get(side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("prepared mesh face is missing a side use".into())
-            })?;
-            let end_side = (side + 1) % 3;
+        let site_pairs = face
+            .output_sites
+            .iter()
+            .copied()
+            .zip(face.output_sites.iter().copied().cycle().skip(1));
+        for (side, (boundary, (start_site, end_site))) in
+            face.boundary_uses.iter().zip(site_pairs).enumerate()
+        {
             let selected_side = face.output_to_selected.get(side).copied();
             let selected_site =
                 selected_side.and_then(|selected| face.selected_sites.get(usize::from(selected)));
             let role_matches = matches!(
                 (mesh.producer, boundary.role),
                 (MeshProducer::Delaunay, MeshEdgeRole::Delaunay)
-                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutBoundary)
-                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutDiagonal)
-                    | (MeshProducer::Earcut, MeshEdgeRole::EarcutBridge)
+                    | (
+                        MeshProducer::Earcut,
+                        MeshEdgeRole::EarcutBoundary
+                            | MeshEdgeRole::EarcutDiagonal
+                            | MeshEdgeRole::EarcutBridge
+                    )
             );
             let twin_matches_role = matches!(
                 (boundary.role, boundary.reverse),
                 (MeshEdgeRole::Delaunay, _)
                     | (MeshEdgeRole::EarcutBoundary, None)
-                    | (MeshEdgeRole::EarcutDiagonal, Some(_))
-                    | (MeshEdgeRole::EarcutBridge, Some(_))
+                    | (
+                        MeshEdgeRole::EarcutDiagonal | MeshEdgeRole::EarcutBridge,
+                        Some(_)
+                    )
             );
             if usize::from(boundary.output_side) != side
                 || boundary.selected_use.face != face.selected_face
@@ -600,8 +593,9 @@ fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertice
                 || !role_matches
                 || !twin_matches_role
                 || selected_site != face.output_sites.get(side)
-                || face.output_sites.get(side) != Some(&boundary.start_site)
-                || face.output_sites.get(end_side) != Some(&boundary.end_site)
+                || face.output_sites.get(side) != Some(&start_site)
+                || start_site != boundary.start_site
+                || end_site != boundary.end_site
                 || mesh.sites.get(boundary.start_site).is_none()
                 || mesh.sites.get(boundary.end_site).is_none()
             {
@@ -623,13 +617,8 @@ fn validate_published_mesh(published: &crate::geometry::PublishedTriangleVertice
     Ok(())
 }
 
-fn mesh_triangle_storage(
-    points: Vec<crate::geometry::Point>,
-    ring_ends: &[usize],
-) -> Result<crate::geometry::storage::GeometryArrayStorage> {
+fn mesh_triangle_storage(points: &[Point], ring_ends: &[usize]) -> Result<GeometryArrayStorage> {
     use std::sync::Arc;
-
-    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
 
     let Some(first) = points.first() else {
         if !ring_ends.is_empty() {
@@ -642,24 +631,22 @@ fn mesh_triangle_storage(
     };
     let axes = first.axes;
     if points.iter().any(|point| point.axes != axes) {
-        let shapes = Shape::triangle_shapes_from_published_rings(&points, ring_ends)?;
+        let shapes = Shape::triangle_shapes_from_published_rings(points, ring_ends)?;
         return Ok(GeometryArrayStorage::Mixed(shapes));
     }
 
-    let mut ring_offsets = crate::geometry::CsrOffsetBuilder::with_capacity(ring_ends.len());
-    let mut polygon_offsets = crate::geometry::CsrOffsetBuilder::with_capacity(ring_ends.len());
+    let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_ends.len());
+    let mut polygon_offsets = CsrOffsetBuilder::with_capacity(ring_ends.len());
     for (index, &end) in ring_ends.iter().enumerate() {
         ring_offsets.push_end(end, points.len())?;
         polygon_offsets.push_end(index.wrapping_add(1), ring_ends.len())?;
     }
-    let ring_offsets = ring_offsets
-        .finish(points.len())?
-        .cast_level::<crate::geometry::RingLevel>();
+    let ring_offsets = ring_offsets.finish(points.len())?.cast_level::<RingLevel>();
     let polygon_offsets = polygon_offsets
         .finish(ring_ends.len())?
-        .cast_level::<crate::geometry::PolygonLevel>();
+        .cast_level::<PolygonLevel>();
     Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-        coords: Arc::new(crate::geometry::CoordSeq::try_from_points(&points)?),
+        coords: Arc::new(CoordSeq::try_from_points(points)?),
         ring_offsets,
         polygon_offsets,
         row_map: RowSelection::Identity,

@@ -110,13 +110,6 @@ impl PreparedMeshBoundaryUse {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "final binding validates prepared face order, site permutations, and directed side uses against output rings"
-    )
-)]
 pub(crate) struct PreparedMeshFace {
     pub(crate) selected_face: usize,
     pub(crate) selected_sites: [usize; 3],
