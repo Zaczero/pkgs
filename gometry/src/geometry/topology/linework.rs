@@ -40,6 +40,7 @@ pub(super) enum FaceCycleRole {
 }
 
 pub(super) struct MinimalFaceSelection {
+    pub(super) exterior_face: GlobalFaceId,
     pub(super) selected_faces: Vec<bool>,
     pub(super) cycles: Vec<FaceBoundaryCycle>,
     pub(super) cycle_roles: Vec<FaceCycleRole>,
@@ -75,25 +76,41 @@ pub(super) fn minimal_face_selection(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,
 ) -> Result<MinimalFaceSelection> {
-    // A once-winding boundary names a pole cap; its opposite pole face is the exterior root.
+    // Start from face zero, then replace it when boundary roles identify another
+    // exterior. Global face IDs follow quotient construction order, not area size.
     let face_count = topology.q.global_face_count;
     work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut selected = Vec::with_capacity(face_count);
     selected.extend((0..face_count).map(|face| face != 0));
     let mut cycles = minimal_face_boundaries(topology, &selected, work)?;
     let mut roles = face_cycle_hole_roles(topology, &cycles, work)?;
-    if let Some(exterior) = exterior_face_for_pole_caps(topology, &roles, work)? {
+    let pole_exterior = exterior_face_for_pole_caps(topology, &roles, work)?;
+    let role_exterior = unbounded_face_from_cycle_roles(&cycles, &roles, face_count, work)?;
+    let exterior_face = match (pole_exterior, role_exterior) {
+        (Some(pole), Some(role)) if pole != role => {
+            return Err(GeometryErrorKind::Invalid(
+                "Q boundary roles disagree about the exterior face".into(),
+            )
+            .into());
+        },
+        (Some(pole), _) => pole,
+        (None, Some(role)) => role,
+        (None, None) => GlobalFaceId(0),
+    };
+    if exterior_face != GlobalFaceId(0) {
         work.charge_into_error(
             u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         selected.fill(true);
-        *selected.get_mut(exterior.0 as usize).ok_or_else(|| {
-            GeometryErrorKind::Invalid("named-pole exterior face is unknown".into())
-        })? = false;
+        *selected
+            .get_mut(exterior_face.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q exterior face is unknown".into()))? =
+            false;
         cycles = minimal_face_boundaries(topology, &selected, work)?;
         roles = face_cycle_hole_roles(topology, &cycles, work)?;
     }
     Ok(MinimalFaceSelection {
+        exterior_face,
         selected_faces: selected,
         cycles,
         cycle_roles: roles,
@@ -147,12 +164,63 @@ pub(super) fn face_cycle_hole_roles(
     Ok(roles)
 }
 
+fn unbounded_face_from_cycle_roles(
+    cycles: &[FaceBoundaryCycle],
+    cycle_roles: &[FaceCycleRole],
+    face_count: usize,
+    work: &mut impl Work,
+) -> Result<Option<GlobalFaceId>> {
+    if cycles.len() != cycle_roles.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q face cycles do not match their exact ring roles".into(),
+        )
+        .into());
+    }
+    work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut role_facts = vec![0_u8; face_count];
+    for (cycle, &role) in cycles.iter().zip(cycle_roles) {
+        work.charge_into_error(1)?;
+        let facts = role_facts.get_mut(cycle.face.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q linework cycle has an unknown face".into())
+        })?;
+        match role {
+            FaceCycleRole::Classified { is_hole: false, .. } => *facts |= 1,
+            FaceCycleRole::Classified {
+                is_hole: true,
+                named_pole: None,
+            } => *facts |= 2,
+            FaceCycleRole::Classified {
+                is_hole: true,
+                named_pole: Some(_),
+            } => {},
+            FaceCycleRole::Unbounded => *facts |= 4,
+        }
+    }
+    let mut exterior = None;
+    for (face, facts) in role_facts.into_iter().enumerate() {
+        work.charge_into_error(1)?;
+        if facts & 4 == 0 && (facts & 1 != 0 || facts & 2 == 0) {
+            continue;
+        }
+        let candidate = GlobalFaceId(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?);
+        if exterior.is_some_and(|previous| previous != candidate) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q linework roles identify multiple exterior faces".into(),
+            )
+            .into());
+        }
+        exterior = Some(candidate);
+    }
+    Ok(exterior)
+}
+
 /// Alternate parity only when crossing a face hole. Shared edges between
 /// adjacent shell faces do not change fill depth.
 pub(super) fn even_odd_face_selection(
     topology: &ExactGeographicTopology,
     cycles: &[FaceBoundaryCycle],
     cycle_roles: &[FaceCycleRole],
+    exterior: GlobalFaceId,
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
     let q = &topology.q;
@@ -163,8 +231,6 @@ pub(super) fn even_odd_face_selection(
         )
         .into());
     }
-    let exterior =
-        exterior_face_for_pole_caps(topology, cycle_roles, work)?.unwrap_or(GlobalFaceId(0));
     work.charge_into_error(
         u64::try_from(
             face_count
@@ -536,9 +602,16 @@ fn walk_minimal_face_boundaries(
 
 pub(super) fn diagnostic_spans(
     topology: &ExactGeographicTopology,
+    selected_boundary_spans: &[bool],
     work: &mut impl Work,
 ) -> Result<Vec<DiagnosticSpan>> {
     let q = &topology.q;
+    if selected_boundary_spans.len() != q.spans.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q diagnostic boundary mask does not match its span table".into(),
+        )
+        .into());
+    }
     work.charge_into_error(
         u64::try_from(
             q.spans
@@ -615,6 +688,15 @@ pub(super) fn diagnostic_spans(
     let mut output = Vec::new();
     for (span_index, span) in q.spans.iter().enumerate() {
         work.charge_into_error(1)?;
+        if selected_boundary_spans
+            .get(span_index)
+            .copied()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q diagnostic boundary mask has no span".into())
+            })?
+        {
+            continue;
+        }
         let kind = if span.owners.len() > 1 {
             Some(DiagnosticKind::InvalidRing)
         } else if dangles.get(span_index).copied().unwrap_or(false) {
@@ -1027,6 +1109,39 @@ mod tests {
 
         assert_eq!(selected_face_count(&polygonize), 2);
         assert_eq!(selected_face_count(&build_area), 1);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions define the test oracle while Result propagates setup errors"
+    )]
+    fn polygonize_selects_the_bounded_face_when_face_zero_is_not_exterior() -> Result<()> {
+        let linework =
+            crate::io::parse_wkt("MULTILINESTRING ((0 0, 1 0), (1 0, 1 1), (1 1, 0 0))")?;
+        let topology = topology(&[linework])?;
+        let mut work = Unmetered;
+        let selection = minimal_face_selection(&topology, &mut work)?;
+
+        assert_ne!(selection.exterior_face, GlobalFaceId(0));
+        assert_eq!(
+            selection
+                .selected_faces
+                .iter()
+                .filter(|&&selected| selected)
+                .count(),
+            1
+        );
+        assert!(
+            !selection.cycle_roles.is_empty()
+                && selection
+                    .cycle_roles
+                    .iter()
+                    .all(|role| matches!(role, FaceCycleRole::Classified { is_hole: false, .. })),
+            "the selected small triangle boundary is a shell: {:?}",
+            selection.cycle_roles
+        );
         Ok(())
     }
 

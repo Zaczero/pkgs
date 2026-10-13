@@ -201,6 +201,7 @@ pub(crate) use source_support::{
 };
 mod tessellation;
 mod topology;
+pub(crate) use topology::overlay::exact_geographic_polygonize_full_from_shapes;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, GeographicCoverageAnalysis,
     TopologyDomain, VertexKey, analyze_geographic_coverage, analyze_geographic_coverage_with_work,
@@ -231,14 +232,15 @@ use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
     snap_ring_to_reference_with_context,
 };
+#[cfg(test)]
+pub(crate) use coverage::coverage_clean;
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges_cartesian,
-    coverage_invalid_edges_geographic_finished, coverage_is_valid, coverage_is_valid_with_domain,
-    coverage_simplify_with_context, coverage_union_topo,
+    CoverageCleanOutput, CoverageOverlapRule, HashMapExt, coverage_clean_output,
+    coverage_invalid_edges_cartesian, coverage_invalid_edges_geographic_finished,
+    coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
+    coverage_union_topo,
 };
-pub(in crate::geometry) use coverage::{
-    TopologyGuard, simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
-};
+pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 #[cfg(test)]
 pub(crate) use coverage::{coverage_invalid_edges, coverage_invalid_edges_geographic_analysis};
 use distance::line_length_3d;

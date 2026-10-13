@@ -1,3 +1,4 @@
+use super::super::emission::plan::QDiagnosticLine;
 use super::{
     CoordinateAxes, EmittedVertex, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
     ExpansionBudget, GeometryErrorKind, OverlayOp, QCoordinates, QEmbeddingCertification,
@@ -22,7 +23,7 @@ impl QEmissionPlan {
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         retain_literals_for_republication: bool,
         work: &mut impl SearchAccount,
-    ) -> Result<FinishedGeometry> {
+    ) -> Result<(FinishedGeometry, Vec<QDiagnosticLine>)> {
         if !producer.is_pooled_linework() {
             return Err(GeometryErrorKind::Invalid(
                 "pooled linework emitter received a non-linework producer".into(),
@@ -164,10 +165,12 @@ pub(in crate::geometry::topology) fn write_certified_q_emission(
     }
 }
 
-fn into_finished_q_emission(embedding: CertifiedQEmission) -> FinishedGeometry {
+fn into_finished_q_emission(
+    embedding: CertifiedQEmission,
+) -> (FinishedGeometry, Vec<QDiagnosticLine>) {
     match embedding.sealed {
-        SealedQDrawing::Source(source) => source.sealed,
-        SealedQDrawing::Native(native) => native.sealed,
+        SealedQDrawing::Source(source) => (source.sealed, source.diagnostic_lines),
+        SealedQDrawing::Native(native) => (native.sealed, native.diagnostic_lines),
     }
 }
 
@@ -266,8 +269,8 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
     } else {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, preparation_work)?;
-        let sealed = if plan.producer.is_pooled_linework() {
-            let (shape, layout) = plan.write_source_drawing_parts(
+        if plan.producer.is_pooled_linework() {
+            let (shape, layout, diagnostic_lines) = plan.write_source_drawing_parts(
                 drawing,
                 &ring_roles,
                 &ordinates,
@@ -314,7 +317,10 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 ),
                 StorageTarget::Scalar,
             )? {
-                PublicationOutcome::Pass(finished) => finished,
+                PublicationOutcome::Pass(finished) => SealedQDrawing::Source(SealedSourceDrawing {
+                    sealed: finished,
+                    diagnostic_lines,
+                }),
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
                     return Err(GeometryErrorKind::Invalid(
                         format!(
@@ -344,6 +350,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 operation,
                 preparation_work,
             )?;
+            let diagnostic_lines = source.diagnostic_lines.clone();
             let receipt = super::super::q_embedding::publication::SourceOnlyPublication::new(
                 source,
                 topology,
@@ -362,7 +369,10 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 ),
                 StorageTarget::Scalar,
             )? {
-                PublicationOutcome::Pass(finished) => finished,
+                PublicationOutcome::Pass(finished) => SealedQDrawing::Source(SealedSourceDrawing {
+                    sealed: finished,
+                    diagnostic_lines,
+                }),
                 PublicationOutcome::Reject(PublicationRejection::SourceOnly(_)) => {
                     return Err(GeometryErrorKind::Invalid(
                         "unchanged Q source output failed its literal binding".into(),
@@ -376,8 +386,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                     .into());
                 },
             }
-        };
-        SealedQDrawing::Source(SealedSourceDrawing { sealed })
+        }
     };
     Ok(CertifiedQEmission {
         sealed,

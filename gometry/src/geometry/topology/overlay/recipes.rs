@@ -180,9 +180,11 @@ pub(in crate::geometry::topology) fn build_fragment_recipes(
 }
 pub(in crate::geometry::topology) fn diagnostic_line_paths(
     topology: &ExactGeographicTopology,
+    selected_boundary_spans: &[bool],
     work: &mut impl Work,
 ) -> Result<Vec<PlannedQLine>> {
-    let selected = super::super::linework::diagnostic_spans(topology, work)?;
+    let selected =
+        super::super::linework::diagnostic_spans(topology, selected_boundary_spans, work)?;
     work.charge_into_error(
         u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;

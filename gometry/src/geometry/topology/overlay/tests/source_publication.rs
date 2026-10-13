@@ -166,6 +166,7 @@ fn source_ring_rotation_keeps_publication_samples_with_their_recipes() -> Result
         publication: Some(source_publication),
         walks: Some(&walks),
         axes: CoordinateAxes::XY,
+        diagnostic_axes: None,
     };
 
     let (ring, locations) = write_ring(

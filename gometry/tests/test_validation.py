@@ -807,6 +807,63 @@ def test_polygonize_full_groups_noded_diagnostics_by_source_row() -> None:
     ] == [0, 0]
 
 
+def test_geographic_polygonize_full_keeps_seam_faces_and_source_diagnostics() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    lines = gm.GeometryArray([
+        gm.LineString([(170, 0), (-170, 0)], crs=crs),
+        None,
+        gm.LineString([(-170, 0), (-170, 10)], crs=crs),
+        gm.LineString([(-170, 10), (170, 10)], crs=crs),
+        gm.LineString([(170, 10), (170, 0)], crs=crs),
+        gm.LineString([(-170, 5, 7, 70), (-160, 5, 17, 170)], crs=crs),
+    ])
+
+    result = gm.polygonize_all(lines, diagnostics=True)
+
+    assert len(result.polygons) == 1
+    polygon = result.polygons[0]
+    assert polygon.crs == gm.CRS(crs)
+    assert gm.covers(polygon, gm.Point(179, 5, crs=crs))
+    assert gm.covers(polygon, gm.Point(-179, 5, crs=crs))
+    assert not gm.covers(polygon, gm.Point(0, 5, crs=crs))
+    assert len(result.dangles) == 6
+    assert result.dangles[1] is None
+    assert [len(result.dangles[index]) for index in (0, 2, 3, 4)] == [0, 0, 0, 0]
+    assert len(result.dangles[5]) == 1
+    diagnostic = result.dangles[5][0]
+    assert diagnostic.geometry_type == 'LineString'
+    assert diagnostic.coordinate_axes == 'XYZM'
+    assert diagnostic.crs == gm.CRS(crs)
+    assert diagnostic.coords.to_nested() == [
+        (-170.0, 5.0, 7.0, 70.0),
+        (-160.0, 5.0, 17.0, 170.0),
+    ]
+    assert all(row is None or len(row) == 0 for row in result.cut_edges)
+    assert all(row is None or len(row) == 0 for row in result.invalid_rings)
+
+
+def test_geographic_polar_polygonize_full_keeps_cap_face() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    lines = gm.GeometryArray([
+        gm.LineString([(0, 80), (90, 80)], crs=crs),
+        gm.LineString([(90, 80), (180, 80)], crs=crs),
+        gm.LineString([(180, 80), (270, 80)], crs=crs),
+        gm.LineString([(270, 80), (0, 80)], crs=crs),
+    ])
+
+    result = gm.polygonize_all(lines, diagnostics=True)
+
+    assert len(result.polygons) == 1
+    cap = result.polygons[0]
+    assert cap.crs == gm.CRS(crs)
+    assert gm.covers(cap, gm.Point(45, 85, crs=crs))
+    assert gm.covers(cap, gm.Point(-135, 85, crs=crs))
+    assert not gm.covers(cap, gm.Point(45, 75, crs=crs))
+    assert all(len(row) == 0 for row in result.cut_edges)
+    assert all(len(row) == 0 for row in result.dangles)
+    assert all(len(row) == 0 for row in result.invalid_rings)
+
+
 def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() -> None:
     first = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
     missing = None

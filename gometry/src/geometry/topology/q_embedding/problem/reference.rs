@@ -18,6 +18,7 @@ use super::super::{
     try_sort_by_with_work, validate_native_reference, validate_native_source_ranges,
 };
 use crate::geographic::retained_exact::sites::rounded_native_neighbors_with_work;
+use crate::geometry::topology::emission::draw::diagnostic_line_tag;
 use crate::work::Work as _;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
@@ -289,6 +290,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let mut expected_line_leaves = Vec::new();
         let mut seam_events = Vec::<NativeSeamEventData>::new();
         let mut line_traces = Vec::new();
+        let mut diagnostic_line_tags = Vec::new();
         let mut literal_chord_uses = Vec::new();
         let mut line_graph_edges = Vec::new();
         let mut reference_ports = Vec::new();
@@ -305,6 +307,22 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         )
                     })?)
                 },
+            };
+            let line_tag = match walk.owner {
+                RecipeWalkOwner::Line(line_index) => {
+                    let line = self
+                        .emission
+                        .plan
+                        .line_paths
+                        .get(line_index)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native line walk has no planned Q line".into(),
+                            )
+                        })?;
+                    diagnostic_line_tag(self.topology, line, budget)?
+                },
+                RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_) => None,
             };
             let mut line_run = NativeLineRun::default();
             for &recipe_id in &walk.fragments {
@@ -429,6 +447,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                                     &mut literal_chord_uses,
                                     budget,
                                 )?);
+                                if let Some(tag) = line_tag {
+                                    diagnostic_line_tags.push((trace_line, tag));
+                                }
                             }
                         }
                     }
@@ -444,6 +465,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     &mut literal_chord_uses,
                     budget,
                 )?);
+                if let Some(tag) = line_tag {
+                    diagnostic_line_tags.push((trace_line, tag));
+                }
             }
         }
 
@@ -1031,6 +1055,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             feature_nodes: cut_nodes,
             publication_sample_nodes: sample_nodes,
             line_traces,
+            diagnostic_line_tags,
             literal_chord_uses,
             line_graph_edges,
             area_edges,
