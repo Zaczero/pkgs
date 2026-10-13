@@ -1,5 +1,5 @@
-use super::output::{OutputColumns, push_interpolated};
-use super::plan::{Route, Target};
+use super::output::OutputColumns;
+use super::plan::Route;
 use super::routes::point_from_xy;
 use super::*;
 #[derive(Default)]

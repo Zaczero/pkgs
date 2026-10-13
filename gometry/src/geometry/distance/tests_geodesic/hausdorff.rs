@@ -1,3 +1,7 @@
+use super::support::{
+    assert_chart_edge_point_hausdorff, assert_public_hausdorff_work_scaling,
+    directed_chart_hausdorff, parallel_point_maximum_oracle, public_hausdorff_work,
+};
 use super::*;
 
 #[test]

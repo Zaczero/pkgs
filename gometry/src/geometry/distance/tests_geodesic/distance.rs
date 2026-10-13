@@ -1,3 +1,4 @@
+use super::support::assert_chart_pair_contract;
 use super::*;
 
 #[test]

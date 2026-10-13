@@ -565,6 +565,7 @@ mod planar_nearest_source_ordinate_tests {
 #[cfg(test)]
 mod shortest_line_tests {
     use super::*;
+    use crate::geometry::CoordSeq;
 
     #[test]
     fn shortest_line_from_geodesic_point_witnesses_uses_its_stored_short_step() {

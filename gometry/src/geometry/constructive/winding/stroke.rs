@@ -1,5 +1,5 @@
-use super::arcs::{emit_arc, emit_cap_with_peer, source_vector, unit_right_normal};
-use super::loops::stroke_loops;
+use super::arcs::emit_cap_with_peer;
+use super::loops::{LoopColumns, stroke_loops};
 use super::*;
 
 /// Stroke lineal input through the winding engine. The requested cap applies

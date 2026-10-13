@@ -1,5 +1,6 @@
 use super::publish::map_geographic_error;
 use super::*;
+use crate::geographic::PeriodicAxis;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ComputedLongitudeRelation<'a> {
@@ -35,7 +36,7 @@ impl ComputedLongitudeRelation<'_> {
 
     pub(super) fn class(
         self,
-        axis: super::PeriodicAxis,
+        axis: PeriodicAxis,
         from: f64,
         to: f64,
     ) -> Result<RetainedLongitudeClass> {
@@ -49,7 +50,7 @@ impl ComputedLongitudeRelation<'_> {
 
     pub(super) fn sample(
         self,
-        axis: super::PeriodicAxis,
+        axis: PeriodicAxis,
         parameter: f64,
     ) -> Result<RetainedComputedSample> {
         match self {
@@ -60,7 +61,7 @@ impl ComputedLongitudeRelation<'_> {
         }
     }
 
-    pub(super) fn split_piece_count(self, axis: super::PeriodicAxis) -> Result<usize> {
+    pub(super) fn split_piece_count(self, axis: PeriodicAxis) -> Result<usize> {
         match self {
             Self::Native(edge) => retained_native_split_piece_count(edge, axis),
             Self::ExactLifted { endpoints } => retained_exact_split_piece_count(endpoints, axis),
@@ -121,10 +122,7 @@ impl<'a> ComputedEdgeIntent<'a> {
         Self::Retained(ComputedLongitudeRelation::ExactLifted { endpoints })
     }
 
-    pub(crate) fn retained_binary64_pair(
-        axis: super::PeriodicAxis,
-        endpoints: [f64; 2],
-    ) -> Result<Self> {
+    pub(crate) fn retained_binary64_pair(axis: PeriodicAxis, endpoints: [f64; 2]) -> Result<Self> {
         Ok(Self::retained_native(
             retained_edge_from_lifted_binary64_pair(axis, endpoints)?,
         ))
@@ -149,7 +147,7 @@ impl<'a> ComputedEdgeIntent<'a> {
         ))
     }
 
-    pub(super) fn certifies_zero_longitude_change(self, axis: super::PeriodicAxis) -> Result<bool> {
+    pub(super) fn certifies_zero_longitude_change(self, axis: PeriodicAxis) -> Result<bool> {
         match self {
             Self::Preserved { zero_longitude } => Ok(zero_longitude),
             Self::Retained(relation) => {

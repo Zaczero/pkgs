@@ -1,6 +1,4 @@
-use super::row::{
-    AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineOriginRow, AffineRowExtents,
-};
+use super::row::{AffineExpansion, AffineOriginRow};
 use super::*;
 
 pub(super) fn exact_affine_origin_ordinate(
@@ -45,7 +43,7 @@ pub(crate) fn affine_y_row_identity(d: f64, e: f64, yoff: f64) -> bool {
 /// binary64 expression. Identity rows are handled by callers so signed zero
 /// and unchanged coordinates remain bit-identical.
 #[cfg(test)]
-pub(crate) fn affine_about_origin_ordinate(
+pub(super) fn affine_about_origin_ordinate(
     coefficient_x: f64,
     coefficient_y: f64,
     output_origin: f64,
@@ -81,7 +79,7 @@ pub(crate) fn affine_about_origin_ordinate(
 
 /// Prepare the three invariant terms once per affine row. The accumulated
 /// error bounds the exact bias outside the retained double-double.
-fn affine_origin_bias(
+pub(super) fn affine_origin_bias(
     output_origin_parts: Option<DekkerParts>,
     coefficient_x_parts: Option<DekkerParts>,
     coefficient_y_parts: Option<DekkerParts>,
@@ -294,9 +292,10 @@ pub(super) fn round_certified_double_double<const ADMITTED: bool>(
     reason = "keep affine rounding witnesses beside their private certificate helpers"
 )]
 mod affine_rounding_tests {
-    use super::{
+    use super::exact_affine_origin_ordinate;
+    use super::row::{
         AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineLinear,
-        AffineOriginRow, AffineRowExtents, DekkerParts, exact_affine_origin_ordinate,
+        AffineOriginRow, AffineRowExtents, DekkerParts,
     };
     use crate::geometry::numerics::product_sum::ExactSum;
 

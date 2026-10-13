@@ -1,20 +1,36 @@
 use super::*;
 
+/// Expand each checked product into the retained double-double and its error
+/// bound for affine setup and coordinate evaluation.
+macro_rules! add_affine_expansion_product {
+    ($high:ident, $low:ident, $error:ident, $product:ident, $product_error:ident) => {{
+        let (sum, sum_error) = checked_two_sum($high, $product)?;
+        let (low_sum, low_error) = checked_two_sum($low, $product_error)?;
+        let (merged_error, discarded_high) = checked_two_sum(sum_error, low_sum)?;
+        let (next_high, next_residual) = checked_two_sum(sum, merged_error)?;
+        $error = upper_sum($error, discarded_high.abs())?;
+        $error = upper_sum($error, low_error.abs())?;
+        $high = next_high;
+        $low = next_residual;
+    }};
+}
+
+/// Use prepared matrix and checked pivot splits when setting up an affine row.
+macro_rules! add_affine_product_parts {
+    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
+        let (product, product_error) = two_product_dekker_checked_parts($lhs, $rhs)?;
+        add_affine_expansion_product!($high, $low, $error, product, product_error);
+    }};
+}
+
 mod columns;
 mod rounding;
 mod row;
 
 pub(crate) use columns::OriginAffine;
-#[cfg(test)]
-pub(crate) use rounding::affine_about_origin_ordinate;
-#[cfg(test)]
-pub(super) use rounding::fast_affine_about_origin_ordinate;
 pub(crate) use rounding::{affine_x_row_identity, affine_y_row_identity};
 pub(crate) use row::AffineLinear;
-pub(super) use row::{
-    AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineOriginRow,
-    AffineRowExtents, affine_ordinate_simd,
-};
+pub(super) use row::affine_ordinate_simd;
 
 /// Affine map with power-of-two pre-scale of the input coordinates so
 /// cancelling huge products (`2*1e308 + (-2)*1e308`) stay finite. Ordinary

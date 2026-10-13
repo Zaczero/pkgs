@@ -1,5 +1,9 @@
 use super::*;
 
+const PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS: &[usize] = &[8, 64, 128];
+const PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT: u64 = 5_000;
+const PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT: u64 = 250_000;
+
 #[derive(Debug)]
 pub(super) struct PublicHausdorffWork {
     pub(super) distance: f64,

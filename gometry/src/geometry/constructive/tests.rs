@@ -8,7 +8,7 @@ use crate::geometry::constructive::{
 use crate::geometry::overlay::{partition_calls, reset_partition_calls};
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq,
-    MultiPolygon, Point, Polygon, Ring, Shape, XY,
+    MultiPolygon, Point, Polygon, Ring, Shape,
 };
 
 mod buffer;

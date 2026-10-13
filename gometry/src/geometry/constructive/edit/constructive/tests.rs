@@ -1,4 +1,8 @@
+use std::num::NonZeroU32;
+
 use super::*;
+use crate::geometry::Ring;
+use crate::geometry::constructive::WalkJoinRule;
 use crate::geometry::constructive::offset::offset_curve_points;
 
 #[cfg(test)]
@@ -6,7 +10,6 @@ mod consecutive_dedup_tests {
     use super::*;
     use crate::geometry::constructive::offset::offset_source;
     use crate::geometry::constructive::strict_cycle;
-    use crate::geometry::{CoordinateAxes, GeometryKind};
 
     fn point(x: f64, y: f64) -> Point {
         Point::new(x, y).unwrap()

@@ -1,6 +1,6 @@
 use super::chart::Chart;
 use super::output::{OutputColumns, push_interpolated};
-use super::plan::{Route, Target, segmentize_steps};
+use super::plan::{Route, segmentize_steps};
 use super::*;
 
 /// Plan the ideal planar piece count without allowing an overflowing endpoint

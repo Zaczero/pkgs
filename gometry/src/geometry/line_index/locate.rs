@@ -92,8 +92,6 @@ pub(crate) fn locate_planar_route<'a>(
     Ok(if normalized { station / total } else { station })
 }
 
-/// Geographic linear referencing uses the same chart-edge owner as proximity.
-
 impl LineIndex {
     /// The along-line offset of `probe`'s nearest projection (the engine
     /// behind `line_locate_point`). Selection shares proximity's exact key:

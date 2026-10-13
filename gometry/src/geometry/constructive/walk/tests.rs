@@ -1,9 +1,7 @@
 use std::num::NonZeroU32;
 
 use super::*;
-use crate::Positive;
 use crate::geometry::CoordSeq;
-use crate::geometry::constructive::WalkJoinRule;
 use crate::geometry::constructive::offset::{line_intersection, offset_curve_points};
 
 fn assert_plan_count_matches_materialization(
@@ -321,3 +319,4 @@ fn styled_offset_restores_source_order_and_ordinate_provenance() {
         vec![Some(100.0), Some(200.0), Some(300.0)]
     );
 }
+use crate::geometry::constructive::winding::stroke::raw_stroke_loop;

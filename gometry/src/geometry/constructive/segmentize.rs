@@ -7,11 +7,10 @@ use std::sync::Arc;
 use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
-use crate::geometry::numerics::product::{axis_pow2_scale, scaled_residual};
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
-    CoordSeq, Coordinates as _, GeometryErrorKind, Point, Segment, XY,
-    interpolate_subdivision_ordinate, line_segments, point_distance, same_point,
+    CoordSeq, Coordinates as _, GeometryErrorKind, Point, Segment, XY, axis_pow2_scale,
+    interpolate_subdivision_ordinate, line_segments, point_distance, same_point, scaled_residual,
 };
 
 mod chart;

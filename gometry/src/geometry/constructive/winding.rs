@@ -11,14 +11,14 @@ use crate::geometry::constructive::{
     emit_cap, extend_cleaned, materialize_walk, middle_outside_segment_bounds, raw_offset_loop,
     sided_buffer_loop, strict_cycle, winding_region,
 };
-use crate::geometry::numerics::product::{axis_pow2_scale, scaled_residual};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     BufferCapStyle, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
     GeometryKind, HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY,
-    canonical_f64_bits, column_all_finite, dedup_consecutive_points, interpolate_f64,
-    line_is_simple, orientation, polygon_parts_to_shape, power_of_two_exponent, ring_winding,
-    same_point, same_topological_coordinate, scale_by_power_of_two, shell_is_convex,
+    axis_pow2_scale, canonical_f64_bits, column_all_finite, dedup_consecutive_points,
+    interpolate_f64, line_is_simple, orientation, polygon_parts_to_shape, power_of_two_exponent,
+    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, scaled_residual,
+    shell_is_convex,
 };
 
 mod arcs;

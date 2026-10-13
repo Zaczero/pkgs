@@ -1,4 +1,3 @@
-use super::degenerate::degenerate_polygonal_as_linework;
 use super::loops::{LoopColumns, collection_loops, erosion_loops, expansion_loops};
 use super::*;
 

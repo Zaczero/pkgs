@@ -36,8 +36,8 @@ mod metric;
 mod route;
 
 use build::{LineSegments, OrdinateSegment};
-use metric::InterpolationProvenance;
-pub(crate) use metric::{PlanarMetric, SegmentMetric, locate_planar_route};
+pub(crate) use locate::locate_planar_route;
+pub(crate) use metric::{InterpolationProvenance, PlanarMetric, SegmentMetric};
 
 /// Cache slot for a built (or unbuildable) [`LineIndex`].
 ///

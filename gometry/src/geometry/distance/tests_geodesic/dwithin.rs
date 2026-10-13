@@ -1,3 +1,4 @@
+use super::support::disconnected_bvh_target;
 use super::*;
 
 #[test]

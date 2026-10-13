@@ -1,7 +1,6 @@
-use super::chains::publish_native_computed_chain_with_edge_ranges;
 use super::*;
 
-pub(super) fn publish_polygon_with_edge_roles(
+pub(in crate::geometry) fn publish_polygon_with_edge_roles(
     polygon: &Polygon,
     computed_edges: &[Vec<bool>],
     frame: GeographicFrame,

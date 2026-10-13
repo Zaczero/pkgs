@@ -31,18 +31,14 @@ mod bounds;
 mod domains;
 mod output;
 
-pub(crate) use bounds::{
-    BOUNDS_2D_ERROR, BOUNDS_2D_GEO_ERROR, BOUNDS_3D_ERROR, BOUNDS_3D_GEO_ERROR, TransformedBounds,
-    TransformedBounds3d, all_finite, transform_bounds, transform_bounds_3d,
-    transform_bounds_3d_many, transform_bounds_many, validate_bounds, validate_bounds_3d,
-};
 pub(super) use bounds::{
-    BoundsInterpretation, BoundsSamplePlan, canonical_identity_latitudes,
-    canonical_identity_longitudes, identity_bounds_2d, identity_bounds_3d,
+    BoundsInterpretation, BoundsSamplePlan, identity_bounds_2d, identity_bounds_3d,
 };
-pub(crate) use domains::{
-    coordinates_are_finite, validate_coordinate_lanes, validate_coordinate_slices,
+pub(crate) use bounds::{
+    TransformedBounds3d, transform_bounds, transform_bounds_3d, transform_bounds_3d_many,
+    transform_bounds_many,
 };
+pub(crate) use domains::{coordinates_are_finite, validate_coordinate_lanes};
 pub(super) use domains::{
     map_geographic_conversion_error, transform_in_core_xy_with_domains,
     transform_in_core_xy_with_domains_indexed, transform_in_core_xy_with_domains_indexed_for_shape,

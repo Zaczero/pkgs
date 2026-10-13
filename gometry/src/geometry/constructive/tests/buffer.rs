@@ -1,4 +1,6 @@
 use super::*;
+use crate::geometry::{axis_pow2_scale, scaled_residual};
+use crate::io::MAX_NESTING;
 
 #[test]
 fn buffer_keeps_a_vertex_below_the_removed_input_simplification_tolerance() {

@@ -1,9 +1,12 @@
-use super::*;
-
 #[cfg(test)]
 mod winding_outcome_tests {
-    use super::*;
-    use crate::geometry::constructive::convex_buffer_budgeted;
+    use std::num::NonZeroU32;
+
+    use crate::geometry::constructive::{
+        WalkJoinRule, convex_buffer_budgeted, reset_walk_plan_construction_count,
+        walk_plan_construction_count,
+    };
+    use crate::geometry::{CoordSeq, ExpansionBudget, Point, Polygon, Ring, Shape};
 
     fn square() -> Polygon {
         Polygon::new(

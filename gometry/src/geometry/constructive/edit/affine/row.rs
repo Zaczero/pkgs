@@ -1,31 +1,9 @@
-use super::columns::{OriginAffine, upper_sum_admitted};
+use super::columns::upper_sum_admitted;
 use super::rounding::{
-    checked_two_sum, exact_affine_origin_ordinate, round_certified_double_double, upper_sum,
+    affine_origin_bias, checked_two_sum, exact_affine_origin_ordinate,
+    round_certified_double_double, upper_sum,
 };
 use super::*;
-
-/// Expand the fixed residual merge at its call site; omitted low limbs accrue
-/// in `error`, and checked forms use `?` when an intermediate is unsafe.
-macro_rules! add_affine_expansion_product {
-    ($high:ident, $low:ident, $error:ident, $product:ident, $product_error:ident) => {{
-        let (sum, sum_error) = checked_two_sum($high, $product)?;
-        let (low_sum, low_error) = checked_two_sum($low, $product_error)?;
-        let (merged_error, discarded_high) = checked_two_sum(sum_error, low_sum)?;
-        let (next_high, next_residual) = checked_two_sum(sum, merged_error)?;
-        $error = upper_sum($error, discarded_high.abs())?;
-        $error = upper_sum($error, low_error.abs())?;
-        $high = next_high;
-        $low = next_residual;
-    }};
-}
-
-/// Use a prepared matrix split and checked pivot split during transform setup.
-macro_rules! add_affine_product_parts {
-    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
-        let (product, product_error) = two_product_dekker_checked_parts($lhs, $rhs)?;
-        add_affine_expansion_product!($high, $low, $error, product, product_error);
-    }};
-}
 
 /// Inline the admitted product and residual merge into the coordinate loop.
 macro_rules! add_affine_product_admitted {
@@ -258,7 +236,7 @@ pub(super) struct AdmittedAffineOriginRow {
 }
 
 impl AdmittedAffineOriginRow {
-    const fn requires_coordinate_split(&self) -> bool {
+    pub(super) const fn requires_coordinate_split(&self) -> bool {
         matches!(
             &self.mode,
             AdmittedAffineMode::BiasedProductX(..)
@@ -406,7 +384,7 @@ fn affine_expansion_admitted(expansion: AffineExpansion) -> bool {
     clippy::arithmetic_side_effects,
     reason = "SIMD affine lanes preserve the declared multiply-add expression order"
 )]
-fn affine_ordinate_simd(
+pub(in crate::geometry::constructive::edit) fn affine_ordinate_simd(
     first: ReduceSimd,
     second: ReduceSimd,
     offset: ReduceSimd,

@@ -1,3 +1,5 @@
+use super::aliases::{ZeroLongitudeAlias, zero_longitude_alias_at};
+use super::publish::map_geographic_error;
 use super::*;
 
 pub(super) struct SampledVertex<'intent> {

@@ -1,3 +1,4 @@
+use super::publish::map_geographic_error;
 use super::*;
 
 #[derive(Clone, Copy)]

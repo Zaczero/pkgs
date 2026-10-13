@@ -50,7 +50,6 @@ pub(crate) use tessellation::{
 pub(in crate::geometry) use tessellation::{
     publish_voronoi_edge_column, publish_voronoi_polygon_shape,
 };
-use transformed::{TransformedChartEdgeProvider, map_transformed_shape_chains};
 pub(crate) use transformed::{publish_transformed_chain, publish_transformed_shape};
 
 #[cfg(test)]
