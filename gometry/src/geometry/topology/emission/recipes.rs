@@ -2,14 +2,12 @@ use super::{
     ChartSpan, CompletedNativeDrawing, DirectedSpan, ExactChartPoint, ExactGeographicTopology,
     ExactQuotientKey, ExactRational, ExactSourceRange, FeatureFamily, FinishedGeometry,
     GeometryErrorKind, Latitude, NodeOrdinates, Point, QPortId, Range, RequestRowId, Result,
-    SourceEdgeId, SourceTrace, TraceRequestLocation, TracedLine, Work,
-    compare_quotient_keys_with_work, quotient_key_for_chart_position_with_work,
-    split_rational_native_site_with_work,
+    SourceEdgeId, SourceTrace, TraceRequestLocation, Work, compare_quotient_keys_with_work,
+    quotient_key_for_chart_position_with_work, split_rational_native_site_with_work,
 };
 
 pub(in crate::geometry::topology) struct SealedSourceDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
-    pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
 }
 
 pub(in crate::geometry::topology) enum SealedQDrawing {

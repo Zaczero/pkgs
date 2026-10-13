@@ -351,10 +351,7 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
             drawing,
             budget,
         )? {
-            GlobalCheck::Pass(mut output) => {
-                output.family_state = self.take_native_families();
-                Ok(GlobalCheck::Pass(output))
-            },
+            GlobalCheck::Pass(output) => Ok(GlobalCheck::Pass(output)),
             GlobalCheck::Reject(classes) => Ok(GlobalCheck::Reject(classes)),
         }
     }

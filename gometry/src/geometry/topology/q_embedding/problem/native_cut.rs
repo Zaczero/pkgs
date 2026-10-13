@@ -6,12 +6,13 @@ use super::super::{
     NativePortData, NativeReference, NativeSeamEvent, NativeSeamEventData, NativeSeamVertices,
     NodeAuthority, OccurrenceSource, PublishedEndpoint, QCandidate, QCoordinates,
     QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError, Result, RootRequest,
-    SearchAccount, SearchOutcome, SourceTrace, Work, align_native_port_to_seam,
-    candidate_from_emission_site, compare_quotient_keys_with_work, emitted_node_key,
-    native_cut_candidate_domain, native_cut_order_holds, native_known_source_spans_for_slice,
-    native_port_data, native_source_sample_occurrences, quotient_key_for_chart_position_with_work,
-    run_with_budget, trace_ranges_for_slice, try_sort_by_with_work,
+    SearchAccount, SearchOutcome, Work, align_native_port_to_seam, candidate_from_emission_site,
+    compare_quotient_keys_with_work, emitted_node_key, native_cut_candidate_domain,
+    native_cut_order_holds, native_known_source_spans_for_slice, native_port_data,
+    native_source_sample_occurrences, quotient_key_for_chart_position_with_work, run_with_budget,
+    trace_ranges_for_slice, try_sort_by_with_work,
 };
+use crate::geometry::topology::emission::SourceTrace;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
     pub(super) fn materialize_native_cut_features(

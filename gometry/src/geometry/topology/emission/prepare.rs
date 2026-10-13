@@ -410,7 +410,6 @@ impl QEmissionPlan {
             points,
             lines,
             polygons,
-            line_traces,
             literal_uses,
         } = parts;
         let (shape, order) = seal_output_parts(
@@ -423,21 +422,13 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let (literal_uses, line_traces) = {
-            let order = order.ok_or_else(|| {
-                GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
-            })?;
-            super::super::emission::native_literal_uses_in_output_order(
-                literal_uses,
-                line_traces,
-                &order,
-                work,
-            )?
-        };
+        let order = order.ok_or_else(|| {
+            GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
+        })?;
+        let literal_uses = literal_uses.in_output_order(&order, work)?;
         Ok(super::super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,
-            line_traces,
         })
     }
 }

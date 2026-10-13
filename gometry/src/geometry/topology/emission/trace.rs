@@ -1,8 +1,7 @@
 use super::{
-    BTreeMap, ChartSpanId, ExactRational, FeatureFamilyRegistry, FragmentRecipeId,
-    GeometryErrorKind, OccurrenceSource, QPortId, RequestRowId, ResourceError, Result, RootId,
-    RootRange, RootRequest, Shape, TraceRows, TraceRowsBuilder, VertexOrigin, Work,
-    try_sort_by_with_work,
+    BTreeMap, ChartSpanId, ExactRational, FragmentRecipeId, GeometryErrorKind, OccurrenceSource,
+    QPortId, RequestRowId, ResourceError, Result, RootId, RootRange, RootRequest, TraceRows,
+    TraceRowsBuilder, VertexOrigin, Work, try_sort_by_with_work,
 };
 
 impl SourceTrace {
@@ -292,52 +291,10 @@ pub(in crate::geometry) struct SourceTrace {
     pub(in crate::geometry::topology) samples: Vec<TracedSourceSample>,
 }
 
-impl SourceTrace {
-    pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        work.charge_into_error(
-            u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let rows = self.rows.try_clone_with_work(work)?;
-        let mut samples = Vec::with_capacity(self.samples.len());
-        for sample in &self.samples {
-            samples.push(TracedSourceSample {
-                written_vertex: sample.written_vertex,
-                edge: sample.edge,
-                parameter: sample.parameter.try_clone_with_work(work)?,
-                request_row: sample.request_row,
-                has_source: sample.has_source,
-                endpoint_only: sample.endpoint_only,
-            });
-        }
-        Ok(Self { rows, samples })
-    }
-}
-
 pub(super) struct SourceTraceSample {
     pub(super) edge_index: usize,
     pub(super) local_parameter: ExactRational,
     pub(super) written_vertex: usize,
-}
-
-pub(in crate::geometry) struct TracedLine {
-    pub(in crate::geometry) member: usize,
-    pub(in crate::geometry) trace: SourceTrace,
-}
-
-impl TracedLine {
-    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        Ok(Self {
-            member: self.member,
-            trace: self.trace.try_clone_with_work(work)?,
-        })
-    }
-}
-
-pub(in crate::geometry) struct PreparedNativeSource {
-    pub(in crate::geometry) shape: Shape,
-    pub(in crate::geometry) line_traces: Vec<TracedLine>,
-    pub(in crate::geometry) source_members: Vec<usize>,
-    pub(in crate::geometry) family_state: Option<FeatureFamilyRegistry>,
 }
 
 impl SourceTrace {

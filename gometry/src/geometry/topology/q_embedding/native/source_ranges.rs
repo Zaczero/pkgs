@@ -3,9 +3,10 @@ use super::super::{
     ExactSourceRange, FragmentRecipeId, GeographicFrame, GeometryErrorKind, NativeAreaEdge,
     NativeAreaEdgeKind, NativeGraphEdgeOwner, NativeKnownSpanBoundary, NativeSourceFaceGerm,
     NativeSourceSpanUse, QDartId, QPublishedChord, QSourceSpanRange, ResourceError, Result, RootId,
-    RootRange, RootRequest, SourceTrace, Work, merge_native_port_data, native_chart_vertex_key,
+    RootRange, RootRequest, Work, merge_native_port_data, native_chart_vertex_key,
     native_q_port_data, span_parameter_at_source, try_sort_by_with_work,
 };
+use crate::geometry::topology::emission::SourceTrace;
 
 pub(in crate::geometry::topology::q_embedding) fn trace_ranges_for_slice(
     trace: &SourceTrace,

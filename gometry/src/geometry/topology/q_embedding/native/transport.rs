@@ -192,7 +192,7 @@ pub(in crate::geometry::topology::q_embedding) fn validate_native_written_chord_
                 let trace = reference.line_traces.get(*line_trace).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native line chord has no trace owner".into())
                 })?;
-                let parent_ranges = trace.trace.rows.row(*trace_row)?;
+                let parent_ranges = trace.rows.row(*trace_row)?;
                 let key = NativeProducerUseKey {
                     recipe: *recipe,
                     trace_edge: *trace_edge,

@@ -147,7 +147,7 @@ pub(in crate::geometry::topology::q_embedding) fn finish_native_line_run(
     trace_line: usize,
     literal_chord_uses: &mut Vec<NativeLiteralChordUse>,
     budget: &mut impl Work,
-) -> Result<super::super::super::emission::TracedLine> {
+) -> Result<super::super::super::emission::SourceTrace> {
     if run.vertices.len() < 2 || run.chords.len().checked_add(1) != Some(run.vertices.len()) {
         return Err(GeometryErrorKind::Invalid(
             "native line run has incomplete endpoint or recipe rows".into(),
@@ -211,11 +211,7 @@ pub(in crate::geometry::topology::q_embedding) fn finish_native_line_run(
         chords.push(chord);
     }
     builder.line(chords)?;
-    let trace = super::super::super::emission::SourceTrace::from_edge_rows(trace_rows, budget)?;
-    let member = run.member.ok_or_else(|| {
-        GeometryErrorKind::Invalid("native line run has no source member identity".into())
-    })?;
-    Ok(super::super::super::emission::TracedLine { member, trace })
+    super::super::super::emission::SourceTrace::from_edge_rows(trace_rows, budget)
 }
 pub(in crate::geometry::topology::q_embedding) fn native_area_facts(
     drawing: &QEmissionDrawing<'_>,

@@ -293,8 +293,6 @@ pub(in crate::geometry) use segments::clip::{
     SegmentParameter, clip_segment_parameter, exact_crossing_parameter,
 };
 pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
-#[cfg(test)]
-pub(crate) use util::dedup_consecutive_xy;
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, empty_geometry,
     geographic_bounds_chart, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
