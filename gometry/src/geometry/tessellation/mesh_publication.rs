@@ -703,14 +703,20 @@ mod tests {
         assert_eq!(publication.producer, MeshProducer::Earcut);
         assert_eq!(publication.faces.len(), 8);
         assert_eq!(publication.points.len(), publication.faces.len() * 4);
-        let ring_ends = publication
+        let output_shapes = publication
             .faces
             .iter()
-            .map(|face| face.output_vertices.end)
+            .map(|face| {
+                let [a, b, c, _] = publication
+                    .points
+                    .get(face.output_vertices.clone())
+                    .and_then(|ring| ring.first_chunk::<4>())
+                    .copied()
+                    .expect("each prepared face owns its closed four-point ring");
+                super::super::earcut::try_triangle_shape(a, b, c)
+                    .expect("published ears retain their per-face common axes")
+            })
             .collect::<Vec<_>>();
-        let output_shapes =
-            Shape::triangle_shapes_from_published_rings(&publication.points, &ring_ends)
-                .expect("published ears retain their per-face common axes");
         assert_eq!(output_shapes.len(), publication.faces.len());
         let mut bridge_uses = 0;
         let mut diagonal_uses = 0;
