@@ -252,7 +252,6 @@ mod tests {
     use super::*;
     use crate::crs::frame::Frame;
     use crate::geometry::Point;
-    use crate::geometry::storage::ValidityMask;
 
     fn mixed_with_missing() -> PyGeometryArray {
         let shapes = (0..3)
