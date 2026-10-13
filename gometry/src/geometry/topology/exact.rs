@@ -71,7 +71,7 @@ pub(super) const fn rational_heap_bytes(value: &ExactRational) -> usize {
     dyadic_heap_bytes(numerator) + dyadic_heap_bytes(denominator)
 }
 
-fn quotient_key_heap_bytes(value: &ExactQuotientKey) -> usize {
+const fn quotient_key_heap_bytes(value: &ExactQuotientKey) -> usize {
     match value {
         ExactQuotientKey::Coordinate(point) => point.heap_bytes(),
         ExactQuotientKey::Seam(latitude) => rational_heap_bytes(latitude),

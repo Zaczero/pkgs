@@ -412,7 +412,7 @@ pub(in crate::geometry::topology) enum CanonicalQNodeKey<'a> {
     },
 }
 
-pub(in crate::geometry::topology::q) fn point_heap_bytes(point: &ExactChartPoint) -> usize {
+pub(in crate::geometry::topology::q) const fn point_heap_bytes(point: &ExactChartPoint) -> usize {
     point.heap_bytes()
 }
 
@@ -424,6 +424,8 @@ pub(in crate::geometry::topology::q) const fn rational_heap_bytes(value: &ExactR
     clippy::arithmetic_side_effects,
     reason = "both exact parameters are part of one owned source-range record"
 )]
-pub(in crate::geometry::topology::q) fn source_range_heap_bytes(range: &ExactSourceRange) -> usize {
+pub(in crate::geometry::topology::q) const fn source_range_heap_bytes(
+    range: &ExactSourceRange,
+) -> usize {
     rational_heap_bytes(&range.start) + rational_heap_bytes(&range.end)
 }
