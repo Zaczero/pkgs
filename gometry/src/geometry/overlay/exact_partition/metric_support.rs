@@ -1,4 +1,9 @@
-use super::*;
+use std::sync::Arc;
+
+use super::{
+    AreaLocationStrategy, ExactMetricNode, ExactMetricSpan, ExactMetricSupport, ExactPartition,
+    ExactSourceInventory, NodeId, Result, parameter_along,
+};
 
 impl ExactSourceInventory {
     /// Exact closed support for scalar metrics, before coordinate publication.

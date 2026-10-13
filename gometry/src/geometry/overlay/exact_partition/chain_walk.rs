@@ -1,4 +1,4 @@
-use super::*;
+use super::{ExactSpan, GeometryErrorKind, IndexedTopology, NodeId, Range, Result};
 
 pub(super) fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usize> {
     let start = records.partition_point(|(record_node, _)| record_node.0 < node.0);

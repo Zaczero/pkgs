@@ -1,4 +1,12 @@
-use super::*;
+#[cfg(test)]
+use super::metrics::{record_partition_call, update as update_partition_metrics};
+use super::{
+    Bounds, ExactDyadic, ExactPartition, ExactSign, ExactSourceInventory, ExpansionBudget,
+    GeometryErrorKind, GlobalFaces, IndexedTopology, KeptNodes, ResourceError, Result, RingKind,
+    SegmentClipInterval, XY, embedding, homogeneous_midpoint, partition_unique_segments,
+    partition_unique_segments_in_window, partition_unique_segments_unbudgeted, ray_crossing,
+    rectangle_side_outward, same_point, stored_orientation_sign, symbolic_ray_crossing,
+};
 
 impl ExactSourceInventory {
     pub(in crate::geometry) fn partition(

@@ -16,9 +16,7 @@ use crate::geographic::{
     ChartPole, ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, ShapeLiteralLayout, reorder_rows,
-};
+use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
 };
@@ -32,7 +30,6 @@ use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowId, RequestRowInput, RootCatalog, RootId, RootRange, RootRequest,
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
-use crate::geometry::overlay::CertifiedOverlayOrder;
 pub(super) use crate::geometry::publication::ChartCutSide as ChartSide;
 use crate::geometry::publication::{
     ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry, SyntheticChartVertex,
@@ -76,7 +73,7 @@ pub(super) use self::materialize::NativePolygonLiteralUses;
 pub(in crate::geometry) use self::materialize::QSourceImage;
 pub(super) use self::materialize::{
     CompletedNativeDrawing, NativeFrozenDrawing, NativeMaterializedParts, SourceFrozenDrawing,
-    materialize_native_parts, native_literal_uses_in_output_order, write_completed_native,
+    materialize_native_parts, write_completed_native,
 };
 pub(in crate::geometry) use self::nodes::EmissionPortId;
 pub(super) use self::nodes::{
@@ -107,15 +104,16 @@ use self::recipes::{
     interpolate_exact_reference_point, pending_source_ranges, producer_ranges,
     producer_step_extends_run,
 };
+pub(in crate::geometry) use self::trace::SourceTrace;
 use self::trace::SourceTraceSample;
 pub(super) use self::trace::{
     DirectedSpan, RecipeWalk, RecipeWalkIndex, RecipeWalkOwner, SourceSampleOccurrence,
     TraceRequestLocation, index_recipe_walks, native_source_sample_occurrences, next_recipe_walk,
 };
-pub(in crate::geometry) use self::trace::{PreparedNativeSource, SourceTrace, TracedLine};
 
 #[cfg(test)]
 mod tests {
+    use crate::geometry::overlay::CertifiedOverlayOrder;
     use crate::geometry::topology::emission::families::{
         FeatureFamilyBound, NativeCutOccurrenceInterval, NativeCutOccurrenceRange,
     };

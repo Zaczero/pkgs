@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CoordSeq, CoordinateAxes, ExactLineSource, ExactPartition, ExactSourceInventory,
+    ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq, NodeId, NodeParts, Point, Polygon,
+    ResolvedNodePoints, ResourceError, Result, Ring, Segment, Shape, XY, embedding,
+};
 
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactLineEmission<'p> {

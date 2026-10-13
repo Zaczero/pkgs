@@ -1,4 +1,11 @@
-use super::*;
+#[cfg(test)]
+use std::ops::Range;
+
+use super::{BoundaryPlan, ExactPartition, GlobalFaces, IndexedTopology, NodeId, Result};
+#[cfg(test)]
+use super::{Polygon, ResourceError, Segment};
+#[cfg(test)]
+use crate::geometry::Coordinates as _;
 
 #[cfg(test)]
 pub(super) struct ArealSources {

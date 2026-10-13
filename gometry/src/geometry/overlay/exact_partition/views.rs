@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    Axis, Bounds, Cow, ExactChainView, ExactChainViews, ExactDyadic, ExactPartition, ExactRational,
+    ExactSign, GeometryErrorKind, KeptNodes, NodeId, Ordering, PointKey, RayPoints as _,
+    ResourceError, Result, Segment, SegmentSource, XY, embedding, parameter_along,
+    walk_exact_chain,
+};
+#[cfg(test)]
+use super::{SOURCE_SPAN_VIEW_ORDERED, SOURCE_SPAN_VIEW_SORTS};
 
 impl ExactPartition<'_> {
     pub(in crate::geometry) const fn node_count(&self) -> usize {

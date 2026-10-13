@@ -165,8 +165,6 @@ pub(crate) use nary::{
     overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
     overlay_intersection_with_rectangle,
 };
-#[cfg(test)]
-pub(crate) use noding::self_node_segments_sourced;
 pub(crate) use rect::{rect_polygon, rectangle_bounds};
 #[cfg(test)]
 #[path = "overlay/clip/extracted_tests.rs"]

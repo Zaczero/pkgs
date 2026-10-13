@@ -1,4 +1,10 @@
-use super::*;
+use std::cell::Cell;
+use std::ops::Range;
+
+use super::{
+    AreaLocationCells, ExactDyadic, Point, PointArena, PointKey, RingKind, RootMetricState,
+    Segment, SegmentProvenance, XY, embedding,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(in crate::geometry) struct NodeId(pub u32);

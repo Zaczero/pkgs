@@ -2,9 +2,9 @@ use super::super::exact::SourceRowId;
 use super::cut_ports::CutNodePorts;
 use super::sites::{EmittedNodeKey, EmittedVertex, record_emitted_node};
 use super::{
-    ChartPole, CoordinateAxes, EmissionNodeRegistry, ExactRational, FragmentRecipe,
-    FragmentRecipes, GeometryErrorKind, NodeOrdinates, PublicationInventory, QDartId, QNodeId,
-    QPortId, RecipeWalk, RecipeWalkOwner, Result, Work,
+    ChartPole, CoordinateAxes, EmissionNodeRegistry, FragmentRecipe, FragmentRecipes,
+    GeometryErrorKind, NodeOrdinates, PublicationInventory, QDartId, QNodeId, QPortId, RecipeWalk,
+    RecipeWalkOwner, Result, Work,
 };
 use crate::geometry::{HasM, HasZ};
 
@@ -25,14 +25,6 @@ pub(in crate::geometry::topology) struct LineStep {
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct SelectedLineSpan {
     pub(in crate::geometry::topology) owner: usize,
-}
-
-pub(in crate::geometry::topology) struct SourceLineSpan {
-    pub(in crate::geometry::topology) low: ExactRational,
-    pub(in crate::geometry::topology) high: ExactRational,
-    pub(in crate::geometry::topology) span: usize,
-    pub(in crate::geometry::topology) owner: usize,
-    pub(in crate::geometry::topology) reversed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,7 +99,6 @@ impl SelectedRegionPoles {
 pub(in crate::geometry) enum QProducer {
     Overlay,
     Boundary,
-    SourceLines,
     Node,
     Polygonize,
     BuildArea,
@@ -125,7 +116,6 @@ impl QProducer {
             Self::BuildArea => "build_area",
             Self::Overlay => "overlay",
             Self::Boundary => "boundary",
-            Self::SourceLines => "source lines",
         }
     }
 }

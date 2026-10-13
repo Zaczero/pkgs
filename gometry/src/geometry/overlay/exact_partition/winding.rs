@@ -1,4 +1,9 @@
-use super::*;
+use std::ops::Range;
+
+use super::{
+    Axis, Bounds, ExactDyadic, ExactPartition, ExactSign, ExactSourceInventory, GeometryErrorKind,
+    NodeId, Ordering, Result, RingKind, Segment,
+};
 
 impl ExactSourceInventory {
     #[expect(

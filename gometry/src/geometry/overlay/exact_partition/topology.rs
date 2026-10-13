@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Axis, ExactPartition, ExactSign, GeometryErrorKind, GlobalFaces, IndexedTopology,
+    IndexedTopologyScratch, NodeId, Ordering, ResourceError, Result, XY, remove_antenna_vertices,
+    same_point, shoot_left, stored_cross_sign, stored_orientation_sign,
+};
 
 pub(super) fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
     if nodes.first() == nodes.last() {

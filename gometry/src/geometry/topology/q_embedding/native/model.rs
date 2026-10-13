@@ -1,12 +1,12 @@
 use super::super::{
     AdmittedLayout, AssignedSite, ChartPole, EmissionChordId, EmissionNodeId, ExactSourceRange,
     ExpandedEmissionPlan, FragmentRecipeId, NativeAreaEdge, NativeGraphCycle, NativeGraphPart,
-    NativePortData, NativeReferenceGraph, NativeSeamEventData, RootRange, TracedLine,
+    NativePortData, NativeReferenceGraph, NativeSeamEventData, RootRange,
 };
+use crate::geometry::topology::emission::SourceTrace;
 
 #[derive(Default)]
 pub(in crate::geometry::topology::q_embedding) struct NativeLineRun {
-    pub(in crate::geometry::topology::q_embedding) member: Option<usize>,
     pub(in crate::geometry::topology::q_embedding) vertices: Vec<NativePortData>,
     pub(in crate::geometry::topology::q_embedding) chords: Vec<NativeLineChordSource>,
 }
@@ -46,7 +46,7 @@ pub(in crate::geometry::topology::q_embedding) struct NativeReference<'topology>
     pub(in crate::geometry::topology::q_embedding) sites: Vec<Option<AssignedSite>>,
     pub(in crate::geometry::topology::q_embedding) feature_nodes: Vec<EmissionNodeId>,
     pub(in crate::geometry::topology::q_embedding) publication_sample_nodes: Vec<EmissionNodeId>,
-    pub(in crate::geometry::topology::q_embedding) line_traces: Vec<TracedLine>,
+    pub(in crate::geometry::topology::q_embedding) line_traces: Vec<SourceTrace>,
     pub(in crate::geometry::topology::q_embedding) literal_chord_uses: Vec<NativeLiteralChordUse>,
     pub(in crate::geometry::topology::q_embedding) line_graph_edges: Vec<NativeAreaEdge>,
     pub(in crate::geometry::topology::q_embedding) area_edges: Vec<NativeAreaEdge>,

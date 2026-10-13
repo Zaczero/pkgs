@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Bounds, Contact, ExactPartition, ExactSourceInventory, ExpansionBudget, NodeId, Point,
+    PolygonOccupancy, Result, Segment, Shape, XY, build_certified_overlay_shape,
+    segment_contact_exact,
+};
 
 impl ExactSourceInventory {
     /// Measure the occupied Cartesian support without serializing rounded

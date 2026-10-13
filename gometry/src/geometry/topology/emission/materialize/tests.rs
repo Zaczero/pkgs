@@ -33,16 +33,7 @@ fn native_literal_port_map_follows_final_shape_order() {
         polygons: Vec::new(),
     };
     let mut work = Unmetered;
-    let trace = SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap();
-    let line_traces = vec![
-        TracedLine {
-            member: 20,
-            trace: trace.try_clone_with_work(&mut work).unwrap(),
-        },
-        TracedLine { member: 30, trace },
-    ];
-    let (ordered, ordered_traces) =
-        native_literal_uses_in_output_order(uses, line_traces, &order, &mut work).unwrap();
+    let ordered = uses.in_output_order(&order, &mut work).unwrap();
     assert_eq!(
         ordered
             .points
@@ -71,13 +62,6 @@ fn native_literal_port_map_follows_final_shape_order() {
             images: vec![EmissionPortId(20), EmissionPortId(21)],
         },
     ],);
-    assert_eq!(
-        ordered_traces
-            .iter()
-            .map(|line| line.member)
-            .collect::<Vec<_>>(),
-        [30, 20],
-    );
     assert!(ordered.polygons.is_empty());
 }
 

@@ -1,4 +1,10 @@
-use super::*;
+use super::{Axis, ExactPartition, ExactSign, NodeId, Ordering, Result};
+#[cfg(test)]
+use super::{
+    ControlFlow, ExactSourceInventory, ExpansionBudget, GeometryErrorKind, HashMap, PointKey,
+    ResourceError, Segment, emitted_pair_preserves_incidence, for_each_candidate_pair,
+    single_chain,
+};
 
 /// Certify a rounded embedding whose endpoint identities were decided by a
 /// different exact construction (currently Voronoi). ExactPartition owns the

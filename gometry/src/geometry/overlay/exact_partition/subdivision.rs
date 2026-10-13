@@ -580,37 +580,6 @@ fn mapped_root_ranges_between_requests<W: Work>(
     Ok(ranges)
 }
 
-trait SubdivisionTraceWork: Work {
-    fn embed<'p>(
-        &mut self,
-        partition: &'p ExactPartition<'_>,
-        emissions: &[&embedding::Emission],
-        operation: &'static str,
-    ) -> Result<embedding::Embedding<'p>>;
-}
-
-impl SubdivisionTraceWork for EvaluationBudget {
-    fn embed<'p>(
-        &mut self,
-        partition: &'p ExactPartition<'_>,
-        emissions: &[&embedding::Emission],
-        operation: &'static str,
-    ) -> Result<embedding::Embedding<'p>> {
-        partition.embed_with_budget(emissions, operation, self)
-    }
-}
-
-impl SubdivisionTraceWork for Unmetered {
-    fn embed<'p>(
-        &mut self,
-        partition: &'p ExactPartition<'_>,
-        emissions: &[&embedding::Emission],
-        operation: &'static str,
-    ) -> Result<embedding::Embedding<'p>> {
-        partition.embed(emissions, operation)
-    }
-}
-
 struct SourceLineRun {
     member: usize,
     nodes: Vec<NodeId>,
@@ -1104,21 +1073,6 @@ impl ExactSourceInventory {
         Ok([first, second])
     }
 
-    pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric, C: RootCatalog>(
-        &self,
-        partition: &ExactPartition<'_>,
-        request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
-        budget: &mut ExpansionBudget,
-        trace_work: &mut EvaluationBudget,
-    ) -> Result<[SubdivisionPart; 2]> {
-        let roots = request.roots;
-        let context = request.context;
-        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut EvaluationBudget| {
-            resolve_request_rows(rows, roots, context.metric_access(), work)
-        };
-        self.subdivision_parts_traced(partition, request, budget, trace_work, &mut resolve_rows)
-    }
-
     pub(in crate::geometry) fn subdivision_parts_with_roots<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
@@ -1381,14 +1335,13 @@ impl ExactSourceInventory {
     fn subdivision_parts_traced<
         M: ChartMetric,
         C: RootCatalog,
-        W: SubdivisionTraceWork,
-        F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
+        F: FnMut(&[RequestRowInput], &mut Unmetered) -> Result<Vec<NodeOrdinates>>,
     >(
         &self,
         partition: &ExactPartition<'_>,
         request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
         budget: &mut ExpansionBudget,
-        trace_work: &mut W,
+        trace_work: &mut Unmetered,
         resolve_rows: &mut F,
     ) -> Result<[SubdivisionPart; 2]> {
         let Some(source_traces) = request.source_traces else {
@@ -1485,7 +1438,7 @@ impl ExactSourceInventory {
                 }
             }
         }
-        let embedding = trace_work.embed(partition, &emission_refs, "subdivide")?;
+        let embedding = partition.embed(&emission_refs, "subdivide")?;
         let views = self.source_line_trace_views(partition, trace_work)?;
         let mut run_plans = Vec::with_capacity(selected.len());
         for spans in &selected {

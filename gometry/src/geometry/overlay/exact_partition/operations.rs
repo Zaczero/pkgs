@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    Bounds, ChartMetric, CoordSeq, CoordinateAxes, ExactPartition, ExactSourceInventory,
+    ExpansionBudget, GeometryErrorKind, GeometryKind, GlobalFaces, IndexedTopology, KeptNodes,
+    LineSeq, OverlayPolygonPartWithSources, OverlaySourceLocation, Point, Polygon, PolygonizeFull,
+    ResourceError, Result, Shape, SourceArcContext, assemble_node_parts, bucket_axes, embedding,
+    emission, polygonize_full_emission, with_axes, xy_sequence_for_nodes,
+};
 
 pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     polygons: &[P],

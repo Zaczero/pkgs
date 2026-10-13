@@ -7,13 +7,14 @@ use super::plan::{DrawnPolygons, QEmissionDrawing};
 use super::sites::EmittedVertex;
 use super::source_publication::SourcePublication;
 use super::{
-    BTreeMap, CertifiedOverlayOrder, CoordSeq, CoordinateAxes, GeometryErrorKind, LiteralPoint,
-    LiteralPolygon, LiteralSequence, NodeOrdinates, Point, Polygon, QEmissionPlan, QSourceImage,
-    RecipeWalkIndex, RecipeWalkOwner, ResourceError, Result, Ring, Shape, ShapeLiteralLayout, Work,
+    BTreeMap, CoordSeq, CoordinateAxes, GeometryErrorKind, LiteralPoint, LiteralPolygon,
+    LiteralSequence, NodeOrdinates, Point, Polygon, QEmissionPlan, QSourceImage, RecipeWalkIndex,
+    RecipeWalkOwner, ResourceError, Result, Ring, Shape, ShapeLiteralLayout, Work,
     next_recipe_walk,
 };
 use crate::geometry::overlay::{
-    build_certified_overlay_shape_with_axes, build_certified_overlay_shape_with_axes_and_order,
+    CertifiedOverlayOrder, build_certified_overlay_shape_with_axes,
+    build_certified_overlay_shape_with_axes_and_order,
 };
 use crate::geometry::{CoordSeqBuilder, GeometryKind, LineSeq};
 

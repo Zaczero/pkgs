@@ -15,19 +15,18 @@
 //! [`ResourceError`], not the item cap.
 
 use std::borrow::{Borrow, Cow};
+#[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Ordering;
 #[cfg(test)]
 use std::ops::ControlFlow;
 use std::ops::Range;
-use std::sync::Arc;
 
 #[cfg(test)]
 use crate::collections::HashMap;
 use crate::error::ResourceError;
 use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
-use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
@@ -81,15 +80,34 @@ mod topology;
 mod views;
 pub(in crate::geometry) mod winding;
 
-use areal_sources::*;
-use chain_walk::*;
-use incidence::*;
-use model::*;
-use ordinates::*;
-use serialize::*;
-use support_queries::*;
-use topology::*;
-use winding::*;
+#[cfg(test)]
+use areal_sources::ArealSources;
+use areal_sources::{ArealCells, BoundarySelection};
+use chain_walk::{node_source_range, walk_exact_chain};
+#[cfg(test)]
+use incidence::certify_emitted_incidence;
+use incidence::cycle_contains_node;
+use model::{
+    ExactChainView, ExactChainViews, ExactLineSource, ExactMetricNode, ExactMetricSpan,
+    ExactMetricSupport, ExactPartition, ExactSourceInventory, ExactSpan, KeptNodes, NodeId,
+    NodeRecipe, OrdinateBindings, SourceArcRecord, StagedExactSources, StagedRelationItem,
+    StagedSourceComponent,
+};
+use ordinates::ResolvedNodePoints;
+use serialize::{
+    ExactLineEmission, assemble_node_parts, bucket_axes, polygons_from_xy_nodes, with_axes,
+    xy_sequence_for_nodes,
+};
+#[cfg(test)]
+use support_queries::{
+    cartesian_support_nonempty, exact_intersects_bounds, occupied_cartesian_area,
+    occupied_cartesian_support,
+};
+use topology::remove_node_antennas;
+use winding::{
+    PolygonOccupancy, homogeneous_midpoint, rectangle_side_outward, ring_occupied, rings_occupied,
+    select_operation, symbolic_ray_crossing,
+};
 
 #[cfg(test)]
 thread_local! {
@@ -173,8 +191,6 @@ pub(in crate::geometry) use metrics::{
 };
 #[cfg(test)]
 pub(crate) use metrics::{partition_calls, reset_partition_calls};
-#[cfg(test)]
-use metrics::{record_partition_call, update as update_partition_metrics};
 pub(in crate::geometry) use rays::{
     RayPoints, RayPointsWithWork, compare_departures_with_work, shoot_left, shoot_left_with_work,
     visit_component_faces,
