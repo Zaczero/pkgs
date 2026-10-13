@@ -25,15 +25,17 @@ pub(super) fn crossing_issues(
             .outgoing_offsets
             .get(end_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no fan end".into()))?;
-        if end.saturating_sub(start) < 4 {
+        let fan_len = end
+            .checked_sub(start)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q node fan offsets are reversed".into()))?;
+        if fan_len < 4 {
             continue;
         }
         let node_id =
             q.nodes.get(node_index).map(|node| node.id).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q node fan has no node record".into())
             })?;
-        let mut rings_by_ray =
-            Vec::<BTreeSet<SourceRingId>>::with_capacity(end.saturating_sub(start));
+        let mut rings_by_ray = Vec::<BTreeSet<SourceRingId>>::with_capacity(fan_len);
         let mut all_rings = BTreeSet::new();
         for dart_id in q.outgoing.get(start..end).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q node fan has an invalid dart range".into())

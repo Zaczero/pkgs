@@ -6,7 +6,7 @@ fn rotate(ring: &[(f64, f64)], offset: usize) -> Vec<(f64, f64)> {
         .split_last()
         .expect("the ring corpus stores an explicit closure");
     if open.is_empty() {
-        return Vec::new();
+        return ring.to_vec();
     }
     let offset = offset.checked_rem(open.len()).unwrap_or(0);
     let mut rotated = open
