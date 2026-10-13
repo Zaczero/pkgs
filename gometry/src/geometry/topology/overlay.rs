@@ -63,6 +63,21 @@ use crate::geometry::{
 #[cfg(test)]
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
 
+#[cfg(test)]
+std::thread_local! {
+    static Q_OVERLAY_PLAN_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::geometry::topology) fn take_q_overlay_plan_build_count() -> usize {
+    Q_OVERLAY_PLAN_BUILDS.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+fn record_q_overlay_plan_build() {
+    Q_OVERLAY_PLAN_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
 mod publish;
 pub(in crate::geometry) use self::producer_drawing::{
     exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,

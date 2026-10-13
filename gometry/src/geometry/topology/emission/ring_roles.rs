@@ -237,10 +237,10 @@ pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     work: &mut impl Work,
 ) -> Result<(bool, Option<ChartPole>)> {
     let Some(role) = exact_q_ring_role_with_work(frame, exact_ports.iter(), work)? else {
-        return Err(GeometryErrorKind::Invalid(
-            "selected Q area boundary has no bounded pole".into(),
-        )
-        .into());
+        // A pole-free quotient strip has winding boundary cycles but no
+        // pole-bounded ring role. Keep those cycles as shell candidates so
+        // linework selection can assemble the region between them.
+        return Ok((false, None));
     };
     Ok(role)
 }
