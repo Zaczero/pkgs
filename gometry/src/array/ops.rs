@@ -470,6 +470,52 @@ impl PyGeometryArray {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        if matches!(domain, crate::geometry::TopologyDomain::Geographic(_)) {
+            let array = self.clone();
+            let mut writer =
+                geometry::CdtGroupsDrawingWriter::new(self.len(), self.missing().cloned())?;
+            let frame = self.frame.clone();
+            let receipt = py
+                .detach(move || {
+                    for row in array.row_operation().rows_with_missing(Vec::<Shape>::new) {
+                        match row {
+                            ArrayRow::Missing { logical, .. } => {
+                                writer
+                                    .append_row(logical, None)
+                                    .map_err(|error| (logical, error))?;
+                            },
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = crate::geometry::ExpansionBudget::new(
+                                    "triangulate",
+                                    "min_angle/max_area",
+                                );
+                                let drawing = row
+                                    .row()
+                                    .try_with_shape(|shape| {
+                                        geometry::prepare_geographic_cdt_drawing(
+                                            shape,
+                                            *refinements
+                                                .get(logical)
+                                                .expect("CDT refinement values match input rows"),
+                                            domain,
+                                            metric,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                writer
+                                    .append_row(logical, Some(drawing))
+                                    .map_err(|error| (logical, error))?;
+                            },
+                        }
+                    }
+                    let final_row = array.len().saturating_sub(1);
+                    writer.finish(frame).map_err(|error| (final_row, error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(receipt)?);
+        }
         // Unrefined rows preserve the selected source-site axes while refined
         // rows are XY, so a batch carrying Z/M uses the shape collector.
         // Pure-XY batches retain the packed triangle builder; both consume the

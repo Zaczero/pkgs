@@ -229,6 +229,21 @@ impl PyGeometry {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        if matches!(domain, geometry::TopologyDomain::Geographic(_)) {
+            let shape = Arc::clone(&self.shape);
+            let drawing = py.detach(move || {
+                let mut budget =
+                    geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
+                geometry::prepare_geographic_cdt_drawing(
+                    &shape,
+                    refinement,
+                    domain,
+                    metric,
+                    &mut budget,
+                )
+            })?;
+            return Ok(geometry::publish_cdt_array(drawing, self.frame.clone())?);
+        }
         // Refinement inserts Steiner vertices, so output is XY-only. The
         // source-site mesh plan supplies the same selected points and axes to
         // both the packed and per-shape publication paths.

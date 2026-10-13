@@ -50,10 +50,7 @@ pub(super) fn take_delaunay_output_reserves() -> usize {
 
 #[path = "cdt.rs"]
 mod cdt;
-pub(crate) use cdt::{
-    CdtFaceUse, CdtSideBoundaryUse, CdtSideUse, CdtSourceUse, ConstrainedMeshPlan, NodeProvenance,
-    RefinementConstruction, RestrictionConstraint, RestrictionPiece, SourceConstraint, SourcePiece,
-};
+pub(crate) use cdt::{CdtSideBoundaryUse, ConstrainedMeshPlan};
 #[cfg(test)]
 #[path = "delaunay/chart_restriction_tests.rs"]
 mod chart_restriction_tests;
@@ -1717,11 +1714,15 @@ fn retained_constrained_source_plan(
     let mut seen: crate::collections::HashMap<(usize, usize), usize> =
         crate::collections::try_hash_map_with_capacity(capacity)?;
     let mut occurrence_start = 0_usize;
+    let mut source_root_start = 0_usize;
     for &(owner, ring) in rings {
         let coords = ring.coords();
         source_rings.push(cdt::SourceRingStart::new(sources.len(), owner));
         for index in 0..coords.coord_count().saturating_sub(1) {
             let start_occurrence = occurrence_start
+                .checked_add(index)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let source_root = source_root_start
                 .checked_add(index)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             let end_occurrence = start_occurrence
@@ -1759,6 +1760,7 @@ fn retained_constrained_source_plan(
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             sources.push(cdt::SourceConstraint {
                 id: sources.len(),
+                source_root,
                 start: coords.nth_coord(index),
                 end: coords.nth_coord(end_index),
                 start_site,
@@ -1769,6 +1771,9 @@ fn retained_constrained_source_plan(
         }
         occurrence_start = occurrence_start
             .checked_add(coords.coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        source_root_start = source_root_start
+            .checked_add(coords.coord_count().saturating_sub(1))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
     let coordinates = cdt::CdtCoordinates::retained_with_generated(
@@ -1813,6 +1818,7 @@ fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<Constrain
     let mut source_rings = Vec::with_capacity(rings.len());
     let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
     let mut occurrence_start = 0_usize;
+    let mut source_root_start = 0_usize;
     for &(owner, ring) in rings {
         let coords = ring.coords();
         source_rings.push(cdt::SourceRingStart::new(sources.len(), owner));
@@ -1843,11 +1849,15 @@ fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<Constrain
             let start_occurrence = occurrence_start
                 .checked_add(index)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let source_root = source_root_start
+                .checked_add(index)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             let end_occurrence = start_occurrence
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             sources.push(cdt::SourceConstraint {
                 id,
+                source_root,
                 start: vertices[start_site],
                 end: vertices[end_site],
                 start_site,
@@ -1858,6 +1868,9 @@ fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<Constrain
         }
         occurrence_start = occurrence_start
             .checked_add(coords.coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        source_root_start = source_root_start
+            .checked_add(coords.coord_count().saturating_sub(1))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
     let coordinates = cdt::CdtCoordinates::raw(&vertices, &source_points);

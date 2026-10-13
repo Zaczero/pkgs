@@ -610,6 +610,8 @@ pub(super) fn take_refinement_work_counters() -> RefinementWorkCounters {
 #[derive(Clone, Debug)]
 pub(crate) struct SourceConstraint {
     pub(crate) id: usize,
+    /// Original input segment ordinal, including skipped zero-length edges.
+    pub(crate) source_root: usize,
     pub(crate) start: Point,
     pub(crate) end: Point,
     pub(crate) start_site: usize,
@@ -773,13 +775,6 @@ pub(crate) struct ConstrainedMeshPlan {
 }
 
 impl ConstrainedMeshPlan {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the parent-owned final writer binds retained site locations to stored corner records"
-        )
-    )]
     pub(crate) fn site_chart_location(&self, site: usize) -> Option<ChartPointSite> {
         self.coordinates.retained_site_location(site)
     }
@@ -795,13 +790,6 @@ impl ConstrainedMeshPlan {
         self.coordinates.retained_source_location(occurrence)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the parent-owned final writer emits realized generated chart coordinates"
-        )
-    )]
     pub(crate) fn chart_proposal(&self, site: usize) -> XY {
         self.coordinates.site_xy(site)
     }
@@ -943,7 +931,11 @@ impl ConstrainedMeshPlan {
                 }
             }
         }
+        let mut previous_source_root = None;
         for (id, source) in self.source_constraints.iter().enumerate() {
+            let source_root_is_ordered =
+                previous_source_root.is_none_or(|previous| source.source_root > previous);
+            previous_source_root = Some(source.source_root);
             if source.start_occurrence >= self.coordinates.source_occurrences.len()
                 || source.end_occurrence >= self.coordinates.source_occurrences.len()
             {
@@ -954,6 +946,7 @@ impl ConstrainedMeshPlan {
             let source_start = self.coordinates.source_query(source.start_occurrence);
             let source_end = self.coordinates.source_query(source.end_occurrence);
             if source.id != id
+                || !source_root_is_ordered
                 || source.start_site == source.end_site
                 || !source.start.xy().x.is_finite()
                 || !source.start.xy().y.is_finite()
@@ -971,7 +964,7 @@ impl ConstrainedMeshPlan {
                         .key(self.coordinates.site_query(source.end_site))
             {
                 return Err(GeometryErrorKind::triangulation(
-                    "constrained mesh certificate has an invalid source site",
+                    "constrained mesh certificate has an invalid source site or root",
                 ));
             }
         }
@@ -2148,6 +2141,7 @@ impl ConstrainedMesh {
             .enumerate()
             .map(|(id, &[start_site, end_site])| SourceConstraint {
                 id,
+                source_root: id,
                 start: points[start_site],
                 end: points[end_site],
                 start_site,
@@ -3741,6 +3735,7 @@ mod tests {
                 .enumerate()
                 .map(|(id, &[start_site, end_site])| SourceConstraint {
                     id,
+                    source_root: id,
                     start: pts[start_site],
                     end: pts[end_site],
                     start_site,
@@ -3893,6 +3888,7 @@ mod tests {
         let end = *points.get(1).expect("fixture has its second source site");
         let source = SourceConstraint {
             id: 0,
+            source_root: 0,
             start,
             end,
             start_site: 0,

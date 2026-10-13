@@ -108,14 +108,15 @@ mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,
     PublishedVoronoiPolygonOutputs, VoronoiReceiptHold, map_computed_shape_chains,
-    publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
-    publish_mesh_publication_for_domain, publish_polygon_parts_with_edge_roles,
-    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
-    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
-    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
-    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
-    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
-    publish_voronoi_edge_column_with_budget, publish_voronoi_polygon_outputs,
+    publish_cdt_triangle_vertex_stream_budgeted, publish_changed_raw_computed_shape,
+    publish_computed_point_or_raw_shape, publish_mesh_publication_for_domain,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
+    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
+    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
+    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
+    publish_triangle_vertex_stream_budgeted, publish_voronoi_edge_column_with_budget,
+    publish_voronoi_polygon_outputs,
 };
 mod arrangement;
 mod bvh_code;
@@ -392,11 +393,16 @@ pub(crate) use segments::{
     interpolate_subdivision_ordinate,
 };
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
+#[expect(
+    unused_imports,
+    reason = "the geographic CDT preparation and finalization functions share this internal drawing type"
+)]
+pub(crate) use tessellation::PreparedCdtDrawing;
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
-    CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
-    row_sample_seed,
+    CdtGroupsDrawingWriter, CdtRefinement, PreparedMeshPublication, PreparedSampling,
+    VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs, prepare_geographic_cdt_drawing,
+    publish_cdt_array, publish_sampling_array, publish_sampling_groups, row_sample_seed,
 };
 #[expect(
     unused_imports,
