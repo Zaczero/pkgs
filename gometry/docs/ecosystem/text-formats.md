@@ -133,10 +133,10 @@ positions as `[lon, lat]` with an optional third altitude element. It has **no p
 for M or coordinate epoch metadata**. [`to_geojson`][gometry.Geometry.to_geojson]
 and `__geo_interface__` raise when those values cannot be represented.
 
-GeoJSON uses CRS84 longitude/latitude order and carries no source CRS label.
+GeoJSON uses OGC:CRS84 longitude/latitude order and carries no source CRS label.
 A tagged geometry must already be in the WGS 84 geographic family; serialization
 does not reproject it. A CRS-free geometry is an explicit assumption that its
-coordinates already have CRS84 semantics: output validates longitude in
+coordinates already have OGC:CRS84 semantics: output validates longitude in
 `[-180, 180]` and latitude in `[-90, 90]`, and splits antimeridian-crossing
 geometry according to RFC 7946. CRS-free projected or other planar coordinates
 must be transformed or written with another format. On read, the default
