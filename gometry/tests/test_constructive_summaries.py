@@ -569,7 +569,9 @@ def test_polygonize_full_preserves_epoch() -> None:
     ring = gm.MultiLineString(
         [[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]], crs=4326, epoch=2020.0
     )
+    assert len(gm.polygonize_all([ring])) == 1
     result = gm.polygonize_all([ring], diagnostics=True)
+    assert len(result.polygons) == 1
     assert result.polygons.crs == gm.CRS('EPSG:4326')
     assert result.polygons.epoch == 2020.0
     for groups in (result.cut_edges, result.dangles, result.invalid_rings):
