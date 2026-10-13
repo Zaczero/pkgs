@@ -350,7 +350,7 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
         }
         return Ok(view.shape().clone());
     }
-    if let Some(capture) = capture.as_deref_mut() {
+    if let Some(capture) = capture {
         capture.capture_source_edges(&chart);
     }
     let split =
@@ -407,6 +407,25 @@ struct ChartEdgeEvent {
     parameter: ExactRational,
     seam_longitude: Option<f64>,
     source_root: Option<RootId>,
+}
+
+struct ChartSourceCapture<'a> {
+    root: Option<RootId>,
+    capture: Option<&'a mut SplitCapture>,
+}
+
+impl ChartSourceCapture<'_> {
+    fn record(
+        &mut self,
+        source_root: Option<RootId>,
+        point: Point,
+        parameter: &ExactRational,
+    ) -> Result<()> {
+        if let (Some(capture), Some(root)) = (self.capture.as_deref_mut(), source_root) {
+            capture.record_root_point(root, point, parameter)?;
+        }
+        Ok(())
+    }
 }
 
 fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<ChartConnection> {
@@ -584,8 +603,7 @@ fn append_source_edge_events<M: ChartMetric>(
     include_seam: bool,
     circle_witnesses: bool,
     band: Option<(f64, f64, f64)>,
-    source_root: Option<RootId>,
-    mut capture: Option<&mut SplitCapture>,
+    source_capture: &mut ChartSourceCapture<'_>,
 ) -> Result<()> {
     if include_seam && certified_no_chart_events(source[0].x, source[1].x, frame) {
         return Ok(());
@@ -616,11 +634,12 @@ fn append_source_edge_events<M: ChartMetric>(
                     ExactDyadic::from_i64(4),
                 )?,
                 seam_longitude: None,
-                source_root,
+                source_root: source_capture.root,
             })?;
         }
     }
-    if include_seam && let Some(event) = seam_event(source, longitude, frame, source_root)? {
+    if include_seam && let Some(event) = seam_event(source, longitude, frame, source_capture.root)?
+    {
         insert_chart_event(&mut events, event)?;
     }
     if events.is_empty() {
@@ -645,9 +664,7 @@ fn append_source_edge_events<M: ChartMetric>(
             interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
         let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
         let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
-        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), event.source_root) {
-            capture.record_root_point(root, point, &event.parameter)?;
-        }
+        source_capture.record(event.source_root, point, &event.parameter)?;
         output.push(point);
     }
     Ok(())
@@ -688,9 +705,11 @@ fn chart_line_captured<M: ChartMetric>(
             Some(capture) => Some(capture.next_source_root()?),
             None => None,
         };
-        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-            capture.record_root_point(root, start_chart, &ExactRational::zero())?;
-        }
+        let mut source_capture = ChartSourceCapture {
+            root: source_root,
+            capture: capture.as_deref_mut(),
+        };
+        source_capture.record(source_root, start_chart, &ExactRational::zero())?;
         append_source_edge_events(
             &mut chart,
             &[start, end],
@@ -701,13 +720,10 @@ fn chart_line_captured<M: ChartMetric>(
             true,
             true,
             None,
-            source_root,
-            capture.as_deref_mut(),
+            &mut source_capture,
         )?;
         start_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-        if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-            capture.record_root_point(root, start_chart, &ExactRational::one())?;
-        }
+        source_capture.record(source_root, start_chart, &ExactRational::one())?;
         chart.push(start_chart);
         start = end;
     }
@@ -790,9 +806,11 @@ fn chart_ring_captured<M: ChartMetric>(
             if points.len() == 0 {
                 points.push(start_chart);
             }
-            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-                capture.record_root_point(root, start_chart, &ExactRational::zero())?;
-            }
+            let mut source_capture = ChartSourceCapture {
+                root: source_root,
+                capture: capture.as_deref_mut(),
+            };
+            source_capture.record(source_root, start_chart, &ExactRational::zero())?;
             append_source_edge_events(
                 &mut points,
                 &[source_start, source_end],
@@ -803,13 +821,10 @@ fn chart_ring_captured<M: ChartMetric>(
                 false,
                 start.y.to_bits() == end.y.to_bits(),
                 Some((start.x, end.x, west)),
-                source_root,
-                capture.as_deref_mut(),
+                &mut source_capture,
             )?;
             let end_chart = band_point(end)?;
-            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-                capture.record_root_point(root, end_chart, &ExactRational::one())?;
-            }
+            source_capture.record(source_root, end_chart, &ExactRational::one())?;
             points.push(end_chart);
         }
     } else {
@@ -822,9 +837,11 @@ fn chart_ring_captured<M: ChartMetric>(
             if points.len() == 0 {
                 points.push(start_chart);
             }
-            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-                capture.record_root_point(root, start_chart, &ExactRational::zero())?;
-            }
+            let mut source_capture = ChartSourceCapture {
+                root: source_root,
+                capture: capture.as_deref_mut(),
+            };
+            source_capture.record(source_root, start_chart, &ExactRational::zero())?;
             append_source_edge_events(
                 &mut points,
                 &[start, end],
@@ -835,13 +852,10 @@ fn chart_ring_captured<M: ChartMetric>(
                 true,
                 true,
                 None,
-                source_root,
-                capture.as_deref_mut(),
+                &mut source_capture,
             )?;
             let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-            if let (Some(capture), Some(root)) = (capture.as_deref_mut(), source_root) {
-                capture.record_root_point(root, end_chart, &ExactRational::one())?;
-            }
+            source_capture.record(source_root, end_chart, &ExactRational::one())?;
             points.push(end_chart);
         }
     }

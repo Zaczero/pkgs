@@ -16,6 +16,7 @@ use crate::geometry::publication::{
     ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, SyntheticChartVertex, finish_geographic,
 };
+use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
@@ -264,12 +265,12 @@ impl SplitDrawing {
                     &mut result,
                     chart_point(start, self.frame, self.longitude_scale, self.latitude_scale)?,
                     chart_point(end, self.frame, self.longitude_scale, self.latitude_scale)?,
-                );
+                )?;
             }
             return Ok(result);
         }
         for &(start, end) in &self.source_edges {
-            *result.entry(ChartEdgeKey::new(start, end)).or_insert(0) += 1;
+            add_edge_count(&mut result, start, end)?;
         }
         Ok(result)
     }
@@ -319,10 +320,8 @@ impl SplitArrayPublisher {
     pub(crate) fn finish(self, frame: Frame) -> Result<FinishedGeometry> {
         let (storage, missing, layout) = self.writer.finish_parts()?;
         let row_map = match layout {
-            crate::geometry::storage::StorageLayout::PresentOnly => {
-                self.row_map.into_iter().flatten().map(Some).collect()
-            },
-            crate::geometry::storage::StorageLayout::LogicalRows => self.row_map,
+            StorageLayout::PresentOnly => self.row_map.into_iter().flatten().map(Some).collect(),
+            StorageLayout::LogicalRows => self.row_map,
         };
         let mut work = Unmetered;
         let buffers =
@@ -405,7 +404,7 @@ struct ShapeLayoutBuilder<'a> {
 }
 
 impl<'a> ShapeLayoutBuilder<'a> {
-    fn new(
+    const fn new(
         logical_row: usize,
         image_start: usize,
         source_roots: &'a BTreeMap<PointRecordKey, Vec<RootRange>>,
@@ -635,22 +634,22 @@ fn chart_point(
 fn collect_shape_edges(shape: &Shape, output: &mut Vec<(Point, Point)>) {
     match shape {
         Shape::LineString(line) => {
-            output.extend(line.segment_pairs().map(|[start, end]| (start, end)));
+            output.extend(line.segment_pairs().map(<(Point, Point)>::from));
         },
         Shape::MultiLineString(lines) => {
             for line in lines.as_slice() {
-                output.extend(line.segment_pairs().map(|[start, end]| (start, end)));
+                output.extend(line.segment_pairs().map(<(Point, Point)>::from));
             }
         },
         Shape::Polygon(polygon) => {
             for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                output.extend(ring.segment_pairs().map(|[start, end]| (start, end)));
+                output.extend(ring.segment_pairs().map(<(Point, Point)>::from));
             }
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons.as_slice() {
                 for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                    output.extend(ring.segment_pairs().map(|[start, end]| (start, end)));
+                    output.extend(ring.segment_pairs().map(<(Point, Point)>::from));
                 }
             }
         },
@@ -663,12 +662,17 @@ fn collect_shape_edges(shape: &Shape, output: &mut Vec<(Point, Point)>) {
     }
 }
 
-fn add_edge_count(edges: &mut BTreeMap<ChartEdgeKey, usize>, start: Point, end: Point) {
+fn add_edge_count(
+    edges: &mut BTreeMap<ChartEdgeKey, usize>,
+    start: Point,
+    end: Point,
+) -> Result<()> {
     let count = edges.entry(ChartEdgeKey::new(start, end)).or_default();
-    *count = count.saturating_add(1);
+    *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    Ok(())
 }
 
-fn chart_pole(point: Point) -> Option<ChartPole> {
+const fn chart_pole(point: Point) -> Option<ChartPole> {
     if point.y.to_bits() == 90.0_f64.to_bits() {
         Some(ChartPole::North)
     } else if point.y.to_bits() == (-90.0_f64).to_bits() {
@@ -731,6 +735,29 @@ fn next_node(node: &mut u32) -> Result<u32> {
     Ok(current)
 }
 
+fn ring_vertex_node(
+    vertex_index: usize,
+    last_index: usize,
+    closed_duplicate: bool,
+    nodes: &mut [Option<u32>],
+    next_node_id: &mut u32,
+) -> Result<u32> {
+    let node_index = if closed_duplicate && vertex_index == last_index {
+        0
+    } else {
+        vertex_index
+    };
+    let slot = nodes.get_mut(node_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("restriction vertex lies outside its ring".into())
+    })?;
+    if let Some(node) = *slot {
+        return Ok(node);
+    }
+    let node = next_node(next_node_id)?;
+    *slot = Some(node);
+    Ok(node)
+}
+
 fn ring_restrictions(
     ring: &Ring,
     frame: GeographicFrame,
@@ -744,49 +771,55 @@ fn ring_restrictions(
     if native_points.len() < 2 {
         return Ok(());
     }
+    let last_index = native_points
+        .len()
+        .checked_sub(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let closed_duplicate = native_points
+        .first()
+        .zip(native_points.last())
+        .is_some_and(|(first, last)| PointRecordKey::new(*first) == PointRecordKey::new(*last));
     let chart_points = native_points
         .iter()
         .copied()
         .map(|point| chart_point(point, frame, longitude_scale, latitude_scale))
         .collect::<Result<Vec<_>>>()?;
     let mut nodes = vec![None; native_points.len()];
-    for (index, pair) in chart_points.array_windows::<2>().enumerate() {
-        let [start_chart, end_chart] = *pair;
+    for (index, (native_pair, chart_pair)) in native_points
+        .array_windows::<2>()
+        .zip(chart_points.array_windows::<2>())
+        .enumerate()
+    {
+        let [start_native, end_native] = *native_pair;
+        let [start_chart, end_chart] = *chart_pair;
         let edge = ChartEdgeKey::new(start_chart, end_chart);
         if let Some(count) = source_edges.get_mut(&edge)
-            && *count != 0
+            && let Some(remaining) = count.checked_sub(1)
         {
-            *count -= 1;
+            *count = remaining;
             continue;
         }
         let Some(restriction) = restriction_for_edge(start_chart, end_chart) else {
             continue;
         };
-        let endpoint_node =
-            |index: usize, nodes: &mut [Option<u32>], next_node_id: &mut u32| -> Result<u32> {
-                let index = if index + 1 == native_points.len()
-                    && PointRecordKey::new(native_points[index])
-                        == PointRecordKey::new(native_points[0])
-                {
-                    0
-                } else {
-                    index
-                };
-                if let Some(node) = nodes.get(index).copied().flatten() {
-                    return Ok(node);
-                }
-                let node = next_node(next_node_id)?;
-                let slot = nodes.get_mut(index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("restriction vertex lies outside its ring".into())
-                })?;
-                *slot = Some(node);
-                Ok(node)
-            };
-        let start_node = endpoint_node(index, &mut nodes, next_node_id)?;
-        let end_node = endpoint_node(index + 1, &mut nodes, next_node_id)?;
+        let end_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let start_node = ring_vertex_node(
+            index,
+            last_index,
+            closed_duplicate,
+            &mut nodes,
+            next_node_id,
+        )?;
+        let end_node = ring_vertex_node(
+            end_index,
+            last_index,
+            closed_duplicate,
+            &mut nodes,
+            next_node_id,
+        )?;
         let (Some(start), Some(end)) = (
-            synthetic_vertex(native_points[index], start_chart, start_node),
-            synthetic_vertex(native_points[index + 1], end_chart, end_node),
+            synthetic_vertex(start_native, start_chart, start_node),
+            synthetic_vertex(end_native, end_chart, end_node),
         ) else {
             continue;
         };
