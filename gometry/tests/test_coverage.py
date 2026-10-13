@@ -198,6 +198,37 @@ def test_geographic_nonidentity_clean_assigns_seam_overlap_to_input_owner() -> N
     assert gm.coverage_is_valid(reversed_rows)
 
 
+def test_geographic_nonidentity_clean_scatters_nullable_rows_after_publication() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    first = gm.Polygon(
+        [
+            (170, 0, 1, 10),
+            (-165, 0, 11, 60),
+            (-165, 10, 21, 110),
+            (170, 10, 31, 160),
+            (170, 0, 1, 10),
+        ],
+        crs=crs,
+    )
+    second = gm.Polygon(
+        [(175, 0), (-160, 0), (-160, 10), (175, 10), (175, 0)],
+        crs=crs,
+    )
+    rows = gm.GeometryArray([first, None, second])
+
+    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule='min_index')
+
+    assert cleaned.is_missing.tolist() == [False, True, False]
+    assert cleaned.crs == gm.CRS(crs)
+    assert cleaned[1] is None
+    assert gm.covers(cleaned[0], gm.Point(177, 5, crs=crs))
+    assert not gm.covers(cleaned[2], gm.Point(177, 5, crs=crs))
+    assert gm.covers(cleaned[2], gm.Point(-162.5, 5, crs=crs))
+    assert gm.coverage_is_valid(cleaned)
+
+
 def test_geographic_nonidentity_clean_assigns_polar_overlap_to_input_owner() -> None:
     crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
 
