@@ -114,7 +114,7 @@ impl FrameSide {
         }
     }
 
-    fn end(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+    const fn end(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
         self.next().start(rectangle)
     }
 
@@ -128,7 +128,7 @@ impl FrameSide {
         }
     }
 
-    fn end_xy(self, rectangle: &[XY; 4]) -> XY {
+    const fn end_xy(self, rectangle: &[XY; 4]) -> XY {
         self.next().start_xy(rectangle)
     }
 
@@ -511,7 +511,7 @@ pub(super) const fn site_at(sites: &[Site], ordinal: usize) -> &Site {
     &sites[ordinal]
 }
 
-fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
+const fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
     site_at(sites, site.0 as usize)
 }
 

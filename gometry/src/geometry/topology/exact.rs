@@ -66,7 +66,7 @@ pub(super) const fn dyadic_heap_bytes(value: &ExactDyadic) -> usize {
     clippy::arithmetic_side_effects,
     reason = "HeapSize sums the two already-owned rational limbs"
 )]
-pub(super) fn rational_heap_bytes(value: &ExactRational) -> usize {
+pub(super) const fn rational_heap_bytes(value: &ExactRational) -> usize {
     let (numerator, denominator) = value.parts();
     dyadic_heap_bytes(numerator) + dyadic_heap_bytes(denominator)
 }

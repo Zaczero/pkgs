@@ -183,14 +183,14 @@ impl ExactRational {
         Ok(rational_exponent(self) == rational_exponent(other))
     }
 
-    pub(crate) fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self {
             numerator: ExactDyadic::zero(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(crate) fn one() -> Self {
+    pub(crate) const fn one() -> Self {
         Self {
             numerator: ExactDyadic::one(),
             denominator: ExactDyadic::one(),

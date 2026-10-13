@@ -31,7 +31,7 @@ pub(super) const fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     clippy::indexing_slicing,
     reason = "both roots are returned by uf_root over this same admitted parent column"
 )]
-pub(super) fn uf_union(parents: &mut [usize], left: usize, right: usize) -> bool {
+pub(super) const fn uf_union(parents: &mut [usize], left: usize, right: usize) -> bool {
     let left = uf_root(parents, left);
     let right = uf_root(parents, right);
     if left == right {

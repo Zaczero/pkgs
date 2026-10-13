@@ -228,7 +228,7 @@ pub(super) struct Site {
 }
 
 impl Site {
-    pub(super) fn raw(id: usize, point: Point, source_ordinal: usize) -> Self {
+    pub(super) const fn raw(id: usize, point: Point, source_ordinal: usize) -> Self {
         Self {
             id,
             point,
