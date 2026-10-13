@@ -173,6 +173,34 @@ pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
+    let output = convex_hull_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => {
+            crate::geometry::finish_geographic_point_selection(output, ctx.frame.clone())
+        },
+    }
+}
+
+pub(crate) fn unary_convex_hull_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let output = convex_hull_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            crate::geometry::geographic_point_selection_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "convex_hull",
+            )?,
+        )),
+    }
+}
+
+fn convex_hull_shape(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     let shape = data.shape();
     ctx.with_source_arc_capture_for_axes(shape.axes(), |source_capture| {
         if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
@@ -456,6 +484,37 @@ pub(crate) fn unary_minimum_bounding_radius(
 
 /// Minimum-rotated-rectangle kernel shared by the spine-routed free function.
 pub(crate) fn unary_minimum_rotated_rectangle(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
+    let output = minimum_rotated_rectangle_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(output),
+        TopologyDomain::Geographic(_) => {
+            crate::geometry::finish_geographic_point_selection(output, ctx.frame.clone())
+        },
+    }
+}
+
+pub(crate) fn unary_minimum_rotated_rectangle_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let output = minimum_rotated_rectangle_shape(data, ctx)?;
+    match ctx.domain {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            crate::geometry::geographic_point_selection_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "minimum_rotated_rectangle",
+            )?,
+        )),
+    }
+}
+
+fn minimum_rotated_rectangle_shape(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {

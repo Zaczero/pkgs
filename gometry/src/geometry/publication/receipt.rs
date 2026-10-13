@@ -2,7 +2,8 @@ use super::DirectedChartRestrictionUse;
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
+    LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_search::{EvaluationBudget, Work};
 use crate::geometry::ordinates::RootRange;
@@ -70,20 +71,143 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
 }
 
 impl ProducerDrawingReceipt {
+    pub(in crate::geometry) fn point_selection(shape: Shape) -> Result<Self> {
+        match shape {
+            Shape::Point(point) => Self::point(Shape::Point(point)),
+            Shape::LineString(line) => Self::line(Shape::LineString(line)),
+            empty @ Shape::Empty(..) => Ok(Self::new(
+                FrozenLiteralBuffers::shapes(empty, ShapeLiteralLayout {
+                    points: Vec::new(),
+                    lines: Vec::new(),
+                    polygons: Vec::new(),
+                }),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
+            Shape::Polygon(polygon) => {
+                let mut next_image = 0_usize;
+                let (shell, mut literals) = Self::ring_layout(&polygon.shell, &mut next_image)?;
+                let mut holes = Vec::with_capacity(polygon.holes.len());
+                for hole in polygon.holes.iter() {
+                    let (layout, mut ring_literals) = Self::ring_layout(hole, &mut next_image)?;
+                    holes.push(layout);
+                    literals.append(&mut ring_literals);
+                }
+                let layout = ShapeLiteralLayout {
+                    points: Vec::new(),
+                    lines: Vec::new(),
+                    polygons: vec![LiteralPolygon {
+                        output: 0,
+                        axes: polygon.axes(),
+                        shell,
+                        holes,
+                    }],
+                };
+                Ok(Self::new(
+                    FrozenLiteralBuffers::shapes(Shape::Polygon(polygon), layout),
+                    literals,
+                    Vec::new(),
+                    Vec::new(),
+                ))
+            },
+            Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_) => Err(GeometryErrorKind::Invalid(
+                "point-selection receipt requires a Point, LineString, or Polygon output".into(),
+            )
+            .into()),
+        }
+    }
+
+    pub(in crate::geometry) fn point(shape: Shape) -> Result<Self> {
+        let image = ProducerImageId::new(0);
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row: 0,
+            group_row: None,
+            value_row: None,
+            output: 0,
+        };
+        let (points, literals) = match &shape {
+            Shape::Point(point) => (
+                vec![LiteralPoint {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::from_point(*point),
+                    image,
+                }],
+                vec![ProducerLiteral::from_point(address, image, *point)],
+            ),
+            Shape::Empty(crate::geometry::GeometryKind::Point, _) => (Vec::new(), Vec::new()),
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                crate::geometry::GeometryKind::MultiPoint
+                | crate::geometry::GeometryKind::LineString
+                | crate::geometry::GeometryKind::MultiLineString
+                | crate::geometry::GeometryKind::Polygon
+                | crate::geometry::GeometryKind::MultiPolygon
+                | crate::geometry::GeometryKind::GeometryCollection,
+                _,
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "nearest-point receipt requires a Point output".into(),
+                )
+                .into());
+            },
+        };
+        Ok(Self::new(
+            FrozenLiteralBuffers::shapes(shape, ShapeLiteralLayout {
+                points,
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            }),
+            literals,
+            Vec::new(),
+            Vec::new(),
+        ))
+    }
+
     pub(in crate::geometry) fn line(shape: Shape) -> Result<Self> {
-        let (layout, literals) = match &shape {
+        let mut next_image = 0;
+        let (layout, literals) = Self::line_layout(&shape, 0, None, None, &mut next_image)?;
+        Ok(Self::new(
+            FrozenLiteralBuffers::shapes(shape, layout),
+            literals,
+            Vec::new(),
+            Vec::new(),
+        ))
+    }
+
+    pub(in crate::geometry) fn line_layout(
+        shape: &Shape,
+        logical_row: usize,
+        group_row: Option<usize>,
+        value_row: Option<usize>,
+        next_image: &mut usize,
+    ) -> Result<(ShapeLiteralLayout<ProducerImageId>, Vec<ProducerLiteral>)> {
+        let (layout, literals) = match shape {
             Shape::LineString(line) => {
                 let mut images = Vec::with_capacity(line.len());
                 let mut literals = Vec::with_capacity(line.len());
-                for (index, point) in line.iter_coords().enumerate() {
+                for point in line.iter_coords() {
+                    let index = *next_image;
+                    *next_image = index
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
                     let image = ProducerImageId::new(index);
                     images.push(image);
                     literals.push(ProducerLiteral::from_point(
                         LiteralAddress {
                             operation: 0,
-                            logical_row: 0,
-                            group_row: None,
-                            value_row: None,
+                            logical_row,
+                            group_row,
+                            value_row,
                             output: 0,
                         },
                         image,
@@ -111,18 +235,62 @@ impl ProducerDrawingReceipt {
                 },
                 Vec::new(),
             ),
-            _ => {
-                return Err(crate::geometry::GeometryErrorKind::Invalid(
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                crate::geometry::GeometryKind::Point
+                | crate::geometry::GeometryKind::MultiPoint
+                | crate::geometry::GeometryKind::MultiLineString
+                | crate::geometry::GeometryKind::Polygon
+                | crate::geometry::GeometryKind::MultiPolygon
+                | crate::geometry::GeometryKind::GeometryCollection,
+                _,
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
                     "producer line receipt requires a LineString output".into(),
                 )
                 .into());
             },
         };
-        Ok(Self::new(
-            FrozenLiteralBuffers::shapes(shape, layout),
+        Ok((layout, literals))
+    }
+
+    fn ring_layout(
+        ring: &crate::geometry::Ring,
+        next_image: &mut usize,
+    ) -> Result<(LiteralSequence<ProducerImageId>, Vec<ProducerLiteral>)> {
+        let mut images = Vec::with_capacity(ring.coords().len());
+        let mut literals = Vec::with_capacity(ring.coords().len());
+        for point in ring.iter_coords() {
+            let index = *next_image;
+            *next_image = index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let image = ProducerImageId::new(index);
+            images.push(image);
+            literals.push(ProducerLiteral::from_point(
+                LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                },
+                image,
+                point,
+            ));
+        }
+        Ok((
+            LiteralSequence {
+                output: 0,
+                axes: ring.coords().axes(),
+                images,
+            },
             literals,
-            Vec::new(),
-            Vec::new(),
         ))
     }
 

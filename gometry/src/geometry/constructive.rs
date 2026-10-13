@@ -33,9 +33,12 @@ pub(crate) use simplify::{
     GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,
     rdp_keep_with_edge_guard, strict_cycle, validate_buffer_style,
 };
+#[cfg(test)]
+pub(in crate::geometry) use snap::snap_drawing_receipt;
 pub(crate) use snap::{
-    SnapReference, remove_repeated_line_points, remove_repeated_points,
-    remove_repeated_ring_points, snap_ring_to_reference, snap_ring_to_reference_with_context,
+    SnapReference, finish_geographic_snap, geographic_snap_pending_row,
+    remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
+    snap_ring_to_reference, snap_ring_to_reference_with_context,
 };
 pub(crate) use subdivide::split;
 pub(in crate::geometry) use walk::winding_region;

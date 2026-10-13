@@ -12,7 +12,9 @@ use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::crs::frame::crs_arc_static;
 use crate::dispatch::MetricResolver;
-use crate::dispatch::kernels::binary_overlay;
+use crate::dispatch::kernels::{
+    binary_overlay, unary_convex_hull, unary_minimum_rotated_rectangle,
+};
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
     LiteralSequence, ShapeLiteralLayout,
@@ -25,7 +27,7 @@ use crate::geometry::storage::ValidityMask;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
     LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain, Unmetered,
-    geographic_topology_route,
+    geographic_topology_route, snap_drawing_receipt,
 };
 
 fn point_literal_layout(
@@ -432,8 +434,7 @@ fn minimum_clearance_line_receipt_omission_fails_final_readback() {
     let shape = crate::io::parse_wkt("MULTIPOINT ((0 0), (1 0))").unwrap();
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
     let output =
-        crate::broadcast::metric_minimum_clearance_line(&model, Some("OGC:CRS84"), &shape)
-            .unwrap();
+        crate::broadcast::metric_minimum_clearance_line(&model, Some("OGC:CRS84"), &shape).unwrap();
     let mut receipt = ProducerDrawingReceipt::line(output).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
@@ -452,6 +453,255 @@ fn minimum_clearance_line_receipt_omission_fails_final_readback() {
         },
         PublicationOutcome::Reject(_) => {
             panic!("minimum-clearance line omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn nearest_points_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+    let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+    let left = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, 0.0)));
+    let right = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 1.0)));
+    let pair = crate::broadcast::metric_nearest_points_resolved(
+        &resolved,
+        &left,
+        &crate::geometry::FrameDependentCaches::default(),
+        &right,
+        &crate::geometry::FrameDependentCaches::default(),
+        None,
+    )
+    .unwrap()
+    .expect("the points have a nearest pair");
+    let (left, _) = crate::geometry::nearest_point_pair(Some(&pair), CoordinateAxes::XY);
+    let mut receipt = ProducerDrawingReceipt::point(left).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("nearest-point literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("nearest-point omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn shortest_line_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+    let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+    let left = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, 0.0)));
+    let right = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 1.0)));
+    let source_context = crate::geometry::SourceArcContext::cartesian();
+    let output = crate::broadcast::metric_shortest_line_resolved(
+        &resolved,
+        &left,
+        &right,
+        TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+        &source_context,
+    )
+    .unwrap();
+    let mut receipt = ProducerDrawingReceipt::line(output).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("shortest-line literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("shortest-line omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn split_groups_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let source = crate::io::parse_wkt("LINESTRING (0 0, 2 0)").unwrap();
+    let splitter = crate::io::parse_wkt("POINT (1 0)").unwrap();
+    let parts = source.split(&splitter, 0.0).unwrap();
+    assert_eq!(parts.len(), 2);
+
+    let mut writer = StreamingShapes::with_capacity(0, parts.len());
+    let mut value_map = Vec::with_capacity(parts.len());
+    let mut literals = Vec::new();
+    let mut next_image = 0_usize;
+    for (value_row, shape) in parts.into_iter().enumerate() {
+        let (layout, mut row_literals) = ProducerDrawingReceipt::line_layout(
+            &shape,
+            0,
+            Some(0),
+            Some(value_row),
+            &mut next_image,
+        )
+        .unwrap();
+        writer.try_push(shape).unwrap();
+        value_map.push(Some(LiteralRowLayout {
+            operation: 0,
+            logical_row: 0,
+            group_row: Some(0),
+            value_row: Some(value_row),
+            layout,
+        }));
+        literals.append(&mut row_literals);
+    }
+    let (storage, value_missing, layout) = writer.finish_parts().unwrap();
+    let mut work = Unmetered;
+    let buffers = FrozenLiteralBuffers::groups(
+        Arc::new(storage),
+        value_missing,
+        layout,
+        value_map,
+        vec![0, 2],
+        None,
+        &mut work,
+    )
+    .unwrap();
+    let mut receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let omitted = receipt.literals.remove(0);
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Groups,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("split group literal omission must fail final Groups readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("split omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn convex_hull_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let shape = crate::io::parse_wkt("MULTIPOINT ((0 0), (2 0), (1 2))").unwrap();
+    let mut scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&frame, &mut scratch)
+        .unwrap();
+    let data = crate::geometry::PreparedPlan::new(shape);
+    let context = crate::dispatch::CachelessRowContext {
+        frame: &frame,
+        domain,
+        metric,
+        lane: crate::dispatch::Lane::Scalar,
+    };
+    let output = unary_convex_hull(&data, &context).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("convex-hull literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("convex-hull omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn degenerate_minimum_rectangle_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let shape = crate::io::parse_wkt("LINESTRING (0 0, 1 1)").unwrap();
+    let mut scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&frame, &mut scratch)
+        .unwrap();
+    let data = crate::geometry::PreparedPlan::new(shape);
+    let context = crate::dispatch::CachelessRowContext {
+        frame: &frame,
+        domain,
+        metric,
+        lane: crate::dispatch::Lane::Scalar,
+    };
+    let output = unary_minimum_rotated_rectangle(&data, &context).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("degenerate rectangle literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("rectangle omission returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn snap_receipt_omission_fails_final_readback() {
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let source = crate::io::parse_wkt("LINESTRING (0 0, 2 0)").unwrap();
+    let reference = crate::io::parse_wkt("POINT (1 0.5)").unwrap();
+    let geographic = crate::geographic::GeographicFrame::crs84();
+    let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
+        crate::geometry::SourceArcContext::new(TopologyDomain::Geographic(geographic), None);
+    let output = source.snap_with_context(&reference, 0.5, &context).unwrap();
+    let mut receipt = snap_drawing_receipt(output).unwrap();
+    let omitted = receipt.literals.remove(0);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
+        StorageTarget::Scalar,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("snap literal omission must fail final scalar readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("snap omission returns producer-drawing rejection");
         },
     }
 }

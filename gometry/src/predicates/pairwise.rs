@@ -1,14 +1,36 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
+use crate::geometry::publication::GeometryOutput;
 use crate::geometry::storage::validity::union_many;
 use crate::{
     Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py,
-    PyGeometry, PyResult, Python, classify_required, crs, exact_geometry_array,
+    PyErr, PyGeometry, PyResult, Python, classify_required, crs, exact_geometry_array,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
     pyfunction, resolve_metric, validate_dwithin_distance, validate_dwithin_distance_arg,
 };
+
+fn shortest_line_array_output(
+    metric: &crate::crs::ResolvedMetric,
+    left: &crate::geometry::PreparedPlan,
+    right: &crate::geometry::PreparedPlan,
+    ctx: &crate::dispatch::CachelessRowContext<'_>,
+    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+) -> crate::error::Result<GeometryOutput> {
+    let output = metric_shortest_line_resolved(metric, left, right, ctx.domain, source_context)?;
+    match ctx.domain {
+        crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
+        crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
+            crate::geometry::geographic_line_pending_row(
+                output,
+                ctx.frame,
+                ctx.lane.row(),
+                "shortest_line",
+            )?,
+        )),
+    }
+}
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
 ///
@@ -98,13 +120,7 @@ pub(crate) fn shortest_line(
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
-                            metric_shortest_line_resolved(
-                                &resolved,
-                                left,
-                                right,
-                                ctx.domain,
-                                source_context,
-                            )
+                            shortest_line_array_output(&resolved, left, right, ctx, source_context)
                         })
                     },
                 )
@@ -123,13 +139,7 @@ pub(crate) fn shortest_line(
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
-                            metric_shortest_line_resolved(
-                                &resolved,
-                                left,
-                                right,
-                                ctx.domain,
-                                source_context,
-                            )
+                            shortest_line_array_output(&resolved, left, right, ctx, source_context)
                         })
                     },
                 )
@@ -156,6 +166,12 @@ pub(crate) fn shortest_line(
                         },
                     )
                 })?;
+                let shape = if domain.is_geographic() {
+                    crate::geometry::finish_geographic_line(shape, admission.frame.clone())
+                        .map_err(PyErr::from)?
+                } else {
+                    shape
+                };
                 crate::Typed(PyGeometry::with_frame(shape, admission.frame)).into_py_any(py)
             },
             (GeometryInput::Many(_), GeometryInput::Many(_)) => {
@@ -166,13 +182,7 @@ pub(crate) fn shortest_line(
                     crate::dispatch::MetricResolver::GeographicCarry,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
-                            metric_shortest_line_resolved(
-                                &resolved,
-                                left,
-                                right,
-                                ctx.domain,
-                                source_context,
-                            )
+                            shortest_line_array_output(&resolved, left, right, ctx, source_context)
                         })
                     },
                 )
@@ -562,6 +572,22 @@ pub(crate) fn nearest_points(
             };
             let (left_shape, right_shape) =
                 crate::geometry::nearest_point_pair(pair.as_ref(), common);
+            let (left_shape, right_shape) = if admission.domain.is_geographic() {
+                (
+                    crate::geometry::finish_geographic_nearest_point(
+                        left_shape,
+                        left.frame.clone(),
+                    )
+                    .map_err(PyErr::from)?,
+                    crate::geometry::finish_geographic_nearest_point(
+                        right_shape,
+                        right.frame.clone(),
+                    )
+                    .map_err(PyErr::from)?,
+                )
+            } else {
+                (left_shape, right_shape)
+            };
             (
                 crate::Typed(PyGeometry::with_frame(left_shape, left.frame.clone()))
                     .into_pyobject(py)?
@@ -654,7 +680,7 @@ pub(crate) fn nearest_points(
                     )
                 })
                 .map_err(crate::broadcast::rows_err)?;
-            nearest_point_columns_masked(pairs, admission.frame, missing)
+            nearest_point_columns_masked(pairs, admission.frame, missing, admission.domain)
                 .and_then(|value| value.into_py_any(py))
         },
     }

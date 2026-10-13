@@ -454,7 +454,7 @@ impl PyGeometry {
             })?,
             None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
         };
-        Ok(PyGeometryArray::from_shapes(shapes, frame)?)
+        Ok(crate::geometry::publish_split_parts_array(shapes, frame)?)
     }
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
