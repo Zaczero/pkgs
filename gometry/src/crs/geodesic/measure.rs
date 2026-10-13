@@ -264,9 +264,9 @@ mod chart_measure_tests {
     use crate::geographic::{
         AngularFactor, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
     };
-    use crate::geometry::types::ChartMetric;
     use crate::geometry::{
-        Bounds, Coordinates as _, MultiPolygon, Point, Polygon, Ring, Shape, ring_bounded_pole,
+        Bounds, ChartMetric, Coordinates as _, MultiPolygon, Point, Polygon, Ring, Shape,
+        ring_bounded_pole,
     };
 
     fn metric_with_flattening_and_frame(flattening: f64, frame: GeographicFrame) -> GeodesicMetric {
