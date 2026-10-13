@@ -741,7 +741,6 @@ fn voronoi_publication_error(message: &'static str) -> crate::error::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Frame;
     use crate::error::ErrorKind;
     use crate::geometry::tessellation::VoronoiProducer;
     use crate::geometry::{GeometryErrorKind, VoronoiBoundary};
@@ -811,7 +810,7 @@ mod tests {
             .unwrap()
             .into_array()
             .unwrap();
-        assert!(!control_values.is_empty());
+        assert_eq!(control_values.len(), 4);
 
         let mut writer = small_voronoi_writer();
         let omitted = writer.literals.pop().expect("Voronoi output has literals");
@@ -825,13 +824,13 @@ mod tests {
             "the omitted literal has no retained source-root use",
         );
 
-        let error = writer
-            .finish_array(Frame::None)
-            .expect_err("the shared readback rejects a missing Voronoi literal");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
+        match writer.finish_array(Frame::None) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            )),
+            Ok(_) => panic!("the shared readback rejects a missing Voronoi literal"),
+        }
     }
 
     #[test]
