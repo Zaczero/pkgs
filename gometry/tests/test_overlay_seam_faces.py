@@ -253,11 +253,15 @@ def test_geographic_polygonize_closes_six_rows_across_the_longitude_alias() -> N
     linework = [gm.LineString(part, crs='OGC:CRS84') for part in parts]
 
     polygons = gm.polygonize_all(linework)
-    groups = gm.GeometryArray(linework).polygonize()
+    groups = gm.GeometryArray([
+        gm.GeometryCollection(linework, crs='OGC:CRS84'),
+        gm.LineString([], crs='OGC:CRS84'),
+    ]).polygonize()
 
     assert len(polygons) == 1
     assert gm.covers(polygons[0], gm.Point(179, 5, crs='OGC:CRS84'))
     assert not gm.covers(polygons[0], gm.Point(0, 5, crs='OGC:CRS84'))
+    assert len(groups) == 2
     assert len(groups[0]) == 1
     assert len(groups[1]) == 0
     assert groups[0][0].to_wkb() == polygons[0].to_wkb()
