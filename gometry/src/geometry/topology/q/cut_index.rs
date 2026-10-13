@@ -3,8 +3,8 @@ use super::{
     GeographicFrame, GeometryErrorKind, GlobalFaceId, HeapSize, Ordering, QComponentCutRuns,
     QComponentId, QCutEvent, QCutIndex, QCutInterval, QDart, QDartId, QFaceChart, QLocalFaceId,
     QNodeId, QNodeKey, QPortId, QSpanOwner, QuotientFaces, ResourceError, Result, RingTransition,
-    SourceEdgeId, SourceEdgeKind, SourceRingId, SourceRowId, SweepEvent, SweepEventKind,
-    face_at_pole_longitude, face_in_direction, rational_heap_bytes, try_sort_by,
+    SourceEdgeId, SourceEdgeKind, face_at_pole_longitude, face_in_direction, rational_heap_bytes,
+    try_sort_by,
 };
 
 impl QCutIndex {

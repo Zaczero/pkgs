@@ -2,7 +2,6 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::ops::Range;
 
 use super::exact::{
     ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceRange,

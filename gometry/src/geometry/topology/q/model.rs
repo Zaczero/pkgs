@@ -1,7 +1,9 @@
+use std::ops::Range;
+
 use super::{
     ChartPole, ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactRational,
-    ExactSourceRange, GlobalFaceRowOccupancy, GlobalNodeRowSupport, GlobalSpanRowSupport, HeapSize,
-    Loc, NodedExactChart, QFaceValidity, QSpatialIndex, QuotientNodeId, SeedFaceGerm, SourceEdgeId,
+    ExactSourceRange, GlobalFaceRowOccupancy, GlobalNodeRowSupport, GlobalSpanRowSupport, Loc,
+    NodedExactChart, QFaceValidity, QSpatialIndex, QuotientNodeId, SeedFaceGerm, SourceEdgeId,
     SourcePolygonId, SourceRingId, SourceRowId,
 };
 
