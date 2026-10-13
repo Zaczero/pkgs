@@ -31,9 +31,12 @@ pub(super) struct FaceBoundaryCycle {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FaceCycleRole {
-    pub(super) is_hole: bool,
-    pub(super) named_pole: Option<ChartPole>,
+pub(super) enum FaceCycleRole {
+    Classified {
+        is_hole: bool,
+        named_pole: Option<ChartPole>,
+    },
+    Unbounded,
 }
 
 pub(super) struct MinimalFaceSelection {
@@ -127,15 +130,19 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        let (is_hole, named_pole) = super::emission::ring_roles::exact_q_ring_role_for_linework(
-            topology.sources.frame,
-            &points,
-            work,
-        )?;
-        roles.push(FaceCycleRole {
-            is_hole,
-            named_pole,
-        });
+        roles.push(
+            match super::emission::ring_roles::exact_q_ring_role_for_linework(
+                topology.sources.frame,
+                &points,
+                work,
+            )? {
+                Some((is_hole, named_pole)) => FaceCycleRole::Classified {
+                    is_hole,
+                    named_pole,
+                },
+                None => FaceCycleRole::Unbounded,
+            },
+        );
     }
     Ok(roles)
 }
@@ -171,7 +178,14 @@ pub(super) fn even_odd_face_selection(
     let mut parent = vec![None; face_count];
     for (cycle, &role) in cycles.iter().zip(cycle_roles) {
         work.charge_into_error(1)?;
-        if role.named_pole.is_some() || !role.is_hole {
+        let FaceCycleRole::Classified {
+            is_hole,
+            named_pole,
+        } = role
+        else {
+            continue;
+        };
+        if named_pole.is_some() || !is_hole {
             continue;
         }
         if cycle.face == exterior {
@@ -302,9 +316,14 @@ fn exterior_face_for_pole_caps(
     let mut exterior = None;
     for role in cycle_roles {
         work.charge_into_error(1)?;
-        let Some(named_pole) = role.named_pole else {
+        let FaceCycleRole::Classified {
+            named_pole: Some(named_pole),
+            ..
+        } = role
+        else {
             continue;
         };
+        let named_pole = *named_pole;
         let Some(cap) = pole_sector_face(topology, named_pole, work)? else {
             return Ok(None);
         };

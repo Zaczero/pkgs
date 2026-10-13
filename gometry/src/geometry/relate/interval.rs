@@ -258,8 +258,8 @@ impl MatrixCells for De9imInterval {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::predicate_spec::Predicate;
     use crate::geometry::relate_pattern::compile;
-    use crate::predicates::Predicate;
 
     const LINE: OperandShape = OperandShape {
         interior: Dimension::Curve,

@@ -12,18 +12,15 @@ use super::q::{
     QNodeId, QPortId,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::retained_exact::sites::{
-    retained_exact_native_site_with_work, split_rational_native_site_with_work,
-};
 use crate::geographic::{
     ChartPole, ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
-use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
-pub(super) use crate::geometry::embedding_completion::{
-    LiteralPoint, LiteralPolygon, LiteralSequence,
+use crate::geometry::embedding_completion::literals::{
+    LiteralPoint, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
-use crate::geometry::embedding_search::{EvaluationBudget, SearchAccount};
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};
 #[cfg(test)]
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::ordinates::{
@@ -113,7 +110,6 @@ pub(super) use self::trace::{
 
 #[cfg(test)]
 mod tests {
-
     use crate::geometry::topology::emission::families::{
         FeatureFamilyBound, NativeCutOccurrenceInterval, NativeCutOccurrenceRange,
     };

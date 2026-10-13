@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use super::receipt::{CheckedPublicationLiteral, ProducerLiteral, PublicationImage};
 use crate::error::Result;
-use crate::geometry::embedding_completion::{CheckedImages, LiteralAddress, LiteralChart};
+use crate::geometry::embedding_completion::literals::LiteralAddress;
+use crate::geometry::embedding_completion::storage::{CheckedImages, LiteralChart};
 use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
 use crate::work::Work;

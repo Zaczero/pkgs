@@ -15,10 +15,11 @@ use crate::dispatch::MetricResolver;
 use crate::dispatch::kernels::{
     binary_overlay, unary_convex_hull, unary_minimum_rotated_rectangle,
 };
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
-    LiteralSequence, ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
+    ShapeLiteralLayout,
 };
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
@@ -1625,6 +1626,7 @@ fn binary_geographic_array_overlay_binds_after_final_array_admission() {
             &right,
             "intersection",
             MetricResolver::GeographicCarry,
+            false,
             |left, right, context| {
                 binary_overlay(
                     left,

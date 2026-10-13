@@ -390,6 +390,7 @@ pub(crate) fn snap(
                 reference,
                 crate::dispatch::Operation::Snap.name(),
                 resolver,
+                true,
                 move |left, right, context| snap_output(left, right, tolerance, context),
             )
         });
@@ -402,6 +403,7 @@ pub(crate) fn snap(
             reference,
             "snap",
             resolver,
+            true,
             move |left, right, context| {
                 snap_output(left, right, tolerance.get(context.lane.row()), context)
             },

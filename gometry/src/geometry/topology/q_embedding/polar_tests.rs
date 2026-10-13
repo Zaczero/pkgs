@@ -1,5 +1,6 @@
 use super::*;
 use crate::geographic::{GeographicRing, RingSummary};
+use crate::geometry::topology::overlay::take_q_overlay_plan_build_count;
 use crate::geometry::topology::q_embedding::emission::ring_roles::assigned_emitted_ring;
 use crate::geometry::{CoordinateAxes, OverlayOp, Shape};
 
@@ -337,6 +338,41 @@ fn t2_bounded_winding_exclusion_and_finite_hole_keep_the_same_native_region() ->
         assert!(!capture.rounded, "{capture:?}");
         assert_eq!(capture.native(), Ok(()), "{capture:?}");
     }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses assertions as its behavioral oracle"
+)]
+fn t2_mixed_winding_and_finite_hole_overlay_does_not_reenter_q() -> Result<()> {
+    let frame = GeographicFrame::crs84();
+    let [shell, _] = t2_notched_inputs(frame)?;
+    let winding_exclusion = winding_pole_cap(false)?;
+    let finite_exclusion = polygon(&[
+        (20.0, 10.0),
+        (30.0, 10.0),
+        (30.0, 15.0),
+        (20.0, 15.0),
+        (20.0, 10.0),
+    ])?;
+    let inputs = [&shell, &winding_exclusion, &finite_exclusion];
+    let _ = take_q_overlay_plan_build_count();
+
+    let output = crate::geometry::overlay_all(
+        &inputs,
+        crate::geometry::TopologyDomain::Geographic(frame),
+        OverlayOp::Difference,
+        crate::geometry::Strictness::Strict,
+    )?;
+
+    assert_eq!(
+        take_q_overlay_plan_build_count(),
+        1,
+        "the mixed winding and finite-hole overlay must complete in one Q plan"
+    );
+    assert!(output.validate()?.is_none());
     Ok(())
 }
 

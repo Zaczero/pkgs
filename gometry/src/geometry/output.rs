@@ -150,7 +150,7 @@ fn assemble_sorted_overlay_shape(
 mod tests {
     use super::*;
     use crate::geometry::Ring;
-    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::embedding_search::account::EvaluationBudget;
 
     struct RecordingBudget {
         budget: EvaluationBudget,

@@ -3,10 +3,11 @@ use std::ops::ControlFlow;
 
 use crate::NonNegative;
 use crate::geometry::constructive::Result;
-use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
+use crate::geometry::embedding_completion::literals::{
+    LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
-use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::publication::{
     PendingPublicationRow, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
     finish_producer_drawing,
@@ -959,7 +960,7 @@ fn visit_snap_drawing(
     layout: &mut ShapeLiteralLayout<ProducerImageId>,
     literals: &mut Vec<ProducerLiteral>,
 ) -> Result<()> {
-    use crate::geometry::embedding_completion::LiteralPoint;
+    use crate::geometry::embedding_completion::literals::LiteralPoint;
     match shape {
         Shape::Point(point) => {
             let output = outputs.0;

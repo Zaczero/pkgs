@@ -484,7 +484,10 @@ pub(crate) fn geographic_line_pending_row(
     operation: &'static str,
 ) -> Result<publication::PendingPublicationRow> {
     let finished = finish_geographic_line_drawing(shape, frame.clone(), true)?;
-    let work = embedding_search::EvaluationBudget::new(operation, finished.output_literal_count())?;
+    let work = embedding_search::account::EvaluationBudget::new(
+        operation,
+        finished.output_literal_count(),
+    )?;
     finished.into_pending_row(logical_row, work, frame)
 }
 
@@ -510,7 +513,10 @@ pub(crate) fn geographic_point_selection_pending_row(
         frame.clone(),
         publication::StorageTarget::Scalar,
     )?;
-    let work = embedding_search::EvaluationBudget::new(operation, finished.output_literal_count())?;
+    let work = embedding_search::account::EvaluationBudget::new(
+        operation,
+        finished.output_literal_count(),
+    )?;
     finished.into_pending_row(logical_row, work, frame)
 }
 
@@ -530,9 +536,10 @@ pub(crate) fn finish_geographic_nearest_point_columns(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::{
-        FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+    use crate::geometry::embedding_completion::literals::{
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
     };
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
         finish_producer_drawing,
@@ -640,7 +647,8 @@ pub(crate) fn publish_split_parts_array(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::{FrozenLiteralBuffers, LiteralRowLayout};
+    use crate::geometry::embedding_completion::literals::LiteralRowLayout;
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
     };
@@ -683,7 +691,8 @@ pub(crate) fn publish_split_groups(
     use std::sync::Arc;
 
     use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::{FrozenLiteralBuffers, LiteralRowLayout};
+    use crate::geometry::embedding_completion::literals::LiteralRowLayout;
+    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
     };

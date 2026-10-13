@@ -118,6 +118,7 @@ pub(crate) fn shortest_line(
                     py,
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
+                    true,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)
@@ -137,6 +138,7 @@ pub(crate) fn shortest_line(
                     py,
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
+                    true,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)
@@ -180,6 +182,7 @@ pub(crate) fn shortest_line(
                     py,
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
+                    true,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)
