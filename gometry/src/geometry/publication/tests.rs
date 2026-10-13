@@ -616,7 +616,7 @@ fn convex_hull_receipt_omission_fails_final_readback() {
         lane: crate::dispatch::Lane::Scalar,
     };
     let output = unary_convex_hull(&data, &context).unwrap();
-    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output, false).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 
@@ -654,7 +654,7 @@ fn degenerate_minimum_rectangle_receipt_omission_fails_final_readback() {
         lane: crate::dispatch::Lane::Scalar,
     };
     let output = unary_minimum_rotated_rectangle(&data, &context).unwrap();
-    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output, false).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 
@@ -685,7 +685,7 @@ fn snap_receipt_omission_fails_final_readback() {
     let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =
         crate::geometry::SourceArcContext::new(TopologyDomain::Geographic(geographic), None);
     let output = source.snap_with_context(&reference, 0.5, &context).unwrap();
-    let mut receipt = snap_drawing_receipt(output).unwrap();
+    let mut receipt = snap_drawing_receipt(output, false).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 

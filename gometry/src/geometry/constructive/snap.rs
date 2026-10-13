@@ -1043,7 +1043,10 @@ fn visit_snap_drawing(
     Ok(())
 }
 
-pub(in crate::geometry) fn snap_drawing_receipt(shape: Shape) -> Result<ProducerDrawingReceipt> {
+pub(in crate::geometry) fn snap_drawing_receipt(
+    shape: Shape,
+    retain_literals_for_republication: bool,
+) -> Result<ProducerDrawingReceipt> {
     let mut next_image = 0_usize;
     let mut outputs = (0_u32, 0_u32, 0_u32);
     let mut layout = ShapeLiteralLayout {
@@ -1059,18 +1062,22 @@ pub(in crate::geometry) fn snap_drawing_receipt(shape: Shape) -> Result<Producer
         &mut layout,
         &mut literals,
     )?;
-    Ok(ProducerDrawingReceipt::new(
-        FrozenLiteralBuffers::shapes(shape, layout),
-        literals,
-        Vec::new(),
-        Vec::new(),
-    ))
+    let buffers = FrozenLiteralBuffers::shapes(shape, layout);
+    Ok(if retain_literals_for_republication {
+        ProducerDrawingReceipt::new_for_republication(buffers, literals, Vec::new(), Vec::new())
+    } else {
+        ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new())
+    })
 }
 
 pub(crate) fn finish_geographic_snap(shape: Shape, frame: crate::Frame) -> Result<Shape> {
-    finish_producer_drawing(snap_drawing_receipt(shape)?, frame, StorageTarget::Scalar)?
-        .into_scalar()
-        .map(|(shape, _)| shape)
+    finish_producer_drawing(
+        snap_drawing_receipt(shape, false)?,
+        frame,
+        StorageTarget::Scalar,
+    )?
+    .into_scalar()
+    .map(|(shape, _)| shape)
 }
 
 pub(crate) fn geographic_snap_pending_row(
@@ -1080,7 +1087,7 @@ pub(crate) fn geographic_snap_pending_row(
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
     let finished = finish_producer_drawing(
-        snap_drawing_receipt(shape)?,
+        snap_drawing_receipt(shape, true)?,
         frame.clone(),
         StorageTarget::Scalar,
     )?;

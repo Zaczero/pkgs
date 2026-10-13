@@ -72,19 +72,37 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
 }
 
 impl ProducerDrawingReceipt {
-    pub(in crate::geometry) fn point_selection(shape: Shape) -> Result<Self> {
+    fn drawing(
+        buffers: FrozenLiteralBuffers<ProducerImageId>,
+        literals: Vec<ProducerLiteral>,
+        retain_literals_for_republication: bool,
+    ) -> Self {
+        if retain_literals_for_republication {
+            Self::new_for_republication(buffers, literals, Vec::new(), Vec::new())
+        } else {
+            Self::new(buffers, literals, Vec::new(), Vec::new())
+        }
+    }
+
+    pub(in crate::geometry) fn point_selection(
+        shape: Shape,
+        retain_literals_for_republication: bool,
+    ) -> Result<Self> {
         match shape {
-            Shape::Point(point) => Self::point(Shape::Point(point)),
-            Shape::LineString(line) => Self::line(Shape::LineString(line)),
-            empty @ Shape::Empty(..) => Ok(Self::new(
+            Shape::Point(point) => {
+                Self::point_drawing(Shape::Point(point), retain_literals_for_republication)
+            },
+            Shape::LineString(line) => {
+                Self::line_drawing(Shape::LineString(line), retain_literals_for_republication)
+            },
+            empty @ Shape::Empty(..) => Ok(Self::drawing(
                 FrozenLiteralBuffers::shapes(empty, ShapeLiteralLayout {
                     points: Vec::new(),
                     lines: Vec::new(),
                     polygons: Vec::new(),
                 }),
                 Vec::new(),
-                Vec::new(),
-                Vec::new(),
+                retain_literals_for_republication,
             )),
             Shape::Polygon(polygon) => {
                 let mut next_image = 0_usize;
@@ -105,11 +123,10 @@ impl ProducerDrawingReceipt {
                         holes,
                     }],
                 };
-                Ok(Self::new(
+                Ok(Self::drawing(
                     FrozenLiteralBuffers::shapes(Shape::Polygon(polygon), layout),
                     literals,
-                    Vec::new(),
-                    Vec::new(),
+                    retain_literals_for_republication,
                 ))
             },
             Shape::MultiPoint(_)
@@ -123,6 +140,14 @@ impl ProducerDrawingReceipt {
     }
 
     pub(in crate::geometry) fn point(shape: Shape) -> Result<Self> {
+        Self::point_drawing(shape, false)
+    }
+
+    pub(in crate::geometry) fn point_for_republication(shape: Shape) -> Result<Self> {
+        Self::point_drawing(shape, true)
+    }
+
+    fn point_drawing(shape: Shape, retain_literals_for_republication: bool) -> Result<Self> {
         let image = ProducerImageId::new(0);
         let address = LiteralAddress {
             operation: 0,
@@ -162,26 +187,32 @@ impl ProducerDrawingReceipt {
                 .into());
             },
         };
-        Ok(Self::new(
+        Ok(Self::drawing(
             FrozenLiteralBuffers::shapes(shape, ShapeLiteralLayout {
                 points,
                 lines: Vec::new(),
                 polygons: Vec::new(),
             }),
             literals,
-            Vec::new(),
-            Vec::new(),
+            retain_literals_for_republication,
         ))
     }
 
     pub(in crate::geometry) fn line(shape: Shape) -> Result<Self> {
+        Self::line_drawing(shape, false)
+    }
+
+    pub(in crate::geometry) fn line_for_republication(shape: Shape) -> Result<Self> {
+        Self::line_drawing(shape, true)
+    }
+
+    fn line_drawing(shape: Shape, retain_literals_for_republication: bool) -> Result<Self> {
         let mut next_image = 0;
         let (layout, literals) = Self::line_layout(&shape, 0, None, None, &mut next_image)?;
-        Ok(Self::new(
+        Ok(Self::drawing(
             FrozenLiteralBuffers::shapes(shape, layout),
             literals,
-            Vec::new(),
-            Vec::new(),
+            retain_literals_for_republication,
         ))
     }
 
