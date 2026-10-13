@@ -703,8 +703,14 @@ mod tests {
         assert_eq!(publication.producer, MeshProducer::Earcut);
         assert_eq!(publication.faces.len(), 8);
         assert_eq!(publication.points.len(), publication.faces.len() * 4);
-        let output_shapes = Shape::triangle_shapes_from_vertices(&publication.points)
-            .expect("published ears retain their per-face common axes");
+        let ring_ends = publication
+            .faces
+            .iter()
+            .map(|face| face.output_vertices.end)
+            .collect::<Vec<_>>();
+        let output_shapes =
+            Shape::triangle_shapes_from_published_rings(&publication.points, &ring_ends)
+                .expect("published ears retain their per-face common axes");
         assert_eq!(output_shapes.len(), publication.faces.len());
         let mut bridge_uses = 0;
         let mut diagonal_uses = 0;
