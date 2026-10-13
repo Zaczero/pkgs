@@ -25409,6 +25409,13 @@ mod canonical_coordinate_tests {
                 )
                 .into());
             },
+            QRingRoleCheck::NativeRequired(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "the complementary source drawing incorrectly required Native role assembly"
+                        .into(),
+                )
+                .into());
+            },
         }
         assert!(
             certify_nearest_ring_roles(&topology, &drawing, &mut budget).is_err(),
