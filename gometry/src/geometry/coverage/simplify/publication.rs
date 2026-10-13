@@ -1,6 +1,6 @@
 use super::*;
 
-fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
+pub(super) fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     tolerance: f64,
     method: SimplifyMethod,

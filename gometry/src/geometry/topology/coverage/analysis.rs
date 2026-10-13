@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
@@ -8,11 +10,9 @@ use super::gaps::{mark_edges, mark_near_gap_edges, mark_t_junction_edges};
 use crate::collections::{try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::geographic_admission_error;
-use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{
-    BulkRTree, ExpansionBudget, GeometryErrorKind, Loc, Shape, XY, point_distance,
-};
+use crate::geometry::{BulkRTree, ExpansionBudget, GeometryErrorKind, Loc, Shape};
 use crate::work::{Unmetered, Work};
 
 type RowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
@@ -326,8 +326,8 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
 
 impl ChartBounds {
     fn from_points(
-        start: &super::exact::ExactChartPoint,
-        end: &super::exact::ExactChartPoint,
+        start: &super::super::exact::ExactChartPoint,
+        end: &super::super::exact::ExactChartPoint,
     ) -> Result<Self> {
         let (start_min_x, start_max_x) = start.x.outward_bounds()?;
         let (start_min_y, start_max_y) = start.y.outward_bounds()?;

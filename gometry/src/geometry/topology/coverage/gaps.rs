@@ -5,7 +5,7 @@ use rstar::AABB;
 use super::super::q::ExactGeographicTopology;
 use super::analysis::{ChartBounds, NodeEdge, SpanIndex};
 use crate::collections::HashSet;
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicFrame;
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::tessellation::exact::ExactRational;

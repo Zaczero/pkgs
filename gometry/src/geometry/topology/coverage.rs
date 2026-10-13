@@ -1,5 +1,6 @@
 use super::q::ExactGeographicTopology;
 use crate::error::Result;
+#[cfg(test)]
 use crate::geometry::Shape;
 use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::geometry::storage::ValidityMask;
