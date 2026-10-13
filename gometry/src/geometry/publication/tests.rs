@@ -487,6 +487,306 @@ fn coverage_invalid_edge_binder_omission_fails_on_final_readback() {
     }
 }
 
+fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingReceipt> {
+    let input = [
+        crate::io::parse_wkt("POLYGON ((170 0, -165 0, -165 10, 170 10, 170 0))")?,
+        crate::io::parse_wkt("POLYGON ((175 0, -160 0, -160 10, 175 10, 175 0))")?,
+    ];
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let analysis =
+        crate::geometry::analyze_geographic_coverage(&input, frame, 0.0, "coverage_clean")?;
+    let areas = input.iter().map(Shape::area).collect::<Vec<_>>();
+    let mut work = Unmetered;
+    let assignment = analysis.assign_cleaning_faces(
+        &areas,
+        0.0,
+        crate::geometry::CoverageOverlapRule::MinIndex,
+        &mut work,
+    )?;
+    let context = crate::geometry::SourceArcContext::new(
+        crate::geometry::TopologyDomain::Geographic(frame),
+        None,
+    );
+    analysis.cleaning_drawing_receipt(&assignment, CoordinateAxes::XY, &context, &mut work)
+}
+
+fn producer_polygon_ring_layout(
+    ring: &Ring,
+    logical_row: usize,
+    output: u32,
+    literals: &[ProducerLiteral],
+    literal_cursor: &mut usize,
+) -> crate::error::Result<LiteralSequence<ProducerImageId>> {
+    let mut images = Vec::with_capacity(ring.coords().len());
+    for point in ring.coords().iter() {
+        let literal = literals.get(*literal_cursor).ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "coverage clean test has fewer literals than polygon coordinates".into(),
+            )
+        })?;
+        let address = LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row: None,
+            value_row: None,
+            output,
+        };
+        if literal.address != address || literal.record != point {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "coverage clean test literal order differs from its row layout".into(),
+            )
+            .into());
+        }
+        images.push(literal.image);
+        *literal_cursor = literal_cursor
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    }
+    Ok(LiteralSequence {
+        output,
+        axes: ring.coords().axes(),
+        images,
+    })
+}
+
+fn producer_polygon_shape_layout(
+    shape: &Shape,
+    logical_row: usize,
+    literals: &[ProducerLiteral],
+    literal_cursor: &mut usize,
+) -> crate::error::Result<LiteralRowLayout<ProducerImageId>> {
+    let polygons = match shape {
+        Shape::Polygon(polygon) => std::slice::from_ref(polygon),
+        Shape::MultiPolygon(polygons) => polygons.as_slice(),
+        Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => &[],
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(
+            GeometryKind::Point
+            | GeometryKind::MultiPoint
+            | GeometryKind::LineString
+            | GeometryKind::MultiLineString
+            | GeometryKind::GeometryCollection,
+            _,
+        ) => {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "coverage clean test received a non-polygonal output row".into(),
+            )
+            .into());
+        },
+    };
+    let mut literal_polygons = Vec::with_capacity(polygons.len());
+    for (output, polygon) in polygons.iter().enumerate() {
+        let output =
+            u32::try_from(output).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let shell = producer_polygon_ring_layout(
+            &polygon.shell,
+            logical_row,
+            output,
+            literals,
+            literal_cursor,
+        )?;
+        let mut holes = Vec::with_capacity(polygon.holes.len());
+        for hole in &polygon.holes {
+            holes.push(producer_polygon_ring_layout(
+                hole,
+                logical_row,
+                output,
+                literals,
+                literal_cursor,
+            )?);
+        }
+        literal_polygons.push(LiteralPolygon {
+            output,
+            axes: polygon.axes(),
+            shell,
+            holes,
+        });
+    }
+    Ok(LiteralRowLayout {
+        operation: 0,
+        logical_row,
+        group_row: None,
+        value_row: None,
+        layout: ShapeLiteralLayout {
+            points: Vec::new(),
+            lines: Vec::new(),
+            polygons: literal_polygons,
+        },
+    })
+}
+
+#[test]
+fn geographic_coverage_clean_producer_receipt_binds_all_output_rows() {
+    let receipt = geographic_coverage_clean_receipt().unwrap();
+    let mut work = Unmetered;
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::None,
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Pass(finished) => {
+            assert!(!finished.producer_source_root_uses().is_empty());
+            let (rows, _) = finished.into_array().unwrap();
+            assert_eq!(rows.len(), 2);
+        },
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+            panic!("matching coverage clean storage must pass final readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("coverage clean must use the producer-drawing rejection family");
+        },
+    }
+}
+
+#[test]
+fn geographic_coverage_clean_rejects_corrupted_final_storage() {
+    let input = [
+        crate::io::parse_wkt("POLYGON ((170 0, -165 0, -165 10, 170 10, 170 0))")
+            .expect("first seam coverage row"),
+        crate::io::parse_wkt("POLYGON ((175 0, -160 0, -160 10, 175 10, 175 0))")
+            .expect("second seam coverage row"),
+    ];
+    let context = crate::geometry::SourceArcContext::new(
+        crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+        None,
+    );
+    let expected = crate::geometry::coverage_clean(
+        &input,
+        0.0,
+        0.0,
+        crate::geometry::CoverageOverlapRule::MinIndex,
+        &context,
+    )
+    .unwrap();
+    let mut receipt = geographic_coverage_clean_receipt().unwrap();
+    let corrupted_row = expected
+        .iter()
+        .position(|shape| !shape.is_empty())
+        .expect("the assigned seam coverage is non-empty");
+    let corrupted_image = receipt
+        .literals
+        .iter()
+        .find(|literal| literal.address.logical_row == corrupted_row)
+        .expect("the cleaned row has a checked producer literal")
+        .image;
+    let changed = std::cell::Cell::new(false);
+    let corrupted = expected
+        .iter()
+        .enumerate()
+        .map(|(logical_row, shape)| {
+            if logical_row == corrupted_row {
+                shape.map_points(&|point| {
+                    if changed.replace(true) {
+                        Ok(point)
+                    } else {
+                        Ok(Point::new_raw_xy(point.x + 13.0, point.y))
+                    }
+                })
+            } else {
+                Ok(shape.clone())
+            }
+        })
+        .collect::<crate::error::Result<Vec<_>>>()
+        .unwrap();
+    assert!(changed.get(), "the receipt-backed row was changed");
+
+    let mut writer = StreamingShapes::with_capacity(0, corrupted.len());
+    let mut row_map = Vec::with_capacity(expected.len());
+    let mut literal_cursor = 0_usize;
+    for (logical_row, (expected_shape, stored_shape)) in expected.iter().zip(corrupted).enumerate()
+    {
+        row_map.push(Some(
+            producer_polygon_shape_layout(
+                expected_shape,
+                logical_row,
+                &receipt.literals,
+                &mut literal_cursor,
+            )
+            .unwrap(),
+        ));
+        writer.try_push(stored_shape).unwrap();
+    }
+    assert_eq!(literal_cursor, receipt.literals.len());
+    let (storage, missing, layout) = writer.finish_parts().unwrap();
+    let mut work = Unmetered;
+    receipt.buffers =
+        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work).unwrap();
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::None,
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert!(images.contains(&corrupted_image));
+        },
+        PublicationOutcome::Pass(finished) => {
+            let (rows, _) = finished.into_array().unwrap();
+            let actual = match rows.logical_row(corrupted_row).expect("output row") {
+                crate::geometry::storage::LogicalRow::Present { row, .. } => {
+                    row.with_shape(Clone::clone).unwrap()
+                },
+                crate::geometry::storage::LogicalRow::Missing { .. } => {
+                    panic!("coverage clean output rows remain present")
+                },
+            };
+            assert_ne!(actual, expected[corrupted_row]);
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("corrupted coverage storage returns producer-drawing rejection");
+        },
+    }
+}
+
+#[test]
+fn geographic_coverage_clean_rejects_an_omitted_producer_literal() {
+    let mut receipt = geographic_coverage_clean_receipt().unwrap();
+    let omitted = receipt
+        .literals
+        .first()
+        .expect("coverage output has a literal")
+        .image;
+    receipt.literals.retain(|literal| literal.image != omitted);
+    receipt
+        .source_root_uses
+        .retain(|source_use| source_use.image != omitted);
+    let mut work = Unmetered;
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::None,
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert!(images.contains(&omitted));
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("final coverage storage must reject an omitted producer literal");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("omitted coverage literals return producer-drawing rejection");
+        },
+    }
+}
+
 #[test]
 fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
     let input = [

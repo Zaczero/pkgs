@@ -52,6 +52,7 @@ pub(in crate::geometry::topology) struct GeographicCoverageDirectedSpanUse {
     pub(in crate::geometry::topology) root_uses: Vec<GeographicCoverageRootUse>,
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct GeographicCoveragePortPresentation {
     pub(in crate::geometry::topology) port: QPortId,
     pub(in crate::geometry::topology) node: QNodeId,

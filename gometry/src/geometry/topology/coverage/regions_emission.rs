@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::super::exact::SourceEdgeKind;
-use super::super::q::{ExactGeographicTopology, QNodeId};
+use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
 use super::regions::{GeographicCoverageBoundaryCycle, GeographicCoverageRootUse};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::array::StreamingShapes;
@@ -83,6 +83,7 @@ struct OutputPolygon {
 }
 
 struct OutputRow {
+    logical_row: usize,
     polygons: Vec<OutputPolygon>,
 }
 
@@ -113,13 +114,33 @@ impl GeographicCoverageAnalysis {
         }
 
         let plans = self.cleaning_boundary_plans(assignment, work)?;
-        let mut node_roots: Vec<Vec<RootParameter>> = std::iter::repeat_with(Vec::new)
+        for (owner, region) in assignment.owners.iter().zip(&plans.face_regions) {
+            if owner != &region.map(|region| region.output_row) {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage output regions changed their assigned owner row".into(),
+                )
+                .into());
+            }
+        }
+
+        let mut node_roots: Vec<Option<Vec<RootParameter>>> = std::iter::repeat_with(|| None)
             .take(plans.topology.q.nodes.len())
             .collect();
+        for &node in &plans.live_nodes {
+            *node_roots.get_mut(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage live node is outside the Q table".into())
+            })? = Some(Vec::new());
+        }
         for row in &plans.rows {
             for region in &row.regions {
                 for cycle in &region.cycles {
                     for use_ in &cycle.uses {
+                        if plans.live_spans.binary_search(&use_.span).is_err() {
+                            return Err(GeometryErrorKind::Invalid(
+                                "coverage output boundary uses a span outside its live plan".into(),
+                            )
+                            .into());
+                        }
                         add_endpoint_roots(
                             &mut node_roots,
                             use_.from_presentation.node,
@@ -139,9 +160,28 @@ impl GeographicCoverageAnalysis {
             }
         }
 
+        let mut live_spans = vec![false; plans.topology.q.spans.len()];
+        for &span in &plans.live_spans {
+            *live_spans.get_mut(span.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage live span is outside the Q table".into())
+            })? = true;
+        }
+        let mut port_points = vec![None; plans.topology.q.ports.len()];
+        for &port_id in &plans.live_ports {
+            *port_points.get_mut(port_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage live port is outside the Q table".into())
+            })? = Some(port_point(plans.topology, port_id, frame, work)?);
+        }
+
         let mut output_rows = Vec::with_capacity(plans.rows.len());
-        for row in &plans.rows {
+        for (expected_row, row) in plans.rows.iter().enumerate() {
             work.charge_into_error(1)?;
+            if row.output_row != expected_row {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage output row plans are not in logical row order".into(),
+                )
+                .into());
+            }
             let mut polygons = Vec::new();
             if row.whole_sphere {
                 polygons.push(OutputPolygon {
@@ -152,8 +192,17 @@ impl GeographicCoverageAnalysis {
                 for region in &row.regions {
                     let mut shells = Vec::<OutputRing>::new();
                     let mut holes = Vec::<OutputRing>::new();
-                    for cycle in &region.cycles {
-                        let ring = output_ring(plans.topology, cycle, frame, work)?;
+                    let mut cycles = region.cycles.iter().collect::<Vec<_>>();
+                    cycles.sort_unstable_by_key(|cycle| cycle.cycle_index);
+                    for cycle in cycles {
+                        let ring = output_ring(
+                            plans.topology,
+                            cycle,
+                            frame,
+                            &port_points,
+                            &live_spans,
+                            work,
+                        )?;
                         if ring.hole {
                             holes.push(ring);
                         } else {
@@ -213,7 +262,10 @@ impl GeographicCoverageAnalysis {
                     polygons.extend(region_polygons);
                 }
             }
-            output_rows.push(OutputRow { polygons });
+            output_rows.push(OutputRow {
+                logical_row: row.output_row,
+                polygons,
+            });
         }
 
         let mut request_rows = Vec::new();
@@ -226,6 +278,7 @@ impl GeographicCoverageAnalysis {
                         let requests = match vertex.node {
                             Some(node) => node_roots
                                 .get(node)
+                                .and_then(Option::as_ref)
                                 .ok_or_else(|| {
                                     GeometryErrorKind::Invalid(
                                         "coverage output references an unknown Q node".into(),
@@ -264,7 +317,8 @@ impl GeographicCoverageAnalysis {
         let mut row_map = Vec::with_capacity(output_rows.len());
         let mut literals = Vec::new();
         let mut source_root_uses = Vec::new();
-        for (logical_row, row) in output_rows.into_iter().enumerate() {
+        for row in output_rows {
+            let logical_row = row.logical_row;
             let mut axes = declared_axes;
             let mut has_vertices = false;
             for polygon in &row.polygons {
@@ -364,18 +418,31 @@ fn output_ring(
     topology: &ExactGeographicTopology,
     cycle: &GeographicCoverageBoundaryCycle,
     frame: GeographicFrame,
+    port_points: &[Option<Point>],
+    live_spans: &[bool],
     work: &mut impl Work,
 ) -> Result<OutputRing> {
     let first = cycle.uses.first().ok_or_else(|| {
         GeometryErrorKind::Invalid("coverage output boundary cycle has no spans".into())
     })?;
     let first_port = first.from;
+    let first_presentation = first.from_presentation;
     let mut ports = Vec::with_capacity(cycle.uses.len().saturating_add(2));
-    ports.push(first_port);
+    ports.push((first_port, first_presentation));
     let mut last_port = first_port;
     let mut has_shell_source = false;
     let mut has_hole_source = false;
     for use_ in &cycle.uses {
+        if !live_spans
+            .get(use_.span.0 as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage boundary cycle references a non-live span".into(),
+            )
+            .into());
+        }
         if use_.from != last_port {
             let previous = topology.q.ports.get(last_port.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage cycle has an unknown previous port".into())
@@ -389,11 +456,11 @@ fn output_ring(
                 )
                 .into());
             }
-            ports.push(use_.from);
+            ports.push((use_.from, use_.from_presentation));
             last_port = use_.from;
         }
         if use_.to != last_port {
-            ports.push(use_.to);
+            ports.push((use_.to, use_.to_presentation));
             last_port = use_.to;
         }
         for root_use in &use_.root_uses {
@@ -420,37 +487,61 @@ fn output_ring(
         let previous = topology.q.ports.get(last_port.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("coverage cycle has an unknown closing port".into())
         })?;
-        let first = topology.q.ports.get(first_port.0 as usize).ok_or_else(|| {
+        let first_port_record = topology.q.ports.get(first_port.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("coverage cycle has an unknown first port".into())
         })?;
-        if previous.node != first.node {
+        if previous.node != first_port_record.node {
             return Err(GeometryErrorKind::Invalid(
                 "coverage boundary cycle does not close in Q".into(),
             )
             .into());
         }
-        ports.push(first_port);
+        ports.push((first_port, first_presentation));
     }
 
     let mut vertices = Vec::with_capacity(ports.len());
     let mut xs = Vec::with_capacity(ports.len());
     let mut ys = Vec::with_capacity(ports.len());
-    for port_id in ports {
+    for (port_id, presentation) in ports {
         work.charge_into_error(1)?;
         let port =
             topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage output port is unknown".into())
             })?;
-        let x = port.point.x.round_with_work(work)?;
-        let y = port.point.y.round_with_work(work)?;
-        let latitude = Latitude::try_new(frame, y)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let point = Point::new_raw_xy(x, latitude.get());
+        if presentation.port != port_id
+            || presentation.node != port.node
+            || presentation.seam_cut != port.cut
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage boundary port presentation changed its Q identity".into(),
+            )
+            .into());
+        }
+        let node = topology.q.nodes.get(port.node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage output port has an unknown node".into())
+        })?;
+        if presentation.pole != node.pole {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage boundary port presentation changed its pole role".into(),
+            )
+            .into());
+        }
+        let mut point = port_points
+            .get(port_id.0 as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage output port was not admitted as live".into())
+            })?;
+        if let Some(pole) = presentation.pole {
+            point.y = frame.chart_pole_latitude(pole);
+        }
+        let point = Point::new_raw_xy(point.x, point.y);
         xs.push(point.x);
         ys.push(point.y);
         vertices.push(OutputVertex {
             point,
-            node: Some(port.node.0 as usize),
+            node: Some(presentation.node.0 as usize),
             request_row: 0,
         });
     }
@@ -534,12 +625,30 @@ fn whole_sphere_vertices(frame: GeographicFrame) -> Vec<OutputVertex> {
     .collect()
 }
 
+fn port_point(
+    topology: &ExactGeographicTopology,
+    port: QPortId,
+    frame: GeographicFrame,
+    work: &mut impl Work,
+) -> Result<Point> {
+    let port = topology
+        .q
+        .ports
+        .get(port.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("coverage live port is unknown".into()))?;
+    let x = port.point.x.round_with_work(work)?;
+    let y = port.point.y.round_with_work(work)?;
+    let latitude = Latitude::try_new(frame, y)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    Ok(Point::new_raw_xy(x, latitude.get()))
+}
+
 fn write_ring(
     vertices: Vec<OutputVertex>,
     axes: CoordinateAxes,
     output: u32,
     logical_row: usize,
-    node_roots: &[Vec<RootParameter>],
+    node_roots: &[Option<Vec<RootParameter>>],
     resolved: &[NodeOrdinates],
     literals: &mut Vec<ProducerLiteral>,
     source_root_uses: &mut Vec<ProducerSourceRootUse>,
@@ -581,9 +690,12 @@ fn write_ring(
         };
         literals.push(ProducerLiteral::from_point(address, image, point));
         if let Some(node) = vertex.node {
-            let roots = node_roots.get(node).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage literal has an unknown Q node".into())
-            })?;
+            let roots = node_roots
+                .get(node)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("coverage literal has an inactive Q node".into())
+                })?;
             for root in roots {
                 work.charge_into_error(1)?;
                 source_root_uses.push(ProducerSourceRootUse {
@@ -612,15 +724,20 @@ fn write_ring(
 }
 
 fn add_endpoint_roots(
-    node_roots: &mut [Vec<RootParameter>],
+    node_roots: &mut [Option<Vec<RootParameter>>],
     node: QNodeId,
     root_uses: &[GeographicCoverageRootUse],
     start: bool,
     work: &mut impl Work,
 ) -> Result<()> {
-    let roots = node_roots.get_mut(node.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("coverage boundary root references an unknown Q node".into())
-    })?;
+    let roots = node_roots
+        .get_mut(node.0 as usize)
+        .and_then(Option::as_mut)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage boundary root references an inactive Q node".into(),
+            )
+        })?;
     for root_use in root_uses {
         work.charge_into_error(1)?;
         roots.push(RootParameter {
