@@ -1,4 +1,6 @@
-use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind, SourceRowId};
+#[cfg(test)]
+use super::super::exact::SourceRowId;
+use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind};
 use super::super::overlay::{self, BoundaryCycle, SelectedRegionPoles};
 use super::super::q::{ChartSpanId, GlobalFaceId, QNodeId, QPortId};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
@@ -61,13 +63,17 @@ pub(in crate::geometry::topology) struct GeographicCoveragePortPresentation {
 }
 
 pub(in crate::geometry::topology) struct GeographicCoverageRootUse {
+    #[cfg(test)]
     pub(in crate::geometry::topology) owner_index: usize,
     pub(in crate::geometry::topology) source_edge: SourceEdgeId,
+    #[cfg(test)]
     pub(in crate::geometry::topology) source_row: SourceRowId,
     /// The exact source interval is oriented in the directed boundary's walk order.
     pub(in crate::geometry::topology) source_range: ExactSourceRange,
+    #[cfg(test)]
     pub(in crate::geometry::topology) source_forward: bool,
     /// Longitude periods from this Q span to the source ring's continuous lift.
+    #[cfg(test)]
     pub(in crate::geometry::topology) lift: i64,
     /// One coowner supplies the emitted source record; all coowners remain in the recipe.
     pub(in crate::geometry::topology) emitted: bool,
@@ -302,21 +308,25 @@ impl GeographicCoverageAnalysis {
                             end: owner.source_range.start.try_clone_with_work(work)?,
                         }
                     };
-                    let source = topology
-                        .sources
-                        .edges
-                        .get(owner.source_edge.0 as usize)
-                        .ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "coverage boundary owner has an unknown source edge".into(),
-                            )
-                        })?;
                     root_uses.push(GeographicCoverageRootUse {
+                        #[cfg(test)]
                         owner_index,
                         source_edge: owner.source_edge,
-                        source_row: source.row,
+                        #[cfg(test)]
+                        source_row: topology
+                            .sources
+                            .edges
+                            .get(owner.source_edge.0 as usize)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "coverage boundary owner has an unknown source edge".into(),
+                                )
+                            })?
+                            .row,
                         source_range,
+                        #[cfg(test)]
                         source_forward,
+                        #[cfg(test)]
                         lift: owner.lift,
                         emitted: owner_index == emitted_owner,
                     });

@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use super::super::exact::SourceEdgeKind;
+use super::super::overlay::SelectedRegionPoles;
 use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
 use super::regions::{GeographicCoverageBoundaryCycle, GeographicCoverageRootUse};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicFrame, Latitude};
+use crate::geographic::{ChartPole, GeographicFrame, Latitude};
+use crate::geometry::area::{AreaSign, exact_ring_area_sign_columns};
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence,
     ShapeLiteralLayout,
@@ -15,6 +17,7 @@ use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
     SourceArcMetricAccess, resolve_request_rows, resolve_source_root,
 };
+use crate::geometry::predicates::ring_contains_interior;
 use crate::geometry::publication::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse,
 };
@@ -28,6 +31,7 @@ use crate::geometry::{
 struct RootParameter {
     root: RootId,
     parameter: ExactRational,
+    emitted: bool,
 }
 
 struct CoverageRoots<'a> {
@@ -198,6 +202,7 @@ impl GeographicCoverageAnalysis {
                         let ring = output_ring(
                             plans.topology,
                             cycle,
+                            region.poles,
                             frame,
                             &port_points,
                             &live_spans,
@@ -234,7 +239,7 @@ impl GeographicCoverageAnalysis {
                                 .iter()
                                 .map(|vertex| vertex.point)
                                 .collect::<Vec<_>>();
-                            if crate::geometry::predicates::ring_contains_interior(&shell, probe) {
+                            if ring_contains_interior(&shell, probe) {
                                 containing = Some(index);
                                 break;
                             }
@@ -285,6 +290,7 @@ impl GeographicCoverageAnalysis {
                                     )
                                 })?
                                 .iter()
+                                .filter(|root| root.emitted)
                                 .map(|root| {
                                     RootRequest::new_with_work(
                                         root.root,
@@ -417,6 +423,7 @@ impl GeographicCoverageAnalysis {
 fn output_ring(
     topology: &ExactGeographicTopology,
     cycle: &GeographicCoverageBoundaryCycle,
+    poles: SelectedRegionPoles,
     frame: GeographicFrame,
     port_points: &[Option<Point>],
     live_spans: &[bool],
@@ -559,36 +566,25 @@ fn output_ring(
         )
         .into());
     }
-    let sign = crate::geometry::area::exact_ring_area_sign_columns(
-        &xs,
-        &ys,
-        vertices.len().saturating_sub(1),
-    );
-    let hole = match sign {
-        crate::geometry::area::AreaSign::Positive
-            if frame.latitude_orientation_sign().is_sign_positive() =>
-        {
-            false
+    let pole_boundary = poles.includes(ChartPole::North) || poles.includes(ChartPole::South);
+    let hole = match (
+        exact_ring_area_sign_columns(&xs, &ys, vertices.len().saturating_sub(1)),
+        frame.latitude_orientation_sign().is_sign_positive(),
+        has_shell_source,
+        has_hole_source,
+        pole_boundary,
+    ) {
+        (AreaSign::Positive, true, ..) | (AreaSign::Negative, false, ..) => false,
+        (AreaSign::Negative, true, ..) | (AreaSign::Positive, false, ..) => true,
+        (AreaSign::Zero, _, false, true, _) => true,
+        (AreaSign::Zero, _, true, false, _) => false,
+        (AreaSign::Zero, _, _, _, true) => {
+            return Err(GeometryErrorKind::Invalid(
+                "polar coverage boundary has no source shell/hole role".into(),
+            )
+            .into());
         },
-        crate::geometry::area::AreaSign::Negative
-            if frame.latitude_orientation_sign().is_sign_positive() =>
-        {
-            true
-        },
-        crate::geometry::area::AreaSign::Negative
-            if frame.latitude_orientation_sign().is_sign_negative() =>
-        {
-            false
-        },
-        crate::geometry::area::AreaSign::Positive
-            if frame.latitude_orientation_sign().is_sign_negative() =>
-        {
-            true
-        },
-        crate::geometry::area::AreaSign::Zero if has_hole_source != has_shell_source => {
-            has_hole_source
-        },
-        _ => {
+        (AreaSign::Zero, _, false, false, false) | (AreaSign::Zero, _, true, true, false) => {
             return Err(GeometryErrorKind::Invalid(
                 "coverage boundary has no shell/hole winding".into(),
             )
@@ -747,6 +743,7 @@ fn add_endpoint_roots(
             } else {
                 root_use.source_range.end.try_clone_with_work(work)?
             },
+            emitted: root_use.emitted,
         });
     }
     Ok(())

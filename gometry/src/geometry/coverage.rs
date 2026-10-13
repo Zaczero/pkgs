@@ -22,9 +22,10 @@ mod rank;
 mod simplify;
 mod validate;
 
+#[cfg(test)]
+pub(crate) use clean::coverage_clean;
 pub(crate) use clean::{
-    CoverageCleanOutput, CoverageOverlapRule, coverage_clean, coverage_clean_output,
-    coverage_union_topo,
+    CoverageCleanOutput, CoverageOverlapRule, coverage_clean_output, coverage_union_topo,
 };
 pub(crate) use rank::{
     BorderTieBreak, ScaledLength, ScaledLengthSum, longest_border_owner,

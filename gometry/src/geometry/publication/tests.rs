@@ -519,7 +519,7 @@ fn producer_polygon_ring_layout(
     literal_cursor: &mut usize,
 ) -> crate::error::Result<LiteralSequence<ProducerImageId>> {
     let mut images = Vec::with_capacity(ring.coords().len());
-    for point in ring.coords().iter() {
+    for point in ring.coords() {
         let literal = literals.get(*literal_cursor).ok_or_else(|| {
             crate::geometry::GeometryErrorKind::Invalid(
                 "coverage clean test has fewer literals than polygon coordinates".into(),

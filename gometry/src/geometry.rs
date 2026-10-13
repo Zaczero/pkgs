@@ -232,8 +232,10 @@ use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
     snap_ring_to_reference_with_context,
 };
+#[cfg(test)]
+pub(crate) use coverage::coverage_clean;
 pub(crate) use coverage::{
-    CoverageCleanOutput, CoverageOverlapRule, HashMapExt, coverage_clean, coverage_clean_output,
+    CoverageCleanOutput, CoverageOverlapRule, HashMapExt, coverage_clean_output,
     coverage_invalid_edges_cartesian, coverage_invalid_edges_geographic_finished,
     coverage_is_valid, coverage_is_valid_with_domain, coverage_simplify_with_context,
     coverage_union_topo,

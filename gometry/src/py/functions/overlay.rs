@@ -1015,7 +1015,7 @@ pub(crate) fn coverage_clean(
             PyGeometryArray::from_shapes(rows, metadata)?
         },
         geometry::CoverageCleanOutput::Finished(finished) => {
-            PyGeometryArray::from_finished(finished)?
+            PyGeometryArray::from_finished(*finished)?
         },
     };
     Ok(match source {

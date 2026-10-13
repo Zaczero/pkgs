@@ -31,7 +31,7 @@ crate::tokens::token_from_pyobject!(CoverageOverlapRule);
 
 pub(crate) enum CoverageCleanOutput {
     Shapes(Vec<Shape>),
-    Finished(FinishedGeometry),
+    Finished(Box<FinishedGeometry>),
 }
 
 /// Clean a near-coverage and retain its final geographic storage receipt.
@@ -113,7 +113,9 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                 ),
                 StorageTarget::Array,
             )? {
-                PublicationOutcome::Pass(finished) => Ok(CoverageCleanOutput::Finished(finished)),
+                PublicationOutcome::Pass(finished) => {
+                    Ok(CoverageCleanOutput::Finished(Box::new(finished)))
+                },
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
                     Err(GeometryErrorKind::Invalid(
                         format!(
@@ -164,6 +166,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
 ///
 /// Geographic public output consumes the `FinishedGeometry` directly so its
 /// checked storage remains the object handed to Python.
+#[cfg(test)]
 pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     grid_size: f64,
@@ -181,7 +184,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     )? {
         CoverageCleanOutput::Shapes(shapes) => Ok(shapes),
         CoverageCleanOutput::Finished(finished) => {
-            let (rows, _) = finished.into_array()?;
+            let (rows, _) = (*finished).into_array()?;
             rows.logical_rows()
                 .map(|row| match row {
                     crate::geometry::storage::LogicalRow::Present { row, .. } => row.to_shape(),
