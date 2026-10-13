@@ -1,7 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "tests assert, and return Result only to propagate setup errors"
-)]
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
 use pyo3::prelude::*;
 
@@ -215,6 +211,10 @@ fn chart_edge_point_maximum_oracle(start: Point, end: Point, target: Point) -> f
     maximum.max(distance(0.0).max(distance(1.0)))
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn assert_chart_edge_point_hausdorff(
     name: &str,
     start: Point,
@@ -250,6 +250,10 @@ fn assert_chart_edge_point_hausdorff(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_parallel_pole_plateaus_close_with_second_order_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 85.0), p(179.0, 85.0)]);
     let geodesic = Geodesic::wgs84();
@@ -326,6 +330,10 @@ fn geographic_hausdorff_near_antipodal_point_target_is_attained() -> Result<()> 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target =
@@ -342,6 +350,10 @@ fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target = Shape::geometry_collection(vec![
@@ -363,6 +375,10 @@ fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_closes_an_exact_polar_parallel_family() -> Result<()> {
     let source = line(vec![p(-45.0, 85.0), p(45.0, 85.0)]);
     let pole = Shape::Point(p(10.0, 90.0));
@@ -421,6 +437,10 @@ fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Result<()> {
     let original = line(vec![p(-10.0, 30.0), p(15.0, 40.0)]);
     let reversed = line(vec![p(15.0, 40.0), p(-10.0, 30.0)]);
@@ -432,6 +452,10 @@ fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Re
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 90.0), p(180.0, 90.0)]);
     let target = Shape::Point(p(0.0, 90.000_000_000_000_01));
@@ -446,6 +470,10 @@ fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() ->
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Result<()> {
     let point_shape = Shape::Point(p(0.0, 82.9));
     let line_shape = line(vec![p(-45.0, 80.0), p(45.0, 80.0)]);
@@ -580,6 +608,10 @@ fn public_distance_measures_a_full_turn_line_as_its_parallel() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> Result<()> {
     let point_shape = Shape::Point(p(0.0, 82.9));
     let line_shape = line(vec![
@@ -640,6 +672,10 @@ fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn cached_point_pair_nearest_validates_both_geographic_operands() -> Result<()> {
     let valid_shape = Shape::Point(p(0.0, 0.0));
     let invalid_shape = Shape::Point(p(1.0, 95.0));
@@ -667,6 +703,10 @@ fn cached_point_pair_nearest_validates_both_geographic_operands() -> Result<()> 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
     let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
     let right_shape = line(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
@@ -695,6 +735,10 @@ fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()> {
     let cases = [
         line(vec![p(-1.0, 0.0), p(1.0, 0.0)]),
@@ -740,6 +784,10 @@ fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()
     Ok(())
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn assert_chart_pair_contract<M>(
     left_shape: &Shape,
     right_shape: &Shape,
@@ -879,6 +927,10 @@ fn chart_distance_property_six_covers_crossings_and_filled_polygons() -> Result<
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn chart_edge_contacts_at_high_latitudes_are_zero_distance() -> Result<()> {
     let cases = [
         (
@@ -911,6 +963,10 @@ fn chart_edge_contacts_at_high_latitudes_are_zero_distance() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
     crate::test_support::initialize_python();
     let geodesic = Geodesic::wgs84();
@@ -1409,6 +1465,10 @@ fn public_growing_span_oblique_hausdorff_work_scales_by_vertex_count() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions define the test oracle while Result propagates setup errors"
+)]
 fn fixed_short_parallel_pairs_have_the_meridional_minimum() -> Result<()> {
     let cases = [
         (
