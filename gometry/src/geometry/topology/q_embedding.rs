@@ -128,7 +128,7 @@ where
     work.charge_into_error(
         u64::try_from(exact_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let Some(exact_is_hole) = exact_q_ring_role_with_work(frame, exact_ports, work)? else {
+    let Some((exact_is_hole, _)) = exact_q_ring_role_with_work(frame, exact_ports, work)? else {
         return Ok(None);
     };
     work.charge_into_error(
@@ -675,9 +675,9 @@ use self::publication::tracing::{
 };
 #[cfg(test)]
 pub(in crate::geometry::topology) use self::source_binding::bind_source_only;
-use self::source_binding::{
-    AssignedSourceChart, QSourceImages, SourceOnlyReceipt, q_source_image_port,
-};
+pub(in crate::geometry::topology) use self::source_binding::q_source_image_port;
+pub(in crate::geometry::topology::q_embedding) use self::source_binding::require_q_source_image_port;
+use self::source_binding::{AssignedSourceChart, QSourceImages, SourceOnlyReceipt};
 use super::emission::plan::{
     DrawnAreaOrigin, DrawnPolygons, PlannedAreaRing, PolygonPlan, QEmbeddingEmission,
     QEmissionDrawing, QEmissionPlan,

@@ -14,10 +14,11 @@ use super::emission::line_paths::{
     planned_line_paths,
 };
 use super::emission::ordinates::node_ordinates;
+pub(in crate::geometry) use super::emission::plan::QProducer;
 use super::emission::plan::{
     BoundaryCycle, BoundarySupport, DiagnosticKind, LineStep, PlannedAreaRing, PlannedQLine,
-    PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer, SelectedLineSpan,
-    SelectedRegionFact, SelectedRegionPoles, SourceLineSpan, SpanEndpoint,
+    PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, SelectedLineSpan, SelectedRegionFact,
+    SelectedRegionPoles, SourceLineSpan, SpanEndpoint,
 };
 use super::emission::sites::{EmittedVertex, QCoordinates, node_injectivity_collisions_with_work};
 #[cfg(test)]
@@ -36,8 +37,7 @@ use super::emission::{
 use super::emission::{PublicationInventory, RecipeWalk};
 use super::exact::{ExactSourceRange, ExactSourceRing, SourceEdgeKind, SourceRowId};
 use super::linework::{
-    DiagnosticSpan, even_odd_face_selection, face_cycle_hole_roles, minimal_face_boundaries,
-    minimal_face_selection, noded_spans,
+    DiagnosticSpan, even_odd_face_selection, minimal_face_selection, noded_spans,
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, row_locations};
 #[cfg(test)]
@@ -64,12 +64,17 @@ use crate::geometry::{
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
 
 mod publish;
+pub(in crate::geometry) use self::producer_drawing::{
+    exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,
+    exact_geographic_linework_pending_row,
+};
 #[cfg(test)]
 use self::publish::{CertifiedQEmission, QEmbeddingChoice};
 use self::publish::{publish_q_overlay, resolve_q_embedding, write_certified_q_emission};
 mod plan_boundary;
 mod plan_linework;
 mod plan_overlay;
+pub(in crate::geometry) mod producer_drawing;
 mod recipes;
 pub(in crate::geometry::topology) mod select_boundaries;
 pub(in crate::geometry::topology) mod select_faces;
@@ -270,3 +275,6 @@ mod tests {
     include!("emission/sites/tests.rs");
     include!("overlay/select_boundaries/tests.rs");
 }
+
+#[cfg(test)]
+mod pooled_linework_tests;

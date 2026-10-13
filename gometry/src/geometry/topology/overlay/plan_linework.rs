@@ -2,18 +2,11 @@ use super::{
     BoundaryCycle, ExactGeographicTopology, ExactRational, FaceUnion, GeometryErrorKind, LineStep,
     PlannedAreaRing, PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer,
     RecipeWalkOwner, ResourceError, Result, SourceEdgeKind, SourceLineSpan, SpanEndpoint, Work,
-    build_fragment_recipes, diagnostic_line_paths, even_odd_face_selection, face_cycle_hole_roles,
-    face_regions, minimal_face_boundaries, minimal_face_selection, noded_spans,
-    selected_area_boundaries, selected_face_roots, selected_region_facts, try_sort_by_with_work,
+    build_fragment_recipes, diagnostic_line_paths, even_odd_face_selection, face_regions,
+    minimal_face_selection, noded_spans, selected_area_boundaries, selected_face_roots,
+    selected_region_facts, try_sort_by_with_work,
 };
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer builders are exercised before F4 and routed after its receiver lands"
-    )
-)]
 impl QEmissionPlan {
     pub(in crate::geometry::topology) fn build_source_lines(
         topology: &ExactGeographicTopology,
@@ -154,6 +147,7 @@ impl QEmissionPlan {
             force_native: true,
             boundary_support: None,
             producer: QProducer::SourceLines,
+            retain_literals_for_republication: false,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
@@ -200,6 +194,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::Node,
+            retain_literals_for_republication: false,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
@@ -215,9 +210,10 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let selected_faces = minimal_face_selection(topology, work)?;
-        let mut regions = FaceUnion::new(&selected_faces, work)?;
-        let cycles = minimal_face_boundaries(topology, &selected_faces, work)?
+        let selection = minimal_face_selection(topology, work)?;
+        let mut regions = FaceUnion::new(&selection.selected_faces, work)?;
+        let cycles = selection
+            .cycles
             .into_iter()
             .map(|cycle| BoundaryCycle {
                 darts: cycle.darts,
@@ -225,15 +221,16 @@ impl QEmissionPlan {
             })
             .collect::<Vec<_>>();
         let mut roots = Vec::new();
-        for (face, &selected) in selected_faces.iter().enumerate() {
+        for (face, &selected) in selection.selected_faces.iter().enumerate() {
             work.charge_into_error(1)?;
             if selected {
                 roots.push(face);
             }
         }
         let selected_regions =
-            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
-        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+            selected_region_facts(q, &selection.selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots =
+            selected_face_roots(q, &selection.selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
         for (cycle, boundary) in cycles.iter().enumerate() {
             work.charge_into_error(1)?;
@@ -258,6 +255,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::Polygonize,
+            retain_literals_for_republication: false,
             polygons,
             cycles,
             selected_regions,
@@ -272,10 +270,9 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let minimal_faces = minimal_face_selection(topology, work)?;
-        let face_cycles = minimal_face_boundaries(topology, &minimal_faces, work)?;
-        let hole_roles = face_cycle_hole_roles(topology, &face_cycles, work)?;
-        let selected_faces = even_odd_face_selection(topology, &face_cycles, &hole_roles, work)?;
+        let selection = minimal_face_selection(topology, work)?;
+        let selected_faces =
+            even_odd_face_selection(topology, &selection.cycles, &selection.cycle_roles, work)?;
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
         work.charge_into_error(
@@ -303,6 +300,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::BuildArea,
+            retain_literals_for_republication: false,
             polygons,
             cycles,
             selected_regions,

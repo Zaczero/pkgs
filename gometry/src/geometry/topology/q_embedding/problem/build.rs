@@ -204,6 +204,32 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
+        budget.charge_into_error(
+            u64::try_from(emission.fragment_recipes.len())
+                .map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut selected_area_recipes = vec![false; emission.fragment_recipes.len()];
+        if matches!(
+            emission.plan.producer,
+            super::super::super::overlay::QProducer::Polygonize
+                | super::super::super::overlay::QProducer::BuildArea
+        ) {
+            for walk in emission.fragment_walks {
+                if !matches!(walk.owner, RecipeWalkOwner::Cycle(_)) {
+                    continue;
+                }
+                for &recipe in &walk.fragments {
+                    budget.charge_into_error(1)?;
+                    *selected_area_recipes
+                        .get_mut(recipe.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "selected Q cycle references an unknown source recipe".into(),
+                            )
+                        })? = true;
+                }
+            }
+        }
         for (index, recipe) in emission.fragment_recipes.iter().enumerate() {
             budget.charge_into_error(1)?;
             if recipe.id.0 as usize != index {
@@ -279,11 +305,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     }
                 }
             }
+            let selected_linework_cycle = recipe.use_kind
+                == super::super::super::emission::SelectedUse::AreaBoundary
+                && selected_area_recipes.get(index).copied().unwrap_or(false);
             if matches!(
                 recipe.use_kind,
                 super::super::super::emission::SelectedUse::AreaBoundary
                     | super::super::super::emission::SelectedUse::ArealBoundaryLine
             ) && !has_areal_owner
+                && !selected_linework_cycle
             {
                 return Err(GeometryErrorKind::Invalid(
                     "areal Q recipe lost its source-face ownership".into(),

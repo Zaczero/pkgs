@@ -12,7 +12,8 @@ pub(in crate::geometry::topology) struct CompletedNativeDrawing {
 }
 
 pub(in crate::geometry::topology) struct NativeFrozenDrawing {
-    pub(in crate::geometry::topology) buffers: FrozenLiteralBuffers<EmissionPortId>,
+    pub(in crate::geometry::topology) shape: Shape,
+    pub(in crate::geometry::topology) literal_uses: ShapeLiteralLayout<EmissionPortId>,
     pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
 }
 

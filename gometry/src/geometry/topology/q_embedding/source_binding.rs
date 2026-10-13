@@ -23,15 +23,22 @@ pub(in crate::geometry::topology::q_embedding) fn q_source_edge(
     }
     Ok(source)
 }
-pub(in crate::geometry::topology::q_embedding) fn q_source_image_port(
+pub(in crate::geometry::topology) fn q_source_image_port(
     topology: &ExactGeographicTopology,
     image: QSourceImage,
-) -> Result<QPortId> {
+) -> Result<Option<QPortId>> {
     let port = match image {
-        QSourceImage::Port(port) => return Ok(port),
-        QSourceImage::SourcePoint(index) => {
-            topology.q.source_point_ports.get(index as usize).copied()
-        },
+        QSourceImage::Port(port) => return Ok(Some(port)),
+        QSourceImage::SourcePoint(index) => Some(
+            topology
+                .q
+                .source_point_ports
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source literal has no admitted Q port".into())
+                })?,
+        ),
         QSourceImage::SourceRingStart(edge) | QSourceImage::CollapsedStart(edge) => {
             let _ = q_source_edge(topology, edge)?;
             topology
@@ -52,7 +59,14 @@ pub(in crate::geometry::topology::q_embedding) fn q_source_image_port(
         },
         QSourceImage::PublicationSample(_) => None,
     };
-    port.ok_or_else(|| {
+    Ok(port)
+}
+
+pub(in crate::geometry::topology::q_embedding) fn require_q_source_image_port(
+    topology: &ExactGeographicTopology,
+    image: QSourceImage,
+) -> Result<QPortId> {
+    q_source_image_port(topology, image)?.ok_or_else(|| {
         GeometryErrorKind::Invalid("source literal has no admitted Q port".into()).into()
     })
 }
@@ -127,7 +141,7 @@ impl QSourceImages<'_> {
         &self,
         image: QSourceImage,
     ) -> Result<&ExactChartPoint> {
-        self.source_port(q_source_image_port(self.topology, image)?)
+        self.source_port(require_q_source_image_port(self.topology, image)?)
     }
 }
 impl CheckedImages<QSourceImage> for QSourceImages<'_> {
@@ -193,7 +207,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 } else {
                     record.y
                 };
-                let port_id = q_source_image_port(self.topology, image)?;
+                let port_id = require_q_source_image_port(self.topology, image)?;
                 let port = self
                     .topology
                     .q

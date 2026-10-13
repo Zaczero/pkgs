@@ -1,15 +1,17 @@
 use super::super::{
-    AssignedProducerProjection, BTreeMap, ChartMetric, EmissionNodeId, EvaluationBudget,
-    ExactChartPoint, ExactQuotientKey, GeometryErrorKind, GlobalCheck, NativeCandidatePublication,
-    NativeCutFeature, NativeCutSearchOutcome, NativeReference, ProducerReceipt, PublicationCall,
-    PublicationOutcome, PublicationRejection, QCandidate, QCoordinates, QEmbeddingOutput,
-    QEmbeddingProblem, QEmissionDrawing, QFaceStructure, QRingRoleCheck, QSourceImage,
-    QVariableNode, ResourceError, Result, SealedSourceDrawing, SearchAccount,
-    SourceOnlyPublication, StorageTarget, Work, assigned_emission_site, check_q_ring_roles,
-    compare_quotient_keys_with_work, face_structure_mismatch_nodes, finish_geographic,
-    publication_sample_index, q_source_image_port, quotient_key_for_chart_position_with_work,
-    rounded_chart_point, subgraph_chart, validate_native_materialized_candidate,
+    AssignedProducerProjection, BTreeMap, ChartMetric, EmissionNodeId, EmissionPortId,
+    EvaluationBudget, ExactChartPoint, ExactQuotientKey, GeometryErrorKind, GlobalCheck,
+    NativeAreaEdgeKind, NativeCandidatePublication, NativeCutFeature, NativeCutSearchOutcome,
+    NativeReference, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+    QCandidate, QCoordinates, QEmbeddingOutput, QEmbeddingProblem, QEmissionDrawing,
+    QFaceStructure, QRingRoleCheck, QSourceImage, QVariableNode, ResourceError, Result,
+    SealedSourceDrawing, SearchAccount, SourceOnlyPublication, StorageTarget, Work,
+    assigned_emission_site, check_q_ring_roles, compare_quotient_keys_with_work,
+    face_structure_mismatch_nodes, finish_geographic, publication_sample_index,
+    quotient_key_for_chart_position_with_work, require_q_source_image_port, rounded_chart_point,
+    subgraph_chart, validate_native_materialized_candidate, validate_native_sealed_layout,
 };
+use crate::geometry::embedding_completion::{FrozenLiteralBuffers, LiteralAddress};
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
     pub(super) fn complete_native_drawing(
@@ -103,16 +105,108 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             .emission
             .plan
             .seal_native_parts(parts, self.declared_axes, budget)?;
+        let super::super::super::emission::NativeFrozenDrawing {
+            shape,
+            literal_uses,
+            line_traces,
+        } = frozen;
         if !std::ptr::eq(candidate.assignment.reference, reference) {
             return Err(GeometryErrorKind::Invalid(
                 "native completion assignment belongs to another reference".into(),
             )
             .into());
         }
-        let line_traces = frozen.line_traces;
+        if self.emission.plan.producer.is_pooled_linework() {
+            if !validate_native_sealed_layout(
+                reference,
+                &literal_uses,
+                &candidate.port_records,
+                candidate.assignment.points(),
+                budget,
+            )? {
+                return Ok(None);
+            }
+            let source_ranges_by_port = reference.plan.source_root_ranges_by_port(
+                self.emission.fragment_recipes,
+                self.emission.publication,
+                budget,
+            )?;
+            let mut chart_restrictions = Vec::new();
+            for edge in reference
+                .area_edges
+                .iter()
+                .chain(&reference.line_graph_edges)
+            {
+                budget.charge_into_error(1)?;
+                if let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind {
+                    chart_restrictions.push(*restriction);
+                }
+            }
+            let producer_receipt =
+                super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
+                    shape,
+                    literal_uses,
+                    |port: EmissionPortId, work: &mut EvaluationBudget| {
+                        let ranges =
+                            source_ranges_by_port.get(port.0 as usize).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "native producer source-use port is unknown".into(),
+                                )
+                            })?;
+                        work.charge_into_error(
+                            u64::try_from(ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                        )?;
+                        let mut output = Vec::with_capacity(ranges.len());
+                        for range in ranges {
+                            work.charge_into_error(1)?;
+                            output.push(range.try_clone_with_work(work)?);
+                        }
+                        Ok(output)
+                    },
+                    chart_restrictions,
+                    LiteralAddress {
+                        operation: 0,
+                        logical_row: 0,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    self.emission.plan.retain_literals_for_republication,
+                    budget,
+                )?;
+            return match finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::ProducerDrawing(producer_receipt),
+                    self.topology.publication_frame().clone(),
+                    budget,
+                ),
+                StorageTarget::Scalar,
+            )? {
+                PublicationOutcome::Pass(sealed) => Ok(Some(
+                    super::super::super::emission::CompletedNativeDrawing {
+                        sealed,
+                        line_traces,
+                    },
+                )),
+                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                    Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "pooled Q producer readback changed {} literal images",
+                            images.len()
+                        )
+                        .into(),
+                    )
+                    .into())
+                },
+                PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
+                    "pooled Q producer finisher returned a different rejection family".into(),
+                )
+                .into()),
+            };
+        }
         let receipt = NativeCandidatePublication {
             assignment: &candidate.assignment,
-            buffers: frozen.buffers,
+            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
             sites: &assigned_sites,
             ordinates: &ordinates,
             port_records: &mut candidate.port_records,
@@ -410,97 +504,167 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     ordinates: &publication_ordinates,
                     live_samples: &live_publication_samples,
                 };
-            let source = self.emission.plan.seal_source_drawing(
-                drawing,
-                ring_roles,
-                &self.ordinates,
-                Some(source_publication),
-                Some(&producer_projection.source_ports),
-                self.declared_axes,
-                self.strict_axes,
-                self.operation,
-                budget,
-            )?;
-            let receipt = SourceOnlyPublication {
-                source,
-                topology: self.topology,
-                source_ports: Some(&producer_projection.source_ports),
-                source_ordinates: &self.ordinates,
-                publication: Some(self.emission.publication),
-                publication_images: &publication_chart_points,
-                publication_points: &publication_points,
-                publication_ordinates: &publication_ordinates,
-            };
-            let sealed = match finish_geographic(
-                PublicationCall::new(
-                    ProducerReceipt::QSourceOnly(receipt),
-                    self.topology.publication_frame().clone(),
+            let sealed = if self.emission.plan.producer.is_pooled_linework() {
+                let (shape, layout) = self.emission.plan.write_source_drawing_parts(
+                    drawing,
+                    ring_roles,
+                    &self.ordinates,
+                    Some(source_publication),
+                    Some(&producer_projection.source_ports),
+                    self.declared_axes,
+                    self.strict_axes,
+                    self.operation,
                     budget,
-                ),
-                StorageTarget::Scalar,
-            )? {
-                PublicationOutcome::Pass(finished) => finished,
-                PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
-                    let mut variables = Vec::with_capacity(images.len());
-                    for image in images {
-                        budget.charge_into_error(1)?;
-                        variables.push(match image {
-                            image @ (QSourceImage::Port(_)
-                            | QSourceImage::SourcePoint(_)
-                            | QSourceImage::SourceRingStart(_)
-                            | QSourceImage::SourceRingEnd(_)
-                            | QSourceImage::CollapsedStart(_)
-                            | QSourceImage::CollapsedEnd(_)) => {
-                                let port = q_source_image_port(self.topology, image)?;
-                                let node = self
-                                    .topology
-                                    .q
-                                    .ports
-                                    .get(port.0 as usize)
-                                    .map(|port| port.node)
-                                    .ok_or_else(|| {
-                                        GeometryErrorKind::Invalid(
-                                            "rejected source literal port is unknown".into(),
-                                        )
-                                    })?;
-                                QVariableNode::Source(node)
-                            },
-                            QSourceImage::PublicationSample(sample) => {
-                                let node = self
-                                    .publication_sample_nodes
-                                    .get(sample as usize)
-                                    .copied()
-                                    .ok_or_else(|| {
-                                        GeometryErrorKind::Invalid(
-                                            "rejected publication literal has no node".into(),
-                                        )
-                                    })?;
-                                QVariableNode::Published(node)
-                            },
-                        });
-                    }
-                    return Ok(GlobalCheck::Reject(
-                        self.classes_for_variables(variables, budget)?,
-                    ));
-                },
-                PublicationOutcome::Reject(PublicationRejection::Native) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "source-only Q finisher returned native rejection".into(),
-                    )
-                    .into());
-                },
-                PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "source-only Q finisher returned array batch rejection".into(),
-                    )
-                    .into());
-                },
-                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "source-only Q finisher returned producer-drawn rejection".into(),
-                    )
-                    .into());
-                },
+                )?;
+                let ranges_by_port =
+                    super::super::super::overlay::producer_drawing::source_root_ranges_by_q_port(
+                        self.topology,
+                        self.emission.fragment_recipes,
+                        budget,
+                    )?;
+                let receipt =
+                    super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
+                        shape,
+                        layout,
+                        |image, work| {
+                            super::super::super::overlay::producer_drawing::source_root_ranges_for_q_image(
+                                self.topology,
+                                &ranges_by_port,
+                                Some(self.emission.publication),
+                                image,
+                                work,
+                            )
+                        },
+                        Vec::new(),
+                        LiteralAddress {
+                            operation: 0,
+                            logical_row: 0,
+                            group_row: None,
+                            value_row: None,
+                            output: 0,
+                        },
+                        self.emission.plan.retain_literals_for_republication,
+                        budget,
+                    )?;
+                match finish_geographic(
+                    PublicationCall::new(
+                        ProducerReceipt::ProducerDrawing(receipt),
+                        self.topology.publication_frame().clone(),
+                        budget,
+                    ),
+                    StorageTarget::Scalar,
+                )? {
+                    PublicationOutcome::Pass(finished) => finished,
+                    PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+                        return Err(GeometryErrorKind::Invalid(
+                            format!(
+                                "pooled Q source drawing readback changed {} literal images",
+                                images.len()
+                            )
+                            .into(),
+                        )
+                        .into());
+                    },
+                    PublicationOutcome::Reject(_) => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "pooled Q source finisher returned a different rejection family".into(),
+                        )
+                        .into());
+                    },
+                }
+            } else {
+                let source = self.emission.plan.seal_source_drawing(
+                    drawing,
+                    ring_roles,
+                    &self.ordinates,
+                    Some(source_publication),
+                    Some(&producer_projection.source_ports),
+                    self.declared_axes,
+                    self.strict_axes,
+                    self.operation,
+                    budget,
+                )?;
+                let receipt = SourceOnlyPublication {
+                    source,
+                    topology: self.topology,
+                    source_ports: Some(&producer_projection.source_ports),
+                    source_ordinates: &self.ordinates,
+                    publication: Some(self.emission.publication),
+                    publication_images: &publication_chart_points,
+                    publication_points: &publication_points,
+                    publication_ordinates: &publication_ordinates,
+                };
+                match finish_geographic(
+                    PublicationCall::new(
+                        ProducerReceipt::QSourceOnly(receipt),
+                        self.topology.publication_frame().clone(),
+                        budget,
+                    ),
+                    StorageTarget::Scalar,
+                )? {
+                    PublicationOutcome::Pass(finished) => finished,
+                    PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
+                        let mut variables = Vec::with_capacity(images.len());
+                        for image in images {
+                            budget.charge_into_error(1)?;
+                            variables.push(match image {
+                                image @ (QSourceImage::Port(_)
+                                | QSourceImage::SourcePoint(_)
+                                | QSourceImage::SourceRingStart(_)
+                                | QSourceImage::SourceRingEnd(_)
+                                | QSourceImage::CollapsedStart(_)
+                                | QSourceImage::CollapsedEnd(_)) => {
+                                    let port = require_q_source_image_port(self.topology, image)?;
+                                    let node = self
+                                        .topology
+                                        .q
+                                        .ports
+                                        .get(port.0 as usize)
+                                        .map(|port| port.node)
+                                        .ok_or_else(|| {
+                                            GeometryErrorKind::Invalid(
+                                                "rejected source literal port is unknown".into(),
+                                            )
+                                        })?;
+                                    QVariableNode::Source(node)
+                                },
+                                QSourceImage::PublicationSample(sample) => {
+                                    let node = self
+                                        .publication_sample_nodes
+                                        .get(sample as usize)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            GeometryErrorKind::Invalid(
+                                                "rejected publication literal has no node".into(),
+                                            )
+                                        })?;
+                                    QVariableNode::Published(node)
+                                },
+                            });
+                        }
+                        return Ok(GlobalCheck::Reject(
+                            self.classes_for_variables(variables, budget)?,
+                        ));
+                    },
+                    PublicationOutcome::Reject(PublicationRejection::Native) => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "source-only Q finisher returned native rejection".into(),
+                        )
+                        .into());
+                    },
+                    PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "source-only Q finisher returned array batch rejection".into(),
+                        )
+                        .into());
+                    },
+                    PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "source-only Q finisher returned producer-drawn rejection".into(),
+                        )
+                        .into());
+                    },
+                }
             };
             super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
                 sealed,

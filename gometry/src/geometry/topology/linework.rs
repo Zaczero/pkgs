@@ -1,5 +1,3 @@
-
-
 //! Geographic linework selection over one exact quotient chart.
 use std::collections::VecDeque;
 

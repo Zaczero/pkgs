@@ -10,10 +10,11 @@ use super::write::WrittenDrawingParts;
 use super::{
     CoordinateAxes, EmissionNodeRegistry, ExactChartPoint, ExactGeographicTopology,
     FrozenLiteralBuffers, GeometryErrorKind, NativeMaterializedParts, NodeOrdinates,
-    PublicationInventory, QEmissionPlan, QNodeId, ResourceError, Result, SourceFrozenDrawing, Work,
-    index_recipe_walks, try_sort_by_with_work,
+    PublicationInventory, QEmissionPlan, QNodeId, QSourceImage, ResourceError, Result,
+    SourceFrozenDrawing, Work, index_recipe_walks, try_sort_by_with_work,
 };
-use crate::geometry::{HasM, HasZ};
+use crate::geometry::embedding_completion::ShapeLiteralLayout;
+use crate::geometry::{HasM, HasZ, Shape};
 
 fn append_source_ring_live_nodes(
     topology: &ExactGeographicTopology,
@@ -291,7 +292,7 @@ impl super::plan::QEmissionPlan {
 use super::write::{seal_output_parts, write_drawing};
 
 impl QEmissionPlan {
-    pub(in crate::geometry::topology) fn seal_source_drawing(
+    pub(in crate::geometry::topology) fn write_source_drawing_parts(
         &self,
         drawing: QEmissionDrawing<'_>,
         ring_roles: &[bool],
@@ -302,7 +303,7 @@ impl QEmissionPlan {
         strict_axes: bool,
         operation: &'static str,
         work: &mut impl Work,
-    ) -> Result<SourceFrozenDrawing> {
+    ) -> Result<(Shape, ShapeLiteralLayout<QSourceImage>)> {
         let walks = publication
             .map(|_| index_recipe_walks(self.fragment_recipes.walks(), work))
             .transpose()?;
@@ -367,6 +368,32 @@ impl QEmissionPlan {
             })?;
             layout.in_output_order(&order, work)?
         };
+        Ok((shape, layout))
+    }
+
+    pub(in crate::geometry::topology) fn seal_source_drawing(
+        &self,
+        drawing: QEmissionDrawing<'_>,
+        ring_roles: &[bool],
+        ordinates: &[NodeOrdinates],
+        publication: Option<SourcePublication<'_>>,
+        source_ports: Option<&[Option<ExactChartPoint>]>,
+        declared_axes: CoordinateAxes,
+        strict_axes: bool,
+        operation: &'static str,
+        work: &mut impl Work,
+    ) -> Result<SourceFrozenDrawing> {
+        let (shape, layout) = self.write_source_drawing_parts(
+            drawing,
+            ring_roles,
+            ordinates,
+            publication,
+            source_ports,
+            declared_axes,
+            strict_axes,
+            operation,
+            work,
+        )?;
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
         })
@@ -408,7 +435,8 @@ impl QEmissionPlan {
             )?
         };
         Ok(super::super::emission::NativeFrozenDrawing {
-            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
+            shape,
+            literal_uses,
             line_traces,
         })
     }

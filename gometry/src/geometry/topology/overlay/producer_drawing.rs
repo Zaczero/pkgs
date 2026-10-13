@@ -1,21 +1,116 @@
 use std::collections::BTreeMap;
 
+use super::super::emission::plan::{QEmissionPlan, QProducer};
 use super::super::emission::{FragmentRecipe, PublicationInventory, QSourceImage};
 use super::super::exact::SourceEdgeId;
 use super::super::q::ExactGeographicTopology;
 use crate::error::{ResourceError, Result};
+use crate::geographic::GeographicInputs;
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress,
     LiteralSequence, ShapeLiteralLayout, visit_shape_literals,
 };
-use crate::geometry::embedding_search::Work;
-use crate::geometry::ordinates::{RootId, RootRange};
+use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly, Work};
+use crate::geometry::ordinates::{RootId, RootRange, SourceArcContext};
 use crate::geometry::publication::{
-    DirectedChartRestrictionUse, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral,
-    ProducerSourceRootUse,
+    DirectedChartRestrictionUse, FinishedGeometry, PendingPublicationRow, ProducerDrawingReceipt,
+    ProducerImageId, ProducerLiteral, ProducerSourceRootUse,
 };
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{GeometryErrorKind, Shape};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Shape, TopologyDomain};
+
+pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: crate::Frame,
+) -> Result<Shape> {
+    exact_geographic_linework_finished_from_shapes(
+        shapes,
+        producer,
+        diagnostics,
+        strict,
+        context,
+        publication_frame,
+        false,
+    )?
+    .0
+    .into_scalar()
+    .map(|(shape, _)| shape)
+}
+
+pub(in crate::geometry) fn exact_geographic_linework_pending_row<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: &crate::Frame,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    let (finished, _construction_work) = exact_geographic_linework_finished_from_shapes(
+        shapes,
+        producer,
+        diagnostics,
+        strict,
+        context,
+        publication_frame.clone(),
+        true,
+    )?;
+    let publication_work =
+        EvaluationBudget::new(producer.operation(), finished.output_literal_count())?;
+    finished.into_pending_row(logical_row, publication_work, publication_frame)
+}
+
+pub(in crate::geometry) fn exact_geographic_linework_finished_from_shapes<
+    M: crate::geometry::ChartMetric,
+>(
+    shapes: &[&Shape],
+    producer: QProducer,
+    diagnostics: bool,
+    strict: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    publication_frame: crate::Frame,
+    retain_literals_for_republication: bool,
+) -> Result<(FinishedGeometry, EvaluationBudget)> {
+    let TopologyDomain::Geographic(frame) = context.domain() else {
+        return Err(GeometryErrorKind::Invalid(
+            "exact Q linework requires a geographic source context".into(),
+        )
+        .into());
+    };
+    let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter().copied())
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let topology = ExactGeographicTopology::from_views_with_publication_frame(
+        frame,
+        publication_frame,
+        inputs.views().iter().copied(),
+    )?;
+    let declared_axes = shapes
+        .iter()
+        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
+    let mut budget = EvaluationBudget::new(producer.operation(), 0)?;
+    let finished = {
+        let mut work = EvaluationOnly::new(&mut budget);
+        QEmissionPlan::build_pooled_linework(
+            &topology,
+            producer,
+            diagnostics,
+            strict,
+            declared_axes,
+            context.metric_access(),
+            retain_literals_for_republication,
+            &mut work,
+        )?
+    };
+    Ok((finished, budget))
+}
 
 pub(in crate::geometry::topology) fn source_root_ranges_by_q_port(
     topology: &ExactGeographicTopology,

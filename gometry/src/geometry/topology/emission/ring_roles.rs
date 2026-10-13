@@ -146,16 +146,20 @@ where
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
 {
     let mut work = Unmetered;
-    exact_q_ring_role_with_work(frame, exact_ports, &mut work)?.ok_or_else(|| {
-        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
-    })
+    let Some((is_hole, _)) = exact_q_ring_role_with_work(frame, exact_ports, &mut work)? else {
+        return Err(GeometryErrorKind::Invalid(
+            "selected Q area boundary has no bounded pole".into(),
+        )
+        .into());
+    };
+    Ok(is_hole)
 }
 
 pub(in crate::geometry::topology) fn exact_q_ring_role_with_work<'a, I>(
     frame: GeographicFrame,
     exact_ports: I,
     work: &mut impl Work,
-) -> Result<Option<bool>>
+) -> Result<Option<(bool, Option<ChartPole>)>>
 where
     I: IntoIterator<Item = &'a ExactChartPoint>,
     I::IntoIter: Clone + ExactSizeIterator + DoubleEndedIterator,
@@ -183,7 +187,7 @@ where
     if let Some(proof) = exact_q_ring_winding_filter(frame, exact_ports.clone())
         && !proof.quotient_closure
     {
-        return Ok(Some(proof.winding == RingWinding::Clockwise));
+        return Ok(Some((proof.winding == RingWinding::Clockwise, None)));
     }
 
     let mut owned_ports = Vec::with_capacity(exact_ports.len());
@@ -195,7 +199,9 @@ where
     let lifted = continuously_lift_exact_ring_with_work(frame, &exact_ports, work)?;
     let exact_published = rounded_canonical_exact_ring_with_work(frame, &exact_ports, work)?;
     match quotient_ring_role_status(frame, &exact_published)? {
-        QuotientRingRoleStatus::Classified(role) => return Ok(Some(role)),
+        QuotientRingRoleStatus::Classified(role) => {
+            return Ok(Some((role, exact_ring_bounded_pole(&exact_ports, work)?)));
+        },
         QuotientRingRoleStatus::Unbounded => return Ok(None),
         QuotientRingRoleStatus::Unclassifiable => {},
     }
@@ -207,7 +213,7 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(Some(false))
+            Ok(Some((false, None)))
         },
         RingWinding::Clockwise => {
             for point in &lifted {
@@ -215,30 +221,28 @@ where
                 point.x.round_with_work(work)?;
                 point.y.round_with_work(work)?;
             }
-            Ok(Some(true))
+            Ok(Some((true, None)))
         },
         RingWinding::Degenerate => {
             let exact_ring = rounded_exact_ring_with_work(&lifted, work)?;
-            ring_role_from_winding(frame, winding, &exact_ring, true).map(Some)
+            ring_role_from_winding(frame, winding, &exact_ring, true)
+                .map(|is_hole| Some((is_hole, None)))
         },
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
-    )
-)]
 pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
-) -> Result<bool> {
-    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)?.ok_or_else(|| {
-        GeometryErrorKind::Invalid("selected Q area boundary has no bounded pole".into()).into()
-    })
+) -> Result<(bool, Option<ChartPole>)> {
+    let Some(role) = exact_q_ring_role_with_work(frame, exact_ports.iter(), work)? else {
+        return Err(GeometryErrorKind::Invalid(
+            "selected Q area boundary has no bounded pole".into(),
+        )
+        .into());
+    };
+    Ok(role)
 }
 
 pub(in crate::geometry::topology) fn quotient_ring_role(
@@ -583,4 +587,28 @@ pub(in crate::geometry::topology) fn quotient_ring_role_status(
         Some(ChartPole::South) => Ok(QuotientRingRoleStatus::Classified(summary.chart_turn > 0)),
         None => Ok(QuotientRingRoleStatus::Unbounded),
     }
+}
+
+pub(in crate::geometry::topology) fn exact_ring_bounded_pole(
+    points: &[ExactChartPoint],
+    work: &mut impl Work,
+) -> Result<Option<ChartPole>> {
+    // Name the cap from exact Q ordinates rather than the rounded role ring.
+    let zero = ExactRational::zero();
+    let mut north = false;
+    let mut south = false;
+    work.charge_into_error(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    for point in points {
+        work.charge_into_error(1)?;
+        match point.y.try_cmp_with_work(&zero, work)? {
+            Ordering::Less => south = true,
+            Ordering::Equal => {},
+            Ordering::Greater => north = true,
+        }
+    }
+    Ok(match (north, south) {
+        (true, false) => Some(ChartPole::North),
+        (false, true) => Some(ChartPole::South),
+        (false, false) | (true, true) => None,
+    })
 }

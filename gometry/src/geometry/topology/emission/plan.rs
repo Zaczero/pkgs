@@ -35,13 +35,6 @@ pub(in crate::geometry::topology) struct SourceLineSpan {
     pub(in crate::geometry::topology) reversed: bool,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "diagnostic and noded line plans await the shared F4 receiver routing"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::geometry::topology) enum QLineOrigin {
     Curve,
@@ -110,15 +103,8 @@ impl SelectedRegionPoles {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer-specific selection is consumed when F4 receiver routing lands"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::geometry::topology) enum QProducer {
+pub(in crate::geometry) enum QProducer {
     Overlay,
     Boundary,
     SourceLines,
@@ -127,18 +113,29 @@ pub(in crate::geometry::topology) enum QProducer {
     BuildArea,
 }
 
+impl QProducer {
+    pub(in crate::geometry::topology) const fn is_pooled_linework(self) -> bool {
+        matches!(self, Self::Node | Self::Polygonize | Self::BuildArea)
+    }
+
+    pub(in crate::geometry::topology) const fn operation(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Polygonize => "polygonize",
+            Self::BuildArea => "build_area",
+            Self::Overlay => "overlay",
+            Self::Boundary => "boundary",
+            Self::SourceLines => "source lines",
+        }
+    }
+}
+
 pub(in crate::geometry::topology) struct QEmissionPlan {
     pub(in crate::geometry::topology) whole_sphere: bool,
     pub(in crate::geometry::topology) force_native: bool,
     pub(in crate::geometry::topology) boundary_support: Option<BoundarySupport>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the final producer sink consumes this selection tag after F4 lands"
-        )
-    )]
     pub(in crate::geometry::topology) producer: QProducer,
+    pub(in crate::geometry::topology) retain_literals_for_republication: bool,
     pub(in crate::geometry::topology) polygons: PolygonPlan,
     pub(in crate::geometry::topology) cycles: Vec<BoundaryCycle>,
     pub(in crate::geometry::topology) selected_regions: Vec<SelectedRegionFact>,

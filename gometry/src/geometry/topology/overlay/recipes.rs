@@ -177,13 +177,6 @@ pub(in crate::geometry::topology) fn build_fragment_recipes(
     }
     Ok(recipes)
 }
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "polygonize diagnostic paths are consumed by the F4 row receiver"
-    )
-)]
 pub(in crate::geometry::topology) fn diagnostic_line_paths(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,
