@@ -623,6 +623,38 @@ fn producer_drawing_rejects_corrupted_cdt_triangle_readback() {
 }
 
 #[test]
+fn producer_drawing_rejects_omitted_cdt_triangle_literal_on_readback() {
+    let first = Point::new_raw_xy(0.0, 0.0);
+    let second = Point::new_raw_xy(1.0, 0.0);
+    let third = Point::new_raw_xy(0.0, 1.0);
+    let expected = [first, second, third, first];
+    let mut receipt = producer_triangle_receipt(&expected, &expected);
+    let omitted = receipt.literals.remove(1);
+    let mut work = Unmetered;
+
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::default(),
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [omitted.image]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("an omitted CDT triangle literal must fail its storage readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("CDT triangle omission returns the producer-drawing rejection")
+        },
+    }
+}
+
+#[test]
 fn geographic_cdt_maps_compacted_constraints_to_authored_edge_roots() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
@@ -774,6 +806,53 @@ fn geographic_cdt_receipt_retains_selected_polar_restrictions() {
     }));
     let (groups, _) = finished.into_groups().unwrap();
     assert_eq!(groups.offsets, [0, 5]);
+}
+
+#[test]
+fn mesh_receipt_omission_is_rejected_by_final_storage_readback() {
+    let shape = Shape::Polygon(Polygon::new(
+        Ring::try_from_closed(
+            crate::geometry::CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(4.0, 0.0),
+                Point::new_raw_xy(0.0, 3.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+        Vec::new(),
+    ));
+    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+    let mut mesh = shape.earcut_mesh_publication_budgeted(&mut budget).unwrap();
+    let mut published =
+        crate::geometry::PublishedTriangleVertices::uniform(mesh.take_points()).unwrap();
+    published.mesh_publication = Some(mesh);
+    let mut receipt = crate::geometry::mesh_publication_array_receipt(published).unwrap();
+    assert_eq!(receipt.literals.len(), 4);
+    receipt.literals.remove(0);
+
+    let mut work = Unmetered;
+    match super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(receipt),
+            Frame::default(),
+            &mut work,
+        ),
+        StorageTarget::Array,
+    )
+    .unwrap()
+    {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [ProducerImageId::new(0)]);
+        },
+        PublicationOutcome::Pass(_) => {
+            panic!("a mesh literal omitted from the receipt must fail its storage readback");
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("mesh literal omission returns the producer-drawing rejection")
+        },
+    }
 }
 
 #[test]

@@ -515,6 +515,13 @@ impl Shape {
         Ok(sink.into_vertices())
     }
 
+    pub(crate) fn earcut_mesh_publication_budgeted(
+        &self,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<super::PreparedMeshPublication> {
+        super::mesh_publication::prepare_earcut_publication(self, budget)
+    }
+
     fn earcut_with(&self, emit: &mut impl FnMut(Point, Point, Point) -> Result<()>) -> Result<()> {
         match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
             Polygonal::Polygon(polygon) => earcut_polygon_with(polygon, emit),

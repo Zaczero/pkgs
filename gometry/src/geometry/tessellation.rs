@@ -13,6 +13,7 @@ mod earcut;
 mod earcut_bridges;
 mod earcut_sweep;
 pub(in crate::geometry) mod exact;
+mod mesh_publication;
 mod prepared_mesh;
 mod sampling;
 mod shape;
@@ -24,6 +25,9 @@ pub(crate) use cdt_publication::{
     CdtGroupsDrawingWriter, PreparedCdtDrawing, prepare_geographic_cdt_drawing, publish_cdt_array,
 };
 pub(crate) use delaunay::{CdtSideBoundaryUse, ConstrainedMeshPlan, publish_constrained_plan};
+#[cfg(test)]
+pub(in crate::geometry) use mesh_publication::mesh_publication_array_receipt;
+pub(crate) use mesh_publication::{finish_mesh_publication_array, finish_mesh_publication_groups};
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,

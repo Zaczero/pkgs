@@ -741,7 +741,10 @@ fn voronoi_publication_error(message: &'static str) -> crate::error::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Frame;
+    use crate::error::ErrorKind;
     use crate::geometry::tessellation::VoronoiProducer;
+    use crate::geometry::{GeometryErrorKind, VoronoiBoundary};
 
     fn vertex(id: u32, origins: Vec<VoronoiVertexOrigin>) -> VoronoiVertexReceipt {
         VoronoiVertexReceipt {
@@ -772,6 +775,63 @@ mod tests {
         let mut receipt = VoronoiDiagramReceipt::empty(VoronoiProducer::Exact);
         receipt.selected_chart_cuts = Some(chart.cut_longitudes().unwrap());
         (frame, receipt)
+    }
+
+    fn small_voronoi_writer() -> VoronoiDrawingWriter {
+        let source = Shape::MultiPoint(
+            vec![
+                crate::Point::new_raw_xy(-1.0, -1.0),
+                crate::Point::new_raw_xy(1.0, -1.0),
+                crate::Point::new_raw_xy(1.0, 1.0),
+                crate::Point::new_raw_xy(-1.0, 1.0),
+            ]
+            .into(),
+        );
+        let frame = GeographicFrame::crs84();
+        let mut budget = ExpansionBudget::new("voronoi_cells", "mesh receipt omission");
+        let outputs = source
+            .voronoi_polygon_outputs_in_frame_budgeted(
+                0.0,
+                VoronoiBoundary::Padded,
+                Some(frame),
+                &mut budget,
+            )
+            .unwrap();
+        let mut writer = VoronoiDrawingWriter::new_array(None).unwrap();
+        writer
+            .push_polygon_outputs(outputs, frame, &mut budget)
+            .unwrap();
+        writer
+    }
+
+    #[test]
+    fn voronoi_receipt_omission_is_rejected_by_final_readback() {
+        let (control_values, _) = small_voronoi_writer()
+            .finish_array(Frame::None)
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert!(!control_values.is_empty());
+
+        let mut writer = small_voronoi_writer();
+        let omitted = writer.literals.pop().expect("Voronoi output has literals");
+        writer.source_root_uses.retain(|source_use| {
+            source_use.address != omitted.address || source_use.image != omitted.image
+        });
+        assert!(
+            !writer.source_root_uses.iter().any(|source_use| {
+                source_use.address == omitted.address && source_use.image == omitted.image
+            }),
+            "the omitted literal has no retained source-root use",
+        );
+
+        let error = writer
+            .finish_array(Frame::None)
+            .expect_err("the shared readback rejects a missing Voronoi literal");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
     }
 
     #[test]

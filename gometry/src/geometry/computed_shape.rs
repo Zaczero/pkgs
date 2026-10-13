@@ -871,6 +871,23 @@ pub(crate) fn publish_mesh_publication_for_domain(
     }
 }
 
+pub(crate) fn publish_earcut_mesh_publication_for_domain(
+    mut publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    let points = publication.take_points();
+    let mut published = match domain {
+        crate::geometry::TopologyDomain::Cartesian => PublishedTriangleVertices::uniform(points)?,
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            publish_triangle_vertex_stream_budgeted(&points, frame, source_context, budget)?
+        },
+    };
+    published.mesh_publication = Some(publication);
+    Ok(published)
+}
+
 pub(crate) fn publish_stored_computed_shape(
     shape: &Shape,
     frame: GeographicFrame,
