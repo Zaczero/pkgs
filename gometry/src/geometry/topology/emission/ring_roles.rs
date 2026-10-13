@@ -236,14 +236,8 @@ pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],
     work: &mut impl Work,
-) -> Result<(bool, Option<ChartPole>)> {
-    let Some(role) = exact_q_ring_role_with_work(frame, exact_ports.iter(), work)? else {
-        return Err(GeometryErrorKind::Invalid(
-            "selected Q area boundary has no bounded pole".into(),
-        )
-        .into());
-    };
-    Ok(role)
+) -> Result<Option<(bool, Option<ChartPole>)>> {
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
 }
 
 pub(in crate::geometry::topology) fn quotient_ring_role(
