@@ -291,7 +291,7 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> crate::error::Result<SeamRing> {
-    let mut coords = indexed_points(points);
+    let coords = indexed_points(points);
     let Some((_, cycle)) = coords.split_last() else {
         return Ok(SeamRing::Whole(seam_piece(coords)));
     };

@@ -35,7 +35,7 @@ use chart_shape::{chart_line, chart_polygon, chart_ring};
 use chart_shape::{chart_shape, map_xy_with_shared_owners};
 use split::{split_polygon, split_polygon_with_lineage};
 
-use super::lineage::{LineageCatalog, LineagePolygon, LineageSequence, MemberId, ShapeLineage};
+use super::lineage::{LineageCatalog, LineageSequence, MemberId, ShapeLineage};
 use super::normalize;
 
 #[derive(Default)]
@@ -134,7 +134,15 @@ impl Shape {
         memo: &mut ShapeTransformMemo,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<Self> {
-        split_shape_with_lineage(self, None, None, memo, metric_access).map(|(shape, _)| shape)
+        split_shape_with_lineage(
+            self,
+            None,
+            None,
+            GeographicFrame::crs84(),
+            memo,
+            metric_access,
+        )
+        .map(|(shape, _)| shape)
     }
 
     /// Split at the antimeridian forcing closure over a specific pole, for
@@ -205,6 +213,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
     shape: &Shape,
     lineage: Option<&ShapeLineage>,
     mut catalog: Option<&mut LineageCatalog>,
+    source_frame: GeographicFrame,
     memo: &mut ShapeTransformMemo,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<(Shape, Option<ShapeLineage>)> {
@@ -343,12 +352,18 @@ fn split_shape_with_lineage<M: ChartMetric>(
             Ok((Shape::narrow_polygons(polygon.axes(), parts), None))
         },
         (Shape::Polygon(polygon), Some(ShapeLineage::Polygon(source))) => {
+            let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured polygon lineage has no event catalog".into())
+            })?;
             let parts = split_polygon_with_lineage(
                 shape,
                 polygon,
                 source,
                 PoleClosure::Auto,
+                HoleOverlayMode::Select,
+                source_frame,
                 metric_access,
+                catalog,
             )?;
             let lineages = parts
                 .iter()
@@ -406,12 +421,20 @@ fn split_shape_with_lineage<M: ChartMetric>(
                         lineages.push(None);
                     },
                     (MultiMember::Value(polygon), Some(source_lineage)) => {
+                        let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "captured multipolygon lineage has no event catalog".into(),
+                            )
+                        })?;
                         let parts = split_polygon_with_lineage(
                             shape,
                             polygon,
                             source_lineage,
                             PoleClosure::Auto,
+                            HoleOverlayMode::Select,
+                            source_frame,
                             metric_access,
+                            catalog,
                         )?;
                         for part in parts {
                             lineages.push(Some(part.lineage));
@@ -459,6 +482,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                     member,
                     Some(lineage),
                     catalog.as_deref_mut(),
+                    source_frame,
                     memo,
                     metric_access,
                 )?;
@@ -484,6 +508,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                         member,
                         None,
                         catalog.as_deref_mut(),
+                        source_frame,
                         memo,
                         metric_access,
                     )?
@@ -611,6 +636,7 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
             &chart,
             Some(lineage),
             Some(capture.lineage_mut()),
+            frame,
             &mut ShapeTransformMemo::default(),
             metric_access,
         )?

@@ -43,9 +43,11 @@ fn chart_line_captured<M: ChartMetric>(
     let mut lineage_vertices = member.map(|_| vec![Vec::new()]);
     let mut lineage_edges = Vec::new();
     for end in line.iter_coords().skip(1) {
-        let source_root = match capture.as_deref_mut() {
-            Some(capture) => Some(capture.next_source_root()?),
-            None => None,
+        let source_root = match (capture.as_deref_mut(), member) {
+            (Some(capture), Some(member)) => {
+                Some(capture.edge_root(member, [start, end], frame)?)
+            },
+            _ => None,
         };
         let mut source_capture =
             ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
@@ -163,9 +165,11 @@ fn chart_ring_captured<M: ChartMetric>(
         for ([start, end], [source_start, source_end]) in
             unwrapped.segment_pairs().zip(ring.segment_pairs())
         {
-            let source_root = match capture.as_deref_mut() {
-                Some(capture) => Some(capture.next_source_root()?),
-                None => None,
+            let source_root = match (capture.as_deref_mut(), member) {
+                (Some(capture), Some(member)) => {
+                    Some(capture.edge_root(member, [source_start, source_end], frame)?)
+                },
+                _ => None,
             };
             let start_chart = band_point(start)?;
             if points.len() == 0 {
@@ -210,9 +214,11 @@ fn chart_ring_captured<M: ChartMetric>(
         }
     } else {
         for [start, end] in ring.segment_pairs() {
-            let source_root = match capture.as_deref_mut() {
-                Some(capture) => Some(capture.next_source_root()?),
-                None => None,
+            let source_root = match (capture.as_deref_mut(), member) {
+                (Some(capture), Some(member)) => {
+                    Some(capture.edge_root(member, [start, end], frame)?)
+                },
+                _ => None,
             };
             let start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
             if points.len() == 0 {
@@ -487,7 +493,9 @@ pub(super) fn chart_shape<M: ChartMetric>(
                 None => None,
             };
             let root = match capture.as_deref_mut() {
-                Some(capture) => Some(capture.next_source_root()?),
+                Some(capture) => {
+                    Some(capture.point_root(member.expect("captured point has a member"), *point)?)
+                },
                 None => None,
             };
             let chart = chart_point(*point, frame, longitude_scale, latitude_scale)?;
@@ -513,7 +521,10 @@ pub(super) fn chart_shape<M: ChartMetric>(
             let mut events = Vec::with_capacity(points.len());
             for point in points.points() {
                 let root = match capture.as_deref_mut() {
-                    Some(capture) => Some(capture.next_source_root()?),
+                    Some(capture) => Some(
+                        capture
+                            .point_root(member.expect("captured multipoint has a member"), point)?,
+                    ),
                     None => None,
                 };
                 let chart = chart_point(point, frame, longitude_scale, latitude_scale)?;

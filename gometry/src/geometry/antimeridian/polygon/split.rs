@@ -1,4 +1,6 @@
-use super::assemble::{assemble_polygons, extend_over_poles, polygons_from_shape};
+use super::assemble::{
+    assemble_polygons, assemble_polygons_with_lineage, extend_over_poles, polygons_from_shape,
+};
 use super::*;
 use crate::geometry::antimeridian::linestring::{SeamPiece, SeamVertexSource};
 
@@ -193,18 +195,51 @@ fn seam_piece_lineage(
     })
 }
 
-pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
-    source: &Shape,
-    polygon: &Polygon,
-    source_lineage: &super::super::lineage::LineagePolygon,
-    preferred: PoleClosure,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
-    let polygons = split_polygon(source, polygon, preferred, metric_access)?;
-    Ok(polygons
+fn polygon_parts_shape(
+    parts: Vec<super::super::lineage::PolygonWithLineage>,
+    axes: CoordinateAxes,
+) -> Result<(Shape, super::super::lineage::ShapeLineage)> {
+    let mut polygons = Vec::with_capacity(parts.len());
+    let mut lineages = Vec::with_capacity(parts.len());
+    for part in parts {
+        polygons.push(part.polygon);
+        lineages.push(Some(part.lineage));
+    }
+    match polygons.len() {
+        0 => Ok((
+            Shape::narrow_polygons(axes, polygons),
+            super::super::lineage::ShapeLineage::Empty,
+        )),
+        1 => Ok((
+            Shape::Polygon(
+                polygons
+                    .pop()
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            ),
+            super::super::lineage::ShapeLineage::Polygon(lineages.pop().flatten().ok_or_else(
+                || GeometryErrorKind::Invalid("split polygon part has no member lineage".into()),
+            )?),
+        )),
+        _ => Ok((
+            Shape::MultiPolygon(MultiPolygon::try_new(
+                axes,
+                polygons.into_iter().map(MultiMember::Value).collect(),
+            )?),
+            super::super::lineage::ShapeLineage::MultiPolygon {
+                axes,
+                members: lineages,
+            },
+        )),
+    }
+}
+
+fn blank_polygon_lineages(
+    polygons: Vec<Polygon>,
+    member: super::super::lineage::MemberId,
+) -> Vec<super::super::lineage::PolygonWithLineage> {
+    polygons
         .into_iter()
         .map(|polygon| {
-            let member = source_lineage.member;
             let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
                 member,
                 vertices: vec![Vec::new(); ring.coords().len()],
@@ -217,7 +252,578 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
             };
             super::super::lineage::PolygonWithLineage { polygon, lineage }
         })
-        .collect())
+        .collect()
+}
+
+fn append_polygon_edge_uses(
+    lineage: &super::super::lineage::LineagePolygon,
+    output: &mut Vec<super::super::lineage::EdgeUseId>,
+) {
+    output.extend(lineage.shell.edges.iter().copied());
+    for hole in &lineage.holes {
+        output.extend(hole.edges.iter().copied());
+    }
+}
+
+fn append_shape_edge_uses(
+    lineage: &super::super::lineage::ShapeLineage,
+    output: &mut Vec<super::super::lineage::EdgeUseId>,
+) -> Result<()> {
+    match lineage {
+        ShapeLineage::Polygon(polygon) => append_polygon_edge_uses(polygon, output),
+        ShapeLineage::MultiPolygon { members, .. } => {
+            for polygon in members.iter().flatten() {
+                append_polygon_edge_uses(polygon, output);
+            }
+        },
+        ShapeLineage::GeometryCollection(members) => {
+            for member in members.iter().flatten() {
+                append_shape_edge_uses(member, output)?;
+            }
+        },
+        ShapeLineage::Point { .. }
+        | ShapeLineage::MultiPoint { .. }
+        | ShapeLineage::LineString(_)
+        | ShapeLineage::MultiLineString { .. }
+        | ShapeLineage::Empty => {
+            return Err(GeometryErrorKind::Invalid(
+                "lineage-aware polygon overlay received non-polygonal input".into(),
+            )
+            .into());
+        },
+    }
+    Ok(())
+}
+
+fn overlay_ring_lineage<M: ChartMetric>(
+    part: &crate::geometry::overlay::OverlayPolygonPartWithSources,
+    ring_index: usize,
+    source_edges: &[super::super::lineage::EdgeUseId],
+    member: super::super::lineage::MemberId,
+    source_frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    catalog: &mut super::super::lineage::LineageCatalog,
+) -> Result<(Ring, super::super::lineage::LineageSequence)> {
+    let vertices = part.vertices.get(ring_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("overlay polygon has no source-node ring".into())
+    })?;
+    let edge_sources = part.edge_sources.get(ring_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("overlay polygon has no source-edge ring".into())
+    })?;
+    if vertices.len() != edge_sources.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "overlay polygon source nodes and edges disagree".into(),
+        )
+        .into());
+    }
+    let coordinates = if ring_index == 0 {
+        part.polygon.shell.coords()
+    } else {
+        part.polygon
+            .holes
+            .get(ring_index - 1)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("overlay polygon source hole is unknown".into())
+            })?
+            .coords()
+    };
+    let points = coordinates.iter_coords().collect::<Vec<_>>();
+    let vertex_count = vertices.len();
+    if points.len() != vertex_count.saturating_add(1) {
+        return Err(GeometryErrorKind::Invalid(
+            "overlay polygon source-node count does not match its ring".into(),
+        )
+        .into());
+    }
+    let mut lineage_vertices = Vec::with_capacity(vertex_count);
+    let mut output_points = Vec::with_capacity(vertex_count.saturating_add(1));
+    for index in 0..vertex_count {
+        let previous = if index == 0 {
+            vertex_count
+                .checked_sub(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        } else {
+            index
+                .checked_sub(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        };
+        let mut uses = Vec::new();
+        for source in edge_sources
+            .get(previous)
+            .ok_or_else(|| GeometryErrorKind::Invalid("overlay edge use is unknown".into()))?
+        {
+            uses.push((
+                *source_edges.get(source.source_id as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "overlay edge use references an unknown split edge".into(),
+                    )
+                })?,
+                source.end_parameter.try_clone_with_work(&mut Unmetered)?,
+            ));
+        }
+        for source in edge_sources
+            .get(index)
+            .ok_or_else(|| GeometryErrorKind::Invalid("overlay edge use is unknown".into()))?
+        {
+            uses.push((
+                *source_edges.get(source.source_id as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "overlay edge use references an unknown split edge".into(),
+                    )
+                })?,
+                source.start_parameter.try_clone_with_work(&mut Unmetered)?,
+            ));
+        }
+        let events = vec![catalog.event_from_edge_parameters(member, &uses)?];
+        let ordinates = catalog.resolve_vertex_ordinates(
+            &events,
+            coordinates.axes(),
+            source_frame,
+            metric_access,
+        )?;
+        let z = if coordinates.axes().has_z() {
+            ordinates.z.value()
+        } else {
+            None
+        };
+        let m = if coordinates.axes().has_m() {
+            ordinates.m.value()
+        } else {
+            None
+        };
+        if (coordinates.axes().has_z() && z.is_none())
+            || (coordinates.axes().has_m() && m.is_none())
+        {
+            return Err(
+                GeometryErrorKind::OrdinateDropped("antimeridian split overlay".into()).into(),
+            );
+        }
+        output_points.push(Point::new_axes(
+            points[index].x,
+            points[index].y,
+            ZOrdinate(z),
+            MOrdinate(m),
+        )?);
+        lineage_vertices.push(events);
+    }
+    if let Some(first) = output_points.first().copied() {
+        output_points.push(first);
+    }
+    let output_ring = Ring::try_from_closed(CoordSeq::try_from_points(&output_points)?)?;
+
+    let mut lineage_edges = Vec::with_capacity(vertex_count);
+    for (index, uses) in edge_sources.iter().enumerate() {
+        let mut sources = Vec::with_capacity(uses.len());
+        for source in uses {
+            sources.push((
+                *source_edges.get(source.source_id as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "overlay edge use references an unknown split edge".into(),
+                    )
+                })?,
+                source.start_parameter.try_clone_with_work(&mut Unmetered)?,
+                source.end_parameter.try_clone_with_work(&mut Unmetered)?,
+            ));
+        }
+        let next = if index
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?
+            == vertex_count
+        {
+            0
+        } else {
+            index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        };
+        let restriction = if sources.is_empty() {
+            crate::geometry::antimeridian::publication::restriction_for_edge(
+                points[index],
+                points[next],
+            )
+        } else {
+            None
+        };
+        lineage_edges.push(catalog.compose_edge_uses(member, &sources, restriction)?);
+    }
+    Ok((output_ring, super::super::lineage::LineageSequence {
+        member,
+        vertices: lineage_vertices,
+        edges: lineage_edges,
+    }))
+}
+
+fn overlay_parts_shape<M: ChartMetric>(
+    parts: Vec<crate::geometry::overlay::OverlayPolygonPartWithSources>,
+    axes: CoordinateAxes,
+    member: super::super::lineage::MemberId,
+    source_edges: &[super::super::lineage::EdgeUseId],
+    source_frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    catalog: &mut super::super::lineage::LineageCatalog,
+) -> Result<(Shape, super::super::lineage::ShapeLineage)> {
+    let mut polygons = Vec::with_capacity(parts.len());
+    let mut lineages = Vec::with_capacity(parts.len());
+    for part in parts {
+        let mut rings = Vec::with_capacity(part.vertices.len());
+        for index in 0..part.vertices.len() {
+            rings.push(overlay_ring_lineage(
+                &part,
+                index,
+                source_edges,
+                member,
+                source_frame,
+                metric_access,
+                catalog,
+            )?);
+        }
+        let mut rings = rings.into_iter();
+        let (shell, shell_lineage) = rings
+            .next()
+            .ok_or_else(|| GeometryErrorKind::Invalid("overlay polygon has no shell".into()))?;
+        let mut holes = Vec::new();
+        let mut hole_lineages = Vec::new();
+        for (hole, lineage) in rings {
+            holes.push(hole);
+            hole_lineages.push(lineage);
+        }
+        polygons.push(Polygon::new(shell, holes));
+        lineages.push(Some(super::super::lineage::LineagePolygon {
+            member,
+            shell: shell_lineage,
+            holes: hole_lineages,
+        }));
+    }
+    match polygons.len() {
+        0 => Ok((
+            Shape::narrow_polygons(axes, polygons),
+            super::super::lineage::ShapeLineage::Empty,
+        )),
+        1 => Ok((
+            Shape::Polygon(
+                polygons
+                    .pop()
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            ),
+            super::super::lineage::ShapeLineage::Polygon(lineages.pop().flatten().ok_or_else(
+                || GeometryErrorKind::Invalid("overlay polygon has no output lineage".into()),
+            )?),
+        )),
+        _ => Ok((
+            Shape::MultiPolygon(MultiPolygon::try_new(
+                axes,
+                polygons.into_iter().map(MultiMember::Value).collect(),
+            )?),
+            super::super::lineage::ShapeLineage::MultiPolygon {
+                axes,
+                members: lineages,
+            },
+        )),
+    }
+}
+
+fn blank_polygon_lineage(
+    polygon: &Polygon,
+    member: super::super::lineage::MemberId,
+) -> super::super::lineage::LineagePolygon {
+    let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
+        member,
+        vertices: vec![Vec::new(); ring.coords().len()],
+        edges: Vec::new(),
+    };
+    super::super::lineage::LineagePolygon {
+        member,
+        shell: empty_sequence(&polygon.shell),
+        holes: polygon.holes.iter().map(empty_sequence).collect(),
+    }
+}
+
+fn lineage_for_polygonal_shape(
+    shape: &Shape,
+    member: super::super::lineage::MemberId,
+) -> Result<super::super::lineage::ShapeLineage> {
+    match shape {
+        Shape::Polygon(polygon) => Ok(super::super::lineage::ShapeLineage::Polygon(
+            blank_polygon_lineage(polygon, member),
+        )),
+        Shape::MultiPolygon(polygons) => {
+            let members = polygons
+                .members_with_values()
+                .map(|member_shape| match member_shape {
+                    MultiMember::Empty => None,
+                    MultiMember::Value(polygon) => Some(blank_polygon_lineage(polygon, member)),
+                })
+                .collect();
+            Ok(super::super::lineage::ShapeLineage::MultiPolygon {
+                axes: polygons.axes(),
+                members,
+            })
+        },
+        Shape::Empty(..) => Ok(super::super::lineage::ShapeLineage::Empty),
+        _ => Err(GeometryErrorKind::Invalid(
+            "polygon difference produced non-polygonal lineage".into(),
+        )
+        .into()),
+    }
+}
+
+fn polygon_lineages(
+    lineage: super::super::lineage::ShapeLineage,
+    polygon_count: usize,
+) -> Result<Vec<super::super::lineage::LineagePolygon>> {
+    match lineage {
+        super::super::lineage::ShapeLineage::Polygon(lineage) if polygon_count == 1 => {
+            Ok(vec![lineage])
+        },
+        super::super::lineage::ShapeLineage::MultiPolygon { members, .. } => {
+            let lineages = members.into_iter().flatten().collect::<Vec<_>>();
+            if lineages.len() == polygon_count {
+                Ok(lineages)
+            } else {
+                Err(GeometryErrorKind::Invalid(
+                    "overlay polygon outputs and lineages disagree".into(),
+                )
+                .into())
+            }
+        },
+        super::super::lineage::ShapeLineage::Empty if polygon_count == 0 => Ok(Vec::new()),
+        _ => Err(GeometryErrorKind::Invalid(
+            "overlay polygon output has the wrong lineage kind".into(),
+        )
+        .into()),
+    }
+}
+
+pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
+    source: &Shape,
+    polygon: &Polygon,
+    source_lineage: &super::super::lineage::LineagePolygon,
+    preferred: PoleClosure,
+    mut overlay_mode: HoleOverlayMode,
+    source_frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    catalog: &mut super::super::lineage::LineageCatalog,
+) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
+    let preferred = match preferred {
+        PoleClosure::Auto => pole_closure_for_ring(&polygon.shell),
+        closure @ PoleClosure::Chart(_) => closure,
+    };
+    let mut crossing_holes = Vec::new();
+    let mut stationary_holes = Vec::new();
+    for (hole, lineage) in polygon.holes.iter().zip(&source_lineage.holes) {
+        let points = collect_points(hole.coords());
+        match split_ring_at_seam_with_metric(&points, GeographicFrame::crs84(), metric_access)? {
+            SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
+                let hole_lineage = seam_piece_lineage(&spelled, lineage, catalog)?;
+                stationary_holes.push((
+                    Ring::try_from_closed(CoordSeq::try_from_points(&spelled.points)?)?,
+                    hole_lineage,
+                ));
+            },
+            SeamRing::Pieces(_) | SeamRing::Whole(_) => {
+                crossing_holes.push((hole.clone(), lineage.clone()));
+            },
+        }
+    }
+    if !crossing_holes.is_empty() {
+        let shell_only = Polygon::new(
+            polygon.shell.clone(),
+            stationary_holes
+                .iter()
+                .map(|(hole, _)| hole.clone())
+                .collect(),
+        );
+        let shell_only_lineage = super::super::lineage::LineagePolygon {
+            member: source_lineage.member,
+            shell: source_lineage.shell.clone(),
+            holes: stationary_holes
+                .iter()
+                .map(|(_, lineage)| lineage.clone())
+                .collect(),
+        };
+        let shell_parts = split_polygon_with_lineage(
+            source,
+            &shell_only,
+            &shell_only_lineage,
+            preferred,
+            overlay_mode,
+            source_frame,
+            metric_access,
+            catalog,
+        )?;
+        let (mut result, mut result_lineage) = polygon_parts_shape(shell_parts, polygon.axes())?;
+        let frame = GeographicFrame::crs84();
+        for (hole, hole_lineage) in crossing_holes {
+            let hole_polygon = Polygon::new(hole.clone(), Vec::new());
+            let hole_shape = Shape::Polygon(hole_polygon.clone());
+            let hole_lineage = super::super::lineage::LineagePolygon {
+                member: source_lineage.member,
+                shell: hole_lineage,
+                holes: Vec::new(),
+            };
+            let hole_parts = split_polygon_with_lineage(
+                &hole_shape,
+                &hole_polygon,
+                &hole_lineage,
+                pole_closure_for_ring(&hole),
+                overlay_mode,
+                source_frame,
+                metric_access,
+                catalog,
+            )?;
+            let (hole_shape, hole_result_lineage) =
+                polygon_parts_shape(hole_parts, hole.coords().axes())?;
+            let operands = [&result, &hole_shape];
+            let use_quotient = match overlay_mode {
+                HoleOverlayMode::Select => {
+                    shape_has_longitude_turn_in_frame(&result, frame)?
+                        || shape_has_longitude_turn_in_frame(&hole_shape, frame)?
+                },
+                HoleOverlayMode::Quotient => true,
+                HoleOverlayMode::Chart => false,
+            };
+            if use_quotient {
+                overlay_mode = HoleOverlayMode::Quotient;
+                result = match metric_access {
+                    Some(metric_access) => crate::geometry::overlay_all_with_metric(
+                        &operands,
+                        TopologyDomain::Geographic(frame),
+                        crate::geometry::OverlayOp::Difference,
+                        Strictness::Strict,
+                        metric_access,
+                    )?,
+                    None => crate::geometry::overlay_all(
+                        &operands,
+                        TopologyDomain::Geographic(frame),
+                        crate::geometry::OverlayOp::Difference,
+                        Strictness::Strict,
+                    )?,
+                };
+                result_lineage = lineage_for_polygonal_shape(&result, source_lineage.member)?;
+            } else {
+                let mut source_edges = Vec::new();
+                append_shape_edge_uses(&result_lineage, &mut source_edges)?;
+                append_shape_edge_uses(&hole_result_lineage, &mut source_edges)?;
+                let parts = crate::geometry::overlay_all_geographic_chart_with_sources(
+                    &operands,
+                    frame,
+                    crate::geometry::OverlayOp::Difference,
+                    Strictness::Strict,
+                    metric_access,
+                )?;
+                let axes = result.axes().union(hole_shape.axes());
+                (result, result_lineage) = overlay_parts_shape(
+                    parts,
+                    axes,
+                    source_lineage.member,
+                    &source_edges,
+                    source_frame,
+                    metric_access,
+                    catalog,
+                )?;
+            }
+        }
+        let polygons = polygons_from_shape(result)?;
+        if overlay_mode != HoleOverlayMode::Quotient {
+            let lineages = polygon_lineages(result_lineage, polygons.len())?;
+            reject_fabricated_pole_ordinates(source, &polygons)?;
+            return Ok(polygons
+                .into_iter()
+                .zip(lineages)
+                .map(
+                    |(polygon, lineage)| super::super::lineage::PolygonWithLineage {
+                        polygon,
+                        lineage,
+                    },
+                )
+                .collect());
+        }
+        let lineages = polygon_lineages(result_lineage, polygons.len())?;
+        let mut charted = Vec::new();
+        for (polygon, lineage) in polygons.into_iter().zip(lineages) {
+            let closure = pole_closure_for_ring(&polygon.shell);
+            charted.extend(split_polygon_with_lineage(
+                source,
+                &polygon,
+                &lineage,
+                closure,
+                HoleOverlayMode::Chart,
+                source_frame,
+                metric_access,
+                catalog,
+            )?);
+        }
+        reject_fabricated_pole_ordinates(
+            source,
+            &charted
+                .iter()
+                .map(|part| part.polygon.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        return Ok(charted);
+    }
+
+    let shell_points = collect_points(polygon.shell.coords());
+    match split_ring_at_seam_with_metric(&shell_points, GeographicFrame::crs84(), metric_access)? {
+        SeamRing::Whole(shell) => {
+            let shell_lineage = seam_piece_lineage(&shell, &source_lineage.shell, catalog)?;
+            let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell.points)?)?;
+            let (holes, hole_lineages): (Vec<_>, Vec<_>) = stationary_holes.into_iter().unzip();
+            let polygon = Polygon::new(shell, holes);
+            reject_fabricated_pole_ordinates(source, std::slice::from_ref(&polygon))?;
+            Ok(vec![super::super::lineage::PolygonWithLineage {
+                polygon,
+                lineage: super::super::lineage::LineagePolygon {
+                    member: source_lineage.member,
+                    shell: shell_lineage,
+                    holes: hole_lineages,
+                },
+            }])
+        },
+        SeamRing::Pieces(pieces) => {
+            let mut segments = pieces
+                .iter()
+                .map(|piece| {
+                    Ok((
+                        piece.points.clone(),
+                        seam_piece_lineage(piece, &source_lineage.shell, catalog)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let plain_segments = segments
+                .iter()
+                .map(|(points, _)| points.clone())
+                .collect::<Vec<_>>();
+            let (stitched, capped) = extend_over_poles(plain_segments, preferred)?;
+            if capped || stitched.len() != segments.len() {
+                let polygons = split_polygon(source, polygon, preferred, metric_access)?;
+                return Ok(polygons
+                    .into_iter()
+                    .map(|polygon| {
+                        let member = source_lineage.member;
+                        let empty_sequence = |ring: &Ring| super::super::lineage::LineageSequence {
+                            member,
+                            vertices: vec![Vec::new(); ring.coords().len()],
+                            edges: Vec::new(),
+                        };
+                        super::super::lineage::PolygonWithLineage {
+                            lineage: super::super::lineage::LineagePolygon {
+                                member,
+                                shell: empty_sequence(&polygon.shell),
+                                holes: polygon.holes.iter().map(empty_sequence).collect(),
+                            },
+                            polygon,
+                        }
+                    })
+                    .collect());
+            }
+            for ((points, _), stitched_points) in segments.iter_mut().zip(stitched) {
+                *points = stitched_points;
+            }
+            let kept_holes = stationary_holes;
+            assemble_polygons_with_lineage(segments, &kept_holes, catalog)
+        },
+    }
 }
 
 fn split_polygon_inner<M: ChartMetric>(

@@ -76,7 +76,6 @@ struct CapturedRootPoint {
 
 pub(super) struct SplitCapture {
     identity: bool,
-    next_root: u32,
     lineage: LineageCatalog,
     root_points: Vec<CapturedRootPoint>,
     source_edges: Vec<(Point, Point)>,
@@ -86,7 +85,6 @@ impl SplitCapture {
     pub(super) fn enabled() -> Self {
         Self {
             identity: false,
-            next_root: 0,
             lineage: LineageCatalog::default(),
             root_points: Vec::new(),
             source_edges: Vec::new(),
@@ -100,17 +98,26 @@ impl SplitCapture {
         self.lineage.clear_roots();
     }
 
-    pub(super) fn next_source_root(&mut self) -> Result<RootId> {
-        let root = RootId::from_index(self.next_root);
-        self.next_root = self
-            .next_root
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        Ok(root)
-    }
-
     pub(super) fn next_member(&mut self) -> Result<MemberId> {
         self.lineage.member()
+    }
+
+    pub(super) fn point_root(&mut self, member: MemberId, point: Point) -> Result<RootId> {
+        self.lineage.point_root(member, point)
+    }
+
+    pub(super) fn edge_root(
+        &mut self,
+        member: MemberId,
+        points: [Point; 2],
+        frame: GeographicFrame,
+    ) -> Result<RootId> {
+        let longitude = frame
+            .longitude()
+            .chart_connection(points[0].x, points[1].x)
+            .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?
+            .retained();
+        self.lineage.edge_root(member, points, longitude)
     }
 
     pub(super) fn identity_lineage(&mut self, shape: &Shape) -> Result<ShapeLineage> {
@@ -232,6 +239,7 @@ impl SplitDrawing {
             &self.shape,
             Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
         ) {
+            orient_shape_lineage(&self.shape, &mut self.shape_lineage, &mut self.lineage)?;
             self.shape = self.shape.orient_polygons(false)?;
         }
         Ok(self)
@@ -327,6 +335,138 @@ impl SplitDrawing {
         }
         Ok(result)
     }
+}
+
+fn reverse_lineage_sequence(
+    lineage: &LineageSequence,
+    catalog: &mut LineageCatalog,
+) -> Result<LineageSequence> {
+    if lineage.edges.len() != lineage.vertices.len().saturating_sub(1) {
+        return Err(GeometryErrorKind::Invalid(
+            "antimeridian ring coordinates and edge lineage disagree".into(),
+        )
+        .into());
+    }
+    let one = ExactRational::one();
+    let zero = ExactRational::zero();
+    let mut edges = Vec::with_capacity(lineage.edges.len());
+    for &edge in lineage.edges.iter().rev() {
+        edges.push(catalog.split_edge_use(lineage.member, edge, &one, &zero)?);
+    }
+    Ok(LineageSequence {
+        member: lineage.member,
+        vertices: lineage.vertices.iter().rev().cloned().collect(),
+        edges,
+    })
+}
+
+fn orient_lineage_sequence(
+    ring: &Ring,
+    lineage: &LineageSequence,
+    clockwise: bool,
+    catalog: &mut LineageCatalog,
+) -> Result<LineageSequence> {
+    if ring.coords().len() != lineage.vertices.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "antimeridian ring coordinates and vertex lineage disagree".into(),
+        )
+        .into());
+    }
+    if crate::geometry::ring_winding(ring).reverse_for_clockwise(clockwise) {
+        reverse_lineage_sequence(lineage, catalog)
+    } else {
+        Ok(lineage.clone())
+    }
+}
+
+fn orient_lineage_polygon(
+    polygon: &Polygon,
+    lineage: &LineagePolygon,
+    catalog: &mut LineageCatalog,
+) -> Result<LineagePolygon> {
+    if polygon.holes.len() != lineage.holes.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "antimeridian polygon holes and lineage disagree".into(),
+        )
+        .into());
+    }
+    let shell = orient_lineage_sequence(&polygon.shell, &lineage.shell, false, catalog)?;
+    let mut holes = Vec::with_capacity(polygon.holes.len());
+    for (ring, ring_lineage) in polygon.holes.iter().zip(&lineage.holes) {
+        holes.push(orient_lineage_sequence(ring, ring_lineage, true, catalog)?);
+    }
+    Ok(LineagePolygon {
+        member: lineage.member,
+        shell,
+        holes,
+    })
+}
+
+fn orient_shape_lineage(
+    shape: &Shape,
+    lineage: &mut ShapeLineage,
+    catalog: &mut LineageCatalog,
+) -> Result<()> {
+    match (shape, lineage) {
+        (Shape::Polygon(polygon), ShapeLineage::Polygon(polygon_lineage)) => {
+            *polygon_lineage = orient_lineage_polygon(polygon, polygon_lineage, catalog)?;
+        },
+        (
+            Shape::MultiPolygon(polygons),
+            ShapeLineage::MultiPolygon {
+                members: lineages, ..
+            },
+        ) => {
+            if polygons.member_count() != lineages.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "antimeridian multipolygon members and lineage disagree".into(),
+                )
+                .into());
+            }
+            for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
+                match (polygon, lineage) {
+                    (MultiMember::Empty, None) => {},
+                    (MultiMember::Value(polygon), Some(lineage)) => {
+                        *lineage = orient_lineage_polygon(polygon, lineage, catalog)?;
+                    },
+                    _ => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "antimeridian multipolygon members and lineage disagree".into(),
+                        )
+                        .into());
+                    },
+                }
+            }
+        },
+        (Shape::GeometryCollection(collection), ShapeLineage::GeometryCollection(lineages)) => {
+            if collection.len() != lineages.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "antimeridian collection members and lineage disagree".into(),
+                )
+                .into());
+            }
+            for (member, lineage) in collection.iter().zip(lineages) {
+                let lineage = lineage.as_mut().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "antimeridian collection member has no lineage".into(),
+                    )
+                })?;
+                orient_shape_lineage(member, lineage, catalog)?;
+            }
+        },
+        (Shape::Point(_), ShapeLineage::Point { .. })
+        | (Shape::MultiPoint(_), ShapeLineage::MultiPoint { .. })
+        | (Shape::LineString(_), ShapeLineage::LineString(_))
+        | (Shape::MultiLineString(_), ShapeLineage::MultiLineString { .. })
+        | (Shape::Empty(..), ShapeLineage::Empty) => {},
+        _ => {
+            return Err(GeometryErrorKind::Invalid(
+                "antimeridian shape and lineage disagree during orientation".into(),
+            )
+            .into());
+        },
+    }
+    Ok(())
 }
 
 pub(crate) struct SplitArrayPublisher {
@@ -1252,15 +1392,15 @@ mod tests {
             (150.0, -80.0, fixture_z, fixture_m),
         ]);
         let hole = ring(&[
-            (160.0, -80.0, fixture_z, fixture_m),
+            (160.0, -50.0, fixture_z, fixture_m),
             (160.0, -40.0, 20.0, 200.0),
             (240.0, 60.0, 120.0, 1200.0),
-            (240.0, -80.0, fixture_z, fixture_m),
-            (160.0, -80.0, fixture_z, fixture_m),
+            (240.0, -50.0, fixture_z, fixture_m),
+            (160.0, -50.0, fixture_z, fixture_m),
         ]);
-        // The hole's lower edge co-owns part of the shell boundary in reverse.
-        // The independent point member deliberately shares the late sample's
-        // full record without sharing its polygon-edge ancestry.
+        // The split hole's seam chord partially co-owns the shell's cut chord
+        // in reverse. The point member shares the sample's full record, but
+        // not its polygon-edge ancestry.
         let point = Shape::Point(
             Point::new_axes(
                 200.0,

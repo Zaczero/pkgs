@@ -143,11 +143,51 @@ impl LineageCatalog {
         }
     }
 
+    pub(super) fn resolve_vertex_ordinates<M: crate::geometry::ChartMetric>(
+        &self,
+        events: &[EventId],
+        axes: crate::geometry::CoordinateAxes,
+        frame: crate::geographic::GeographicFrame,
+        metric_access: Option<&crate::geometry::ordinates::SourceArcMetricAccess<'_, '_, M>>,
+    ) -> crate::error::Result<crate::geometry::ordinates::NodeOrdinates> {
+        let mut result = crate::geometry::ordinates::NodeOrdinates::default();
+        for &event in events {
+            for range in self.event_uses(event) {
+                result.merge(self.resolve_root(
+                    range.root(),
+                    range.source_start(),
+                    axes,
+                    frame,
+                    metric_access,
+                )?);
+            }
+        }
+        Ok(result)
+    }
+
     pub(super) fn event(
         &mut self,
         member: MemberId,
         roots: Vec<RootRange>,
     ) -> crate::error::Result<EventId> {
+        for range in &roots {
+            let root = self.roots.get(range.root().index()).ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Invalid(
+                    "split event references an unknown root".into(),
+                )
+            })?;
+            let root_member = match root {
+                SplitRootSource::Point { member, .. } | SplitRootSource::Edge { member, .. } => {
+                    *member
+                },
+            };
+            if root_member != member {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "split event borrows a root from a different member".into(),
+                )
+                .into());
+            }
+        }
         let id = EventId(
             u32::try_from(self.events.len())
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
@@ -238,6 +278,16 @@ impl LineageCatalog {
         Ok(roots)
     }
 
+    pub(super) fn combine_events(
+        &mut self,
+        member: MemberId,
+        events: &[EventId],
+    ) -> crate::error::Result<EventId> {
+        let mut work = crate::geometry::Unmetered;
+        let roots = self.vertex_roots(events, &mut work)?;
+        self.event(member, roots)
+    }
+
     pub(super) fn edge_use_at(&self, edge: EdgeUseId) -> &SplitEdgeUse {
         self.edge_uses
             .get(edge.0 as usize)
@@ -252,6 +302,12 @@ impl LineageCatalog {
     ) -> crate::error::Result<EventId> {
         let mut work = crate::geometry::Unmetered;
         let mut roots = Vec::new();
+        if self.edge_use_at(edge).member != member {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "split event uses an edge from a different member".into(),
+            )
+            .into());
+        }
         for range in &self.edge_use_at(edge).roots {
             if let Some(source_parameter) = range.parameter_at_with_work(parameter, &mut work)? {
                 roots.push(RootRange::point_with_work(
@@ -260,6 +316,50 @@ impl LineageCatalog {
                     crate::geometry::tessellation::exact::ExactRational::zero(),
                     &mut work,
                 )?);
+            }
+        }
+        self.event(member, roots)
+    }
+
+    pub(super) fn event_from_edge_parameters(
+        &mut self,
+        member: MemberId,
+        uses: &[(
+            EdgeUseId,
+            crate::geometry::tessellation::exact::ExactRational,
+        )],
+    ) -> crate::error::Result<EventId> {
+        let mut work = crate::geometry::Unmetered;
+        let mut roots: Vec<RootRange> = Vec::new();
+        for (edge, parameter) in uses {
+            let source = self.edge_use_at(*edge);
+            if source.member != member {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "split event uses an edge from a different member".into(),
+                )
+                .into());
+            }
+            for range in &source.roots {
+                let Some(source_parameter) = range.parameter_at_with_work(parameter, &mut work)?
+                else {
+                    continue;
+                };
+                let candidate = RootRange::point_with_work(
+                    range.root(),
+                    source_parameter,
+                    crate::geometry::tessellation::exact::ExactRational::zero(),
+                    &mut work,
+                )?;
+                let mut found = false;
+                for existing in &roots {
+                    if existing.try_eq_with_work(&candidate, &mut work)? {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    roots.push(candidate);
+                }
             }
         }
         self.event(member, roots)
@@ -274,6 +374,12 @@ impl LineageCatalog {
     ) -> crate::error::Result<EdgeUseId> {
         let mut work = crate::geometry::Unmetered;
         let mut roots = Vec::new();
+        if self.edge_use_at(edge).member != member {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "reversed split edge belongs to a different member".into(),
+            )
+            .into());
+        }
         for range in &self.edge_use_at(edge).roots {
             let Some(source_start) = range.parameter_at_with_work(local_start, &mut work)? else {
                 continue;
@@ -311,6 +417,12 @@ impl LineageCatalog {
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, local_start, local_end) in source_uses {
             let source = self.edge_use_at(*edge);
+            if source.member != member {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "split edge use belongs to a different member".into(),
+                )
+                .into());
+            }
             if restriction.is_none() {
                 restriction = source.restriction;
             }

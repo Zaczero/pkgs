@@ -388,6 +388,36 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
     )
 }
 
+pub(crate) fn overlay_all_geographic_chart_with_sources<M: crate::geometry::ChartMetric>(
+    geometries: &[&Shape],
+    frame: GeographicFrame,
+    operation: OverlayOp,
+    strictness: Strictness,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Vec<OverlayPolygonPartWithSources>> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: operation.name(),
+        }
+        .into());
+    }
+    if operation != OverlayOp::Difference || geometries.len() != 2 {
+        return Err(GeometryErrorKind::Invalid(
+            "lineage-aware chart overlay requires a binary difference".into(),
+        )
+        .into());
+    }
+    let declared_axes = overlay_declared_axes(geometries, operation);
+    let context = SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access);
+    ExactSourceInventory::from_shapes(geometries)?.overlay_polygon_parts_with_ordinates(
+        operation,
+        0,
+        declared_axes,
+        strictness.is_strict(),
+        &context,
+    )
+}
+
 pub(crate) fn overlay_all_geographic_with_metric_and_frame<
     S: Borrow<Shape>,
     M: crate::geometry::ChartMetric,

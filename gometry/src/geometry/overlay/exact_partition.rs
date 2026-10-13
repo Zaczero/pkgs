@@ -2220,6 +2220,93 @@ impl ExactSourceInventory {
         preserved_operand: u32,
     ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let partition = self.partition_without_budget()?;
+        self.overlay_polygon_parts_from_partition(&partition, operation, preserved_operand)
+    }
+
+    pub(in crate::geometry) fn overlay_polygon_parts_with_ordinates<M: ChartMetric>(
+        &self,
+        operation: crate::geometry::OverlayOp,
+        preserved_operand: u32,
+        declared_axes: CoordinateAxes,
+        strict: bool,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
+        let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
+        let partition = self.partition(&mut budget)?;
+        let mut parts =
+            self.overlay_polygon_parts_from_partition(&partition, operation, preserved_operand)?;
+        for part in &mut parts {
+            let shell_vertices = part.vertices.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("overlay polygon has no shell provenance".into())
+            })?;
+            let shell = self.ring_from_overlay_nodes(
+                &partition,
+                shell_vertices,
+                declared_axes,
+                strict,
+                operation.name(),
+                context,
+            )?;
+            if part.vertices.len() != part.polygon.holes.len().saturating_add(1) {
+                return Err(GeometryErrorKind::Invalid(
+                    "overlay polygon source rings do not match its holes".into(),
+                )
+                .into());
+            }
+            let mut holes = Vec::with_capacity(part.polygon.holes.len());
+            for (hole, vertices) in part.polygon.holes.iter().zip(part.vertices.iter().skip(1)) {
+                let _ = hole;
+                holes.push(self.ring_from_overlay_nodes(
+                    &partition,
+                    vertices,
+                    declared_axes,
+                    strict,
+                    operation.name(),
+                    context,
+                )?);
+            }
+            part.polygon = Polygon::new(shell, holes);
+        }
+        Ok(parts)
+    }
+
+    fn ring_from_overlay_nodes<M: ChartMetric>(
+        &self,
+        partition: &ExactPartition<'_>,
+        vertices: &[OverlayNodeReceipt],
+        axes: CoordinateAxes,
+        strict: bool,
+        operation: &'static str,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Ring> {
+        let mut points = Vec::with_capacity(vertices.len().saturating_add(1));
+        for vertex in vertices {
+            let node = NodeId(vertex.id);
+            let ordinates = self.resolve_node_ordinates(partition, node, axes, context, None)?;
+            let z = if axes.has_z() { ordinates.0.0 } else { None };
+            let m = if axes.has_m() { ordinates.1.0 } else { None };
+            if strict && ((axes.has_z() && z.is_none()) || (axes.has_m() && m.is_none())) {
+                return Err(GeometryErrorKind::OrdinateDropped(operation.into()).into());
+            }
+            points.push(Point::new_axes(
+                vertex.assignment.x,
+                vertex.assignment.y,
+                crate::geometry::ZOrdinate(z),
+                crate::geometry::MOrdinate(m),
+            )?);
+        }
+        if let Some(first) = points.first().copied() {
+            points.push(first);
+        }
+        Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
+    }
+
+    fn overlay_polygon_parts_from_partition(
+        &self,
+        partition: &ExactPartition<'_>,
+        operation: crate::geometry::OverlayOp,
+        preserved_operand: u32,
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let cells = self.select_cells(&partition, &topology, &edges, &global, operation, false)?;
