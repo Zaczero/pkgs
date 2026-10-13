@@ -16,13 +16,6 @@ pub(crate) enum MeshSiteLocation {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "mesh publishers use source ordinals and retained locations to select emitted records; final binding validates site references"
-    )
-)]
 pub(crate) struct PreparedMeshSite {
     pub(crate) producer_ordinal: usize,
     pub(crate) source_ordinal: usize,
