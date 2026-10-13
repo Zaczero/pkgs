@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::receipt::{CheckedPublicationLiteral, PublicationImage};
+use super::receipt::{CheckedPublicationLiteral, ProducerLiteral, PublicationImage};
 use crate::error::Result;
 use crate::geometry::embedding_completion::{CheckedImages, LiteralAddress, LiteralChart};
 use crate::geometry::topology::ExactChartPoint;
@@ -33,6 +33,32 @@ impl CheckedLiteralSnapshot {
 
     pub(super) fn contains(&self, address: LiteralAddress, image: PublicationImage) -> bool {
         self.records.contains_key(&(address, image))
+    }
+
+    pub(super) fn addresses_for_image(&self, image: PublicationImage) -> Vec<LiteralAddress> {
+        self.records
+            .keys()
+            .filter_map(|(address, candidate)| (*candidate == image).then_some(*address))
+            .collect()
+    }
+
+    pub(super) fn into_producer_literals(self) -> Result<Vec<ProducerLiteral>> {
+        let mut literals = Vec::with_capacity(self.records.len());
+        for ((address, image), (record, chart)) in self.records {
+            let PublicationImage::ProducerDrawn(image) = image else {
+                return Err(GeometryErrorKind::Invalid(
+                    "producer receiver contains a different image family".into(),
+                )
+                .into());
+            };
+            literals.push(ProducerLiteral {
+                address,
+                image,
+                record,
+                chart,
+            });
+        }
+        Ok(literals)
     }
 }
 

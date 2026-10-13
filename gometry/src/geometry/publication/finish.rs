@@ -37,6 +37,10 @@ impl ProducerImageReceiver {
             snapshot: super::binding::CheckedLiteralSnapshot::new(checked)?,
         })
     }
+
+    fn into_literals(self) -> Result<Vec<ProducerLiteral>> {
+        self.snapshot.into_producer_literals()
+    }
 }
 
 impl CheckedImages<ProducerImageId> for ProducerImageReceiver {
@@ -72,14 +76,19 @@ pub(crate) struct FinishedGeometry {
     frame: Frame,
     scalar_layout: Option<ShapeLiteralLayout<PublicationImage>>,
     checked: Vec<CheckedPublicationLiteral>,
+    producer_literals: Vec<ProducerLiteral>,
     source_root_uses: Vec<ProducerSourceRootUse>,
     chart_restrictions: Vec<DirectedChartRestrictionUse>,
     producer_drawing: bool,
 }
 
 impl FinishedGeometry {
-    pub(in crate::geometry) const fn checked_literal_count(&self) -> usize {
-        self.checked.len()
+    pub(in crate::geometry) const fn output_literal_count(&self) -> usize {
+        if self.producer_drawing {
+            self.producer_literals.len()
+        } else {
+            self.checked.len()
+        }
     }
 
     pub(super) fn from_sealed<I: Copy>(
@@ -105,6 +114,7 @@ impl FinishedGeometry {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            producer_literals: Vec::new(),
             source_root_uses: Vec::new(),
             chart_restrictions: Vec::new(),
             producer_drawing: false,
@@ -122,6 +132,7 @@ impl FinishedGeometry {
             frame,
             scalar_layout: None,
             checked: Vec::new(),
+            producer_literals: Vec::new(),
             source_root_uses,
             chart_restrictions,
             producer_drawing: false,
@@ -131,6 +142,7 @@ impl FinishedGeometry {
     fn from_producer_sealed(
         sealed: SealedOutput<ProducerImageId>,
         frame: Frame,
+        producer_literals: Vec<ProducerLiteral>,
         source_root_uses: Vec<ProducerSourceRootUse>,
         chart_restrictions: Vec<DirectedChartRestrictionUse>,
     ) -> Result<Self> {
@@ -152,6 +164,7 @@ impl FinishedGeometry {
                     chart: literal.chart,
                 })
                 .collect(),
+            producer_literals,
             source_root_uses,
             chart_restrictions,
             producer_drawing: true,
@@ -183,6 +196,10 @@ impl FinishedGeometry {
         for literal in &mut checked {
             literal.address.logical_row = logical_row;
         }
+        let mut producer_literals = self.producer_literals;
+        for literal in &mut producer_literals {
+            literal.address.logical_row = logical_row;
+        }
         let mut source_root_uses = self.source_root_uses;
         for source_use in &mut source_root_uses {
             source_use.address.logical_row = logical_row;
@@ -199,6 +216,7 @@ impl FinishedGeometry {
                 layout,
             },
             checked,
+            producer_literals,
             source_root_uses,
             chart_restrictions: self.chart_restrictions,
             producer_drawing,
@@ -219,6 +237,7 @@ impl FinishedGeometry {
             frame,
             scalar_layout,
             checked,
+            producer_literals,
             source_root_uses,
             chart_restrictions,
             producer_drawing,
@@ -274,18 +293,18 @@ impl FinishedGeometry {
             .into());
         }
 
-        let had_checked = !checked.is_empty();
+        if !checked.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "ProducerDrawing polygon output retained a second literal ledger".into(),
+            )
+            .into());
+        }
+        let had_producer_literals = !producer_literals.is_empty();
         let had_source_uses = !source_root_uses.is_empty();
         let had_chart_restrictions = !chart_restrictions.is_empty();
-        let mut checked_by_output = BTreeMap::<u32, Vec<CheckedPublicationLiteral>>::new();
-        for literal in checked {
-            let PublicationImage::ProducerDrawn(_) = literal.image else {
-                return Err(GeometryErrorKind::Invalid(
-                    "polygon output lost its producer-drawn literal identity".into(),
-                )
-                .into());
-            };
-            checked_by_output
+        let mut literals_by_output = BTreeMap::<u32, Vec<ProducerLiteral>>::new();
+        for literal in producer_literals {
+            literals_by_output
                 .entry(literal.address.output)
                 .or_default()
                 .push(literal);
@@ -325,7 +344,7 @@ impl FinishedGeometry {
                 address.value_row = value_row;
                 address.output = 0;
             };
-            let mut literals = checked_by_output.remove(&output).unwrap_or_default();
+            let mut literals = literals_by_output.remove(&output).unwrap_or_default();
             for literal in &mut literals {
                 address(&mut literal.address);
             }
@@ -373,7 +392,8 @@ impl FinishedGeometry {
                     value_row,
                     layout: row_layout,
                 },
-                checked: literals,
+                checked: Vec::new(),
+                producer_literals: literals,
                 source_root_uses: source_uses,
                 chart_restrictions: if index == 0 {
                     chart_restrictions.clone()
@@ -384,13 +404,15 @@ impl FinishedGeometry {
                 work: EvaluationBudget::new(operation, coordinates)?,
             });
         }
-        if !checked_by_output.is_empty() || !source_uses_by_output.is_empty() {
+        if !literals_by_output.is_empty() || !source_uses_by_output.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon producer receipt references an unknown output row".into(),
             )
             .into());
         }
-        if polygon_count == 0 && (had_checked || had_source_uses || had_chart_restrictions) {
+        if polygon_count == 0
+            && (had_producer_literals || had_source_uses || had_chart_restrictions)
+        {
             return Err(GeometryErrorKind::Invalid(
                 "empty polygon output retained producer literal uses".into(),
             )
@@ -594,6 +616,7 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
             literals,
             source_root_uses,
             chart_restrictions,
+            retain_literals_for_republication,
         }) => {
             let mut receiver = ProducerImageReceiver::new(literals)?;
             for source_use in &source_root_uses {
@@ -601,7 +624,13 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
                 let image = PublicationImage::ProducerDrawn(source_use.image);
                 if !receiver.snapshot.contains(source_use.address, image) {
                     return Err(GeometryErrorKind::Invalid(
-                        "producer source-root use has no checked output literal".into(),
+                        format!(
+                            "producer source-root use for image {:?} at {:?} has no checked output literal; checked image addresses: {:?}",
+                            source_use.image,
+                            source_use.address,
+                            receiver.snapshot.addresses_for_image(image)
+                        )
+                        .into(),
                     )
                     .into());
                 }
@@ -613,14 +642,22 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
             )?;
             let buffers = buffers.admit_target(target)?;
             match bind_final_literals(buffers, &mut receiver, work)? {
-                LiteralCheck::Pass(sealed) => Ok(PublicationOutcome::Pass(
-                    FinishedGeometry::from_producer_sealed(
-                        sealed,
-                        frame,
-                        source_root_uses,
-                        chart_restrictions,
-                    )?,
-                )),
+                LiteralCheck::Pass(sealed) => {
+                    let producer_literals = if retain_literals_for_republication {
+                        receiver.into_literals()?
+                    } else {
+                        Vec::new()
+                    };
+                    Ok(PublicationOutcome::Pass(
+                        FinishedGeometry::from_producer_sealed(
+                            sealed,
+                            frame,
+                            producer_literals,
+                            source_root_uses,
+                            chart_restrictions,
+                        )?,
+                    ))
+                },
                 LiteralCheck::Reject(images) => Ok(PublicationOutcome::Reject(
                     PublicationRejection::ProducerDrawing(images),
                 )),

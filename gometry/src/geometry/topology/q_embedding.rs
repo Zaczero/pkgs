@@ -20178,6 +20178,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     value_row: None,
                     output: 0,
                 },
+                self.emission.plan.retain_literals_for_republication,
                 budget,
             )?;
             return match finish_geographic(
@@ -20533,6 +20534,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 value_row: None,
                                 output: 0,
                             },
+                            self.emission.plan.retain_literals_for_republication,
                             budget,
                         )?;
                         match finish_geographic(

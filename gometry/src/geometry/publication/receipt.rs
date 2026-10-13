@@ -66,6 +66,7 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
     pub(super) literals: Vec<ProducerLiteral>,
     pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
     pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
+    pub(super) retain_literals_for_republication: bool,
 }
 
 impl ProducerDrawingReceipt {
@@ -80,6 +81,22 @@ impl ProducerDrawingReceipt {
             literals,
             source_root_uses,
             chart_restrictions,
+            retain_literals_for_republication: false,
+        }
+    }
+
+    pub(in crate::geometry) const fn new_for_republication(
+        buffers: FrozenLiteralBuffers<ProducerImageId>,
+        literals: Vec<ProducerLiteral>,
+        source_root_uses: Vec<ProducerSourceRootUse>,
+        chart_restrictions: Vec<DirectedChartRestrictionUse>,
+    ) -> Self {
+        Self {
+            buffers,
+            literals,
+            source_root_uses,
+            chart_restrictions,
+            retain_literals_for_republication: true,
         }
     }
 }
@@ -97,6 +114,7 @@ pub(crate) struct PendingPublicationRow {
     pub(super) logical_row: usize,
     pub(super) layout: LiteralRowLayout<PublicationImage>,
     pub(super) checked: Vec<CheckedPublicationLiteral>,
+    pub(super) producer_literals: Vec<ProducerLiteral>,
     pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
     pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
     pub(super) producer_drawing: bool,
@@ -129,7 +147,12 @@ impl PendingPublicationRow {
     }
 
     pub(crate) fn precharge_append(&mut self) -> Result<()> {
-        let ticks = u64::try_from(self.checked.len())
+        let literal_count = self
+            .checked
+            .len()
+            .checked_add(self.producer_literals.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let ticks = u64::try_from(literal_count)
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?
             .checked_add(1)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;

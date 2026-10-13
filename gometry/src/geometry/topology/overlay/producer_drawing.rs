@@ -311,6 +311,7 @@ pub(in crate::geometry::topology) fn receipt_from_shape_layout<I, W>(
     source_ranges: impl FnMut(I, &mut W) -> Result<Vec<RootRange>>,
     chart_restrictions: Vec<DirectedChartRestrictionUse>,
     base_address: LiteralAddress,
+    retain_literals_for_republication: bool,
     work: &mut W,
 ) -> Result<ProducerDrawingReceipt>
 where
@@ -333,10 +334,15 @@ where
     work.charge_into_error(
         u64::try_from(chart_restrictions.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    Ok(ProducerDrawingReceipt::new(
-        FrozenLiteralBuffers::shapes(shape, mapped_layout),
-        literals,
-        source_root_uses,
-        chart_restrictions,
-    ))
+    let buffers = FrozenLiteralBuffers::shapes(shape, mapped_layout);
+    Ok(if retain_literals_for_republication {
+        ProducerDrawingReceipt::new_for_republication(
+            buffers,
+            literals,
+            source_root_uses,
+            chart_restrictions,
+        )
+    } else {
+        ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions)
+    })
 }

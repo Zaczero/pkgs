@@ -1104,6 +1104,7 @@ impl Shape {
             strict,
             context,
             (*publication_frame).clone(),
+            true,
         )?;
         finished.into_pending_polygon_rows(
             publication_frame,

@@ -177,6 +177,7 @@ pub(super) struct QEmissionPlan {
     force_native: bool,
     boundary_support: Option<BoundarySupport>,
     pub(super) producer: QProducer,
+    pub(super) retain_literals_for_republication: bool,
     pub(super) polygons: PolygonPlan,
     pub(super) cycles: Vec<BoundaryCycle>,
     pub(super) selected_regions: Vec<SelectedRegionFact>,
@@ -203,6 +204,7 @@ pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
         strict,
         context,
         publication_frame,
+        false,
     )?
     .0
     .into_scalar()
@@ -227,9 +229,10 @@ pub(in crate::geometry) fn exact_geographic_linework_pending_row<
         strict,
         context,
         publication_frame.clone(),
+        true,
     )?;
     let publication_work =
-        EvaluationBudget::new(producer.operation(), finished.checked_literal_count())?;
+        EvaluationBudget::new(producer.operation(), finished.output_literal_count())?;
     finished.into_pending_row(logical_row, publication_work, publication_frame)
 }
 
@@ -242,6 +245,7 @@ pub(in crate::geometry) fn exact_geographic_linework_finished_from_shapes<
     strict: bool,
     context: &crate::geometry::SourceArcContext<'_, '_, M>,
     publication_frame: crate::Frame,
+    retain_literals_for_republication: bool,
 ) -> Result<(FinishedGeometry, EvaluationBudget)> {
     let crate::geometry::TopologyDomain::Geographic(frame) = context.domain() else {
         return Err(GeometryErrorKind::Invalid(
@@ -270,6 +274,7 @@ pub(in crate::geometry) fn exact_geographic_linework_finished_from_shapes<
             strict,
             declared_axes,
             context.metric_access(),
+            retain_literals_for_republication,
             &mut work,
         )?
     };
@@ -588,6 +593,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                     value_row: None,
                     output: 0,
                 },
+                plan.retain_literals_for_republication,
                 preparation_work,
             )?;
             match finish_geographic(
@@ -1011,6 +1017,7 @@ impl QEmissionPlan {
         strict: bool,
         declared_axes: CoordinateAxes,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        retain_literals_for_republication: bool,
         work: &mut impl SearchAccount,
     ) -> Result<FinishedGeometry> {
         if !producer.is_pooled_linework() {
@@ -1020,7 +1027,7 @@ impl QEmissionPlan {
             .into());
         }
         let mut expansion_budget = ExpansionBudget::new(producer.operation(), "computed edges");
-        let plan = match producer {
+        let mut plan = match producer {
             QProducer::Node => Self::build_node(topology, work)?,
             QProducer::Polygonize => Self::build_polygonize(topology, diagnostics, work)?,
             QProducer::BuildArea => Self::build_area(topology, work)?,
@@ -1031,6 +1038,7 @@ impl QEmissionPlan {
                 .into());
             },
         };
+        plan.retain_literals_for_republication = retain_literals_for_republication;
         let nearest = QCoordinates::build_with_work(topology, work)?;
         let source_points = source_point_coordinates_with_work(topology, work)?;
         let embedding = resolve_q_embedding(
@@ -1098,6 +1106,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::Overlay,
+            retain_literals_for_republication: false,
             polygons,
             cycles,
             selected_regions,
@@ -1194,6 +1203,7 @@ impl QEmissionPlan {
                 force_native: false,
                 boundary_support: Some(support),
                 producer: QProducer::Boundary,
+                retain_literals_for_republication: false,
                 polygons,
                 cycles: Vec::new(),
                 selected_regions,
@@ -1345,6 +1355,7 @@ impl QEmissionPlan {
             force_native: true,
             boundary_support: None,
             producer: QProducer::SourceLines,
+            retain_literals_for_republication: false,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
@@ -1392,6 +1403,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::Node,
+            retain_literals_for_republication: false,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
@@ -1453,6 +1465,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::Polygonize,
+            retain_literals_for_republication: false,
             polygons,
             cycles,
             selected_regions,
@@ -1498,6 +1511,7 @@ impl QEmissionPlan {
             force_native: false,
             boundary_support: None,
             producer: QProducer::BuildArea,
+            retain_literals_for_republication: false,
             polygons,
             cycles,
             selected_regions,

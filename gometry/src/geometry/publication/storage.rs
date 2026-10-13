@@ -377,20 +377,7 @@ fn collect_producer_rows(
             .into());
         }
         *slot = Some(super::finish::producer_row_layout(pending.layout)?);
-        for literal in pending.checked {
-            let PublicationImage::ProducerDrawn(image) = literal.image else {
-                return Err(GeometryErrorKind::Invalid(
-                    "producer-drawn storage contains a different image family".into(),
-                )
-                .into());
-            };
-            literals.push(ProducerLiteral {
-                address: literal.address,
-                image,
-                record: literal.record,
-                chart: literal.chart,
-            });
-        }
+        literals.extend(pending.producer_literals);
         source_root_uses.extend(pending.source_root_uses);
         chart_restrictions.extend(pending.chart_restrictions);
     }
@@ -607,6 +594,7 @@ mod tests {
                     ExactRational::from_f64(expected.y),
                 ),
             }],
+            producer_literals: Vec::new(),
             source_root_uses: Vec::new(),
             chart_restrictions: Vec::new(),
             producer_drawing: false,
