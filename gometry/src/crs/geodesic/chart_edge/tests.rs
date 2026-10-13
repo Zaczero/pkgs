@@ -13,8 +13,9 @@ use crate::geographic::{
 use crate::geometry::exact_arith::{
     retained_source_interval_initial_piece_count, retained_source_sheet_site,
 };
-use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
-use crate::geometry::{GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate};
+use crate::geometry::{
+    ChartMetric as _, GeodesicMetric as _, GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate,
+};
 
 mod support;
 
