@@ -1,4 +1,6 @@
 use super::*;
+use crate::geographic::{GeographicRing, RingSummary};
+use crate::geometry::topology::q_embedding::emission::ring_roles::assigned_emitted_ring;
 use crate::geometry::{CoordinateAxes, OverlayOp, Shape};
 
 fn topology_in_frame(shapes: &[Shape], frame: GeographicFrame) -> Result<ExactGeographicTopology> {

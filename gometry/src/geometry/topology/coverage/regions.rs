@@ -1,5 +1,6 @@
+use super::super::emission::plan::{BoundaryCycle, SelectedRegionPoles};
 use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind, SourceRowId};
-use super::super::overlay::{self, BoundaryCycle, SelectedRegionPoles};
+use super::super::overlay;
 use super::super::q::{ChartSpanId, GlobalFaceId, QNodeId, QPortId};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::error::{ResourceError, Result};

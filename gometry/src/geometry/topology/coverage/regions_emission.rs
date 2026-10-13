@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use super::super::emission::plan::SelectedRegionPoles;
 use super::super::exact::SourceEdgeKind;
-use super::super::overlay::SelectedRegionPoles;
 use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
 use super::regions::{GeographicCoverageBoundaryCycle, GeographicCoverageRootUse};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
