@@ -10,8 +10,8 @@ use std::cmp::Ordering;
 #[cfg(test)]
 use super::metrics::update as update_partition_metrics;
 use super::{
-    ArealCells, CoverageFaceState, ExactPartition, ExactSourceInventory, GlobalFaces, KeptNodes,
-    NodeId, NodeParts, ResolvedNodePoints, bucket_axes, with_axes,
+    ArealCells, CoverageFaceState, ExactPartition, ExactSourceInventory, KeptNodes, NodeId,
+    NodeParts, ResolvedNodePoints, bucket_axes, with_axes,
 };
 use crate::error::ResourceError;
 #[cfg(test)]
@@ -20,8 +20,9 @@ use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::coverage::{
     BorderTieBreak, ScaledLength, ScaledLengthSum, longest_border_owner, scaled_point_distance,
 };
+use crate::geometry::graph::GlobalFaces;
 #[cfg(test)]
-use crate::geometry::exact_arith::floor_binary_exponent;
+use crate::geometry::numerics::product::floor_binary_exponent;
 use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, Polygon,

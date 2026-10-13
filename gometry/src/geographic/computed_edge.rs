@@ -3,13 +3,14 @@ use super::{
     RetainedLongitudeClass,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::{
-    RetainedComputedSample, retained_computed_samples_connection, retained_edge_from_chart_witness,
+use crate::geographic::retained_exact::edges::{
+    retained_computed_samples_connection, retained_edge_from_chart_witness,
     retained_edge_from_lifted_binary64_pair, retained_exact_interval_class,
     retained_exact_publisher_sample, retained_exact_split_piece_count,
     retained_native_interval_class, retained_native_publisher_sample,
     retained_native_split_piece_count,
 };
+use crate::geographic::retained_exact::sites::RetainedComputedSample;
 use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
     interpolate_optional_ordinate, interpolate_subdivision_ordinate,

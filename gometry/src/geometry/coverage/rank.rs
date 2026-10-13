@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::geometry::exact_arith::{dd_add, floor_binary_exponent, two_sum};
+use crate::geometry::numerics::product::{dd_add, floor_binary_exponent, two_sum};
 use crate::geometry::{
     XY, axis_pow2_scale, point_distance, power_of_two_exponent, scale_by_power_of_two,
     scaled_residual,

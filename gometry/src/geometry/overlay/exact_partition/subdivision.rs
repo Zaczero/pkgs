@@ -1,6 +1,7 @@
 //! Preserve source-root traces while exact partitions emit subdivision children.
 
 use super::*;
+use crate::work::Work;
 
 #[derive(Clone, Copy)]
 enum LineSource<'a> {

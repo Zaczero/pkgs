@@ -1,8 +1,9 @@
 use super::super::emission::cut_ports::CutNodePorts;
 use super::{
     ExactChartPoint, ExactGeographicQ, ExactRational, GeographicFrame, GeometryErrorKind,
-    ResourceError, Result, Work,
+    ResourceError, Result,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn reconstruct_cut_ports(
     frame: GeographicFrame,

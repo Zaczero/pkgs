@@ -28,7 +28,7 @@ use mesh::{bounds, hilbert16};
 use ordering::{order_interior, symbolic_incircle_tie};
 
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY, canonicalize_zero};
 

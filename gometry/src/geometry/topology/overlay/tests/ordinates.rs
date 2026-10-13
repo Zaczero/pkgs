@@ -35,7 +35,7 @@ fn q_node_ordinates_return_xy_defaults_before_source_metric_access() {
         ))
     };
 
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     let xy = node_ordinates::<crate::crs::GeodesicMetric>(
         &topology,
         CoordinateAxes::XY,

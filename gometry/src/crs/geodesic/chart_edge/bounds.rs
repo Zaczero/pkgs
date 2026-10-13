@@ -4,10 +4,10 @@ use geographiclib_rs::Geodesic;
 
 use super::ChartEdge;
 use crate::geographic::GeographicFrame;
-use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::interval::{
     HALF_PI_LOWER, HALF_PI_UPPER, Interval as CertifiedInterval, PI_LOWER, PI_UPPER,
 };
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::{GeodesicNumericalPolicy, Point};
 
 #[derive(Clone, Copy)]

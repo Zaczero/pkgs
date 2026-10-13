@@ -3,11 +3,12 @@ use super::super::{
     DrawnPolygons, EmittedVertex, FragmentRecipeId, GeometryErrorKind, NodeAuthority,
     PlannedAreaRing, PolygonPlan, PublishedEndpoint, QCandidate, QCoordinates, QEmbeddingProblem,
     QEmissionDrawing, QPortId, RecipeWalk, RecipeWalkOwner, ResourceError, Result, SeamIdentity,
-    Work, add_source_reused_recipe_walk, exact_canonical_longitude_with_work,
+    add_source_reused_recipe_walk, exact_canonical_longitude_with_work,
     exact_coordinate_has_binary64_value_with_work,
     exact_node_position_has_binary64_value_with_work, source_line_reuse_is_complete,
     source_ring_reuse_matches, strict_native_bank_event,
 };
+use crate::work::Work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
     pub(in crate::geometry::topology::q_embedding) fn source_reused_recipe_ids(

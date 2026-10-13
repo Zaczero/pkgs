@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::geographic::{
     CircularInterval, GeodeticPole, GeographicError, GeographicFrame, Latitude, LongitudeWindows,
 };
-use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::{
     CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate,
     types,

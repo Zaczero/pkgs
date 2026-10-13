@@ -8,7 +8,7 @@
 //! outside the window declines to the exact construction.
 
 use crate::geometry::XY;
-use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
+use crate::geometry::numerics::bounded::{Bounded, inside_window};
 
 /// Certified outward bounds around a certified rounding: the exact value lies
 /// inside `rounded`'s nearest-even cell, so it is between the two binary64

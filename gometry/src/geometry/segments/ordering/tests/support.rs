@@ -1,4 +1,4 @@
-use crate::geometry::Work;
+use crate::work::Work;
 
 pub(super) struct RemainingWork(pub(super) u64);
 
@@ -14,6 +14,6 @@ impl Work for RemainingWork {
     }
 
     fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> crate::error::Result<()> {
-        self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+        self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
     }
 }

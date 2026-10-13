@@ -1,8 +1,9 @@
 //! Frozen point-location labels derived from an exact partition.
 
-use super::{ExactPartition, ExactSourceInventory, GlobalFaces, NodeId};
+use super::{ExactPartition, ExactSourceInventory, NodeId};
 use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::graph::GlobalFaces;
 use crate::geometry::point_location::{
     AreaLocationLabels, ExactLocationCells, ExactLocationDart, ExactLocationEdge,
     ExactLocationPoints, SourceLocationLabels,

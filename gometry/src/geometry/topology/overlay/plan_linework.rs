@@ -1,10 +1,11 @@
 use super::{
     BoundaryCycle, ExactGeographicTopology, FaceUnion, LineStep, PlannedAreaRing, PolygonPlan,
     QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer, RecipeWalkOwner, ResourceError, Result,
-    SpanEndpoint, Work, build_fragment_recipes, diagnostic_line_paths, even_odd_face_selection,
+    SpanEndpoint, build_fragment_recipes, diagnostic_line_paths, even_odd_face_selection,
     face_regions, minimal_face_selection, noded_spans, selected_area_boundaries,
     selected_face_roots, selected_region_facts,
 };
+use crate::work::Work;
 
 impl QEmissionPlan {
     pub(in crate::geometry::topology) fn build_node(

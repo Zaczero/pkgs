@@ -8,7 +8,8 @@ use super::{
 };
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, GeographicInputs};
-use crate::geometry::{GeometryErrorKind, Shape, Unmetered};
+use crate::geometry::{GeometryErrorKind, Shape};
+use crate::work::Unmetered;
 
 fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
     let frame = GeographicFrame::crs84();
