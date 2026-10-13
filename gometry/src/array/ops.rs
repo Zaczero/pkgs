@@ -710,6 +710,57 @@ impl PyGeometryArray {
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         };
+        if let Some(geographic_frame) = geographic_frame {
+            let array = self.clone();
+            let frame = self.frame.clone();
+            let missing = self.missing().cloned();
+            let row_count = array.len();
+            let finished = py
+                .detach(move || {
+                    let source_clip = match boundary.as_borrowed() {
+                        crate::geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                        crate::geometry::VoronoiBoundary::Envelope
+                        | crate::geometry::VoronoiBoundary::Padded => None,
+                    };
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
+                        .map_err(|error| (0, error))?;
+                    for row in array.row_operation().rows_with_missing(|| ()) {
+                        let logical = match row {
+                            ArrayRow::Missing { logical, .. } => logical,
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = crate::geometry::ExpansionBudget::new(
+                                    "voronoi_cells",
+                                    "sites/clip topology",
+                                );
+                                row.row()
+                                    .try_with_shape(|shape| {
+                                        let outputs = shape
+                                            .voronoi_polygon_outputs_in_frame_budgeted(
+                                                tolerance,
+                                                boundary.as_borrowed(),
+                                                Some(geographic_frame),
+                                                &mut budget,
+                                            )?;
+                                        writer.push_polygon_outputs(
+                                            outputs,
+                                            geographic_frame,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                logical
+                            },
+                        };
+                        writer.end_group().map_err(|error| (logical, error))?;
+                    }
+                    writer
+                        .finish_groups(frame, missing)
+                        .map_err(|error| (row_count.saturating_sub(1), error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(finished)?);
+        }
         self.flat_map_shapes_groups_budgeted(
             py,
             "voronoi_cells",
@@ -744,6 +795,57 @@ impl PyGeometryArray {
             geometry::TopologyDomain::Geographic(frame) => Some(frame),
             geometry::TopologyDomain::Cartesian => None,
         };
+        if let Some(geographic_frame) = geographic_frame {
+            let array = self.clone();
+            let frame = self.frame.clone();
+            let missing = self.missing().cloned();
+            let row_count = array.len();
+            let finished = py
+                .detach(move || {
+                    let source_clip = match boundary.as_borrowed() {
+                        geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
+                        geometry::VoronoiBoundary::Envelope | geometry::VoronoiBoundary::Padded => {
+                            None
+                        },
+                    };
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
+                        .map_err(|error| (0, error))?;
+                    for row in array.row_operation().rows_with_missing(|| ()) {
+                        let logical = match row {
+                            ArrayRow::Missing { logical, .. } => logical,
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                let mut budget = geometry::ExpansionBudget::new(
+                                    "voronoi_edge_lines",
+                                    "sites/clip topology",
+                                );
+                                row.row()
+                                    .try_with_shape(|shape| {
+                                        let output = shape.voronoi_edge_column_in_frame_budgeted(
+                                            tolerance,
+                                            boundary.as_borrowed(),
+                                            Some(geographic_frame),
+                                            &mut budget,
+                                        )?;
+                                        writer.push_edge_column(
+                                            output,
+                                            geographic_frame,
+                                            &mut budget,
+                                        )
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                logical
+                            },
+                        };
+                        writer.end_group().map_err(|error| (logical, error))?;
+                    }
+                    writer
+                        .finish_groups(frame, missing)
+                        .map_err(|error| (row_count.saturating_sub(1), error))
+                })
+                .map_err(rows_err)?;
+            return Ok(Groups::from_finished(finished)?);
+        }
         let array = self.clone();
         let frame = self.frame.clone();
         let packed = py

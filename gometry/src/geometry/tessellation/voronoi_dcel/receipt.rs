@@ -52,8 +52,10 @@ pub(super) fn chart_vertex_origins(
 pub(super) fn site_receipts(
     producer: VoronoiProducer,
     sites: &[Site],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = VoronoiDiagramReceipt::empty(producer);
+    receipt.selected_chart_cuts = chart.map(|chart| chart.cut_longitudes()).transpose()?;
     receipt.sites.reserve(sites.len());
     for site in sites {
         let id = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -108,8 +110,9 @@ pub(super) fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::
 
 pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
     sites: &[Site],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites, chart)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -118,8 +121,9 @@ pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
 
 pub(in crate::geometry::tessellation) fn lone_site_empty_polygon_outputs(
     sites: &[Site],
+    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -136,7 +140,7 @@ pub(in crate::geometry::tessellation) fn lone_site_empty_edges(
             lone_site_polygon_outputs(sites, polygon, chart)?.receipt
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?)
+            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?)
         },
     };
     empty_edges_with_receipt(receipt)
@@ -152,7 +156,7 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             "lone-site receipt requires one admitted site",
         ));
     };
-    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites, chart)?;
     let owner = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     let mut output_edge_id = 0_u32;
     let mut vertex_id = 0_u32;
@@ -452,7 +456,7 @@ pub(super) fn exact_diagram_receipt(
     points: &[XY],
     chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(producer, sites)?;
+    let mut receipt = site_receipts(producer, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, Some(clip_trace))?;
 
     let mut assignments = vec![None; subdivision.vertices.len()];

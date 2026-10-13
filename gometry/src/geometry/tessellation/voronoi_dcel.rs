@@ -600,10 +600,12 @@ pub(super) struct EmbeddedEdges {
     receipt: std::sync::Arc<VoronoiDiagramReceipt>,
 }
 
-pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
-    empty_edges_with_receipt(std::sync::Arc::new(VoronoiDiagramReceipt::empty(
+pub(super) fn empty_packed_edges(chart: Option<&PointSelectionChart>) -> Result<EmbeddedEdges> {
+    empty_edges_with_receipt(std::sync::Arc::new(site_receipts(
         VoronoiProducer::Empty,
-    )))
+        &[],
+        chart,
+    )?))
 }
 
 fn empty_edges_with_receipt(
@@ -1236,6 +1238,9 @@ pub(super) fn build_edges_with_chart(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "voronoi_dcel/chart_cut_receipt_tests.rs"]
+mod chart_cut_receipt_tests;
 
 // =====================================================================
 // The certified combinatorial dual.

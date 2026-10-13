@@ -436,7 +436,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     };
     budget.add(published.saturating_sub(baseline))?;
 
-    let mut receipt = site_receipts(VoronoiProducer::Dual, sites)?;
+    let mut receipt = site_receipts(VoronoiProducer::Dual, sites, chart)?;
     receipt.clip_segments = clip_segment_receipts(clip, None)?;
     let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
         .take(vertex_xy.len())
