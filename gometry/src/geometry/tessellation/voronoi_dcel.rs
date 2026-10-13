@@ -1,7 +1,6 @@
 //! Exact labelled Voronoi subdivision and its sole binary64 projection.
 
 #![expect(
-    clippy::clone_on_copy,
     clippy::explicit_iter_loop,
     clippy::float_cmp,
     clippy::inconsistent_struct_constructor,
