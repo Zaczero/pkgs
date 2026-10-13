@@ -544,11 +544,14 @@ fn split_shape_with_lineage<M: ChartMetric>(
 }
 
 fn line_sequence_is_closed(line: &LineSeq) -> bool {
-    if line.len() < 2 {
+    let Some(last_index) = line.len().checked_sub(1) else {
+        return false;
+    };
+    if last_index == 0 {
         return false;
     }
     let first = line.point_at(0);
-    let last = line.point_at(line.len() - 1);
+    let last = line.point_at(last_index);
     first.x.to_bits() == last.x.to_bits()
         && first.y.to_bits() == last.y.to_bits()
         && first.z() == last.z()
@@ -649,8 +652,7 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
         };
         return Ok((view.shape().clone(), lineage));
     }
-    let (split, lineage) = if let (Some(capture), Some(lineage)) =
-        (capture.as_deref_mut(), chart_lineage.as_ref())
+    let (split, lineage) = if let (Some(capture), Some(lineage)) = (capture, chart_lineage.as_ref())
     {
         split_shape_with_lineage(
             &chart,

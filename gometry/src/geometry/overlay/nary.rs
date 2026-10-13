@@ -389,14 +389,9 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
     )
 }
 
-pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources<
-    M: crate::geometry::ChartMetric,
->(
+pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources(
     geometries: &[&Shape],
-    frame: GeographicFrame,
     operation: OverlayOp,
-    strictness: Strictness,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<OverlayPolygonPartWithSources>> {
     if geometries.is_empty() {
         return Err(GeometryErrorKind::EmptyGeometrySequence {
@@ -410,15 +405,8 @@ pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources<
         )
         .into());
     }
-    let declared_axes = overlay_declared_axes(geometries, operation);
-    let context = SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access);
-    ExactSourceInventory::from_shapes(geometries)?.overlay_polygon_parts_with_ordinates(
-        operation,
-        0,
-        declared_axes,
-        strictness.is_strict(),
-        &context,
-    )
+    ExactSourceInventory::from_shapes(geometries)?
+        .overlay_polygon_parts_with_source_roles(operation, 0)
 }
 
 pub(crate) fn overlay_all_geographic_with_metric_and_frame<

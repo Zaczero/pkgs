@@ -191,7 +191,7 @@ fn push_indexed(points: &mut Vec<IndexedPoint>, mut point: IndexedPoint) {
     }
 }
 
-fn spelled_indexed(mut point: IndexedPoint, side: f64) -> IndexedPoint {
+const fn spelled_indexed(mut point: IndexedPoint, side: f64) -> IndexedPoint {
     point.point.x = side;
     point
 }

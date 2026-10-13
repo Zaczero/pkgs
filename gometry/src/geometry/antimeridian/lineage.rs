@@ -1,16 +1,27 @@
-use crate::geometry::ordinates::{RootId, RootRange};
+use crate::error::{ResourceError, Result};
+use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
+use crate::geometry::ordinates::{
+    AxisValue, NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, SourceArcRequest,
+    source_arc_ordinates,
+};
 use crate::geometry::publication::ChartRestriction;
+use crate::geometry::tessellation::exact::ExactRational;
+use crate::geometry::{
+    ChartMetric, CoordinateAxes, GeometryErrorKind, MultiMember, Point, Polygon, RootMetricState,
+    Shape,
+};
+use crate::work::{Unmetered, Work};
 
 enum SplitRootSource {
     Point {
         member: MemberId,
-        point: crate::geometry::Point,
+        point: Point,
     },
     Edge {
         member: MemberId,
-        points: [crate::geometry::Point; 2],
-        longitude: crate::geographic::RetainedChartDisplacement,
-        metric: std::cell::Cell<crate::geometry::RootMetricState>,
+        points: [Point; 2],
+        longitude: RetainedChartDisplacement,
+        metric: RootMetricId,
     },
 }
 
@@ -22,6 +33,9 @@ pub(super) struct EventId(u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct EdgeUseId(u32);
+
+#[derive(Clone, Copy)]
+struct RootMetricId(usize);
 
 pub(super) struct SplitEvent {
     pub(super) member: MemberId,
@@ -37,13 +51,14 @@ pub(super) struct SplitEdgeUse {
 #[derive(Default)]
 pub(super) struct LineageCatalog {
     roots: Vec<SplitRootSource>,
+    edge_metrics: Vec<std::cell::Cell<RootMetricState>>,
     next_member: u32,
     events: Vec<SplitEvent>,
     edge_uses: Vec<SplitEdgeUse>,
 }
 
 impl LineageCatalog {
-    fn member_of_root(&self, root: RootId) -> crate::error::Result<MemberId> {
+    fn member_of_root(&self, root: RootId) -> Result<MemberId> {
         self.roots
             .get(root.index())
             .map(|source| match source {
@@ -52,29 +67,22 @@ impl LineageCatalog {
                 },
             })
             .ok_or_else(|| {
-                crate::geometry::GeometryErrorKind::Invalid(
-                    "split lineage references an unknown source root".into(),
-                )
-                .into()
+                GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
+                    .into()
             })
     }
 
-    pub(super) fn member(&mut self) -> crate::error::Result<MemberId> {
+    pub(super) fn member(&mut self) -> Result<MemberId> {
         let member = MemberId(self.next_member);
         self.next_member = self
             .next_member
             .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            .ok_or(ResourceError::SizeOverflow)?;
         Ok(member)
     }
 
-    pub(super) fn point_root(
-        &mut self,
-        member: MemberId,
-        point: crate::geometry::Point,
-    ) -> crate::error::Result<RootId> {
-        let index = u32::try_from(self.roots.len())
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    pub(super) fn point_root(&mut self, member: MemberId, point: Point) -> Result<RootId> {
+        let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
         self.roots.push(SplitRootSource::Point { member, point });
         Ok(RootId::from_index(index))
     }
@@ -82,46 +90,44 @@ impl LineageCatalog {
     pub(super) fn edge_root(
         &mut self,
         member: MemberId,
-        points: [crate::geometry::Point; 2],
-        longitude: crate::geographic::RetainedChartDisplacement,
-    ) -> crate::error::Result<RootId> {
-        let index = u32::try_from(self.roots.len())
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        points: &[Point; 2],
+        longitude: RetainedChartDisplacement,
+    ) -> Result<RootId> {
+        let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
+        let metric = RootMetricId(self.edge_metrics.len());
+        self.edge_metrics
+            .push(std::cell::Cell::new(RootMetricState::default()));
         self.roots.push(SplitRootSource::Edge {
             member,
-            points,
+            points: *points,
             longitude,
-            metric: std::cell::Cell::new(crate::geometry::RootMetricState::default()),
+            metric,
         });
         Ok(RootId::from_index(index))
     }
 
-    pub(super) fn resolve_root<M: crate::geometry::ChartMetric>(
+    pub(super) fn resolve_root<M: ChartMetric>(
         &self,
         root: RootId,
-        parameter: &crate::geometry::tessellation::exact::ExactRational,
-        axes: crate::geometry::CoordinateAxes,
-        frame: crate::geographic::GeographicFrame,
-        metric_access: Option<&crate::geometry::ordinates::SourceArcMetricAccess<'_, '_, M>>,
-    ) -> crate::error::Result<crate::geometry::ordinates::NodeOrdinates> {
-        use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
-
+        parameter: &ExactRational,
+        axes: CoordinateAxes,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<NodeOrdinates> {
         let source = self.roots.get(root.index()).ok_or_else(|| {
-            crate::geometry::GeometryErrorKind::Invalid(
-                "split lineage references an unknown source root".into(),
-            )
+            GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
         })?;
         match source {
-            SplitRootSource::Point { point, .. } => Ok(crate::geometry::ordinates::NodeOrdinates {
+            SplitRootSource::Point { point, .. } => Ok(NodeOrdinates {
                 z: {
-                    let mut value = crate::geometry::ordinates::AxisValue::default();
+                    let mut value = AxisValue::default();
                     if axes.has_z() {
                         value.observe(point.z());
                     }
                     value
                 },
                 m: {
-                    let mut value = crate::geometry::ordinates::AxisValue::default();
+                    let mut value = AxisValue::default();
                     if axes.has_m() {
                         value.observe(point.m());
                     }
@@ -134,10 +140,15 @@ impl LineageCatalog {
                 metric,
                 ..
             } => {
+                let metric = self.edge_metrics.get(metric.0).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "split lineage references an unknown edge metric".into(),
+                    )
+                })?;
                 let request =
                     SourceArcRequest::new(frame, points, axes, parameter, || Ok(*longitude))?;
                 let mut fraction = None;
-                let mut work = crate::work::Unmetered;
+                let mut work = Unmetered;
                 let mut metric_state = metric.get();
                 let ordinates = source_arc_ordinates(
                     &request,
@@ -159,14 +170,14 @@ impl LineageCatalog {
         }
     }
 
-    pub(super) fn resolve_vertex_ordinates<M: crate::geometry::ChartMetric>(
+    pub(super) fn resolve_vertex_ordinates<M: ChartMetric>(
         &self,
         events: &[EventId],
-        axes: crate::geometry::CoordinateAxes,
-        frame: crate::geographic::GeographicFrame,
-        metric_access: Option<&crate::geometry::ordinates::SourceArcMetricAccess<'_, '_, M>>,
-    ) -> crate::error::Result<crate::geometry::ordinates::NodeOrdinates> {
-        let mut result = crate::geometry::ordinates::NodeOrdinates::default();
+        axes: CoordinateAxes,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<NodeOrdinates> {
+        let mut result = NodeOrdinates::default();
         for &event in events {
             for range in self.event_uses(event) {
                 result.merge(self.resolve_root(
@@ -181,23 +192,17 @@ impl LineageCatalog {
         Ok(result)
     }
 
-    pub(super) fn event(
-        &mut self,
-        member: MemberId,
-        roots: Vec<RootRange>,
-    ) -> crate::error::Result<EventId> {
+    pub(super) fn event(&mut self, member: MemberId, roots: Vec<RootRange>) -> Result<EventId> {
         for range in &roots {
             if self.member_of_root(range.root())? != member {
-                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "split event borrows a root from a different member".into(),
                 )
                 .into());
             }
         }
-        let id = EventId(
-            u32::try_from(self.events.len())
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-        );
+        let id =
+            EventId(u32::try_from(self.events.len()).map_err(|_| ResourceError::SizeOverflow)?);
         self.events.push(SplitEvent { member, roots });
         Ok(id)
     }
@@ -207,18 +212,17 @@ impl LineageCatalog {
         member: MemberId,
         roots: Vec<RootRange>,
         restriction: Option<ChartRestriction>,
-    ) -> crate::error::Result<EdgeUseId> {
+    ) -> Result<EdgeUseId> {
         for range in &roots {
             if self.member_of_root(range.root())? != member {
-                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "split edge borrows a root from a different member".into(),
                 )
                 .into());
             }
         }
         let id = EdgeUseId(
-            u32::try_from(self.edge_uses.len())
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            u32::try_from(self.edge_uses.len()).map_err(|_| ResourceError::SizeOverflow)?,
         );
         self.edge_uses.push(SplitEdgeUse {
             member,
@@ -246,8 +250,8 @@ impl LineageCatalog {
     pub(super) fn vertex_roots(
         &self,
         events: &[EventId],
-        work: &mut impl crate::work::Work,
-    ) -> crate::error::Result<Vec<RootRange>> {
+        work: &mut impl Work,
+    ) -> Result<Vec<RootRange>> {
         let mut roots: Vec<RootRange> = Vec::new();
         for &event in events {
             for range in self.event_uses(event) {
@@ -270,17 +274,17 @@ impl LineageCatalog {
         &mut self,
         member: MemberId,
         events: &[EventId],
-    ) -> crate::error::Result<EventId> {
+    ) -> Result<EventId> {
         if events
             .iter()
             .any(|&event| self.event_member(event) != member)
         {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
+            return Err(GeometryErrorKind::Invalid(
                 "combined split events belong to different members".into(),
             )
             .into());
         }
-        let mut work = crate::work::Unmetered;
+        let mut work = Unmetered;
         let roots = self.vertex_roots(events, &mut work)?;
         self.event(member, roots)
     }
@@ -295,12 +299,12 @@ impl LineageCatalog {
         &mut self,
         member: MemberId,
         edge: EdgeUseId,
-        parameter: &crate::geometry::tessellation::exact::ExactRational,
-    ) -> crate::error::Result<EventId> {
-        let mut work = crate::work::Unmetered;
+        parameter: &ExactRational,
+    ) -> Result<EventId> {
+        let mut work = Unmetered;
         let mut roots = Vec::new();
         if self.edge_use_at(edge).member != member {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
+            return Err(GeometryErrorKind::Invalid(
                 "split event uses an edge from a different member".into(),
             )
             .into());
@@ -310,7 +314,7 @@ impl LineageCatalog {
                 roots.push(RootRange::point_with_work(
                     range.root(),
                     source_parameter,
-                    crate::geometry::tessellation::exact::ExactRational::zero(),
+                    ExactRational::zero(),
                     &mut work,
                 )?);
             }
@@ -321,17 +325,14 @@ impl LineageCatalog {
     pub(super) fn event_from_edge_parameters(
         &mut self,
         member: MemberId,
-        uses: &[(
-            EdgeUseId,
-            crate::geometry::tessellation::exact::ExactRational,
-        )],
-    ) -> crate::error::Result<EventId> {
-        let mut work = crate::work::Unmetered;
+        uses: &[(EdgeUseId, ExactRational)],
+    ) -> Result<EventId> {
+        let mut work = Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, parameter) in uses {
             let source = self.edge_use_at(*edge);
             if source.member != member {
-                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "split event uses an edge from a different member".into(),
                 )
                 .into());
@@ -344,7 +345,7 @@ impl LineageCatalog {
                 let candidate = RootRange::point_with_work(
                     range.root(),
                     source_parameter,
-                    crate::geometry::tessellation::exact::ExactRational::zero(),
+                    ExactRational::zero(),
                     &mut work,
                 )?;
                 let mut found = false;
@@ -366,13 +367,13 @@ impl LineageCatalog {
         &mut self,
         member: MemberId,
         edge: EdgeUseId,
-        local_start: &crate::geometry::tessellation::exact::ExactRational,
-        local_end: &crate::geometry::tessellation::exact::ExactRational,
-    ) -> crate::error::Result<EdgeUseId> {
-        let mut work = crate::work::Unmetered;
+        local_start: &ExactRational,
+        local_end: &ExactRational,
+    ) -> Result<EdgeUseId> {
+        let mut work = Unmetered;
         let mut roots = Vec::new();
         if self.edge_use_at(edge).member != member {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
+            return Err(GeometryErrorKind::Invalid(
                 "reversed split edge belongs to a different member".into(),
             )
             .into());
@@ -391,8 +392,8 @@ impl LineageCatalog {
                 range.root(),
                 source_start,
                 source_end,
-                crate::geometry::tessellation::exact::ExactRational::zero(),
-                crate::geometry::tessellation::exact::ExactRational::one(),
+                ExactRational::zero(),
+                ExactRational::one(),
                 &mut work,
             )?);
         }
@@ -403,15 +404,15 @@ impl LineageCatalog {
     pub(super) fn reverse_sequence(
         &mut self,
         lineage: &LineageSequence,
-    ) -> crate::error::Result<LineageSequence> {
+    ) -> Result<LineageSequence> {
         if lineage.edges.len() != lineage.vertices.len().saturating_sub(1) {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
+            return Err(GeometryErrorKind::Invalid(
                 "split sequence coordinates and edge lineage disagree".into(),
             )
             .into());
         }
-        let one = crate::geometry::tessellation::exact::ExactRational::one();
-        let zero = crate::geometry::tessellation::exact::ExactRational::zero();
+        let one = ExactRational::one();
+        let zero = ExactRational::zero();
         let mut edges = Vec::with_capacity(lineage.edges.len());
         for &edge in lineage.edges.iter().rev() {
             edges.push(self.split_edge_use(lineage.member, edge, &one, &zero)?);
@@ -426,19 +427,15 @@ impl LineageCatalog {
     pub(super) fn compose_edge_uses(
         &mut self,
         member: MemberId,
-        source_uses: &[(
-            EdgeUseId,
-            crate::geometry::tessellation::exact::ExactRational,
-            crate::geometry::tessellation::exact::ExactRational,
-        )],
+        source_uses: &[(EdgeUseId, ExactRational, ExactRational)],
         mut restriction: Option<ChartRestriction>,
-    ) -> crate::error::Result<EdgeUseId> {
-        let mut work = crate::work::Unmetered;
+    ) -> Result<EdgeUseId> {
+        let mut work = Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, local_start, local_end) in source_uses {
             let source = self.edge_use_at(*edge);
             if source.member != member {
-                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "split edge use belongs to a different member".into(),
                 )
                 .into());
@@ -461,8 +458,8 @@ impl LineageCatalog {
                     range.root(),
                     source_start,
                     source_end,
-                    crate::geometry::tessellation::exact::ExactRational::zero(),
-                    crate::geometry::tessellation::exact::ExactRational::one(),
+                    ExactRational::zero(),
+                    ExactRational::one(),
                     &mut work,
                 )?;
                 let mut found = false;
@@ -480,16 +477,11 @@ impl LineageCatalog {
         self.push_edge_use(member, roots, restriction)
     }
 
-    pub(super) fn identity_shape(
-        &mut self,
-        shape: &crate::geometry::Shape,
-    ) -> crate::error::Result<ShapeLineage> {
-        use crate::geometry::{MultiMember, Shape};
-
+    pub(super) fn identity_shape(&mut self, shape: &Shape) -> Result<ShapeLineage> {
         let sequence = |catalog: &mut Self,
                         member: MemberId,
                         coordinate_count: usize|
-         -> crate::error::Result<LineageSequence> {
+         -> Result<LineageSequence> {
             let edge_count = coordinate_count.saturating_sub(1);
             let mut edges = Vec::with_capacity(edge_count);
             for _ in 0..edge_count {
@@ -600,7 +592,7 @@ pub(super) struct LineagePolygon {
 }
 
 pub(super) struct PolygonWithLineage {
-    pub(super) polygon: crate::geometry::Polygon,
+    pub(super) polygon: Polygon,
     pub(super) lineage: LineagePolygon,
 }
 
@@ -616,14 +608,14 @@ pub(super) enum ShapeLineage {
     },
     LineString(LineageSequence),
     MultiLineString {
-        axes: crate::geometry::CoordinateAxes,
+        axes: CoordinateAxes,
         members: Vec<Option<LineageSequence>>,
     },
     Polygon(LineagePolygon),
     MultiPolygon {
-        axes: crate::geometry::CoordinateAxes,
+        axes: CoordinateAxes,
         members: Vec<Option<LineagePolygon>>,
     },
-    GeometryCollection(Vec<Option<ShapeLineage>>),
+    GeometryCollection(Vec<Option<Self>>),
     Empty,
 }

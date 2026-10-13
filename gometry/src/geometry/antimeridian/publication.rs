@@ -22,7 +22,7 @@ use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MultiMember, Point, Polygon,
-    Ring, Shape,
+    Ring, Shape, ring_winding,
 };
 use crate::work::Unmetered;
 
@@ -52,7 +52,7 @@ impl SplitCapture {
     pub(super) fn edge_root(
         &mut self,
         member: MemberId,
-        points: [Point; 2],
+        points: &[Point; 2],
         frame: GeographicFrame,
     ) -> Result<RootId> {
         let longitude = frame
@@ -67,7 +67,7 @@ impl SplitCapture {
         self.lineage.identity_shape(shape)
     }
 
-    pub(super) fn lineage_mut(&mut self) -> &mut LineageCatalog {
+    pub(super) const fn lineage_mut(&mut self) -> &mut LineageCatalog {
         &mut self.lineage
     }
 
@@ -220,7 +220,7 @@ fn orient_lineage_sequence(
         )
         .into());
     }
-    if crate::geometry::ring_winding(ring).reverse_for_clockwise(clockwise) {
+    if ring_winding(ring).reverse_for_clockwise(clockwise) {
         catalog.reverse_sequence(lineage)
     } else {
         Ok(lineage.clone())
@@ -1058,7 +1058,8 @@ mod tests {
             semi_major: f64,
             flattening: f64,
         ) -> f64 {
-            const INTERVALS: usize = 16_384;
+            // 2^14 Simpson intervals keep quadrature error below the Z tolerance.
+            const INTERVALS: usize = 0x4000;
             let step = limit / INTERVALS as f64;
             let longitude_rate = (end.0 - start.0) * radians_per_unit;
             let latitude_rate = (end.1 - start.1) * radians_per_unit;

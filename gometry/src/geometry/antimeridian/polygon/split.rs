@@ -1,9 +1,12 @@
+use super::super::publication::restriction_for_edge;
 use super::assemble::{
     assemble_polygons, assemble_polygons_with_lineage, extend_over_poles, polygons_from_shape,
 };
 use super::*;
+use crate::error::ResourceError;
 use crate::geometry::antimeridian::linestring::{SeamPiece, SeamVertexSource};
-use crate::work::Unmetered;
+use crate::geometry::overlay::OverlayPolygonPartWithSources;
+use crate::work::{Unmetered, Work};
 
 /// A pole-closure cap fabricates ±90 vertices with no source segment, so a
 /// measured/3D input cannot honestly keep its ordinates there. Reject Z/M only
@@ -77,13 +80,16 @@ pub(super) fn seam_piece_lineage(
         sources: &[SeamVertexSource],
         edge_count: usize,
         source_closed: bool,
-        work: &mut impl crate::work::Work,
+        work: &mut impl Work,
     ) -> Result<Vec<(usize, ExactRational)>> {
         let mut parameters = Vec::new();
         for source in sources {
             match source {
                 SeamVertexSource::InputVertex(index) if source_closed && *index == edge_count => {
-                    parameters.push((edge_count - 1, ExactRational::one()));
+                    let last_edge = edge_count
+                        .checked_sub(1)
+                        .ok_or(ResourceError::SizeOverflow)?;
+                    parameters.push((last_edge, ExactRational::one()));
                     parameters.push((0, ExactRational::zero()));
                 },
                 SeamVertexSource::InputVertex(index) => {
@@ -91,7 +97,9 @@ pub(super) fn seam_piece_lineage(
                         parameters.push((*index, ExactRational::zero()));
                     }
                     if *index > 0 {
-                        parameters.push((*index - 1, ExactRational::one()));
+                        let previous_edge =
+                            index.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+                        parameters.push((previous_edge, ExactRational::one()));
                     }
                 },
                 SeamVertexSource::InputEdge { edge, parameter } => {
@@ -149,7 +157,8 @@ pub(super) fn seam_piece_lineage(
 
     let mut edges = Vec::with_capacity(piece.points.len().saturating_sub(1));
     let mut work = Unmetered;
-    for index in 0..piece.points.len().saturating_sub(1) {
+    for (index, &[start_point, end_point]) in piece.points.array_windows::<2>().enumerate() {
+        let end_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         let starts = source_parameters(
             piece
                 .vertices
@@ -160,7 +169,7 @@ pub(super) fn seam_piece_lineage(
             &mut work,
         );
         let ends = source_parameters(
-            piece.vertices.get(index + 1).ok_or_else(|| {
+            piece.vertices.get(end_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("seam edge end vertex is unavailable".into())
             })?,
             edge_count,
@@ -186,10 +195,7 @@ pub(super) fn seam_piece_lineage(
             }
         }
         let restriction = if source_uses.is_empty() {
-            crate::geometry::antimeridian::publication::restriction_for_edge(
-                piece.points[index],
-                piece.points[index + 1],
-            )
+            restriction_for_edge(start_point, end_point)
         } else {
             None
         };
@@ -281,8 +287,9 @@ fn append_shape_edge_uses(
 }
 
 fn overlay_ring_lineage<M: ChartMetric>(
-    part: &crate::geometry::overlay::OverlayPolygonPartWithSources,
+    part: &OverlayPolygonPartWithSources,
     ring_index: usize,
+    axes: CoordinateAxes,
     source_edges: &[super::super::lineage::EdgeUseId],
     member: super::super::lineage::MemberId,
     source_frame: GeographicFrame,
@@ -304,9 +311,12 @@ fn overlay_ring_lineage<M: ChartMetric>(
     let coordinates = if ring_index == 0 {
         part.polygon.shell.coords()
     } else {
+        let hole_index = ring_index
+            .checked_sub(1)
+            .ok_or(ResourceError::SizeOverflow)?;
         part.polygon
             .holes
-            .get(ring_index - 1)
+            .get(hole_index)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("overlay polygon source hole is unknown".into())
             })?
@@ -322,7 +332,7 @@ fn overlay_ring_lineage<M: ChartMetric>(
     }
     let mut lineage_vertices = Vec::with_capacity(vertex_count);
     let mut output_points = Vec::with_capacity(vertex_count.saturating_add(1));
-    for index in 0..vertex_count {
+    for (index, point) in points.iter().copied().take(vertex_count).enumerate() {
         let previous = if index == 0 {
             vertex_count
                 .checked_sub(1)
@@ -360,32 +370,26 @@ fn overlay_ring_lineage<M: ChartMetric>(
             ));
         }
         let events = vec![catalog.event_from_edge_parameters(member, &uses)?];
-        let ordinates = catalog.resolve_vertex_ordinates(
-            &events,
-            coordinates.axes(),
-            source_frame,
-            metric_access,
-        )?;
-        let z = if coordinates.axes().has_z() {
+        let ordinates =
+            catalog.resolve_vertex_ordinates(&events, axes, source_frame, metric_access)?;
+        let z = if axes.has_z() {
             ordinates.z.value()
         } else {
             None
         };
-        let m = if coordinates.axes().has_m() {
+        let m = if axes.has_m() {
             ordinates.m.value()
         } else {
             None
         };
-        if (coordinates.axes().has_z() && z.is_none())
-            || (coordinates.axes().has_m() && m.is_none())
-        {
+        if (axes.has_z() && z.is_none()) || (axes.has_m() && m.is_none()) {
             return Err(
                 GeometryErrorKind::OrdinateDropped("antimeridian split overlay".into()).into(),
             );
         }
         output_points.push(Point::new_axes(
-            points[index].x,
-            points[index].y,
+            point.x,
+            point.y,
             ZOrdinate(z),
             MOrdinate(m),
         )?);
@@ -425,10 +429,13 @@ fn overlay_ring_lineage<M: ChartMetric>(
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
         let restriction = if sources.is_empty() {
-            crate::geometry::antimeridian::publication::restriction_for_edge(
-                points[index],
-                points[next],
-            )
+            let start = points.get(index).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("overlay output ring edge start is unavailable".into())
+            })?;
+            let end = points.get(next).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("overlay output ring edge end is unavailable".into())
+            })?;
+            restriction_for_edge(start, end)
         } else {
             None
         };
@@ -442,7 +449,7 @@ fn overlay_ring_lineage<M: ChartMetric>(
 }
 
 fn overlay_parts_shape<M: ChartMetric>(
-    parts: Vec<crate::geometry::overlay::OverlayPolygonPartWithSources>,
+    parts: Vec<OverlayPolygonPartWithSources>,
     axes: CoordinateAxes,
     member: super::super::lineage::MemberId,
     source_edges: &[super::super::lineage::EdgeUseId],
@@ -458,6 +465,7 @@ fn overlay_parts_shape<M: ChartMetric>(
             rings.push(overlay_ring_lineage(
                 &part,
                 index,
+                axes,
                 source_edges,
                 member,
                 source_frame,
@@ -530,7 +538,13 @@ fn polygon_lineages(
             }
         },
         super::super::lineage::ShapeLineage::Empty if polygon_count == 0 => Ok(Vec::new()),
-        _ => Err(GeometryErrorKind::Invalid(
+        super::super::lineage::ShapeLineage::Point { .. }
+        | super::super::lineage::ShapeLineage::MultiPoint { .. }
+        | super::super::lineage::ShapeLineage::LineString(_)
+        | super::super::lineage::ShapeLineage::MultiLineString { .. }
+        | super::super::lineage::ShapeLineage::Polygon(_)
+        | super::super::lineage::ShapeLineage::GeometryCollection(_)
+        | super::super::lineage::ShapeLineage::Empty => Err(GeometryErrorKind::Invalid(
             "overlay polygon output has the wrong lineage kind".into(),
         )
         .into()),
@@ -633,10 +647,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
             append_shape_edge_uses(&hole_result_lineage, &mut source_edges)?;
             let parts = crate::geometry::overlay_all_geographic_chart_with_sources(
                 &operands,
-                frame,
                 crate::geometry::OverlayOp::Difference,
-                Strictness::Strict,
-                metric_access,
             )?;
             let axes = result.axes().union(hole_shape.axes());
             (result, result_lineage) = overlay_parts_shape(
@@ -707,7 +718,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
             }])
         },
         SeamRing::Pieces(pieces) => {
-            let mut segments = pieces
+            let segments = pieces
                 .iter()
                 .map(|piece| {
                     Ok((
@@ -729,14 +740,12 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                             vertices: vec![Vec::new(); ring.coords().len()],
                             edges: Vec::new(),
                         };
-                        super::super::lineage::PolygonWithLineage {
-                            lineage: super::super::lineage::LineagePolygon {
-                                member,
-                                shell: empty_sequence(&polygon.shell),
-                                holes: polygon.holes.iter().map(empty_sequence).collect(),
-                            },
-                            polygon,
-                        }
+                        let lineage = super::super::lineage::LineagePolygon {
+                            member,
+                            shell: empty_sequence(&polygon.shell),
+                            holes: polygon.holes.iter().map(empty_sequence).collect(),
+                        };
+                        super::super::lineage::PolygonWithLineage { polygon, lineage }
                     })
                     .collect());
             }

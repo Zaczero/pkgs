@@ -45,7 +45,7 @@ fn chart_line_captured<M: ChartMetric>(
     for end in line.iter_coords().skip(1) {
         let source_root = match (capture.as_deref_mut(), member) {
             (Some(capture), Some(member)) => {
-                Some(capture.edge_root(member, [start, end], frame)?)
+                Some(capture.edge_root(member, &[start, end], frame)?)
             },
             _ => None,
         };
@@ -166,7 +166,7 @@ fn chart_ring_captured<M: ChartMetric>(
         {
             let source_root = match (capture.as_deref_mut(), member) {
                 (Some(capture), Some(member)) => {
-                    Some(capture.edge_root(member, [source_start, source_end], frame)?)
+                    Some(capture.edge_root(member, &[source_start, source_end], frame)?)
                 },
                 _ => None,
             };
@@ -214,7 +214,7 @@ fn chart_ring_captured<M: ChartMetric>(
         for [start, end] in ring.segment_pairs() {
             let source_root = match (capture.as_deref_mut(), member) {
                 (Some(capture), Some(member)) => {
-                    Some(capture.edge_root(member, [start, end], frame)?)
+                    Some(capture.edge_root(member, &[start, end], frame)?)
                 },
                 _ => None,
             };
@@ -268,7 +268,7 @@ fn chart_ring_captured<M: ChartMetric>(
                 closed.sort_unstable();
                 closed.dedup();
                 if let Some(first) = vertices.first_mut() {
-                    *first = closed.clone();
+                    first.clone_from(&closed);
                 }
                 if let Some(last) = vertices.last_mut() {
                     *last = closed;

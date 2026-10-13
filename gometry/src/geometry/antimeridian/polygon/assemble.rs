@@ -6,6 +6,8 @@ use super::{
 };
 use crate::geometry::antimeridian::publication::restriction_for_edge;
 
+pub(super) type SeamSegmentsWithLineage = Vec<(Vec<Point>, LineageSequence)>;
+
 pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     match shape {
         Shape::Polygon(polygon) => Ok(vec![polygon]),
@@ -108,11 +110,11 @@ pub(super) fn assemble_polygons(
 }
 
 pub(super) fn assemble_polygons_with_lineage(
-    segments: Vec<(Vec<Point>, LineageSequence)>,
+    segments: SeamSegmentsWithLineage,
     kept_holes: &[(Ring, LineageSequence)],
     catalog: &mut LineageCatalog,
 ) -> Result<Vec<PolygonWithLineage>> {
-    let mut shells = build_rings_with_lineage(segments, catalog)?;
+    let shells = build_rings_with_lineage(segments, catalog)?;
     if shells.is_empty() {
         return Err(GeometryErrorKind::antimeridian_split_failed(
             "no ring could be stitched along the seam",
@@ -155,7 +157,7 @@ pub(super) fn assemble_polygons_with_lineage(
     let mut candidates = Vec::with_capacity(shells.len());
     let mut polygons = Vec::with_capacity(shells.len());
     let mut lineages = Vec::with_capacity(shells.len());
-    for (shell, lineage) in shells.drain(..) {
+    for (shell, lineage) in shells {
         let (shell, lineage) = close_ring_with_lineage(shell, lineage, catalog)?;
         let ring = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
         candidates.push(Shape::Polygon(Polygon::new(ring.clone(), Vec::new())));
@@ -184,15 +186,13 @@ pub(super) fn assemble_polygons_with_lineage(
     }
 
     let mut output = Vec::with_capacity(polygons.len());
-    for ((mut polygon, shell_lineage), mut holes) in
-        polygons.into_iter().zip(lineages).zip(assigned)
-    {
+    for ((mut polygon, shell_lineage), holes) in polygons.into_iter().zip(lineages).zip(assigned) {
         let hole_rings = holes
             .iter()
             .map(|(ring, _)| ring.clone())
             .collect::<Vec<_>>();
         polygon = Polygon::new(polygon.shell.clone(), hole_rings);
-        let hole_lineages = holes.drain(..).map(|(_, lineage)| lineage).collect();
+        let hole_lineages = holes.into_iter().map(|(_, lineage)| lineage).collect();
         output.push(PolygonWithLineage {
             polygon,
             lineage: LineagePolygon {
@@ -206,9 +206,9 @@ pub(super) fn assemble_polygons_with_lineage(
 }
 
 fn build_rings_with_lineage(
-    mut segments: Vec<(Vec<Point>, LineageSequence)>,
+    mut segments: SeamSegmentsWithLineage,
     catalog: &mut LineageCatalog,
-) -> Result<Vec<(Vec<Point>, LineageSequence)>> {
+) -> Result<SeamSegmentsWithLineage> {
     let mut rings = Vec::new();
     while let Some((mut segment, mut lineage)) = segments.pop() {
         let end = *segment.last().expect("segments are non-empty");
@@ -307,12 +307,8 @@ fn synthetic_lineage_ring(
         vertices.push(vec![event]);
     }
     let mut edges = Vec::with_capacity(points.len().saturating_sub(1));
-    for pair in points.windows(2) {
-        edges.push(catalog.push_edge_use(
-            member,
-            Vec::new(),
-            restriction_for_edge(pair[0], pair[1]),
-        )?);
+    for &[start, end] in points.array_windows::<2>() {
+        edges.push(catalog.push_edge_use(member, Vec::new(), restriction_for_edge(start, end))?);
     }
     Ok(LineageSequence {
         member,
@@ -343,10 +339,10 @@ pub(super) fn extend_over_poles(
 }
 
 pub(super) fn extend_over_poles_with_lineage(
-    segments: Vec<(Vec<Point>, LineageSequence)>,
+    segments: SeamSegmentsWithLineage,
     closure: PoleClosure,
     catalog: &mut LineageCatalog,
-) -> Result<(Vec<(Vec<Point>, LineageSequence)>, bool)> {
+) -> Result<(SeamSegmentsWithLineage, bool)> {
     let plain_segments = segments.iter().map(|(points, _)| points.clone()).collect();
     let (stitched, capped, reversed) = extend_over_poles_with_direction(plain_segments, closure)?;
     if capped {
