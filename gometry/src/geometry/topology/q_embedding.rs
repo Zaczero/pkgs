@@ -26707,5 +26707,6 @@ mod native_cycle_start_tests {
     }
 }
 
+#[cfg(test)]
 #[path = "q_embedding_acceptance_tests.rs"]
 mod acceptance_tests;
