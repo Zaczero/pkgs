@@ -1,3 +1,4 @@
+
 #[test]
 fn same_seam_bank_occurrence_merges_at_a_pole() {
     let frame = GeographicFrame::crs84();

@@ -15,8 +15,9 @@ use super::{
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, CsrOffsetBuilder, GeometryErrorKind, GeometryKind, PolygonLevel,
-    RingLevel, Shape, ShapeCountQuery, Work,
+    RingLevel, Shape, ShapeCountQuery,
 };
+use crate::work::Work;
 
 /// How a nullable payload is aligned when it crosses the owner boundary.
 ///

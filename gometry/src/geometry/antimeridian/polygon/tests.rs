@@ -14,9 +14,10 @@ use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric as _, CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq,
     MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, RootMetricState,
-    Shape, Unmetered, ZOrdinate,
+    Shape, ZOrdinate,
 };
 use crate::test_support::allocation_count;
+use crate::work::Unmetered;
 
 include!("tests/support.rs");
 include!("tests/chart_events.rs");

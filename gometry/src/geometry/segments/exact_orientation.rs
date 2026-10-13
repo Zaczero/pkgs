@@ -6,8 +6,8 @@
 //! exact products of the original coordinates decide what remains.
 
 use super::CCW_ERRBOUND_A;
-use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::numerics::product::ExactSign;
+use crate::geometry::numerics::product_sum::ExactSum;
 use crate::geometry::tessellation::exact::Interval;
 use crate::geometry::{Orientation, XY};
 

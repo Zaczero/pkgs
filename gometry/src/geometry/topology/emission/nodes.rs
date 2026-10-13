@@ -1,9 +1,10 @@
 use super::{
     CanonicalQNodeKey, ChartSide, ExactChartPoint, ExactGeographicTopology, ExactQuotientKey,
     FallibleAvl, FragmentRecipeId, GeographicFrame, GeometryErrorKind, Point, QNodeId, Range,
-    RequestRowId, ResourceError, Result, TraceRequestLocation, Work, compare_quotient_keys,
+    RequestRowId, ResourceError, Result, TraceRequestLocation, compare_quotient_keys,
     quotient_key_for_chart_position,
 };
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology) struct EmissionNodeId(pub u32);

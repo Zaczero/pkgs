@@ -19,7 +19,7 @@ use super::{
     PreparedConstraintSplit, PreparedSplit, RefinementConstruction, ordered,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 

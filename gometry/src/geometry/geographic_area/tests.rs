@@ -2,7 +2,7 @@ use super::density::Harmonic;
 use super::exact::{ExactSourceBounds, add_exact_edge, exact_scaled_x, exact_scaled_y};
 use super::fast::{RowCertificate, add_fast_determinant, contract_fast, rectangle_moments};
 use super::*;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 include!("tests/support.rs");
 include!("tests/bounds.rs");
 include!("tests/density.rs");

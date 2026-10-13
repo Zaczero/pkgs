@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::stored_cross_sign;
 use crate::geometry::{Orientation, Segment, XY, orientation};
 

@@ -16,8 +16,8 @@ use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryErrorKind,
     LineSeq, MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring,
     RootMetricState, Shape, ShapeOwnerKey, SourceArcMetricAccess, Strictness, TopologyDomain,
-    Unmetered, ZOrdinate, interpolate_subdivision_ordinate, open_point_cycle_winding,
-    polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
+    ZOrdinate, interpolate_subdivision_ordinate, open_point_cycle_winding, polygon_is_valid,
+    ring_encloses_pole, ring_winding, same_point,
 };
 
 mod assemble;

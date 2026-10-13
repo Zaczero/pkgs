@@ -6,8 +6,9 @@ use super::exact::SourceRowId;
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{GeometryErrorKind, Work};
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NodedSpan {
@@ -723,12 +724,13 @@ mod tests {
 
     use super::*;
     use crate::geographic::{GeographicFrame, GeographicInputs};
+    use crate::geometry::Shape;
     use crate::geometry::topology::emission::RecipeWalkOwner;
     use crate::geometry::topology::emission::plan::{
         PolygonPlan, QEmissionPlan, QLineOrigin, QProducer,
     };
     use crate::geometry::topology::exact::{SourceEdgeId, SourceEdgeKind};
-    use crate::geometry::{Shape, Unmetered};
+    use crate::work::Unmetered;
 
     fn topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
         let frame = GeographicFrame::crs84();

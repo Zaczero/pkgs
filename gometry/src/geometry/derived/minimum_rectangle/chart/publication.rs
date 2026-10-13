@@ -269,7 +269,7 @@ pub(in crate::geometry::derived::minimum_rectangle) fn vector_cross(
 pub(in crate::geometry::derived::minimum_rectangle) fn vector_quadrant(
     vector: &(ExactRational, ExactRational),
 ) -> u8 {
-    use crate::geometry::exact_arith::ExactSign::Negative;
+    use crate::geometry::numerics::product::ExactSign::Negative;
 
     let x = vector.0.sign();
     let y = vector.1.sign();

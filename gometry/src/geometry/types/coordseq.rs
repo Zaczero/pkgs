@@ -5,11 +5,12 @@
 use std::ops::Range;
 
 use crate::error::Result;
+use crate::geometry::column_all_finite;
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
     ensure_coordseq_vertex_capacity,
 };
-use crate::geometry::{Unmetered, Work, column_all_finite};
+use crate::work::{Unmetered, Work};
 
 /// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).
@@ -1125,7 +1126,7 @@ mod work_funded_constructor_tests {
             count: usize,
             ticks_per_item: usize,
         ) -> crate::error::Result<()> {
-            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
         }
     }
 
