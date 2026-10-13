@@ -65,22 +65,22 @@ pub(super) use certified::{
     CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay,
     certified_delaunay_with_coordinates,
 };
-use hull::{collinear_order, delaunay_halfedges, hull_cycle};
-pub(super) use hull::{
-    delaunay_triangulation, exact_corner_hull_cycle_with, exact_hull_cycle_with,
-};
+use hull::delaunay_halfedges;
+pub(crate) use hull::delaunay_triangulation;
+pub(super) use hull::{exact_corner_hull_cycle_with, exact_hull_cycle_with};
+pub(crate) use publication::publish_constrained_plan;
 pub(super) use publication::{
     prepare_constrained_triangle_plan, prepare_raw_delaunay_publication,
-    prepare_retained_delaunay_publication, publish_constrained_plan, selected_triangle_points,
+    prepare_retained_delaunay_publication,
 };
-pub(super) use refinement::CdtRefinement;
-use refinement::{effective_refinement, exact_minimum_faces, validate_refinement_request};
-pub(super) use retained::certified_delaunay_for_retained_points;
+pub(crate) use refinement::CdtRefinement;
+use refinement::{effective_refinement, validate_refinement_request};
+pub(super) use retained::{RetainedPointCoordinates, certified_delaunay_for_retained_points};
 use retained::{
-    RetainedPolarClosure, compare_retained_coordinate_x, compare_retained_x, compare_retained_y,
-    retained_between_axis, retained_chart_area, retained_on_segment,
+    RetainedPolarClosure, compare_retained_x, retained_chart_area,
     retained_point_in_coordinate_cycle, retained_point_in_cycle, retained_site_key,
 };
+pub(super) use source::retained_constrained_source_plan;
 use source::{ConstrainedSourcePlan, constrained_source_plan};
 #[cfg(test)]
 #[path = "delaunay/chart_restriction_tests.rs"]
@@ -88,9 +88,6 @@ mod chart_restriction_tests;
 #[cfg(test)]
 #[path = "delaunay/tests.rs"]
 mod tests;
-#[cfg(test)]
-use hull::delaunay_euler_complete;
-#[cfg(test)]
 #[cfg(test)]
 pub(super) use hull::{exact_corner_hull_cycle, exact_hull_cycle};
 #[cfg(test)]
@@ -116,33 +113,4 @@ fn note_constrained_output_reserve() {
 #[cfg(test)]
 pub(super) fn take_constrained_output_reserves() -> usize {
     CONSTRAINED_OUTPUT_RESERVES.with(|cell| cell.replace(0))
-}
-
-impl<'a> RetainedPointCoordinates<'a> {
-    pub(in crate::geometry::tessellation) const fn new(
-        frame: GeographicFrame,
-        sites: &'a [ChartPointSite],
-    ) -> Self {
-        Self { frame, sites }
-    }
-
-    fn site(&self, query: usize) -> ChartPointSite {
-        self.sites
-            .get(query)
-            .copied()
-            .expect("mesh site ordinals come from the admitted retained site rows")
-    }
-
-    fn exact_x(&self, query: usize) -> Result<exact::ExactDyadic> {
-        let site = self.site(query);
-        retained_site_longitude(self.frame.longitude(), site.longitude())
-    }
-
-    fn exact_y(&self, query: usize) -> exact::ExactDyadic {
-        exact::ExactDyadic::from_f64(self.site(query).source_y())
-    }
-
-    fn exact_xy(&self, query: usize) -> Result<[exact::ExactDyadic; 2]> {
-        Ok([self.exact_x(query)?, self.exact_y(query)])
-    }
 }

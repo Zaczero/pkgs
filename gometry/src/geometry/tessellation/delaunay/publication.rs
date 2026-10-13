@@ -258,11 +258,7 @@ pub(crate) fn publish_constrained_plan(
     clippy::indexing_slicing,
     reason = "the selected face contains only site IDs produced by the mesh over this point column"
 )]
-pub(super) fn selected_triangle_points(
-    points: &[Point],
-    [a, b, c]: [usize; 3],
-    force_xy: bool,
-) -> [Point; 4] {
+fn selected_triangle_points(points: &[Point], [a, b, c]: [usize; 3], force_xy: bool) -> [Point; 4] {
     let points = [points[a], points[b], points[c]];
     if force_xy {
         return [

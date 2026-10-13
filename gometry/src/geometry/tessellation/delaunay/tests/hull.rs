@@ -1,4 +1,6 @@
+use super::super::hull::delaunay_euler_complete;
 use super::*;
+use crate::geometry::{Orientation, orientation};
 
 #[test]
 fn hull_retains_collinear_boundary_sites_and_collinear_input_is_empty() {

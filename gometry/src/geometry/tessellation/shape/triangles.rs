@@ -2,7 +2,7 @@ use super::*;
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.
-pub(super) struct BudgetedTriangleSink<'budget> {
+pub(in crate::geometry::tessellation) struct BudgetedTriangleSink<'budget> {
     budget: &'budget mut ExpansionBudget,
     shapes: Vec<Shape>,
 }
@@ -35,7 +35,7 @@ impl<'budget> BudgetedTriangleSink<'budget> {
 }
 
 /// Packed `[a, b, c, a]` emitter: charge four vertices, then grow the stream.
-pub(super) struct BudgetedPackedTriangleSink<'budget> {
+pub(in crate::geometry::tessellation) struct BudgetedPackedTriangleSink<'budget> {
     budget: &'budget mut ExpansionBudget,
     vertices: Vec<Point>,
 }

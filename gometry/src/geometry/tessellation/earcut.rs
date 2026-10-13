@@ -22,7 +22,7 @@ mod normalize;
 #[cfg(test)]
 pub(super) use admission::ring_has_contact_box_scan;
 pub(super) use admission::ring_segments_adjacent;
-use admission::{EarcutCycle, HoleId, HoleList, RingVertexId};
+use admission::{EarcutCycle, HoleList, RingVertexId};
 pub(crate) use admission::{
     validate_earcut_ring, validate_hole_inside_shell, validate_hole_interactions,
 };
@@ -31,11 +31,9 @@ pub(super) use bridges::point_in_triangle;
 pub(crate) use linked::earcut_linked_ring_with_ids;
 #[cfg(test)]
 pub(super) use linked::{count_ear_candidates, ear_scan_steps};
+use normalize::cleaned_earcut_ring_with_ids;
 #[cfg(test)]
-pub(crate) use normalize::{
-    cleaned_earcut_ring, filter_earcut_ring_points, orient_earcut_ring, strip_collinear_vertices,
-};
-use normalize::{cleaned_earcut_ring_with_ids, source_identities};
+pub(crate) use normalize::{cleaned_earcut_ring, filter_earcut_ring_points, orient_earcut_ring};
 pub(crate) use normalize::{closed_ring, open_ring};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

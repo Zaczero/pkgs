@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use super::refine::fan_size;
 use super::*;
-use crate::geometry::{Bounds, Coordinates as _, Point, PointBatchTester, Shape, same_point};
+use crate::geometry::{Bounds, Coordinates as _, Point, PointBatchTester, same_point};
 use crate::grid::affine_source::RectangularCandidate;
 use crate::grid::coverer::{NativeRectClassifier, RectClass};
 use crate::grid::s2::cell::Cell;
-use crate::grid::s2::cellid::Face;
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };

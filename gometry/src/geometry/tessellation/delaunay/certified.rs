@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug)]
-pub(super) struct Site {
+pub(in crate::geometry::tessellation) struct Site {
     pub(in crate::geometry::tessellation) id: usize,
     pub(in crate::geometry::tessellation) point: Point,
     pub(in crate::geometry::tessellation) source_ordinal: usize,
@@ -57,13 +57,13 @@ impl Site {
 /// crate's halfedge layout plus one exact cocircular flag per slot, so every
 /// fan of cocircular faces can be collapsed onto its one circumcenter.
 #[derive(Debug)]
-pub(super) struct CertifiedDelaunay {
+pub(in crate::geometry::tessellation) struct CertifiedDelaunay {
     topology: Triangulation,
     cocircular_halfedges: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CertifiedPrimalEdge {
+pub(in crate::geometry::tessellation) enum CertifiedPrimalEdge {
     Interior {
         sites: [usize; 2],
         faces: [usize; 2],
@@ -104,7 +104,7 @@ impl CertifiedDelaunay {
     }
 
     #[cfg(test)]
-    pub(super) fn hull(&self) -> &[usize] {
+    pub(in crate::geometry::tessellation) fn hull(&self) -> &[usize] {
         &self.topology.hull
     }
 
@@ -179,7 +179,9 @@ impl CertifiedDelaunay {
     }
 }
 
-pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
+pub(in crate::geometry::tessellation) fn certified_delaunay(
+    sites: &[Site],
+) -> Result<CertifiedDelaunay> {
     // Every site by its input index; duplicates and collinear input are the
     // engine's to settle exactly.
     let mut points = Vec::with_capacity(sites.len());

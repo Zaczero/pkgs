@@ -31,7 +31,7 @@ use crate::grid::affine_source::{
     WorkingShapeRelation,
 };
 pub(crate) use crate::grid::coverer::CellClass;
-use crate::grid::s2::cellid::CellId;
+use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::{CoverBudgetExceeded, CoverError, ensure_cover_budget};
 
@@ -51,8 +51,8 @@ mod refine;
 mod stats;
 
 use candidate::{
-    Candidate, CandidateCertificate, CertificateBatch, PointMembership, Productivity,
-    admit_visible_candidate, debug_assert_budget, is_visible, productive_state, retain_productive,
+    Candidate, CandidateCertificate, PointMembership, Productivity, admit_visible_candidate,
+    debug_assert_budget, is_visible, productive_state, retain_productive,
 };
 #[cfg(test)]
 use classify::classify;

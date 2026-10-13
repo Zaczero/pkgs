@@ -516,7 +516,9 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(super) fn count_ear_candidates<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+pub(in crate::geometry::tessellation) fn count_ear_candidates<T>(
+    operation: impl FnOnce() -> T,
+) -> (T, usize) {
     EAR_CANDIDATE_VISITS.with(|count| count.set(0));
     EAR_SCAN_STEPS.with(|count| count.set(0));
     let result = operation();
@@ -524,7 +526,7 @@ pub(super) fn count_ear_candidates<T>(operation: impl FnOnce() -> T) -> (T, usiz
 }
 
 #[cfg(test)]
-pub(super) fn ear_scan_steps() -> usize {
+pub(in crate::geometry::tessellation) fn ear_scan_steps() -> usize {
     EAR_SCAN_STEPS.with(std::cell::Cell::get)
 }
 

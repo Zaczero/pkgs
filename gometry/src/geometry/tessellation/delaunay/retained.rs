@@ -7,6 +7,35 @@ pub(in crate::geometry::tessellation) struct RetainedPointCoordinates<'a> {
     sites: &'a [ChartPointSite],
 }
 
+impl<'a> RetainedPointCoordinates<'a> {
+    pub(in crate::geometry::tessellation) const fn new(
+        frame: GeographicFrame,
+        sites: &'a [ChartPointSite],
+    ) -> Self {
+        Self { frame, sites }
+    }
+
+    fn site(&self, query: usize) -> ChartPointSite {
+        self.sites
+            .get(query)
+            .copied()
+            .expect("mesh site ordinals come from the admitted retained site rows")
+    }
+
+    fn exact_x(&self, query: usize) -> Result<exact::ExactDyadic> {
+        let site = self.site(query);
+        retained_site_longitude(self.frame.longitude(), site.longitude())
+    }
+
+    fn exact_y(&self, query: usize) -> exact::ExactDyadic {
+        exact::ExactDyadic::from_f64(self.site(query).source_y())
+    }
+
+    fn exact_xy(&self, query: usize) -> Result<[exact::ExactDyadic; 2]> {
+        Ok([self.exact_x(query)?, self.exact_y(query)])
+    }
+}
+
 impl exact_delaunay::MeshCoordinates for RetainedPointCoordinates<'_> {
     type Query = usize;
     type Key = (i64, u64, u64);

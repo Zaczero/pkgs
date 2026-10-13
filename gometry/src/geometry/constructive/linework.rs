@@ -8,8 +8,8 @@ use crate::geometry::topology::overlay::{
     exact_geographic_linework_from_shapes,
 };
 use crate::geometry::{
-    CoordinateAxes, ExpansionBudget, GeometryErrorKind, MultiMember, MultiPolygon, Polygon,
-    PolygonizeFull, Shape, SourceArcContext, TopologyDomain,
+    CoordinateAxes, ExpansionBudget, GeometryErrorKind, Polygon, PolygonizeFull, Shape,
+    SourceArcContext,
 };
 
 fn polygonal_parts(shape: Shape) -> crate::error::Result<Vec<Shape>> {

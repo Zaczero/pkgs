@@ -36,7 +36,7 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(super) fn ring_has_contact_box_scan(ring: &[Point]) -> bool {
+pub(in crate::geometry::tessellation) fn ring_has_contact_box_scan(ring: &[Point]) -> bool {
     let segments: Vec<Segment> = EarcutCycle::new(ring)
         .edges()
         .map(|(_, start, end)| ring_segment_points(start, end))
@@ -347,6 +347,10 @@ const fn ring_segment_points(start: Point, end: Point) -> Segment {
     }
 }
 
-pub(super) const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
+pub(in crate::geometry::tessellation) const fn ring_segments_adjacent(
+    len: usize,
+    left: usize,
+    right: usize,
+) -> bool {
     left.abs_diff(right) == 1 || (left == 0 && right == len.wrapping_sub(1))
 }

@@ -1,15 +1,20 @@
 use super::{Productivity, rect_bounds};
 
+#[path = "tests/authority.rs"]
 mod authority;
+#[path = "tests/budget.rs"]
 mod budget;
+#[path = "tests/parity.rs"]
 mod parity;
+#[path = "tests/productivity.rs"]
 mod productivity;
+#[path = "tests/support.rs"]
 mod support;
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use support::*;
+pub(super) use support::*;
 
 use crate::geometry::{
     Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, ShapeCountQuery,

@@ -293,11 +293,11 @@ impl Coverer {
     }
 
     /// Whether a queue entry can still subdivide under this coverer.
-    fn can_refine(self, level: u8, class: CellClass) -> bool {
+    pub(super) fn can_refine(self, level: u8, class: CellClass) -> bool {
         class == CellClass::Boundary && self.refinement_target(level).is_some()
     }
 
-    fn refinement_target(self, level: u8) -> Option<u8> {
+    pub(super) fn refinement_target(self, level: u8) -> Option<u8> {
         let target = level.checked_add(self.level_mod)?;
         (target <= self.max_level && target <= MAX_LEVEL).then_some(target)
     }
@@ -346,7 +346,7 @@ fn interior_multiplicity(level: u8, min_level: u8) -> Option<usize> {
 }
 
 /// Number of descendants in one supported 1/2/3-level fan.
-fn fan_size(parent_level: u8, target: u8) -> usize {
+pub(super) fn fan_size(parent_level: u8, target: u8) -> usize {
     debug_assert!(target > parent_level);
     let delta = target
         .checked_sub(parent_level)

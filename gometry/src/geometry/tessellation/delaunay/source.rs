@@ -38,7 +38,7 @@ pub(super) fn constrained_source_plan(
     raw_constrained_source_plan(rings)
 }
 
-fn retained_constrained_source_plan(
+pub(super) fn retained_constrained_source_plan(
     frame: GeographicFrame,
     chart: Option<&PointSelectionChart>,
     rings: &[(RingOwner, &Ring)],

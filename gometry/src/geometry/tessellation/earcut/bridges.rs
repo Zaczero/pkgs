@@ -185,7 +185,7 @@ fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<RingVertexId> {
     Some(m)
 }
 
-pub(super) fn point_in_triangle(
+pub(in crate::geometry::tessellation) fn point_in_triangle(
     ax: f64,
     ay: f64,
     bx: f64,

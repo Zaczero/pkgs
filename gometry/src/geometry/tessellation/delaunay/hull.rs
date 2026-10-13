@@ -106,13 +106,13 @@ pub(super) fn hull_cycle<C: exact_delaunay::MeshCoordinates>(
 }
 
 #[cfg(test)]
-pub(super) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
+pub(in crate::geometry::tessellation) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
     let xy = |site: usize| points[site].xy();
     exact_corner_hull_cycle_with(&xy, points.len()).expect("stored XY orientation is infallible")
 }
 
 #[cfg(test)]
-pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
+pub(in crate::geometry::tessellation) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
     let xy = |site: usize| points[site].xy();
     exact_hull_cycle_with(&xy, points.len()).expect("stored XY hull arithmetic is infallible")
 }

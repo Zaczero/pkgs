@@ -1,3 +1,4 @@
+use super::refine::fan_size;
 use super::*;
 
 /// One classified S2 candidate.  The membership facts are carried with the
