@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(test)]
+use crate::geometry::XY;
+#[cfg(test)]
+use crate::geometry::exact_arith::ExactSign;
 
 /// Supporting half-planes bound every contained disk. The cyclic normal
 /// cross-products cancel its center; a three-plane solve only nominates a
@@ -181,7 +185,7 @@ pub(super) fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Res
     compare_ratios(&left.0, &left.1, &right.0, &right.1)
 }
 
-pub(super) fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
+pub(in crate::geometry::derived) fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
     ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 

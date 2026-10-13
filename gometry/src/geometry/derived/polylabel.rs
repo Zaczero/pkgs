@@ -3,26 +3,23 @@ use std::collections::BinaryHeap;
 use std::num::NonZeroU32;
 
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
 #[cfg(test)]
 use crate::geometry::tessellation::exact::compare_ratios;
-use crate::geometry::tessellation::exact::{
-    self, ExactDyadic, ExactRational as Rational, Interval,
-};
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
     ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PreparedLinework, PreparedSupport,
-    Ring, Segment, Shape, XY, orientation, predicates,
+    Ring, Segment, Shape, orientation, predicates,
 };
 
 mod incidence;
 mod inscribed;
-mod minimum_circle;
 mod search;
 
+pub(super) use self::incidence::exact_difference;
 use self::incidence::{
-    candidate_center_is_strictly_inside, exact_difference, framed_metric_segment_distance,
-    has_interior, label_carrier_enclosure, representative_point,
+    candidate_center_is_strictly_inside, framed_metric_segment_distance, has_interior,
+    label_carrier_enclosure, representative_point,
 };
 #[cfg(test)]
 pub(in crate::geometry::derived::polylabel) use self::incidence::{
@@ -34,19 +31,8 @@ pub(crate) use self::inscribed::build_inscribed_circle;
 #[cfg(test)]
 pub(in crate::geometry::derived::polylabel) use self::inscribed::build_inscribed_circle_once;
 pub(crate) use self::inscribed::{build_inscribed_circle_budgeted, emit_zero_radius_point};
-pub(in crate::geometry::derived::polylabel) use self::minimum_circle::next_realization_radius;
-#[cfg(test)]
-pub(in crate::geometry::derived::polylabel) use self::minimum_circle::solve_enclosing_circle_order;
-#[cfg(test)]
-pub(in crate::geometry::derived::polylabel) use self::minimum_circle::{
-    CertifiedDisk, CircleWork, DiskEnclosure,
-};
-#[cfg(test)]
-pub(in crate::geometry::derived::polylabel) use self::minimum_circle::{
-    certify_minimum_circle_polygon, tangent_circle_polygon,
-};
-pub(crate) use self::minimum_circle::{emit_minimum_bounding_circle, smallest_enclosing_circle};
 use self::search::polylabel_search;
+pub(super) use super::minimum_circle::next_realization_radius;
 
 pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<Point> {
     let Some(bounds) = shape.bounds() else {

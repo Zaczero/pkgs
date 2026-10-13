@@ -1,10 +1,10 @@
 use super::*;
 
-pub(super) fn unrepresentable_minimum_circle() -> crate::error::Error {
+fn unrepresentable_minimum_circle() -> crate::error::Error {
     crate::geometry::GeometryErrorKind::unrepresentable_output("minimum_bounding_circle")
 }
 
-pub(super) fn circle_emission_error(error: crate::error::Error) -> crate::error::Error {
+fn circle_emission_error(error: crate::error::Error) -> crate::error::Error {
     if matches!(
         error.kind(),
         crate::error::ErrorKind::Resource(_)
@@ -18,7 +18,7 @@ pub(super) fn circle_emission_error(error: crate::error::Error) -> crate::error:
     }
 }
 
-pub(in crate::geometry::derived::polylabel) fn certify_minimum_circle_polygon(
+pub(super) fn certify_minimum_circle_polygon(
     output: &Shape,
     disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
@@ -131,7 +131,7 @@ pub(in crate::geometry::derived::polylabel) fn certify_minimum_circle_polygon(
     clippy::arithmetic_side_effects,
     reason = "quadrants is nonzero and steps is checked as four times quadrants, bounding each step division and offset"
 )]
-pub(in crate::geometry::derived::polylabel) fn tangent_circle_polygon(
+pub(super) fn tangent_circle_polygon(
     center: Point,
     radius: f64,
     quadrant_segments: NonZeroU32,
@@ -229,7 +229,7 @@ const ULP_REALIZATION_RETRIES: u32 = 64;
 /// inscribed one. The first retries move one ulp; after that the offset from
 /// `exact` doubles, so a circle far below the coordinate spacing at its center
 /// reaches a representable ring in logarithmically many retries.
-pub(in crate::geometry::derived::polylabel) fn next_realization_radius(
+pub(in crate::geometry::derived) fn next_realization_radius(
     exact: f64,
     candidate: f64,
     retries: u32,

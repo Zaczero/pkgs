@@ -1,17 +1,27 @@
-use super::*;
+use std::cmp::Ordering;
+use std::num::NonZeroU32;
+
+use super::polylabel::exact_difference;
+use crate::error::Result;
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::exact::{self, ExactDyadic, Interval};
+use crate::geometry::{
+    CoordSeq, Coordinates as _, ExpansionBudget, Point, Polygon, Ring, Shape, XY,
+};
 
 mod publication;
-pub(in crate::geometry::derived::polylabel) use self::publication::next_realization_radius;
+pub(crate) use self::publication::emit_minimum_bounding_circle;
+pub(super) use self::publication::next_realization_radius;
 #[cfg(test)]
-pub(in crate::geometry::derived::polylabel) use self::publication::{
-    certify_minimum_circle_polygon, tangent_circle_polygon,
-};
+use self::publication::{certify_minimum_circle_polygon, tangent_circle_polygon};
+#[cfg(test)]
+mod tests;
 
 /// The support of a minimum enclosing circle.  A candidate never stores a
 /// rounded center or radius: those values are derived only after the support
 /// has passed the independent exact certificate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CircleSupport {
+enum CircleSupport {
     One(usize),
     Two(usize, usize),
     Three(usize, usize, usize),
@@ -33,13 +43,13 @@ pub(crate) struct MinimumCircle {
 /// from either one.
 #[derive(Debug)]
 pub(crate) struct CertifiedDisk {
-    pub(in crate::geometry::derived::polylabel) center_x: ExactDyadic,
-    pub(in crate::geometry::derived::polylabel) center_y: ExactDyadic,
-    pub(in crate::geometry::derived::polylabel) center_w: ExactDyadic,
-    pub(in crate::geometry::derived::polylabel) radius_squared_numerator: ExactDyadic,
-    pub(in crate::geometry::derived::polylabel) radius_squared_denominator: ExactDyadic,
-    pub(in crate::geometry::derived::polylabel) source_center: Option<Point>,
-    pub(in crate::geometry::derived::polylabel) exact_zero_radius: bool,
+    center_x: ExactDyadic,
+    center_y: ExactDyadic,
+    center_w: ExactDyadic,
+    radius_squared_numerator: ExactDyadic,
+    radius_squared_denominator: ExactDyadic,
+    source_center: Option<Point>,
+    exact_zero_radius: bool,
 }
 
 impl MinimumCircle {
@@ -47,7 +57,7 @@ impl MinimumCircle {
         clippy::indexing_slicing,
         reason = "support ordinals are created by the enclosing-circle solver from this points slice"
     )]
-    pub(super) const fn support_xy(self, points: &[Point]) -> ([XY; 3], usize) {
+    const fn support_xy(self, points: &[Point]) -> ([XY; 3], usize) {
         match self.support {
             CircleSupport::One(a) => ([points[a].xy(), XY::new(0.0, 0.0), XY::new(0.0, 0.0)], 1),
             CircleSupport::Two(a, b) => ([points[a].xy(), points[b].xy(), XY::new(0.0, 0.0)], 2),
@@ -59,7 +69,7 @@ impl MinimumCircle {
         clippy::indexing_slicing,
         reason = "the support and queried ordinals are created from this admitted points slice"
     )]
-    pub(super) fn contains(self, points: &[Point], point: usize) -> Result<bool> {
+    fn contains(self, points: &[Point], point: usize) -> Result<bool> {
         let (support, count) = self.support_xy(points);
         exact::try_circle_contains(&support[..count], points[point].xy())
     }
@@ -68,7 +78,7 @@ impl MinimumCircle {
         clippy::indexing_slicing,
         reason = "candidate pair ordinals are source sites in this points slice"
     )]
-    pub(super) fn widest_pair(points: &[Point], a: usize, b: usize, c: usize) -> Result<Self> {
+    fn widest_pair(points: &[Point], a: usize, b: usize, c: usize) -> Result<Self> {
         let mut pairs = [(a, b), (a, c), (b, c)].into_iter();
         let mut widest = pairs.next().expect("three support sites have a pair");
         for (left, right) in pairs {
@@ -92,7 +102,7 @@ impl MinimumCircle {
         clippy::indexing_slicing,
         reason = "the support slice length is derived from the CircleSupport variant"
     )]
-    pub(super) fn certificate(self, points: &[Point]) -> Result<bool> {
+    fn certificate(self, points: &[Point]) -> Result<bool> {
         let (support, count) = self.support_xy(points);
         exact::try_certify_support(
             &support[..count],
@@ -153,7 +163,7 @@ impl MinimumCircle {
 }
 
 impl CertifiedDisk {
-    pub(super) fn enclosure(&self) -> Result<Option<DiskEnclosure>> {
+    fn enclosure(&self) -> Result<Option<DiskEnclosure>> {
         // A finite disk need not have a finite squared-radius enclosure.
         let largest_squared =
             ExactDyadic::from_f64(f64::MAX).try_product(&self.radius_squared_denominator)?;
@@ -210,7 +220,7 @@ impl CertifiedDisk {
     }
 
     /// Whether a binary64 vertex is strictly outside this exact disk.
-    pub(super) fn vertex_is_strictly_outside(&self, point: XY) -> Result<bool> {
+    fn vertex_is_strictly_outside(&self, point: XY) -> Result<bool> {
         let point_x = ExactDyadic::from_f64(point.x);
         let point_y = ExactDyadic::from_f64(point.y);
         let dx = self
@@ -238,7 +248,7 @@ impl CertifiedDisk {
     /// With `center = (N_x/W, N_y/W)` and `r² = S/T`, let
     /// `H = cross(b-a, N-W*a)`. The line is a valid disk half-plane exactly
     /// when `H >= 0` and `T*H² >= S*W²*|b-a|²`.
-    pub(super) fn ccw_edge_encloses(&self, left: XY, right: XY) -> Result<bool> {
+    fn ccw_edge_encloses(&self, left: XY, right: XY) -> Result<bool> {
         let edge_x = exact_difference(right.x, left.x)?;
         let edge_y = exact_difference(right.y, left.y)?;
         let left_x = ExactDyadic::from_f64(left.x);
@@ -274,14 +284,14 @@ impl CertifiedDisk {
 
 /// Outward enclosures of the source-certified disk, not of the emitted ring.
 /// An inconclusive comparison still reaches the homogeneous exact certificate.
-pub(super) struct DiskEnclosure {
-    pub(in crate::geometry::derived::polylabel) x: Interval,
-    pub(in crate::geometry::derived::polylabel) y: Interval,
-    pub(in crate::geometry::derived::polylabel) squared_radius: Interval,
+struct DiskEnclosure {
+    x: Interval,
+    y: Interval,
+    squared_radius: Interval,
 }
 
 impl DiskEnclosure {
-    pub(super) fn proves_vertex_outside(&self, point: XY) -> bool {
+    fn proves_vertex_outside(&self, point: XY) -> bool {
         let dx = Interval::exact(point.x).sub(self.x);
         let dy = Interval::exact(point.y).sub(self.y);
         if !dx.is_finite() || !dy.is_finite() {
@@ -295,7 +305,7 @@ impl DiskEnclosure {
         clippy::suspicious_operation_groupings,
         reason = "the lower bound for cross squared must be at least the upper bound for radius squared times edge norm"
     )]
-    pub(super) fn proves_ccw_edge_encloses(&self, left: XY, right: XY) -> bool {
+    fn proves_ccw_edge_encloses(&self, left: XY, right: XY) -> bool {
         let dx = Interval::exact(right.x).sub(Interval::exact(left.x));
         let dy = Interval::exact(right.y).sub(Interval::exact(left.y));
         let cx = self.x.sub(Interval::exact(left.x));
@@ -316,17 +326,17 @@ impl DiskEnclosure {
 
 /// Solver step counts inspected by unit tests; zero-sized outside them.
 #[derive(Debug, Default)]
-pub(super) struct CircleWork {
+struct CircleWork {
     #[cfg(test)]
-    pub(in crate::geometry::derived::polylabel) contains: usize,
+    contains: usize,
     #[cfg(test)]
-    pub(in crate::geometry::derived::polylabel) one_supports: usize,
+    one_supports: usize,
     #[cfg(test)]
-    pub(in crate::geometry::derived::polylabel) two_supports: usize,
+    two_supports: usize,
     #[cfg(test)]
-    pub(in crate::geometry::derived::polylabel) three_supports: usize,
+    three_supports: usize,
     #[cfg(test)]
-    pub(in crate::geometry::derived::polylabel) collinear_fallbacks: usize,
+    collinear_fallbacks: usize,
 }
 
 #[cfg_attr(
@@ -344,35 +354,35 @@ pub(super) struct CircleWork {
     )
 )]
 impl CircleWork {
-    pub(super) const fn count_contains(&mut self) {
+    const fn count_contains(&mut self) {
         #[cfg(test)]
         {
             self.contains += 1;
         }
     }
 
-    pub(super) const fn count_one_support(&mut self) {
+    const fn count_one_support(&mut self) {
         #[cfg(test)]
         {
             self.one_supports += 1;
         }
     }
 
-    pub(super) const fn count_two_support(&mut self) {
+    const fn count_two_support(&mut self) {
         #[cfg(test)]
         {
             self.two_supports += 1;
         }
     }
 
-    pub(super) const fn count_three_support(&mut self) {
+    const fn count_three_support(&mut self) {
         #[cfg(test)]
         {
             self.three_supports += 1;
         }
     }
 
-    pub(super) const fn count_collinear_fallback(&mut self) {
+    const fn count_collinear_fallback(&mut self) {
         #[cfg(test)]
         {
             self.collinear_fallbacks += 1;
@@ -384,7 +394,7 @@ impl CircleWork {
     clippy::indexing_slicing,
     reason = "the order is a permutation of the non-empty source point ordinals"
 )]
-pub(super) fn solve_enclosing_circle_order(
+fn solve_enclosing_circle_order(
     points: &[Point],
     order: &[usize],
     work: &mut CircleWork,
@@ -470,23 +480,21 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircl
 }
 
 impl MinimumCircle {
-    pub(super) const fn new_one(index: usize) -> Self {
+    const fn new_one(index: usize) -> Self {
         Self {
             support: CircleSupport::One(index),
         }
     }
 
-    pub(super) const fn new_two(left: usize, right: usize) -> Self {
+    const fn new_two(left: usize, right: usize) -> Self {
         Self {
             support: CircleSupport::Two(left, right),
         }
     }
 
-    pub(super) const fn new_three(a: usize, b: usize, c: usize) -> Self {
+    const fn new_three(a: usize, b: usize, c: usize) -> Self {
         Self {
             support: CircleSupport::Three(a, b, c),
         }
     }
 }
-
-pub(crate) use self::publication::emit_minimum_bounding_circle;
