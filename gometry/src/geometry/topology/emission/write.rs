@@ -1,11 +1,25 @@
 use super::super::exact::*;
 use super::super::q::*;
 use super::line_paths::*;
+use super::ordinates::{
+    source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
+};
 use super::plan::*;
 use super::sites::*;
 use super::source_publication::*;
 use super::source_reuse::*;
 use super::*;
+use crate::geometry::overlay::{
+    build_certified_overlay_shape_with_axes, build_certified_overlay_shape_with_axes_and_order,
+};
+use crate::geometry::{CoordSeqBuilder, GeometryKind, LineSeq};
+
+pub(in crate::geometry::topology) struct WrittenDrawingParts {
+    pub(in crate::geometry::topology) points: Vec<Point>,
+    pub(in crate::geometry::topology) lines: Vec<CoordSeq>,
+    pub(in crate::geometry::topology) polygons: Vec<Polygon>,
+    pub(in crate::geometry::topology) layout: ShapeLiteralLayout<QSourceImage>,
+}
 
 pub(in crate::geometry::topology) struct SourceWrittenPath {
     pub(in crate::geometry::topology) points: Vec<Point>,

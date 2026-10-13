@@ -256,7 +256,7 @@ fn publication_preserves_authentic_start_and_samples_constructed_end() {
         exact_displacement: displacement,
         use_kind: SelectedUse::Curve,
     };
-    let coordinates = super::super::emission::sites::QCoordinates::build(&topology).unwrap();
+    let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
     let recipes = FragmentRecipes {
         values: vec![recipe],
         walks: Vec::new(),
@@ -442,7 +442,7 @@ fn publisher_samples_resolve_through_the_original_source_edge() {
         values: vec![recipe],
         walks: Vec::new(),
     };
-    let coordinates = super::super::emission::sites::QCoordinates::build(&topology).unwrap();
+    let coordinates = super::super::q_embedding::QCoordinates::build(&topology).unwrap();
     let mut work = Unmetered;
     let publication = recipes
         .publish(&topology, &coordinates, "source trace test", &mut work)

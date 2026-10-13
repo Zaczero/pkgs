@@ -12,8 +12,10 @@ use self::recipes::*;
 use self::select_boundaries::*;
 use self::select_faces::*;
 use self::select_lines::*;
+use super::emission::draw::*;
+use super::emission::line_paths::*;
 use super::emission::ordinates::{
-    source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
+    node_ordinates, source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
 };
 use super::emission::plan::*;
 #[cfg(test)]
@@ -31,6 +33,7 @@ use super::emission::source_reuse::{
     source_cycle_start_port, source_cycles_by_ring, source_edge_at,
     source_ring_cycles_cover_boundary, source_ring_cycles_follow_source,
 };
+use super::emission::write::*;
 use super::emission::{
     DirectedSpan, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint, LiteralPolygon,
     LiteralSequence, NativeMaterializedParts, PreparedNativeSource, QSourceImage, RecipeWalkIndex,
@@ -83,7 +86,9 @@ use crate::geometry::{MOrdinate, XY, ZOrdinate};
 mod publish;
 use self::publish::publish_q_overlay;
 #[cfg(test)]
-use self::publish::{CertifiedQEmission, QEmbeddingChoice, resolve_q_embedding};
+use self::publish::{
+    CertifiedQEmission, QEmbeddingChoice, resolve_q_embedding, write_certified_q_emission,
+};
 mod plan_boundary;
 mod plan_linework;
 mod plan_overlay;
@@ -91,6 +96,10 @@ mod recipes;
 pub(in crate::geometry::topology) mod select_boundaries;
 pub(in crate::geometry::topology) mod select_faces;
 pub(in crate::geometry::topology) mod select_lines;
+pub(in crate::geometry::topology) use self::select_boundaries::coverage_area_boundaries;
+pub(in crate::geometry::topology) use self::select_faces::{
+    coverage_face_regions, selected_face_roots, selected_region_facts,
+};
 
 /// Select all dimensions from the one exact source chart and its global Q.
 /// Rounding happens only after face, span, and node selection is complete.

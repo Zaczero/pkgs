@@ -1,9 +1,14 @@
 use super::super::exact::ExactSourceRing;
 use super::cut_ports::build_cut_node_ports;
-use super::plan::{PlannedAreaRing, PolygonPlan, QEmbeddingEmission, QLineOrigin};
+use super::plan::{
+    PlannedAreaRing, PolygonPlan, QEmbeddingEmission, QEmissionDrawing, QLineOrigin,
+};
 use super::sites::EmittedVertex;
+use super::source_publication::SourcePublication;
 use super::source_reuse::cycle_belongs_to_source_ring;
+use super::write::WrittenDrawingParts;
 use super::*;
+use crate::geometry::{HasM, HasZ};
 
 fn append_source_ring_live_nodes(
     topology: &ExactGeographicTopology,

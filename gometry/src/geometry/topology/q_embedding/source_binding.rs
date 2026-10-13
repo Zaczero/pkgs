@@ -125,7 +125,7 @@ impl QSourceImages<'_> {
 impl CheckedImages<QSourceImage> for QSourceImages<'_> {
     fn image(
         &self,
-        _address: super::super::super::super::embedding_completion::LiteralAddress,
+        _address: super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
     ) -> Result<&ExactChartPoint> {
         match image {
@@ -157,7 +157,7 @@ pub(in crate::geometry::topology::q_embedding) struct AssignedSourceChart<'a> {
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
     fn read_point<W: Work>(
         &mut self,
-        _address: super::super::super::super::embedding_completion::LiteralAddress,
+        _address: super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         _expected_axes: crate::geometry::CoordinateAxes,
@@ -253,7 +253,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                     )
                     .into());
                 }
-                let expected_record = super::super::overlay::with_vertex_axes(
+                let expected_record = super::super::emission::sites::with_vertex_axes(
                     EmittedVertex {
                         port,
                         point: record,
@@ -285,8 +285,11 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 {
                     return Ok(None);
                 }
-                let expected =
-                    super::super::overlay::with_publication_axes(point, ordinates, stored_axes)?;
+                let expected = super::super::emission::ordinates::with_publication_axes(
+                    point,
+                    ordinates,
+                    stored_axes,
+                )?;
                 work.charge_into_error(1)?;
                 if expected != record {
                     return Ok(None);
@@ -307,7 +310,7 @@ pub(in crate::geometry::topology::q_embedding) struct SourceOnlyReceipt<'a> {
 impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
     fn image(
         &self,
-        address: super::super::super::super::embedding_completion::LiteralAddress,
+        address: super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
     ) -> Result<&ExactChartPoint> {
         if let QSourceImage::PublicationSample(sample) = image
@@ -327,7 +330,7 @@ impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
 impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
     fn read_point<W: Work>(
         &mut self,
-        address: super::super::super::super::embedding_completion::LiteralAddress,
+        address: super::super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         expected_axes: crate::geometry::CoordinateAxes,
@@ -339,7 +342,7 @@ impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
     }
 }
 #[cfg(test)]
-pub(in crate::geometry::topology::q_embedding) fn bind_source_only(
+pub(in crate::geometry::topology) fn bind_source_only(
     source: SourceFrozenDrawing,
     topology: &ExactGeographicTopology,
     source_ports: Option<&[Option<ExactChartPoint>]>,

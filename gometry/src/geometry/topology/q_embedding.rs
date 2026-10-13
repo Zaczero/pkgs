@@ -25,10 +25,6 @@ use super::exact::{
     compare_quotient_keys_with_work, point_on_exact_segment_with_work,
     quotient_key_for_chart_position_with_work, vector_cross_with_work, vector_difference_with_work,
 };
-use super::overlay::{
-    DrawnAreaOrigin, DrawnPolygons, PlannedAreaRing, PolygonPlan, QEmissionDrawing, QEmissionPlan,
-    SelectedRegionFact, source_ring_reuse_matches,
-};
 use super::q::{
     ChartSpan, ChartSpanId, CutChart, ExactGeographicQ, ExactGeographicTopology, GlobalFaceId,
     GlobalFaceStructure, QDartId, QFaceChart, QNode, QNodeId, QNodeKey, QPort, QPortId,
@@ -90,11 +86,6 @@ type NativeCutPeriodRange = (i64, i64);
 type NativeChordCutRanges = Vec<NativeCutPeriodRange>;
 type NativeRecipeCutRanges = Vec<NativeChordCutRanges>;
 type NativeCutFamilyDomains = Vec<NativeRecipeCutRanges>;
-
-#[expect(
-    clippy::suspicious_operation_groupings,
-    reason = "NativeGraphCycle.edges stores the shell boundary; its shell field is a boolean role flag"
-)]
 
 /// Compare the role used for publication with the role of its exact Q ports.
 /// `None` means the emitted chart has no classifiable ring role and must be
@@ -176,13 +167,6 @@ where
     }))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum QVariableNode {
     Source(QNodeId),
@@ -481,14 +465,6 @@ pub(super) struct QEmbeddingPass {
     pub(super) searched: bool,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing a short-lived successful result would add a heap allocation to Native publication"
-)]
-#[expect(
-    clippy::suspicious_operation_groupings,
-    reason = "NativeSourceSpanUse preserves its owner's chart lift as source_lift"
-)]
 #[cfg(test)]
 mod canonical_coordinate_tests {
     include!("q_embedding/native/tests/support.rs");
@@ -540,11 +516,12 @@ mod cut_reconstruction;
 mod dependencies;
 mod domains;
 pub(in crate::geometry::topology) mod emission;
-mod face_structure;
+pub(in crate::geometry::topology) mod face_structure;
 mod native;
 mod problem;
 mod source_binding;
 
+use self::cut_reconstruction::reconstruct_cut_ports;
 use self::dependencies::chords::*;
 use self::dependencies::classes::*;
 use self::dependencies::proximity::*;
@@ -557,6 +534,16 @@ use self::emission::ring_roles::{
 use self::face_structure::*;
 use self::native::assignment::*;
 use self::native::cut_search::*;
+#[cfg(test)]
+use self::native::cycles::{
+    NativeCycleStartCandidate, NativeCycleStartQuery, NativeGraphCycleEdge,
+    exhaustive_native_cycle_start_vertex_index, native_cycle_rotations_for_queries,
+};
+#[cfg(test)]
+use self::native::cycles::{
+    NativeCycleStartCandidate, NativeCycleStartQuery, NativeGraphCycleEdge,
+    exhaustive_native_cycle_start_vertex_index, native_cycle_rotations_for_queries,
+};
 use self::native::cycles::{
     NativeGraphCycle, NativeGraphPart, align_native_cycle_starts, native_graph_cycle_recipe,
     native_graph_cycle_vertex, native_reference_cycles_and_parts,
@@ -582,13 +569,11 @@ use self::publication::fans::*;
 use self::publication::model::*;
 use self::publication::tracing::*;
 use self::publication::witness::*;
+pub(in crate::geometry::topology) use self::source_binding::bind_source_only;
 use self::source_binding::*;
+use super::emission::ordinates::*;
+use super::emission::plan::*;
 use super::emission::ring_roles::*;
+use super::emission::sites::*;
+use super::emission::source_reuse::*;
 use crate::geometry::exact_point::exact_orientation_with_work;
-
-use self::dependencies::{chords::*, classes::*, proximity::*};
-use self::publication::{chords::*, fans::*, model::*, tracing::*, witness::*};
-use self::native::cycles::{NativeGraphCycle, NativeGraphPart, align_native_cycle_starts, native_graph_cycle_recipe, native_graph_cycle_vertex, native_reference_cycles_and_parts};
-use self::emission::ring_roles::{assigned_emitted_ring, check_q_ring_roles, planned_area_rings, QRingRoleCheck, QRingRoleFailure, QRingRoleStatus};
-use self::problem::{completion::native_reference_global_check, publication::publication_leaf_replaces_source_span, search::search_q_embedding};
-pub(in crate::geometry::topology) use self::problem::search::{certify_and_search_q_embedding, certify_q_embedding_nearest};

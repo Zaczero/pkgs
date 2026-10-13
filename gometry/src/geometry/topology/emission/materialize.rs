@@ -10,6 +10,11 @@ pub(in crate::geometry::topology) struct NativeFrozenDrawing {
     pub(in crate::geometry::topology) line_traces: Vec<TracedLine>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[expect(
+    private_interfaces,
+    reason = "the common sink carries Q image blame opaquely while the Q adapter alone interprets its topology-private IDs"
+)]
 pub(in crate::geometry) enum QSourceImage {
     /// A computed or respelled port, authenticated by its checked chart image.
     Port(QPortId),

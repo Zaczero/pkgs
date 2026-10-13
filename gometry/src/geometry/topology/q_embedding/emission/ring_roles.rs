@@ -1,12 +1,5 @@
 use super::super::*;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
-    )
-)]
 pub(in crate::geometry::topology::q_embedding) fn assigned_emitted_ring(
     topology: &ExactGeographicTopology,
     vertices: &[EmittedVertex<'_>],

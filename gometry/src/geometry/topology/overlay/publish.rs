@@ -1,11 +1,14 @@
+use super::super::emission::draw::source_point_coordinates_with_work;
 use super::super::emission::plan::QEmissionPlan;
 use super::super::emission::sites::QCoordinates;
 use super::{
-    CertifiedQEmission, CoordinateAxes, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
-    ExpansionBudget, OverlayOp, Result, SealedQDrawing, Shape, SourceArcMetricAccess,
-    finish_certified_q_emission, resolve_q_embedding, source_point_coordinates_with_work,
+    CoordinateAxes, EvaluationBudget, EvaluationOnly, ExactGeographicTopology, ExpansionBudget,
+    OverlayOp, Result, SealedQDrawing, Shape, SourceArcMetricAccess,
 };
-use crate::geometry::publication::PendingPublicationRow;
+use crate::geometry::publication::{
+    PendingPublicationRow, ProducerReceipt, PublicationCall, PublicationOutcome,
+    PublicationRejection, StorageTarget,
+};
 
 pub(super) fn exact_geographic_overlay<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
@@ -107,13 +110,6 @@ pub(in crate::geometry::topology) struct WrittenQDrawing {
     pub(in crate::geometry::topology) shape: Shape,
     pub(in crate::geometry::topology) line_traces: Vec<super::super::emission::TracedLine>,
     pub(in crate::geometry::topology) family_state: Option<FeatureFamilyRegistry>,
-}
-
-pub(in crate::geometry::topology) struct WrittenDrawingParts {
-    pub(in crate::geometry::topology) points: Vec<Point>,
-    pub(in crate::geometry::topology) lines: Vec<CoordSeq>,
-    pub(in crate::geometry::topology) polygons: Vec<Polygon>,
-    pub(in crate::geometry::topology) layout: ShapeLiteralLayout<QSourceImage>,
 }
 
 pub(in crate::geometry::topology) fn finish_certified_q_emission(
@@ -257,41 +253,33 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
             &[],
         );
         let sealed = match finish_geographic(
-            super::super::publication::PublicationCall::new(
-                super::super::publication::ProducerReceipt::QSourceOnly(receipt),
+            PublicationCall::new(
+                ProducerReceipt::QSourceOnly(receipt),
                 topology.publication_frame().clone(),
                 preparation_work,
             ),
-            super::super::publication::StorageTarget::Scalar,
+            StorageTarget::Scalar,
         )? {
-            super::super::publication::PublicationOutcome::Pass(finished) => finished,
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::SourceOnly(_),
-            ) => {
+            PublicationOutcome::Pass(finished) => finished,
+            PublicationOutcome::Reject(PublicationRejection::SourceOnly(_)) => {
                 return Err(GeometryErrorKind::Invalid(
                     "unchanged Q source output failed its literal binding".into(),
                 )
                 .into());
             },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::Native,
-            ) => {
+            PublicationOutcome::Reject(PublicationRejection::Native) => {
                 return Err(GeometryErrorKind::Invalid(
                     "Q source-only finisher returned native rejection".into(),
                 )
                 .into());
             },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::Batch(_),
-            ) => {
+            PublicationOutcome::Reject(PublicationRejection::Batch(_)) => {
                 return Err(GeometryErrorKind::Invalid(
                     "Q source-only finisher returned array batch rejection".into(),
                 )
                 .into());
             },
-            super::super::publication::PublicationOutcome::Reject(
-                super::super::publication::PublicationRejection::ProducerDrawing(_),
-            ) => {
+            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
                 return Err(GeometryErrorKind::Invalid(
                     "Q source-only finisher returned producer-drawn rejection".into(),
                 )

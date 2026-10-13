@@ -17,18 +17,14 @@ pub(in crate::geometry::topology) struct CutNodePorts {
 }
 
 #[derive(Clone)]
-pub(in crate::geometry::topology::q_embedding) struct CutOwnerHalf {
-    pub(in crate::geometry::topology::q_embedding) source_edge: SourceEdgeId,
-    pub(in crate::geometry::topology::q_embedding) parameter: ExactRational,
-    pub(in crate::geometry::topology::q_embedding) far_port: QPortId,
+pub(in crate::geometry::topology) struct CutOwnerHalf {
+    pub(in crate::geometry::topology) source_edge: SourceEdgeId,
+    pub(in crate::geometry::topology) parameter: ExactRational,
+    pub(in crate::geometry::topology) far_port: QPortId,
 }
 
 impl CutOwnerHalf {
-    pub(in crate::geometry::topology::q_embedding) fn same_key(
-        &self,
-        other: &Self,
-        work: &mut impl Work,
-    ) -> Result<bool> {
+    pub(in crate::geometry::topology) fn same_key(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
         Ok(self.source_edge == other.source_edge
             && self
                 .parameter
@@ -38,14 +34,14 @@ impl CutOwnerHalf {
 }
 
 #[derive(Default)]
-pub(in crate::geometry::topology::q_embedding) struct CutSides {
-    pub(in crate::geometry::topology::q_embedding) west: Option<QPortId>,
-    pub(in crate::geometry::topology::q_embedding) east: Option<QPortId>,
-    pub(in crate::geometry::topology::q_embedding) west_halves: Vec<CutOwnerHalf>,
-    pub(in crate::geometry::topology::q_embedding) east_halves: Vec<CutOwnerHalf>,
+pub(in crate::geometry::topology) struct CutSides {
+    pub(in crate::geometry::topology) west: Option<QPortId>,
+    pub(in crate::geometry::topology) east: Option<QPortId>,
+    pub(in crate::geometry::topology) west_halves: Vec<CutOwnerHalf>,
+    pub(in crate::geometry::topology) east_halves: Vec<CutOwnerHalf>,
 }
 
-pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half_key(
+pub(in crate::geometry::topology) fn compare_cut_owner_half_key(
     left: &CutOwnerHalf,
     right: &CutOwnerHalf,
     work: &mut impl Work,
@@ -58,7 +54,7 @@ pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half_key(
     })
 }
 
-pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half(
+pub(in crate::geometry::topology) fn compare_cut_owner_half(
     left: &CutOwnerHalf,
     right: &CutOwnerHalf,
     work: &mut impl Work,
@@ -71,7 +67,7 @@ pub(in crate::geometry::topology::q_embedding) fn compare_cut_owner_half(
     })
 }
 
-pub(in crate::geometry::topology::q_embedding) fn deduplicate_cut_owner_halves(
+pub(in crate::geometry::topology) fn deduplicate_cut_owner_halves(
     halves: &mut Vec<CutOwnerHalf>,
     work: &mut impl Work,
 ) -> Result<()> {

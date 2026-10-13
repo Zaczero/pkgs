@@ -1,17 +1,17 @@
 use super::*;
 
-pub(in crate::geometry::topology::q_embedding) struct QFaceStructure {
-    pub(in crate::geometry::topology::q_embedding) global: GlobalFaceStructure,
-    pub(in crate::geometry::topology::q_embedding) outgoing: Vec<QDartId>,
-    pub(in crate::geometry::topology::q_embedding) outgoing_offsets: Vec<usize>,
-    pub(in crate::geometry::topology::q_embedding) outgoing_nodes: Vec<QNodeId>,
-    pub(in crate::geometry::topology::q_embedding) span_nodes: Vec<[QNodeId; 2]>,
-    pub(in crate::geometry::topology::q_embedding) component_nodes: Vec<Vec<QNodeId>>,
-    pub(in crate::geometry::topology::q_embedding) cut_interval_nodes: Vec<[Option<QNodeId>; 2]>,
-    pub(in crate::geometry::topology::q_embedding) isolated_nodes: Vec<Option<QNodeId>>,
+pub(in crate::geometry::topology) struct QFaceStructure {
+    pub(in crate::geometry::topology) global: GlobalFaceStructure,
+    pub(in crate::geometry::topology) outgoing: Vec<QDartId>,
+    pub(in crate::geometry::topology) outgoing_offsets: Vec<usize>,
+    pub(in crate::geometry::topology) outgoing_nodes: Vec<QNodeId>,
+    pub(in crate::geometry::topology) span_nodes: Vec<[QNodeId; 2]>,
+    pub(in crate::geometry::topology) component_nodes: Vec<Vec<QNodeId>>,
+    pub(in crate::geometry::topology) cut_interval_nodes: Vec<[Option<QNodeId>; 2]>,
+    pub(in crate::geometry::topology) isolated_nodes: Vec<Option<QNodeId>>,
 }
 impl QFaceStructure {
-    pub(in crate::geometry::topology::q_embedding) fn build(
+    pub(in crate::geometry::topology) fn build(
         source_topology: &ExactGeographicTopology,
         emission: &QEmbeddingEmission<'_, '_>,
         chart: CutChart,
@@ -132,7 +132,7 @@ pub(in crate::geometry::topology::q_embedding) fn unique_nodes(
     nodes.dedup();
     nodes
 }
-pub(in crate::geometry::topology::q_embedding) fn face_structure_mismatch_nodes(
+pub(in crate::geometry::topology) fn face_structure_mismatch_nodes(
     exact: &QFaceStructure,
     emitted: &QFaceStructure,
     fallback: &[QNodeId],
@@ -326,7 +326,7 @@ pub(in crate::geometry::topology::q_embedding) fn face_structure_mismatch_nodes(
     (exact_to_emitted.iter().any(Option::is_none) || emitted_to_exact.iter().any(Option::is_none))
         .then(|| fallback.to_vec())
 }
-pub(in crate::geometry::topology::q_embedding) fn subgraph_chart(
+pub(in crate::geometry::topology) fn subgraph_chart(
     topology: &ExactGeographicTopology,
     emission: &QEmbeddingEmission<'_, '_>,
     nearest_coordinates: &QCoordinates,

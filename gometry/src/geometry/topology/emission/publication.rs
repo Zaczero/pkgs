@@ -107,7 +107,7 @@ impl FragmentRecipes {
     pub(in crate::geometry::topology) fn publish(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &sites::QCoordinates,
+        coordinates: &super::super::q_embedding::QCoordinates,
         operation: &'static str,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {
@@ -118,7 +118,7 @@ impl FragmentRecipes {
     pub(in crate::geometry::topology) fn publish_with_expansion_budget(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &sites::QCoordinates,
+        coordinates: &super::super::q_embedding::QCoordinates,
         budget: &mut ExpansionBudget,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {

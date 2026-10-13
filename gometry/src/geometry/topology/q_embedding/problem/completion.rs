@@ -374,7 +374,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             };
             let live_publication_samples =
-                super::super::super::overlay::source_live_publication_samples(
+                super::super::super::emission::source_publication::source_live_publication_samples(
                     self.emission.plan,
                     self.emission.publication,
                     budget,
@@ -394,12 +394,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     self.metric_access,
                     budget,
                 )?;
-            let source_publication = super::super::super::overlay::SourcePublication {
-                inventory: self.emission.publication,
-                points: &publication_points,
-                ordinates: &publication_ordinates,
-                live_samples: &live_publication_samples,
-            };
+            let source_publication =
+                super::super::super::emission::source_publication::SourcePublication {
+                    inventory: self.emission.publication,
+                    points: &publication_points,
+                    ordinates: &publication_ordinates,
+                    live_samples: &live_publication_samples,
+                };
             let source = self.emission.plan.seal_source_drawing(
                 drawing,
                 ring_roles,

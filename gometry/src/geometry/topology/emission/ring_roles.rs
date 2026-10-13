@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use super::super::exact::ExactChartPoint;
 use super::sites::canonical_bits;
 use crate::error::{ResourceError, Result};
@@ -220,6 +222,13 @@ where
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
+    )
+)]
 pub(in crate::geometry::topology) fn exact_q_ring_role_for_linework(
     frame: GeographicFrame,
     exact_ports: &[ExactChartPoint],

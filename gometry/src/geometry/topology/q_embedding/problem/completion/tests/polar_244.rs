@@ -4,11 +4,11 @@
         let topology = topology(std::slice::from_ref(&source))?;
         let mut budget = EvaluationBudget::new("QC-R", 0)?;
         let plan =
-            super::super::overlay::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+            super::super::emission::plan::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
         let source_points = vec![None; topology.sources.points.len()];
         let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
         let mut drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
-        let super::super::overlay::DrawnPolygons::Regions { rings, .. } = &mut drawing.polygons
+        let super::super::emission::plan::DrawnPolygons::Regions { rings, .. } = &mut drawing.polygons
         else {
             return Err(GeometryErrorKind::Invalid(
                 "the cap did not produce a bounded source ring".into(),
@@ -18,7 +18,7 @@
         let ring = rings
             .first_mut()
             .ok_or_else(|| GeometryErrorKind::Invalid("the cap source ring is missing".into()))?;
-        if !matches!(ring.origin, super::super::overlay::DrawnAreaOrigin::Source) {
+        if !matches!(ring.origin, super::super::emission::plan::DrawnAreaOrigin::Source) {
             return Err(GeometryErrorKind::Invalid(
                 "the cap source ring lost its source authority".into(),
             )

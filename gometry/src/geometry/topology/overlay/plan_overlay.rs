@@ -139,56 +139,61 @@ pub(in crate::geometry::topology) const fn source_polygon_contributes_to_whole_s
         OverlayOp::Union | OverlayOp::SymmetricDifference => true,
     }
 }
-pub(in crate::geometry::topology) fn build(
-    topology: &ExactGeographicTopology,
-    operation: OverlayOp,
-    work: &mut impl Work,
-) -> Result<Self> {
-    let q = &topology.q;
-    let row_count = topology.sources.row_count;
-    let faces = select_faces(q, row_count, operation, work)?;
-    let mut whole_sphere = !faces.is_empty();
-    for &selected in &faces {
-        work.charge_into_error(1)?;
-        whole_sphere &= selected;
-        if !whole_sphere {
-            break;
+
+impl QEmissionPlan {
+    pub(in crate::geometry::topology) fn build(
+        topology: &ExactGeographicTopology,
+        operation: OverlayOp,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let row_count = topology.sources.row_count;
+        let faces = select_faces(q, row_count, operation, work)?;
+        let mut whole_sphere = !faces.is_empty();
+        for &selected in &faces {
+            work.charge_into_error(1)?;
+            whole_sphere &= selected;
+            if !whole_sphere {
+                break;
+            }
         }
-    }
-    let mut face_regions = face_regions(q, &faces, work)?;
-    let line_spans = select_line_spans(topology, &faces, row_count, operation, work)?;
-    let cycles = selected_area_boundaries(q, &faces, &mut face_regions, work)?;
-    let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation, work)?;
-    let line_paths = planned_line_paths(topology, line_steps(topology, &line_spans, work)?, work)?;
-    let polygons = PolygonPlan::build(topology, whole_sphere, operation, &cycles, work)?;
-    let region_roots = match &polygons {
-        PolygonPlan::WholeSphere(_) => Vec::new(),
-        PolygonPlan::Regions { rings, .. } => rings
-            .iter()
-            .map(|ring| {
-                work.charge_into_error(1)?;
-                Ok(match *ring {
-                    PlannedAreaRing::Source { region, .. }
-                    | PlannedAreaRing::Cycle { region, .. } => region,
+        let mut face_regions = face_regions(q, &faces, work)?;
+        let line_spans = select_line_spans(topology, &faces, row_count, operation, work)?;
+        let cycles = selected_area_boundaries(q, &faces, &mut face_regions, work)?;
+        let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation, work)?;
+        let line_paths =
+            planned_line_paths(topology, line_steps(topology, &line_spans, work)?, work)?;
+        let polygons = PolygonPlan::build(topology, whole_sphere, operation, &cycles, work)?;
+        let region_roots = match &polygons {
+            PolygonPlan::WholeSphere(_) => Vec::new(),
+            PolygonPlan::Regions { rings, .. } => rings
+                .iter()
+                .map(|ring| {
+                    work.charge_into_error(1)?;
+                    Ok(match *ring {
+                        PlannedAreaRing::Source { region, .. }
+                        | PlannedAreaRing::Cycle { region, .. } => region,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>>>()?,
-    };
-    let selected_regions =
-        selected_region_facts(q, &faces, &mut face_regions, &region_roots, work)?;
-    let selected_face_roots = selected_face_roots(q, &faces, &mut face_regions, work)?;
-    let fragment_recipes = build_fragment_recipes(topology, &polygons, &cycles, &line_paths, work)?;
-    Ok(Self {
-        whole_sphere,
-        force_native: false,
-        boundary_support: None,
-        producer: QProducer::Overlay,
-        polygons,
-        cycles,
-        selected_regions,
-        selected_face_roots,
-        fragment_recipes,
-        line_paths,
-        point_nodes,
-    })
+                .collect::<Result<Vec<_>>>()?,
+        };
+        let selected_regions =
+            selected_region_facts(q, &faces, &mut face_regions, &region_roots, work)?;
+        let selected_face_roots = selected_face_roots(q, &faces, &mut face_regions, work)?;
+        let fragment_recipes =
+            build_fragment_recipes(topology, &polygons, &cycles, &line_paths, work)?;
+        Ok(Self {
+            whole_sphere,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::Overlay,
+            polygons,
+            cycles,
+            selected_regions,
+            selected_face_roots,
+            fragment_recipes,
+            line_paths,
+            point_nodes,
+        })
+    }
 }

@@ -229,7 +229,7 @@
         let topology = topology(&shapes)?;
         let mut budget = EvaluationBudget::new("q native domain", 0)?;
         let plan =
-            super::super::overlay::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+            super::super::emission::plan::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
         let source_points = vec![None; topology.sources.points.len()];
         let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
         let publication = plan.fragment_recipes.publish(

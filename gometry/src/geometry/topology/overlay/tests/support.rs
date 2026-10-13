@@ -8,9 +8,10 @@ use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
 use crate::geometry::Coordinates as _;
 use crate::geometry::overlay::{Strictness, overlay_all};
 use crate::geometry::topology::emission::sites::canonicalize_ring_vertices;
-use crate::geometry::topology::q_embedding::{
-    QFaceStructure, compare_q_ring_role, face_structure_mismatch_nodes,
-    round_canonical_longitude, subgraph_chart,
+use crate::geometry::topology::emission::ring_roles::round_canonical_longitude;
+use crate::geometry::topology::q_embedding::compare_q_ring_role;
+use crate::geometry::topology::q_embedding::face_structure::{
+    QFaceStructure, face_structure_mismatch_nodes, subgraph_chart,
 };
 
 fn build_q_plan(

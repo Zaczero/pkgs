@@ -6,15 +6,7 @@ use super::exact::{
     compare_quotient_keys, compare_quotient_keys_with_work, quotient_key_for_chart_position,
     quotient_key_for_chart_position_with_work,
 };
-pub(in crate::geometry::topology) mod cut_ports;
-pub(in crate::geometry::topology) mod ordinates;
-pub(in crate::geometry::topology) mod plan;
-pub(in crate::geometry::topology) mod prepare;
-pub(in crate::geometry::topology) mod sites;
-pub(in crate::geometry::topology) mod source_publication;
-pub(in crate::geometry::topology) mod source_reuse;
-
-use self::plan::QEmissionPlan;
+use super::overlay::QEmissionPlan;
 use super::q::{
     CanonicalQNodeKey, ChartSpan, ChartSpanId, ExactGeographicTopology, GlobalFaceId, QDartId,
     QNodeId, QPortId,
@@ -53,21 +45,18 @@ use crate::geometry::{
 };
 
 mod builder;
+pub(in crate::geometry::topology) mod draw;
 mod families;
+pub(in crate::geometry::topology) mod line_paths;
 mod materialize;
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[expect(
-    private_interfaces,
-    reason = "the common sink carries Q image blame opaquely while the Q adapter alone interprets its topology-private IDs"
-)]
 mod nodes;
-mod ordinates;
 mod port_authority;
 mod presentation;
 mod publication;
 mod recipes;
 pub(in crate::geometry::topology) mod ring_roles;
 mod trace;
+pub(in crate::geometry::topology) mod write;
 pub(super) use self::builder::{EmissionBuilder, ExpandedEmissionPlan};
 pub(in crate::geometry) use self::families::FeatureFamilyRegistry;
 pub(super) use self::families::{
@@ -138,7 +127,3 @@ mod tests {
     include!("emission/materialize/tests.rs");
     include!("emission/trace/tests.rs");
 }
-
-pub(in crate::geometry::topology) mod draw;
-pub(in crate::geometry::topology) mod line_paths;
-pub(in crate::geometry::topology) mod write;

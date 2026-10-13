@@ -1,3 +1,4 @@
+use super::super::exact::{SourceEdgeKind, source_edge_at};
 use super::plan::*;
 use super::sites::*;
 use super::*;

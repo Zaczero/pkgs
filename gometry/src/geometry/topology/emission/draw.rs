@@ -5,6 +5,7 @@ use super::line_paths::*;
 use super::plan::*;
 use super::sites::*;
 use super::*;
+use crate::geographic::SeamIdentity;
 
 pub(in crate::geometry::topology) fn emitted_point<'topology>(
     topology: &'topology ExactGeographicTopology,
