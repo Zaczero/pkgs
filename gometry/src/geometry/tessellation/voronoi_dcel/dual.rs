@@ -156,9 +156,9 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     let flat = |edge: usize| dual_site_at_halfedge(triangles, edge);
     let mut start_edge = Vec::with_capacity(site_count);
     start_edge.resize(site_count, usize::MAX);
-    for edge in 0..halfedges.len() {
+    for (edge, &halfedge) in halfedges.iter().enumerate() {
         let endpoint = flat(dual_next_halfedge(edge));
-        if start_edge[endpoint] == usize::MAX || halfedges[edge] == EMPTY {
+        if start_edge[endpoint] == usize::MAX || halfedge == EMPTY {
             start_edge[endpoint] = edge;
         }
     }
@@ -167,8 +167,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     offsets.reserve(site_count + 1);
     boundaries.reserve(site_count);
     offsets.push(0);
-    for site in 0..site_count {
-        let start = start_edge[site];
+    for &start in &start_edge {
         let (length, boundary) = incident_faces_for_site(start, halfedges, None);
         offsets.push(offsets.last().copied().unwrap_or(0) + length);
         boundaries.push(boundary);

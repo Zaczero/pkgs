@@ -2,7 +2,6 @@
 
 #![expect(
     clippy::float_cmp,
-    clippy::needless_range_loop,
     clippy::unwrap_used,
     reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"
 )]

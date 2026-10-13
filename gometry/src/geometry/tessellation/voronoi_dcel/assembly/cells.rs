@@ -438,8 +438,8 @@ impl OwnerRingForest {
         let mut nearest_positive = vec![None; rings.len()];
         let mut clock = 0;
         let mut stack = Vec::with_capacity(rings.len().saturating_mul(2));
-        for root in 0..rings.len() {
-            if parent[root].is_some() {
+        for (root, parent_of_root) in parent.iter().enumerate() {
+            if parent_of_root.is_some() {
                 continue;
             }
             stack.push((root, false, None));
