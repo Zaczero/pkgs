@@ -1,3 +1,5 @@
+use crate::geometry::output::CertifiedShapeOrder;
+
 #[test]
 fn native_literal_port_map_follows_final_shape_order() {
     let uses = NativeLiteralUses {
@@ -27,7 +29,7 @@ fn native_literal_port_map_follows_final_shape_order() {
         ],
         polygons: Vec::new(),
     };
-    let order = CertifiedOverlayOrder {
+    let order = CertifiedShapeOrder {
         points: vec![1, 0],
         lines: vec![1, 0],
         polygons: Vec::new(),

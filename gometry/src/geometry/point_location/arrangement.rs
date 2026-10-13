@@ -7,7 +7,7 @@ use std::{cell::Cell, thread_local};
 
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::source_support::SourcePointLocation;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, compare_ratios};

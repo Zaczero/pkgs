@@ -4,7 +4,8 @@ use super::receipt::{CheckedPublicationLiteral, ProducerLiteral, PublicationImag
 use crate::error::Result;
 use crate::geometry::embedding_completion::{CheckedImages, LiteralAddress, LiteralChart};
 use crate::geometry::topology::ExactChartPoint;
-use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Work};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
+use crate::work::Work;
 
 pub(super) struct CheckedLiteralSnapshot {
     records: BTreeMap<(LiteralAddress, PublicationImage), (Point, ExactChartPoint)>,

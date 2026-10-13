@@ -4,7 +4,7 @@
 //! a possible tie or a magnitude outside the window declines to the exact
 //! construction instead of rounding wrong.
 
-use crate::geometry::exact_arith::{fast_two_sum, two_product_exact, two_sum};
+use crate::geometry::numerics::product::{fast_two_sum, two_product_exact, two_sum};
 
 /// The exact quantity lies within `err` of `hi + lo`.
 #[derive(Clone, Copy, Debug)]

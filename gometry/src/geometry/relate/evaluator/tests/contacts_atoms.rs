@@ -104,7 +104,7 @@ fn stored_dyadic_recovery_preserves_binary64_edges_without_rounding() {
 #[cfg(debug_assertions)]
 fn stored_recovery_does_not_round_ratios_or_reconvert_coordinates() {
     use crate::geometry::source_support::exact_stored_point;
-    use crate::geometry::tessellation::exact::round_ratio;
+    use crate::geometry::round_ratio;
     use crate::test_support::exact_operation_counts::measure;
     let point = stored_exact_point(XY::new(7.25, -3.125));
     let (recovered, counts) = measure(|| exact_stored_point(&point).unwrap());

@@ -3,8 +3,9 @@ use super::{
     EmissionNodeId, EvaluationBudget, ExactRational, ExactSourceRange, FragmentRecipeId,
     GeographicFrame, GeometryErrorKind, GlobalFaceId, NativePortData, OccurrenceSource,
     PortSpelling, QDartId, QNodeId, QPortId, ResourceError, Result, RootRange, SourceEdgeId,
-    SyntheticChartVertex, VertexOrigin, Work, try_sort_by_with_work,
+    SyntheticChartVertex, VertexOrigin, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology) struct NativeAreaEdge {
     pub(in crate::geometry::topology) vertices: [NativePortData; 2],

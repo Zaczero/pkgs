@@ -8,7 +8,8 @@ use std::{cell::Cell, thread_local};
 
 use crate::error::{ResourceError, Result};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{Bounds, PointKey, Segment, Unmetered, Work, XY, segment_envelopes_disjoint};
+use crate::geometry::{Bounds, PointKey, Segment, XY, segment_envelopes_disjoint};
+use crate::work::{Unmetered, Work};
 
 fn u32_ordinal(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())

@@ -1,3 +1,4 @@
+
     #[test]
     fn source_only_seam_union_stays_on_quotient_publication() -> Result<()> {
         let east = crate::io::parse_wkt("POLYGON ((170 0, 180 0, 180 10, 170 10, 170 0))")?;

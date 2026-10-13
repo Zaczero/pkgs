@@ -15,7 +15,7 @@ use super::{
     SquaredDistanceKey, WitnessRole, XY, dd_strict_cmp,
 };
 use crate::error::{ErrorKind, Result};
-use crate::geometry::exact_arith::two_sum;
+use crate::geometry::numerics::product::two_sum;
 use crate::geometry::tessellation::exact::{compare_ratios, round_sqrt_ratio};
 use crate::geometry::{Ordering, same_point};
 

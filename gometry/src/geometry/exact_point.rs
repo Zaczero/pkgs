@@ -1,10 +1,10 @@
 use crate::error::Result;
-use crate::geometry::Work;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::topology::{
     ExactChartPoint, point_on_exact_segment_with_work, vector_cross_with_work,
     vector_difference_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry) fn exact_segments_intersect(
     left_start: &ExactChartPoint,
@@ -12,7 +12,7 @@ pub(in crate::geometry) fn exact_segments_intersect(
     right_start: &ExactChartPoint,
     right_end: &ExactChartPoint,
 ) -> Result<bool> {
-    let mut work = crate::geometry::Unmetered;
+    let mut work = crate::work::Unmetered;
     exact_segments_intersect_with_work(left_start, left_end, right_start, right_end, &mut work)
 }
 

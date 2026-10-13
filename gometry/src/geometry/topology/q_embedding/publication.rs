@@ -11,11 +11,12 @@ use super::{
     ExactGeographicTopology, ExactRational, FrozenLiteralBuffers, GeometryErrorKind, LiteralChart,
     LiteralCheck, NativeCandidateAssignment, NodeOrdinates, Point, PublicationInventory,
     QSourceImage, QSourceImages, Result, SealedOutput, SourceFrozenDrawing, SourceOnlyReceipt,
-    StorageTarget, Work, XY, bind_literals, validate_native_materialized_port,
+    StorageTarget, XY, bind_literals, validate_native_materialized_port,
     validate_native_sealed_layout,
 };
 use crate::geometry::CoordinateAxes;
 use crate::geometry::embedding_completion::LiteralAddress;
+use crate::work::Work;
 
 pub(in crate::geometry) struct NativeCandidatePublication<'call, 'reference, 'topology> {
     pub(super) assignment: &'call NativeCandidateAssignment<'reference, 'topology>,

@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use super::{AvlNode, FallibleAvl};
 use crate::error::{ResourceError, Result};
-use crate::geometry::{Unmetered, Work};
+use crate::work::{Unmetered, Work};
 
 #[expect(
     clippy::indexing_slicing,

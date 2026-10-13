@@ -2,7 +2,7 @@
 
 use super::MeshCoordinates;
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 
 /// Lexicographically ordered infinitesimal vertical lifts of the paraboloid.
 /// On a zero determinant, its first nonzero lift cofactor selects one diagonal;

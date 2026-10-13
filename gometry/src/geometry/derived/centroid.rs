@@ -6,8 +6,9 @@ use std::simd::{Select as _, StdFloat as _};
 
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::{ErrorKind, ResourceError, Result as CoreResult};
-use crate::geometry::exact_arith::product_sum::ExactCentroidSums as FixedExactCentroidSums;
-use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+use crate::geographic::retained_exact::sites::retained_site_longitude;
+use crate::geometry::numerics::product::ExactSign;
+use crate::geometry::numerics::product_sum::ExactCentroidSums as FixedExactCentroidSums;
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, round_sqrt_ratio};
 use crate::geometry::{
     Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,

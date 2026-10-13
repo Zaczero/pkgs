@@ -1,3 +1,4 @@
+use super::dyadic::ExactOracle as _;
 use super::frame::{enclosing_frame, enclosing_frame_binary64};
 use super::incidence::{
     angle_ccw_cmp, cycle_orientation, point_in_cycle, segment_intersection, signed_line_product,
