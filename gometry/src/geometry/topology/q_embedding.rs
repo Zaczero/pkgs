@@ -15,8 +15,8 @@ use super::emission::{
     NativeGraphEdgeOwner, NativePortData, NativeSeamEvent, NativeSeamVertices,
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
     PortSpelling, PublicationInventory, RecipeWalk, RecipeWalkOwner, SealedSourceDrawing,
-    SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing, SourceSampleOccurrence, SourceTrace,
-    TraceRequestLocation, TracedLine, merge_native_port_data, native_pole_edges, native_seam_edges,
+    SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing, SourceSampleOccurrence,
+    TraceRequestLocation, merge_native_port_data, native_pole_edges, native_seam_edges,
     native_source_sample_occurrences,
 };
 use super::exact::{
@@ -425,7 +425,6 @@ pub(super) enum NearestQCertificate {
 
 pub(super) struct QEmbeddingOutput {
     pub(super) sealed: super::emission::SealedQDrawing,
-    pub(super) family_state: Option<FeatureFamilyRegistry>,
 }
 
 #[derive(Clone, Copy)]

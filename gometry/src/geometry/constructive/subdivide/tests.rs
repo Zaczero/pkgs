@@ -4,9 +4,9 @@
 )]
 
 use super::*;
-use crate::crs;
+use crate::crs::{self, GeodesicMetric};
 use crate::geometry::overlay::{partition_calls, reset_partition_calls};
-use crate::geometry::{Polygon, Ring, ordinates, overlay};
+use crate::geometry::{CoordSeq, Point, Polygon, Ring, ordinates, overlay};
 
 fn ring_shape(points: &[Point]) -> Shape {
     Shape::Polygon(Polygon::new(
@@ -1029,24 +1029,6 @@ fn source_ordinate_dedup_merges_signed_zero_and_keeps_adjacent_values() {
     assert_eq!(ordinates[4].to_bits(), adjacent.to_bits());
 }
 
-#[test]
-fn cartesian_shared_subdivision_never_counts_source_line_members() {
-    let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
-    reset_source_line_member_count_calls();
-    for depth in [4, 8, 16, 40, 128] {
-        let mut shared = base.clone();
-        for _ in 0..depth {
-            shared = Shape::geometry_collection(vec![shared.clone(), shared])
-                .expect("shared collection depth is admitted");
-        }
-        let parts = shared
-            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
-            .expect("Cartesian shared subdivision succeeds");
-        assert!(!parts.is_empty(), "depth {depth}");
-    }
-    assert_eq!(source_line_member_count_calls(), 0);
-}
-
 fn geographic_member_line(identity: f64) -> Shape {
     let coordinates = CoordSeq::try_from_vecs(
         vec![0.0, 0.0],
@@ -1088,54 +1070,8 @@ fn expand_collection_owners(shape: &Shape) -> Shape {
     }
 }
 
-fn legacy_line_member_count(shape: &Shape) -> Result<usize> {
-    let mut count = 0_usize;
-    shape.try_for_each_component(&mut |component| -> Result<()> {
-        if matches!(component, Component::LineString(_)) {
-            count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-        }
-        Ok(())
-    })?;
-    Ok(count)
-}
-
-fn expanded_line_ranges(
-    shape: &Shape,
-    start: usize,
-    output: &mut Vec<(u64, usize, usize)>,
-) -> Result<usize> {
-    match shape {
-        Shape::GeometryCollection(collection) => {
-            let mut next = start;
-            for member in collection.as_slice() {
-                let count = legacy_line_member_count(member)?;
-                let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
-                expanded_line_ranges(member, next, output)?;
-                next = end;
-            }
-            next.checked_sub(start)
-                .ok_or_else(|| ResourceError::SizeOverflow.into())
-        },
-        Shape::LineString(line) => {
-            let end = start.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-            output.push((
-                line.as_coords().zs().expect("test line carries Z")[0].to_bits(),
-                start,
-                end,
-            ));
-            Ok(1)
-        },
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::MultiLineString(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_)
-        | Shape::Empty(..) => Ok(0),
-    }
-}
-
 #[test]
-fn geographic_shared_line_ranges_match_expanded_occurrence_order() {
+fn geographic_shared_line_subdivision_matches_expanded_occurrences() {
     let longitude =
         crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
             .unwrap();
@@ -1156,101 +1092,21 @@ fn geographic_shared_line_ranges_match_expanded_occurrence_order() {
     for depth in [4, 8, 16] {
         let shared = shared_repeated_lines(depth);
         let expanded = expand_collection_owners(&shared);
-        let native =
-            NativeSubdivisionContext::new(&shared, Some(frame), SubdivisionPath::NativePrepared);
-        let mut memo = SourceLineMemberCountMemo::default();
-        reset_source_line_member_count_calls();
-        let total = if native.frame.is_some() {
-            source_line_member_count(&shared, &mut memo).unwrap()
-        } else {
-            0
-        };
-        assert_eq!(total, 4);
-        assert!(
-            source_line_member_count_calls() <= 4 * (depth + 1),
-            "depth {depth} revisited too many collection owners"
-        );
-
-        let mut expanded_ranges = Vec::with_capacity(total);
-        assert_eq!(
-            expanded_line_ranges(&expanded, 0, &mut expanded_ranges).unwrap(),
-            total
-        );
-
-        reset_subdivision_line_member_ranges();
         let shared_parts = shared
             .subdivide_with_context(2, false, &context)
             .expect("geographic-frame shared subdivision succeeds");
-        let shared_ranges = subdivision_line_member_ranges();
-        assert_eq!(shared_parts.len(), total, "depth {depth}");
-        assert_eq!(shared_ranges, expanded_ranges, "shared depth {depth}");
-
-        reset_subdivision_line_member_ranges();
         let expanded_parts = expanded
             .subdivide_with_context(2, false, &context)
             .expect("expanded geographic-frame subdivision succeeds");
-        let actual_expanded_ranges = subdivision_line_member_ranges();
-        assert_eq!(expanded_parts.len(), total, "expanded depth {depth}");
-        assert_eq!(
-            actual_expanded_ranges, expanded_ranges,
-            "expanded depth {depth}"
-        );
-    }
-}
-
-fn quotient_test_line(latitude_start: f64) -> Shape {
-    let longitudes = vec![0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 140.0, 180.0];
-    let latitudes = (0..longitudes.len())
-        .map(|index| latitude_start + index as f64)
-        .collect();
-    let coordinates = CoordSeq::try_from_vecs(longitudes, latitudes, None, None).unwrap();
-    Shape::LineString(LineSeq::from_proven(coordinates))
-}
-
-fn shared_point_collection(depth: usize) -> Shape {
-    let mut shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
-    for _ in 0..depth {
-        shape = Shape::geometry_collection(vec![shape.clone(), shape])
-            .expect("point collection depth is admitted");
-    }
-    shape
-}
-
-fn legacy_native_line_members_with_known(
-    shape: &Shape,
-    frame: GeographicFrame,
-    max_vertices: usize,
-    first_member: usize,
-    known: &[(usize, crate::geometry::CoordinateAxes)],
-) -> Result<Vec<(usize, crate::geometry::CoordinateAxes)>> {
-    let mut next_member = first_member;
-    let mut output = Vec::new();
-    shape.try_for_each_component(&mut |component| -> Result<()> {
-        let Component::LineString(line) = component else {
-            return Ok(());
+        let wkb = |parts: &[Shape]| {
+            parts
+                .iter()
+                .map(|part| crate::io::to_wkb(part, None, false).unwrap())
+                .collect::<Vec<_>>()
         };
-        let member = next_member;
-        next_member = next_member
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        if line.len() <= max_vertices {
-            return Ok(());
-        }
-        if let Ok(index) = known.binary_search_by_key(&member, |&(member, _)| member) {
-            output.push((member, known[index].1));
-            return Ok(());
-        }
-        let source = Shape::LineString(line.clone());
-        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(&source))
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        if crate::geometry::geographic_topology_route(inputs.views().iter().copied())
-            == crate::geometry::GeographicTopologyRoute::Quotient
-        {
-            output.push((member, source.axes()));
-        }
-        Ok(())
-    })?;
-    Ok(output)
+        assert_eq!(shared_parts.len(), 4, "shared depth {depth}");
+        assert_eq!(wkb(&shared_parts), wkb(&expanded_parts), "depth {depth}");
+    }
 }
 
 #[test]
@@ -1299,78 +1155,6 @@ fn geographic_deep_shared_polygon_subdivision_keeps_support() {
         .expect("deep geographic source union");
         assert_eq!(source_union.area(), 1.0, "depth {depth}");
     }
-}
-
-#[test]
-fn geographic_shared_native_member_ordinals_match_expanded_occurrences() {
-    let longitude =
-        crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
-            .unwrap();
-    let latitude =
-        crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
-            .unwrap();
-    let frame = GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
-    let first_line = quotient_test_line(-20.0);
-    let second_line = quotient_test_line(20.0);
-    for line in [&first_line, &second_line] {
-        assert_eq!(
-            crate::geometry::geographic_topology_route(
-                GeographicInputs::try_from_shapes(frame, std::iter::once(line))
-                    .expect("line admits in the geographic frame")
-                    .views()
-                    .iter()
-                    .copied()
-            ),
-            crate::geometry::GeographicTopologyRoute::Quotient
-        );
-    }
-    for depth in [4, 8] {
-        let mut line_branch =
-            Shape::geometry_collection(vec![first_line.clone(), second_line.clone()])
-                .expect("line members form a collection");
-        for _ in 0..depth {
-            line_branch = Shape::geometry_collection(vec![line_branch])
-                .expect("line collection depth is admitted");
-        }
-        let repeated_lines = Shape::geometry_collection(vec![line_branch.clone(), line_branch])
-            .expect("repeated line collection is admitted");
-        let source =
-            Shape::geometry_collection(vec![shared_point_collection(depth), repeated_lines])
-                .expect("mixed source collection is admitted");
-        let expanded = expand_collection_owners(&source);
-        let known = [(18, crate::geometry::CoordinateAxes::XY)];
-        let expected_members = vec![
-            (17, crate::geometry::CoordinateAxes::XY),
-            (18, crate::geometry::CoordinateAxes::XY),
-            (19, crate::geometry::CoordinateAxes::XY),
-            (20, crate::geometry::CoordinateAxes::XY),
-        ];
-        let mut memo = SourceLineMemberCountMemo::default();
-        let shared_members =
-            collect_native_line_members_with_known(&source, frame, 2, 17, &known, &mut memo)
-                .unwrap();
-        let expanded_members =
-            legacy_native_line_members_with_known(&expanded, frame, 2, 17, &known).unwrap();
-        assert_eq!(shared_members, expected_members, "depth {depth}");
-        assert_eq!(expanded_members, expected_members, "depth {depth}");
-    }
-}
-
-#[test]
-fn shared_geographic_line_member_count_reports_overflow() {
-    let line = line_shape(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 0.0)]);
-    let mut shared = line;
-    for _ in 0..usize::BITS {
-        shared = Shape::geometry_collection(vec![shared.clone(), shared])
-            .expect("overflow fixture nesting is admitted");
-    }
-    let mut memo = SourceLineMemberCountMemo::default();
-    let error = source_line_member_count(&shared, &mut memo)
-        .expect_err("logical line multiplicity exceeds usize");
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Resource(ResourceError::SizeOverflow)
-    ));
 }
 
 #[test]

@@ -835,25 +835,6 @@ pub(crate) struct TraceRows {
 }
 
 impl TraceRows {
-    pub(crate) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
-        prepay_slots(self.offsets.len(), work)?;
-        prepay_slots(self.sample_offsets.len(), work)?;
-        prepay_slots(self.ranges.len(), work)?;
-        let mut offsets = Vec::with_capacity(self.offsets.len());
-        offsets.extend(self.offsets.iter().copied());
-        let mut sample_offsets = Vec::with_capacity(self.sample_offsets.len());
-        sample_offsets.extend(self.sample_offsets.iter().copied());
-        let mut ranges = Vec::with_capacity(self.ranges.len());
-        for range in &self.ranges {
-            ranges.push(range.try_clone_with_work(work)?);
-        }
-        Ok(Self {
-            offsets,
-            sample_offsets,
-            ranges,
-        })
-    }
-
     pub(crate) fn row(&self, edge: usize) -> Result<&[RootRange]> {
         let start = *self.offsets.get(edge).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no requested edge row".into())
@@ -2066,82 +2047,6 @@ mod tests {
         let last = rows.sample_requests_at(128, &mut work).unwrap();
         assert_eq!(last.len(), 1);
         assert_eq!(last[0].root(), root);
-    }
-
-    #[test]
-    fn trace_row_clone_prepays_storage_and_exact_range_copies() {
-        let root = RootId::from_index(8);
-        let quarter_turn = ExactRational::from_f64(0.75);
-        let mut source_start = ExactRational::one();
-        let mut setup = Unmetered;
-        for _ in 0..100 {
-            source_start = source_start
-                .try_product_with_work(&quarter_turn, &mut setup)
-                .unwrap();
-        }
-        let range = RootRange::from_mapped(
-            root,
-            source_start,
-            ExactRational::from_f64(0.75),
-            ExactRational::from_f64(0.125),
-            ExactRational::from_f64(0.875),
-        )
-        .unwrap();
-        let mut builder = TraceRowsBuilder::new(&mut setup).unwrap();
-        builder.push_row([range], &mut setup).unwrap();
-        let rows = builder.finish(&mut setup).unwrap();
-
-        let target_attempts = {
-            let progress = Rc::new(Cell::new(0));
-            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0).unwrap();
-            let mut work = RecordingWork {
-                budget: &mut budget,
-                progress: Rc::clone(&progress),
-                spent: 0,
-                attempts: Vec::new(),
-            };
-            let cloned = rows.try_clone_with_work(&mut work).unwrap();
-            progress.set(1);
-            assert_eq!(cloned.row(0).unwrap(), rows.row(0).unwrap());
-            assert_eq!(progress.get(), 1);
-            assert_eq!(
-                work.attempts
-                    .iter()
-                    .map(|attempt| attempt.ticks)
-                    .take(3)
-                    .collect::<Vec<_>>(),
-                [2, 1, 1]
-            );
-            let first_range_copy = work
-                .attempts
-                .get(3)
-                .copied()
-                .expect("the original-root exact payload clone has a Work charge");
-            assert!(first_range_copy.ticks > 1);
-            first_range_copy
-        };
-
-        let progress = Rc::new(Cell::new(0));
-        let mut budget = refusing_budget(target_attempts);
-        let mut work = RecordingWork {
-            budget: &mut budget,
-            progress: Rc::clone(&progress),
-            spent: 0,
-            attempts: Vec::new(),
-        };
-        let Err(error) = rows.try_clone_with_work(&mut work) else {
-            panic!("exact root-range copies must be paid before clone completion");
-        };
-        assert_work_limit(&error);
-        assert_eq!(progress.get(), 0);
-        let refusal = work
-            .attempts
-            .last()
-            .expect("the recorder observes the refused exact-copy charge");
-        assert!(!refusal.accepted);
-        assert_eq!(refusal.ticks, target_attempts.ticks);
-        assert_eq!(refusal.spent_before, target_attempts.spent_before);
-        assert_eq!(refusal.progress, 0);
     }
 
     fn append_test_trace_row(work: &mut impl Work, progress: &Cell<usize>) -> Result<()> {

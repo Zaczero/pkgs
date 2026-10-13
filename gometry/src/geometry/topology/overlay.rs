@@ -18,7 +18,7 @@ pub(in crate::geometry) use super::emission::plan::QProducer;
 use super::emission::plan::{
     BoundaryCycle, BoundarySupport, DiagnosticKind, LineStep, PlannedAreaRing, PlannedQLine,
     PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, SelectedLineSpan, SelectedRegionFact,
-    SelectedRegionPoles, SourceLineSpan, SpanEndpoint,
+    SelectedRegionPoles, SpanEndpoint,
 };
 use super::emission::sites::{EmittedVertex, QCoordinates, node_injectivity_collisions_with_work};
 #[cfg(test)]
@@ -30,12 +30,12 @@ use super::emission::source_reuse::{
     source_ring_cycles_follow_source,
 };
 use super::emission::{
-    DirectedSpan, FeatureFamilyRegistry, FragmentRecipes, PreparedNativeSource, RecipeWalkOwner,
-    SealedQDrawing, SealedSourceDrawing, SelectedUse, write_completed_native,
+    DirectedSpan, FragmentRecipes, RecipeWalkOwner, SealedQDrawing, SealedSourceDrawing,
+    SelectedUse, write_completed_native,
 };
 #[cfg(test)]
 use super::emission::{PublicationInventory, RecipeWalk};
-use super::exact::{ExactSourceRange, ExactSourceRing, SourceEdgeKind, SourceRowId};
+use super::exact::{ExactSourceRange, ExactSourceRing, SourceRowId};
 use super::linework::{
     DiagnosticSpan, even_odd_face_selection, minimal_face_selection, noded_spans,
 };
@@ -56,9 +56,7 @@ use crate::geometry::overlay::OverlayOp;
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
-use crate::geometry::{
-    CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, Loc, Shape, Work,
-};
+use crate::geometry::{CoordinateAxes, ExpansionBudget, GeometryErrorKind, Loc, Shape, Work};
 #[cfg(test)]
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
 
@@ -68,8 +66,10 @@ pub(in crate::geometry) use self::producer_drawing::{
     exact_geographic_linework_pending_row,
 };
 #[cfg(test)]
+use self::publish::write_certified_q_emission;
+#[cfg(test)]
 use self::publish::{CertifiedQEmission, QEmbeddingChoice};
-use self::publish::{publish_q_overlay, resolve_q_embedding, write_certified_q_emission};
+use self::publish::{publish_q_overlay, resolve_q_embedding};
 mod plan_boundary;
 mod plan_linework;
 mod plan_overlay;
@@ -111,80 +111,6 @@ pub(in crate::geometry) fn exact_geographic_overlay_pending_row<M: crate::geomet
         metric_access,
         logical_row,
     )
-}
-
-pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
-    topology: &ExactGeographicTopology,
-    line_members: &[usize],
-    declared_axes: CoordinateAxes,
-    strict: bool,
-    operation: &'static str,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-    expansion_budget: &mut ExpansionBudget,
-    budget: &mut EvaluationBudget,
-) -> Result<PreparedNativeSource> {
-    let plan = QEmissionPlan::build_source_lines(topology, line_members, budget)?;
-    if plan.line_paths.is_empty() {
-        return Ok(PreparedNativeSource {
-            shape: Shape::typed_empty(GeometryKind::MultiLineString, declared_axes),
-            line_traces: Vec::new(),
-            source_members: Vec::new(),
-            family_state: None,
-        });
-    }
-    let mut source_members = Vec::with_capacity(plan.line_paths.len());
-    for line in &plan.line_paths {
-        let RecipeWalkOwner::Line(member) = line.recipe_walk else {
-            return Err(GeometryErrorKind::Invalid(
-                "native source-line plan contains a non-line producer".into(),
-            )
-            .into());
-        };
-        source_members.push(member);
-    }
-    let nearest = QCoordinates::build_with_work(topology, budget)?;
-    let source_points = source_point_coordinates_with_work(topology, budget)?;
-    let embedding = resolve_q_embedding(
-        topology,
-        &plan,
-        &source_points,
-        &nearest,
-        declared_axes,
-        strict,
-        operation,
-        metric_access,
-        expansion_budget,
-        budget,
-    )?;
-    let written = write_certified_q_emission(embedding)?;
-    let line_count = match &written.shape {
-        Shape::LineString(_) => 1,
-        Shape::MultiLineString(lines) => lines.len(),
-        Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => 0,
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_)
-        | Shape::GeometryCollection(_)
-        | Shape::Empty(..) => {
-            return Err(GeometryErrorKind::Invalid(
-                "native line preparation emitted a non-lineal shape".into(),
-            )
-            .into());
-        },
-    };
-    if line_count != written.line_traces.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "native line preparation lost its written trace rows".into(),
-        )
-        .into());
-    }
-    Ok(PreparedNativeSource {
-        shape: written.shape,
-        line_traces: written.line_traces,
-        source_members,
-        family_state: written.family_state,
-    })
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(

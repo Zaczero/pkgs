@@ -378,14 +378,6 @@
             )
             .into());
         };
-        assert!(
-            !native.line_traces.is_empty()
-                && native
-                    .line_traces
-                    .iter()
-                    .all(|line| line.trace.rows.edge_count() > 0),
-            "Native completion must retain final producer leaf records"
-        );
         let shape = native.sealed.into_scalar()?.0;
         let mut crossing_leaf_ends = 0;
         let mut fixed_records = Vec::new();

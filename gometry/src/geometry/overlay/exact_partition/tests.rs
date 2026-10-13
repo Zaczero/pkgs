@@ -4392,6 +4392,69 @@ fn overlap_reversed_duplicate_keeps_reverse_owner() {
 }
 
 #[test]
+fn exact_partition_orders_extreme_horizontal_cuts_and_keeps_owner() {
+    for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
+        let segments = std::iter::once(seg(0.0, 0.0, 4.0 * scale, 0.0))
+            .chain(
+                [3.0, 1.0, 2.0]
+                    .map(|multiple| seg(multiple * scale, -scale, multiple * scale, scale)),
+            )
+            .collect::<Vec<_>>();
+        let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+        let mut budget = ExpansionBudget::new("exact_partition", "extreme horizontal cuts");
+        let partition = inventory.partition(&mut budget).unwrap();
+        let mut source_atoms = Vec::new();
+        for (index, span) in partition.spans.iter().enumerate() {
+            let owners = partition.owners(index);
+            if owners.iter().any(|&(source, _)| source == 0) {
+                assert_eq!(owners, &[(0, false)]);
+                let start = partition.nearest_xy(span.start);
+                let end = partition.nearest_xy(span.end);
+                assert_eq!((start.y, end.y), (0.0, 0.0));
+                source_atoms.push((start.x.min(end.x), start.x.max(end.x)));
+            }
+        }
+        source_atoms.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+        assert_eq!(source_atoms, vec![
+            (0.0, scale),
+            (scale, 2.0 * scale),
+            (2.0 * scale, 3.0 * scale),
+            (3.0 * scale, 4.0 * scale),
+        ]);
+    }
+}
+
+#[test]
+fn exact_partition_preserves_reversed_partial_overlap_atom_owners() {
+    let segments = [
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(3.0, 0.0, 1.0, 0.0),
+        seg(1.0, 0.0, 3.0, 0.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+    let mut budget = ExpansionBudget::new("exact_partition", "reversed partial overlap");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let mut horizontal = Vec::new();
+    for (index, span) in partition.spans.iter().enumerate() {
+        let start = partition.nearest_xy(span.start);
+        let end = partition.nearest_xy(span.end);
+        if start.y == 0.0 && end.y == 0.0 {
+            horizontal.push((
+                start.x.min(end.x),
+                start.x.max(end.x),
+                partition.owners(index).to_vec(),
+            ));
+        }
+    }
+    horizontal.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+    assert_eq!(horizontal, vec![
+        (0.0, 1.0, vec![(0, false)]),
+        (1.0, 3.0, vec![(0, false), (1, true), (2, false)]),
+        (3.0, 4.0, vec![(0, false)]),
+    ]);
+}
+
+#[test]
 fn overlap_aggregate_owners_are_one_atom() {
     let case = run(&[seg(0.0, 0.0, 4.0, 0.0), seg(1.0, 0.0, 3.0, 0.0)]);
     let partition = case.partition();

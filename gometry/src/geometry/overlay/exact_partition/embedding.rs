@@ -31,7 +31,7 @@ use crate::collections::try_hash_map_with_capacity;
 use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
-use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};
+use crate::geometry::embedding_search::account::SearchAccount;
 use crate::geometry::embedding_search::proximity::{
     ProximityChord, ProximityClasses, build_proximity_classes as build_search_proximity_classes,
     build_proximity_classes_with_work, exact_chord_radius, possible_swept_bounds, proximity_limit,
@@ -605,35 +605,6 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         )
     }
 
-    pub(super) fn new_with_work<A: SearchAccount>(
-        partition: &'p ExactPartition<'s>,
-        emissions: &[&'e Emission],
-        seeds: &[NodeId],
-        movable_cache: Vec<Option<bool>>,
-        account: &mut A,
-    ) -> Result<Self> {
-        Self::new_with_proximity(
-            partition,
-            emissions,
-            seeds,
-            movable_cache,
-            |search_chords, incident_chords, seed_nodes, movable_cache| {
-                build_proximity_classes_with_work(
-                    partition.node_count(),
-                    search_chords,
-                    incident_chords,
-                    seed_nodes,
-                    movable_cache,
-                    |node| exact_movable_node(partition, NodeId(node)),
-                    |left, right| partition.compare_nodes(NodeId(left), NodeId(right)),
-                    segments_within_chebyshev,
-                    account,
-                    |account, _initial_evaluations, units| account.charge_evaluations(units),
-                )
-            },
-        )
-    }
-
     fn new_with_proximity(
         partition: &'p ExactPartition<'s>,
         emissions: &[&'e Emission],
@@ -1168,30 +1139,6 @@ impl ExactPartition<'_> {
                     .ok_or(ResourceError::SizeOverflow)
             })?;
             Search::new(problem, operation, constructed)?.run()
-        })
-    }
-
-    pub(super) fn embed_with_budget<'p>(
-        &'p self,
-        emissions: &[&Emission],
-        operation: &'static str,
-        budget: &mut EvaluationBudget,
-    ) -> Result<Embedding<'p>> {
-        self.embed_with_search(emissions, |seeds, movable_cache| {
-            let mut problem =
-                PlanarProblem::new_with_work(self, emissions, seeds, movable_cache, budget)?;
-            let constructed = problem.classes.iter().try_fold(0_usize, |count, class| {
-                count
-                    .checked_add(class.len())
-                    .ok_or(ResourceError::SizeOverflow)
-            })?;
-            budget.include_constructed(constructed)?;
-            match run_with_budget(&mut problem, budget)? {
-                SearchOutcome::Pass(assignment) => Ok(assignment),
-                SearchOutcome::Exhausted => {
-                    Err(GeometryErrorKind::unrepresentable_output(operation))
-                },
-            }
         })
     }
 

@@ -60,28 +60,6 @@ pub(super) fn touch_endpoint(a: Segment, b: Segment, orientations: PairOrientati
     None
 }
 
-/// The single point shared by a pair of segments that are not collinear:
-/// a touching endpoint bit-exactly, or the nearest-even rounding of a
-/// proper crossing; `None` when they do not meet.
-#[cfg(test)]
-pub(crate) fn segment_cross_point_with_orientations(
-    a: Segment,
-    b: Segment,
-    orientations: PairOrientations,
-) -> Result<Option<XY>> {
-    // Same strict side: no crossing. Both collinear: parallel overlap,
-    // handled by the endpoint-overlap path.
-    if orientations.right_start == orientations.right_end
-        || orientations.left_start == orientations.left_end
-    {
-        return Ok(None);
-    }
-    if let Some(point) = touch_endpoint(a, b, orientations) {
-        return Ok(Some(point));
-    }
-    Ok(Some(crossing_point(a, b)?.point))
-}
-
 pub(crate) fn point_on_segment(
     point: impl Into<XY>,
     start: impl Into<XY>,
