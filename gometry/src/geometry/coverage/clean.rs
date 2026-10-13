@@ -727,4 +727,43 @@ mod tests {
         crate::geometry::coverage_union_topo(&cleaned, &SourceArcContext::cartesian())
             .expect("dissolve accepts the repaired jittered coverage");
     }
+
+    #[test]
+    fn geographic_coverage_union_keeps_ordinates_after_presplit_dissolve() -> Result<()> {
+        let crs = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let first = crate::io::parse_wkt(
+            "POLYGON ZM ((165 -20 1 10, -165 -10 11 110, \
+             -165 30 21 210, 165 -20 1 10))",
+        )?;
+        let second = crate::io::parse_wkt(
+            "POLYGON ZM ((165 -20 1 10, -165 30 21 210, \
+             165 20 31 310, 165 -20 1 10))",
+        )?;
+        let rows = [first, second];
+        let model = crate::crs::metric_model(Some(crs))?;
+        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric_access = || Ok(&metric);
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            Some(&metric_access),
+        );
+
+        let forward = coverage_union_topo(&rows, &context)?;
+        let reverse = coverage_union_topo(&[rows[1].clone(), rows[0].clone()], &context)?;
+
+        for output in [&forward, &reverse] {
+            assert_eq!(output.axes(), CoordinateAxes::XYZM);
+            let mut seam_samples = Vec::new();
+            output.try_for_each_point(|point| {
+                if point.x.abs() == 180.0 && point.y == -15.0 {
+                    seam_samples.push((point.z(), point.m()));
+                }
+                Ok::<_, crate::error::Error>(())
+            })?;
+            assert_eq!(seam_samples.len(), 2);
+            assert!(seam_samples.iter().all(|(z, m)| z.is_some() && m.is_some()));
+            assert_eq!(seam_samples[0], seam_samples[1]);
+        }
+        Ok(())
+    }
 }
