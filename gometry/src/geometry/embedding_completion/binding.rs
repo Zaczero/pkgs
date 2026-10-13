@@ -8,7 +8,8 @@ use super::storage::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geometry::storage::{ArrayRows, LogicalRow, ValidityMask};
-use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Work};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
+use crate::work::Work;
 
 fn validate_group_storage(
     values: &ArrayRows,

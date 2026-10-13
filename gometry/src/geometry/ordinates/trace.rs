@@ -8,7 +8,8 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Work};
+use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point};
+use crate::work::Work;
 
 #[cfg(test)]
 thread_local! {
@@ -162,7 +163,7 @@ impl RootRange {
         producer_start: ExactRational,
         producer_end: ExactRational,
     ) -> Result<Self> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         Self::from_mapped_with_work(
             root,
             source_start,
@@ -227,7 +228,7 @@ impl RootRange {
         source_parameter: ExactRational,
         producer_parameter: ExactRational,
     ) -> Result<Self> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         Self::point_with_work(root, source_parameter, producer_parameter, &mut work)
     }
 
@@ -256,7 +257,7 @@ impl RootRange {
         local_start: &ExactRational,
         local_end: &ExactRational,
     ) -> Result<Option<Self>> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         self.compose_with_work(local_start, local_end, &mut work)
     }
 
@@ -460,7 +461,7 @@ impl RootRange {
         &self,
         producer_parameter: &ExactRational,
     ) -> Result<Option<RootRequest>> {
-        let mut work = crate::geometry::Unmetered;
+        let mut work = crate::work::Unmetered;
         self.request_at_with_work(producer_parameter, &mut work)
     }
 
@@ -1287,8 +1288,8 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::geometry::Unmetered;
     use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
+    use crate::work::Unmetered;
 
     const TRACE_OPERATION: &str = "trace_storage_test";
 
@@ -1450,7 +1451,7 @@ mod tests {
         }
 
         fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

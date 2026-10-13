@@ -9,11 +9,14 @@
 
 use std::cmp::Ordering;
 
+use crate::geographic::retained_exact::sites::{
+    retained_site_longitude, retained_site_orientation,
+};
 use crate::geographic::{
     ChartPointSite, ChartPole, GeographicFrame, GeographicRing, PointSelectionChart,
     RetainedLongitudeSite, RingDomain, RingSummary, SeamIdentity,
 };
-use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };

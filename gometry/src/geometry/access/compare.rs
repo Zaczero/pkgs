@@ -1,4 +1,5 @@
-use crate::geometry::{Bounds, Coordinates, GeometryKind, Ordering, Point, Polygon, Shape, Work};
+use crate::geometry::{Bounds, Coordinates, GeometryKind, Ordering, Point, Polygon, Shape};
+use crate::work::Work;
 pub(crate) fn compare_shapes(left: &Shape, right: &Shape) -> Ordering {
     shape_sort_rank(left)
         .cmp(&shape_sort_rank(right))
@@ -172,7 +173,8 @@ pub(crate) fn bounds_from_iter(bounds: impl IntoIterator<Item = Bounds>) -> Opti
 mod tests {
     use super::*;
     use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
-    use crate::geometry::{CoordinateAxes, GeometryErrorKind, Unmetered};
+    use crate::geometry::{CoordinateAxes, GeometryErrorKind};
+    use crate::work::Unmetered;
 
     struct RecordingBudget {
         budget: EvaluationBudget,
@@ -209,7 +211,7 @@ mod tests {
             count: usize,
             ticks_per_item: usize,
         ) -> crate::error::Result<()> {
-            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

@@ -16,14 +16,15 @@ use crate::geometry::coverage::{
     BorderTieBreak, CoverageOverlapRule, ScaledLengthSum, longest_border_ranked_owner,
     scaled_point_distance,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    BulkRTree, ExactRationalArea, ExpansionBudget, GeometryErrorKind, Loc, Shape, Unmetered, Work,
-    XY, point_distance,
+    BulkRTree, ExactRationalArea, ExpansionBudget, GeometryErrorKind, Loc, Shape, XY,
+    point_distance,
 };
+use crate::work::{Unmetered, Work};
 
 pub(in crate::geometry::topology) mod chains;
 mod invalid_edges;

@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::geometry::distance::exact_segment::{
     ExactCarrier, ExactPoint, UnreducedRatio, point_span_distance_squared,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::overlay::{
     AreaLocationStrategy, ExactMetricSpan, ExactMetricSupport, ExactSourceInventory,
 };

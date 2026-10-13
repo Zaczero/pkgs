@@ -110,7 +110,7 @@ fn q_component_hosts_match_nested_shell_point_location_expectations() -> Result<
         &topology,
         &nearest,
         OverlayOp::Difference.name(),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let exact_chart = subgraph_chart(
@@ -118,7 +118,7 @@ fn q_component_hosts_match_nested_shell_point_location_expectations() -> Result<
         &emission,
         &nearest,
         None,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let exact_faces = QFaceStructure::build(&topology, &emission, exact_chart)?;
 
@@ -182,7 +182,7 @@ fn candidate_subgraph_rebuilds_cut_ports_on_a_full_longitude_band() -> Result<()
         &topology,
         &coordinates,
         OverlayOp::Union.name(),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
     let selected_cut_ports = emission
@@ -208,7 +208,7 @@ fn candidate_subgraph_rebuilds_cut_ports_on_a_full_longitude_band() -> Result<()
         &emission,
         &coordinates,
         None,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let exact_faces = QFaceStructure::build(&topology, &emission, exact_chart)?;
     let candidate_chart = subgraph_chart(
@@ -216,7 +216,7 @@ fn candidate_subgraph_rebuilds_cut_ports_on_a_full_longitude_band() -> Result<()
         &emission,
         &coordinates,
         Some(&coordinates),
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     let candidate_faces = QFaceStructure::build(&topology, &emission, candidate_chart)?;
     assert!(

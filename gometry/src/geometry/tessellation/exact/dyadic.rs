@@ -9,19 +9,20 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
-use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
-use crate::geometry::embedding_search::{Unmetered, Work};
+use super::{ExactPoint, GeometryErrorKind, ResourceError, Result, XY};
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(all(test, debug_assertions))]
 use crate::test_support::exact_operation_counts;
+use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::geometry) struct ExactDyadic {
-    pub(in crate::geometry) negative: bool,
-    pub(in crate::geometry) limbs: CompactLimbs,
+pub(crate) struct ExactDyadic {
+    pub(crate) negative: bool,
+    pub(crate) limbs: CompactLimbs,
     // Retained exponent range and aligned limb spans are separate bounds.
     // Constructors check exponent arithmetic and alignment sizes; comparison
     // uses i128 top-bit positions and virtual words without materializing gaps.
-    pub(in crate::geometry) exponent: i64,
+    pub(crate) exponent: i64,
 }
 
 /// Every observed value used at most one trimmed limb in ordinary Cartesian
@@ -30,7 +31,7 @@ pub(in crate::geometry) struct ExactDyadic {
 /// values spill to a heap vector.
 pub(in crate::geometry) const INLINE_DYADIC_LIMBS: usize = 2;
 
-pub(in crate::geometry) enum CompactLimbs {
+pub(crate) enum CompactLimbs {
     Inline {
         limbs: [u64; INLINE_DYADIC_LIMBS],
         len: u8,
@@ -76,21 +77,21 @@ impl Hash for ExactDyadic {
 }
 
 impl CompactLimbs {
-    pub(in crate::geometry) const fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self::Inline {
             limbs: [0; INLINE_DYADIC_LIMBS],
             len: 0,
         }
     }
 
-    pub(in crate::geometry) const fn single(value: u64) -> Self {
+    pub(crate) const fn single(value: u64) -> Self {
         Self::Inline {
             limbs: [value; INLINE_DYADIC_LIMBS],
             len: 1,
         }
     }
 
-    pub(in crate::geometry) fn with_capacity(required: usize) -> Self {
+    pub(crate) fn with_capacity(required: usize) -> Self {
         if required <= INLINE_DYADIC_LIMBS {
             return Self::Inline {
                 limbs: [0; INLINE_DYADIC_LIMBS],
@@ -117,7 +118,7 @@ impl CompactLimbs {
     }
 
     #[cfg(test)]
-    pub(in crate::geometry) fn from_vec(limbs: Vec<u64>) -> Self {
+    pub(crate) fn from_vec(limbs: Vec<u64>) -> Self {
         if limbs.len() <= INLINE_DYADIC_LIMBS {
             Self::inline_from_slice(&limbs)
         } else {
@@ -169,7 +170,7 @@ impl CompactLimbs {
         clippy::indexing_slicing,
         reason = "private inline lengths are initialized and maintained in 0..=2, matching the fixed limb array capacity"
     )]
-    pub(in crate::geometry) fn as_slice(&self) -> &[u64] {
+    pub(crate) fn as_slice(&self) -> &[u64] {
         match self {
             Self::Inline { limbs, len } => &limbs[..usize::from(*len)],
             Self::Heap(limbs) => limbs,
@@ -180,14 +181,14 @@ impl CompactLimbs {
         clippy::indexing_slicing,
         reason = "private inline lengths are initialized and maintained in 0..=2, matching the fixed limb array capacity"
     )]
-    pub(in crate::geometry) fn as_mut_slice(&mut self) -> &mut [u64] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u64] {
         match self {
             Self::Inline { limbs, len } => &mut limbs[..usize::from(*len)],
             Self::Heap(limbs) => limbs,
         }
     }
 
-    pub(in crate::geometry) const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         match self {
             Self::Inline { len, .. } => *len == 0,
             Self::Heap(limbs) => limbs.is_empty(),
@@ -198,7 +199,7 @@ impl CompactLimbs {
         clippy::indexing_slicing,
         reason = "write_product reserves the operand-length sum after the one-limb case; aligned addition reserves its carry limb, and subtraction reserves the larger length, so every inline writer stays within two limbs"
     )]
-    pub(in crate::geometry) fn push(&mut self, value: u64) {
+    pub(crate) fn push(&mut self, value: u64) {
         match self {
             Self::Inline { limbs, len } => {
                 let index = usize::from(*len);
@@ -213,7 +214,7 @@ impl CompactLimbs {
         clippy::indexing_slicing,
         reason = "checked_sub selects the preceding limb of the private 0..=2 inline length, so the index is within the two-limb array"
     )]
-    pub(in crate::geometry) fn pop(&mut self) -> Option<u64> {
+    pub(crate) fn pop(&mut self) -> Option<u64> {
         match self {
             Self::Inline { limbs, len } => {
                 let index = usize::from(*len).checked_sub(1)?;
@@ -390,7 +391,7 @@ impl<'a> Aligned<'a> {
 }
 
 impl ExactDyadic {
-    pub(in crate::geometry) fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
+    pub(crate) fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
         Ok(Self {
             negative: self.negative,
             limbs: self.limbs.try_clone_with_work(work)?,
@@ -398,7 +399,7 @@ impl ExactDyadic {
         })
     }
 
-    pub(in crate::geometry) fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::zero(),
@@ -406,7 +407,7 @@ impl ExactDyadic {
         }
     }
 
-    pub(in crate::geometry) fn one() -> Self {
+    pub(crate) fn one() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::single(1),
@@ -414,7 +415,7 @@ impl ExactDyadic {
         }
     }
 
-    pub(in crate::geometry) fn from_i64(value: i64) -> Self {
+    pub(crate) fn from_i64(value: i64) -> Self {
         let magnitude = value.unsigned_abs();
         if magnitude == 0 {
             return Self::zero();
@@ -433,7 +434,7 @@ impl ExactDyadic {
     /// cannot be reached from one binary64 input. The storage chooses inline
     /// or heap form without changing the supplied exact value.
     #[cfg(test)]
-    pub(in crate::geometry) fn from_parts(negative: bool, limbs: Vec<u64>, exponent: i64) -> Self {
+    pub(crate) fn from_parts(negative: bool, limbs: Vec<u64>, exponent: i64) -> Self {
         Self {
             negative,
             limbs: CompactLimbs::from_vec(limbs),
@@ -441,7 +442,7 @@ impl ExactDyadic {
         }
     }
 
-    pub(in crate::geometry) fn from_f64(value: f64) -> Self {
+    pub(crate) fn from_f64(value: f64) -> Self {
         #[cfg(all(test, debug_assertions))]
         exact_operation_counts::conversion();
         debug_assert!(value.is_finite());
@@ -468,7 +469,7 @@ impl ExactDyadic {
     }
 
     /// Recover a binary64 only when the scaled dyadic is exactly representable.
-    pub(in crate::geometry) fn to_f64_exact_scaled(&self, scale: i64) -> Option<f64> {
+    pub(crate) fn to_f64_exact_scaled(&self, scale: i64) -> Option<f64> {
         let magnitude = match self.limbs.as_slice() {
             [] => return Some(0.0),
             [magnitude] => *magnitude,
@@ -494,11 +495,11 @@ impl ExactDyadic {
         Some(f64::from_bits(sign | bits))
     }
 
-    pub(in crate::geometry) fn try_trim(&mut self) -> Result<()> {
+    pub(crate) fn try_trim(&mut self) -> Result<()> {
         self.try_trim_with_work(&mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_trim_with_work<W: Work>(&mut self, work: &mut W) -> Result<()> {
+    pub(crate) fn try_trim_with_work<W: Work>(&mut self, work: &mut W) -> Result<()> {
         self.limbs.try_trim_high_with_work(work)?;
         work.charge_into_error(1)?;
         if self.limbs.is_empty() {
@@ -553,19 +554,19 @@ impl ExactDyadic {
         Ok(())
     }
 
-    pub(in crate::geometry) const fn is_zero(&self) -> bool {
+    pub(crate) const fn is_zero(&self) -> bool {
         self.limbs.is_empty()
     }
 
-    pub(in crate::geometry) fn is_one(&self) -> bool {
+    pub(crate) fn is_one(&self) -> bool {
         !self.negative && self.exponent == 0 && self.limbs.as_slice() == [1]
     }
 
-    pub(in crate::geometry) fn is_two(&self) -> bool {
+    pub(crate) fn is_two(&self) -> bool {
         !self.negative && self.exponent == 1 && self.limbs.as_slice() == [1]
     }
 
-    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
+    pub(crate) const fn sign(&self) -> ExactSign {
         if self.is_zero() {
             ExactSign::Zero
         } else if self.negative {
@@ -575,14 +576,14 @@ impl ExactDyadic {
         }
     }
 
-    pub(in crate::geometry) const fn neg(mut self) -> Self {
+    pub(crate) const fn neg(mut self) -> Self {
         if !self.is_zero() {
             self.negative = !self.negative;
         }
         self
     }
 
-    pub(in crate::geometry) const fn abs(mut self) -> Self {
+    pub(crate) const fn abs(mut self) -> Self {
         self.negative = false;
         self
     }
@@ -745,15 +746,11 @@ impl ExactDyadic {
         Ok(Ordering::Equal)
     }
 
-    pub(in crate::geometry) fn try_add(self, other: Self) -> Result<Self> {
+    pub(crate) fn try_add(self, other: Self) -> Result<Self> {
         Self::try_add_with_work(self, other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_add_with_work<W: Work>(
-        self,
-        other: Self,
-        work: &mut W,
-    ) -> Result<Self> {
+    pub(crate) fn try_add_with_work<W: Work>(self, other: Self, work: &mut W) -> Result<Self> {
         if self.is_zero() {
             return Ok(other);
         }
@@ -763,11 +760,11 @@ impl ExactDyadic {
         Self::try_combine_refs_with_work(&self, &other, false, work)
     }
 
-    pub(in crate::geometry) fn try_add_refs(left: &Self, right: &Self) -> Result<Self> {
+    pub(crate) fn try_add_refs(left: &Self, right: &Self) -> Result<Self> {
         Self::try_add_refs_with_work(left, right, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_add_refs_with_work<W: Work>(
+    pub(crate) fn try_add_refs_with_work<W: Work>(
         left: &Self,
         right: &Self,
         work: &mut W,
@@ -782,7 +779,7 @@ impl ExactDyadic {
     }
 
     /// The magnitude when it fits in the two inline limbs.
-    pub(in crate::geometry) fn small_magnitude(&self) -> Option<u128> {
+    pub(crate) fn small_magnitude(&self) -> Option<u128> {
         match *self.limbs.as_slice() {
             [low] => Some(u128::from(low)),
             [low, high] => Some(u128::from(low) | (u128::from(high) << 64)),
@@ -809,11 +806,7 @@ impl ExactDyadic {
 
     /// A normalized value from a `u128` magnitude: trailing zero bits move
     /// into the exponent, leaving the odd lowest limb every value carries.
-    pub(in crate::geometry) fn try_from_u128(
-        negative: bool,
-        magnitude: u128,
-        exponent: i64,
-    ) -> Result<Self> {
+    pub(crate) fn try_from_u128(negative: bool, magnitude: u128, exponent: i64) -> Result<Self> {
         if magnitude == 0 {
             return Ok(Self::zero());
         }
@@ -824,7 +817,7 @@ impl ExactDyadic {
         Ok(Self::from_odd_u128(negative, magnitude >> zeros, exponent))
     }
 
-    pub(in crate::geometry) fn try_combine_refs_with_work<W: Work>(
+    pub(crate) fn try_combine_refs_with_work<W: Work>(
         left: &Self,
         right: &Self,
         negate_right: bool,
@@ -894,11 +887,11 @@ impl ExactDyadic {
         Ok(result)
     }
 
-    pub(in crate::geometry) fn try_subtract_ref(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_subtract_ref(&self, other: &Self) -> Result<Self> {
         self.try_subtract_ref_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_subtract_ref_with_work<W: Work>(
+    pub(crate) fn try_subtract_ref_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -906,11 +899,11 @@ impl ExactDyadic {
         Self::try_subtract_refs_with_work(self, other, work)
     }
 
-    pub(in crate::geometry) fn try_subtract_refs(left: &Self, right: &Self) -> Result<Self> {
+    pub(crate) fn try_subtract_refs(left: &Self, right: &Self) -> Result<Self> {
         Self::try_subtract_refs_with_work(left, right, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_subtract_refs_with_work<W: Work>(
+    pub(crate) fn try_subtract_refs_with_work<W: Work>(
         left: &Self,
         right: &Self,
         work: &mut W,
@@ -928,15 +921,11 @@ impl ExactDyadic {
         Self::try_combine_refs_with_work(left, right, true, work)
     }
 
-    pub(in crate::geometry) fn try_subtract(self, other: Self) -> Result<Self> {
+    pub(crate) fn try_subtract(self, other: Self) -> Result<Self> {
         Self::try_subtract_with_work(self, other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_subtract_with_work<W: Work>(
-        self,
-        other: Self,
-        work: &mut W,
-    ) -> Result<Self> {
+    pub(crate) fn try_subtract_with_work<W: Work>(self, other: Self, work: &mut W) -> Result<Self> {
         if self.is_zero() {
             return Ok(other.neg());
         }
@@ -950,12 +939,12 @@ impl ExactDyadic {
     /// the scalar product. The ratio-rounding residual uses this for the exact
     /// power-of-two gap between adjacent binary64 values.
     #[cfg(test)]
-    pub(in crate::geometry) fn cmp_magnitude_scaled(&self, other: &Self, shift: i64) -> Ordering {
+    pub(crate) fn cmp_magnitude_scaled(&self, other: &Self, shift: i64) -> Ordering {
         self.cmp_magnitude_scaled_with_work(other, shift, &mut Unmetered)
             .expect("unmetered dyadic comparison cannot fail")
     }
 
-    pub(in crate::geometry) fn cmp_magnitude_scaled_with_work<W: Work>(
+    pub(crate) fn cmp_magnitude_scaled_with_work<W: Work>(
         &self,
         other: &Self,
         shift: i64,
@@ -1051,11 +1040,11 @@ impl ExactDyadic {
         Ok(())
     }
 
-    pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn try_product(&self, other: &Self) -> Result<Self> {
         self.try_product_with_work(other, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn try_product_with_work<W: Work>(
+    pub(crate) fn try_product_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,
@@ -1096,12 +1085,12 @@ impl ExactDyadic {
     }
 
     #[cfg(test)]
-    pub(in crate::geometry) fn compare_unsigned(left: &[u64], right: &[u64]) -> Ordering {
+    pub(crate) fn compare_unsigned(left: &[u64], right: &[u64]) -> Ordering {
         Self::compare_unsigned_with_work(left, right, &mut Unmetered)
             .expect("unmetered unsigned comparison cannot fail")
     }
 
-    pub(in crate::geometry) fn compare_unsigned_with_work<W: Work>(
+    pub(crate) fn compare_unsigned_with_work<W: Work>(
         left: &[u64],
         right: &[u64],
         work: &mut W,
@@ -1147,10 +1136,7 @@ impl ExactDyadic {
     /// Callers pass a nonzero trimmed divisor; the one-limb case and normalized
     /// high word therefore both divide by nonzero values.
     #[cfg(test)]
-    pub(in crate::geometry) fn div_rem_unsigned(
-        dividend: &[u64],
-        divisor: &[u64],
-    ) -> (Vec<u64>, Vec<u64>) {
+    pub(crate) fn div_rem_unsigned(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
         Self::div_rem_unsigned_with_work(dividend, divisor, &mut Unmetered)
             .expect("unmetered unsigned division cannot fail")
     }
@@ -1163,7 +1149,7 @@ impl ExactDyadic {
         clippy::arithmetic_side_effects,
         reason = "the one-limb divisor is nonzero after the top-limb invariant, and Algorithm D's normalized divisor top is nonzero"
     )]
-    pub(in crate::geometry) fn div_rem_unsigned_with_work<W: Work>(
+    pub(crate) fn div_rem_unsigned_with_work<W: Work>(
         dividend: &[u64],
         divisor: &[u64],
         work: &mut W,
@@ -1307,14 +1293,11 @@ impl ExactDyadic {
     }
 
     /// Nearest integer quotient of two exact dyadics, with halfway cases toward zero.
-    pub(in crate::geometry) fn nearest_integer_quotient_ties_to_zero(
-        &self,
-        divisor: &Self,
-    ) -> Result<Self> {
+    pub(crate) fn nearest_integer_quotient_ties_to_zero(&self, divisor: &Self) -> Result<Self> {
         self.nearest_integer_quotient_ties_to_zero_with_work(divisor, &mut Unmetered)
     }
 
-    pub(in crate::geometry) fn nearest_integer_quotient_ties_to_zero_with_work<W: Work>(
+    pub(crate) fn nearest_integer_quotient_ties_to_zero_with_work<W: Work>(
         &self,
         divisor: &Self,
         work: &mut W,
@@ -1376,16 +1359,12 @@ impl ExactDyadic {
     /// `trim` keeps each nonzero limb bank odd, so the common power-of-two
     /// factor is the smaller exponent and the odd banks can use ordinary
     /// integer Euclid. The result is positive and exact.
-    pub(in crate::geometry) fn gcd(&self, other: &Self) -> Self {
+    pub(crate) fn gcd(&self, other: &Self) -> Self {
         self.gcd_with_work(other, &mut Unmetered)
             .expect("unmetered dyadic GCD cannot fail")
     }
 
-    pub(in crate::geometry) fn gcd_with_work<W: Work>(
-        &self,
-        other: &Self,
-        work: &mut W,
-    ) -> Result<Self> {
+    pub(crate) fn gcd_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<Self> {
         if self.is_zero() {
             return Ok(other.try_clone_with_work(work)?.abs());
         }
@@ -1435,7 +1414,7 @@ impl ExactDyadic {
     /// Rational-area reduction only calls this with a common divisor, so a
     /// nonzero remainder is an internal exactness failure rather than a
     /// rounded result.
-    pub(in crate::geometry) fn try_exact_quotient(&self, divisor: &Self) -> Result<Self> {
+    pub(crate) fn try_exact_quotient(&self, divisor: &Self) -> Result<Self> {
         self.try_exact_quotient_with_work(divisor, &mut Unmetered)
     }
 
@@ -1443,7 +1422,7 @@ impl ExactDyadic {
         clippy::arithmetic_side_effects,
         reason = "the divisor is rejected as zero first, and a canonical nonzero dyadic has a positive small magnitude"
     )]
-    pub(in crate::geometry) fn try_exact_quotient_with_work<W: Work>(
+    pub(crate) fn try_exact_quotient_with_work<W: Work>(
         &self,
         divisor: &Self,
         work: &mut W,
@@ -1499,16 +1478,12 @@ impl ExactDyadic {
         Ok(value)
     }
 
-    pub(in crate::geometry) fn cmp(&self, other: &Self) -> Ordering {
+    pub(crate) fn cmp(&self, other: &Self) -> Ordering {
         self.cmp_with_work(other, &mut Unmetered)
             .expect("unmetered dyadic comparison cannot fail")
     }
 
-    pub(in crate::geometry) fn cmp_with_work<W: Work>(
-        &self,
-        other: &Self,
-        work: &mut W,
-    ) -> Result<Ordering> {
+    pub(crate) fn cmp_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<Ordering> {
         work.charge_into_error(1)?;
         if self.negative != other.negative {
             return Ok(if self.negative {
@@ -1526,12 +1501,12 @@ impl ExactDyadic {
     }
 
     #[cfg(test)]
-    pub(in crate::geometry) fn cmp_magnitude(&self, other: &Self) -> Ordering {
+    pub(crate) fn cmp_magnitude(&self, other: &Self) -> Ordering {
         self.cmp_magnitude_with_work(other, &mut Unmetered)
             .expect("unmetered dyadic comparison cannot fail")
     }
 
-    pub(in crate::geometry) fn cmp_magnitude_with_work<W: Work>(
+    pub(crate) fn cmp_magnitude_with_work<W: Work>(
         &self,
         other: &Self,
         work: &mut W,

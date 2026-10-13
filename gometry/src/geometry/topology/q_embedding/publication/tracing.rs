@@ -1,9 +1,10 @@
 use super::super::{
     BTreeSet, ExactGeographicTopology, ExactRational, ExactSourceRange, FragmentRecipe,
     FragmentRecipeId, GeometryErrorKind, PublicationInventory, QProducerSourceRange,
-    QProducerTrace, QSourceSpanRange, RecipeWalk, ResourceError, Result, RootRange, Work,
+    QProducerTrace, QSourceSpanRange, RecipeWalk, ResourceError, Result, RootRange,
     try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn add_source_reused_recipe_walk(
     walk: &RecipeWalk,

@@ -1,6 +1,7 @@
 use super::{
-    BoundaryCycle, FaceUnion, GeometryErrorKind, NonZeroUsize, QDartId, ResourceError, Result, Work,
+    BoundaryCycle, FaceUnion, GeometryErrorKind, NonZeroUsize, QDartId, ResourceError, Result,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology) fn selected_area_boundaries(
     q: &super::super::q::ExactGeographicQ,

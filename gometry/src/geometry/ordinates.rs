@@ -6,8 +6,8 @@ use std::cell::Cell;
 
 use crate::collections::HashMap;
 use crate::error::Result;
+use crate::geographic::retained_exact::edges::retained_edge_from_lifted_binary64_pair;
 use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
-use crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair;
 use crate::geometry::segments::projection::{
     point_segment_distance_and_projection, segment_projection,
 };
@@ -15,10 +15,11 @@ use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
     OverlayOp, Point, PointKey, RunIdentity, Segment, SegmentProjection, Shape, TopologyDomain,
-    Unmetered, VertexKey, Work, XY, ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate,
+    VertexKey, XY, ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate, overlay, point_distance, point_on_segment, same_point,
     scaled_residual,
 };
+use crate::work::{Unmetered, Work};
 
 mod trace;
 pub(crate) use trace::{
@@ -1153,7 +1154,7 @@ mod tests {
         ticks: u64,
     }
 
-    impl crate::geometry::Work for CountingWork {
+    impl crate::work::Work for CountingWork {
         type Error = crate::error::Error;
 
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
@@ -1169,7 +1170,7 @@ mod tests {
             count: usize,
             ticks_per_item: usize,
         ) -> crate::error::Result<()> {
-            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

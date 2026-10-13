@@ -5,9 +5,10 @@ use super::plan::{
 };
 use super::source_reuse::source_edge_at;
 use super::{
-    ExactGeographicTopology, GeometryErrorKind, RecipeWalkOwner, ResourceError, Result, Work,
+    ExactGeographicTopology, GeometryErrorKind, RecipeWalkOwner, ResourceError, Result,
     try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology) fn boundary_cycle_line_paths(
     topology: &ExactGeographicTopology,

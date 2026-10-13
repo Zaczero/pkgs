@@ -50,21 +50,14 @@ use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount
 use crate::geometry::embedding_search::proximity::{proximity_limit, swept_bounds};
 use crate::geometry::embedding_search::search::run_with_budget;
 use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem, SearchOutcome};
-use crate::geometry::exact_arith::{
-    ExactSign, RoundedNativeSite, retained_exact_native_site_with_work,
-    round_native_longitude_with_work, rounded_native_neighbors_with_work,
-    split_rational_native_site_with_work,
-};
-use crate::geometry::exact_point::exact_chord_fraction;
+use crate::geometry::numerics::product::ExactSign;
 #[cfg(test)]
 use crate::geometry::ordinates::RequestRowId;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootId, RootRange, RootRequest, SourceArcMetricAccess,
 };
 use crate::geometry::overlay::{
-    EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
-    compare_departures_with_work, graph_global_faces_with_work, segments_within_chebyshev,
-    shoot_left_with_work, walk_is_shell_with_work,
+    EmbeddingDomain, segments_within_chebyshev, walk_is_shell_with_work,
 };
 use crate::geometry::publication::{
     ChartRestriction, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
@@ -73,9 +66,12 @@ use crate::geometry::publication::{
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Bounds, ChartMetric, CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Segment, Unmetered,
-    Work, XY, for_each_overlapping_bounds_cross_pair_with_work, ring_winding,
+    Bounds, ChartMetric, CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Segment, XY,
+    for_each_overlapping_bounds_cross_pair_with_work, ring_winding,
 };
+#[cfg(test)]
+use crate::work::Unmetered;
+use crate::work::Work;
 
 mod endpoint_point_cache;
 use self::endpoint_point_cache::{NativeEndpointPointCache, NativeEndpointPointKey};

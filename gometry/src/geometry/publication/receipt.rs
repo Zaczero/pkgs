@@ -3,7 +3,6 @@ use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{LiteralAddress, LiteralRowLayout};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::embedding_search::Work;
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::RootRange;
 use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask};
@@ -13,6 +12,7 @@ use crate::geometry::topology::q_embedding::publication::{
 };
 use crate::geometry::topology::{EmissionPortId, ExactChartPoint, QSourceImage};
 use crate::geometry::{GeometryErrorKind, Shape};
+use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry) enum PublicationImage {

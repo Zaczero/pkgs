@@ -8,7 +8,8 @@
 use std::cmp::Ordering;
 
 use super::FULL_TURN_DEGREES;
-use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim, two_product};
+use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim};
+use crate::geometry::numerics::product::two_product_exact as two_product;
 use crate::grid::spherical_arc::Bound;
 
 /// Limb ceiling for one expansion.

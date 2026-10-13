@@ -10,9 +10,10 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
     IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
 };
-use crate::geometry::overlay::{GlobalFaces, compare_departures_with_work};
+use crate::geometry::graph::{GlobalFaces, compare_departures_with_work};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{GeometryErrorKind, Work, XY};
+use crate::geometry::{GeometryErrorKind, XY};
+use crate::work::Work;
 
 pub(in crate::geometry) struct AdmittedLayout {
     layout: LogicalLayout,

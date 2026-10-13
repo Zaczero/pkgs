@@ -4,10 +4,11 @@ use super::admission::{AdmittedGraph, indexed_topology};
 use super::layout::LogicalLayout;
 use super::points::ExactPoints;
 use crate::error::{ResourceError, Result};
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::arrangement::IndexedTopology;
-use crate::geometry::overlay::{GlobalFaces, graph_global_faces_with_work};
+use crate::geometry::graph::{GlobalFaces, graph_global_faces_with_work};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::{GeometryErrorKind, Work};
+use crate::work::Work;
 
 /// Stable identities needed by a candidate proof survive the wall view. Its
 /// indexed CSR and `GlobalFaces` are temporary admission/candidate data.

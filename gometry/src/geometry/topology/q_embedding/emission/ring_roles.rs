@@ -1,9 +1,10 @@
 use super::super::{
     CoordSeq, DrawnAreaOrigin, DrawnPolygons, EmittedVertex, ExactGeographicTopology,
     GeometryErrorKind, PlannedAreaRing, PolygonPlan, QEmissionDrawing, QEmissionPlan, QNodeId,
-    QuotientRingRoleStatus, ResourceError, Result, Ring, Work, canonicalize_ring_vertices,
+    QuotientRingRoleStatus, ResourceError, Result, Ring, canonicalize_ring_vertices,
     compare_q_ring_role_with_work, quotient_ring_role_status,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn assigned_emitted_ring(
     topology: &ExactGeographicTopology,

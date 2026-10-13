@@ -5,7 +5,7 @@ use super::{
     canonical_incircle, compare_f64, compare_xy, exact_delaunay, next_halfedge, site_xy,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::test_support::points;
 use crate::geometry::{Point, XY};

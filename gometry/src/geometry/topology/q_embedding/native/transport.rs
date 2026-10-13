@@ -3,9 +3,10 @@ use super::super::{
     ExactSourceRange, GeographicFrame, GeometryErrorKind, NativeAreaEdgeKind,
     NativeChartSpellingKey, NativeLiteralChordAuthority, NativeProducerAtomUse,
     NativeProducerUseKey, NativeReference, NativeReferencePoints, NodeOrdinates, Point,
-    ResourceError, Result, RootRange, ShapeLiteralLayout, Work, exact_chord_fraction,
-    native_producer_atom_uses,
+    ResourceError, Result, RootRange, ShapeLiteralLayout, native_producer_atom_uses,
 };
+use crate::geometry::exact_point::exact_chord_fraction;
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn native_chart_spelling_longitude(
     spelling: NativeChartSpellingKey,

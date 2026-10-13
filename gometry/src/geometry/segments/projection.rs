@@ -16,7 +16,7 @@ use super::{
     certified_projection,
 };
 use crate::error::{ErrorKind, Result};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::{
     ExactDyadic, ExactRational, compare_ratios, round_ratio, round_sqrt_ratio,
 };

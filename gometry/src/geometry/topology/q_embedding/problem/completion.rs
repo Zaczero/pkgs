@@ -5,7 +5,7 @@ use super::super::{
     NativeReference, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     QCandidate, QCoordinates, QEmbeddingOutput, QEmbeddingProblem, QEmissionDrawing,
     QFaceStructure, QRingRoleCheck, QSourceImage, QVariableNode, ResourceError, Result,
-    SealedSourceDrawing, SearchAccount, SourceOnlyPublication, StorageTarget, Work,
+    SealedSourceDrawing, SearchAccount, SourceOnlyPublication, StorageTarget,
     assigned_emission_site, check_q_ring_roles, compare_quotient_keys_with_work,
     face_structure_mismatch_nodes, finish_geographic, publication_sample_index,
     quotient_key_for_chart_position_with_work, require_q_source_image_port, rounded_chart_point,
@@ -13,6 +13,7 @@ use super::super::{
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::work::Work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
     pub(super) fn complete_native_drawing(

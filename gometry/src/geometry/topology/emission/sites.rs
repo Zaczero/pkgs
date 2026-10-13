@@ -5,13 +5,14 @@ use super::super::q::QPort;
 use super::{
     CoordinateAxes, ExactGeographicTopology, ExactQuotientKey, ExactRational, GeographicFrame,
     GeometryErrorKind, Latitude, MOrdinate, NodeOrdinates, Point, QDartId, QNodeId, QPortId,
-    QSourceImage, ResourceError, Result, Work, ZOrdinate, try_sort_by_with_work,
+    QSourceImage, ResourceError, Result, ZOrdinate, try_sort_by_with_work,
 };
 use crate::geographic::SeamIdentity;
-#[cfg(test)]
-use crate::geometry::Unmetered;
+use crate::geographic::retained_exact::sites::rounded_native_neighbors_with_work;
 use crate::geometry::XY;
-use crate::geometry::exact_arith::rounded_native_neighbors_with_work;
+#[cfg(test)]
+use crate::work::Unmetered;
+use crate::work::Work;
 
 #[derive(Clone, Debug)]
 pub(in crate::geometry::topology) struct QCoordinates {

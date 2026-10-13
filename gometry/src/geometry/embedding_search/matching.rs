@@ -1,9 +1,9 @@
 use std::hash::Hash;
 
-use super::Work;
 use super::preparation::PreparedOptions;
 use crate::collections::{try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::error::{ResourceError, Result};
+use crate::work::Work;
 
 pub(super) fn has_perfect_matching<N, C, K, W: Work>(
     class: &PreparedOptions<N, C, K>,

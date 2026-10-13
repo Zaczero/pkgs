@@ -1,16 +1,20 @@
 use super::super::{
     AdmittedGraph, ChartSpanId, Deref, EmissionPort, ExactChartPoint, ExactDyadic, ExactRational,
-    ExactSign, ExactSourceRange, ExpandedEmissionPlan, FallibleAvl, GeographicFrame,
-    GeometryErrorKind, GlobalFaces, LogicalArealWalk, NativeAreaEdge, NativeAreaEdgeKind,
-    NativeChartAtom, NativeChartAtomIndex, NativeChartContributor, NativeChartSpellingKey,
-    NativeChartVertexIndex, NativeChartVertexKey, NativeGraphCycle, NativeGraphEdgeOwner,
-    NativeGraphFaceSourceTable, NativeGraphPart, NativeGraphSewing, NativePortData,
-    NativeProducerEdgeRow, NativeProducerUseKey, NativeProducerUseTable, NativeReferencePoints,
-    NativeWrittenChartEdge, Ordering, PortPosition, PortSpelling, QPortId, RayAxis, RayPoints,
-    RayPointsWithWork, ResourceError, Result, Unmetered, Work, XY, admit_known_graph,
-    build_native_producer_use_table, graph_global_faces_with_work, native_graph_sewing,
-    vector_cross_with_work, vector_difference_with_work,
+    ExactSourceRange, ExpandedEmissionPlan, FallibleAvl, GeographicFrame, GeometryErrorKind,
+    LogicalArealWalk, NativeAreaEdge, NativeAreaEdgeKind, NativeChartAtom, NativeChartAtomIndex,
+    NativeChartContributor, NativeChartSpellingKey, NativeChartVertexIndex, NativeChartVertexKey,
+    NativeGraphCycle, NativeGraphEdgeOwner, NativeGraphFaceSourceTable, NativeGraphPart,
+    NativeGraphSewing, NativePortData, NativeProducerEdgeRow, NativeProducerUseKey,
+    NativeProducerUseTable, NativeReferencePoints, NativeWrittenChartEdge, Ordering, PortPosition,
+    PortSpelling, QPortId, ResourceError, Result, XY, admit_known_graph,
+    build_native_producer_use_table, native_graph_sewing, vector_cross_with_work,
+    vector_difference_with_work,
 };
+use crate::geometry::graph::{
+    GlobalFaces, RayAxis, RayPoints, RayPointsWithWork, graph_global_faces_with_work,
+};
+use crate::geometry::numerics::product::ExactSign;
+use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology::q_embedding) enum NativeRayTransform {

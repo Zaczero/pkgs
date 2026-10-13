@@ -8,7 +8,6 @@ use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::embedding_search::Work;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry,
@@ -21,7 +20,8 @@ use crate::geometry::tessellation::{
     VoronoiChartCutSide, VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin,
     VoronoiPolygonOutputs, VoronoiRingEdgeRole, VoronoiVertexOrigin, VoronoiVertexReceipt,
 };
-use crate::geometry::{ExpansionBudget, Polygon, Ring, Shape, Unmetered};
+use crate::geometry::{ExpansionBudget, Polygon, Ring, Shape};
+use crate::work::{Unmetered, Work};
 
 pub(crate) struct VoronoiDrawingWriter {
     target: StorageTarget,

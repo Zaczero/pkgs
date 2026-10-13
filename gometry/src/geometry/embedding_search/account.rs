@@ -1,8 +1,8 @@
 use std::convert::Infallible;
 
-use super::Work;
 use crate::error::{ResourceError, Result};
 use crate::geometry::GeometryErrorKind;
+use crate::work::Work;
 
 pub(super) const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 

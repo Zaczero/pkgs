@@ -16,11 +16,11 @@ use crate::geometry::embedding_completion::literals::LiteralRowLayout;
 use crate::geometry::embedding_completion::storage::{
     FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding,
 };
-use crate::geometry::embedding_search::{Unmetered, Work};
 use crate::geometry::publication::{ProducerImageId, finish_geographic};
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::{GeometryErrorKind, ShapeCountQuery};
 use crate::py::vectors::Groups;
+use crate::work::{Unmetered, Work};
 
 pub(crate) struct PublicationRows {
     writer: StreamingShapes,

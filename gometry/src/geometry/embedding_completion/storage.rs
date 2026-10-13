@@ -5,7 +5,8 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::topology::ExactChartPoint;
-use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape, Work};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape};
+use crate::work::Work;
 
 #[derive(Clone)]
 pub(in crate::geometry) struct CheckedLiteralRecord<I> {

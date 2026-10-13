@@ -3,7 +3,7 @@ use std::ops::Range;
 #[cfg(test)]
 use std::{cell::Cell, thread_local};
 
-use crate::geometry::{Unmetered, Work, WorkResult};
+use crate::work::{Unmetered, Work, WorkResult};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -738,7 +738,7 @@ mod tests {
     use super::{OrderTree, UpdateProgress, reset_update_progress, update_progress};
     use crate::error::{ErrorKind, Result};
     use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
-    use crate::geometry::{Unmetered, Work};
+    use crate::work::{Unmetered, Work};
 
     #[derive(Clone, Copy)]
     struct TreeChargeEvent {

@@ -21,8 +21,8 @@ use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
-    Unmetered,
 };
+use crate::work::Unmetered;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PointRecordKey {

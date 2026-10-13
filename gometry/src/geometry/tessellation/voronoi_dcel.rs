@@ -29,13 +29,14 @@ use crate::geometry::embedding_search::proximity::{
     proximity_limit,
 };
 use crate::geometry::embedding_search::search::Search;
-use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem, Work};
-use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+use crate::geometry::embedding_search::{ClassAssignment, GlobalCheck, Problem};
+use crate::geometry::graph::{RayAxis, RayPoints, visit_component_faces};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::overlay::{
-    NodeId, OverlayNodeReceipt, OverlaySourceEdgeUse, RayAxis, RayPoints,
+    NodeId, OverlayNodeReceipt, OverlaySourceEdgeUse,
     binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, emitted_pair_preserves_incidence,
-    segments_within_chebyshev, visit_component_faces,
+    segments_within_chebyshev,
 };
 use crate::geometry::segment_index::YStabbingIndex;
 use crate::geometry::segments::ordering::{try_dedup_by, try_sort_by};

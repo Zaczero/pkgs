@@ -3,12 +3,13 @@ use std::cmp::Ordering;
 #[cfg(test)]
 use crate::error::ResourceError;
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::overlay::{RayAxis, RayPoints, RayPointsWithWork};
+use crate::geometry::graph::{RayAxis, RayPoints, RayPointsWithWork};
+use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::topology::{
     ExactChartPoint, vector_cross_with_work, vector_difference_with_work,
 };
-use crate::geometry::{GeometryErrorKind, Unmetered, Work, XY};
+use crate::geometry::{GeometryErrorKind, XY};
+use crate::work::{Unmetered, Work};
 
 /// Exact points are chart images already admitted by their producer receipt.
 /// An adapter must form a lifted longitude as exact native X plus the original

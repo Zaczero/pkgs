@@ -5,12 +5,13 @@ use super::account::{EvaluationBudget, EvaluationOnly, SearchAccount};
 use super::preparation::{PreparedClass, prepare_classes};
 use super::{
     ClassAssignment, ClassSolution, GlobalCheck, Problem, SearchAssignment, SearchOutcome,
-    SearchResult, Work,
+    SearchResult,
 };
 use crate::collections::{HashSet, try_hash_set_with_capacity};
 use crate::error::{ResourceError, Result};
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::work::Work;
 
 pub(super) struct ClassSearchState<C, K> {
     pub(super) next_candidate: Vec<usize>,

@@ -1,13 +1,14 @@
 use super::{
     CheckedImages, EmittedVertex, ExactChartPoint, ExactGeographicTopology, ExactQuotientKey,
     ExactRational, ExactSourceEdge, GeometryErrorKind, Latitude, LiteralChart, NodeOrdinates,
-    Ordering, Point, PublicationInventory, QPortId, QSourceImage, Result, SourceEdgeId, Work, XY,
+    Ordering, Point, PublicationInventory, QPortId, QSourceImage, Result, SourceEdgeId, XY,
     exact_coordinate_matches_with_work, quotient_key_for_chart_position_with_work,
     rounded_chart_point_with_work,
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 #[cfg(test)]
 use crate::geometry::topology::q_embedding::{LiteralCheck, SourceFrozenDrawing, bind_literals};
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn q_source_edge(
     topology: &ExactGeographicTopology,

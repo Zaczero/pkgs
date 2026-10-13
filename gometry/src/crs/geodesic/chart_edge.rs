@@ -24,9 +24,9 @@ use crate::geographic::{
     RetainedChartDisplacement,
 };
 use crate::geometry::{
-    ChartBox, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, Unmetered, Work,
-    ZOrdinate,
+    ChartBox, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, ZOrdinate,
 };
+use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdge {

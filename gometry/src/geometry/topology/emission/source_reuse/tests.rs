@@ -178,7 +178,7 @@ fn k0_source_point_y_bits_are_rechecked_in_the_final_shape() -> Result<()> {
             &topology,
             &drawing,
             &source_points,
-            &mut crate::geometry::Unmetered,
+            &mut crate::work::Unmetered,
         )?,
         "unchanged explicit source points take the proven K0 writer path"
     );
@@ -253,7 +253,7 @@ fn source_pole_point_keeps_its_raw_longitude_record() -> Result<()> {
         &topology,
         &drawing,
         &source_points,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?);
 
     let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
@@ -318,13 +318,13 @@ fn k0_source_ring_y_bits_are_rechecked_in_the_final_shape() -> Result<()> {
         &topology,
         &nearest,
         &source_points,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?;
     assert!(plan.source_reuse_is_proven(
         &topology,
         &drawing,
         &source_points,
-        &mut crate::geometry::Unmetered,
+        &mut crate::work::Unmetered,
     )?);
     let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
         &topology,

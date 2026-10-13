@@ -3,9 +3,10 @@ use super::super::{
     GeometryErrorKind, NativeChordCutRanges, NativeCutFamilyDomains, NativeEndpointPointCache,
     NativeEndpointPointKey, NativePoleClosure, NativeRecipeCutRanges, PublishedEndpoint,
     QCandidate, QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError, Result,
-    SearchAccount, Work, assigned_port_point, candidate_chart_point_with_work,
-    collection_hash_state, retained_exact_native_site_with_work,
+    SearchAccount, assigned_port_point, candidate_chart_point_with_work, collection_hash_state,
 };
+use crate::geographic::retained_exact::sites::retained_exact_native_site_with_work;
+use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
     pub(super) fn register_native_pole_families(

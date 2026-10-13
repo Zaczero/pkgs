@@ -621,7 +621,7 @@ fn analyze_geographic_invalid_edges<S: std::borrow::Borrow<Shape>>(
     frame: crate::geographic::GeographicFrame,
     gap_width: f64,
     operation: &'static str,
-    work: &mut impl crate::geometry::Work,
+    work: &mut impl crate::work::Work,
 ) -> Result<crate::geometry::GeographicCoverageAnalysis> {
     validate_gap_width(gap_width)?;
     validate_polygonal_rows(rows)?;

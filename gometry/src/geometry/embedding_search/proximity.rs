@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
 
-use super::{Unmetered, Work};
 use crate::collections::{HashMap, UnionFind, try_hash_map_with_capacity};
 use crate::error::{ResourceError, Result};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{Bounds, Segment, XY, for_each_overlapping_bounds_cross_pair_with_work};
+use crate::work::{Unmetered, Work};
 
 const PROXIMITY_RELATIVE_SLACK: f64 = 9.094_947_017_729_282e-13;
 

@@ -20,7 +20,8 @@ use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::ArrayRows;
 use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::topology::q_embedding::publication as q_publication;
-use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape, ShapeCountQuery, Work};
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape, ShapeCountQuery};
+use crate::work::{Unmetered, Work};
 
 struct ProducerImageReceiver {
     snapshot: super::binding::CheckedLiteralSnapshot,
@@ -684,8 +685,6 @@ pub(in crate::geometry) fn finish_producer_drawing(
     frame: Frame,
     target: StorageTarget,
 ) -> Result<FinishedGeometry> {
-    use crate::geometry::Unmetered;
-
     let mut work = Unmetered;
     match finish_geographic(
         PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),

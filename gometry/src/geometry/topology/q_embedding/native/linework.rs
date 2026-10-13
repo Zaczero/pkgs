@@ -4,8 +4,9 @@ use super::super::{
     NativeLineChordSource, NativeLineRun, NativeLiteralChordAuthority, NativeLiteralChordUse,
     NativePoleClosure, NativePortData, NativeSeamEvent, NativeSeamVertices,
     NativeSelectedPoleSector, NativeSelectedPoleSectors, QEmissionDrawing, RecipeWalkOwner,
-    ResourceError, Result, Work, merge_native_port_data, try_sort_by_with_work,
+    ResourceError, Result, merge_native_port_data, try_sort_by_with_work,
 };
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) struct NativeSeamEventData {
     pub(in crate::geometry::topology::q_embedding) event: NativeSeamEvent,

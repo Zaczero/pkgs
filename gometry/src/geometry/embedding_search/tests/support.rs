@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::convert::Infallible;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
@@ -14,7 +15,7 @@ use super::proximity::{
 use super::search::{ClassSearchState, Search, replace_class_solution, run_with_budget};
 use super::*;
 use crate::collections::try_hash_set_with_capacity;
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, ResourceError};
 use crate::geometry::segment_index::sweep::{
     for_each_candidate_pair_with_work as sweep_for_each_candidate_pair_with_work,
     for_each_overlapping_bounds_cross_pair_with_work as sweep_for_each_overlapping_bounds_cross_pair_with_work,
@@ -23,6 +24,7 @@ use crate::geometry::segment_index::sweep::{
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, round_ratio_with_work};
 use crate::geometry::{Bounds, GeometryErrorKind, Segment, XY};
+use crate::work::{Unmetered, Work};
 
 type Assignment = Vec<(usize, u8)>;
 type AssignmentBlame = Vec<(Assignment, Vec<usize>)>;

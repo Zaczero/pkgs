@@ -2,7 +2,7 @@ use super::*;
 #[cfg(test)]
 use crate::geometry::XY;
 #[cfg(test)]
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::numerics::product::ExactSign;
 
 /// Supporting half-planes bound every contained disk. The cyclic normal
 /// cross-products cancel its center; a three-plane solve only nominates a

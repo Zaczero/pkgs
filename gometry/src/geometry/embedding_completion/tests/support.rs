@@ -24,8 +24,9 @@ use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, LineSeq, MOrdinate, Point, Polygon, Ring, Shape,
-    Unmetered, Work, XY, ZOrdinate,
+    XY, ZOrdinate,
 };
+use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Copy)]
 struct SweepCharge {
@@ -181,7 +182,7 @@ impl CheckedImages<u32> for ImageRows {
 struct IdentityLiteralChart;
 
 impl LiteralChart<u32> for IdentityLiteralChart {
-    fn read_point<W: crate::geometry::Work>(
+    fn read_point<W: crate::work::Work>(
         &mut self,
         _address: super::literals::LiteralAddress,
         _image: u32,
@@ -269,7 +270,7 @@ impl Work for EvaluationRecorder {
 }
 
 impl LiteralChart<u32> for TestLiteralReceiver {
-    fn read_point<W: crate::geometry::Work>(
+    fn read_point<W: crate::work::Work>(
         &mut self,
         address: super::literals::LiteralAddress,
         image: u32,
@@ -299,7 +300,7 @@ impl CheckedImages<u32> for FullRecordReceiver {
 }
 
 impl LiteralChart<u32> for FullRecordReceiver {
-    fn read_point<W: crate::geometry::Work>(
+    fn read_point<W: crate::work::Work>(
         &mut self,
         address: LiteralAddress,
         image: u32,

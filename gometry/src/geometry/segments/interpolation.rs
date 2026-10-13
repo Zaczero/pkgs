@@ -2,9 +2,10 @@
 
 use super::{ExactDyadic, dd_interpolate};
 use crate::error::Result;
-use crate::geometry::exact_arith::two_sum;
-use crate::geometry::tessellation::exact::round_ratio;
-use crate::geometry::{MOrdinate, Point, XY, ZOrdinate, axis_pow2_scale, scaled_residual};
+use crate::geometry::numerics::product::two_sum;
+use crate::geometry::{
+    MOrdinate, Point, XY, ZOrdinate, axis_pow2_scale, round_ratio, scaled_residual,
+};
 
 /// Affinely interpolate between two finite points. A convex `fraction` in
 /// `[0, 1]` always yields a finite point; far extrapolation (e.g. a

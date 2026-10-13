@@ -2,12 +2,14 @@ use super::super::{
     AssignedSite, ChartPole, EmbeddingDomain, EmissionNodeId, ExactChartPoint, ExactDyadic,
     ExactGeographicQ, ExactGeographicTopology, ExactNodePosition, ExactQuotientKey, ExactRational,
     GeographicFrame, GeometryErrorKind, Latitude, NativePortData, OccurrenceSource, Ordering,
-    Point, QCandidate, QCoordinates, QPortId, ResourceError, Result, RootRequest, SeamIdentity,
-    Work, XY, candidate_from_emission_site, exact_abs_upper_with_work,
-    native_source_sample_occurrences, nearest_exact_longitude_alias_with_work,
-    quotient_key_for_chart_position_with_work, round_native_longitude_with_work,
-    split_rational_native_site_with_work,
+    Point, QCandidate, QCoordinates, QPortId, ResourceError, Result, RootRequest, SeamIdentity, XY,
+    candidate_from_emission_site, exact_abs_upper_with_work, native_source_sample_occurrences,
+    nearest_exact_longitude_alias_with_work, quotient_key_for_chart_position_with_work,
 };
+use crate::geographic::retained_exact::sites::{
+    round_native_longitude_with_work, split_rational_native_site_with_work,
+};
+use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn assigned_port_point(
     frame: GeographicFrame,

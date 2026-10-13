@@ -11,7 +11,6 @@ use crate::geometry::embedding_completion::literals::{
     ShapeLiteralLayout, visit_shape_literals,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::embedding_search::Work;
 use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::ordinates::{RootId, RootRange, SourceArcContext};
 use crate::geometry::publication::{
@@ -20,6 +19,7 @@ use crate::geometry::publication::{
 };
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Shape, TopologyDomain};
+use crate::work::Work;
 
 pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
     M: crate::geometry::ChartMetric,

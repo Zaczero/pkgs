@@ -7,11 +7,13 @@ use super::{
     NodeOrdinates, PendingSourceRange, Point, PublicationInventory, PublishedFragment,
     PublishedSample, QPortId, RecipeWalk, RecipeWalkOwner, RequestRowId, ResourceError, Result,
     RootId, RootRange, SampleProducerKind, SelectedUse, SourceEdgeId, SourceTrace,
-    SourceTraceSample, TraceRequestLocation, TraceRowsBuilder, Work, ZOrdinate,
+    SourceTraceSample, TraceRequestLocation, TraceRowsBuilder, ZOrdinate,
     interpolate_exact_reference_coordinate, interpolate_exact_reference_point,
     pending_source_ranges, producer_ranges, producer_step_extends_run,
-    publish_computed_chain_with_vertex_intents_and_samples, retained_exact_native_site_with_work,
+    publish_computed_chain_with_vertex_intents_and_samples,
 };
+use crate::geographic::retained_exact::sites::retained_exact_native_site_with_work;
+use crate::work::Work;
 
 #[derive(Default)]
 pub(in crate::geometry::topology) struct FragmentRecipes {
