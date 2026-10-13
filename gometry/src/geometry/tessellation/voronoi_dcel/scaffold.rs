@@ -404,6 +404,18 @@ pub(super) fn node_scaffold_and_separators(
     clip: &NormalizedClip<'_>,
     rect: &[exact::ExactPoint; 4],
 ) -> Result<NodedAtoms> {
+    #[derive(Clone)]
+    struct MappedSeed {
+        endpoints: [VertexId; 2],
+        reversed: bool,
+        frame_delta: i8,
+        clip_delta: i32,
+        owner: PrimitiveOwner,
+        separator: Option<[SiteId; 2]>,
+        clip_source: Option<ClipSegmentId>,
+        frame_side: Option<FrameSide>,
+    }
+
     for separator in &mut separators {
         for primitive in &mut scaffold {
             match exact::incidence::segment_intersection(
@@ -469,17 +481,6 @@ pub(super) fn node_scaffold_and_separators(
             .ok_or_else(|| voronoi_error("exact event was not globally interned"))?;
         Ok(VertexId(index as u32))
     };
-    #[derive(Clone)]
-    struct MappedSeed {
-        endpoints: [VertexId; 2],
-        reversed: bool,
-        frame_delta: i8,
-        clip_delta: i32,
-        owner: PrimitiveOwner,
-        separator: Option<[SiteId; 2]>,
-        clip_source: Option<ClipSegmentId>,
-        frame_side: Option<FrameSide>,
-    }
     let mut mapped = Vec::with_capacity(seeds.len());
     for seed in seeds {
         let mut endpoints = [vertex_id(&seed.start)?, vertex_id(&seed.end)?];

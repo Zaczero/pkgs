@@ -255,15 +255,16 @@ fn clip_to_half_plane_with_origins(
     keep: ExactSign,
     cut_origin: VoronoiEdgeOrigin,
 ) -> Result<(Vec<exact::ExactPoint>, Vec<Vec<VoronoiEdgeOrigin>>)> {
-    if ring.len() != edge_origins.len() {
-        return Err(voronoi_error(
-            "collinear strip edge origins do not match the exact ring",
-        ));
-    }
     struct Piece {
         start: exact::ExactPoint,
         end: exact::ExactPoint,
         origins: Vec<VoronoiEdgeOrigin>,
+    }
+
+    if ring.len() != edge_origins.len() {
+        return Err(voronoi_error(
+            "collinear strip edge origins do not match the exact ring",
+        ));
     }
     let mut pieces = Vec::new();
     for (index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
