@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{AuthalicSeries, GeodesicMetric};

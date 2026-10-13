@@ -55,7 +55,7 @@ mod coordinates;
 mod order;
 mod shape;
 
-pub(super) use affine::affine_ordinate_simd;
+use affine::affine_ordinate_simd;
 pub(crate) use affine::{
     AffineLinear, OriginAffine, affine_x_row_identity, affine_y_row_identity, stable_affine_xy,
 };
