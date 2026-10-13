@@ -6,6 +6,7 @@ use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt as _;
 
+pub(crate) use crate::geometry::RecordingWork;
 use crate::geometry::storage::ValidityMask;
 
 pub(crate) fn nullable_polygon_typed_empty_fixture() -> crate::array::PyGeometryArray {

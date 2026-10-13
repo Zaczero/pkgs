@@ -14,9 +14,8 @@ mod packed;
 mod unary;
 
 pub(crate) use binary::{
-    admit_binary, admit_binary_inputs, dispatch_binary, dispatch_binary_array_left,
-    dispatch_binary_geometry, dispatch_binary_geometry_admitted_with_resolver,
-    dispatch_typed_metric_binary, geometry_kernel_over_array,
+    admit_binary, admit_binary_inputs, dispatch_binary_array_left, dispatch_binary_geometry,
+    dispatch_binary_geometry_admitted_with_resolver, dispatch_typed_metric_binary,
 };
 pub(crate) use binary_fast::{
     dispatch_broadcast2, dispatch_distance, dispatch_distance_3d, dispatch_dwithin_admitted,

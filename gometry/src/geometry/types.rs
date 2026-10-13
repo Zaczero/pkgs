@@ -9,9 +9,12 @@ mod coordseq;
 mod csr;
 mod error;
 mod point;
+pub(in crate::geometry) mod point_key;
 mod primitives;
+pub(in crate::geometry) mod results;
 mod ring;
 mod shape;
+pub(in crate::geometry) mod shape_data;
 mod shared_slice;
 
 pub(crate) use coordseq::{

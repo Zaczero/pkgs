@@ -14,7 +14,7 @@ use crate::array::{
     owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
     row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
-use crate::geometry::publication::{GeometryOutput, PublicationRows};
+use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_groups};
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
@@ -54,6 +54,46 @@ fn split_paired_rows(
         builder.push_row(values).map_err(|error| (row, error))?;
     }
     Ok(builder)
+}
+
+fn publish_split_group_builder(
+    builder: crate::CsrBuilder<Shape>,
+    frame: Frame,
+    missing: Option<ValidityMask>,
+) -> PyResult<Groups> {
+    let (shapes, offsets) = builder.finish();
+    publish_split_groups(shapes, offsets, frame, missing).map_err(PyErr::from)
+}
+
+fn split_array_groups(
+    py: Python<'_>,
+    lines: &PyGeometryArray,
+    frame: Frame,
+    missing: Option<ValidityMask>,
+    mut split: impl FnMut(&Shape) -> Result<Vec<Shape>> + Send,
+) -> PyResult<Groups> {
+    let array = lines.clone();
+    let builder = py
+        .detach(move || {
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
+            for row in array.row_operation().rows_with_missing(Vec::new) {
+                let (logical, shapes) = match row {
+                    ArrayRow::Missing { logical, value } => (logical, value),
+                    ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let shapes = row
+                            .row()
+                            .try_with_shape(|shape| split(shape))
+                            .map_err(|error| (logical, error))?;
+                        (logical, shapes)
+                    },
+                };
+                builder.push_row(shapes).map_err(|error| (logical, error))?;
+            }
+            Ok::<_, (usize, Error)>(builder)
+        })
+        .map_err(rows_err)?;
+    publish_split_group_builder(builder, frame, missing)
 }
 
 fn publish_triangle_shapes_for_domain(
@@ -1199,26 +1239,37 @@ impl PyGeometryArray {
                 let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
                     .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
                 if domain.is_geographic() {
-                    return self.flat_map_shapes_groups(py, move |line| {
-                        let metric_access = || {
-                            metric.geographic_chart_metric()?.ok_or_else(|| {
+                    return split_array_groups(
+                        py,
+                        self,
+                        self.frame.clone(),
+                        self.missing().cloned(),
+                        move |line| {
+                            let metric_access = || {
+                                metric.geographic_chart_metric()?.ok_or_else(|| {
                                 crate::crs::CrsError::invalid(
                                     "geographic split source ordinates require the operation's CRS metric",
                                 )
                             })
-                        };
-                        let context =
-                            geometry::SourceArcContext::new(domain, Some(&metric_access));
-                        if geometry::source_arc_ordinates_eligible(line.axes(), domain) {
-                            line.split_with_source_arcs(&splitter_shape, tolerance, &context)
-                        } else {
-                            line.split(&splitter_shape, tolerance)
-                        }
-                    });
+                            };
+                            let context =
+                                geometry::SourceArcContext::new(domain, Some(&metric_access));
+                            if geometry::source_arc_ordinates_eligible(line.axes(), domain) {
+                                line.split_with_source_arcs(&splitter_shape, tolerance, &context)
+                            } else {
+                                line.split(&splitter_shape, tolerance)
+                            }
+                        },
+                    );
                 }
             }
-            return self
-                .flat_map_shapes_groups(py, move |line| line.split(&splitter_shape, tolerance));
+            return split_array_groups(
+                py,
+                self,
+                self.frame.clone(),
+                self.missing().cloned(),
+                move |line| line.split(&splitter_shape, tolerance),
+            );
         }
         if let Some(splitters) = exact_geometry_array(splitter) {
             crate::broadcast::validate_paired_arrays(self, splitters, "split")?;
@@ -1269,7 +1320,7 @@ impl PyGeometryArray {
                 })
                 .map_err(rows_err)?
             };
-            return Groups::from_geometry_builder(self.frame.clone(), builder, missing);
+            return publish_split_group_builder(builder, self.frame.clone(), missing);
         }
         Err(expected_geometry_or_array())
     }

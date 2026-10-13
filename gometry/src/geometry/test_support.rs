@@ -1,6 +1,9 @@
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
 
+mod recording_work;
+pub(crate) use recording_work::RecordingWork;
+
 pub(in crate::geometry) fn frame() -> GeographicFrame {
     let degrees = AngularFactor::try_new("test degrees", std::f64::consts::PI / 180.0).unwrap();
     GeographicFrame::try_new(degrees, degrees, 0.0).unwrap()

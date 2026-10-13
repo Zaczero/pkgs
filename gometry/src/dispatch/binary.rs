@@ -1176,7 +1176,8 @@ where
     }
 }
 
-pub(crate) fn geometry_kernel_over_array<K>(
+#[cfg(test)]
+fn geometry_kernel_over_array<K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: GeometryInput<'_>,

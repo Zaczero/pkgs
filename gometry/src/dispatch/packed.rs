@@ -297,6 +297,16 @@ pub(crate) fn try_unary_packed_array(
     {
         return None;
     }
+    if matches!(
+        op,
+        Operation::ConvexHull | Operation::MinimumRotatedRectangle
+    ) {
+        match crate::geometry::topology_domain(&array.frame) {
+            Ok(domain) if domain.is_geographic() => return None,
+            Ok(_) => {},
+            Err(error) => return Some(Err(PyErr::from(error))),
+        }
+    }
     if op == Operation::MinimumRotatedRectangle
         && let Some(identity) = array.packed_points_identity()
     {
