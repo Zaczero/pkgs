@@ -4,6 +4,9 @@
 //! owns the shared proof that a finite coordinate assignment preserves the
 //! admitted graph, its embedding, and the identities of distinct vertices.
 
+use crate::error::{ResourceError, Result};
+use crate::work::Work;
+
 pub(in crate::geometry) mod admission;
 pub(in crate::geometry) mod areal;
 pub(in crate::geometry) mod binding;

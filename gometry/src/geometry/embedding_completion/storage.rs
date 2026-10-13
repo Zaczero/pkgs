@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use super::literals::{LiteralAddress, LiteralRowLayout, ShapeLiteralLayout};
-use crate::error::{ResourceError, Result};
+use super::{ResourceError, Result, Work};
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape};
-use crate::work::Work;
 
 #[derive(Clone)]
 pub(in crate::geometry) struct CheckedLiteralRecord<I> {

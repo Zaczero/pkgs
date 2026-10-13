@@ -1,9 +1,8 @@
-use crate::error::{ResourceError, Result};
+use super::{ResourceError, Result, Work};
 use crate::geometry::output::CertifiedShapeOrder;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::{CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape};
-use crate::work::Work;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct LiteralPoint<I> {

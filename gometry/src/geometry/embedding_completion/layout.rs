@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::error::{ResourceError, Result};
+use super::{ResourceError, Result, Work};
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::work::Work;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry) struct LogicalArealWalk {

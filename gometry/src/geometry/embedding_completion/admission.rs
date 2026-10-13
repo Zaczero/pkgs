@@ -6,14 +6,13 @@ use super::areal::{
 use super::contacts::{edges_have_only_vertex_contacts, point_edge_contacts_preserved};
 use super::layout::{LogicalArealWalk, LogicalLayout};
 use super::points::ExactPoints;
-use crate::error::{ResourceError, Result};
+use super::{ResourceError, Result, Work};
 use crate::geometry::arrangement::{
     IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
 };
 use crate::geometry::graph::{GlobalFaces, compare_departures_with_work};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::{GeometryErrorKind, XY};
-use crate::work::Work;
 
 pub(in crate::geometry) struct AdmittedLayout {
     layout: LogicalLayout,

@@ -4,14 +4,13 @@ use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
 use super::points::ExactPoints;
-use crate::error::{ResourceError, Result};
+use super::{ResourceError, Result, Work};
 use crate::geometry::topology::{
     ExactChartPoint, exact_segments_intersect_with_work, point_on_exact_segment_with_work,
 };
 use crate::geometry::{
     Bounds, GeometryErrorKind, for_each_overlapping_bounds_cross_pair_with_work,
 };
-use crate::work::Work;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
