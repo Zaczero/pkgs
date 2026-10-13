@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    GeometryErrorKind, Polygon, Result, Shape, SimplifyMethod, SourceArcContext, TopologyDomain,
+    line_segments, same_point, undirected_segment_edge_key,
+};
 
 pub(super) fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
     rows: &[S],

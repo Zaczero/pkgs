@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AABB, BulkRTree, ChordIndex, Orientation, Segment, XY, orientation, same_point,
+    segment_contact_exact, undirected_segment_edge_key,
+};
 
 /// The topology guard behind chain simplification: indexes every original
 /// segment and vertex once; a removal is safe when the shortcut crosses no
@@ -38,7 +41,7 @@ impl<'a> TopologyGuard<'a> {
             .get_or_init(|| ChordIndex::build(self.segments))
     }
 
-    fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
+    pub(super) fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
         self.vertex_tree
             .get_or_init(|| BulkRTree::bulk_load_with_params(self.vertex_cloud.take()))
     }

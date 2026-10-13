@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BinaryHeap, ExactChainView, ExactPartition, NodeId, Result, Reverse, Segment, SimplifyMethod,
+    TopologyGuard, XY, point_segment_distance, same_point, undirected_segment_edge_key,
+};
 
 /// Exact chain coordinates plus the shared/exterior ownership class.
 pub(super) struct Chain {
