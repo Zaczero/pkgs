@@ -295,8 +295,9 @@ mod affine_rounding_tests {
     use super::exact_affine_origin_ordinate;
     use super::row::{
         AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineLinear,
-        AffineOriginRow, AffineRowExtents, DekkerParts,
+        AffineOriginRow, AffineRowExtents,
     };
+    use crate::geometry::numerics::product::DekkerParts;
     use crate::geometry::numerics::product_sum::ExactSum;
 
     #[test]
