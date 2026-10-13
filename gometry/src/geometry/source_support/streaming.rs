@@ -59,10 +59,6 @@ impl PolygonSummary {
         }
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact source-coordinate equality distinguishes contact from an open ray crossing"
-    )]
     fn add_ring(&mut self, shell: bool, scan: RingScan) {
         if shell {
             self.shell = Some(PolygonShell {
