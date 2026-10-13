@@ -1178,7 +1178,6 @@ fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() 
             groups
                 .get_item(PyInt::new(py, 3))
                 .unwrap()
-                .bind(py)
                 .call_method0("__len__")
                 .unwrap()
                 .extract::<usize>()
@@ -1187,12 +1186,11 @@ fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() 
             "present empty rows remain distinct from missing groups"
         );
         assert!(
-            groups.get_item(PyInt::new(py, 4)).unwrap().is_none(py),
+            groups.get_item(PyInt::new(py, 4)).unwrap().is_none(),
             "missing source rows remain null"
         );
 
         let gathered = groups.get_item(PySlice::new(py, 0, 6, 2)).unwrap();
-        let gathered = gathered.bind(py);
         assert_eq!(
             gathered
                 .getattr("offsets")
@@ -1210,7 +1208,7 @@ fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() 
             [false, false, true]
         );
         assert!(
-            gathered.get_item(PyInt::new(py, 2)).unwrap().is_none(py),
+            gathered.get_item(PyInt::new(py, 2)).unwrap().is_none(),
             "gathered missing groups retain their row identity"
         );
         let gathered_values = gathered.getattr("values").unwrap();
