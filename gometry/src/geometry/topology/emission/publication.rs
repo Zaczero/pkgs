@@ -1,4 +1,17 @@
-use super::*;
+use super::sites::QCoordinates;
+use super::{
+    ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, CoordSeq,
+    DirectedSourceRange, DirectedSpan, EndpointSide, ExactChartPoint, ExactDyadic,
+    ExactGeographicTopology, ExactRational, ExactSourceRange, ExpansionBudget, FeatureFamily,
+    FeatureFamilyParent, FragmentRecipe, FragmentRecipeId, GeometryErrorKind, MOrdinate,
+    NodeOrdinates, PendingSourceRange, Point, PublicationInventory, PublishedFragment,
+    PublishedSample, QPortId, RecipeWalk, RecipeWalkOwner, RequestRowId, ResourceError, Result,
+    RootId, RootRange, SampleProducerKind, SelectedUse, SourceEdgeId, SourceTrace,
+    SourceTraceSample, TraceRequestLocation, TraceRowsBuilder, Work, ZOrdinate,
+    interpolate_exact_reference_coordinate, interpolate_exact_reference_point,
+    pending_source_ranges, producer_ranges, producer_step_extends_run,
+    publish_computed_chain_with_vertex_intents_and_samples, retained_exact_native_site_with_work,
+};
 
 #[derive(Default)]
 pub(in crate::geometry::topology) struct FragmentRecipes {
@@ -107,7 +120,7 @@ impl FragmentRecipes {
     pub(in crate::geometry::topology) fn publish(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &super::super::q_embedding::QCoordinates,
+        coordinates: &QCoordinates,
         operation: &'static str,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {
@@ -118,7 +131,7 @@ impl FragmentRecipes {
     pub(in crate::geometry::topology) fn publish_with_expansion_budget(
         &self,
         topology: &ExactGeographicTopology,
-        coordinates: &super::super::q_embedding::QCoordinates,
+        coordinates: &QCoordinates,
         budget: &mut ExpansionBudget,
         work: &mut impl Work,
     ) -> Result<PublicationInventory> {

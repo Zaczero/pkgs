@@ -1,10 +1,13 @@
-use super::super::*;
+use super::super::{
+    ChartMetric, EmittedNodeKey, GeometryErrorKind, GlobalCheck, NearestQCertificate,
+    NodeAuthority, PlannedAreaRing, Problem, QCandidate, QEmbeddingPass, QEmbeddingProblem,
+    QEmissionDrawing, QNodeId, QVariableNode, ResourceError, Result, SearchAccount, SearchOutcome,
+    planned_area_rings, try_sort_by_with_work,
+};
 use super::search::search_q_embedding;
 
-impl<'topology, M: ChartMetric>
-    QEmbeddingProblem<'topology, '_, '_, '_, M>
-{
-    fn certify_nearest(
+impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
+    pub(super) fn certify_nearest(
         &mut self,
         live_keys: &[(EmittedNodeKey, QNodeId)],
         drawing: QEmissionDrawing<'topology>,
@@ -245,7 +248,7 @@ impl<'topology, M: ChartMetric>
             },
         }
     }
-    fn certify_and_search<A: SearchAccount>(
+    pub(super) fn certify_and_search<A: SearchAccount>(
         mut self,
         live_keys: &[(EmittedNodeKey, QNodeId)],
         drawing: QEmissionDrawing<'topology>,
@@ -287,7 +290,7 @@ impl<'topology, M: ChartMetric>
                 }),
         }
     }
-    fn charge_global_work(&self, budget: &mut impl SearchAccount) -> Result<()> {
+    pub(super) fn charge_global_work(&self, budget: &mut impl SearchAccount) -> Result<()> {
         if self.exact_faces.is_some() {
             let item_count = self
                 .emission

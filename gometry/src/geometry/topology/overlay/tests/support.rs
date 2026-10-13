@@ -1,8 +1,3 @@
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "Result-returning tests use assertions for behavior and ? for fallible setup"
-)]
-
 use super::*;
 use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
 use crate::geometry::Coordinates as _;

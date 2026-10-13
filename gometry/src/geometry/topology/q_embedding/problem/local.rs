@@ -1,8 +1,12 @@
-use super::super::*;
+use super::super::{
+    BTreeMap, ChartMetric, ExactChartPoint, ExactRational, GeometryErrorKind,
+    LocalPublicationChord, PublishedEndpoint, QCandidate, QEmbeddingProblem, QGraphNode, QNodeId,
+    QPortId, QPublicationChordId, QPublicationPair, Result, Work, assigned_port_point,
+    candidate_chart_point_with_work, cut_intersection_y, pair_preserves_incidence_with_work,
+    translated_exact_point_with_work,
+};
 
-impl<M: ChartMetric>
-    QEmbeddingProblem<'_, '_, '_, '_, M>
-{
+impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
     fn local_candidate(
         &self,
         node: QNodeId,
@@ -29,7 +33,7 @@ impl<M: ChartMetric>
             },
         }
     }
-    fn candidate_cut_latitude(
+    pub(super) fn candidate_cut_latitude(
         &self,
         cut_index: usize,
         class: usize,
@@ -150,7 +154,7 @@ impl<M: ChartMetric>
         }
         Ok(Some(latitude))
     }
-    fn candidate_port_point(
+    pub(super) fn candidate_port_point(
         &self,
         port_id: QPortId,
         class: usize,
@@ -344,7 +348,7 @@ impl<M: ChartMetric>
             },
         }
     }
-    fn publication_pair_matches_local(
+    pub(super) fn publication_pair_matches_local(
         &self,
         pair: QPublicationPair,
         class: usize,
@@ -388,7 +392,7 @@ impl<M: ChartMetric>
             budget,
         )
     }
-    fn exact_port_point(&self, port_id: QPortId) -> Result<&ExactChartPoint> {
+    pub(super) fn exact_port_point(&self, port_id: QPortId) -> Result<&ExactChartPoint> {
         self.topology
             .q
             .ports

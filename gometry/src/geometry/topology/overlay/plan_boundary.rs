@@ -1,12 +1,10 @@
-use super::*;
+use super::{
+    BoundarySupport, ExactGeographicTopology, GeometryErrorKind, Loc, OverlayOp, PolygonPlan,
+    QEmissionPlan, QProducer, ResourceError, Result, SourceRowId, Work, boundary_cycle_line_paths,
+    build_fragment_recipes, face_regions, row_locations, select_faces, selected_area_boundaries,
+    selected_face_roots, selected_region_facts,
+};
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer builders are exercised before F4 and routed after its receiver lands"
-    )
-)]
 impl QEmissionPlan {
     pub(in crate::geometry::topology) fn build_boundary(
         topology: &ExactGeographicTopology,

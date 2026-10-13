@@ -2,7 +2,11 @@ use std::cmp::Ordering;
 
 use super::super::exact::ExactSourceRing;
 use super::super::q::QPort;
-use super::*;
+use super::{
+    CoordinateAxes, ExactGeographicTopology, ExactQuotientKey, ExactRational, GeographicFrame,
+    GeometryErrorKind, Latitude, MOrdinate, NodeOrdinates, Point, QDartId, QNodeId, QPortId,
+    QSourceImage, ResourceError, Result, Work, ZOrdinate, try_sort_by_with_work,
+};
 use crate::geographic::SeamIdentity;
 #[cfg(test)]
 use crate::geometry::Unmetered;

@@ -1,9 +1,19 @@
-use super::super::*;
+use super::super::{
+    AssignedProducerFanRayBuilder, AssignedProducerLeaf, AssignedProducerProjection, BTreeMap,
+    BTreeSet, ChartMetric, EmittedNodeKey, ExactChartPoint, ExactRational, GeometryErrorKind,
+    NativeReferencePoints, NodeAuthority, PublishedEndpoint, QCandidate, QChord, QCoordinates,
+    QDartId, QEmbeddingProblem, QFaceStructure, QGraphNode, QNodeId, QPortId, QPublicationChordId,
+    QPublishedChord, QVariableNode, ResourceError, Result, SelectedUse, Work, XY,
+    align_native_chart_lift, align_producer_fan_target, assigned_producer_fan_order_matches,
+    candidate_chart_point_with_work, compare_quotient_keys_with_work, emitted_node_key,
+    exact_departures_share_forward_ray, lift_assigned_publication_point,
+    pair_preserves_incidence_with_work, producer_range_fan_dart, producer_range_touches_node,
+    q_port_assigned_point, quotient_key_for_chart_position_with_work, reconstruct_cut_ports,
+    split_rational_native_site_with_work, translated_exact_point_with_work, try_sort_by_with_work,
+};
 
-impl<M: ChartMetric>
-    QEmbeddingProblem<'_, '_, '_, '_, M>
-{
-    fn publication_identity_conflicts(
+impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
+    pub(super) fn publication_identity_conflicts(
         &self,
         coordinates: &QCoordinates,
         live_keys: &[(EmittedNodeKey, QNodeId)],
@@ -188,7 +198,7 @@ impl<M: ChartMetric>
         conflicting_nodes.dedup();
         Ok((conflicting_nodes, unrepresentable))
     }
-    fn global_q_port_points(
+    pub(super) fn global_q_port_points(
         &self,
         coordinates: &QCoordinates,
         budget: &mut impl Work,
@@ -298,7 +308,7 @@ impl<M: ChartMetric>
             budget,
         )
     }
-    fn assigned_publication_endpoint_point(
+    pub(super) fn assigned_publication_endpoint_point(
         &self,
         endpoint: &PublishedEndpoint,
         reference: &ExactChartPoint,
@@ -330,7 +340,7 @@ impl<M: ChartMetric>
         }
         lift_assigned_publication_point(assigned, reference_offset, budget)
     }
-    fn publication_graph_rejections(
+    pub(in crate::geometry::topology::q_embedding) fn publication_graph_rejections(
         &self,
         producer: &AssignedProducerProjection,
         budget: &mut impl Work,
@@ -573,7 +583,7 @@ impl<M: ChartMetric>
         rejected.dedup();
         Ok(rejected)
     }
-    fn certify_assigned_producer(
+    pub(in crate::geometry::topology::q_embedding) fn certify_assigned_producer(
         &self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],

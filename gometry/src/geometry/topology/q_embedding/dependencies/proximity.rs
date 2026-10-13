@@ -1,4 +1,12 @@
-use super::super::*;
+use super::super::{
+    Bounds, ControlFlow, ExactChartPoint, ExactGeographicQ, ExactGeographicTopology, ExactRational,
+    GeographicFrame, GeometryErrorKind, Ordering, QCandidate, QChord, QClosure, QCoordinates,
+    QCutRow, QDependencyIndex, QEmbeddingEmission, QFanRow, QNodeId, QPortId, ResourceError,
+    Result, SearchAccount, Segment, UnionFind, Unmetered, Work, XY, assigned_port_point,
+    build_q_classes, emitted_node_key, for_each_overlapping_bounds_cross_pair_with_work,
+    include_closure_variables, node_is_movable, proximity_limit, segments_within_chebyshev,
+    swept_bounds, try_sort_by_with_work,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology::q_embedding) struct QProximityPair {

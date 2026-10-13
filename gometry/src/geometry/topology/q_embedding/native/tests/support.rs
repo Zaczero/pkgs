@@ -1,8 +1,3 @@
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "exact coordinate controls use assertions for independently computed bit expectations"
-    )]
-
     use super::*;
     use crate::Frame;
     use crate::geometry::embedding_completion::{LiteralPoint, LiteralRowLayout};

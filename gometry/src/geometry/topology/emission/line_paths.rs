@@ -1,8 +1,13 @@
 use super::super::exact::SourceEdgeKind;
-use super::plan::*;
-use super::sites::*;
+use super::plan::{
+    BoundaryCycle, LineStep, PlannedQLine, QLineOrigin, QLinePrimitive, SelectedLineSpan,
+    SpanEndpoint,
+};
 use super::source_reuse::source_edge_at;
-use super::*;
+use super::{
+    ExactGeographicTopology, GeometryErrorKind, RecipeWalkOwner, ResourceError, Result, Work,
+    try_sort_by_with_work,
+};
 
 pub(in crate::geometry::topology) fn boundary_cycle_line_paths(
     topology: &ExactGeographicTopology,

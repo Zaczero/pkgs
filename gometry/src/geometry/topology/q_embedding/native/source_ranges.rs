@@ -1,4 +1,11 @@
-use super::super::*;
+use super::super::{
+    AssignedSite, ChartSpanId, ExactChartPoint, ExactGeographicTopology, ExactRational,
+    ExactSourceRange, FragmentRecipeId, GeographicFrame, GeometryErrorKind, NativeAreaEdge,
+    NativeAreaEdgeKind, NativeGraphEdgeOwner, NativeKnownSpanBoundary, NativeSourceFaceGerm,
+    NativeSourceSpanUse, QDartId, QPublishedChord, QSourceSpanRange, ResourceError, Result, RootId,
+    RootRange, RootRequest, SourceTrace, Work, merge_native_port_data, native_chart_vertex_key,
+    native_q_port_data, span_parameter_at_source, try_sort_by_with_work,
+};
 
 pub(in crate::geometry::topology::q_embedding) fn trace_ranges_for_slice(
     trace: &SourceTrace,

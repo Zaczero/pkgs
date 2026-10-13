@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    AssignedSite, CertifiedOverlayOrder, CoordSeq, CoordinateAxes, EmissionPortId,
+    ExpandedEmissionPlan, FinishedGeometry, FrozenLiteralBuffers, GeometryErrorKind, LiteralPoint,
+    LiteralPolygon, LiteralSequence, NodeOrdinates, Point, Polygon, QPortId, ResourceError, Result,
+    Ring, Shape, ShapeLiteralLayout, SourceEdgeId, TracedLine, Work, native_chord_points,
+    native_port_point, reorder_rows,
+};
 
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,

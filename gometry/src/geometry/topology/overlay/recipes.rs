@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    BoundaryCycle, DiagnosticKind, DiagnosticSpan, DirectedSpan, ExactDyadic,
+    ExactGeographicTopology, ExactRational, ExactSourceRange, ExactSourceRing, FragmentRecipes,
+    GeometryErrorKind, LineStep, PlannedAreaRing, PlannedQLine, PolygonPlan, QLineOrigin,
+    QLinePrimitive, RecipeWalkOwner, ResourceError, Result, SelectedUse, SpanEndpoint, Work,
+    boundary_owner_index,
+};
 
 pub(in crate::geometry::topology) fn build_fragment_recipes(
     topology: &ExactGeographicTopology,

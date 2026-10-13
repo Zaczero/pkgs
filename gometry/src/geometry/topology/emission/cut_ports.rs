@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 
-use super::*;
+use super::{
+    ExactGeographicTopology, ExactRational, GeometryErrorKind, QNodeId, QPortId, ResourceError,
+    Result, SourceEdgeId, Work, try_sort_by_with_work,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::geometry::topology) struct CutChordPair {

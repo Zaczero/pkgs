@@ -1,4 +1,10 @@
-use super::super::*;
+use super::super::{
+    ChartPole, ExactChartPoint, ExactRational, FeatureFamilyRegistry, GeographicFrame,
+    GeometryErrorKind, NativeAreaEdge, NativeAreaEdgeKind, NativeChartSpellingKey,
+    NativeGraphEdgeOwner, NativeGraphSewingKind, NativePortData, NativeReference, OccurrenceSource,
+    QCandidate, ResourceError, Result, SearchAccount, UnionFind, Work, XY, native_chart_vertex_key,
+    native_graph_cycle_vertex,
+};
 
 pub(in crate::geometry::topology::q_embedding) fn native_whole_sphere_cell_points(
     frame: GeographicFrame,

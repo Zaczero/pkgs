@@ -1,5 +1,12 @@
 use super::sites::{EmittedVertex, with_vertex_axes};
-use super::*;
+use super::{
+    AssignedSite, ChartMetric, ChartSide, CoordinateAxes, EmissionChordId, EmissionPortId,
+    ExactChartPoint, ExactGeographicTopology, ExpandedEmissionPlan, FragmentRecipeId,
+    GeometryErrorKind, MOrdinate, NativeChordPoints, NodeOrdinates, Point, PortPosition,
+    PortSpelling, PublicationInventory, PublishedFragment, QSourceImage, RequestRowInput,
+    ResourceError, Result, RootCatalog, RootId, RootRequest, SourceArcMetricAccess,
+    TraceRequestLocation, VertexOrigin, Work, ZOrdinate, resolve_request_rows,
+};
 use crate::geometry::XY;
 
 pub(in crate::geometry::topology) fn with_publication_axes(

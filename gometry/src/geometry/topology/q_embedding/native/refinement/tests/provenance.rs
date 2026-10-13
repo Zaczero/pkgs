@@ -1,8 +1,3 @@
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions are exact request-row and refinement provenance checks"
-    )]
-
     use super::*;
 
     #[test]

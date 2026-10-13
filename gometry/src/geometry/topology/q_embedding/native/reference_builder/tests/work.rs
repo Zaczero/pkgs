@@ -1,8 +1,3 @@
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "ray Work controls assert observed refusal and exact predicate results"
-    )]
-
     use std::cmp::Ordering;
 
     use super::{NativeRayTransform, NativeReferencePoints, NativeReferenceRayPoints, RayAxis};

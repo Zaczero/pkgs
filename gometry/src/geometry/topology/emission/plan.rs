@@ -1,7 +1,11 @@
 use super::super::exact::SourceRowId;
 use super::cut_ports::CutNodePorts;
 use super::sites::{EmittedNodeKey, EmittedVertex, record_emitted_node};
-use super::*;
+use super::{
+    ChartPole, CoordinateAxes, EmissionNodeRegistry, ExactRational, FragmentRecipe,
+    FragmentRecipes, GeometryErrorKind, NodeOrdinates, PublicationInventory, QDartId, QNodeId,
+    QPortId, RecipeWalk, RecipeWalkOwner, Result, Work,
+};
 use crate::geometry::{HasM, HasZ};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

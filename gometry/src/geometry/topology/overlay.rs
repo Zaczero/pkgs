@@ -1,94 +1,72 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
-use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use self::plan_boundary::*;
-use self::plan_linework::*;
-use self::plan_overlay::*;
-use self::recipes::*;
-use self::select_boundaries::*;
-use self::select_faces::*;
-use self::select_lines::*;
-use super::emission::draw::*;
-use super::emission::line_paths::*;
-use super::emission::ordinates::{
-    node_ordinates, source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
+use self::recipes::{build_fragment_recipes, diagnostic_line_paths};
+use self::select_boundaries::selected_area_boundaries;
+use self::select_faces::{AreaSupport, FaceUnion, append_unique_rows, face_regions, select_faces};
+use self::select_lines::{select_line_spans, select_points};
+use super::emission::draw::{boundary_source_points_with_work, source_point_coordinates_with_work};
+use super::emission::line_paths::{
+    boundary_cycle_line_paths, boundary_owner_index, line_owner_index, line_steps,
+    planned_line_paths,
 };
-use super::emission::plan::*;
-#[cfg(test)]
-use super::emission::sites::canonicalize_ring_vertices;
-use super::emission::sites::{
-    EmittedNodeKey, EmittedVertex, QCoordinates, emitted_node_key, for_each_q_cycle_vertex,
-    node_injectivity_collisions_with_work, source_ring_emitted_vertices,
+use super::emission::ordinates::node_ordinates;
+use super::emission::plan::{
+    BoundaryCycle, BoundarySupport, DiagnosticKind, LineStep, PlannedAreaRing, PlannedQLine,
+    PolygonPlan, QEmissionPlan, QLineOrigin, QLinePrimitive, QProducer, SelectedLineSpan,
+    SelectedRegionFact, SelectedRegionPoles, SourceLineSpan, SpanEndpoint,
 };
+use super::emission::sites::{EmittedVertex, QCoordinates, node_injectivity_collisions_with_work};
 #[cfg(test)]
 use super::emission::sites::{certify_node_injectivity, node_injectivity_collisions};
-use super::emission::source_publication::SourcePublication;
 #[cfg(test)]
 use super::emission::source_reuse::cycle_belongs_to_source_ring;
 use super::emission::source_reuse::{
-    source_cycle_start_port, source_cycles_by_ring, source_edge_at,
-    source_ring_cycles_cover_boundary, source_ring_cycles_follow_source,
+    source_cycle_start_port, source_cycles_by_ring, source_ring_cycles_cover_boundary,
+    source_ring_cycles_follow_source,
 };
-use super::emission::write::*;
 use super::emission::{
-    DirectedSpan, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint, LiteralPolygon,
-    LiteralSequence, NativeMaterializedParts, PreparedNativeSource, QSourceImage, RecipeWalkIndex,
-    RecipeWalkOwner, SealedQDrawing, SealedSourceDrawing, SelectedUse, SourceFrozenDrawing,
-    index_recipe_walks, next_recipe_walk, write_completed_native,
+    DirectedSpan, FeatureFamilyRegistry, FragmentRecipes, PreparedNativeSource, RecipeWalkOwner,
+    SealedQDrawing, SealedSourceDrawing, SelectedUse, write_completed_native,
 };
 #[cfg(test)]
-use super::emission::{EmissionNodeRegistry, PublicationInventory, RecipeWalk};
-use super::exact::{
-    ExactChartPoint, ExactSourceRange, ExactSourceRing, SourceEdgeId, SourceEdgeKind, SourceRowId,
-};
-#[cfg(test)]
-use super::exact::{ExactSourceEdge, SourceRingId};
+use super::emission::{PublicationInventory, RecipeWalk};
+use super::exact::{ExactSourceRange, ExactSourceRing, SourceEdgeKind, SourceRowId};
 use super::linework::{
     DiagnosticSpan, even_odd_face_selection, face_cycle_hole_roles, minimal_face_boundaries,
     minimal_face_selection, noded_spans,
 };
-use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
+use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, row_locations};
 #[cfg(test)]
 use super::q_embedding::{NearestQCertificate, certify_q_embedding_nearest};
 use super::q_embedding::{
     QEmbeddingCertification, certify_and_search_q_embedding, certify_nearest_ring_roles,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::{ChartPole, SeamIdentity};
+use crate::geographic::ChartPole;
 #[cfg(test)]
 use crate::geometry::embedding_completion::LiteralCheck;
-use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
 };
-use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootId, RootRequest, SourceArcMetricAccess,
-    resolve_request_rows,
-};
-use crate::geometry::overlay::{
-    CertifiedOverlayOrder, OverlayOp, build_certified_overlay_shape_with_axes,
-    build_certified_overlay_shape_with_axes_and_order,
-};
+use crate::geometry::ordinates::SourceArcMetricAccess;
+use crate::geometry::overlay::OverlayOp;
 use crate::geometry::publication::{PendingPublicationRow, finish_geographic};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, LineSeq, Loc, Point, Polygon, Ring, Shape, Work,
+    CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, Loc, Shape, Work,
 };
 #[cfg(test)]
 use crate::geometry::{MOrdinate, XY, ZOrdinate};
 
 mod publish;
-use self::publish::publish_q_overlay;
 #[cfg(test)]
-use self::publish::{
-    CertifiedQEmission, QEmbeddingChoice, resolve_q_embedding, write_certified_q_emission,
-};
+use self::publish::{CertifiedQEmission, QEmbeddingChoice};
+use self::publish::{publish_q_overlay, resolve_q_embedding, write_certified_q_emission};
 mod plan_boundary;
 mod plan_linework;
 mod plan_overlay;
@@ -255,7 +233,30 @@ const fn selects_support(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning tests use assertions for behavior and ? for fallible setup"
+)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::geometry::LineSeq;
+    use crate::geometry::embedding_completion::{FrozenLiteralBuffers, ShapeLiteralLayout};
+    use crate::geometry::ordinates::NodeOrdinates;
+    use crate::geometry::topology::emission::draw::{
+        boundary_source_points, source_point_coordinates,
+    };
+    use crate::geometry::topology::emission::index_recipe_walks;
+    use crate::geometry::topology::emission::plan::{QEmbeddingEmission, QEmissionDrawing};
+    use crate::geometry::topology::emission::sites::{EmittedNodeKey, emitted_node_key};
+    use crate::geometry::topology::emission::source_publication::SourcePublication;
+    use crate::geometry::topology::emission::write::{
+        SourcePathContext, WrittenDrawingParts, rotate_area_ring_vertices, seal_output_parts,
+        write_drawing, write_ring,
+    };
+    use crate::geometry::topology::q::QPortId;
+    use crate::geometry::topology::{ExactChartPoint, QSourceImage};
+    use crate::{CoordSeq, Point, Polygon, Ring};
     include!("overlay/tests/support.rs");
     include!("overlay/plan_overlay/tests.rs");
     include!("overlay/recipes/tests.rs");

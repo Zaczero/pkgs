@@ -1,11 +1,20 @@
-use super::super::exact::*;
-use super::super::linework::*;
-use super::super::q::*;
-use super::line_paths::*;
-use super::plan::*;
-use super::sites::*;
+use super::super::exact::{SourceEdgeId, SourceEdgeKind, SourceRowId};
+use super::super::q::{ExactGeographicTopology, QNodeId, QPortId};
+use super::line_paths::boundary_owner_index;
+use super::plan::{
+    BoundaryCycle, DrawnAreaOrigin, DrawnAreaRing, DrawnPolygons, DrawnQLine, DrawnSourceRing,
+    PlannedAreaRing, PlannedQLine, PolygonPlan, QEmissionDrawing, QLineOrigin, QLinePrimitive,
+    SpanEndpoint,
+};
+use super::sites::{
+    EmittedNodeKey, EmittedVertex, QCoordinates, emitted_node_key, for_each_q_cycle_vertex,
+    source_ring_emitted_vertices,
+};
 use super::source_reuse::source_edge_at;
-use super::*;
+use super::{
+    GeometryErrorKind, Point, QEmissionPlan, QSourceImage, RecipeWalkOwner, ResourceError, Result,
+    Work,
+};
 use crate::geographic::SeamIdentity;
 
 pub(in crate::geometry::topology) fn emitted_point<'topology>(
@@ -403,13 +412,6 @@ pub(in crate::geometry::topology) fn boundary_source_points_with_work<'topology>
     }
     Ok(output)
 }
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer builders are exercised before F4 and routed after its receiver lands"
-    )
-)]
 impl QEmissionPlan {
     #[cfg(test)]
     pub(in crate::geometry::topology) fn live_node_keys(

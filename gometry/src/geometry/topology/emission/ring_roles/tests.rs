@@ -1,8 +1,3 @@
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "numerical filter controls assert independently known exact windings"
-    )]
-
     use super::*;
 
     fn exact_points(values: &[(f64, f64)]) -> Vec<ExactChartPoint> {

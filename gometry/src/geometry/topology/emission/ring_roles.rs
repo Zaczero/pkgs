@@ -4,9 +4,11 @@ use super::super::exact::ExactChartPoint;
 use super::sites::canonical_bits;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame, GeographicRing, RingSummary};
+#[cfg(test)]
+use crate::geometry::Unmetered;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact::{ExactRational, Interval};
-use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Unmetered, Work};
+use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Work};
 
 #[derive(Clone, Copy)]
 pub(in crate::geometry::topology) struct QRingRole {

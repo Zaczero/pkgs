@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    GeometryErrorKind, NodeOrdinates, PublicationInventory, QEmissionPlan, ResourceError, Result,
+    Work,
+};
 use crate::geometry::XY;
 
 #[derive(Clone, Copy)]

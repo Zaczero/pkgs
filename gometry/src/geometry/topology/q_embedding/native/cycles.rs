@@ -1,4 +1,14 @@
-use super::super::*;
+use super::super::{
+    DrawnPolygons, EmissionNodeId, EmissionNodeRegistry, EmittedVertex, ExactGeographicTopology,
+    ExactQuotientKey, ExactRational, FragmentRecipeId, GeographicFrame, GeometryErrorKind, HashMap,
+    HashSet, NativeAreaEdge, NativeAreaEdgeKind, NativeChartSpellingKey, NativeChartVertexKey,
+    NativeFaceId, NativeGraphEdgeOwner, NativePortData, NativeReferenceGraph,
+    NativeReferenceGraphResult, QEmissionDrawing, QRingRoleCheck, QRingRoleStatus, ResourceError,
+    Result, UnionFind, Work, assign_native_face_region, collection_hash_state,
+    merge_native_port_data, native_graph_slot, native_graph_writer_edge,
+    quotient_key_for_chart_position_with_work, validate_native_boundary_walks,
+    walk_is_shell_with_work,
+};
 
 pub(in crate::geometry::topology::q_embedding) struct NativeGraphCycleEdge {
     pub(in crate::geometry::topology::q_embedding) atom: u32,

@@ -1,8 +1,3 @@
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "cycle-start controls assert indexed behavior against the exhaustive oracle"
-    )]
-
     use super::*;
 
     #[derive(Clone, Copy)]

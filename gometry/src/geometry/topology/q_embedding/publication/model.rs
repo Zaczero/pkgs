@@ -1,4 +1,8 @@
-use super::super::*;
+use super::super::{
+    Bounds, EmissionNodeId, EmissionNodeRegistry, ExactChartPoint, ExactRational, ExactSourceRange,
+    FragmentRecipeId, GlobalFaceId, Point, PublishedDomains, QDartId, QGraphNode, QNodeId, QPortId,
+    QVariableNode, RootId, Segment, SelectedUse, SourceEdgeId, SourceRowId, SourceSampleOccurrence,
+};
 
 #[derive(Debug)]
 pub(in crate::geometry::topology::q_embedding) enum PublishedEndpoint {

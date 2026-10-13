@@ -1,9 +1,16 @@
-use super::super::*;
+use super::super::{
+    AssignedProducerProjection, BTreeMap, BTreeSet, ChartMetric, ChartPole, DrawnAreaOrigin,
+    DrawnPolygons, EmittedVertex, FragmentRecipeId, GeometryErrorKind, NodeAuthority,
+    PlannedAreaRing, PolygonPlan, PublishedEndpoint, QCandidate, QCoordinates, QEmbeddingProblem,
+    QEmissionDrawing, QPortId, RecipeWalk, RecipeWalkOwner, ResourceError, Result, SeamIdentity,
+    Work, add_source_reused_recipe_walk, exact_canonical_longitude_with_work,
+    exact_coordinate_has_binary64_value_with_work,
+    exact_node_position_has_binary64_value_with_work, source_line_reuse_is_complete,
+    source_ring_reuse_matches, strict_native_bank_event,
+};
 
-impl<'topology, M: ChartMetric>
-    QEmbeddingProblem<'topology, '_, '_, '_, M>
-{
-    fn source_reused_recipe_ids(
+impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
+    pub(in crate::geometry::topology::q_embedding) fn source_reused_recipe_ids(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &[bool],
@@ -517,7 +524,7 @@ impl<'topology, M: ChartMetric>
     ) -> Result<bool> {
         self.drawing_has_rounding_residual(drawing, producer, budget)
     }
-    fn actual_native_demand(
+    pub(in crate::geometry::topology::q_embedding) fn actual_native_demand(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &[bool],

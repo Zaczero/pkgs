@@ -1,9 +1,20 @@
-use super::super::*;
+use super::super::{
+    AssignedProducerProjection, AssignedSite, BTreeSet, ChartMetric, EvaluationBudget,
+    ExactChartPoint, ExactQuotientKey, ExactRational, GeometryErrorKind, GlobalCheck,
+    NativeAreaEdge, NativeAreaEdgeKind, NativeChordPieces, NativeCutFeature, NativeCutOrder,
+    NativeCutOrderSite, NativeCutProblem, NativeCutSearchOutcome, NativeGraphEdgeOwner,
+    NativePortData, NativeReference, NativeSeamEvent, NativeSeamEventData, NativeSeamVertices,
+    NodeAuthority, OccurrenceSource, PublishedEndpoint, QCandidate, QCoordinates,
+    QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError, Result, RootRequest,
+    SearchAccount, SearchOutcome, SourceTrace, Work, align_native_port_to_seam,
+    candidate_from_emission_site, compare_quotient_keys_with_work, emitted_node_key,
+    native_cut_candidate_domain, native_cut_order_holds, native_known_source_spans_for_slice,
+    native_port_data, native_source_sample_occurrences, quotient_key_for_chart_position_with_work,
+    run_with_budget, trace_ranges_for_slice, try_sort_by_with_work,
+};
 
-impl<'topology, M: ChartMetric>
-    QEmbeddingProblem<'topology, '_, '_, '_, M>
-{
-    fn materialize_native_cut_features(
+impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
+    pub(super) fn materialize_native_cut_features(
         &mut self,
         producer: &AssignedProducerProjection,
         budget: &mut impl SearchAccount,
@@ -77,7 +88,7 @@ impl<'topology, M: ChartMetric>
         families.synchronize_budget(budget)?;
         Ok(output)
     }
-    fn all_outer_repair_classes(&self, budget: &mut impl Work) -> Result<Vec<usize>> {
+    pub(super) fn all_outer_repair_classes(&self, budget: &mut impl Work) -> Result<Vec<usize>> {
         let variable_count = self.classes.iter().try_fold(0_usize, |count, class| {
             count
                 .checked_add(class.len())
@@ -92,7 +103,7 @@ impl<'topology, M: ChartMetric>
         }
         self.classes_for_variables(variables, budget)
     }
-    fn search_native_cut_candidates(
+    pub(super) fn search_native_cut_candidates(
         &self,
         reference: &NativeReference<'topology>,
         features: &[NativeCutFeature],
@@ -606,7 +617,7 @@ impl<'topology, M: ChartMetric>
             occurrences,
         })
     }
-    fn native_chord_pieces(
+    pub(super) fn native_chord_pieces(
         &self,
         builder: &mut super::super::super::emission::EmissionBuilder<'topology>,
         chord: &QPublishedChord,

@@ -1,9 +1,26 @@
-use super::super::*;
+use super::super::{
+    AssignedProducerProjection, BTreeMap, ChartMetric, ChartPole, ChartRestriction, DrawnPolygons,
+    EvaluationBudget, ExactChartPoint, ExactRational, FragmentRecipeId, GeometryErrorKind,
+    NativeAreaEdgeKind, NativeChordPieces, NativeCutFeature, NativeGraphEdgeOwner, NativeLineRun,
+    NativeLiteralChordAuthority, NativeLiteralChordUse, NativeReference,
+    NativeReferenceGraphResult, NativeSeamEvent, NativeSeamEventData, NativeSeamVertices,
+    NodeAuthority, OccurrenceSource, QCandidate, QCoordinates, QEmbeddingProblem, QEmissionDrawing,
+    QFamilyState, QRingRoleCheck, RecipeWalkOwner, ResourceError, Result, Work as _, XY,
+    admit_logical_layout, align_native_cycle_starts, append_native_line_edge,
+    assign_selected_pole_seam_band, assigned_emission_site, candidate_from_emission_site,
+    common_refine_native_edges, finish_native_line_run, logical_layout_for_plan,
+    merge_native_port_data, native_area_facts, native_emission_port_key, native_graph_cycle_recipe,
+    native_graph_cycle_vertex, native_graph_face_source_table, native_known_span_boundaries,
+    native_point_contact_vertices, native_pole_closure_regions, native_pole_edges,
+    native_port_data, native_reference_cycles_and_parts, native_seam_bands_from_assigned_graph,
+    native_seam_edges, native_selected_pole_sectors, native_whole_sphere_cell_edges,
+    new_native_reference_graph_builder, normalize_native_chart_lifts, normalize_native_seam_events,
+    rounded_native_neighbors_with_work, try_sort_by_with_work, validate_native_reference,
+    validate_native_source_ranges,
+};
 
-impl<'topology, M: ChartMetric>
-    QEmbeddingProblem<'topology, '_, '_, '_, M>
-{
-    fn prepare_native_reference(
+impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
+    pub(super) fn prepare_native_reference(
         &mut self,
         drawing: &QEmissionDrawing<'topology>,
         ring_roles: &QRingRoleCheck,

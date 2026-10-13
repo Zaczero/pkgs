@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ChartPole, ExactGeographicTopology, GeometryErrorKind, GlobalFaceId, OverlayOp, ResourceError,
+    Result, SelectedRegionFact, SelectedRegionPoles, SourceRowId, Work, selects_support,
+    try_sort_by_with_work,
+};
 
 /// Incident faces can differ only on rows owning an incident source edge.
 /// Count their union from one face and those rows, without expanding ancestors.

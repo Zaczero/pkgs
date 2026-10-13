@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    BTreeMap, ChartSpanId, ExactRational, FeatureFamilyRegistry, FragmentRecipeId,
+    GeometryErrorKind, OccurrenceSource, QPortId, RequestRowId, ResourceError, Result, RootId,
+    RootRange, RootRequest, Shape, TraceRows, TraceRowsBuilder, VertexOrigin, Work,
+    try_sort_by_with_work,
+};
 
 impl SourceTrace {
     pub(super) fn split_at_samples(

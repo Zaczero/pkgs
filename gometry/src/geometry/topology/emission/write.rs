@@ -1,14 +1,17 @@
-use super::super::exact::*;
-use super::super::q::*;
-use super::line_paths::*;
+use super::super::exact::ExactChartPoint;
+use super::super::q::QPortId;
 use super::ordinates::{
     source_literal_image, with_assigned_source_vertex_axes, with_publication_axes,
 };
-use super::plan::*;
-use super::sites::*;
-use super::source_publication::*;
-use super::source_reuse::*;
-use super::*;
+use super::plan::{DrawnPolygons, QEmissionDrawing};
+use super::sites::EmittedVertex;
+use super::source_publication::SourcePublication;
+use super::{
+    BTreeMap, CertifiedOverlayOrder, CoordSeq, CoordinateAxes, GeometryErrorKind, LiteralPoint,
+    LiteralPolygon, LiteralSequence, NodeOrdinates, Point, Polygon, QEmissionPlan, QSourceImage,
+    RecipeWalkIndex, RecipeWalkOwner, ResourceError, Result, Ring, Shape, ShapeLiteralLayout, Work,
+    next_recipe_walk,
+};
 use crate::geometry::overlay::{
     build_certified_overlay_shape_with_axes, build_certified_overlay_shape_with_axes_and_order,
 };

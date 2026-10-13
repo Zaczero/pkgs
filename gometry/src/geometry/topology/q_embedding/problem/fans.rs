@@ -1,9 +1,12 @@
-use super::super::*;
+use super::super::{
+    BTreeMap, ChartMetric, EmissionNodeId, ExactChartPoint, ExactRational, GeometryErrorKind,
+    NodeAuthority, QCandidate, QEmbeddingProblem, QFaceChart, QFanRow, QNodeId, QNodeLocation,
+    QPortId, QVariableNode, ResourceError, Result, Work, compare_q_darts_with_points,
+    inexact_axes_with_work, rotation_row_matches, try_sort_by_with_work,
+};
 
-impl<M: ChartMetric>
-    QEmbeddingProblem<'_, '_, '_, '_, M>
-{
-    fn fan_matches(
+impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
+    pub(super) fn fan_matches(
         &self,
         fan: &QFanRow,
         class: usize,
@@ -214,7 +217,7 @@ impl<M: ChartMetric>
         }
         Ok(location)
     }
-    fn classes_for_nodes(
+    pub(super) fn classes_for_nodes(
         &self,
         nodes: impl IntoIterator<Item = QNodeId>,
         budget: &mut impl Work,
@@ -309,7 +312,7 @@ impl<M: ChartMetric>
         classes.dedup();
         Ok(classes)
     }
-    fn classes_for_variables(
+    pub(super) fn classes_for_variables(
         &self,
         variables: impl IntoIterator<Item = QVariableNode>,
         budget: &mut impl Work,

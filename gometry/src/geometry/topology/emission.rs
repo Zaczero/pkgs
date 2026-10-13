@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use self::plan::QEmissionPlan;
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceRange, FallibleAvl, SourceEdgeId,
     compare_quotient_keys, compare_quotient_keys_with_work, quotient_key_for_chart_position,
     quotient_key_for_chart_position_with_work,
 };
-use super::overlay::QEmissionPlan;
 use super::q::{
     CanonicalQNodeKey, ChartSpan, ChartSpanId, ExactGeographicTopology, GlobalFaceId, QDartId,
     QNodeId, QPortId,
@@ -67,42 +67,34 @@ pub(in crate::geometry::topology) mod write;
 pub(super) use self::builder::{EmissionBuilder, ExpandedEmissionPlan};
 pub(in crate::geometry) use self::families::FeatureFamilyRegistry;
 pub(super) use self::families::{
-    FeatureFamily, FeatureFamilyBound, FeatureFamilyBounds, FeatureFamilyParent, NativeCutFeature,
-    NativeCutOccurrenceRange, SampleProducerKind, native_cut_features,
+    FeatureFamily, FeatureFamilyBounds, FeatureFamilyParent, NativeCutFeature, SampleProducerKind,
+    native_cut_features,
 };
-use self::families::{NativeCutOccurrenceInterval, append_native_cut_feature};
 use self::materialize::NativeChordPoints;
+#[cfg(test)]
+pub(super) use self::materialize::NativePolygonLiteralUses;
 pub(in crate::geometry) use self::materialize::QSourceImage;
 pub(super) use self::materialize::{
-    CompletedNativeDrawing, NativeFrozenDrawing, NativeLiteralUses, NativeMaterializedParts,
-    NativePolygonLiteralUses, SourceFrozenDrawing, WrittenNativeDrawing, materialize_native_parts,
-    native_literal_uses_in_output_order, write_completed_native,
+    CompletedNativeDrawing, NativeFrozenDrawing, NativeMaterializedParts, SourceFrozenDrawing,
+    materialize_native_parts, native_literal_uses_in_output_order, write_completed_native,
 };
 pub(in crate::geometry) use self::nodes::EmissionPortId;
-use self::nodes::IndexedEmissionNode;
 pub(super) use self::nodes::{
     ChartPartId, EmissionChord, EmissionChordId, EmissionNode, EmissionNodeId,
     EmissionNodeRegistry, EmissionPart, EmissionPort, NativeFaceId, NodeAuthority,
     OccurrenceSource, PortPosition, PortSpelling, VertexOrigin, WrittenOccurrence,
 };
-use self::ordinates::{native_chord_points, source_requests_at_location, source_trace_fragment};
+use self::ordinates::native_chord_points;
 pub(super) use self::ordinates::{
     native_port_point, resolve_emission_ordinates, resolve_publication_ordinates,
 };
 pub(super) use self::port_authority::{
     NativePortData, merge_native_port_data, native_source_record_quotient_key,
 };
-use self::port_authority::{
-    exact_chart_points_equal_with_work, native_source_record_spells_chart_point,
-    validate_native_port_image, validate_native_source_record,
-};
 pub(super) use self::presentation::{
     AssignedSite, NativeAreaEdge, NativeAreaEdgeKind, NativeGraphEdgeOwner, NativeSeamEvent,
     NativeSeamVertices, NativeSourceFaceGerm, NativeSourceSpanUse, SelectedNativeSeamBand,
     native_pole_edges, native_seam_edges,
-};
-use self::presentation::{
-    directed_chart_restriction_use, native_pole_presentation_occurrence, native_seam_vertex_index,
 };
 pub(super) use self::publication::FragmentRecipes;
 pub(super) use self::recipes::{
@@ -111,19 +103,24 @@ pub(super) use self::recipes::{
 };
 use self::recipes::{
     EndpointSide, PendingSourceRange, interpolate_exact_reference_coordinate,
-    interpolate_exact_reference_point, pending_source_ranges, producer_mapping_is_affine,
-    producer_ranges, producer_step_extends_run,
+    interpolate_exact_reference_point, pending_source_ranges, producer_ranges,
+    producer_step_extends_run,
 };
 use self::trace::SourceTraceSample;
 pub(super) use self::trace::{
     DirectedSpan, RecipeWalk, RecipeWalkIndex, RecipeWalkOwner, SourceSampleOccurrence,
-    TraceRequestLocation, TracedSourceSample, index_recipe_walks, native_source_sample_occurrences,
-    next_recipe_walk,
+    TraceRequestLocation, index_recipe_walks, native_source_sample_occurrences, next_recipe_walk,
 };
 pub(in crate::geometry) use self::trace::{PreparedNativeSource, SourceTrace, TracedLine};
 
 #[cfg(test)]
 mod tests {
+    use crate::geometry::topology::emission::families::{
+        FeatureFamilyBound, NativeCutOccurrenceInterval, NativeCutOccurrenceRange,
+    };
+    use crate::geometry::topology::emission::materialize::NativeLiteralUses;
+    use crate::geometry::topology::emission::presentation::directed_chart_restriction_use;
+    use crate::geometry::topology::emission::trace::TracedSourceSample;
     include!("emission/tests/support.rs");
     include!("emission/ordinates/tests.rs");
     include!("emission/port_authority/tests.rs");

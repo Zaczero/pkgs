@@ -1,9 +1,18 @@
-use super::super::*;
+use super::super::{
+    AssignedProducerProjection, BTreeMap, ChartMetric, EmissionNodeId, EvaluationBudget,
+    ExactChartPoint, ExactQuotientKey, GeometryErrorKind, GlobalCheck, NativeCandidatePublication,
+    NativeCutFeature, NativeCutSearchOutcome, NativeReference, ProducerReceipt, PublicationCall,
+    PublicationOutcome, PublicationRejection, QCandidate, QCoordinates, QEmbeddingOutput,
+    QEmbeddingProblem, QEmissionDrawing, QFaceStructure, QRingRoleCheck, QSourceImage,
+    QVariableNode, ResourceError, Result, SealedSourceDrawing, SearchAccount,
+    SourceOnlyPublication, StorageTarget, Work, assigned_emission_site, check_q_ring_roles,
+    compare_quotient_keys_with_work, face_structure_mismatch_nodes, finish_geographic,
+    publication_sample_index, q_source_image_port, quotient_key_for_chart_position_with_work,
+    rounded_chart_point, subgraph_chart, validate_native_materialized_candidate,
+};
 
-impl<'topology, M: ChartMetric>
-    QEmbeddingProblem<'topology, '_, '_, '_, M>
-{
-    fn complete_native_drawing(
+impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
+    pub(super) fn complete_native_drawing(
         &self,
         reference: &NativeReference<'topology>,
         features: &[NativeCutFeature],
@@ -140,7 +149,7 @@ impl<'topology, M: ChartMetric>
     ) -> Result<Vec<ExactChartPoint>> {
         self.checked_publication_sample_images(producer, budget)
     }
-    fn checked_publication_sample_images(
+    pub(in crate::geometry::topology::q_embedding) fn checked_publication_sample_images(
         &self,
         producer: &AssignedProducerProjection,
         work: &mut impl Work,
@@ -250,7 +259,7 @@ impl<'topology, M: ChartMetric>
         }
         Ok(checked)
     }
-    fn check_global_candidate(
+    pub(super) fn check_global_candidate(
         &mut self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],

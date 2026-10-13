@@ -1,9 +1,14 @@
-use super::super::*;
+use super::super::{
+    ChartMetric, ChartPole, EvaluationBudget, ExactChartPoint, FeatureFamilyBounds,
+    FeatureFamilyRegistry, GeometryErrorKind, NativeChordCutRanges, NativeCutFamilyDomains,
+    NativeEndpointPointCache, NativeEndpointPointKey, NativePoleClosure, NativeRecipeCutRanges,
+    PublishedEndpoint, QCandidate, QEmbeddingProblem, QFamilyState, QPublishedChord, ResourceError,
+    Result, SearchAccount, Work, assigned_port_point, candidate_chart_point_with_work,
+    collection_hash_state, retained_exact_native_site_with_work,
+};
 
-impl<M: ChartMetric>
-    QEmbeddingProblem<'_, '_, '_, '_, M>
-{
-    fn register_native_pole_families(
+impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
+    pub(super) fn register_native_pole_families(
         &mut self,
         pole_closures: &[NativePoleClosure],
         budget: &mut impl SearchAccount,
@@ -106,7 +111,7 @@ impl<M: ChartMetric>
         }
         Ok(families)
     }
-    fn freeze_native_families(&mut self, budget: &mut EvaluationBudget) -> Result<()> {
+    pub(super) fn freeze_native_families(&mut self, budget: &mut EvaluationBudget) -> Result<()> {
         let QFamilyState::Shared {
             original_source_base,
         } = &self.family_state
@@ -131,7 +136,7 @@ impl<M: ChartMetric>
         self.family_state = QFamilyState::Native(registry);
         Ok(())
     }
-    fn take_native_families(&mut self) -> Option<FeatureFamilyRegistry> {
+    pub(super) fn take_native_families(&mut self) -> Option<FeatureFamilyRegistry> {
         let QFamilyState::Native(_) = &self.family_state else {
             return None;
         };

@@ -7,7 +7,12 @@ use super::sites::EmittedVertex;
 use super::source_publication::SourcePublication;
 use super::source_reuse::cycle_belongs_to_source_ring;
 use super::write::WrittenDrawingParts;
-use super::*;
+use super::{
+    CoordinateAxes, EmissionNodeRegistry, ExactChartPoint, ExactGeographicTopology,
+    FrozenLiteralBuffers, GeometryErrorKind, NativeMaterializedParts, NodeOrdinates,
+    PublicationInventory, QEmissionPlan, QNodeId, ResourceError, Result, SourceFrozenDrawing, Work,
+    index_recipe_walks, try_sort_by_with_work,
+};
 use crate::geometry::{HasM, HasZ};
 
 fn append_source_ring_live_nodes(
@@ -285,13 +290,6 @@ impl super::plan::QEmissionPlan {
 
 use super::write::{seal_output_parts, write_drawing};
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "producer builders are exercised before F4 and routed after its receiver lands"
-    )
-)]
 impl QEmissionPlan {
     pub(in crate::geometry::topology) fn seal_source_drawing(
         &self,
