@@ -15,6 +15,7 @@ use crate::geographic::PointSelectionChart;
 use crate::geographic::chart::{
     point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
 };
+use crate::geometry::publication::GeometryOutput;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -1045,9 +1046,13 @@ pub(crate) fn unary_clip_by_rect(
                     "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
                 ))
         };
-        return data
-            .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access);
+        return data.shape().clip_by_rect_in_geographic_frame(
+            rect,
+            drop,
+            frame,
+            ctx.frame,
+            &metric_access,
+        );
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }
@@ -1152,10 +1157,14 @@ pub(crate) fn binary_overlay(
     ctx: &CachelessRowContext<'_>,
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
-) -> Result<Shape> {
+) -> Result<GeometryOutput> {
     match ctx.domain {
-        TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
-        TopologyDomain::Geographic(_) => {
+        TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(op.apply(
+            left.shape(),
+            right.shape(),
+            strictness,
+        )?)),
+        TopologyDomain::Geographic(frame) => {
             let metric_access = || {
                 ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
                     crate::crs::CrsError::invalid(
@@ -1163,13 +1172,28 @@ pub(crate) fn binary_overlay(
                     )
                 })
             };
-            crate::geometry::overlay_all_with_metric(
-                &[left.shape(), right.shape()],
-                ctx.domain,
-                op,
-                strictness,
-                &metric_access,
-            )
+            if ctx.lane.is_array() {
+                crate::geometry::overlay_all_geographic_output_with_metric_and_frame(
+                    &[left.shape(), right.shape()],
+                    frame,
+                    ctx.frame,
+                    op,
+                    strictness,
+                    &metric_access,
+                    ctx.lane.row(),
+                )
+            } else {
+                Ok(GeometryOutput::Shape(
+                    crate::geometry::overlay_all_geographic_with_metric_and_frame(
+                        &[left.shape(), right.shape()],
+                        frame,
+                        ctx.frame,
+                        op,
+                        strictness,
+                        &metric_access,
+                    )?,
+                ))
+            }
         },
     }
 }

@@ -17,7 +17,7 @@ use crate::geographic::{
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout, reorder_rows,
+    FrozenLiteralBuffers, ShapeLiteralLayout, reorder_rows,
 };
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
@@ -33,6 +33,10 @@ use crate::geometry::ordinates::{
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
 use crate::geometry::overlay::CertifiedOverlayOrder;
+pub(super) use crate::geometry::publication::ChartCutSide as ChartSide;
+use crate::geometry::publication::{
+    ChartRestriction, DirectedChartRestrictionUse, FinishedGeometry, SyntheticChartVertex,
+};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -44,7 +48,7 @@ use crate::geometry::{
 pub(super) struct EmissionNodeId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct EmissionPortId(pub u32);
+pub(in crate::geometry) struct EmissionPortId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct EmissionChordId(pub u32);
@@ -617,6 +621,39 @@ pub(super) struct NativeAreaEdge {
     pub(super) kind: NativeAreaEdgeKind,
 }
 
+fn directed_chart_restriction_use(
+    restriction: ChartRestriction,
+    vertices: &[NativePortData; 2],
+) -> Result<DirectedChartRestrictionUse> {
+    let synthetic_vertex = |port: &NativePortData| -> Result<SyntheticChartVertex> {
+        match (&restriction, &port.spelling) {
+            (
+                ChartRestriction::CutChord | ChartRestriction::PolarCap { .. },
+                PortSpelling::Seam(side),
+            ) => Ok(SyntheticChartVertex::Cut {
+                node: port.node.0,
+                side: *side,
+            }),
+            (ChartRestriction::PolarCap { pole }, PortSpelling::Pole { native_longitude }) => {
+                Ok(SyntheticChartVertex::Pole {
+                    node: port.node.0,
+                    pole: *pole,
+                    native_longitude_bits: native_longitude.to_bits(),
+                })
+            },
+            _ => Err(GeometryErrorKind::Invalid(
+                "generated chart restriction has a nonsynthetic endpoint".into(),
+            )
+            .into()),
+        }
+    };
+    Ok(DirectedChartRestrictionUse {
+        restriction,
+        start: synthetic_vertex(&vertices[0])?,
+        end: synthetic_vertex(&vertices[1])?,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NativeGraphEdgeOwner {
     Area { region: usize },
@@ -632,10 +669,7 @@ pub(super) enum NativeAreaEdgeKind {
         trace_ranges: Vec<(usize, RootRange)>,
         known_spans: Vec<NativeSourceSpanUse>,
     },
-    SeamConnector,
-    PolePresentation {
-        pole: ChartPole,
-    },
+    Restriction(DirectedChartRestrictionUse),
     WholeSphereCover {
         cell: u8,
     },
@@ -768,25 +802,35 @@ pub(super) fn native_seam_edges(
         if let Some(region) = band.east_region
             && !has_existing_area_edge(region, &low.east, &high.east, budget)?
         {
+            let vertices = [
+                low.east.try_clone_with_work(budget)?,
+                high.east.try_clone_with_work(budget)?,
+            ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::CutChord,
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                vertices: [
-                    low.east.try_clone_with_work(budget)?,
-                    high.east.try_clone_with_work(budget)?,
-                ],
+                vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
-                kind: NativeAreaEdgeKind::SeamConnector,
+                kind,
             });
         }
         if let Some(region) = band.west_region
             && !has_existing_area_edge(region, &high.west, &low.west, budget)?
         {
+            let vertices = [
+                high.west.try_clone_with_work(budget)?,
+                low.west.try_clone_with_work(budget)?,
+            ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::CutChord,
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                vertices: [
-                    high.west.try_clone_with_work(budget)?,
-                    low.west.try_clone_with_work(budget)?,
-                ],
+                vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
-                kind: NativeAreaEdgeKind::SeamConnector,
+                kind,
             });
         }
     }
@@ -1059,13 +1103,18 @@ pub(super) fn native_pole_edges(
             if has_existing_area_edge(region, start, end, budget)? {
                 continue;
             }
+            let vertices = [
+                start.try_clone_with_work(budget)?,
+                end.try_clone_with_work(budget)?,
+            ];
+            let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                ChartRestriction::PolarCap { pole },
+                &vertices,
+            )?);
             edges.push(NativeAreaEdge {
-                vertices: [
-                    start.try_clone_with_work(budget)?,
-                    end.try_clone_with_work(budget)?,
-                ],
+                vertices,
                 owner: NativeGraphEdgeOwner::Area { region },
-                kind: NativeAreaEdgeKind::PolePresentation { pole },
+                kind,
             });
         }
     }
@@ -1329,7 +1378,7 @@ impl<'topology> EmissionBuilder<'topology> {
 }
 
 pub(super) struct CompletedNativeDrawing {
-    pub(super) sealed: SealedOutput<EmissionPortId>,
+    pub(super) sealed: FinishedGeometry,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
@@ -1339,7 +1388,11 @@ pub(super) struct NativeFrozenDrawing {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum QSourceImage {
+#[expect(
+    private_interfaces,
+    reason = "the common sink carries Q image blame opaquely while the Q adapter alone interprets its topology-private IDs"
+)]
+pub(in crate::geometry) enum QSourceImage {
     /// A computed or respelled port, authenticated by its checked chart image.
     Port(QPortId),
     /// Retained source records. Their locator lets the final sink recheck the
@@ -1606,15 +1659,15 @@ pub(super) fn materialize_native_parts(
     })
 }
 
-pub(super) fn write_completed_native(drawing: CompletedNativeDrawing) -> WrittenNativeDrawing {
+pub(super) fn write_completed_native(
+    drawing: CompletedNativeDrawing,
+) -> Result<WrittenNativeDrawing> {
     let CompletedNativeDrawing {
         sealed,
         line_traces,
     } = drawing;
-    WrittenNativeDrawing {
-        shape: sealed.into_shape(),
-        line_traces,
-    }
+    let (shape, _frame) = sealed.into_scalar()?;
+    Ok(WrittenNativeDrawing { shape, line_traces })
 }
 
 pub(super) struct WrittenNativeDrawing {
@@ -1886,7 +1939,7 @@ pub(super) fn native_port_point(
 }
 
 pub(super) struct SealedSourceDrawing {
-    pub(super) sealed: SealedOutput<QSourceImage>,
+    pub(super) sealed: FinishedGeometry,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
@@ -3113,12 +3166,6 @@ impl FeatureFamily {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ChartSide {
-    East,
-    West,
-}
-
 #[derive(Debug)]
 pub(super) struct NativeCutFeature {
     pub(super) family: FeatureFamily,
@@ -4246,7 +4293,7 @@ mod tests {
     use super::*;
     use crate::geometry::Unmetered;
     use crate::geometry::embedding_completion::{
-        ExactPoints, admit_known_graph, visit_shape_literals,
+        ExactPoints, LiteralRowAddress, admit_known_graph, visit_shape_literals,
     };
     use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
 
@@ -6081,6 +6128,24 @@ mod tests {
             &third.vertices[1].spelling,
             PortSpelling::Seam(ChartSide::West)
         ));
+        let NativeAreaEdgeKind::Restriction(first_use) = &first.kind else {
+            panic!("polar closure edges retain their restriction receipt");
+        };
+        assert_eq!(first_use.restriction, ChartRestriction::PolarCap {
+            pole: ChartPole::North
+        });
+        assert_eq!(first_use.start, SyntheticChartVertex::Cut {
+            node: first.vertices[0].node.0,
+            side: ChartSide::East,
+        });
+        let PortSpelling::Pole { native_longitude } = &first.vertices[1].spelling else {
+            panic!("the first polar side use ends at a generated pole vertex");
+        };
+        assert_eq!(first_use.end, SyntheticChartVertex::Pole {
+            node: first.vertices[1].node.0,
+            pole: ChartPole::North,
+            native_longitude_bits: native_longitude.to_bits(),
+        });
         for presentation_port in [
             &first.vertices[1],
             &second.vertices[0],
@@ -6102,6 +6167,76 @@ mod tests {
     }
 
     #[test]
+    fn native_seam_connectors_keep_cut_roles_and_directed_side_uses() {
+        let seam = |node, latitude, side| NativePortData {
+            node: EmissionNodeId(node),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(match side {
+                    ChartSide::East => 180.0,
+                    ChartSide::West => -180.0,
+                }),
+                ExactRational::from_f64(latitude),
+            ),
+            spelling: PortSpelling::Seam(side),
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::Presentation,
+                source_trace: None,
+            }],
+        };
+        let events = [
+            NativeSeamVertices {
+                latitude: ExactRational::from_f64(0.0),
+                east: seam(0, 0.0, ChartSide::East),
+                west: seam(0, 0.0, ChartSide::West),
+            },
+            NativeSeamVertices {
+                latitude: ExactRational::from_f64(10.0),
+                east: seam(1, 10.0, ChartSide::East),
+                west: seam(1, 10.0, ChartSide::West),
+            },
+        ];
+        let bands = [SelectedNativeSeamBand {
+            low: ExactRational::from_f64(0.0),
+            high: ExactRational::from_f64(10.0),
+            west_region: Some(1),
+            east_region: Some(0),
+        }];
+        let mut budget = EvaluationBudget::new("seam restriction receipt", 0).unwrap();
+        let edges =
+            native_seam_edges(&bands, &events, &mut |_, _, _, _| Ok(false), &mut budget).unwrap();
+
+        assert_eq!(edges.len(), 2);
+        let [east, west] = edges.as_slice() else {
+            panic!("both selected chart sides have one generated connector");
+        };
+        let NativeAreaEdgeKind::Restriction(east_use) = &east.kind else {
+            panic!("east connector retains its chart restriction");
+        };
+        let NativeAreaEdgeKind::Restriction(west_use) = &west.kind else {
+            panic!("west connector retains its chart restriction");
+        };
+        assert_eq!(east_use.restriction, ChartRestriction::CutChord);
+        assert_eq!(east_use.start, SyntheticChartVertex::Cut {
+            node: 0,
+            side: ChartSide::East,
+        });
+        assert_eq!(east_use.end, SyntheticChartVertex::Cut {
+            node: 1,
+            side: ChartSide::East,
+        });
+        assert_eq!(west_use.restriction, ChartRestriction::CutChord);
+        assert_eq!(west_use.start, SyntheticChartVertex::Cut {
+            node: 1,
+            side: ChartSide::West,
+        });
+        assert_eq!(west_use.end, SyntheticChartVertex::Cut {
+            node: 0,
+            side: ChartSide::West,
+        });
+    }
+
+    #[test]
     fn overlapping_pole_presentation_arcs_still_fail_known_graph_admission() {
         let frame = GeographicFrame::crs84();
         let pole_latitude = frame.chart_pole_latitude(ChartPole::North);
@@ -6120,12 +6255,20 @@ mod tests {
                 source_trace: None,
             }],
         };
+        let vertices = [pole_port(80.0), pole_port(140.0)];
+        let kind = NativeAreaEdgeKind::Restriction(
+            directed_chart_restriction_use(
+                ChartRestriction::PolarCap {
+                    pole: ChartPole::North,
+                },
+                &vertices,
+            )
+            .unwrap(),
+        );
         let existing = NativeAreaEdge {
-            vertices: [pole_port(80.0), pole_port(140.0)],
+            vertices,
             owner: NativeGraphEdgeOwner::Area { region: 0 },
-            kind: NativeAreaEdgeKind::PolePresentation {
-                pole: ChartPole::North,
-            },
+            kind,
         };
         let seam_vertex = |longitude, spelling| NativePortData {
             node: EmissionNodeId(4),
@@ -6933,6 +7076,7 @@ mod tests {
         visit_shape_literals(
             &shape,
             &layout,
+            LiteralRowAddress::scalar(),
             &mut work,
             &mut |_, port, point, _, _, _| {
                 visited.push((port, point.x, point.y));
@@ -6983,6 +7127,7 @@ mod tests {
         visit_shape_literals(
             &shape,
             &layout,
+            LiteralRowAddress::scalar(),
             &mut work,
             &mut |_, port, point, _, _, _| {
                 visited.push((port, point.x, point.y));

@@ -140,6 +140,7 @@ pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch}
 pub(crate) use types::coordinate_columns_eq;
 pub(crate) mod embedding_completion;
 mod embedding_search;
+pub(crate) mod publication;
 #[cfg(test)]
 pub(crate) use embedding_search::work_product_ticks;
 pub(crate) use embedding_search::{Unmetered, Work, WorkResult};
@@ -163,7 +164,8 @@ pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_pol
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
-    overlay_all_with_metric,
+    overlay_all_geographic_output_with_metric_and_frame,
+    overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;
@@ -400,7 +402,8 @@ pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_wi
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
     CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, row_sample_seed,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
+    row_sample_seed,
 };
 #[expect(
     unused_imports,

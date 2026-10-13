@@ -414,26 +414,31 @@ pub(crate) fn try_unary_packed_array(
         ) => {
             let mut scratch = MetricScratch::default();
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
-                Ok((domain, metric)) => {
-                    let rect = match domain {
-                        TopologyDomain::Geographic(frame) => {
-                            Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy)
-                        },
-                        TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
-                    };
-                    match rect {
-                        Ok(rect) => {
-                            let metric_access = || {
-                                metric.geographic_chart_metric()?.ok_or_else(|| {
+                Ok((domain, metric)) => match domain {
+                    TopologyDomain::Geographic(frame) => {
+                        match Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy) {
+                            Ok(rect) => {
+                                let metric_access = || {
+                                    metric.geographic_chart_metric()?.ok_or_else(|| {
                                     crate::crs::CrsError::invalid(
                                         "geographic rectangle clipping requires the operation's CRS metric",
                                     )
                                 })
-                            };
-                            array.clip_by_rect_unary_packed(py, rect, domain, &metric_access)
-                        },
+                                };
+                                array.clip_by_rect_unary_packed_geographic(
+                                    py,
+                                    rect,
+                                    frame,
+                                    &metric_access,
+                                )
+                            },
+                            Err(error) => Err(error.into()),
+                        }
+                    },
+                    TopologyDomain::Cartesian => match Bounds::new(*minx, *miny, *maxx, *maxy) {
+                        Ok(rect) => array.clip_by_rect_unary_packed(py, rect),
                         Err(error) => Err(error.into()),
-                    }
+                    },
                 },
                 Err(error) => Err(error),
             };

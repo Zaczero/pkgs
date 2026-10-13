@@ -7,6 +7,7 @@ use pyo3::Python;
 use crate::CsrBuilder;
 use crate::error::Result;
 use crate::geometry::TopologyDomain;
+use crate::geometry::publication::FinishedGeometry;
 use crate::geometry::storage::ValidityMask;
 use crate::py::vectors::{
     Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyOverflowError, PyResult,
@@ -14,6 +15,26 @@ use crate::py::vectors::{
 };
 
 impl Groups {
+    pub(crate) fn from_finished(finished: FinishedGeometry) -> Result<Self> {
+        let (groups, frame) = finished.into_groups()?;
+        let row_count = groups.offsets.len().checked_sub(1).ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "finished Groups storage has no terminal offset".into(),
+            )
+        })?;
+        let values = PyGeometryArray::from_admitted_rows(
+            groups.values,
+            frame,
+            crate::array::ComputedCaches::fresh(),
+        );
+        Ok(Self {
+            values: GroupsValues::Geometry(Arc::new(values)),
+            offsets: groups.offsets.into(),
+            rows: 0..row_count,
+            missing: groups.missing,
+        })
+    }
+
     pub(super) fn from_int64_values_csr(ids: Vec<i64>, offsets: Vec<i64>) -> PyResult<Self> {
         let row_count = validate_csr_offsets(&offsets, ids.len())?;
         Ok(Self {

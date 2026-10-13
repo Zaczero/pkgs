@@ -6,6 +6,7 @@ use crate::array::{
     PolygonLevel, Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, Shape,
     StorageLayout, TotalBoundsCache, prepared,
 };
+use crate::geometry::publication::FinishedGeometry;
 use crate::geometry::storage::kernels::packed_per_row_self_origin_affine_columns;
 use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{
@@ -440,14 +441,31 @@ impl PyGeometryArray {
         caches: ComputedCaches,
     ) -> crate::error::Result<Self> {
         let rows = ArrayRows::admit(storage, missing, layout)?;
+        Ok(Self::from_admitted_rows(rows, frame, caches))
+    }
+
+    pub(crate) fn from_finished(finished: FinishedGeometry) -> crate::error::Result<Self> {
+        let (rows, frame) = finished.into_array()?;
+        Ok(Self::from_admitted_rows(
+            rows,
+            frame,
+            ComputedCaches::fresh(),
+        ))
+    }
+
+    pub(crate) fn from_admitted_rows(
+        rows: ArrayRows,
+        frame: Frame,
+        caches: ComputedCaches,
+    ) -> Self {
         let len = rows.len();
-        Ok(Self {
+        Self {
             rows,
             frame,
             bounds_cache: caches.bounds_cache,
             total_bounds_cache: caches.total_bounds_cache,
             row_products: prepared::RowProducts::fresh(len),
-        })
+        }
     }
 
     /// Publish a source-derived selection with products selected independently
