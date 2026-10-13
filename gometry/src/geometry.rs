@@ -11,8 +11,8 @@
 //! `tessellation` (triangulation/voronoi/polygonize), `linear`/`distance`
 //! (linear referencing and proximity), `derived` (polylabel and friends),
 //! `segments` (segment/orientation primitives), `ordinates` (Z/M carry), and
-//! `types` (the data model). Children reach the shared kernel via `use
-//! super::*`.
+//! `types` (the data model) and `prepared` (reusable execution products).
+//! Children reach the shared kernel via `use super::*`.
 
 /// Runtime axis flags select const-generic loops at their callers, avoiding
 /// per-coordinate axis checks. The expanded block remains in the caller, so
@@ -78,19 +78,23 @@ pub(crate) use geographic_area::{
 };
 pub(crate) use segments::interpolation::held_axis_interpolate;
 pub(crate) use segments::{Orientation, orientation};
+mod prepared;
 pub(crate) mod storage;
 pub(crate) mod types;
+pub(crate) use prepared::{
+    ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
+    ChartPointDistanceSample, DwithinOutcome, FrameDependentCaches, GeodesicMetric,
+    GeodesicNumericalPolicy, IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery,
+    PointEdgeQueryResult, PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue,
+    canonical_f64_bits,
+};
 pub(crate) use types::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
-    ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
-    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    DwithinOutcome, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
-    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
-    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
-    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
-    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
-    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,
+    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, MAX_NESTING, MColumn, MOrdinate,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, PolygonLevel,
+    RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeOwnerKey, SharedSlice,
+    SimplifyMethod, SmoothMethod, VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate,
     coerce_to_common_axes,
 };
 mod antimeridian;
