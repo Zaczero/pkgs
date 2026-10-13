@@ -472,6 +472,7 @@ mod tests {
 
     use super::super::GeographicCoverageAnalysis;
     use crate::geographic::GeographicFrame;
+    use crate::geometry::segments::ordering::try_sort_by;
     use crate::geometry::{ExactRational, Shape};
 
     fn analyze(rows: &[Shape], gap_width: f64) -> GeographicCoverageAnalysis {
@@ -528,7 +529,7 @@ mod tests {
         let zero = ExactRational::from_f64(0.0);
         let one = ExactRational::from_f64(1.0);
         for (_, mut edge_ranges) in ranges {
-            crate::geometry::try_sort_by(&mut edge_ranges, |left, right| {
+            try_sort_by(&mut edge_ranges, |left, right| {
                 left.start.try_cmp(&right.start)
             })
             .expect("source range order is exact");
