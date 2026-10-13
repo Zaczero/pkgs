@@ -1,10 +1,3 @@
-// Crate-wide lint policy lives here and nowhere else. `similar_names` is
-// deliberately not hoisted: it stays an `expect` on the files whose axis and
-// formula vocabulary trips it, so it still flags confusable names elsewhere.
-#![expect(
-    clippy::arbitrary_source_item_ordering,
-    reason = "cohesive item layout is clearer than a mandated declaration order here"
-)]
 #![expect(
     clippy::redundant_closure_for_method_calls,
     reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
