@@ -307,8 +307,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         | Shape::GeometryCollection(_)
         | Shape::Empty(..)) => shape,
     };
-    let shape = super::grid_outline::publish_grid_outline(&shape, "grid coverage")?;
-    Ok(PyGeometry::typed_wgs84(shape))
+    super::grid_outline::publish_grid_outline(&shape, "grid coverage")
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /

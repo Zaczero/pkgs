@@ -1,6 +1,5 @@
 use pyo3::prelude::PyResult;
 
-use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{CoordSeq, LineSeq, Shape};
 use crate::py::cells::Typed;
@@ -34,13 +33,12 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
         return Ok(None);
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
-    let shape = publish_grid_outline(&shape, "grid dissolve")?;
-    Ok(Some(crate::PyGeometry::typed_wgs84(shape)))
+    Ok(Some(publish_grid_outline(&shape, "grid dissolve")?))
 }
 
-pub(super) fn publish_grid_outline(shape: &Shape, operation: &'static str) -> Result<Shape> {
+pub(super) fn publish_grid_outline(shape: &Shape, operation: &'static str) -> PyResult<Typed> {
     let frame = GeographicFrame::crs84();
-    let published = crate::geometry::publish_raw_computed_shape(shape, frame, operation)?;
+    let mut published = crate::geometry::publish_raw_computed_shape(shape, frame, operation)?;
     if matches!(published, Shape::MultiPolygon(_))
         && crate::geometry::crosses_antimeridian_in_frame(&published, frame)
         && let Some(chart) = crate::geometry::unwrap_contact_chart(&published, frame)?
@@ -48,9 +46,12 @@ pub(super) fn publish_grid_outline(shape: &Shape, operation: &'static str) -> Re
         // Publication splits seam pieces into a common chart. Cancel their
         // shared cut edge here, before the later receipt sink seals the result.
         let selected = Shape::union_all(&[chart], crate::geometry::Strictness::Lenient)?;
-        return crate::geometry::publish_raw_computed_shape(&selected, frame, operation);
+        published = crate::geometry::publish_raw_computed_shape(&selected, frame, operation)?;
     }
-    Ok(published)
+    let finished =
+        crate::geometry::finish_grid_outline(published, crate::Frame::Crs(crate::wgs84_crs()))?;
+    let (shape, frame) = finished.into_scalar()?;
+    Ok(Typed(crate::PyGeometry::with_frame(shape, frame)))
 }
 
 pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
@@ -76,9 +77,10 @@ mod tests {
         )
         .unwrap();
         let output = publish_grid_outline(&source, "grid dissolve").unwrap();
+        let output = output.0.shape.shape();
         assert!(matches!(output, Shape::Polygon(_)));
         let issue = crate::geometry::validate_shape_in_frame(
-            &output,
+            output,
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
         )
         .unwrap();
