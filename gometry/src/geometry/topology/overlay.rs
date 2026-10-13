@@ -8280,7 +8280,7 @@ mod tests {
         omitted_areal_spans.areal_spans.clear();
         let drawing = draw_q_plan_unmetered(&plan, &topology, &reversed, &source_points)?;
         let mut omission_budget = EvaluationBudget::new("geographic boundary", 0)?;
-        let error = match certify_q_embedding_nearest_xy(
+        let Err(error) = certify_q_embedding_nearest_xy(
             &topology,
             &omitted_areal_spans,
             &reversed,
@@ -8288,15 +8288,12 @@ mod tests {
             drawing,
             "geographic boundary",
             &mut omission_budget,
-        ) {
-            Err(error) => error,
-            Ok(_) => {
-                return Err(GeometryErrorKind::Invalid(
-                    "the boundary certificate accepted areal linework without its source-face projection"
-                        .into(),
-                )
-                .into());
-            },
+        ) else {
+            return Err(GeometryErrorKind::Invalid(
+                "the boundary certificate accepted areal linework without its source-face projection"
+                    .into(),
+            )
+            .into());
         };
         assert!(
             matches!(
