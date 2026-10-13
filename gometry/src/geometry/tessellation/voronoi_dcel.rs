@@ -1,10 +1,5 @@
 //! Exact labelled Voronoi subdivision and its sole binary64 projection.
 
-#![expect(
-    clippy::unwrap_used,
-    reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"
-)]
-
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
