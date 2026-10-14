@@ -2334,9 +2334,9 @@ mod tests {
         let mut work = Unmetered;
         let table = RootRequestTable::from_rows(&rows, &mut work).unwrap();
         let mut grouped_requests = Vec::with_capacity(rows.len());
-        for index in 0..rows.len() {
+        for (index, row) in rows.iter().enumerate() {
             let row_id = RequestRowId::from_index(index).unwrap();
-            assert_eq!(table.axes(row_id).unwrap(), rows[index].axes);
+            assert_eq!(table.axes(row_id).unwrap(), row.axes);
             grouped_requests.push(
                 table
                     .row(row_id)

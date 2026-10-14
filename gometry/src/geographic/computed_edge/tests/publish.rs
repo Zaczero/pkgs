@@ -349,9 +349,7 @@ fn certified_minor_chain_rejects_an_ambiguous_half_turn() {
     ])
     .unwrap();
     let mut budget = ExpansionBudget::new("test", "mislabelled half-turn");
-    assert!(
-        super::publish_certified_minor_chain(degrees(), &coordinates, false, &mut budget).is_err()
-    );
+    super::publish_certified_minor_chain(degrees(), &coordinates, false, &mut budget).unwrap_err();
 }
 
 #[test]
@@ -364,16 +362,14 @@ fn certified_minor_witness_cannot_be_reused_for_another_edge() {
     .unwrap();
     let points = [Point::new_raw_xy(10.0, 0.0), Point::new_raw_xy(30.0, 1.0)];
     let mut budget = ExpansionBudget::new("test", "misapplied minor witness");
-    assert!(
-        publish_computed_chain(
-            degrees(),
-            points.as_slice(),
-            false,
-            &mut budget,
-            |_, _, _| Ok(witness),
-        )
-        .is_err()
-    );
+    publish_computed_chain(
+        degrees(),
+        points.as_slice(),
+        false,
+        &mut budget,
+        |_, _, _| Ok(witness),
+    )
+    .unwrap_err();
 }
 
 #[test]
