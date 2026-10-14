@@ -405,8 +405,11 @@ pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources(
         )
         .into());
     }
-    ExactSourceInventory::from_shapes(geometries)?
-        .overlay_polygon_parts_with_source_roles(operation, 0)
+    ExactSourceInventory::from_shapes(geometries)?.overlay_polygon_parts_with_source_roles(
+        operation,
+        0,
+        GeographicFrame::crs84(),
+    )
 }
 
 pub(crate) fn overlay_all_geographic_with_metric_and_frame<

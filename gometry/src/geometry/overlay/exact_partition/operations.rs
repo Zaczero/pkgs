@@ -371,9 +371,11 @@ impl ExactSourceInventory {
         &self,
         operation: crate::geometry::OverlayOp,
         preserved_operand: u32,
+        frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let mut budget = ExpansionBudget::new(operation.name(), "exact partition");
-        let partition = self.partition(&mut budget)?;
+        let mut partition = self.partition(&mut budget)?;
+        partition.set_geographic_frame(frame);
         self.overlay_polygon_parts_from_partition(&partition, operation, preserved_operand)
     }
 
