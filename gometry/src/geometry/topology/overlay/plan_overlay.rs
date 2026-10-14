@@ -127,7 +127,7 @@ impl PolygonPlan {
                                 "Q source-ring start cycle is unknown".into(),
                             )
                         })?;
-                    Some(source_cycle_start_port(topology, cycle, work)?)
+                    Some(source_cycle_start_port(topology, source_ring, cycle, work)?)
                 } else {
                     None
                 };

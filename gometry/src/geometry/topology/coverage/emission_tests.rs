@@ -133,6 +133,56 @@ fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
 }
 
 #[test]
+fn geographic_clean_area_rankings_retain_source_ring_anchors() {
+    let rows = [
+        crate::io::parse_wkt("POLYGON ((10 60, 10 85, 0 85, 0 60, 10 60))")
+            .expect("northern rectangle"),
+        crate::io::parse_wkt("POLYGON ((10 50, 10 70, 0 70, 0 50, 10 50))")
+            .expect("southern rectangle"),
+    ];
+    let model = crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric");
+    let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");
+    let access = || Ok(&metric);
+    let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
+    let context = SourceArcContext::new(domain, Some(&access));
+    for rule in [CoverageOverlapRule::MaxArea, CoverageOverlapRule::MinArea] {
+        let output =
+            coverage_clean(&rows, 0.0, 0.0, rule, &context).expect("ranked coverage drawing");
+        assert!(
+            crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+                .expect("ranked coverage validates"),
+        );
+    }
+}
+
+#[test]
+fn geographic_clean_longest_border_retains_polar_boundary() {
+    let rows = [
+        crate::io::parse_wkt("POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))")
+            .expect("northern rectangle"),
+        crate::io::parse_wkt("POLYGON ((10 70, 10 90, 0 90, 0 70, 10 70))")
+            .expect("polar rectangle"),
+    ];
+    let model = crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric");
+    let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");
+    let access = || Ok(&metric);
+    let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
+    let context = SourceArcContext::new(domain, Some(&access));
+    let output = coverage_clean(
+        &rows,
+        0.0,
+        0.0,
+        CoverageOverlapRule::LongestBorder,
+        &context,
+    )
+    .expect("polar ranked coverage drawing");
+    assert!(
+        crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+            .expect("polar ranked coverage validates"),
+    );
+}
+
+#[test]
 fn geographic_scalar_coverage_receipt_rejects_two_live_rows() {
     let rows = [
         crate::io::parse_wkt("POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))").expect("first live row"),

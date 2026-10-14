@@ -372,9 +372,18 @@ pub(in crate::geometry::topology) fn source_cycles_by_ring(
 
 pub(in crate::geometry::topology) fn source_cycle_start_port(
     topology: &ExactGeographicTopology,
+    ring: &ExactSourceRing,
     cycle: &BoundaryCycle,
     work: &mut impl Work,
 ) -> Result<QPortId> {
+    let mut retained_ports = BTreeSet::new();
+    for edge in ring.source_edges.clone() {
+        work.charge_into_error(1)?;
+        let ports = topology.q.source_edge_ports.get(edge).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q source ring edge has no retained ports".into())
+        })?;
+        retained_ports.extend(ports.iter().copied());
+    }
     for &dart_id in &cycle.darts {
         work.charge_into_error(1)?;
         let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
@@ -387,7 +396,7 @@ pub(in crate::geometry::topology) fn source_cycle_start_port(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cycle start references an unknown port".into())
             })?;
-        if !port.cut {
+        if !port.cut && retained_ports.contains(&dart.from_port) {
             return Ok(dart.from_port);
         }
     }
@@ -403,7 +412,7 @@ pub(in crate::geometry::topology) fn source_cycle_start_port(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cycle start references an unknown port".into())
             })?;
-        if !port.cut {
+        if !port.cut && retained_ports.contains(&dart.to_port) {
             return Ok(dart.to_port);
         }
     }
