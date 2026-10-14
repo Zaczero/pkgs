@@ -437,6 +437,8 @@ def test_geographic_line_merge_keeps_an_oblique_retained_source_occurrence() -> 
         [
             list(source.coords),
             [(60.0, 40.0, sample.z), (60.0, 50.0, sample.z + 1.0)],
+            [(179.0, 0.0, 30.0), (180.0, 0.0, 31.0)],
+            [(-180.0, 0.0, 99.0), (-179.0, 0.0, 98.0)],
         ],
         crs=crs,
     )
@@ -455,6 +457,16 @@ def test_geographic_line_merge_keeps_an_oblique_retained_source_occurrence() -> 
         for coordinate in cut_nodes
     )
     assert abs(cut_nodes[0][2] - 110.0) > 14.0
+    seam_records = [
+        coordinate
+        for part in merged.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0 and coordinate[1] == 0.0
+    ]
+    assert {(coordinate[0], coordinate[2]) for coordinate in seam_records} == {
+        (180.0, 31.0),
+        (-180.0, 99.0),
+    }
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,7 @@ use crate::geometry::coverage::{
     HashMap, coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };
 use crate::geometry::embedding_search::account::EvaluationBudget;
-use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::overlay::{ExactSourceInventory, overlay_declared_axes};
 use crate::geometry::publication::{
     FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, finish_geographic,
@@ -362,7 +362,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
 fn empty_coverage_union(source_refs: &[&Shape]) -> Shape {
     Shape::typed_empty(
         crate::geometry::GeometryKind::Polygon,
-        crate::geometry::overlay::overlay_declared_axes(source_refs, OverlayOp::Union),
+        overlay_declared_axes(source_refs, OverlayOp::Union),
     )
 }
 
@@ -370,13 +370,12 @@ fn coverage_union_geographic_ordinary(
     source_refs: &[&Shape],
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
-    let crate::geometry::TopologyDomain::Geographic(frame) = context.domain() else {
+    let crate::geometry::TopologyDomain::Geographic(_) = context.domain() else {
         unreachable!("the ordinary geographic dissolve requires its source frame")
     };
     let inventory = ExactSourceInventory::from_shapes(source_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_union_all", "exact partition");
-    let mut partition = inventory.partition(&mut budget)?;
-    partition.set_geographic_frame(frame);
+    let partition = inventory.partition(&mut budget)?;
     let declared_axes = source_refs
         .iter()
         .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {

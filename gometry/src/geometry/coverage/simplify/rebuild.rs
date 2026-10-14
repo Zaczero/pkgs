@@ -1,9 +1,64 @@
 use super::*;
 
+type ChainReplacement = (Vec<(NodeId, XY)>, Option<Vec<bool>>);
+type ResolvedNodeOrdinates = (crate::geometry::ZOrdinate, crate::geometry::MOrdinate);
+
 #[derive(Clone, Copy)]
 struct SourceAtom {
     span: u32,
     reversed: bool,
+}
+
+pub(super) struct RebuildRoots<'inventory, 'access, 'metric> {
+    inventory: &'inventory ExactSourceInventory,
+    context: SourceArcContext<'access, 'metric, crate::crs::GeodesicMetric>,
+    axes: crate::geometry::CoordinateAxes,
+    by_node: Vec<Option<ResolvedNodeOrdinates>>,
+}
+
+impl<'inventory, 'access, 'metric> RebuildRoots<'inventory, 'access, 'metric> {
+    pub(super) fn new(
+        inventory: &'inventory ExactSourceInventory,
+        context: &SourceArcContext<'access, 'metric, crate::crs::GeodesicMetric>,
+        axes: crate::geometry::CoordinateAxes,
+        node_count: usize,
+    ) -> Self {
+        Self {
+            inventory,
+            context: *context,
+            axes,
+            by_node: vec![None; node_count],
+        }
+    }
+
+    fn resolve(&mut self, partition: &ExactPartition<'_>, node: NodeId) -> Result<()> {
+        let slot = self.by_node.get_mut(node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage rebuild references an unknown source node".into())
+        })?;
+        if slot.is_none() {
+            *slot = Some(self.inventory.resolve_node_ordinates(
+                partition,
+                node,
+                self.axes,
+                &self.context,
+                None,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn ordinates(&self, node: NodeId) -> Result<ResolvedNodeOrdinates> {
+        self.by_node
+            .get(node.0 as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "coverage rebuild lost a retained source-node occurrence".into(),
+                )
+                .into()
+            })
+    }
 }
 
 #[expect(
@@ -179,7 +234,7 @@ fn replacement_for_chain_run(
     simplified: &SimplifiedChain,
     run: &[SourceAtom],
     capture_edge_roles: bool,
-) -> Result<(Vec<(NodeId, XY)>, Option<Vec<bool>>)> {
+) -> Result<ChainReplacement> {
     let run_nodes = source_run_nodes(partition, run)?;
     let indices = chain_run_indices(chain, run, &run_nodes).ok_or_else(|| {
         GeometryErrorKind::Invalid("coverage source run is absent from its exact chain".into())
@@ -230,8 +285,7 @@ fn replacement_for_chain_run(
 
 #[derive(Clone, Copy)]
 struct RebuiltVertex {
-    xy: XY,
-    point: Option<Point>,
+    point: Point,
     node: Option<NodeId>,
 }
 
@@ -248,24 +302,17 @@ pub(super) fn rebuild_row(
     chain_of_span: &[u32],
     chains: &[Chain],
     simplified: &[SimplifiedChain],
-    inventory: &ExactSourceInventory,
     partition: &ExactPartition<'_>,
-    source_context: &super::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
-    root_axes: crate::geometry::CoordinateAxes,
-    node_ordinates: &mut [Option<crate::geometry::NodeOrdinates>],
-    capture_edge_roles: bool,
+    mut roots: Option<&mut RebuildRoots<'_, '_, '_>>,
 ) -> Result<(Shape, Option<crate::geometry::PolygonPartEdgeRoles>)> {
+    let capture_edge_roles = roots.is_some();
     let mut rebuild_ring = |ring: &CoordSeq| -> Result<(Vec<RebuiltVertex>, Option<Vec<bool>>)> {
         let original: Vec<Point> = ring.iter_coords().collect();
         let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_cursor)?;
         if original.len() < 4 {
             let vertices = original
                 .into_iter()
-                .map(|point| RebuiltVertex {
-                    xy: point.xy(),
-                    point: Some(point),
-                    node: None,
-                })
+                .map(|point| RebuiltVertex { point, node: None })
                 .collect();
             let roles = capture_edge_roles.then(|| vec![false; ring.len().saturating_sub(1)]);
             return Ok((vertices, roles));
@@ -280,15 +327,13 @@ pub(super) fn rebuild_row(
         if open.len() < 3 {
             let vertices = original
                 .into_iter()
-                .map(|point| RebuiltVertex {
-                    xy: point.xy(),
-                    point: Some(point),
-                    node: None,
-                })
+                .map(|point| RebuiltVertex { point, node: None })
                 .collect();
             let roles = capture_edge_roles.then(|| vec![false; ring.len().saturating_sub(1)]);
             return Ok((vertices, roles));
         }
+        // Geographic rebuilds retain node roots; coordinate-key recovery is
+        // permitted only for the Cartesian carry path.
         let source_point_by_key: Option<HashMap<PointKey, Point>> =
             (!capture_edge_roles).then(|| {
                 open.iter()
@@ -379,26 +424,21 @@ pub(super) fn rebuild_row(
             )?;
             for &(node, point) in replacement.iter().take(replacement.len().saturating_sub(1)) {
                 if capture_edge_roles {
-                    resolve_node(
-                        inventory,
-                        partition,
-                        node,
-                        root_axes,
-                        source_context,
-                        node_ordinates,
-                    )?;
+                    roots
+                        .as_deref_mut()
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "geographic coverage rebuild has no retained source roots".into(),
+                            )
+                        })?
+                        .resolve(partition, node)?;
                     out.push(RebuiltVertex {
-                        xy: point,
-                        point: None,
+                        point: Point::new_raw_xy(point.x, point.y),
                         node: Some(node),
                     });
                 } else {
                     let point = source_point(point);
-                    out.push(RebuiltVertex {
-                        xy: point.xy(),
-                        point: Some(point),
-                        node: None,
-                    });
+                    out.push(RebuiltVertex { point, node: None });
                 }
             }
             match (&mut edge_roles, run_edge_roles) {
@@ -461,12 +501,36 @@ pub(super) fn rebuild_row(
             return Ok((shape.clone(), capture_edge_roles.then(Vec::new)));
         },
     };
+    if !capture_edge_roles {
+        let axes = shape.axes();
+        let mut polygons = Vec::with_capacity(rebuilt.len());
+        for polygon in rebuilt {
+            let mut rings = polygon.rings.into_iter();
+            let shell =
+                build_ring_cartesian(rings.next().expect("rebuilt polygon has an exterior ring"))?;
+            let holes = rings
+                .map(build_ring_cartesian)
+                .collect::<Result<Vec<_>>>()?;
+            polygons.push(Polygon::new(shell, holes));
+        }
+        let shape = if is_multi {
+            Shape::multi_polygon(axes, polygons)
+        } else {
+            Shape::Polygon(
+                polygons
+                    .into_iter()
+                    .next()
+                    .expect("rebuilt polygon source has one polygon"),
+            )
+        };
+        return Ok((shape, edge_roles));
+    }
     let mut axes = shape.axes();
     for vertex in rebuilt
         .iter()
         .flat_map(|polygon| polygon.rings.iter().flatten())
     {
-        let (z, m) = rebuilt_vertex_ordinates(vertex, node_ordinates)?;
+        let (z, m) = rebuilt_vertex_ordinates(vertex, roots.as_deref())?;
         axes = crate::geometry::CoordinateAxes::new(
             crate::geometry::HasZ(axes.has_z() && z.is_some()),
             crate::geometry::HasM(axes.has_m() && m.is_some()),
@@ -478,10 +542,10 @@ pub(super) fn rebuild_row(
         let shell = build_ring(
             rings.next().expect("rebuilt polygon has an exterior ring"),
             axes,
-            node_ordinates,
+            roots.as_deref(),
         )?;
         let holes = rings
-            .map(|ring| build_ring(ring, axes, node_ordinates))
+            .map(|ring| build_ring(ring, axes, roots.as_deref()))
             .collect::<Result<Vec<_>>>()?;
         polygons.push(Polygon::new(shell, holes));
     }
@@ -498,42 +562,25 @@ pub(super) fn rebuild_row(
     Ok((shape, edge_roles))
 }
 
-fn resolve_node(
-    inventory: &ExactSourceInventory,
-    partition: &ExactPartition<'_>,
-    node: NodeId,
-    axes: crate::geometry::CoordinateAxes,
-    context: &super::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
-    resolved: &mut [Option<crate::geometry::NodeOrdinates>],
-) -> Result<()> {
-    let slot = resolved.get_mut(node.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("coverage rebuild references an unknown source node".into())
-    })?;
-    if slot.is_none() {
-        *slot = Some(inventory.resolve_node_ordinates(partition, node, axes, context, None)?);
-    }
-    Ok(())
+fn build_ring_cartesian(vertices: Vec<RebuiltVertex>) -> Result<Ring> {
+    let points: Vec<_> = vertices.into_iter().map(|vertex| vertex.point).collect();
+    Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
 }
 
 fn rebuilt_vertex_ordinates(
     vertex: &RebuiltVertex,
-    node_ordinates: &[Option<crate::geometry::NodeOrdinates>],
+    roots: Option<&RebuildRoots<'_, '_, '_>>,
 ) -> Result<(Option<f64>, Option<f64>)> {
     if let Some(node) = vertex.node {
-        let ordinates = node_ordinates
-            .get(node.0 as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "coverage rebuild lost a retained source-node occurrence".into(),
-                )
-            })?;
-        Ok((ordinates.z.value(), ordinates.m.value()))
+        let roots = roots.ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage rebuild lost its retained source-root catalog".into(),
+            )
+        })?;
+        let ordinates = roots.ordinates(node)?;
+        Ok((ordinates.0.0, ordinates.1.0))
     } else {
-        let point = vertex
-            .point
-            .expect("non-root rebuilt vertex retains its original point");
+        let point = vertex.point;
         Ok((point.z(), point.m()))
     }
 }
@@ -541,25 +588,30 @@ fn rebuilt_vertex_ordinates(
 fn build_ring(
     vertices: Vec<RebuiltVertex>,
     axes: crate::geometry::CoordinateAxes,
-    node_ordinates: &[Option<crate::geometry::NodeOrdinates>],
+    roots: Option<&RebuildRoots<'_, '_, '_>>,
 ) -> Result<Ring> {
-    let mut points = Vec::with_capacity(vertices.len());
+    let mut coordinates = crate::geometry::CoordSeqBuilder::with_capacity(axes, vertices.len());
     for vertex in vertices {
-        let (z, m) = rebuilt_vertex_ordinates(&vertex, node_ordinates)?;
-        points.push(Point::new_raw_axes(
-            vertex.xy.x,
-            vertex.xy.y,
-            crate::geometry::ZOrdinate(
-                axes.has_z()
-                    .then(|| z.expect("retained Z is present on every output vertex")),
-            ),
-            crate::geometry::MOrdinate(
-                axes.has_m()
-                    .then(|| m.expect("retained M is present on every output vertex")),
-            ),
-        ));
+        let (z, m) = rebuilt_vertex_ordinates(&vertex, roots)?;
+        let point = vertex.point;
+        coordinates.push(if vertex.node.is_some() || point.axes() != axes {
+            Point::new_raw_axes(
+                point.x,
+                point.y,
+                crate::geometry::ZOrdinate(
+                    axes.has_z()
+                        .then(|| z.expect("retained Z is present on every output vertex")),
+                ),
+                crate::geometry::MOrdinate(
+                    axes.has_m()
+                        .then(|| m.expect("retained M is present on every output vertex")),
+                ),
+            )
+        } else {
+            point
+        });
     }
-    Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
+    Ring::try_from_closed(coordinates.finish()?)
 }
 
 fn rebuild_polygon(

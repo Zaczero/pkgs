@@ -2,8 +2,8 @@ use super::exact_partition::ordinates::ResolvedNodePoints;
 use crate::error::Result;
 use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{
-    ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
-    merge_chains_with_origins, overlay_all,
+    ExactLineEmission, ExactPartition, ExactSourceInventory, NodeId, OverlayOp, Strictness,
+    merge_chains, merge_chains_with_origins, overlay_all,
 };
 use crate::geometry::topology::overlay::{QProducer, exact_geographic_linework_from_shapes};
 use crate::geometry::{
@@ -179,11 +179,9 @@ impl Shape {
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         let lineal = self.lineal().ok_or(GeometryErrorKind::LinealRequired)?;
-        if let TopologyDomain::Geographic(frame) = context.domain() {
+        if context.domain().is_geographic() {
             return match lineal {
-                Lineal::MultiLineString(lines) => {
-                    line_merge_geographic(self, lines, frame, context)
-                },
+                Lineal::MultiLineString(lines) => line_merge_geographic(self, lines, context),
                 Lineal::LineString(_) | Lineal::Empty => Ok(self.clone()),
             };
         }
@@ -273,7 +271,6 @@ impl Shape {
 fn line_merge_geographic(
     input: &Shape,
     lines: &crate::geometry::MultiLineString,
-    frame: crate::geographic::GeographicFrame,
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     if !input.has_z() && !input.has_m() {
@@ -309,8 +306,7 @@ fn line_merge_geographic(
 
     let inventory = ExactSourceInventory::from_shapes(&[input])?;
     let mut budget = crate::geometry::ExpansionBudget::new("line_merge", "exact partition");
-    let mut partition = inventory.partition(&mut budget)?;
-    partition.set_geographic_frame(frame);
+    let partition = inventory.partition(&mut budget)?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
     let vertex_nodes = line_vertex_nodes(lines, &source_spans, &partition)?;
     let mut resolved_nodes = vec![None; partition.node_count()];
@@ -331,9 +327,10 @@ fn line_merge_geographic(
             )?);
         }
         let resolved = ordinates.expect("line-merge node was resolved");
+        let (z, m) = resolved;
         axes = CoordinateAxes::new(
-            crate::geometry::HasZ(axes.has_z() && resolved.z.value().is_some()),
-            crate::geometry::HasM(axes.has_m() && resolved.m.value().is_some()),
+            crate::geometry::HasZ(axes.has_z() && z.0.is_some()),
+            crate::geometry::HasM(axes.has_m() && m.0.is_some()),
         );
     }
 
@@ -347,16 +344,15 @@ fn line_merge_geographic(
                 .copied()
                 .flatten()
                 .expect("every emitted line-merge occurrence has resolved ordinates");
+            let (z, m) = ordinates;
             points.push(Point::new_raw_axes(
                 point.x,
                 point.y,
                 crate::geometry::ZOrdinate(
-                    axes.has_z()
-                        .then(|| ordinates.z.value().expect("retained Z is resolved")),
+                    axes.has_z().then(|| z.0.expect("retained Z is resolved")),
                 ),
                 crate::geometry::MOrdinate(
-                    axes.has_m()
-                        .then(|| ordinates.m.value().expect("retained M is resolved")),
+                    axes.has_m().then(|| m.0.expect("retained M is resolved")),
                 ),
             ));
         }
@@ -368,7 +364,7 @@ fn line_merge_geographic(
 fn line_vertex_nodes(
     lines: &crate::geometry::MultiLineString,
     source_spans: &[Vec<(u32, bool)>],
-    partition: &crate::geometry::overlay::ExactPartition<'_>,
+    partition: &ExactPartition<'_>,
 ) -> Result<Vec<Vec<Option<NodeId>>>> {
     let mut source_cursor = 0_usize;
     let mut result = Vec::with_capacity(lines.len());
@@ -411,24 +407,43 @@ fn line_vertex_nodes(
                 )))
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut vertices = Vec::with_capacity(line.len());
-        for vertex in 0..line.len() {
-            let previous = endpoints
-                .iter()
-                .take(vertex)
-                .rev()
-                .find_map(|endpoints| endpoints.map(|(_, end)| end));
-            let next = endpoints
-                .iter()
-                .skip(vertex)
-                .find_map(|endpoints| endpoints.map(|(start, _)| start));
+        let mut vertices = vec![None; line.len()];
+        for (index, endpoints) in endpoints.into_iter().enumerate() {
+            if let Some((start, end)) = endpoints {
+                assign_line_vertex(vertices.get_mut(index), start)?;
+                assign_line_vertex(vertices.get_mut(index.wrapping_add(1)), end)?;
+            }
+        }
+        let mut index = 0;
+        while index < vertices.len() {
+            if vertices.get(index).is_some_and(Option::is_some) {
+                index = index.wrapping_add(1);
+                continue;
+            }
+            let start = index;
+            while vertices.get(index).is_some_and(Option::is_none) {
+                index = index.wrapping_add(1);
+            }
+            let previous = start
+                .checked_sub(1)
+                .and_then(|prior| vertices.get(prior).copied().flatten());
+            let next = vertices.get(index).copied().flatten();
             if previous.is_some() && next.is_some() && previous != next {
                 return Err(GeometryErrorKind::Invalid(
-                    "line-merge source vertex has inconsistent partition nodes".into(),
+                    "line-merge stutter run has inconsistent partition nodes".into(),
                 )
                 .into());
             }
-            vertices.push(previous.or(next));
+            let node = previous.or(next).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "line-merge source line has no retained partition node".into(),
+                )
+            })?;
+            for vertex in vertices.get_mut(start..index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("line-merge stutter range is invalid".into())
+            })? {
+                *vertex = Some(node);
+            }
         }
         result.push(vertices);
         source_cursor = source_end;
@@ -440,6 +455,20 @@ fn line_vertex_nodes(
         .into());
     }
     Ok(result)
+}
+
+fn assign_line_vertex(slot: Option<&mut Option<NodeId>>, node: NodeId) -> Result<()> {
+    let slot = slot.ok_or_else(|| {
+        GeometryErrorKind::Invalid("line-merge source segment exceeds its line".into())
+    })?;
+    if slot.is_some_and(|prior| prior != node) {
+        return Err(GeometryErrorKind::Invalid(
+            "line-merge source vertex has inconsistent partition nodes".into(),
+        )
+        .into());
+    }
+    *slot = Some(node);
+    Ok(())
 }
 
 fn origin_node(

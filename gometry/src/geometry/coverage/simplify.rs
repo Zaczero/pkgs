@@ -16,7 +16,7 @@ use chain::{Chain, SimplifiedChain, exact_chain, simplify_chain_kept};
 pub(in crate::geometry) use chain::{simplify_chain_guarded, triangle_area};
 pub(in crate::geometry) use guard::TopologyGuard;
 use publication::{publish_coverage_edge_roles, simplify_unshared_geographic_rows};
-use rebuild::rebuild_row;
+use rebuild::{RebuildRoots, rebuild_row};
 
 use crate::geometry::coverage::{
     AABB, HashMap, Reverse, coverage_rows, valid_coverage_rows, validate_polygonal_rows,
@@ -106,12 +106,19 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     let inventory = ExactSourceInventory::from_shapes(&source_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_simplify", "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    let root_axes = source_refs
-        .iter()
-        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
-            axes.union(shape.axes())
-        });
-    let mut node_ordinates = vec![None; partition.node_count()];
+    let mut rebuild_roots = geographic_frame.map(|_| {
+        let root_axes = source_refs
+            .iter()
+            .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+                axes.union(shape.axes())
+            });
+        RebuildRoots::new(
+            &inventory,
+            source_context,
+            root_axes,
+            partition.node_count(),
+        )
+    });
     let views = partition.coverage_chain_views(inventory.source_operands())?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
     let mut chain_sources = vec![Vec::new(); views.chains.len()];
@@ -185,7 +192,6 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     drop(all_segments);
 
     let mut source_cursor = 0;
-    let capture_edge_roles = geographic_frame.is_some();
     prepared
         .iter()
         .map(|row| {
@@ -199,12 +205,8 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
                 &views.chain_of_span,
                 &chains,
                 &simplified,
-                &inventory,
                 &partition,
-                source_context,
-                root_axes,
-                &mut node_ordinates,
-                capture_edge_roles,
+                rebuild_roots.as_mut(),
             )?;
             match (geographic_frame, edge_roles) {
                 (Some(frame), Some(edge_roles)) => publish_coverage_edge_roles(

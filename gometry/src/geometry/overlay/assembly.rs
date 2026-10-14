@@ -1,3 +1,4 @@
+use super::ChainOrigins;
 use crate::geometry::{CoordSeq, CoordSeqBuilder, HashMap, PointKey};
 
 fn extend_chain(
@@ -41,13 +42,16 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
 /// than coordinate equality, owns additional ordinate candidates.
 pub(crate) fn merge_chains_with_origins<E: AsRef<CoordSeq>>(
     edges: &[E],
-) -> crate::error::Result<(Vec<CoordSeq>, Vec<Vec<(usize, usize)>>)> {
+) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
     let mut origins = Vec::with_capacity(edges.len());
     let chains = merge_chains_impl(edges, &mut |chain, edge, vertex| {
         while origins.len() <= chain {
             origins.push(Vec::new());
         }
-        origins[chain].push((edge, vertex));
+        origins
+            .get_mut(chain)
+            .expect("origin chain row is initialized before appending")
+            .push((edge, vertex));
     })?;
     Ok((chains, origins))
 }
