@@ -106,6 +106,12 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     let inventory = ExactSourceInventory::from_shapes(&source_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_simplify", "exact partition");
     let partition = inventory.partition(&mut budget)?;
+    let root_axes = source_refs
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.axes())
+        });
+    let mut node_ordinates = vec![None; partition.node_count()];
     let views = partition.coverage_chain_views(inventory.source_operands())?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
     let mut chain_sources = vec![Vec::new(); views.chains.len()];
@@ -193,7 +199,11 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
                 &views.chain_of_span,
                 &chains,
                 &simplified,
+                &inventory,
                 &partition,
+                source_context,
+                root_axes,
+                &mut node_ordinates,
                 capture_edge_roles,
             )?;
             match (geographic_frame, edge_roles) {

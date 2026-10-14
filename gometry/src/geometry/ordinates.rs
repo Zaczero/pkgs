@@ -223,26 +223,19 @@ pub(crate) fn record_root_work(event: RootWorkEvent) {
     });
 }
 
-/// Z/M lookup table for source-preserving operations that have no exact source
-/// parameter at emission time. Exact partition owners resolve their own nodes.
-pub(super) struct OrdinateSource<'access, 'metric> {
+/// Cartesian Z/M lookup for source-preserving operations without exact source
+/// parameters. Geographic producers retain and resolve their source occurrences.
+pub(super) struct OrdinateSource {
     vertices: HashMap<VertexKey, Vec<Point>>,
     segments: Vec<(Point, Point)>,
-    /// Cartesian output from snapped overlay kernels can differ slightly from
-    /// its exact source intersection. Geographic fallback projects into the
-    /// retained chart and tests the rounded local representation instead.
     tolerance: f64,
-    context: SourceArcContext<'access, 'metric>,
 }
 
 /// The engine-snap allowance relative to the inputs' coordinate magnitude.
 const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 
-impl<'access, 'metric> OrdinateSource<'access, 'metric> {
-    fn new<S: Borrow<Shape>>(
-        inputs: &[S],
-        context: &SourceArcContext<'access, 'metric>,
-    ) -> Result<Self> {
+impl OrdinateSource {
+    fn new<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
         // Shared XY owners bound dedup storage without expanding logical
         // occurrences. Non-collection shapes use their exact count.
         let capacity = inputs.iter().try_fold(0_usize, |total, input| {
@@ -260,37 +253,37 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         Ok(Self {
             vertices,
             segments,
-            tolerance: if context.domain().is_geographic() {
-                0.0
-            } else {
-                ordinate_tolerance(inputs)
-            },
-            context: *context,
+            tolerance: ordinate_tolerance(inputs),
         })
     }
 
     fn add_vertex(&mut self, point: Point) {
-        add_vertex(&mut self.vertices, point, self.context.domain());
+        add_vertex(
+            &mut self.vertices,
+            point,
+            crate::geometry::TopologyDomain::Cartesian,
+        );
     }
 
     fn add_source_edge(&mut self, start: Point, end: Point) {
         self.add_vertex(start);
         self.add_vertex(end);
         if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
-            self.segments
-                .push(if self.context.domain().is_geographic() {
-                    (start, end)
-                } else {
-                    canonical_segment(start, end)
-                });
+            self.segments.push(canonical_segment(start, end));
         }
     }
 
     fn build_direct<S: Borrow<Shape>>(
         inputs: &[S],
-        context: &SourceArcContext<'access, 'metric>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
-        let mut result = Self::new(inputs, context)?;
+        if context.domain().is_geographic() {
+            return Err(GeometryErrorKind::Invalid(
+                "geographic ordinate carry requires retained source occurrences".into(),
+            )
+            .into());
+        }
+        let mut result = Self::new(inputs)?;
         for input in inputs {
             let shape = Borrow::<Shape>::borrow(input);
             match shape {
@@ -329,9 +322,10 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
     fn resolve(&self, point: Point) -> Result<(Option<f64>, Option<f64>)> {
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
-        let source_vertex = self
-            .vertices
-            .get(&VertexKey::new(point, self.context.domain()));
+        let source_vertex = self.vertices.get(&VertexKey::new(
+            point,
+            crate::geometry::TopologyDomain::Cartesian,
+        ));
         if let Some(candidates) = source_vertex {
             for &candidate in candidates {
                 z.observe(candidate.z());
@@ -341,8 +335,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         // An exact source occurrence owns its XY even when it is merely near
         // another ordinate-carrying segment. Do not turn that near miss into
         // a fabricated interpolation through a tolerance envelope.
-        if self.context.domain() == crate::geometry::TopologyDomain::Cartesian
-            && source_vertex.is_some()
+        if source_vertex.is_some()
             && !self
                 .segments
                 .iter()
@@ -354,97 +347,31 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
             return Ok((z.value(), m.value()));
         }
         for &(start, end) in &self.segments {
-            let resolved = match self.context.domain() {
-                crate::geometry::TopologyDomain::Cartesian => {
-                    let pad = self.tolerance;
-                    let segment_pad = ON_SEGMENT_EPSILON * point_distance(start, end);
-                    let min_x = start.x.min(end.x) - segment_pad;
-                    let max_x = start.x.max(end.x) + segment_pad;
-                    let min_y = start.y.min(end.y) - segment_pad;
-                    let max_y = start.y.max(end.y) + segment_pad;
-                    if point.x < min_x - pad
-                        || point.x > max_x + pad
-                        || point.y < min_y - pad
-                        || point.y > max_y + pad
-                    {
-                        None
-                    } else {
-                        segment_ordinate_at(start, end, point, self.tolerance)?
-                    }
-                },
-                crate::geometry::TopologyDomain::Geographic(source_frame) => {
-                    self.geographic_segment_ordinates(start, end, point, source_frame)?
-                },
+            let pad = self.tolerance;
+            let segment_pad = ON_SEGMENT_EPSILON * point_distance(start, end);
+            let min_x = start.x.min(end.x) - segment_pad;
+            let max_x = start.x.max(end.x) + segment_pad;
+            let min_y = start.y.min(end.y) - segment_pad;
+            let max_y = start.y.max(end.y) + segment_pad;
+            let resolved = if point.x < min_x - pad
+                || point.x > max_x + pad
+                || point.y < min_y - pad
+                || point.y > max_y + pad
+            {
+                None
+            } else {
+                segment_ordinate_at(start, end, point, self.tolerance)?
             };
             if let Some((source_z, source_m)) = resolved {
                 // Exact endpoint candidates are already represented by the
-                // vertex table in Cartesian space. Geographic quotient aliases
-                // can spell the same authentic endpoint differently.
-                if self.context.domain().is_geographic()
-                    || !same_point(start, point) && !same_point(end, point)
-                {
+                // vertex table in Cartesian space.
+                if !same_point(start, point) && !same_point(end, point) {
                     z.observe(source_z);
                     m.observe(source_m);
                 }
             }
         }
         Ok((z.value(), m.value()))
-    }
-
-    fn geographic_segment_ordinates(
-        &self,
-        start: Point,
-        end: Point,
-        point: Point,
-        source_frame: crate::geographic::GeographicFrame,
-    ) -> Result<Option<(Option<f64>, Option<f64>)>> {
-        // This fallback serves source-less operations only. Exact emission
-        // owners use their retained source parameters; contact below certifies
-        // membership in the rounded local chart representation, not the
-        // original exact source edge.
-        let axes = CoordinateAxes::new(
-            HasZ(start.z().is_some() && end.z().is_some()),
-            HasM(start.m().is_some() && end.m().is_some()),
-        );
-        if !axes.has_z() && !axes.has_m() {
-            return Ok(None);
-        }
-        let domain = crate::geometry::TopologyDomain::Geographic(source_frame);
-        if VertexKey::new(point, domain) == VertexKey::new(start, domain)
-            || VertexKey::new(point, domain) == VertexKey::new(end, domain)
-        {
-            return Ok(None);
-        }
-        let longitude = source_frame
-            .longitude()
-            .chart_connection(start.x, end.x)
-            .map(crate::geographic::ChartConnection::retained)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let edge = crate::crs::ChartEdge::from_retained(start, end, source_frame, longitude)?;
-        let (projection, query, segment) = edge.project_source_chart(point)?;
-        let point_segment = Segment {
-            start: query,
-            end: query,
-        };
-        if !matches!(
-            crate::geometry::segment_contact_exact(point_segment, segment),
-            crate::geometry::Contact::Touch(_) | crate::geometry::Contact::Collinear
-        ) {
-            return Ok(None);
-        }
-        let parameter = projection.exact_fraction()?;
-        let source = [start, end];
-        let request =
-            SourceArcRequest::new(source_frame, &source, axes, &parameter, || Ok(longitude))?;
-        let ordinates = source_arc_ordinates_unmetered(&request, || {
-            let access = self.context.metric_access().ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic source-ordinate carry requires the operation's CRS metric",
-                )
-            })?;
-            access()
-        })?;
-        Ok(Some((ordinates.z.value(), ordinates.m.value())))
     }
 }
 
@@ -1024,7 +951,7 @@ pub(crate) fn carry_overlay_ordinates(
 /// have a conflict or an unsourced vertex.
 fn carry_or_degrade(
     output: &Shape,
-    source: &OrdinateSource<'_, '_>,
+    source: &OrdinateSource,
     declared_axes: CoordinateAxes,
     operation: &str,
     strict: bool,
