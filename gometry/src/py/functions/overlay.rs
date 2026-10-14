@@ -958,11 +958,16 @@ pub(crate) fn coverage_simplify(
 ///
 /// gap_width : float, default 0.0
 ///     Finite non-negative coordinate-space width of gaps to merge (0 keeps
-///     gaps).
+///     gaps). Geographic CRSs use native angular units without conversion to
+///     physical units; projected CRSs use native linear units, and CRS-free
+///     inputs use raw coordinate units.
 /// overlap_rule : str, default 'longest_border'
 ///     Which row keeps a region covered more than once:
 ///     ``'longest_border'``, ``'max_area'``, ``'min_area'``, or
-///     ``'min_index'``.
+///     ``'min_index'``. Geographic inputs rank rows by ellipsoidal area in
+///     square metres and rank shared borders by ellipsoidal arclength in metres
+///     along retained chart-straight edges. Projected and CRS-free inputs
+///     retain coordinate-space rankings.
 ///     Cleaning rebuilds faces from one exact partition. Source Z/M ordinates
 ///     are retained for rows whose emitted nodes have one consistent source
 ///     value; an unavailable or conflicting axis is dropped for that row.

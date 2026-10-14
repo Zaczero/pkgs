@@ -27,8 +27,30 @@ fn chart_piece_counts_refine_only_requested_edges_and_preserve_ordinates() {
 
     assert_eq!(refined.xs(), &[0.0, 1.0, 1.0, 1.0, 1.0, 2.0]);
     assert_eq!(refined.ys(), &[0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]);
-    assert_eq!(refined.zs().unwrap(), &[1.0, 2.0, 12.0, 22.0, 32.0, 33.0]);
-    assert_eq!(refined.ms().unwrap(), &[10.0, 20.0, 40.0, 60.0, 80.0, 90.0]);
+    for (actual, expected) in refined
+        .zs()
+        .unwrap()
+        .iter()
+        .zip([1.0, 2.0, 12.0, 22.0, 32.0, 33.0])
+    {
+        assert!((*actual - expected).abs() <= 1.0e-12);
+    }
+    for (actual, expected) in refined
+        .ms()
+        .unwrap()
+        .iter()
+        .zip([10.0, 20.0, 40.0, 60.0, 80.0, 90.0])
+    {
+        assert!((*actual - expected).abs() <= 1.0e-12);
+    }
+    assert_eq!(
+        refined.zs().unwrap().first().unwrap().to_bits(),
+        1.0_f64.to_bits()
+    );
+    assert_eq!(
+        refined.zs().unwrap().last().unwrap().to_bits(),
+        33.0_f64.to_bits()
+    );
     assert_eq!(budget.used(), 9);
 }
 #[test]

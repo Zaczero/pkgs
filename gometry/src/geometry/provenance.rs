@@ -14,21 +14,83 @@ use crate::geometry::{
 use crate::work::Work;
 
 /// How one output vertex derives from the operation's source-frame input.
-///
-/// This type deliberately cannot hold a coordinate computed in another frame:
-/// the only representable outputs are an exact source vertex copy or an
-/// interpolation along a source segment. Local-projection kernels may use a
-/// projected frame to decide this plan, but final coordinates are emitted by
-/// [`emit_from_original`] from the original input bits.
 #[derive(Clone, Debug)]
 pub(crate) enum VertexProvenance {
     Input(usize),
+    /// Planar interpolation; geographic source interpolation uses `OnSource`.
     OnSegment {
         i: usize,
         j: usize,
         projection: SegmentProjection,
-        root_request: Option<RootRequest>,
     },
+    /// Geographic interpolation bound to its original source edge.
+    OnSource {
+        i: usize,
+        j: usize,
+        projection: SegmentProjection,
+        root_request: RootRequest,
+    },
+}
+
+/// A checked geographic plan. A segment sample carrying source Z/M cannot be
+/// admitted without a request for its original edge.
+pub(crate) struct GeographicProvenancePlan<'a> {
+    source_points: &'a [Point],
+    vertices: &'a [VertexProvenance],
+    axes: CoordinateAxes,
+}
+
+impl<'a> GeographicProvenancePlan<'a> {
+    pub(crate) fn new(
+        source_points: &'a [Point],
+        vertices: &'a [VertexProvenance],
+        axes: CoordinateAxes,
+    ) -> Result<Self> {
+        for vertex in vertices {
+            let VertexProvenance::OnSegment {
+                i, j, projection, ..
+            } = vertex
+            else {
+                continue;
+            };
+            let start = *source_points.get(*i).ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Invalid(
+                    "geographic provenance segment start is outside its source points".into(),
+                )
+            })?;
+            let end = *source_points.get(*j).ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Invalid(
+                    "geographic provenance segment end is outside its source points".into(),
+                )
+            })?;
+            let at_start = projection.is_start();
+            let at_end = projection.is_end();
+            let has_z = if at_start {
+                start.z().is_some()
+            } else if at_end {
+                end.z().is_some()
+            } else {
+                start.z().is_some() && end.z().is_some()
+            };
+            let has_m = if at_start {
+                start.m().is_some()
+            } else if at_end {
+                end.m().is_some()
+            } else {
+                start.m().is_some() && end.m().is_some()
+            };
+            if (axes.has_z() && has_z) || (axes.has_m() && has_m) {
+                return Err(crate::crs::CrsError::invalid(
+                    "geographic on-segment provenance is missing its original source root",
+                ));
+            }
+        }
+        Ok(Self {
+            source_points,
+            vertices,
+            axes,
+        })
+    }
 }
 
 /// Per-edge subdivision counts for one original line or ring chain.
@@ -134,11 +196,10 @@ impl RefinedChainProvenance {
     }
 }
 
-/// Materialize a vertex-provenance plan in the original source frame.
+/// Materialize planar vertex provenance in the original source frame.
 ///
-/// `Input(i)` is a bit-exact copy of `original[i]`. `OnSegment` interpolates
-/// directly on the original segment, so projected coordinates can never leak
-/// into a copy/partial-output operation.
+/// `Input(i)` is a bit-exact copy of `original[i]`; `OnSegment` interpolates
+/// directly on the original segment.
 pub(crate) fn emit_from_original(
     original: &[Point],
     plan: &[VertexProvenance],
@@ -159,6 +220,46 @@ pub(crate) fn emit_from_original(
                     .get(*j)
                     .expect("segment provenance end is within the source geometry"),
             )?,
+            VertexProvenance::OnSource { .. } => {
+                return Err(crate::crs::CrsError::invalid(
+                    "geographic source provenance requires root-based materialization",
+                ));
+            },
+        };
+        output.push(point);
+    }
+    Ok(output)
+}
+
+/// Materialize only the XY projection used by a local-frame geometry.
+pub(crate) fn emit_from_original_xy(
+    original: &[Point],
+    plan: &[VertexProvenance],
+) -> Result<Vec<Point>> {
+    let mut output = Vec::with_capacity(plan.len());
+    for vertex in plan {
+        let point = match vertex {
+            VertexProvenance::Input(index) => {
+                let source = original
+                    .get(*index)
+                    .expect("input provenance index is within the source geometry");
+                Point::new_raw_xy(source.x, source.y)
+            },
+            VertexProvenance::OnSegment {
+                i, j, projection, ..
+            }
+            | VertexProvenance::OnSource {
+                i, j, projection, ..
+            } => {
+                let start = *original
+                    .get(*i)
+                    .expect("segment provenance start is within the source geometry");
+                let end = *original
+                    .get(*j)
+                    .expect("segment provenance end is within the source geometry");
+                let projected = projection.interpolate_point(start, end)?;
+                Point::new_raw_xy(projected.x, projected.y)
+            },
         };
         output.push(point);
     }
@@ -221,56 +322,166 @@ impl RootCatalog for OriginalPointRoots<'_> {
 }
 
 pub(crate) fn emit_from_original_with_source_roots<M: ChartMetric>(
-    source_points: &[Point],
+    plan: &GeographicProvenancePlan<'_>,
     original_roots: &[Point],
-    plan: &[VertexProvenance],
-    axes: CoordinateAxes,
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     work: &mut impl Work,
 ) -> Result<Vec<Point>> {
-    let mut output = emit_from_original(source_points, plan)?;
-    if !axes.has_z() && !axes.has_m() {
-        return Ok(output);
+    let mut output = Vec::with_capacity(plan.vertices.len());
+    for vertex in plan.vertices {
+        let point = match vertex {
+            VertexProvenance::Input(index) => *plan
+                .source_points
+                .get(*index)
+                .expect("input provenance index is within the source geometry"),
+            VertexProvenance::OnSegment {
+                i, j, projection, ..
+            }
+            | VertexProvenance::OnSource {
+                i, j, projection, ..
+            } => {
+                let start = *plan
+                    .source_points
+                    .get(*i)
+                    .expect("segment provenance start is within the source geometry");
+                let end = *plan
+                    .source_points
+                    .get(*j)
+                    .expect("segment provenance end is within the source geometry");
+                let projected = projection.interpolate_point(start, end)?;
+                Point::new_raw_xy(projected.x, projected.y)
+            },
+        };
+        output.push(point);
     }
-    if !plan.iter().any(|vertex| {
-        matches!(vertex, VertexProvenance::OnSegment {
-            root_request: Some(_),
-            ..
-        })
-    }) {
+    if !(plan.axes.has_z() || plan.axes.has_m())
+        || !plan
+            .vertices
+            .iter()
+            .any(|vertex| matches!(vertex, VertexProvenance::OnSource { .. }))
+    {
         return Ok(output);
     }
 
-    let mut rows = Vec::with_capacity(plan.len());
-    for vertex in plan {
+    let mut rows = Vec::with_capacity(plan.vertices.len());
+    for vertex in plan.vertices {
         let requests = match vertex {
-            VertexProvenance::OnSegment {
-                root_request: Some(request),
-                ..
-            } => vec![request.clone()],
+            VertexProvenance::OnSource { root_request, .. } => vec![root_request.clone()],
             VertexProvenance::Input(_) | VertexProvenance::OnSegment { .. } => Vec::new(),
         };
-        rows.push(RequestRowInput { axes, requests });
+        rows.push(RequestRowInput {
+            axes: plan.axes,
+            requests,
+        });
     }
     let roots = OriginalPointRoots {
         frame,
         points: original_roots,
     };
     let resolved = resolve_request_rows(&rows, &roots, metric_access, work)?;
-    for (point, (vertex, ordinates)) in output.iter_mut().zip(plan.iter().zip(resolved)) {
-        if !matches!(vertex, VertexProvenance::OnSegment {
-            root_request: Some(_),
-            ..
-        }) {
+    for (point, (vertex, ordinates)) in output.iter_mut().zip(plan.vertices.iter().zip(resolved)) {
+        if !matches!(vertex, VertexProvenance::OnSource { .. }) {
             continue;
         }
         *point = Point::new_raw_axes(
             point.x,
             point.y,
-            ZOrdinate(ordinates.z.value().or_else(|| point.z())),
-            MOrdinate(ordinates.m.value().or_else(|| point.m())),
+            ZOrdinate(ordinates.z.value()),
+            MOrdinate(ordinates.m.value()),
         );
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::segments::projection::segment_projection;
+    use crate::geometry::{CoordSeq, LineSeq, Segment, Shape, XY};
+
+    #[test]
+    fn geographic_provenance_rejects_an_on_segment_sample_without_a_root() {
+        let source = [
+            Point::new_axes(10.0, 5.0, ZOrdinate(Some(0.0)), MOrdinate(None)).unwrap(),
+            Point::new_axes(40.0, 70.0, ZOrdinate(Some(100.0)), MOrdinate(None)).unwrap(),
+        ];
+        let projection = segment_projection(XY::new(25.0, 37.5), Segment {
+            start: source[0].xy(),
+            end: source[1].xy(),
+        })
+        .unwrap();
+        assert_eq!(projection.fraction().to_bits(), 0.5_f64.to_bits());
+        let plan = [VertexProvenance::OnSegment {
+            i: 0,
+            j: 1,
+            projection,
+        }];
+        let axes = source[0].axes().union(source[1].axes());
+        let result = GeographicProvenancePlan::new(&source, &plan, axes);
+
+        assert!(
+            result.is_err(),
+            "a rootless WGS84 midpoint must not publish affine Z=50; its source-edge arclength Z is approximately 51.056",
+        );
+    }
+
+    #[test]
+    fn geographic_on_source_uses_the_original_wgs84_root_arclength() -> Result<()> {
+        let source = [
+            Point::new_axes(10.0, 5.0, ZOrdinate(Some(0.0)), MOrdinate(None))?,
+            Point::new_axes(40.0, 70.0, ZOrdinate(Some(100.0)), MOrdinate(None))?,
+        ];
+        let line = LineSeq::try_new(CoordSeq::try_from_points(&source)?)?;
+        let shape = Shape::LineString(line);
+        let state = crate::crs::runtime_state_snapshot()?;
+
+        let output =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&shape], &state, |metric| {
+                let metric_access = || Ok(metric);
+                let mut work = crate::work::Unmetered;
+                let projection = segment_projection(XY::new(25.0, 37.5), Segment {
+                    start: source[0].xy(),
+                    end: source[1].xy(),
+                })?;
+                let root_request = RootRequest::new_with_work(
+                    RootId::from_index(0),
+                    ExactRational::from_f64(0.5),
+                    &mut work,
+                )?;
+                let plan = [VertexProvenance::OnSource {
+                    i: 0,
+                    j: 1,
+                    projection,
+                    root_request,
+                }];
+                let axes = source[0].axes().union(source[1].axes());
+                let plan = GeographicProvenancePlan::new(&source, &plan, axes)?;
+                emit_from_original_with_source_roots(
+                    &plan,
+                    &source,
+                    GeographicFrame::crs84(),
+                    Some(&metric_access),
+                    &mut work,
+                )
+            })?;
+
+        let point = output.first().ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "geographic provenance emitted no midpoint".into(),
+            )
+        })?;
+        let z = point.z().ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "geographic provenance midpoint has no source Z".into(),
+            )
+        })?;
+        if (z - 51.056_024_441_584_35).abs() > 1.0e-7 {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                format!("geographic midpoint Z {z} differs from its WGS84 source arclength").into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
 }

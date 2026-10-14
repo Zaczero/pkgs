@@ -233,7 +233,10 @@ that assignment before returning it. Each moved coordinate stays within 1.5
 times the larger spacing to its neighboring binary64 values on that axis. A
 stored vertex, or an exactly representable constructed coordinate, never
 moves. Geographic overlay output does not move a vertex onto a seam or pole.
-Z/M values are evaluated at the exact constructed vertex.
+Z/M values are evaluated at the exact constructed vertex. On geographic source
+edges, eligible ordinates follow ellipsoidal arclength along the retained
+straight chart edge, including across later cuts; see
+[Z/M under operations](geometry.md#zm-under-operations).
 
 If no assignment in the overlay operation's admitted finite coordinate domain
 passes the certificate, it raises [`GeometryError`][gometry.GeometryError] with

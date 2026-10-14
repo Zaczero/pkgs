@@ -306,7 +306,7 @@ impl ChartMetric for EllipsoidMetric<'_> {
         parameter: f64,
         length: Option<f64>,
     ) -> crate::error::Result<Point> {
-        edge.witness(start, end, parameter, length, self.geodesic)
+        edge.witness(start, end, parameter, length, self)
     }
 
     fn chart_edge_differential(&self, edge: &ChartEdge, parameter: f64) -> ChartEdgeDifferential {

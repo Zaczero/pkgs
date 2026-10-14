@@ -115,7 +115,7 @@ fn publish_polygon_with_edge_roles_inner(
 }
 
 pub(crate) fn publish_polygon_parts_with_edge_roles(
-    polygons: Vec<Polygon>,
+    polygons: &[Polygon],
     edge_roles: &[Vec<Vec<bool>>],
     frame: GeographicFrame,
     budget: &mut ExpansionBudget,
@@ -126,8 +126,8 @@ pub(crate) fn publish_polygon_parts_with_edge_roles(
         ));
     }
     polygons
-        .into_iter()
+        .iter()
         .zip(edge_roles)
-        .map(|(polygon, roles)| publish_polygon_with_edge_roles(&polygon, roles, frame, budget))
+        .map(|(polygon, roles)| publish_polygon_with_edge_roles(polygon, roles, frame, budget))
         .collect()
 }
