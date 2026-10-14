@@ -116,9 +116,14 @@ fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
     let access = || Ok(&metric);
     let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
     let context = SourceArcContext::new(domain, Some(&access));
-    for rows in [[outer.clone(), inner.clone()], [inner, outer]] {
+    for (order, rows) in [
+        ("outer first", [outer.clone(), inner.clone()]),
+        ("inner first", [inner, outer]),
+    ] {
         let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::MinIndex, &context)
-            .expect("selected polar regions have an admitted drawing");
+            .unwrap_or_else(|error| {
+                panic!("{order}: selected polar regions have no drawing: {error:?}")
+            });
         assert!(
             crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
                 .expect("polar coverage validates"),

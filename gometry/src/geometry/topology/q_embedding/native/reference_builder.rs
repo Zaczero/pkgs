@@ -308,14 +308,13 @@ pub(in crate::geometry::topology::q_embedding) fn normalize_native_chart_lift(
     let PortSpelling::Interior { periods } = &port.spelling else {
         return Ok(());
     };
-    if *periods == 0 {
-        return Ok(());
+    if *periods != 0 {
+        let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(*periods));
+        let shift = ExactRational::from_f64(frame.longitude().period())
+            .try_product_with_work(&lift, budget)?;
+        port.point.x = port.point.x.try_subtract_with_work(&shift, budget)?;
+        port.spelling = PortSpelling::Interior { periods: 0 };
     }
-    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(*periods));
-    let shift =
-        ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, budget)?;
-    port.point.x = port.point.x.try_subtract_with_work(&shift, budget)?;
-    port.spelling = PortSpelling::Interior { periods: 0 };
     if port.source_record.is_some_and(|record| {
         ExactRational::from_f64(record.x) != port.point.x
             || ExactRational::from_f64(record.y) != port.point.y
