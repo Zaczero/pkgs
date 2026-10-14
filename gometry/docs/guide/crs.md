@@ -29,22 +29,23 @@ CRS assignment and transformation have different effects:
 
 A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
 into a few families rather than one exception-free slogan. Geographic
-measurements use either ellipsoidal arclength/area on straight chart edges or
-geodesic point distances, depending on the operation. Topology remains a
-coordinate-plane X/Y operation: in a geographic CRS it resolves longitude
-aliases, seam spellings, and pole longitudes in the CRS-native frame before
-construction. A seam split uses straight edges in an unwrapped longitude/latitude
-chart; it does not construct geodesic edges. Metric constructive operations use
-CRS-native distance inputs but can construct in a local projection. Coordinate
-edits operate on stored coordinates; planar constructive operations use stored
-coordinates or a method-specific geographic chart, as described below.
+measurements use ellipsoidal arclength of retained chart-straight source edges
+and ellipsoidal area bounded by those edges, while point-to-point distances use
+geodesics. Topology remains a coordinate-plane X/Y operation: in a geographic
+CRS it resolves longitude aliases, seam spellings, and pole longitudes in the
+CRS-native frame before construction. A seam split uses straight edges in an
+unwrapped longitude/latitude chart; it does not construct geodesic edges. Metric
+constructive operations use CRS-native distance inputs but can construct in a
+local projection. Coordinate edits operate on stored coordinates; planar
+constructive operations use stored coordinates or a method-specific geographic
+chart, as described below.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
 | **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | Geographic area, length, and LRS measure straight chart edges on the ellipsoid. Point-to-point distance uses a geodesic; shape distance, `dwithin`, `nearest_points`, and `shortest_line` minimize ellipsoidal geodesic separation over closed chart-edge supports, including filled polygons. Geographic Hausdorff ranges continuously over points and linework only. `unit='planar'` selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits endpoints within the CRS frame's native longitude half-period and latitude poles, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
-| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
+| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength of the retained chart-straight source edge and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], [`triangulate`][gometry.Geometry.triangulate], [`voronoi`][gometry.Geometry.voronoi] | Planar or local-projection construction; see [constructive operations](constructive.md#tessellation-triangulate-voronoi-polygonize) for geographic tessellation behavior. |
 
@@ -71,7 +72,8 @@ distance is metres, but the produced outline is a local-projection approximation
   its inputs, so metadata never silently drops out of a pipeline.
 - **`unit=None` means the CRS-natural unit**, everywhere a `unit=` parameter
   exists: geographic shape area and length use ellipsoidal chart-edge measures,
-  geographic LRS uses the same edge arclength, geographic point distances use
+  geographic LRS uses the ellipsoidal arclength of the retained
+  chart-straight source edge, geographic point distances use
   geodesics, projected measurements use native linear units, and CRS-free
   measurements use raw coordinate units (area results square the corresponding
   unit). `unit='planar'` uses Cartesian coordinate space, with geographic
@@ -368,12 +370,19 @@ longitude/latitude chart. A constant-latitude edge therefore follows its
 parallel, rather than the shortest geodesic between its endpoints. WKT records
 vertices without specifying an edge interpolation rule. GeoJSON follows RFC
 7946's straight Cartesian interpolation in its WGS 84 longitude/latitude
-coordinate system; it has no geodesic or rhumb-line edge option. To represent a
-geodesic, rhumb line, or path defined in another projected frame, **sample that
-path into intermediate vertices before writing GeoJSON**. The serialized
-segments remain straight between those samples. Ordinary densify interpolates
-the stored chart edge and does not synthesize a rhumb route. Split or otherwise
-disambiguate half-period edges that have no unique chart direction.
+coordinate system; it has no geodesic or rhumb-line edge option. RFC 7946
+[§3.1.1](https://www.rfc-editor.org/rfc/rfc7946.html#section-3.1.1) defines
+linearly interpolated positions and applies the same rule to the optional third
+ordinate (height). Gometry instead inserts Z using the ellipsoidal
+arclength fraction of the retained chart-straight source edge. Therefore a Z
+inserted before GeoJSON export can differ from one inserted later by a consumer
+interpolating the exported segment, even when both insertions use the same
+longitude/latitude position. To represent a geodesic, rhumb line, or path
+defined in another projected frame, **sample that path into intermediate
+vertices before writing GeoJSON**. The serialized segments remain straight
+between those samples. Ordinary densify interpolates the stored chart edge and
+does not synthesize a rhumb route. Split or otherwise disambiguate half-period
+edges that have no unique chart direction.
 
 For geographic shape pairs, [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin],
@@ -753,7 +762,8 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     [`segmentize`][gometry.Geometry.segmentize] only *inserts* vertices along
     existing segments, so every original survives untouched. By default,
     geographic edges stay straight in longitude/latitude, and `max_length` is
-    their ellipsoidal arclength, measured like
+    the ellipsoidal arclength of the retained chart-straight source edge,
+    measured like
     [`length`][gometry.length] — meters along the ellipsoid on a geographic CRS,
     native linear units on a projected one, raw coordinate units when CRS-free — with the
     same `unit='planar'` / `unit='meters'` escapes as every other metric.

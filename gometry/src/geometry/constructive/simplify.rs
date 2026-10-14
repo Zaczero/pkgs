@@ -1,3 +1,4 @@
+mod plan;
 mod rdp;
 
 use crate::NonNegative;
@@ -325,6 +326,14 @@ enum RawSimplify {
     Changed(Shape),
 }
 
+/// Source vertex indices retained by polygonal geographic simplification.
+///
+/// `polygons` follows the output shape's polygon-value order. Each polygon
+/// contains one index list per output ring, in shell-then-hole order.
+pub(crate) struct PolygonalSimplificationPlan {
+    pub(crate) polygons: Vec<Vec<Vec<usize>>>,
+}
+
 impl RawSimplify {
     #[cfg(test)]
     fn into_shape(self, original: &Shape) -> Shape {
@@ -347,12 +356,28 @@ fn kept_coords(
     points: &CoordSeq,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
+    kept_vertices: Option<&mut Vec<usize>>,
 ) -> Result<Option<CoordSeq>> {
     let Some(kept) = keep_mask(points.xs(), points.ys(), scratch)? else {
+        if let Some(kept_vertices) = kept_vertices {
+            kept_vertices.extend(0..points.len());
+        }
         return Ok(None);
     };
     if kept == points.len() {
+        if let Some(kept_vertices) = kept_vertices {
+            kept_vertices.extend(0..points.len());
+        }
         return Ok(None);
+    }
+    if let Some(kept_vertices) = kept_vertices {
+        kept_vertices.extend(
+            scratch
+                .keep
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &keep)| keep.then_some(index)),
+        );
     }
     Ok(Some(points.select_mask(&scratch.keep, kept)))
 }
@@ -367,12 +392,16 @@ fn keep_ring(
     ring: &Ring,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
-) -> Result<RingKeep> {
-    Ok(
-        kept_coords(ring.coords(), scratch, keep_mask)?.map_or(RingKeep::Same, |coords| {
-            Ring::from_closed(coords).map_or(RingKeep::Drop, RingKeep::New)
+    capture_plan: bool,
+) -> Result<(RingKeep, Option<Vec<usize>>)> {
+    let mut kept_vertices = capture_plan.then(Vec::new);
+    let output = kept_coords(ring.coords(), scratch, keep_mask, kept_vertices.as_mut())?;
+    Ok(match output {
+        None => (RingKeep::Same, kept_vertices),
+        Some(coords) => Ring::from_closed(coords).map_or((RingKeep::Drop, None), |ring| {
+            (RingKeep::New(ring), kept_vertices)
         }),
-    )
+    })
 }
 
 enum PolygonKeep {
@@ -392,20 +421,31 @@ fn keep_polygon(
     polygon: &Polygon,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
-) -> Result<PolygonKeep> {
-    let new_shell = match keep_ring(&polygon.shell, scratch, keep_mask)? {
-        RingKeep::Drop => return Ok(PolygonKeep::Empty),
+    capture_plan: bool,
+) -> Result<(PolygonKeep, Option<Vec<Vec<usize>>>)> {
+    let mut ring_plans =
+        capture_plan.then(|| Vec::with_capacity(polygon.holes.len().saturating_add(1)));
+    let (shell_keep, shell_plan) = keep_ring(&polygon.shell, scratch, keep_mask, capture_plan)?;
+    let new_shell = match shell_keep {
+        RingKeep::Drop => return Ok((PolygonKeep::Empty, None)),
         RingKeep::Same => None,
         RingKeep::New(shell) => Some(shell),
     };
+    if let Some(ring_plans) = &mut ring_plans {
+        ring_plans.push(shell_plan.expect("a retained shell has a source vertex plan"));
+    }
     let mut holes_out = new_shell
         .is_some()
         .then(|| Vec::with_capacity(polygon.holes.len()));
     for (index, hole) in polygon.holes.iter().enumerate() {
-        match keep_ring(hole, scratch, keep_mask)? {
+        let (ring_keep, ring_plan) = keep_ring(hole, scratch, keep_mask, capture_plan)?;
+        match ring_keep {
             RingKeep::Same => {
                 if let Some(holes) = holes_out.as_mut() {
                     holes.push(hole.clone());
+                }
+                if let Some(ring_plans) = &mut ring_plans {
+                    ring_plans.push(ring_plan.expect("a retained hole has a source vertex plan"));
                 }
             },
             RingKeep::Drop => {
@@ -421,15 +461,21 @@ fn keep_polygon(
                     holes.push(ring);
                     holes_out = Some(holes);
                 }
+                if let Some(ring_plans) = &mut ring_plans {
+                    ring_plans.push(ring_plan.expect("a rebuilt hole has a source vertex plan"));
+                }
             },
         }
     }
-    Ok(holes_out.map_or(PolygonKeep::Same, |holes| {
-        PolygonKeep::New(Polygon::new(
-            new_shell.unwrap_or_else(|| polygon.shell.clone()),
-            holes,
-        ))
-    }))
+    Ok((
+        holes_out.map_or(PolygonKeep::Same, |holes| {
+            PolygonKeep::New(Polygon::new(
+                new_shell.unwrap_or_else(|| polygon.shell.clone()),
+                holes,
+            ))
+        }),
+        ring_plans,
+    ))
 }
 
 fn prefix_members<'a, T: Clone + 'a>(
@@ -458,7 +504,7 @@ fn keep_multi_lines(
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(line) => match kept_coords(line, scratch, keep_mask)? {
+            MultiMember::Value(line) => match kept_coords(line, scratch, keep_mask, None)? {
                 None => {
                     if let Some(members) = out.as_mut() {
                         members.push(MultiMember::Value(line.clone()));
@@ -493,8 +539,10 @@ fn keep_multi_polygons(
     polygons: &MultiPolygon,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
-) -> Result<RawSimplify> {
+    capture_plan: bool,
+) -> Result<(RawSimplify, Vec<Vec<Vec<usize>>>)> {
     let mut out: Option<Vec<MultiMember<Polygon>>> = None;
+    let mut plans = Vec::with_capacity(if capture_plan { polygons.len() } else { 0 });
     for (index, member) in polygons.members_with_values().enumerate() {
         match member {
             MultiMember::Empty => {
@@ -502,48 +550,60 @@ fn keep_multi_polygons(
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
-                PolygonKeep::Same => {
-                    if let Some(members) = out.as_mut() {
-                        members.push(MultiMember::Value(polygon.clone()));
-                    }
-                },
-                PolygonKeep::Empty => {
-                    if let Some(members) = out.as_mut() {
-                        members.push(MultiMember::Empty);
-                    } else {
-                        let mut members = prefix_members(
-                            polygons.members_with_values(),
-                            polygons.member_count(),
-                            index,
-                        );
-                        members.push(MultiMember::Empty);
-                        out = Some(members);
-                    }
-                },
-                PolygonKeep::New(polygon) => {
-                    if let Some(members) = out.as_mut() {
-                        members.push(MultiMember::Value(polygon));
-                    } else {
-                        let mut members = prefix_members(
-                            polygons.members_with_values(),
-                            polygons.member_count(),
-                            index,
-                        );
-                        members.push(MultiMember::Value(polygon));
-                        out = Some(members);
-                    }
-                },
+            MultiMember::Value(polygon) => {
+                let (keep, plan) = keep_polygon(polygon, scratch, keep_mask, capture_plan)?;
+                match keep {
+                    PolygonKeep::Same => {
+                        if let Some(members) = out.as_mut() {
+                            members.push(MultiMember::Value(polygon.clone()));
+                        }
+                        if capture_plan {
+                            plans.push(plan.expect("a retained polygon has a source vertex plan"));
+                        }
+                    },
+                    PolygonKeep::Empty => {
+                        if let Some(members) = out.as_mut() {
+                            members.push(MultiMember::Empty);
+                        } else {
+                            let mut members = prefix_members(
+                                polygons.members_with_values(),
+                                polygons.member_count(),
+                                index,
+                            );
+                            members.push(MultiMember::Empty);
+                            out = Some(members);
+                        }
+                    },
+                    PolygonKeep::New(polygon) => {
+                        if let Some(members) = out.as_mut() {
+                            members.push(MultiMember::Value(polygon));
+                        } else {
+                            let mut members = prefix_members(
+                                polygons.members_with_values(),
+                                polygons.member_count(),
+                                index,
+                            );
+                            members.push(MultiMember::Value(polygon));
+                            out = Some(members);
+                        }
+                        if capture_plan {
+                            plans.push(plan.expect("a rebuilt polygon has a source vertex plan"));
+                        }
+                    },
+                }
             },
         }
     }
-    Ok(match out {
-        None => RawSimplify::Unchanged,
-        Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::try_new(
-            polygons.axes(),
-            members,
-        )?)),
-    })
+    Ok((
+        match out {
+            None => RawSimplify::Unchanged,
+            Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::try_new(
+                polygons.axes(),
+                members,
+            )?)),
+        },
+        plans,
+    ))
 }
 
 impl Shape {
@@ -741,6 +801,16 @@ impl Shape {
         axis: PeriodicAxis,
         candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     ) -> Result<Self> {
+        self.simplify_guarded_with_capture::<CHECK_EDGE_SPAN>(axis, candidate, false)
+            .map(|(shape, _)| shape)
+    }
+
+    fn simplify_guarded_with_capture<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        axis: PeriodicAxis,
+        candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
+        capture_plan: bool,
+    ) -> Result<(Self, Option<Vec<Vec<usize>>>)> {
         let mut counts = ShapeCountQuery::default();
         let segment_count = counts.segments(self)?;
         let coordinate_count = counts.coordinates(self)?;
@@ -759,7 +829,8 @@ impl Shape {
             Ok::<_, std::convert::Infallible>(())
         });
         let guard = TopologyGuard::new(&segments, vertex_cloud);
-        self.map_chains(&mut |points: &CoordSeq| {
+        let mut chain_plans = capture_plan.then(Vec::new);
+        let shape = self.map_chains(&mut |points: &CoordSeq| {
             let xs = points.xs();
             let ys = points.ys();
             let count = xs.len();
@@ -796,12 +867,17 @@ impl Shape {
                 },
                 &guard,
             )?;
-            if kept.len() == count {
-                Ok(None)
+            let output = if kept.len() == count {
+                None
             } else {
-                Ok(Some(points.select(kept.into_iter())?))
+                Some(points.select(kept.iter().copied())?)
+            };
+            if let Some(chain_plans) = &mut chain_plans {
+                chain_plans.push(kept);
             }
-        })
+            Ok(output)
+        })?;
+        Ok((shape, chain_plans))
     }
 
     #[cfg(test)]
@@ -938,19 +1014,21 @@ impl Shape {
     ) -> Result<RawSimplify> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => RawSimplify::Unchanged,
-            Self::LineString(points) => kept_coords(points, scratch, keep_mask)?
+            Self::LineString(points) => kept_coords(points, scratch, keep_mask, None)?
                 .map_or(RawSimplify::Unchanged, |coords| {
                     RawSimplify::Changed(Self::LineString(LineSeq::from_proven(coords)))
                 }),
             Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask)?,
-            Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
+            Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask, false)?.0 {
                 PolygonKeep::Same => RawSimplify::Unchanged,
                 PolygonKeep::Empty => {
                     RawSimplify::Changed(Self::typed_empty(GeometryKind::Polygon, polygon.axes()))
                 },
                 PolygonKeep::New(polygon) => RawSimplify::Changed(Self::Polygon(polygon)),
             },
-            Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask)?,
+            Self::MultiPolygon(polygons) => {
+                keep_multi_polygons(polygons, scratch, keep_mask, false)?.0
+            },
             Self::GeometryCollection(geometries) => {
                 let mut out: Option<Vec<Self>> = None;
                 for (index, geometry) in geometries.iter().enumerate() {

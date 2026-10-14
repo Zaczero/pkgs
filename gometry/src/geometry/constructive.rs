@@ -31,8 +31,8 @@ pub(crate) use segmentize::{
     segmentize_points_budgeted, segmentize_points_with_piece_counts_budgeted,
 };
 pub(crate) use simplify::{
-    GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,
-    rdp_keep_with_edge_guard, strict_cycle, validate_buffer_style,
+    GeographicRdpGuard, PlanarRdpGuard, PolygonalSimplificationPlan, RdpEdgeSpanGuard,
+    raw_offset_loop, rdp_keep_with_edge_guard, strict_cycle, validate_buffer_style,
 };
 pub(crate) use snap::{
     SnapReference, remove_repeated_line_points, remove_repeated_points,

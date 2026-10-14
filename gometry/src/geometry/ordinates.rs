@@ -636,8 +636,11 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
         } => {
             let metric = metric()?;
             let [start, end] = **source;
-            let value = if let Some(fraction) = *fraction {
-                fraction
+            let mut ordinates = NodeOrdinates::default();
+            if let Some(cached_fraction) = *fraction {
+                let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, cached_fraction);
+                ordinates.z.observe(z.0);
+                ordinates.m.observe(m.0);
             } else {
                 let parameter = chart_parameter.round_with_work(work)?;
                 let edge = if let Some(edge) = state.edge {
@@ -653,19 +656,31 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                     state.edge = Some(edge);
                     edge
                 };
-                if parameter > 0.0 && parameter < 1.0 && state.total_length.is_none() {
-                    state.total_length = Some(metric.chart_edge_length_with_work(&edge, work)?);
+                if edge.is_degenerate() {
+                    if axes.has_z() {
+                        ordinates.z.observe(start.z());
+                        ordinates.z.observe(end.z());
+                    }
+                    if axes.has_m() {
+                        ordinates.m.observe(start.m());
+                        ordinates.m.observe(end.m());
+                    }
+                } else {
+                    if parameter > 0.0 && parameter < 1.0 && state.total_length.is_none() {
+                        state.total_length = Some(metric.chart_edge_length_with_work(&edge, work)?);
+                    }
+                    let value = metric.chart_edge_arclength_fraction_with_work(
+                        &edge,
+                        parameter,
+                        state.total_length,
+                        work,
+                    )?;
+                    *fraction = Some(value);
+                    let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, value);
+                    ordinates.z.observe(z.0);
+                    ordinates.m.observe(m.0);
                 }
-                let value = metric.chart_edge_arclength_fraction_with_work(
-                    &edge,
-                    parameter,
-                    state.total_length,
-                    work,
-                )?;
-                *fraction = Some(value);
-                value
-            };
-            let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, value);
+            }
             #[cfg(test)]
             SOURCE_ARC_OBSERVATIONS.with(|observations| {
                 observations.borrow_mut().push(SourceArcObservation {
@@ -673,13 +688,10 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                     parameter: chart_parameter
                         .round()
                         .expect("source request parameters stay in the unit interval"),
-                    z: z.0,
-                    m: m.0,
+                    z: ordinates.z.value(),
+                    m: ordinates.m.value(),
                 });
             });
-            let mut ordinates = NodeOrdinates::default();
-            ordinates.z.observe(z.0);
-            ordinates.m.observe(m.0);
             Ok(ordinates)
         },
     }

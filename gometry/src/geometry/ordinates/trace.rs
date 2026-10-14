@@ -156,7 +156,7 @@ where
         || {
             metric_access.map_or_else(
                 || Err(crate::crs::CrsError::invalid(
-                "geographic source-ordinate carry requires the operation's CRS metric authority",
+                    "geographic source-ordinate carry requires a CRS metric authority; no source CRS was supplied",
                 )),
                 |access| access(),
             )
@@ -428,13 +428,8 @@ impl RootRange {
     ) -> Result<Option<Self>> {
         check_unit_parameter_with_work(local_start, work)?;
         check_unit_parameter_with_work(local_end, work)?;
-        if local_start.try_cmp_with_work(local_end, work)?.is_gt() {
-            return Err(GeometryErrorKind::Invalid(
-                "source trace child interval is reversed".into(),
-            )
-            .into());
-        }
-        if local_start.try_cmp_with_work(local_end, work)?.is_eq() {
+        let child_order = local_start.try_cmp_with_work(local_end, work)?;
+        if child_order.is_eq() {
             return Ok(None);
         }
         if self
@@ -442,13 +437,18 @@ impl RootRange {
             .try_cmp_with_work(&self.producer_end, work)?
             .is_eq()
         {
+            let (child_low, child_high) = if child_order.is_lt() {
+                (local_start, local_end)
+            } else {
+                (local_end, local_start)
+            };
             if self
                 .producer_start
-                .try_cmp_with_work(local_start, work)?
+                .try_cmp_with_work(child_low, work)?
                 .is_lt()
                 || self
                     .producer_start
-                    .try_cmp_with_work(local_end, work)?
+                    .try_cmp_with_work(child_high, work)?
                     .is_gt()
             {
                 return Ok(None);
@@ -478,36 +478,57 @@ impl RootRange {
         } else {
             &self.producer_start
         };
-        let overlap_start = if owner_low.try_cmp_with_work(local_start, work)?.is_gt() {
+        let (child_low, child_high) = if child_order.is_lt() {
+            (local_start, local_end)
+        } else {
+            (local_end, local_start)
+        };
+        let overlap_start = if owner_low.try_cmp_with_work(child_low, work)?.is_gt() {
             owner_low.try_clone_with_work(work)?
         } else {
-            local_start.try_clone_with_work(work)?
+            child_low.try_clone_with_work(work)?
         };
-        let overlap_end = if owner_high.try_cmp_with_work(local_end, work)?.is_lt() {
+        let overlap_end = if owner_high.try_cmp_with_work(child_high, work)?.is_lt() {
             owner_high.try_clone_with_work(work)?
         } else {
-            local_end.try_clone_with_work(work)?
+            child_high.try_clone_with_work(work)?
         };
-        if overlap_start.try_cmp_with_work(&overlap_end, work)?.is_ge() {
+        let overlap_order = overlap_start.try_cmp_with_work(&overlap_end, work)?;
+        if overlap_order.is_gt() {
             return Ok(None);
         }
+        let (directed_start, directed_end) = if child_order.is_lt() {
+            (&overlap_start, &overlap_end)
+        } else {
+            (&overlap_end, &overlap_start)
+        };
         let producer_width = self
             .producer_end
             .try_subtract_with_work(&self.producer_start, work)?;
         let source_start =
-            self.producer_to_source_with_work(&overlap_start, &producer_width, work)?;
-        let source_end = self.producer_to_source_with_work(&overlap_end, &producer_width, work)?;
+            self.producer_to_source_with_work(directed_start, &producer_width, work)?;
         let child_width = local_end.try_subtract_with_work(local_start, work)?;
+        let producer_start = directed_start
+            .try_subtract_with_work(local_start, work)?
+            .try_quotient_with_work(&child_width, work)?;
+        if overlap_order.is_eq() {
+            return Ok(Some(Self::point_with_work(
+                self.root,
+                source_start,
+                producer_start,
+                work,
+            )?));
+        }
+        let source_end = self.producer_to_source_with_work(directed_end, &producer_width, work)?;
+        let producer_end = directed_end
+            .try_subtract_with_work(local_start, work)?
+            .try_quotient_with_work(&child_width, work)?;
         Ok(Some(Self {
             root: self.root,
             source_start,
             source_end,
-            producer_start: overlap_start
-                .try_subtract_with_work(local_start, work)?
-                .try_quotient_with_work(&child_width, work)?,
-            producer_end: overlap_end
-                .try_subtract_with_work(local_start, work)?
-                .try_quotient_with_work(&child_width, work)?,
+            producer_start,
+            producer_end,
         }))
     }
 
@@ -2444,7 +2465,7 @@ mod tests {
     }
 
     #[test]
-    fn child_rows_keep_only_the_contributors_covering_their_source_interval() {
+    fn child_rows_retain_endpoint_only_contributors_at_support_boundaries() {
         let zero = ExactRational::zero();
         let quarter = ExactRational::from_f64(0.25);
         let half = ExactRational::from_f64(0.5);
@@ -2474,7 +2495,12 @@ mod tests {
             .unwrap();
         let right = right.finish(&mut work).unwrap();
 
-        assert_eq!(left.owner_count(), 0);
+        assert_eq!(left.owner_count(), 1);
+        let left_owner = left.row(0).unwrap().first().unwrap();
+        assert_eq!(left_owner.source_start, ExactRational::zero());
+        assert_eq!(left_owner.source_end, ExactRational::zero());
+        assert_eq!(left_owner.producer_start, ExactRational::one());
+        assert_eq!(left_owner.producer_end, ExactRational::one());
         assert_eq!(middle.owner_count(), 1);
         let middle_owner = middle
             .row(0)
@@ -2488,7 +2514,12 @@ mod tests {
         assert_eq!(middle_owner.source_end, ExactRational::one());
         assert_eq!(middle_owner.producer_start, ExactRational::zero());
         assert_eq!(middle_owner.producer_end, ExactRational::one());
-        assert_eq!(right.owner_count(), 0);
+        assert_eq!(right.owner_count(), 1);
+        let right_owner = right.row(0).unwrap().first().unwrap();
+        assert_eq!(right_owner.source_start, ExactRational::one());
+        assert_eq!(right_owner.source_end, ExactRational::one());
+        assert_eq!(right_owner.producer_start, ExactRational::zero());
+        assert_eq!(right_owner.producer_end, ExactRational::zero());
     }
 
     #[test]
@@ -2553,7 +2584,7 @@ mod tests {
             half.clone(),
             one.clone(),
             half.clone(),
-            one,
+            one.clone(),
         )
         .unwrap();
         let mut work = Unmetered;
@@ -2569,7 +2600,14 @@ mod tests {
         assert!(requests.iter().all(|request| request.parameter() == &half));
 
         assert!(left.compose(&zero, &half).unwrap().is_some());
-        assert!(right.compose(&zero, &half).unwrap().is_none());
+        let right_endpoint = right
+            .compose(&zero, &half)
+            .unwrap()
+            .expect("the child retains the shared source endpoint");
+        assert_eq!(right_endpoint.source_start, half);
+        assert_eq!(right_endpoint.source_end, half);
+        assert_eq!(right_endpoint.producer_start, one);
+        assert_eq!(right_endpoint.producer_end, one);
     }
 
     #[test]

@@ -98,7 +98,7 @@ mod tests {
     )]
     fn split_receipt_keeps_both_seam_banks_on_the_exact_source_root() {
         let row = measured_crossing_line()
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_crs84()
             .unwrap()
             .into_row(0, 0, 0)
             .unwrap();
@@ -139,7 +139,9 @@ mod tests {
             .unwrap(),
         );
         let row = source
-            .split_antimeridian_captured_in_frame(frame)
+            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+                frame, None,
+            )
             .unwrap()
             .into_row(0, 0, 0)
             .unwrap();
@@ -380,7 +382,10 @@ mod tests {
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
         let row = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+                GeographicFrame::crs84(),
+                None,
+            )
             .unwrap()
             .into_row(0, 0, 0)
             .unwrap();
@@ -414,7 +419,10 @@ mod tests {
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
         let drawing = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+                GeographicFrame::crs84(),
+                None,
+            )
             .unwrap();
         let mut pole_cap = false;
         drawing.shape.for_each_point(|point| {
@@ -447,7 +455,10 @@ mod tests {
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
         let mut row = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+                GeographicFrame::crs84(),
+                None,
+            )
             .unwrap()
             .into_row(0, 0, 0)
             .unwrap();
