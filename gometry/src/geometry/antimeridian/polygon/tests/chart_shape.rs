@@ -76,6 +76,94 @@ fn crs84_half_period_endpoint_is_identity() {
 }
 
 #[test]
+fn frame_only_capture_requires_metric_authority_for_interior_ordinates() {
+    let source = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_vecs(
+                vec![144.0, -144.0],
+                vec![-40.0, 60.0],
+                Some(vec![20.0, 120.0]),
+                None,
+            )
+            .expect("test source line coordinates are valid"),
+        )
+        .expect("test source line is valid"),
+    );
+
+    let runtime =
+        crate::crs::runtime_state_snapshot().expect("CRS runtime state is available");
+    let split_with_metric = |crs: &str| {
+        crate::crs::with_ellipsoid_metric_at(crs, &[], &runtime, |metric| {
+            let metric_access = || Ok(metric);
+            let drawing = source.split_antimeridian_captured_in_frame_with_metric(
+                GeographicFrame::crs84(),
+                Some(&metric_access),
+            )?;
+            let finished = drawing.finish_scalar(crate::Frame::None)?;
+            let (split, _) = finished.into_scalar()?;
+            Ok(split)
+        })
+        .expect("explicit ellipsoid metric resolves source ordinates")
+    };
+    let seam_z = |shape: &Shape| {
+        let mut values = Vec::new();
+        shape.for_each_point(|point| {
+            if point.x.abs() == 180.0 {
+                values.push(point.z().expect("seam sample retains its source Z"));
+            }
+        });
+        values
+    };
+    let wgs84 = seam_z(&split_with_metric("OGC:CRS84"));
+    let sphere = seam_z(&split_with_metric(
+        "+proj=longlat +R=6371000 +type=crs",
+    ));
+    assert_eq!(wgs84.len(), 2);
+    assert_eq!(sphere.len(), 2);
+    assert!(wgs84.iter().all(|value| (*value - 71.0451436549).abs() < 1.0e-7));
+    assert!(sphere.iter().all(|value| (*value - 71.0842603000).abs() < 1.0e-7));
+    assert!((wgs84[0] - sphere[0]).abs() > 0.03);
+
+    let result = source.split_antimeridian_captured_in_frame(GeographicFrame::crs84());
+    let error = match result {
+        Ok(_) => panic!("a chart frame alone must not supply an ellipsoid"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("CRS metric authority"),
+        "{error}"
+    );
+}
+
+#[test]
+fn frame_only_capture_keeps_authentic_endpoints_without_metric_authority() {
+    let source = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_vecs(
+                vec![10.0, 20.0],
+                vec![1.0, 2.0],
+                Some(vec![30.0, 40.0]),
+                None,
+            )
+            .expect("test source line coordinates are valid"),
+        )
+        .expect("test source line is valid"),
+    );
+
+    let drawing = source
+        .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+        .expect("authentic endpoints need no metric authority");
+    let finished = drawing
+        .finish_scalar(crate::Frame::None)
+        .expect("captured line drawing finishes");
+    let (split, _) = finished
+        .into_scalar()
+        .expect("finished drawing delivers its scalar shape");
+
+    assert_eq!(split, source);
+}
+
+#[test]
 fn crs84_full_period_pair_is_identity() {
     let shape = line(&[-180.0, 180.0], &[0.0, 0.0]);
     assert_eq!(split_crs84(&shape), shape);
