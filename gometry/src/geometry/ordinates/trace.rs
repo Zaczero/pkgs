@@ -4,6 +4,7 @@ use std::cell::Cell;
 use super::{
     NodeOrdinates, RootMetricState, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
 };
+use crate::collections::IndexMap;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
@@ -80,34 +81,76 @@ impl RootId {
     }
 }
 
-pub(crate) trait RootCatalog {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        root: RootId,
-        parameter: &ExactRational,
-        axes: CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        state: &mut RootMetricState,
-        fraction: &mut Option<f64>,
-        work: &mut W,
-    ) -> Result<NodeOrdinates>;
+#[derive(Clone, Copy)]
+pub(crate) enum RootSourceData<'a> {
+    Point(Point),
+    Edge {
+        points: &'a [Point; 2],
+        longitude: Option<RetainedChartDisplacement>,
+    },
 }
 
-pub(crate) fn resolve_source_root<M: ChartMetric>(
+pub(crate) trait RootCatalog {
+    fn frame(&self) -> GeographicFrame;
+    fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>>;
+}
+
+pub(crate) enum SourceRootLongitude<'a> {
+    Retained(RetainedChartDisplacement),
+    Catalog(&'a mut Option<RetainedChartDisplacement>),
+}
+
+impl<'a> From<RetainedChartDisplacement> for SourceRootLongitude<'a> {
+    fn from(longitude: RetainedChartDisplacement) -> Self {
+        Self::Retained(longitude)
+    }
+}
+
+impl SourceRootLongitude<'_> {
+    fn resolve(
+        self,
+        frame: GeographicFrame,
+        source: &[Point; 2],
+    ) -> Result<RetainedChartDisplacement> {
+        match self {
+            Self::Retained(longitude) => Ok(longitude),
+            Self::Catalog(cached) => {
+                if let Some(longitude) = *cached {
+                    return Ok(longitude);
+                }
+                let longitude = frame
+                    .longitude()
+                    .chart_connection(source[0].x, source[1].x)
+                    .map(crate::geographic::ChartConnection::retained)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+                *cached = Some(longitude);
+                Ok(longitude)
+            },
+        }
+    }
+}
+
+pub(crate) fn resolve_source_root<'longitude, M: ChartMetric, L>(
     frame: GeographicFrame,
     source: &[Point; 2],
-    longitude: RetainedChartDisplacement,
+    longitude: L,
     parameter: &ExactRational,
     axes: CoordinateAxes,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     state: &mut RootMetricState,
     fraction: &mut Option<f64>,
     work: &mut impl Work,
-) -> Result<NodeOrdinates> {
+) -> Result<NodeOrdinates>
+where
+    L: Into<SourceRootLongitude<'longitude>>,
+{
     #[cfg(test)]
     super::record_source_root_resolution();
 
-    let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
+    let longitude = longitude.into();
+    let request = SourceArcRequest::new(frame, source, axes, parameter, || {
+        longitude.resolve(frame, source)
+    })?;
     source_arc_ordinates(
         &request,
         || {
@@ -122,6 +165,122 @@ pub(crate) fn resolve_source_root<M: ChartMetric>(
         fraction,
         work,
     )
+}
+
+#[derive(Clone, Copy, Default)]
+struct RootEvaluationState {
+    metric: RootMetricState,
+    longitude: Option<RetainedChartDisplacement>,
+}
+
+pub(crate) struct RootEvaluationContext<'authority, 'access, 'metric, C, M>
+where
+    C: RootCatalog,
+    M: ChartMetric,
+{
+    frame: GeographicFrame,
+    authority: &'authority C,
+    metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
+    states: IndexMap<RootId, RootEvaluationState>,
+}
+
+impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
+    RootEvaluationContext<'authority, 'access, 'metric, C, M>
+{
+    pub(crate) fn new(
+        authority: &'authority C,
+        metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
+    ) -> Self {
+        Self {
+            frame: authority.frame(),
+            authority,
+            metric_access,
+            states: IndexMap::default(),
+        }
+    }
+
+    pub(crate) fn resolve_rows(
+        &mut self,
+        rows: &[RequestRowInput],
+        work: &mut impl Work,
+    ) -> Result<Vec<NodeOrdinates>> {
+        let mut table = RootRequestTable::from_rows(rows, work)?;
+        let mut new_state_count = 0_usize;
+        let mut previous_root = None;
+        for record in &table.records {
+            if previous_root != Some(record.root) {
+                previous_root = Some(record.root);
+                if !self.states.contains_key(&record.root) {
+                    new_state_count = new_state_count
+                        .checked_add(1)
+                        .ok_or(ResourceError::SizeOverflow)?;
+                }
+            }
+        }
+        if new_state_count > 0 {
+            work.charge_into_error(
+                u64::try_from(new_state_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            self.states.reserve(new_state_count);
+        }
+
+        let mut output = Vec::new();
+        reserve_with_work(&mut output, rows.len(), work)?;
+        for row_index in 0..rows.len() {
+            work.charge_into_error(1)?;
+            let row_id = RequestRowId::from_index(row_index)?;
+            let row_axes = table.axes(row_id)?;
+            let request_count = table.row(row_id)?.len();
+            let mut ordinates = NodeOrdinates::default();
+            let mut previous_request = None;
+            for request_index in 0..request_count {
+                let request_id = table.request_id_at(row_id, request_index)?;
+                if previous_request == Some(request_id) {
+                    continue;
+                }
+                previous_request = Some(request_id);
+                work.charge_into_error(1)?;
+                let root = table.record(request_id)?.root;
+                #[cfg(test)]
+                super::record_root_work(super::RootWorkEvent::RootCatalogResolution);
+                let source = self.authority.source_root(root).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "source request references an unknown source root".into(),
+                    )
+                })?;
+                let state = self.states.entry(root).or_default();
+                let record = table.record_mut(request_id)?;
+                let resolved = match source {
+                    RootSourceData::Point(point) => super::node_ordinates_at(point, row_axes),
+                    RootSourceData::Edge { points, longitude } => {
+                        let RootEvaluationState {
+                            metric,
+                            longitude: cached_longitude,
+                        } = state;
+                        let longitude = longitude.map_or_else(
+                            || SourceRootLongitude::Catalog(cached_longitude),
+                            SourceRootLongitude::Retained,
+                        );
+                        resolve_source_root(
+                            self.frame,
+                            points,
+                            longitude,
+                            &record.parameter,
+                            row_axes,
+                            self.metric_access,
+                            metric,
+                            &mut record.fraction,
+                            work,
+                        )?
+                    },
+                };
+                ordinates.merge(resolved);
+            }
+            work.charge_into_error(1)?;
+            output.push(ordinates);
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -574,7 +733,6 @@ pub(crate) struct UniqueRequestId(u32);
 pub(crate) struct UniqueRootRequest {
     root: RootId,
     parameter: ExactRational,
-    root_state_slot: usize,
     fraction: Option<f64>,
 }
 
@@ -590,23 +748,12 @@ fn push_unique_root_request(
     request: &RootRequest,
     work: &mut impl Work,
 ) -> Result<UniqueRequestId> {
-    let root_state_slot = match records.last() {
-        Some(previous_record) if previous_record.root == request.root => {
-            previous_record.root_state_slot
-        },
-        Some(previous_record) => previous_record
-            .root_state_slot
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?,
-        None => 0,
-    };
     let request_id =
         UniqueRequestId(u32::try_from(records.len()).map_err(|_| ResourceError::SizeOverflow)?);
     reserve_with_work(records, 1, work)?;
     records.push(UniqueRootRequest {
         root: request.root,
         parameter: request.parameter.try_clone_with_work(work)?,
-        root_state_slot,
         fraction: None,
     });
     Ok(request_id)
@@ -770,17 +917,17 @@ impl RootRequestTable {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn root_count(&self) -> Result<usize> {
-        self.records.last().map_or(Ok(0), |record| {
-            record
-                .root_state_slot
-                .checked_add(1)
-                .ok_or_else(|| ResourceError::SizeOverflow.into())
-        })
-    }
-
-    pub(crate) fn root_state_slot(&self, request: UniqueRequestId) -> Result<usize> {
-        Ok(self.record(request)?.root_state_slot)
+        let mut count = 0_usize;
+        let mut previous_root = None;
+        for record in &self.records {
+            if previous_root != Some(record.root) {
+                count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                previous_root = Some(record.root);
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -790,43 +937,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     work: &mut impl Work,
 ) -> Result<Vec<NodeOrdinates>> {
-    let mut table = RootRequestTable::from_rows(rows, work)?;
-    let state_count = table.root_count()?;
-    let mut states = Vec::new();
-    reserve_with_work(&mut states, state_count, work)?;
-    states.resize(state_count, RootMetricState::default());
-    let mut output = Vec::new();
-    reserve_with_work(&mut output, rows.len(), work)?;
-    for row_index in 0..rows.len() {
-        work.charge_into_error(1)?;
-        let row_id = RequestRowId::from_index(row_index)?;
-        let row_axes = table.axes(row_id)?;
-        let request_count = table.row(row_id)?.len();
-        let mut ordinates = NodeOrdinates::default();
-        for request_index in 0..request_count {
-            let request_id = table.request_id_at(row_id, request_index)?;
-            let state_slot = table.root_state_slot(request_id)?;
-            let state = states.get_mut(state_slot).ok_or_else(|| {
-                GeometryErrorKind::Invalid("source root state slot is unknown".into())
-            })?;
-            work.charge_into_error(1)?;
-            let record = table.record_mut(request_id)?;
-            #[cfg(test)]
-            super::record_root_work(super::RootWorkEvent::RootCatalogResolution);
-            ordinates.merge(roots.resolve(
-                record.root,
-                &record.parameter,
-                row_axes,
-                metric_access,
-                state,
-                &mut record.fraction,
-                work,
-            )?);
-        }
-        work.charge_into_error(1)?;
-        output.push(ordinates);
-    }
-    Ok(output)
+    RootEvaluationContext::new(roots, metric_access).resolve_rows(rows, work)
 }
 
 pub(crate) struct TraceRows {
@@ -1284,7 +1395,6 @@ fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Wor
     reason = "the fallible trace-builder setup propagates with `?`; assertions are the test oracle"
 )]
 mod tests {
-    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
@@ -1384,56 +1494,41 @@ mod tests {
     struct ProgressRoots(Rc<Cell<usize>>);
 
     impl RootCatalog for ProgressRoots {
-        fn resolve<M: ChartMetric, W: Work>(
-            &self,
-            root: RootId,
-            parameter: &ExactRational,
-            axes: CoordinateAxes,
-            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-            _state: &mut RootMetricState,
-            _fraction: &mut Option<f64>,
-            _work: &mut W,
-        ) -> Result<NodeOrdinates> {
+        fn frame(&self) -> GeographicFrame {
+            GeographicFrame::crs84()
+        }
+
+        fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
             self.0.set(
                 self.0
                     .get()
                     .checked_add(1)
-                    .expect("test resolution count fits usize"),
+                    .expect("test source lookup count fits usize"),
             );
-            let root_value =
-                u32::try_from(root.index()).map_err(|_| ResourceError::SizeOverflow)?;
-            let value = f64::from(root_value) + parameter.round()?;
-            let mut ordinates = NodeOrdinates::default();
-            if axes.has_z() {
-                ordinates.z.observe(Some(value));
-            }
-            if axes.has_m() {
-                ordinates.m.observe(Some(-value));
-            }
-            Ok(ordinates)
+            let value = f64::from(u32::try_from(root.index()).ok()?);
+            Some(RootSourceData::Point(Point::new_raw_axes(
+                0.0,
+                0.0,
+                crate::geometry::ZOrdinate(Some(value)),
+                crate::geometry::MOrdinate(Some(-value)),
+            )))
         }
     }
 
     struct SignedZeroRoots;
 
     impl RootCatalog for SignedZeroRoots {
-        fn resolve<M: ChartMetric, W: Work>(
-            &self,
-            root: RootId,
-            _parameter: &ExactRational,
-            axes: CoordinateAxes,
-            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-            _state: &mut RootMetricState,
-            _fraction: &mut Option<f64>,
-            _work: &mut W,
-        ) -> Result<NodeOrdinates> {
-            let mut ordinates = NodeOrdinates::default();
-            if axes.has_z() {
-                ordinates
-                    .z
-                    .observe(Some(if root.index() == 0 { 0.0 } else { -0.0 }));
-            }
-            Ok(ordinates)
+        fn frame(&self) -> GeographicFrame {
+            GeographicFrame::crs84()
+        }
+
+        fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
+            Some(RootSourceData::Point(Point::new_raw_axes(
+                0.0,
+                0.0,
+                crate::geometry::ZOrdinate(Some(if root.index() == 0 { 0.0 } else { -0.0 })),
+                crate::geometry::MOrdinate(None),
+            )))
         }
     }
 
@@ -1452,24 +1547,6 @@ mod tests {
 
         fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
             self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
-        }
-    }
-
-    struct RecordingRoots(RefCell<Vec<(RootId, ExactRational, CoordinateAxes)>>);
-
-    impl RootCatalog for RecordingRoots {
-        fn resolve<M: ChartMetric, W: Work>(
-            &self,
-            root: RootId,
-            parameter: &ExactRational,
-            axes: CoordinateAxes,
-            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-            _state: &mut RootMetricState,
-            _fraction: &mut Option<f64>,
-            _work: &mut W,
-        ) -> Result<NodeOrdinates> {
-            self.0.borrow_mut().push((root, parameter.clone(), axes));
-            Ok(NodeOrdinates::default())
         }
     }
 
@@ -2235,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_requests_resolve_in_written_occurrence_order() {
+    fn request_table_preserves_grouped_occurrence_order_and_axis_masks() {
         let first_root = RootId::from_index(7);
         let second_root = RootId::from_index(2);
         let third_root = RootId::from_index(5);
@@ -2270,17 +2347,30 @@ mod tests {
                 ],
             },
         ];
-        let roots = RecordingRoots(RefCell::new(Vec::new()));
         let mut work = Unmetered;
-
-        resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)
-            .unwrap();
-
-        assert_eq!(roots.0.borrow().as_slice(), &[
-            (first_root, first_parameter.clone(), CoordinateAxes::XY),
-            (second_root, second_parameter, CoordinateAxes::XY),
-            (first_root, first_parameter, CoordinateAxes::XYZM),
-            (third_root, third_parameter, CoordinateAxes::XYZM),
+        let table = RootRequestTable::from_rows(&rows, &mut work).unwrap();
+        let mut grouped_requests = Vec::with_capacity(rows.len());
+        for index in 0..rows.len() {
+            let row_id = RequestRowId::from_index(index).unwrap();
+            assert_eq!(table.axes(row_id).unwrap(), rows[index].axes);
+            grouped_requests.push(
+                table
+                    .row(row_id)
+                    .unwrap()
+                    .iter()
+                    .map(|&request_id| {
+                        let request = table.record(request_id).unwrap();
+                        (request.root, request.parameter.clone())
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(grouped_requests, vec![
+            vec![
+                (first_root, first_parameter.clone()),
+                (second_root, second_parameter),
+            ],
+            vec![(first_root, first_parameter), (third_root, third_parameter),],
         ]);
     }
 

@@ -1,17 +1,16 @@
 use super::{
-    Bounds, ChartMetric, ChartPole, ChartSpan, ExactChartPoint, ExactGeographicChartInventory,
+    Bounds, ChartPole, ChartSpan, ExactChartPoint, ExactGeographicChartInventory,
     ExactGeographicPointLocation, ExactGeographicQ, ExactGeographicRectangleLocation,
     ExactGeographicTopology, ExactQRectangleWindows, ExactRational, ExpansionBudget,
     GeographicFrame, GeometryErrorKind, GlobalFaceId, GlobalFaceRowOccupancy,
     GlobalFaceRowProducts, HeapSize, Loc, NodeOrdinates, NodedExactChart, Point, PoleSector,
     QComponentId, QDart, QDartId, QFaceValidity, QLocalFace, QLocalFaceId, QNode, QNodeKey, QPort,
     QPortId, QSpanOwner, QSpatialIndex, QSpatialItem, QuotientFaces, ResourceError, Result,
-    RootCatalog, RootId, RootMetricState, SeamOwnerSide, SourceArcMetricAccess, SourceRowId,
-    build_global_face_topology, build_node_line_boundary_rows, build_span_line_rows,
-    lift_query_point, locate_q_node, locate_q_span, location_in_area_face, location_in_global_face,
-    make_cut_chart, outward_segment_proxy, point_heap_bytes, point_on_exact_segment,
-    q_face_has_row, q_port_node, rational_heap_bytes, resolve_source_root, select_cut,
-    source_range_heap_bytes, span_crosses_north_ray,
+    RootCatalog, RootId, RootSourceData, SeamOwnerSide, SourceRowId, build_global_face_topology,
+    build_node_line_boundary_rows, build_span_line_rows, lift_query_point, locate_q_node,
+    locate_q_span, location_in_area_face, location_in_global_face, make_cut_chart,
+    outward_segment_proxy, point_heap_bytes, point_on_exact_segment, q_face_has_row, q_port_node,
+    rational_heap_bytes, select_cut, source_range_heap_bytes, span_crosses_north_ray,
 };
 use crate::work::Work;
 
@@ -681,30 +680,16 @@ impl HeapSize for ExactGeographicQ {
 }
 
 impl RootCatalog for ExactGeographicTopology {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        root: RootId,
-        parameter: &ExactRational,
-        axes: crate::geometry::CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        state: &mut RootMetricState,
-        fraction: &mut Option<f64>,
-        work: &mut W,
-    ) -> Result<NodeOrdinates> {
-        let edge = self.sources.edges.get(root.index()).ok_or_else(|| {
-            GeometryErrorKind::Invalid("source trace references an unknown source edge".into())
-        })?;
-        resolve_source_root(
-            self.sources.frame,
-            &edge.source,
-            edge.retained_longitude(),
-            parameter,
-            axes,
-            metric_access,
-            state,
-            fraction,
-            work,
-        )
+    fn frame(&self) -> GeographicFrame {
+        self.sources.frame
+    }
+
+    fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
+        let edge = self.sources.edges.get(root.index())?;
+        Some(RootSourceData::Edge {
+            points: &edge.source,
+            longitude: Some(edge.retained_longitude()),
+        })
     }
 }
 impl ExactGeographicTopology {
