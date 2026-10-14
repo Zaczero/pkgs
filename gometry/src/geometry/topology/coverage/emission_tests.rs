@@ -142,6 +142,7 @@ fn geographic_scalar_coverage_receipt_rejects_two_live_rows() {
             &rows.iter().map(Shape::area).collect::<Vec<_>>(),
             0.0,
             CoverageOverlapRule::MinIndex,
+            None::<&crate::crs::GeodesicMetric>,
             &mut work,
         )
         .expect("both rows keep their faces");
