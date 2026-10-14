@@ -498,7 +498,7 @@ fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
-fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> {
+fn ordinary_geographic_zm_subdivision_uses_one_request_table_per_cut() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
     let context = SourceArcContext::new(
@@ -538,14 +538,12 @@ fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> 
             let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
             ordinates::reset_root_range_mapping_counts();
-            overlay::reset_subdivision_resolution_batches();
             overlay::reset_source_span_view_order_counts();
             drop(ordinates::take_source_arc_observations());
             split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
             let table_builds = ordinates::root_request_table_builds();
             let local_root_row_sorts = ordinates::root_request_row_sorts();
-            let resolution_batches = overlay::take_subdivision_resolution_batches();
             let (
                 source_span_sorts,
                 ordered_source_span_views,
@@ -560,33 +558,13 @@ fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> 
             );
             let emitted_vertices = subdivision_output_vertices(&parts);
             let cuts = parts.len().saturating_sub(1);
-            let (resolved_rows, root_requests, unique_root_requests) =
-                resolution_batches.iter().copied().fold(
-                    (0_usize, 0_usize, 0_usize),
-                    |(rows, requests, unique), batch| {
-                        (
-                            rows.saturating_add(batch.0),
-                            requests.saturating_add(batch.1),
-                            unique.saturating_add(batch.2),
-                        )
-                    },
-                );
-            assert_eq!(table_builds, 0);
-            assert_eq!(resolution_batches.len(), cuts);
+            assert_eq!(table_builds, cuts);
             assert!(ordered_source_span_views > 0);
             assert!(source_span_sorts <= cuts.saturating_mul(4));
             assert!(source_span_sorts > 0);
             assert!(source_span_endpoint_parameters > 0);
             assert!(source_span_interior_parameters <= cuts.saturating_mul(8));
-            assert!(resolution_batches.iter().all(|&(rows, requests, unique)| {
-                rows <= 2 && requests <= rows.saturating_mul(2) && unique == rows
-            }));
-            assert!(resolved_rows <= emitted_vertices);
-            assert!(resolved_rows <= cuts.saturating_add(1));
             assert!(local_root_row_sorts <= emitted_vertices);
-            assert!(root_requests <= resolved_rows.saturating_mul(2));
-            assert!(unique_root_requests <= root_requests);
-            assert_eq!(unique_root_requests, resolved_rows);
             assert!(root_observations.len() <= cuts.saturating_add(1) * 2);
         }
     }

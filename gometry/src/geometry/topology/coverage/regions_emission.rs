@@ -14,8 +14,7 @@ use crate::geometry::embedding_completion::literals::{
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
-    SourceArcMetricAccess, resolve_request_rows, resolve_source_root,
+    NodeOrdinates, RequestRowInput, RootId, RootRange, RootRequest, resolve_request_rows,
 };
 use crate::geometry::predicates::ring_contains_interior;
 use crate::geometry::publication::{
@@ -33,46 +32,6 @@ struct RootParameter {
     root: RootId,
     parameter: ExactRational,
     emitted: bool,
-}
-
-struct CoverageRoots<'a> {
-    topology: &'a ExactGeographicTopology,
-    frame: GeographicFrame,
-}
-
-impl RootCatalog for CoverageRoots<'_> {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        root: RootId,
-        parameter: &ExactRational,
-        axes: CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        state: &mut RootMetricState,
-        fraction: &mut Option<f64>,
-        work: &mut W,
-    ) -> Result<NodeOrdinates> {
-        let edge = self
-            .topology
-            .sources
-            .edges
-            .get(root.index())
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "coverage output source root is outside the admitted edge table".into(),
-                )
-            })?;
-        resolve_source_root(
-            self.frame,
-            &edge.source,
-            edge.retained_longitude(),
-            parameter,
-            axes,
-            metric_access,
-            state,
-            fraction,
-            work,
-        )
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -314,15 +273,8 @@ impl GeographicCoverageAnalysis {
                 }
             }
         }
-        let resolved = resolve_request_rows(
-            &request_rows,
-            &CoverageRoots {
-                topology: plans.topology,
-                frame,
-            },
-            context.metric_access(),
-            work,
-        )?;
+        let resolved =
+            resolve_request_rows(&request_rows, plans.topology, context.metric_access(), work)?;
 
         let mut output_shapes = Vec::with_capacity(output_rows.len());
         let mut row_map = Vec::with_capacity(output_rows.len());

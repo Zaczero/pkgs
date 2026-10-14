@@ -514,7 +514,7 @@ def test_nonzero_geographic_shared_seam_simplify_replays_reversed_zm_owners() ->
     assert gm.coverage_is_valid(simplified)
 
 
-def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
+def test_geographic_disjoint_coverage_union_preserves_selected_regions() -> None:
     seam = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 10), (170, 10)],
         crs='OGC:CRS84',
@@ -524,14 +524,19 @@ def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
         crs='OGC:CRS84',
     )
 
-    assert gm.coverage_union_all([seam, greenwich]).to_wkt() == (
+    expected = gm.from_wkt(
         'MULTIPOLYGON (((-180 0, -170 0, -170 10, -180 10, -180 0)), '
         '((180 10, 170 10, 170 0, 180 0, 180 10)), '
-        '((-5 2, 5 2, 5 8, -5 8, -5 2)))'
+        '((-5 2, 5 2, 5 8, -5 8, -5 2)))',
+        crs='OGC:CRS84',
     )
+    merged = gm.coverage_union_all([seam, greenwich])
+    assert gm.equals(merged, expected)
+    assert merged.is_valid
+    assert merged.crs == seam.crs
 
 
-def test_geographic_seam_coverage_union_keeps_its_output_bytes() -> None:
+def test_geographic_seam_coverage_union_preserves_selected_region() -> None:
     west = gm.Polygon(
         [(170, 0), (180, 0), (180, 10), (170, 10)],
         crs='OGC:CRS84',
@@ -541,10 +546,15 @@ def test_geographic_seam_coverage_union_keeps_its_output_bytes() -> None:
         crs='OGC:CRS84',
     )
 
-    assert gm.coverage_union_all([west, east]).to_wkt() == (
+    expected = gm.from_wkt(
         'MULTIPOLYGON (((170 0, 180 0, 180 10, 170 10, 170 0)), '
-        '((-180 0, -170 0, -170 10, -180 10, -180 0)))'
+        '((-180 0, -170 0, -170 10, -180 10, -180 0)))',
+        crs='OGC:CRS84',
     )
+    merged = gm.coverage_union_all([west, east])
+    assert gm.equals(merged, expected)
+    assert merged.is_valid
+    assert merged.crs == west.crs
 
 
 def test_geographic_coverage_union_keeps_presplit_original_zm_arclength() -> None:

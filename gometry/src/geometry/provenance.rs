@@ -4,12 +4,11 @@
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootRequest, resolve_request_rows,
-    resolve_source_root,
+    RequestRowInput, RootCatalog, RootId, RootRequest, RootSourceData, resolve_request_rows,
 };
 use crate::geometry::{
-    ChartMetric, CoordinateAxes, ExactRational, MOrdinate, Point, RootMetricState,
-    SegmentProjection, SourceArcMetricAccess, ZOrdinate,
+    ChartMetric, CoordinateAxes, MOrdinate, Point, SegmentProjection, SourceArcMetricAccess,
+    ZOrdinate,
 };
 use crate::work::Work;
 
@@ -273,51 +272,17 @@ struct OriginalPointRoots<'a> {
 }
 
 impl RootCatalog for OriginalPointRoots<'_> {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        root: RootId,
-        parameter: &ExactRational,
-        axes: CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        state: &mut RootMetricState,
-        fraction: &mut Option<f64>,
-        work: &mut W,
-    ) -> Result<NodeOrdinates> {
+    fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
         let start_index = root.index();
-        let end_index = start_index
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let source = [
-            *self.points.get(start_index).ok_or_else(|| {
-                crate::geometry::GeometryErrorKind::Invalid(
-                    "source-root request start is outside the original points".into(),
-                )
-            })?,
-            *self.points.get(end_index).ok_or_else(|| {
-                crate::geometry::GeometryErrorKind::Invalid(
-                    "source-root request end is outside the original points".into(),
-                )
-            })?,
-        ];
-        let longitude = self
-            .frame
-            .longitude()
-            .chart_connection(source[0].x, source[1].x)
-            .map(crate::geographic::ChartConnection::retained)
-            .map_err(|error| {
-                crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
-            })?;
-        resolve_source_root(
-            self.frame,
-            &source,
-            longitude,
-            parameter,
-            axes,
-            metric_access,
-            state,
-            fraction,
-            work,
-        )
+        let end_index = start_index.checked_add(1)?;
+        Some(RootSourceData::Edge {
+            points: self.points.get(start_index..=end_index)?.try_into().ok()?,
+            longitude: None,
+        })
     }
 }
 
@@ -398,7 +363,7 @@ pub(crate) fn emit_from_original_with_source_roots<M: ChartMetric>(
 mod tests {
     use super::*;
     use crate::geometry::segments::projection::segment_projection;
-    use crate::geometry::{CoordSeq, LineSeq, Segment, Shape, XY};
+    use crate::geometry::{CoordSeq, ExactRational, LineSeq, Segment, Shape, XY};
 
     #[test]
     fn geographic_provenance_rejects_an_on_segment_sample_without_a_root() {

@@ -109,7 +109,7 @@ fn segment_coords_core<P: TransitVertex, M: ChartMetric>(
     let coords = dedup_consecutive(coords);
     let mut piece = Vec::new();
     let mut pieces = Vec::new();
-    let mut lineage = LineageCatalog::default();
+    let mut lineage = LineageCatalog::new(frame);
     let member = lineage.member()?;
     for (edge, [start, end]) in coords.array_windows::<2>().enumerate() {
         push_distinct(&mut piece, start.clone());
@@ -355,7 +355,7 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     let mut pieces: Vec<Vec<IndexedPoint>> = Vec::new();
     let mut piece = vec![vertex(0)];
     let mut transits = false;
-    let mut lineage = LineageCatalog::default();
+    let mut lineage = LineageCatalog::new(frame);
     let member = lineage.member()?;
     let mut offset = 1;
     while offset <= cycle_len {
@@ -555,7 +555,7 @@ fn crossing_points<M: ChartMetric>(
     let axes = west.axes().union(east.axes());
     let ordinates = if axes.has_z() || axes.has_m() {
         let root = lineage.edge_root(member, &source, longitude)?;
-        lineage.resolve_root(root, &parameter, axes, frame, metric_access)?
+        lineage.resolve_root(root, &parameter, axes, metric_access)?
     } else {
         NodeOrdinates::default()
     };
