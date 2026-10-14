@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 use super::*;
+use crate::crs::frame::crs_arc_static;
 use crate::dispatch::{CachelessRowContext, Lane, MetricResolver, MetricScratch, kernels};
 use crate::error::ErrorKind;
 use crate::geometry::publication::PendingPublicationRow;
@@ -10,11 +11,7 @@ const SEAM: &str = "POLYGON M ((170 10 10,190 50 110,190 55 210,170 15 310,170 1
 const ORDINARY: &str = "POLYGON M ((0 0 401,3 0 402,3 2 403,0 2 404,0 0 401))";
 
 fn frame() -> Frame {
-    Frame::new(
-        Some(crate::crs::frame::crs_arc_static("OGC:CRS84")),
-        Some(2020.0),
-    )
-    .unwrap()
+    Frame::new(Some(crs_arc_static("OGC:CRS84")), Some(2020.0)).unwrap()
 }
 
 fn pending(wkt: &str, logical: usize, frame: &Frame) -> PendingPublicationRow {
@@ -70,9 +67,8 @@ fn replace_writer(rows: &mut PublicationRows, shapes: Vec<Option<Shape>>) {
 }
 
 fn assert_invalid(result: Result<crate::PyGeometryArray>) {
-    let error = match result {
-        Ok(_) => panic!("final boundary storage accepted a corrupted publication"),
-        Err(error) => error,
+    let Err(error) = result else {
+        panic!("final boundary storage accepted a corrupted publication");
     };
     assert!(matches!(
         error.kind(),
@@ -100,7 +96,11 @@ fn mixed_boundary_rows_preserve_q_and_drawing_expectations() {
 fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
     for logical in [0, 2] {
         let (mut rows, mut expected, frame) = mixed_rows();
-        let shape = expected.get_mut(logical).unwrap().as_mut().unwrap();
+        let shape = expected
+            .get_mut(logical)
+            .expect("the selected logical row is present")
+            .as_mut()
+            .unwrap();
         let changed = std::cell::Cell::new(false);
         *shape = shape
             .map_points(&|point| {
@@ -149,7 +149,7 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
                         == 1
                 })
                 .expect("a boundary has a non-closing unique image");
-            let _ = row.checked.remove(unique);
+            drop(row.checked.remove(unique));
         }
         assert_invalid(rows.finish(frame));
     }

@@ -84,6 +84,7 @@ pub(in crate::geometry) use self::producer_drawing::{
     exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,
     exact_geographic_linework_pending_row,
 };
+#[cfg(test)]
 use self::publish::publish_q_overlay;
 pub(in crate::geometry::topology) use self::publish::resolve_q_embedding;
 #[cfg(test)]

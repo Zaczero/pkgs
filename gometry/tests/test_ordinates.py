@@ -74,10 +74,14 @@ def test_boundary_array_keeps_original_root_m_through_mixed_nullable_gathers() -
     assert output.coordinate_axes == ['XYM', None, 'XYM', 'XYM', 'XYM']
     assert output.crs == rows.crs
     assert output.epoch == 2020.0
-    assert output[2].to_wkb() == output[4].to_wkb()
-    assert output[3].to_wkb() == ordinary.boundary().to_wkb()
+    assert output[2].to_wkb(drop_epoch=True) == output[4].to_wkb(drop_epoch=True)
+    assert output[3].to_wkb(drop_epoch=True) == ordinary.boundary().to_wkb(
+        drop_epoch=True
+    )
     assert len(output[0].parts) == 2
-    assert [part.to_wkb() for part in output[0].parts] == [output[2].to_wkb()] * 2
+    assert [part.to_wkb(drop_epoch=True) for part in output[0].parts] == [
+        output[2].to_wkb(drop_epoch=True)
+    ] * 2
     fraction = _ellipsoid_chart_fraction(
         (170, 10), (190, 50), 0.5, 6378137, 298.257223563
     )

@@ -527,9 +527,7 @@ mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::super::receipt::{
-        CheckedPublicationLiteral, PendingPublicationRow, PublicationImage,
-    };
+    use super::super::receipt::PendingPublicationRow;
     use super::*;
     use crate::geometry::embedding_completion::literals::{
         LiteralAddress, LiteralPoint, ShapeLiteralLayout,
