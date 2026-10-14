@@ -1,8 +1,7 @@
 use super::{
     AxisValue, ChartMetric, CoordinateAxes, ExactLineEmission, ExactPartition, ExactRational,
-    ExactSourceInventory, GeometryErrorKind, MOrdinate, NodeId, Point, Result, RootMetricState,
-    SourceArcContext, XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along,
-    resolve_source_root,
+    ExactSourceInventory, GeometryErrorKind, MOrdinate, NodeId, Point, Result, SourceArcContext,
+    XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along, resolve_source_root,
 };
 use crate::work::Unmetered;
 
@@ -170,14 +169,7 @@ impl ExactSourceInventory {
                             longitude,
                             &parameter,
                             axes,
-                            || {
-                                let access = context.metric_access().ok_or_else(|| {
-                                    crate::crs::CrsError::invalid(
-                                        "geographic source-ordinate carry requires the operation's CRS metric",
-                                    )
-                                })?;
-                                access()
-                            },
+                            context.metric_access(),
                             &mut metric_state,
                             &mut fraction,
                             &mut work,

@@ -527,17 +527,6 @@ impl RootMetricState {
             total_length,
         }
     }
-
-    pub(crate) const fn from_admitted_edge_with_fraction(
-        edge: crate::crs::ChartEdge,
-        total_length: Option<f64>,
-        fraction: f64,
-    ) -> (Self, Option<f64>) {
-        (
-            Self::from_admitted_edge(edge, total_length),
-            Some(fraction),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -691,7 +680,7 @@ impl<'a> SourceArcRequest<'a> {
 /// rounding and chart-edge measurement.
 pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
     request: &SourceArcRequest<'_>,
-    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+    metric: impl Fn() -> crate::error::Result<&'m M>,
     state: &mut RootMetricState,
     fraction: &mut Option<f64>,
     work: &mut impl Work,
@@ -776,6 +765,7 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
     work: &mut impl Work,
 ) -> crate::error::Result<ComputedSampleOrdinates> {
     let chart_parameter = ExactRational::from_f64(parameter);
+    let metric_access = metric;
     let mut fraction = None;
     let ordinates = resolve_source_root(
         source_frame,
@@ -783,7 +773,7 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
         longitude,
         &chart_parameter,
         axes,
-        metric,
+        Some(&metric_access),
         state,
         &mut fraction,
         work,
@@ -1460,6 +1450,36 @@ mod tests {
         assert_eq!(xy.m.0, None);
         assert_eq!(xy_metric_accesses.get(), 0);
         assert!(state.edge.is_none());
+    }
+
+    #[test]
+    fn computed_native_sample_uses_independent_wgs84_chart_arclength() {
+        let frame = crate::geographic::GeographicFrame::crs84();
+        let source = [
+            Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
+            Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0))).unwrap(),
+        ];
+        let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+        let longitude = retained_source_longitude(frame, &source);
+        let mut state = RootMetricState::default();
+        let mut work = Unmetered;
+
+        let sample = computed_native_sample_ordinates(
+            frame,
+            &source,
+            longitude,
+            0.5,
+            CoordinateAxes::XYZM,
+            || Ok(&metric),
+            &mut state,
+            &mut work,
+        )
+        .unwrap();
+
+        assert_eq!(sample.y, 40.0);
+        assert!((sample.z.0.unwrap() - 124.792_495_251_506_88).abs() <= 2.0e-12);
+        assert!((sample.m.0.unwrap() - 329.584_990_503_013_7).abs() <= 4.0e-12);
     }
 
     #[test]

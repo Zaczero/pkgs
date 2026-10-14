@@ -135,13 +135,14 @@ impl ChartEmission<'_, '_> {
                     }
                     let chart_parameter = ExactRational::from_f64(parameter);
                     let mut fraction_slot = None;
+                    let metric_access = || Ok(&metric);
                     let ordinates = resolve_source_root(
                         self.edge.frame(),
                         &source,
                         self.edge.retained_displacement(),
                         &chart_parameter,
                         axes,
-                        || Ok(&metric),
+                        Some(&metric_access),
                         &mut metric_state,
                         &mut fraction_slot,
                         &mut work,

@@ -6,7 +6,6 @@ use crate::geometry::distance::{
 };
 use crate::geometry::facet_bvh::NearestSourceProjection;
 use crate::geometry::ordinates::{RootMetricState, resolve_source_root};
-use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, FrameDependentCaches, GeodesicMetric, MOrdinate, Point,
     PreparedPlan, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
@@ -201,7 +200,7 @@ fn resolve_nearest_source_projection(
         longitude,
         &parameter,
         axes,
-        || metric_access(),
+        Some(metric_access),
         &mut state,
         &mut fraction,
         &mut work,

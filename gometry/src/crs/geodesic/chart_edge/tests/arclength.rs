@@ -244,6 +244,23 @@ fn chart_edge_witness_uses_canonical_point_emission_and_arclength_axes() {
 }
 
 #[test]
+fn oblique_wgs84_witness_resolves_ordinates_at_chart_arclength() {
+    let start = Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap();
+    let end = Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0)))
+        .unwrap();
+    let frame = degrees();
+    let edge = ChartEdge::new(start, end, frame).unwrap();
+    let geodesic = wgs84();
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+
+    let witness = edge.witness(start, end, 0.5, None, &metric).unwrap();
+
+    assert_eq!((witness.x, witness.y), (60.0, 40.0));
+    assert!((witness.z().unwrap() - 124.792_495_251_506_88).abs() <= 2.0e-12);
+    assert!((witness.m().unwrap() - 329.584_990_503_013_7).abs() <= 4.0e-12);
+}
+
+#[test]
 fn gauss_legendre_admission_is_bounded_to_one_degree_and_near_pole_ratio() {
     let edge = ChartEdge::new(
         Point::new_raw_xy(0.0, 45.0),

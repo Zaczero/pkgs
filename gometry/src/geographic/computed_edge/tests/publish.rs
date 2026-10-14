@@ -239,6 +239,31 @@ fn computed_ring_keeps_its_start_and_copies_full_closure() {
     ]);
     assert_eq!(result.first(), result.last());
 }
+
+#[test]
+fn metric_free_publisher_refuses_to_fabricate_ordinate_samples() {
+    let points = [
+        Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0))),
+        Point::new_raw_axes(260.0, 10.0, ZOrdinate(Some(19.0)), MOrdinate(Some(43.0))),
+    ];
+    let mut budget = ExpansionBudget::new("computed edge", "computed edges");
+    let error = publish_computed_chain(
+        degrees(),
+        points.as_slice(),
+        false,
+        &mut budget,
+        |_, start, end| {
+            ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+    ));
+}
+
 #[test]
 fn positive_half_period_closing_cap_is_not_rotated_or_split() {
     let ring = [

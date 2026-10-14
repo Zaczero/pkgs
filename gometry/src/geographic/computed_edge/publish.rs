@@ -33,9 +33,7 @@ pub(crate) fn publish_computed_chain<'intent, P: Coordinates + ?Sized>(
         &edge_intents,
         |_, _| ComputedVertexIntent::Canonical,
         |edge_index, endpoints, relation, parameter, retained| {
-            Ok(sample_xy_ordinates(
-                edge_index, endpoints, relation, parameter, retained,
-            ))
+            sample_xy_ordinates(edge_index, endpoints, relation, parameter, retained)
         },
         |_, _, _, _, _, _| Ok(()),
         &[],
@@ -112,9 +110,7 @@ pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates
         intent,
         vertex_intent,
         |edge_index, endpoints, relation, parameter, retained| {
-            Ok(sample_xy_ordinates(
-                edge_index, endpoints, relation, parameter, retained,
-            ))
+            sample_xy_ordinates(edge_index, endpoints, relation, parameter, retained)
         },
         |_, _, _, _, _, _| Ok(()),
     )

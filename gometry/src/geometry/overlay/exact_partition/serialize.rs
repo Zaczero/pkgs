@@ -206,7 +206,7 @@ impl ExactSourceInventory {
             strict,
             operation,
         )?;
-        let polygon_axes = bucket_axes(
+        let mut polygon_axes = bucket_axes(
             parts
                 .polygons
                 .iter()
@@ -246,12 +246,78 @@ impl ExactSourceInventory {
             polygons.push(Polygon::new(shell, holes));
         }
         if let Some((roles, frame, budget)) = polygon_publication.take() {
-            polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
-                polygons, &roles, frame, budget,
+            (polygons, polygon_axes) = publish_polygon_parts_with_roles(
+                polygons,
+                &roles,
+                frame,
+                budget,
+                polygon_axes,
+                strict,
+                operation,
             )?;
         }
         assemble_node_parts(points, lines, polygons, point_axes, line_axes, polygon_axes)
     }
+}
+
+fn publish_polygon_parts_with_roles(
+    polygons: Vec<Polygon>,
+    roles: &[Vec<Vec<bool>>],
+    frame: crate::geographic::GeographicFrame,
+    budget: &mut ExpansionBudget,
+    axes: crate::geometry::CoordinateAxes,
+    strict: bool,
+    operation: &str,
+) -> Result<(Vec<Polygon>, crate::geometry::CoordinateAxes)> {
+    let mut candidate_budget = budget.clone();
+    match crate::geometry::publish_polygon_parts_with_edge_roles(
+        polygons.clone(),
+        roles,
+        frame,
+        &mut candidate_budget,
+    ) {
+        Ok(polygons) => {
+            *budget = candidate_budget;
+            Ok((polygons, axes))
+        },
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+            ) =>
+        {
+            if strict {
+                return Err(GeometryErrorKind::ordinate_dropped(operation));
+            }
+            let polygons = polygons
+                .into_iter()
+                .map(polygon_xy)
+                .collect::<Result<Vec<_>>>()?;
+            let mut fallback_budget = budget.clone();
+            let polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
+                polygons,
+                roles,
+                frame,
+                &mut fallback_budget,
+            )?;
+            *budget = fallback_budget;
+            Ok((polygons, crate::geometry::CoordinateAxes::XY))
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn polygon_xy(polygon: Polygon) -> Result<Polygon> {
+    let mut rings = polygon.rings().map(|ring| {
+        let coordinates = ring.coords().try_map_points(|point| {
+            Ok::<_, crate::error::Error>(Point::new_raw_xy(point.x, point.y))
+        })?;
+        Ring::try_from_closed(coordinates)
+    });
+    let shell = rings
+        .next()
+        .ok_or_else(|| GeometryErrorKind::message("a polygon has an exterior ring"))??;
+    Ok(Polygon::new(shell, rings.collect::<Result<Vec<_>>>()?))
 }
 
 pub(super) fn bucket_axes<I: IntoIterator<Item = NodeId>>(
