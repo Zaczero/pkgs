@@ -330,7 +330,7 @@ fn certified_minor_edges_canonicalize_without_subdivision() {
         points.as_slice(),
         false,
         &mut budget,
-        |_, _, _| Ok(ComputedEdgeIntent::CertifiedMinor),
+        |_, start, end| ComputedEdgeIntent::certified_minor(degrees(), start, end),
     )
     .unwrap()
     .unwrap();
@@ -340,6 +340,57 @@ fn certified_minor_edges_canonicalize_without_subdivision() {
         Point::new_raw_xy(-170.0, 0.0),
     ]);
 }
+
+#[test]
+fn certified_minor_chain_rejects_an_ambiguous_half_turn() {
+    let coordinates = crate::geometry::CoordSeq::try_from_points(&[
+        Point::new_raw_xy(-90.0, 0.0),
+        Point::new_raw_xy(90.0, 1.0),
+    ])
+    .unwrap();
+    let mut budget = ExpansionBudget::new("test", "mislabelled half-turn");
+    assert!(
+        super::publish_certified_minor_chain(degrees(), &coordinates, false, &mut budget).is_err()
+    );
+}
+
+#[test]
+fn certified_minor_witness_cannot_be_reused_for_another_edge() {
+    let witness = ComputedEdgeIntent::certified_minor(
+        degrees(),
+        Point::new_raw_xy(10.0, 0.0),
+        Point::new_raw_xy(20.0, 1.0),
+    )
+    .unwrap();
+    let points = [Point::new_raw_xy(10.0, 0.0), Point::new_raw_xy(30.0, 1.0)];
+    let mut budget = ExpansionBudget::new("test", "misapplied minor witness");
+    assert!(
+        publish_computed_chain(
+            degrees(),
+            points.as_slice(),
+            false,
+            &mut budget,
+            |_, _, _| Ok(witness),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn certified_minor_chain_keeps_the_no_change_fast_path() {
+    let coordinates = crate::geometry::CoordSeq::try_from_points(&[
+        Point::new_raw_xy(10.0, 0.0),
+        Point::new_raw_xy(20.0, 1.0),
+    ])
+    .unwrap();
+    let mut budget = ExpansionBudget::new("test", "certified minor fast path");
+    assert!(
+        super::publish_certified_minor_chain(degrees(), &coordinates, false, &mut budget)
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[test]
 fn minor_chain_certificate_preserves_spelling_and_complete_closure() {
     let first = Point::new_raw_axes(10.0, 20.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0)));

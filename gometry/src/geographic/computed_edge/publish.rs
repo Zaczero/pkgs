@@ -1,11 +1,10 @@
 use super::aliases::{ZeroLongitudeAlias, zero_longitude_aliases};
-use super::intents::{collect_edge_intents, sample_xy_ordinates};
+use super::intents::{certified_minor_relation, collect_edge_intents, sample_xy_ordinates};
 use super::vertices::{SampledVertex, observe_sampled_vertex, publish_vertex_at};
 use super::{
-    ChartStep, ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates,
-    ComputedVertexIntent, CoordSeq, Coordinates, EdgeDirection, ExpansionBudget, GeographicError,
-    GeographicFrame, GeometryErrorKind, Point, Result, RetainedComputedSample,
-    RetainedLongitudeClass,
+    ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
+    CoordSeq, Coordinates, ExpansionBudget, GeographicError, GeographicFrame, GeometryErrorKind,
+    Point, Result, RetainedComputedSample, RetainedLongitudeClass,
 };
 
 /// Canonicalize a computed chain and split only edges whose canonical writing
@@ -71,17 +70,21 @@ fn publish_certified_minor_chain_with_vertex_intents(
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
 ) -> Result<Option<Vec<Point>>> {
     let bound = frame.longitude().ordinary_longitude_bound();
-    let canonical =
-        points.xs().iter().zip(points.ys()).all(|(&x, &y)| {
-            x.abs() < bound && x.to_bits() != (-0.0_f64).to_bits() && y.is_finite()
-        });
+    let mut canonical = true;
+    let mut previous = None;
+    for point in points.iter_coords() {
+        if !(point.x.abs() < bound
+            && point.x.to_bits() != (-0.0_f64).to_bits()
+            && point.y.is_finite())
+        {
+            canonical = false;
+        }
+        if let Some(start) = previous {
+            ComputedEdgeIntent::certified_minor(frame, start, point)?;
+        }
+        previous = Some(point);
+    }
     if canonical && (!closed_ring || points.first_coord() == points.last_coord()) {
-        debug_assert!(
-            points
-                .segment_pairs()
-                .all(|[start, end]| certified_minor_reads(frame, start, end)),
-            "local projected-edge certificate must exclude half-period and major readings"
-        );
         return Ok(None);
     }
     publish_computed_chain_with_vertex_intents(
@@ -89,7 +92,7 @@ fn publish_certified_minor_chain_with_vertex_intents(
         points,
         closed_ring,
         budget,
-        |_, _, _| Ok(ComputedEdgeIntent::CertifiedMinor),
+        |_, start, end| ComputedEdgeIntent::certified_minor(frame, start, end),
         vertex_intent,
     )
 }
@@ -315,11 +318,19 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
                 observe_sampled_vertex(end_sample.as_ref(), canonical_end, &mut on_published)?;
                 canonical_start = canonical_end;
             },
-            ComputedEdgeIntent::CertifiedMinor => {
-                debug_assert!(
-                    certified_minor_reads(frame, canonical_start, canonical_end),
-                    "local projected-edge certificate must exclude half-period and major readings"
-                );
+            ComputedEdgeIntent::CertifiedMinor(witness) => {
+                if !witness.matches(source_start, source_end) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "certified-minor witness does not match its source edge".into(),
+                    )
+                    .into());
+                }
+                if !certified_minor_relation(frame, canonical_start, canonical_end)? {
+                    return Err(GeometryErrorKind::Invalid(
+                        "certified-minor edge is not minor after canonicalization".into(),
+                    )
+                    .into());
+                }
                 if let Some(emitted) = output.as_mut() {
                     emitted.push(canonical_end);
                 } else if canonical_end != source_end {
@@ -557,14 +568,6 @@ fn publish_sampled_point<'intent>(
         ordinates.m,
     )?;
     Ok(point)
-}
-
-fn certified_minor_reads(frame: GeographicFrame, start: Point, end: Point) -> bool {
-    matches!(
-        frame.longitude().chart_step(start.x, end.x),
-        Ok(ChartStep::Shortest(EdgeDirection::Minor(delta)))
-            if delta.abs() < frame.longitude().half_period()
-    )
 }
 
 fn canonical_prefix<'intent, P: Coordinates + ?Sized>(

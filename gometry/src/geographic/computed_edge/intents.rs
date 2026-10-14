@@ -1,7 +1,7 @@
 use super::publish::map_geographic_error;
 use super::{
-    ChartStep, Coordinates, GeographicFrame, GeometryErrorKind, MOrdinate, Point, Result,
-    RetainedChartDisplacement, RetainedComputedSample, RetainedLongitudeClass, ZOrdinate,
+    ChartStep, Coordinates, EdgeDirection, GeographicFrame, GeometryErrorKind, MOrdinate, Point,
+    Result, RetainedChartDisplacement, RetainedComputedSample, RetainedLongitudeClass, ZOrdinate,
     interpolate_subdivision_ordinate, retained_computed_samples_connection,
     retained_edge_from_chart_witness, retained_edge_from_lifted_binary64_pair,
     retained_exact_interval_class, retained_exact_publisher_sample,
@@ -107,6 +107,25 @@ impl ComputedLongitudeRelation<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CertifiedMinorEdge([u64; 2]);
+
+impl CertifiedMinorEdge {
+    fn try_new(frame: GeographicFrame, start: Point, end: Point) -> Result<Self> {
+        if !certified_minor_relation(frame, start, end)? {
+            return Err(GeometryErrorKind::Invalid(
+                "certified-minor witness requires a strictly minor longitude edge".into(),
+            )
+            .into());
+        }
+        Ok(Self([start.x.to_bits(), end.x.to_bits()]))
+    }
+
+    pub(super) fn matches(self, start: Point, end: Point) -> bool {
+        self.0 == [start.x.to_bits(), end.x.to_bits()]
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ComputedEdgeIntent<'a> {
     /// A source-provenance edge whose written coordinates must be replayed.
@@ -114,7 +133,22 @@ pub(crate) enum ComputedEdgeIntent<'a> {
     /// An exact producer relation retained through canonical publication.
     Retained(ComputedLongitudeRelation<'a>),
     /// A local projected segment certified to sweep less than half a period.
-    CertifiedMinor,
+    CertifiedMinor(CertifiedMinorEdge),
+}
+
+pub(super) fn certified_minor_relation(
+    frame: GeographicFrame,
+    start: Point,
+    end: Point,
+) -> Result<bool> {
+    Ok(matches!(
+        frame
+            .longitude()
+            .chart_step(start.x, end.x)
+            .map_err(map_geographic_error)?,
+        ChartStep::Shortest(EdgeDirection::Minor(delta))
+            if delta.abs() < frame.longitude().half_period()
+    ))
 }
 
 impl<'a> ComputedEdgeIntent<'a> {
@@ -155,6 +189,16 @@ impl<'a> ComputedEdgeIntent<'a> {
         ))
     }
 
+    pub(crate) fn certified_minor(
+        frame: GeographicFrame,
+        start: Point,
+        end: Point,
+    ) -> Result<Self> {
+        Ok(Self::CertifiedMinor(CertifiedMinorEdge::try_new(
+            frame, start, end,
+        )?))
+    }
+
     pub(super) fn certifies_zero_longitude_change(self, axis: PeriodicAxis) -> Result<bool> {
         match self {
             Self::Preserved { zero_longitude } => Ok(zero_longitude),
@@ -163,7 +207,7 @@ impl<'a> ComputedEdgeIntent<'a> {
             },
             // A minor certificate supplies no exact displacement. Mixed-source
             // chains retain explicit or stored displacement for their zero classes.
-            Self::CertifiedMinor => Ok(false),
+            Self::CertifiedMinor(_) => Ok(false),
         }
     }
 
