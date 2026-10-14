@@ -616,6 +616,7 @@ pub(in crate::geometry) struct ArrayPublicationBatch {
     pub(super) missing: Option<ValidityMask>,
     pub(super) layout: StorageLayout,
     pub(super) logical_rows: Vec<Option<StoredPublicationRow>>,
+    pub(super) expected_present: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -148,7 +148,7 @@ impl PublicationRows {
         ArrayRows::validate_publication_domain(
             logical_count,
             missing.as_ref(),
-            self.expected_present.into_iter(),
+            self.expected_present.iter().copied(),
         )?;
         let mut logical_rows = std::iter::repeat_with(|| None)
             .take(logical_count)
@@ -180,6 +180,7 @@ impl PublicationRows {
             missing,
             layout,
             logical_rows,
+            expected_present: self.expected_present,
         };
         let mut unmetered = Unmetered;
         match super::finish::finish_geographic(
@@ -398,12 +399,6 @@ pub(super) fn finish_array_batch<W: Work>(
     frame: Frame,
     work: &mut W,
 ) -> Result<PublicationOutcome> {
-    if batch.logical_rows.is_empty() {
-        return Err(GeometryErrorKind::Invalid(
-            "array publication batch has no logical rows".into(),
-        )
-        .into());
-    }
     let logical_count = batch
         .missing
         .as_ref()
@@ -414,6 +409,11 @@ pub(super) fn finish_array_batch<W: Work>(
         )
         .into());
     }
+    ArrayRows::validate_publication_domain(
+        logical_count,
+        batch.missing.as_ref(),
+        batch.expected_present.into_iter(),
+    )?;
 
     let mut row_map = Vec::with_capacity(logical_count);
     let mut pending_rows = Vec::new();
@@ -552,6 +552,52 @@ mod tests {
         writer.try_push_missing().unwrap();
         rows.writer = writer;
         assert!(rows.finish(Frame::default()).is_err());
+    }
+
+    #[test]
+    fn array_batch_preserves_missing_and_other_producer_row_domains() {
+        for (expected, actual) in [
+            (vec![], vec![]),
+            (vec![false], vec![false]),
+            (vec![true], vec![true]),
+            (vec![false], vec![true]),
+            (vec![true], vec![false]),
+            (vec![true, false], vec![false, true]),
+            (vec![true, false], vec![true]),
+        ] {
+            let correct = expected == actual;
+            let logical_rows = std::iter::repeat_with(|| None)
+                .take(expected.len())
+                .collect();
+            let mut writer = StreamingShapes::with_capacity(0, actual.len());
+            for present in actual {
+                if present {
+                    writer.try_push(Shape::Point(xyzm(2., 3., 4., 5.))).unwrap();
+                } else {
+                    writer.try_push_missing().unwrap();
+                }
+            }
+            let (storage, missing, layout) = writer.finish_parts().unwrap();
+            let batch = ArrayPublicationBatch {
+                storage: Arc::new(storage),
+                missing,
+                layout,
+                logical_rows,
+                expected_present: expected,
+            };
+            let result = finish_array_batch(batch, Frame::default(), &mut Unmetered);
+            if correct {
+                assert!(matches!(result.unwrap(), PublicationOutcome::Pass(_)));
+            } else {
+                let Err(error) = result else {
+                    panic!("a writer changed a missing or other-producer row domain");
+                };
+                assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+                ));
+            }
+        }
     }
 
     #[test]
@@ -868,6 +914,7 @@ mod tests {
                 missing,
                 layout,
                 logical_rows: vec![Some(pending)],
+                expected_present: vec![true],
             },
             frame,
         )
