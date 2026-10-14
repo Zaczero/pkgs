@@ -43,7 +43,7 @@ pub(super) type CheckedPublicationLiteral = PublicationLiteral<PublicationImage>
 pub(in crate::geometry) type ProducerLiteral = PublicationLiteral<ProducerImageId>;
 
 impl PublicationLiteral<ProducerImageId> {
-    pub(in crate::geometry) fn from_point(
+    pub(in crate::geometry) const fn from_point(
         address: LiteralAddress,
         image: ProducerImageId,
         record: crate::Point,

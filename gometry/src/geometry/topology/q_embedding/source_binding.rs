@@ -176,7 +176,7 @@ pub(in crate::geometry::topology::q_embedding) struct AssignedSourceChart<'a> {
 }
 impl AssignedSourceChart<'_> {
     fn read_point<W: Work>(
-        &mut self,
+        &self,
         _address: LiteralAddress,
         image: QSourceImage,
         record: Point,

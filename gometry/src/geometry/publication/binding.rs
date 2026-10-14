@@ -234,5 +234,35 @@ mod tests {
             .is_err(),
             "bitwise point identity does not merge signed-zero occurrences"
         );
+
+        let mut snapshot =
+            CheckedLiteralSnapshot::new(vec![literal(address, image, original)]).unwrap();
+        let mut work = Unmetered;
+        assert!(
+            !LiteralReceiver::accepts_point(
+                &mut snapshot,
+                address,
+                image,
+                changed_m,
+                CoordinateAxes::XYZM,
+                CoordinateAxes::XYZM,
+                &mut work,
+            )
+            .unwrap(),
+            "final readback rejects an active M change"
+        );
+        assert!(
+            !LiteralReceiver::accepts_point(
+                &mut snapshot,
+                address,
+                image,
+                original,
+                CoordinateAxes::XY,
+                CoordinateAxes::XYZM,
+                &mut work,
+            )
+            .unwrap(),
+            "final readback rejects an axes mismatch"
+        );
     }
 }

@@ -186,6 +186,65 @@
         );
         Ok(())
     }
+
+    #[test]
+    fn source_only_rejects_an_unchanged_point_with_a_corrupt_retained_source_chart(
+    ) -> Result<()> {
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let port = *topology
+            .q
+            .source_point_ports
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("source point has no Q port".into()))?;
+        let mut source_ports: Vec<Option<ExactChartPoint>> = topology
+            .q
+            .ports
+            .iter()
+            .map(|port| Some(port.point.clone()))
+            .collect();
+        let assigned = source_ports
+            .get_mut(port.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| GeometryErrorKind::Invalid("source port has no chart".into()))?;
+        *assigned = ExactChartPoint::from_rationals(
+            ExactRational::from_f64(1.0),
+            ExactRational::from_f64(0.0),
+        );
+        let source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let buffers = FrozenLiteralBuffers::shapes(
+            crate::geometry::Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::XY,
+                    image: QSourceImage::SourcePoint(0),
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        );
+        let mut work = EvaluationBudget::new("corrupt retained source chart", 0)?;
+
+        assert!(matches!(
+            super::bind_source_only(
+                SourceFrozenDrawing {
+                    buffers,
+                    diagnostic_lines: Vec::new(),
+                },
+                &topology,
+                Some(&source_ports),
+                &source_ordinates,
+                None,
+                &[],
+                &[],
+                &[],
+                &mut work,
+            )?,
+            LiteralCheck::Reject(images) if images == [QSourceImage::SourcePoint(0)]
+        ), "the unchanged stored Point must still be checked against its retained source chart");
+        Ok(())
+    }
+
     #[test]
     fn native_literal_readback_rejects_an_unchanged_point_with_a_corrupt_assigned_port(
     ) -> Result<()> {
@@ -333,6 +392,116 @@
         );
         Ok(())
     }
+
+    #[test]
+    fn native_sealed_layout_rejects_changed_chord_incidence_with_unchanged_points() -> Result<()> {
+        use super::super::emission::{
+            EmissionChord, EmissionChordId, native_port_point,
+        };
+        use crate::geometry::{CoordSeq, LineSeq, Shape};
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native chord incidence", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (mut reference, port_id) =
+            single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let vertex = *reference
+            .port_vertices
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample graph vertex is unknown".into()))?;
+        let duplicate_port = EmissionPortId(
+            u32::try_from(reference.plan.ports.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        );
+        let port = reference
+            .plan
+            .ports
+            .get(port_id.0 as usize)
+            .cloned()
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample port is unknown".into()))?;
+        reference.plan.ports.push(port);
+        reference.port_vertices.push(vertex);
+        reference.plan.points.clear();
+
+        let chord_id = EmissionChordId(
+            u32::try_from(reference.plan.chords.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        );
+        reference.plan.chords.push(EmissionChord {
+            ports: [port_id, port_id],
+            recipe: None,
+        });
+        reference.plan.lines.push(vec![chord_id]);
+        let chord = reference
+            .plan
+            .chords
+            .get_mut(chord_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample chord is unknown".into()))?;
+        *chord
+            .ports
+            .get_mut(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample chord has no end port".into()))? =
+            duplicate_port;
+
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("unchanged Native reference assignment was rejected".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
+        let ordinates = [NodeOrdinates::default()];
+        let record = native_port_point(
+            &reference.plan,
+            &sites,
+            &ordinates,
+            port_id,
+            crate::geometry::CoordinateAxes::XY,
+        )?;
+        let shape = Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&[
+            record, record,
+        ])?));
+        let buffers = FrozenLiteralBuffers::shapes(
+            shape,
+            ShapeLiteralLayout {
+                points: Vec::new(),
+                lines: vec![crate::geometry::embedding_completion::literals::LiteralSequence {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::XY,
+                    images: vec![port_id, port_id],
+                }],
+                polygons: Vec::new(),
+            },
+        );
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let receipt = NativeCandidatePublication {
+            assignment: &assignment,
+            buffers,
+            sites: &sites,
+            ordinates: &ordinates,
+            port_records: &mut port_records,
+        };
+        assert!(matches!(
+            finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::QNative(receipt),
+                    topology.publication_frame().clone(),
+                    &mut budget,
+                ),
+                StorageTarget::Scalar,
+            )?,
+            PublicationOutcome::Reject(PublicationRejection::Native)
+        ), "the same materialized points cannot hide a changed chord endpoint identity");
+        Ok(())
+    }
+
     #[test]
     fn native_assignment_factory_rejects_crosswired_graph_layout_and_images() -> Result<()> {
         let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;

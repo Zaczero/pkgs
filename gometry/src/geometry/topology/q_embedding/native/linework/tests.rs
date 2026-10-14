@@ -200,15 +200,20 @@
             &publication_points,
             &publication_ordinates,
         );
-        let error = finish_geographic(
+        let result = finish_geographic(
             PublicationCall::new(
                 ProducerReceipt::QSourceOnly(receipt),
                 topology.publication_frame().clone(),
                 &mut work,
             ),
             StorageTarget::Scalar,
-        )
-        .expect_err("an assigned but out-of-context sample remains an error");
+        );
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "an assigned but out-of-context sample must remain an error".into(),
+            )
+            .into());
+        };
         assert!(
             error
                 .to_string()

@@ -18,7 +18,7 @@ use crate::geometry::embedding_completion::storage::{
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::ArrayRows;
 use crate::geometry::topology::q_embedding::publication as q_publication;
-use crate::geometry::{GeometryErrorKind, Point, Shape, ShapeCountQuery};
+use crate::geometry::{GeometryErrorKind, Shape, ShapeCountQuery};
 use crate::work::{Unmetered, Work};
 
 pub(crate) struct FinishedGeometry {
