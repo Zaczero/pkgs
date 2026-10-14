@@ -331,7 +331,6 @@ fn overlay_ring_lineage<M: ChartMetric>(
     axes: CoordinateAxes,
     source_edges: &[super::super::lineage::EdgeUseId],
     member: super::super::lineage::MemberId,
-    source_frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: &mut super::super::lineage::LineageCatalog,
 ) -> Result<(Ring, super::super::lineage::LineageSequence)> {
@@ -498,7 +497,6 @@ fn overlay_parts_shape<M: ChartMetric>(
     axes: CoordinateAxes,
     member: super::super::lineage::MemberId,
     source_edges: &[super::super::lineage::EdgeUseId],
-    source_frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: &mut super::super::lineage::LineageCatalog,
 ) -> Result<(Shape, super::super::lineage::ShapeLineage)> {
@@ -513,7 +511,6 @@ fn overlay_parts_shape<M: ChartMetric>(
                 axes,
                 source_edges,
                 member,
-                source_frame,
                 metric_access,
                 catalog,
             )?);
@@ -777,7 +774,6 @@ fn split_polygon_core<M: ChartMetric>(
                     axes,
                     source_lineage.shell.member,
                     &source_edges,
-                    source_frame,
                     metric_access,
                     catalog.as_deref_mut().ok_or_else(|| {
                         GeometryErrorKind::Invalid(
