@@ -992,16 +992,13 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         request: &SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
+        evaluation_states: &mut RootEvaluationStates,
         budget: &mut ExpansionBudget,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
         let roots = request.roots;
-        let mut evaluation_states = RootEvaluationStates::default();
-        let mut evaluation = RootEvaluationContext::new(
-            roots,
-            request.context.metric_access(),
-            &mut evaluation_states,
-        );
+        let mut evaluation =
+            RootEvaluationContext::new(roots, request.context.metric_access(), evaluation_states);
         let mut resolve_rows =
             |rows: &[RequestRowInput], work: &mut Unmetered| evaluation.resolve_rows(rows, work);
         if request.source_traces.is_none() {

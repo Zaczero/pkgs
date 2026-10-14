@@ -139,6 +139,8 @@ pub(crate) struct RootWorkCounters {
     pub(crate) trace_rows_builders: usize,
     pub(crate) request_tables: usize,
     pub(crate) root_catalog_resolutions: usize,
+    pub(crate) root_metric_edge_setups: usize,
+    pub(crate) root_metric_length_setups: usize,
 }
 
 #[cfg(test)]
@@ -154,6 +156,8 @@ pub(crate) enum RootWorkEvent {
     TraceRowsBuilder,
     RequestTable,
     RootCatalogResolution,
+    RootMetricEdgeSetup,
+    RootMetricLengthSetup,
 }
 
 #[cfg(test)]
@@ -170,6 +174,8 @@ thread_local! {
             trace_rows_builders: 0,
             request_tables: 0,
             root_catalog_resolutions: 0,
+            root_metric_edge_setups: 0,
+            root_metric_length_setups: 0,
         }) };
 }
 
@@ -218,6 +224,13 @@ pub(crate) fn record_root_work(event: RootWorkEvent) {
             },
             RootWorkEvent::RootCatalogResolution => {
                 current.root_catalog_resolutions = current.root_catalog_resolutions.wrapping_add(1);
+            },
+            RootWorkEvent::RootMetricEdgeSetup => {
+                current.root_metric_edge_setups = current.root_metric_edge_setups.wrapping_add(1);
+            },
+            RootWorkEvent::RootMetricLengthSetup => {
+                current.root_metric_length_setups =
+                    current.root_metric_length_setups.wrapping_add(1);
             },
         }
         counters.set(current);
@@ -654,6 +667,8 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                         *longitude,
                     )?;
                     state.edge = Some(edge);
+                    #[cfg(test)]
+                    record_root_work(RootWorkEvent::RootMetricEdgeSetup);
                     edge
                 };
                 if edge.is_degenerate() {
@@ -668,6 +683,8 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                 } else {
                     if parameter > 0.0 && parameter < 1.0 && state.total_length.is_none() {
                         state.total_length = Some(metric.chart_edge_length_with_work(&edge, work)?);
+                        #[cfg(test)]
+                        record_root_work(RootWorkEvent::RootMetricLengthSetup);
                     }
                     let value = metric.chart_edge_arclength_fraction_with_work(
                         &edge,

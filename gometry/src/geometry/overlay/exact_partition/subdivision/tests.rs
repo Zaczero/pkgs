@@ -197,6 +197,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
         );
 
         drop(take_source_arc_observations());
+        let mut evaluation_states = RootEvaluationStates::default();
         let parts = inventory.subdivision_parts_with_roots(
             &partition,
             &SubdivisionTraceRequest {
@@ -211,6 +212,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
                 fallback_inventory: Some(&inventory),
                 reuse_existing_source_vertices: true,
             },
+            &mut evaluation_states,
             &mut budget,
             &mut trace_work,
         )?;

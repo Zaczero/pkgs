@@ -5,6 +5,7 @@ use std::cell::Cell;
 
 use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicFrame;
+use crate::geometry::ordinates::RootEvaluationStates;
 use crate::geometry::overlay::{
     ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,
     rect_polygon,
@@ -503,6 +504,7 @@ impl SubdivisionWorkItem {
 struct SubdivisionContext {
     frame: Option<GeographicFrame>,
     ordinary_roots: Option<SubdivisionRootCatalog>,
+    evaluation_states: RootEvaluationStates,
 }
 
 pub(crate) fn split<M: crate::geometry::ChartMetric>(
@@ -521,6 +523,7 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
     let mut subdivision = SubdivisionContext {
         frame,
         ordinary_roots: None,
+        evaluation_states: RootEvaluationStates::default(),
     };
     let mut item = SubdivisionWorkItem::new(shape, false);
     if let Some(frame) = frame
@@ -576,7 +579,15 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
             }
         }
     }
-    split_with_context(item, max_vertices, drop, context, &subdivision, out, budget)
+    split_with_context(
+        item,
+        max_vertices,
+        drop,
+        context,
+        &mut subdivision,
+        out,
+        budget,
+    )
 }
 
 fn split_with_context<M: crate::geometry::ChartMetric>(
@@ -584,7 +595,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
     max_vertices: usize,
     drop: bool,
     context: &SourceArcContext<'_, '_, M>,
-    subdivision: &SubdivisionContext,
+    subdivision: &mut SubdivisionContext,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
@@ -684,6 +695,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 inventory.subdivision_parts_with_roots(
                     &partition,
                     &request,
+                    &mut subdivision.evaluation_states,
                     budget,
                     &mut trace_work,
                 )?
@@ -708,6 +720,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                         fallback_inventory: Some(&inventory),
                         reuse_existing_source_vertices: true,
                     },
+                    &mut subdivision.evaluation_states,
                     budget,
                     &mut trace_work,
                 )?

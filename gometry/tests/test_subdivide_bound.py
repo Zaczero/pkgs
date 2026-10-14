@@ -332,6 +332,72 @@ def test_geographic_subdivide_resolves_seam_ordinates_on_the_original_root() -> 
         assert coordinate[3] == pytest.approx(100 + 1000 * arclength_fraction, abs=1e-4)
 
 
+def test_geographic_array_subdivide_keeps_original_roots_per_row() -> None:
+    lines = [
+        gm.LineString(
+            [(10 * index, 5 * index) for index in range(9)],
+            z=[10 + 100 * index for index in range(9)],
+            m=[100 + 1000 * index for index in range(9)],
+            crs='EPSG:4326',
+        ),
+        gm.LineString(
+            [(5 * index, 10 * index) for index in range(9)],
+            z=[1000 + 200 * index for index in range(9)],
+            m=[10000 + 2000 * index for index in range(9)],
+            crs='EPSG:4326',
+        ),
+    ]
+
+    groups = gm.GeometryArray(lines).subdivide(max_vertices=8)
+    assert len(groups) == 2
+
+    geod = pyproj.Geod(ellps='WGS84')
+    for group, line, cut, root_index in zip(
+        groups,
+        lines,
+        [(35.0, 17.5), (17.5, 35.0)],
+        [3, 3],
+        strict=True,
+    ):
+        scalar_parts = line.subdivide(max_vertices=8)
+        assert [part.to_wkb() for part in group] == [
+            part.to_wkb() for part in scalar_parts
+        ]
+
+        start = line.coords[root_index]
+        end = line.coords[root_index + 1]
+        chart_points = [
+            (
+                start[0] + (end[0] - start[0]) * index / 1024,
+                start[1] + (end[1] - start[1]) * index / 1024,
+            )
+            for index in range(1025)
+        ]
+        total_length = sum(
+            geod.inv(*start, *end)[2] for start, end in pairwise(chart_points)
+        )
+        half_length = sum(
+            geod.inv(*start, *end)[2] for start, end in pairwise(chart_points[:513])
+        )
+        fraction = half_length / total_length
+        start_z, end_z = line.coords[root_index][2], line.coords[root_index + 1][2]
+        start_m, end_m = line.coords[root_index][3], line.coords[root_index + 1][3]
+        samples = [
+            coordinate
+            for part in group
+            for coordinate in part.coords
+            if coordinate[:2] == pytest.approx(cut, abs=1e-12)
+        ]
+        assert samples
+        for coordinate in samples:
+            assert coordinate[2] == pytest.approx(
+                start_z + (end_z - start_z) * fraction, abs=2e-5
+            )
+            assert coordinate[3] == pytest.approx(
+                start_m + (end_m - start_m) * fraction, abs=1e-4
+            )
+
+
 def test_geographic_polygon_subdivide_keeps_seam_source_edges_bounded() -> None:
     polygon = gm.Polygon(
         [
