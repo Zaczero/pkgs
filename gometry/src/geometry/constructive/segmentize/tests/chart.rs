@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::ordinates::take_source_arc_activity;
 
 #[test]
 fn ordinary_chart_stations_keep_common_root_carry_without_remeasurement() {
@@ -11,7 +12,7 @@ fn ordinary_chart_stations_keep_common_root_carry_without_remeasurement() {
     .unwrap();
     let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
     crate::crs::reset_quadrature_test_progress();
-    let _ = crate::geometry::ordinates::take_source_arc_activity();
+    let _ = take_source_arc_activity();
     let mut budget = ExpansionBudget::new("segmentize", "piece_counts");
     let output = segmentize_points_with_piece_counts_budgeted(
         &source,
@@ -21,7 +22,7 @@ fn ordinary_chart_stations_keep_common_root_carry_without_remeasurement() {
     )
     .unwrap();
     let progress = crate::crs::quadrature_test_progress();
-    let activity = crate::geometry::ordinates::take_source_arc_activity();
+    let activity = take_source_arc_activity();
     assert_eq!(output.len(), 5);
     assert!(progress.station_measurements >= 3);
     assert_eq!(progress.fraction_measurements, 0);
@@ -66,10 +67,6 @@ fn chart_station_refinements_measure_their_own_original_root_parameter() {
         })
         .count();
     assert!(refinement_count > 0);
-    assert_eq!(
-        usize::try_from(progress.fraction_measurements).unwrap(),
-        refinement_count,
-    );
     assert_eq!(ranges.parameters.len(), output.len());
     for (index, &parameter) in ranges.parameters.iter().enumerate() {
         let fraction = edge
@@ -85,6 +82,10 @@ fn chart_station_refinements_measure_their_own_original_root_parameter() {
         assert_eq!(actual.z().map(f64::to_bits), z.0.map(f64::to_bits));
         assert_eq!(actual.m().map(f64::to_bits), m.0.map(f64::to_bits));
     }
+    assert_eq!(
+        usize::try_from(progress.fraction_measurements).unwrap(),
+        refinement_count,
+    );
     assert_eq!(output.nth_coord(0), source.nth_coord(0));
     assert_eq!(output.nth_coord(output.len() - 1), source.nth_coord(1));
 }
