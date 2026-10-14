@@ -210,6 +210,141 @@ impl Shape {
     }
 }
 
+fn line_part(
+    points: Vec<Point>,
+    lineage: Option<super::lineage::LineageSequence>,
+) -> Result<(LineSeq, Option<super::lineage::LineageSequence>)> {
+    Ok((
+        LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
+        lineage,
+    ))
+}
+
+fn split_line_member<M: ChartMetric>(
+    line: &LineSeq,
+    source_lineage: Option<&super::lineage::LineageSequence>,
+    mut catalog: Option<&mut LineageCatalog>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Option<Vec<(LineSeq, Option<super::lineage::LineageSequence>)>>> {
+    match source_lineage {
+        Some(source_lineage) => {
+            let pieces = segment_coords_with_occurrences(
+                &collect_points(line),
+                GeographicFrame::crs84(),
+                metric_access,
+            )?;
+            if pieces.is_empty() {
+                return Ok(None);
+            }
+            let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured line lineage has no event catalog".into())
+            })?;
+            let source_closed = line_sequence_is_closed(line);
+            pieces
+                .into_iter()
+                .map(|piece| {
+                    let lineage =
+                        split::seam_piece_lineage(&piece, source_lineage, source_closed, catalog)?;
+                    line_part(piece.points, Some(lineage))
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(Some)
+        },
+        None => {
+            let pieces = segment_coords_with_metric(
+                &collect_points(line),
+                GeographicFrame::crs84(),
+                metric_access,
+            )?;
+            if pieces.is_empty() {
+                return Ok(None);
+            }
+            pieces
+                .into_iter()
+                .map(|piece| line_part(piece, None))
+                .collect::<Result<Vec<_>>>()
+                .map(Some)
+        },
+    }
+}
+
+fn split_multiline<M: ChartMetric>(
+    lines: &MultiLineString,
+    lineage: Option<&ShapeLineage>,
+    mut catalog: Option<&mut LineageCatalog>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<(Shape, Option<ShapeLineage>)> {
+    let (axes, source_members) = match lineage {
+        None => (lines.axes(), None),
+        Some(ShapeLineage::MultiLineString { axes, members }) => {
+            if lines.member_count() != members.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "antimeridian line members and lineage disagree".into(),
+                )
+                .into());
+            }
+            (*axes, Some(members.as_slice()))
+        },
+        Some(_) => {
+            return Err(GeometryErrorKind::Invalid(
+                "antimeridian shape and member lineage disagree".into(),
+            )
+            .into());
+        },
+    };
+    let mut members = Vec::with_capacity(lines.member_count());
+    let mut output_lineages = source_members.map(|_| Vec::with_capacity(lines.member_count()));
+    for (index, member) in lines.members_with_values().enumerate() {
+        match member {
+            MultiMember::Empty => {
+                members.push(MultiMember::Empty);
+                if let Some(lineages) = &mut output_lineages {
+                    lineages.push(None);
+                }
+            },
+            MultiMember::Value(line) => {
+                let source_lineage = match source_members {
+                    Some(source_members) => Some(
+                        source_members
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "antimeridian line members and lineage disagree".into(),
+                                )
+                            })?,
+                    ),
+                    None => None,
+                };
+                match split_line_member(
+                    line,
+                    source_lineage,
+                    catalog.as_deref_mut(),
+                    metric_access,
+                )? {
+                    None => {
+                        members.push(MultiMember::Value(line.clone()));
+                        if let Some(lineages) = &mut output_lineages {
+                            lineages.push(source_lineage.cloned());
+                        }
+                    },
+                    Some(pieces) => {
+                        for (line, lineage) in pieces {
+                            members.push(MultiMember::Value(line));
+                            if let Some(lineages) = &mut output_lineages {
+                                lineages.push(lineage);
+                            }
+                        }
+                    },
+                }
+            },
+        }
+    }
+    let shape = Shape::MultiLineString(MultiLineString::try_new(axes, members)?);
+    let lineage = output_lineages.map(|members| ShapeLineage::MultiLineString { axes, members });
+    Ok((shape, lineage))
+}
+
 fn split_shape_with_lineage<M: ChartMetric>(
     shape: &Shape,
     lineage: Option<&ShapeLineage>,
@@ -222,148 +357,45 @@ fn split_shape_with_lineage<M: ChartMetric>(
         (Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..), lineage) => {
             Ok((shape.clone(), lineage.cloned()))
         },
-        (Shape::LineString(line), None) => {
-            let pieces = segment_coords_with_metric(
-                &collect_points(line),
-                GeographicFrame::crs84(),
-                metric_access,
-            )?;
-            if pieces.is_empty() {
-                return Ok((shape.clone(), None));
-            }
-            let lines = pieces
-                .into_iter()
-                .map(|piece| CoordSeq::try_from_points(&piece))
-                .map(|coords| coords.map(LineSeq::from_proven))
-                .collect::<Result<Vec<_>>>()?;
-            Ok((
-                Shape::multi_line_string(line.as_coords().axes(), lines),
-                None,
-            ))
-        },
-        (Shape::LineString(line), Some(ShapeLineage::LineString(source))) => {
-            let pieces = segment_coords_with_occurrences(
-                &collect_points(line),
-                GeographicFrame::crs84(),
-                metric_access,
-            )?;
-            if pieces.is_empty() {
+        (Shape::LineString(line), lineage) => {
+            let source = match lineage {
+                None => None,
+                Some(ShapeLineage::LineString(source)) => Some(source),
+                Some(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian line and lineage disagree".into(),
+                    )
+                    .into());
+                },
+            };
+            let Some(pieces) =
+                split_line_member(line, source, catalog.as_deref_mut(), metric_access)?
+            else {
                 return Ok((shape.clone(), lineage.cloned()));
-            }
-            let catalog = catalog.as_deref_mut().ok_or_else(|| {
-                GeometryErrorKind::Invalid("captured line lineage has no event catalog".into())
-            })?;
-            let source_closed = line_sequence_is_closed(line);
-            let mut lines = Vec::with_capacity(pieces.len());
-            let mut lineages = Vec::with_capacity(pieces.len());
-            for piece in pieces {
-                lineages.push(Some(split::seam_piece_lineage(
-                    &piece,
-                    source,
-                    source_closed,
-                    catalog,
-                )?));
-                lines.push(LineSeq::from_proven(CoordSeq::try_from_points(
-                    &piece.points,
-                )?));
-            }
-            Ok((
-                Shape::multi_line_string(line.as_coords().axes(), lines),
-                Some(ShapeLineage::MultiLineString {
-                    axes: line.as_coords().axes(),
-                    members: lineages,
-                }),
-            ))
-        },
-        (Shape::MultiLineString(lines), None) => {
-            let mut split = Vec::with_capacity(lines.member_count());
-            for member in lines.members_with_values() {
-                match member {
-                    MultiMember::Empty => split.push(MultiMember::Empty),
-                    MultiMember::Value(line) => {
-                        let pieces = segment_coords_with_metric(
-                            &collect_points(line),
-                            GeographicFrame::crs84(),
-                            metric_access,
-                        )?;
-                        if pieces.is_empty() {
-                            split.push(MultiMember::Value(line.clone()));
-                        } else {
-                            split.extend(
-                                pieces
-                                    .into_iter()
-                                    .map(|piece| CoordSeq::try_from_points(&piece))
-                                    .map(|coords| coords.map(LineSeq::from_proven))
-                                    .map(|line| line.map(MultiMember::Value))
-                                    .collect::<Result<Vec<_>>>()?,
-                            );
-                        }
-                    },
-                }
-            }
-            Ok((
-                Shape::MultiLineString(MultiLineString::try_new(lines.axes(), split)?),
-                None,
-            ))
-        },
-        (
-            Shape::MultiLineString(lines),
-            Some(ShapeLineage::MultiLineString {
-                axes,
-                members: source_members,
-            }),
-        ) => {
-            let mut split = Vec::with_capacity(lines.member_count());
-            let mut lineages = Vec::with_capacity(lines.member_count());
-            let catalog = catalog.as_deref_mut().ok_or_else(|| {
-                GeometryErrorKind::Invalid("captured multiline lineage has no event catalog".into())
-            })?;
-            for (source, source_lineage) in lines.members_with_values().zip(source_members) {
-                match (source, source_lineage) {
-                    (MultiMember::Empty, None) => {
-                        split.push(MultiMember::Empty);
-                        lineages.push(None);
-                    },
-                    (MultiMember::Value(line), Some(source_lineage)) => {
-                        let pieces = segment_coords_with_occurrences(
-                            &collect_points(line),
-                            GeographicFrame::crs84(),
-                            metric_access,
-                        )?;
-                        if pieces.is_empty() {
-                            split.push(MultiMember::Value(line.clone()));
-                            lineages.push(Some(source_lineage.clone()));
-                        } else {
-                            let source_closed = line_sequence_is_closed(line);
-                            for piece in pieces {
-                                let lineage = split::seam_piece_lineage(
-                                    &piece,
-                                    source_lineage,
-                                    source_closed,
-                                    catalog,
-                                )?;
-                                let line =
-                                    LineSeq::from_proven(CoordSeq::try_from_points(&piece.points)?);
-                                lineages.push(Some(lineage));
-                                split.push(MultiMember::Value(line));
-                            }
-                        }
-                    },
-                    _ => {
-                        return Err(GeometryErrorKind::Invalid(
-                            "antimeridian line members and lineage disagree".into(),
+            };
+            let axes = line.as_coords().axes();
+            let captured = source.is_some();
+            let mut output_lines = Vec::with_capacity(pieces.len());
+            let mut output_lineages = Vec::with_capacity(pieces.len());
+            for (line, lineage) in pieces {
+                output_lines.push(line);
+                if captured {
+                    output_lineages.push(Some(lineage.ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "captured split line has no member lineage".into(),
                         )
-                        .into());
-                    },
+                    })?));
                 }
             }
-            Ok((
-                Shape::MultiLineString(MultiLineString::try_new(*axes, split)?),
-                Some(ShapeLineage::MultiLineString {
-                    axes: *axes,
-                    members: lineages,
-                }),
-            ))
+            let shape = Shape::multi_line_string(axes, output_lines);
+            let lineage = captured.then_some(ShapeLineage::MultiLineString {
+                axes,
+                members: output_lineages,
+            });
+            Ok((shape, lineage))
+        },
+        (Shape::MultiLineString(lines), lineage) => {
+            split_multiline(lines, lineage, catalog.as_deref_mut(), metric_access)
         },
         (Shape::Polygon(polygon), None) => {
             let parts = split_polygon(shape, polygon, PoleClosure::Auto, metric_access)?;
