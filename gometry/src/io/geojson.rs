@@ -128,6 +128,16 @@ fn to_geojson_string_with_limit_and_metric<M: ChartMetric>(
     let limit = limit.min(isize::MAX.unsigned_abs());
     validate_geojson_value(shape)?;
     crate::io::require_serializable_axes(shape)?;
+    if matches!(domain, TopologyDomain::Geographic(_)) {
+        validate_geojson_domain(shape)?;
+    }
+    // Reject an oversized collection before the geographic drawing expands
+    // shared member occurrences into output geometry.
+    if matches!(shape, Shape::GeometryCollection(_)) {
+        geojson_text_summary(shape)
+            .geojson_lower_bound(limit)
+            .require_within()?;
+    }
     let prepared = geojson_output_shape_for_write(shape, domain, metric_access)?;
     let summary = geojson_text_summary(&prepared);
     summary.geojson_lower_bound(limit).require_within()?;
@@ -223,53 +233,32 @@ fn validate_geojson_structure(shape: &Shape, owners: &mut SharedShapeOwners) -> 
         Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) => Ok(()),
     }
 }
-/// The serialization-only view of `shape` normalized for RFC 7946 output.
-///
-/// Never mutates the source: a geographic geometry is split at the
-/// antimeridian (a no-op that returns an owned clone for non-crossing input),
-/// and any polygonal geometry is oriented to right-hand winding. Non-polygonal
-/// planar geometry borrows through unchanged.
-pub(crate) fn geojson_output_shape<'s, M: ChartMetric>(
-    shape: &'s Shape,
-    domain: TopologyDomain,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-) -> Result<Cow<'s, Shape>> {
-    let prepared: Cow<'_, Shape> = match domain {
-        TopologyDomain::Cartesian => Cow::Borrowed(shape),
-        TopologyDomain::Geographic(frame) => {
-            validate_geojson_domain(shape)?;
-            Cow::Owned(shape.split_antimeridian_in_frame_with_metric(frame, metric_access)?)
-        },
-    };
-    // RFC 7946 §3.1.6 mandates right-hand ring winding on output; only
-    // polygonal geometry carries rings, so everything else borrows through
-    // without a copy. `orient_polygons` reverses a ring only when its winding
-    // is wrong, so a geometry already in canonical form is not perturbed.
-    if matches!(
-        prepared.as_ref(),
-        Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
-    ) {
-        Ok(Cow::Owned(prepared.as_ref().orient_polygons(false)?))
-    } else {
-        Ok(prepared)
-    }
-}
-
 fn geojson_output_shape_for_write<'s, M: ChartMetric>(
     shape: &'s Shape,
     domain: TopologyDomain,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Cow<'s, Shape>> {
-    let TopologyDomain::Geographic(frame) = domain else {
-        return geojson_output_shape(shape, domain, metric_access);
-    };
-    validate_geojson_domain(shape)?;
-    let drawing = shape.split_antimeridian_captured_in_frame_with_metric(frame, metric_access)?;
-    let finished = drawing
-        .orient_geojson()?
-        .finish_scalar(crate::Frame::None)?;
-    let (shape, _) = finished.into_scalar()?;
-    Ok(Cow::Owned(shape))
+    match domain {
+        TopologyDomain::Cartesian => {
+            if matches!(
+                shape,
+                Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
+            ) {
+                Ok(Cow::Owned(shape.orient_polygons(false)?))
+            } else {
+                Ok(Cow::Borrowed(shape))
+            }
+        },
+        TopologyDomain::Geographic(frame) => {
+            let drawing =
+                shape.split_antimeridian_captured_in_frame_with_metric(frame, metric_access)?;
+            let finished = drawing
+                .orient_geojson()?
+                .finish_scalar(crate::Frame::None)?;
+            let (shape, _) = finished.into_scalar()?;
+            Ok(Cow::Owned(shape))
+        },
+    }
 }
 
 /// Position outside the WGS84 lon/lat domain, as `(coordinate_label, value)`.
