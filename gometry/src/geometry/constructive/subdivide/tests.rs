@@ -36,6 +36,27 @@ fn subdivision_output_vertices(parts: &[Shape]) -> usize {
         .sum()
 }
 
+fn evaluated_metric_roots(observations: &[ordinates::SourceArcObservation]) -> usize {
+    let mut roots = std::collections::BTreeSet::new();
+    for observation in observations {
+        if observation.parameter <= 0.0
+            || observation.parameter >= 1.0
+            || (observation.z.is_none() && observation.m.is_none())
+        {
+            continue;
+        }
+        roots.insert(observation.source.map(|point| {
+            (
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z().map(f64::to_bits),
+                point.m().map(f64::to_bits),
+            )
+        }));
+    }
+    roots.len()
+}
+
 #[derive(Default)]
 struct CountingWork {
     charged: u64,
@@ -646,8 +667,10 @@ fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> R
     let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
     drop(ordinates::take_source_arc_observations());
+    ordinates::reset_root_work_counters();
     split(shape, 8, false, &context, &mut parts, &mut budget)?;
     let observations = ordinates::take_source_arc_observations();
+    let root_work = ordinates::root_work_counters();
     assert_eq!(metric_access_calls.get(), observations.len());
     let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
     let scale = 10.0 / 9.0;
@@ -675,6 +698,13 @@ fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> R
                 && (observation.parameter - 7.0 / 12.0).abs() <= 1e-15
         })
         .expect("the second cut resolves against the original grad-frame edge");
+    assert!(observations.iter().any(|observation| {
+        observation.source[0].x == 0.0
+            && observation.source[0].y == 0.0
+            && observation.source[1].x == 12.0 * scale
+            && observation.source[1].y == 6.0 * scale
+            && (observation.parameter - 5.0 / 12.0).abs() <= 1e-15
+    }));
     assert_eq!(second_cut.z(), root_request.z);
     assert_eq!(second_cut.m(), root_request.m);
     assert!(
@@ -685,6 +715,10 @@ fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> R
         (second_cut.m().unwrap() - 683.886_199_647_133_4).abs() <= 1e-4,
         "the original ellipsoidal arc gives the second cut M"
     );
+    let evaluated_roots = evaluated_metric_roots(&observations);
+    assert!(evaluated_roots > 0);
+    assert_eq!(root_work.root_metric_edge_setups, evaluated_roots);
+    assert_eq!(root_work.root_metric_length_setups, evaluated_roots);
     let mut counts = ShapeCountQuery::default();
     assert!(parts.iter().all(|part| {
         counts
@@ -765,8 +799,10 @@ fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> 
     let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
     drop(ordinates::take_source_arc_observations());
+    ordinates::reset_root_work_counters();
     split(shape, 8, false, &context, &mut parts, &mut budget)?;
     let observations = ordinates::take_source_arc_observations();
+    let root_work = ordinates::root_work_counters();
     let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
     assert!(
         output_points
@@ -782,11 +818,22 @@ fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> 
             && observation.source[0].y == 0.0
             && observation.source[1].x == 12.0 * scale
             && observation.source[1].y == 6.0 * scale
+            && (observation.parameter - 5.0 / 12.0).abs() <= 1e-15
+    }));
+    assert!(observations.iter().any(|observation| {
+        observation.source[0].x == 0.0
+            && observation.source[0].y == 0.0
+            && observation.source[1].x == 12.0 * scale
+            && observation.source[1].y == 6.0 * scale
             && (observation.parameter - 7.0 / 12.0).abs() <= 1e-15
     }));
     assert!(metric_access_calls.get() > 0);
     assert!((second_cut.z().unwrap() - 126.777_239_929_426_68).abs() <= 2e-5);
     assert!((second_cut.m().unwrap() - 683.886_199_647_133_4).abs() <= 1e-4);
+    let evaluated_roots = evaluated_metric_roots(&observations);
+    assert!(evaluated_roots > 0);
+    assert_eq!(root_work.root_metric_edge_setups, evaluated_roots);
+    assert_eq!(root_work.root_metric_length_setups, evaluated_roots);
     let mut counts = ShapeCountQuery::default();
     assert!(parts.iter().all(|part| {
         counts
