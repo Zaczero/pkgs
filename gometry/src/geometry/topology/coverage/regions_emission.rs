@@ -240,12 +240,12 @@ impl CoverageRows {
         &self,
         plan: &ExpandedEmissionPlan<'_>,
         sites: &[AssignedSite],
-        request_rows: Vec<RequestRowInput>,
+        request_rows: &[RequestRowInput],
         area_edges: &[NativeAreaEdge],
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         work: &mut impl Work,
     ) -> Result<ProducerDrawingReceipt> {
-        let ordinates = resolve_request_rows(&request_rows, plan.topology, metric_access, work)?;
+        let ordinates = resolve_request_rows(request_rows, plan.topology, metric_access, work)?;
         let row_count = if self.target == StorageTarget::Scalar {
             1
         } else {
@@ -314,7 +314,7 @@ impl CoverageRows {
                     plan,
                     sites,
                     &ordinates,
-                    &request_rows,
+                    request_rows,
                     &part.shell,
                     axes,
                     address,
@@ -329,7 +329,7 @@ impl CoverageRows {
                         plan,
                         sites,
                         &ordinates,
-                        &request_rows,
+                        request_rows,
                         hole,
                         axes,
                         address,

@@ -116,7 +116,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 rows.drawing_receipt(
                     &reference.plan,
                     &assigned_sites,
-                    requests,
+                    &requests,
                     &reference.area_edges,
                     self.metric_access,
                     budget,
