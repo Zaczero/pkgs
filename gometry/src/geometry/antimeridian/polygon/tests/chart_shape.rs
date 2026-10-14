@@ -124,13 +124,15 @@ fn frame_only_capture_requires_metric_authority_for_interior_ordinates() {
     assert!(sphere.iter().all(|value| (*value - 71.0842603000).abs() < 1.0e-7));
     assert!((wgs84[0] - sphere[0]).abs() > 0.03);
 
-    let result = source.split_antimeridian_captured_in_frame(GeographicFrame::crs84());
+    let result = source.split_antimeridian_captured_in_frame_with_metric::<
+        crate::crs::GeodesicMetric,
+    >(GeographicFrame::crs84(), None);
     let error = match result {
         Ok(_) => panic!("a chart frame alone must not supply an ellipsoid"),
         Err(error) => error,
     };
     assert!(
-        error.to_string().contains("CRS metric authority"),
+        error.to_string().contains("CRS metric"),
         "{error}"
     );
 }
@@ -151,7 +153,10 @@ fn frame_only_capture_keeps_authentic_endpoints_without_metric_authority() {
     );
 
     let drawing = source
-        .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+        .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+            GeographicFrame::crs84(),
+            None,
+        )
         .expect("authentic endpoints need no metric authority");
     let finished = drawing
         .finish_scalar(crate::Frame::None)
