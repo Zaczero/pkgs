@@ -126,13 +126,25 @@ fn publish_transformed_chain_with_edges(
             let ComputedLongitudeRelation::Native(longitude) = *relation else {
                 unreachable!("transform publication supplies native retained relations");
             };
+            let source_metric = if output.axes().has_z() || output.axes().has_m() {
+                Some(metric.geodesic_metric()?)
+            } else {
+                None
+            };
+            let metric_access = || {
+                source_metric.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic transform samples with Z/M require the target CRS metric",
+                    )
+                })
+            };
             crate::geometry::computed_native_sample_ordinates(
                 frame,
                 endpoints,
                 longitude,
                 parameter,
                 output.axes(),
-                || metric.geodesic_metric(),
+                Some(&metric_access),
                 &mut root_metric,
                 &mut work,
             )

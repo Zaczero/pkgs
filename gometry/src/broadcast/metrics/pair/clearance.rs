@@ -1,6 +1,9 @@
 use super::{
     CoordinateAxes, GeometryKind, LineSeq, LocalInputPurpose, PreparedLocalInput, Shape, crs,
-    dispatch_metric_model, emit_from_original, geodesic_by_identity,
+    dispatch_metric_model, geodesic_by_identity,
+};
+use crate::geometry::{
+    GeographicProvenancePlan, emit_from_original_with_source_roots, emit_from_original_xy,
 };
 
 /// CRS-aware minimum-clearance witness line: the realizing two-point
@@ -52,7 +55,7 @@ fn metric_minimum_clearance_line_impl(
                         ));
                     };
                     let plan = witness.plan;
-                    let projected_points = emit_from_original(&witness.points, &plan)?;
+                    let projected_points = emit_from_original_xy(&witness.points, &plan)?;
                     let [a, b] = projected_points.as_slice() else {
                         unreachable!("minimum-clearance witness plan has two vertices");
                     };
@@ -62,27 +65,18 @@ fn metric_minimum_clearance_line_impl(
                     ))
                 },
                 |source_points, original_roots, plan, axes, source_frame| {
-                    if !resolve_source_ordinates
-                        || (!axes.has_z() && !axes.has_m())
-                        || !plan.iter().any(|vertex| {
-                            matches!(vertex, crate::geometry::VertexProvenance::OnSegment {
-                                root_request: Some(_),
-                                ..
-                            })
-                        })
-                    {
-                        return emit_from_original(source_points, plan);
+                    if !resolve_source_ordinates {
+                        return emit_from_original_xy(source_points, plan);
                     }
+                    let plan = GeographicProvenancePlan::new(source_points, plan, axes)?;
                     let source_metric = std::cell::OnceCell::new();
                     let metric_access = || {
                         source_metric
                             .get_or_try_init(|| crate::crs::GeodesicMetric::from_model(model))
                     };
-                    crate::geometry::emit_from_original_with_source_roots(
-                        source_points,
+                    emit_from_original_with_source_roots(
+                        &plan,
                         original_roots,
-                        plan,
-                        axes,
                         source_frame,
                         Some(&metric_access),
                         &mut crate::work::Unmetered,

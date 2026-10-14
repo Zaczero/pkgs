@@ -8,6 +8,9 @@ CRS_CASES = (
     'OGC:CRS84',
     '+proj=longlat +a=7000000 +rf=150 +type=crs',
 )
+# Independent 8192-panel Simpson results for the WGS84 chart edge (0°, 10°)→(120°, 70°).
+OBLIQUE_WGS84_HALF_CHART_PARAMETER = 0.57396247625753438
+OBLIQUE_WGS84_HALF_ARCLENGTH_PARAMETER = 0.42925274533794278
 
 
 def _chart_length(
@@ -36,12 +39,14 @@ def _assert_root_sample(
     parameter: float,
     crs: str,
 ) -> None:
-    if isinstance(shape, gm.Polygon):
+    if isinstance(shape, gm.Point):
+        coordinates = [(shape.x, shape.y, shape.z, shape.m)]
+    elif isinstance(shape, gm.Polygon):
         coordinates = list(shape.exterior.coords)
     elif isinstance(shape, gm.LineString):
         coordinates = list(shape.coords)
     else:
-        raise TypeError(f'expected a polygon or linestring, got {shape!r}')
+        raise TypeError(f'expected a point, polygon, or linestring, got {shape!r}')
     y = start[1] + (end[1] - start[1]) * parameter
     point = next(
         coordinate
@@ -64,7 +69,8 @@ def _assert_source_point_ordinates(
     end: tuple[float, float, float, float],
     crs: str,
 ) -> None:
-    fraction = _chart_length(start[:2], (point.x, point.y), 1.0, crs) / _chart_length(
+    parameter = (point.y - start[1]) / (end[1] - start[1])
+    fraction = _chart_length(start[:2], end[:2], parameter, crs) / _chart_length(
         start[:2], end[:2], 1.0, crs
     )
     expected_z = start[2] + (end[2] - start[2]) * fraction
@@ -335,7 +341,6 @@ def test_shortest_line_samples_follow_the_producer_chord_for_all_pair_forms() ->
                         parameter=0.5,
                         crs=crs,
                     )
-
         full_turn_start = (0.0, 1.0, 10.0, 100.0)
         full_turn_end = (360.0, 60.0, 210.0, 500.0)
         full_turn_line = gm.shortest_line(
@@ -351,3 +356,58 @@ def test_shortest_line_samples_follow_the_producer_chord_for_all_pair_forms() ->
                 parameter=parameter,
                 crs=crs,
             )
+
+
+def test_oblique_wgs84_lrs_and_substring_use_independent_chart_arclength() -> None:
+    line = gm.from_wkt(
+        'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
+        crs='OGC:CRS84',
+    )
+    fraction = OBLIQUE_WGS84_HALF_CHART_PARAMETER
+    expected_z = 124.79249525150688
+    expected_m = 329.5849905030137
+
+    point = line.line_interpolate(fraction, normalized=True)
+    assert isclose(point.x, 60.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(point.y, 40.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(point.z, expected_z, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(point.m, expected_m, rel_tol=0.0, abs_tol=2e-7)
+
+    substring = line.line_substring(0.0, fraction, normalized=True)
+    endpoint = list(substring.coords)[-1]
+    assert isclose(endpoint[0], 60.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(endpoint[1], 40.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(endpoint[2], expected_z, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(endpoint[3], expected_m, rel_tol=0.0, abs_tol=2e-7)
+
+
+def test_oblique_wgs84_intersection_uses_original_root_arclength() -> None:
+    source = gm.from_wkt(
+        'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
+        crs='OGC:CRS84',
+    )
+    crossing = gm.from_wkt('LINESTRING (60 0, 60 80)', crs='OGC:CRS84')
+    intersection = gm.intersection(source, crossing)
+    assert isinstance(intersection, gm.Point)
+    assert isclose(intersection.x, 60.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(intersection.y, 40.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(intersection.z, 124.79249525150688, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(intersection.m, 329.5849905030137, rel_tol=0.0, abs_tol=2e-7)
+
+
+def test_oblique_wgs84_segmentize_uses_independent_chart_arclength() -> None:
+    line = gm.from_wkt(
+        'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
+        crs='OGC:CRS84',
+    )
+    total_length = line.length
+    segmented = list(line.segmentize(total_length * 0.5001).coords)
+    assert len(segmented) == 3
+    midpoint_parameter = OBLIQUE_WGS84_HALF_ARCLENGTH_PARAMETER
+    midpoint = segmented[1]
+    assert isclose(midpoint[0], 120.0 * midpoint_parameter, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(
+        midpoint[1], 10.0 + 60.0 * midpoint_parameter, rel_tol=0.0, abs_tol=2e-8
+    )
+    assert isclose(midpoint[2], 110.0, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(midpoint[3], 300.0, rel_tol=0.0, abs_tol=2e-7)

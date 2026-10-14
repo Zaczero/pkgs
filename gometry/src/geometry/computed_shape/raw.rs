@@ -31,7 +31,7 @@ pub(crate) fn publish_computed_point_or_raw_shape(
     }
 }
 
-pub(crate) fn publish_raw_computed_shape_with_budget(
+fn publish_raw_computed_shape_with_budget(
     shape: &Shape,
     frame: GeographicFrame,
     budget: &mut ExpansionBudget,
