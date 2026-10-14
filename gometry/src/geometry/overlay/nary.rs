@@ -389,6 +389,26 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
     )
 }
 
+pub(in crate::geometry) fn overlay_all_geographic_chart_with_sources(
+    geometries: &[&Shape],
+    operation: OverlayOp,
+) -> Result<Vec<OverlayPolygonPartWithSources>> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: operation.name(),
+        }
+        .into());
+    }
+    if operation != OverlayOp::Difference || geometries.len() != 2 {
+        return Err(GeometryErrorKind::Invalid(
+            "lineage-aware chart overlay requires a binary difference".into(),
+        )
+        .into());
+    }
+    ExactSourceInventory::from_shapes(geometries)?
+        .overlay_polygon_parts_with_source_roles(operation, 0)
+}
+
 pub(crate) fn overlay_all_geographic_with_metric_and_frame<
     S: Borrow<Shape>,
     M: crate::geometry::ChartMetric,

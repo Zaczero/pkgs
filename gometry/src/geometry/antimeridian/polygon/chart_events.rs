@@ -2,7 +2,7 @@ use super::*;
 use crate::geometry::ordinates::RootId;
 use crate::work::Unmetered;
 
-pub(super) fn chart_point(
+pub(in crate::geometry::antimeridian) fn chart_point(
     point: Point,
     frame: GeographicFrame,
     longitude_scale: f64,
@@ -25,7 +25,11 @@ pub(super) fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) ->
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
-pub(super) fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
+pub(in crate::geometry::antimeridian) fn chart_latitude(
+    value: f64,
+    frame: GeographicFrame,
+    scale: f64,
+) -> Result<f64> {
     Latitude::try_new(frame, value)
         .map(|latitude| latitude.get() * scale)
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
@@ -42,24 +46,58 @@ pub(super) struct ChartEdgeEvent {
 
 pub(super) struct ChartSourceCapture<'a> {
     root: Option<RootId>,
+    member: Option<super::super::lineage::MemberId>,
     capture: Option<&'a mut SplitCapture>,
+    records: Vec<(super::super::lineage::EventId, ExactRational)>,
 }
 
 impl<'a> ChartSourceCapture<'a> {
-    pub(super) const fn new(root: Option<RootId>, capture: Option<&'a mut SplitCapture>) -> Self {
-        Self { root, capture }
+    pub(super) const fn new(
+        root: Option<RootId>,
+        member: Option<super::super::lineage::MemberId>,
+        capture: Option<&'a mut SplitCapture>,
+    ) -> Self {
+        Self {
+            root,
+            member,
+            capture,
+            records: Vec::new(),
+        }
     }
 
     pub(super) fn record(
         &mut self,
         source_root: Option<RootId>,
-        point: Point,
         parameter: &ExactRational,
-    ) -> Result<()> {
-        if let (Some(capture), Some(root)) = (self.capture.as_deref_mut(), source_root) {
-            capture.record_root_point(root, point, parameter)?;
+    ) -> Result<Option<super::super::lineage::EventId>> {
+        if let (Some(capture), Some(root), Some(member)) =
+            (self.capture.as_deref_mut(), source_root, self.member)
+        {
+            let event = capture.record_root_point(root, member, parameter)?;
+            self.records.push((
+                event,
+                parameter.try_clone_with_work(&mut crate::work::Unmetered)?,
+            ));
+            Ok(Some(event))
+        } else {
+            Ok(None)
         }
-        Ok(())
+    }
+
+    pub(super) fn event_ids(&self) -> Vec<super::super::lineage::EventId> {
+        self.records.iter().map(|(event, _)| *event).collect()
+    }
+
+    pub(super) fn edge_uses(&mut self) -> Result<Vec<super::super::lineage::EdgeUseId>> {
+        let (Some(root), Some(member), Some(capture)) =
+            (self.root, self.member, self.capture.as_deref_mut())
+        else {
+            return Ok(Vec::new());
+        };
+        self.records
+            .array_windows::<2>()
+            .map(|[(_, start), (_, end)]| capture.source_edge_use(member, root, start, end))
+            .collect()
     }
 }
 
@@ -303,7 +341,7 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
             interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
         let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
         let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
-        source_capture.record(event.source_root, point, &event.parameter)?;
+        source_capture.record(event.source_root, &event.parameter)?;
         output.push(point);
     }
     Ok(())
