@@ -24,6 +24,7 @@ fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
     )
     .unwrap();
     let geodesic = wgs84();
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, degrees());
 
     let mut work = CountingWork::default();
     edge.witness_with_work(
@@ -31,7 +32,7 @@ fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
         Point::new_raw_xy(20.0, 30.0),
         0.4,
         None,
-        &geodesic,
+        &metric,
         &mut work,
     )
     .unwrap();
@@ -53,7 +54,7 @@ fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
     ] {
         let mut work = CountingWork::default();
         let witness = edge
-            .witness_with_work(start, end, 0.4, None, &geodesic, &mut work)
+            .witness_with_work(start, end, 0.4, None, &metric, &mut work)
             .unwrap();
         assert!(work.0 > 0);
         assert_eq!(witness.z().is_some(), start.z().is_some());
@@ -231,13 +232,32 @@ fn chart_edge_witness_uses_canonical_point_emission_and_arclength_axes() {
     let start = Point::new_axes(170.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(Some(-0.0))).unwrap();
     let end = Point::new_axes(-170.0, 10.0, ZOrdinate(Some(6.0)), MOrdinate(Some(8.0))).unwrap();
     let edge = ChartEdge::new(start, end, degrees()).unwrap();
-    let witness = edge.witness(start, end, 0.5, None, &wgs84()).unwrap();
+    let geodesic = wgs84();
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, degrees());
+    let witness = edge.witness(start, end, 0.5, None, &metric).unwrap();
 
     assert_eq!(witness.x, -180.0);
     assert_eq!(witness.y, 10.0);
     assert_eq!(witness.z(), Some(4.0));
     assert_eq!(witness.m(), Some(4.0));
     assert_eq!(edge.chart_position(0.5).unwrap().x, 180.0);
+}
+
+#[test]
+fn oblique_wgs84_witness_resolves_ordinates_at_chart_arclength() {
+    let start = Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap();
+    let end = Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0)))
+        .unwrap();
+    let frame = degrees();
+    let edge = ChartEdge::new(start, end, frame).unwrap();
+    let geodesic = wgs84();
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+
+    let witness = edge.witness(start, end, 0.5, None, &metric).unwrap();
+
+    assert_eq!((witness.x, witness.y), (60.0, 40.0));
+    assert!((witness.z().unwrap() - 124.792_495_251_506_88).abs() <= 2.0e-12);
+    assert!((witness.m().unwrap() - 329.584_990_503_013_7).abs() <= 4.0e-12);
 }
 
 #[test]

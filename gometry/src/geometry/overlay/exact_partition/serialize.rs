@@ -179,7 +179,7 @@ impl ExactSourceInventory {
             let mut polygons = polygons_from_xy_nodes(parts.polygons, xy)?;
             if let Some((roles, frame, budget)) = polygon_publication.take() {
                 polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
-                    polygons, &roles, frame, budget,
+                    &polygons, &roles, frame, budget,
                 )?;
             }
             return assemble_node_parts(
@@ -206,7 +206,7 @@ impl ExactSourceInventory {
             strict,
             operation,
         )?;
-        let polygon_axes = bucket_axes(
+        let mut polygon_axes = bucket_axes(
             parts
                 .polygons
                 .iter()
@@ -246,12 +246,78 @@ impl ExactSourceInventory {
             polygons.push(Polygon::new(shell, holes));
         }
         if let Some((roles, frame, budget)) = polygon_publication.take() {
-            polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
-                polygons, &roles, frame, budget,
+            (polygons, polygon_axes) = publish_polygon_parts_with_roles(
+                &polygons,
+                &roles,
+                frame,
+                budget,
+                polygon_axes,
+                strict,
+                operation,
             )?;
         }
         assemble_node_parts(points, lines, polygons, point_axes, line_axes, polygon_axes)
     }
+}
+
+fn publish_polygon_parts_with_roles(
+    polygons: &[Polygon],
+    roles: &[Vec<Vec<bool>>],
+    frame: crate::geographic::GeographicFrame,
+    budget: &mut ExpansionBudget,
+    axes: crate::geometry::CoordinateAxes,
+    strict: bool,
+    operation: &str,
+) -> Result<(Vec<Polygon>, crate::geometry::CoordinateAxes)> {
+    let mut candidate_budget = budget.clone();
+    match crate::geometry::publish_polygon_parts_with_edge_roles(
+        polygons,
+        roles,
+        frame,
+        &mut candidate_budget,
+    ) {
+        Ok(polygons) => {
+            *budget = candidate_budget;
+            Ok((polygons, axes))
+        },
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+            ) =>
+        {
+            if strict {
+                return Err(GeometryErrorKind::ordinate_dropped(operation));
+            }
+            let polygons = polygons
+                .iter()
+                .map(polygon_xy)
+                .collect::<Result<Vec<_>>>()?;
+            let mut fallback_budget = budget.clone();
+            let polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
+                &polygons,
+                roles,
+                frame,
+                &mut fallback_budget,
+            )?;
+            *budget = fallback_budget;
+            Ok((polygons, crate::geometry::CoordinateAxes::XY))
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn polygon_xy(polygon: &Polygon) -> Result<Polygon> {
+    let mut rings = polygon.rings().map(|ring| {
+        let coordinates = ring.coords().try_map_points(|point| {
+            Ok::<_, crate::error::Error>(Point::new_raw_xy(point.x, point.y))
+        })?;
+        Ring::try_from_closed(coordinates)
+    });
+    let shell = rings
+        .next()
+        .ok_or_else(|| GeometryErrorKind::message("a polygon has an exterior ring"))??;
+    Ok(Polygon::new(shell, rings.collect::<Result<Vec<_>>>()?))
 }
 
 pub(super) fn bucket_axes<I: IntoIterator<Item = NodeId>>(
@@ -394,5 +460,61 @@ impl ExactPartition<'_> {
             owners,
             offsets,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{MOrdinate, ZOrdinate};
+
+    #[test]
+    fn rootless_synthetic_polygon_samples_refuse_strictly_and_drop_axes_leniently() {
+        let points = [
+            Point::new_axes(-170.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
+            Point::new_axes(170.0, 0.0, ZOrdinate(Some(20.0)), MOrdinate(Some(200.0))).unwrap(),
+            Point::new_axes(170.0, 10.0, ZOrdinate(Some(30.0)), MOrdinate(Some(300.0))).unwrap(),
+            Point::new_axes(-170.0, 10.0, ZOrdinate(Some(40.0)), MOrdinate(Some(400.0))).unwrap(),
+            Point::new_axes(-170.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
+        ];
+        let polygon = Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        );
+        let roles = [vec![vec![true; 4]]];
+        let frame = crate::geographic::GeographicFrame::crs84();
+        let mut strict_budget = ExpansionBudget::new("subdivide", "computed edges");
+        let strict_error = publish_polygon_parts_with_roles(
+            std::slice::from_ref(&polygon),
+            &roles,
+            frame,
+            &mut strict_budget,
+            CoordinateAxes::XYZM,
+            true,
+            "subdivide",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            strict_error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+        ));
+
+        let mut lenient_budget = ExpansionBudget::new("subdivide", "computed edges");
+        let (polygons, axes) = publish_polygon_parts_with_roles(
+            std::slice::from_ref(&polygon),
+            &roles,
+            frame,
+            &mut lenient_budget,
+            CoordinateAxes::XYZM,
+            false,
+            "subdivide",
+        )
+        .unwrap();
+        assert_eq!(axes, CoordinateAxes::XY);
+        let published = polygons.first().expect("one polygon was published");
+        assert_eq!(published.axes(), CoordinateAxes::XY);
+        let coordinates = published.shell.coords().iter().collect::<Vec<_>>();
+        assert!(coordinates.contains(&Point::new_raw_xy(0.0, 0.0)));
+        assert!(coordinates.contains(&Point::new_raw_xy(0.0, 10.0)));
     }
 }

@@ -9,12 +9,11 @@ use crate::geometry::ordinates::{RootId, RootRange, RootRequest};
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
-    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, CoordinateAxes, Coordinates,
-    ExactRational, FacetBvh, Ordering, Point, PointSetIndex, Polygon, PreparedLinework,
-    RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
-    SquaredDistanceKey, VertexProvenance, XY, point_distance, point_distance_squared,
-    point_in_ccw_triangle, point_pair_distance_key, point_segment_distance,
-    point_segment_exact_distance_key, ring_winding, same_point,
+    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, Coordinates, ExactRational,
+    FacetBvh, Ordering, Point, PointSetIndex, Polygon, PreparedLinework, RefinedChainProvenance,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, SquaredDistanceKey, VertexProvenance,
+    XY, point_distance, point_distance_squared, point_in_ccw_triangle, point_pair_distance_key,
+    point_segment_distance, point_segment_exact_distance_key, ring_winding, same_point,
 };
 use crate::work::Unmetered;
 
@@ -183,7 +182,7 @@ impl MinimumClearanceWitness {
             )),
             [
                 VertexProvenance::Input(point),
-                VertexProvenance::OnSegment { i, j, .. },
+                VertexProvenance::OnSegment { i, j, .. } | VertexProvenance::OnSource { i, j, .. },
             ] => {
                 let point = *self
                     .points
@@ -328,37 +327,49 @@ pub(crate) fn minimum_clearance_witness_with_support(
     };
     let mut plan = finish_clearance_candidate(&candidate, &site_points, &segments)?;
     if resolve_source_ordinates
+        && (sites.axes().has_z() || sites.axes().has_m())
         && let ClearanceSource::PointSegment { segment, .. } = candidate.source
     {
         let [_, second] = &mut plan;
-        let VertexProvenance::OnSegment {
-            projection,
-            root_request,
-            ..
-        } = second
-        else {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
-                "clearance point-segment candidate lost its support projection".into(),
-            )
-            .into());
+        let (i, j, projection) = match second {
+            VertexProvenance::OnSegment {
+                i, j, projection, ..
+            } => (*i, *j, projection.clone()),
+            VertexProvenance::Input(_) | VertexProvenance::OnSource { .. } => {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "clearance point-segment candidate lost its support projection".into(),
+                )
+                .into());
+            },
         };
-        *root_request = root_request_for_support_segment(
+        if let Some(root_request) = root_request_for_support_segment(
             segment,
-            projection,
-            sites.axes(),
+            &projection,
             &site_points,
             &lineages,
             refined_chains,
-        )?;
+        )? {
+            *second = VertexProvenance::OnSource {
+                i,
+                j,
+                projection,
+                root_request,
+            };
+        }
     }
-    let has_segment_witness = plan
-        .iter()
-        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
+    let has_segment_witness = plan.iter().any(|vertex| {
+        matches!(
+            vertex,
+            VertexProvenance::OnSegment { .. } | VertexProvenance::OnSource { .. }
+        )
+    });
     let points = if has_segment_witness {
         let support_points = support.points_vec()?;
         let offset = site_points.len();
         for vertex in &mut plan {
-            if let VertexProvenance::OnSegment { i, j, .. } = vertex {
+            if let VertexProvenance::OnSegment { i, j, .. }
+            | VertexProvenance::OnSource { i, j, .. } = vertex
+            {
                 *i = i
                     .checked_add(offset)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
@@ -404,7 +415,6 @@ impl SupportChainLineage {
 fn root_request_for_support_segment(
     segment_index: usize,
     projection: &crate::geometry::SegmentProjection,
-    axes: CoordinateAxes,
     site_points: &[Point],
     lineages: &[SupportChainLineage],
     refined_chains: &[RefinedChainProvenance],
@@ -427,22 +437,16 @@ fn root_request_for_support_segment(
     let root_end_index = root_start_index
         .checked_add(1)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let root_start = *site_points.get(root_start_index).ok_or_else(|| {
+    site_points.get(root_start_index).ok_or_else(|| {
         crate::geometry::GeometryErrorKind::Invalid(
             "clearance support root start is outside the source points".into(),
         )
     })?;
-    let root_end = *site_points.get(root_end_index).ok_or_else(|| {
+    site_points.get(root_end_index).ok_or_else(|| {
         crate::geometry::GeometryErrorKind::Invalid(
             "clearance support root end is outside the source points".into(),
         )
     })?;
-    let has_eligible_axis = (axes.has_z() && root_start.z().is_some() && root_end.z().is_some())
-        || (axes.has_m() && root_start.m().is_some() && root_end.m().is_some());
-    if !has_eligible_axis {
-        return Ok(None);
-    }
-
     let root = RootId::from_index(
         u32::try_from(root_start_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     );
@@ -647,7 +651,6 @@ fn finish_clearance_candidate(
                             .expect("clearance point ordinal belongs to the source points"),
                         segment.xy,
                     )?,
-                    root_request: None,
                 },
             ])
         },

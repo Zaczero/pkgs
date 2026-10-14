@@ -1,7 +1,7 @@
 use super::publish::map_geographic_error;
 use super::{
-    ChartStep, Coordinates, GeographicFrame, MOrdinate, Point, Result, RetainedChartDisplacement,
-    RetainedComputedSample, RetainedLongitudeClass, ZOrdinate, interpolate_optional_ordinate,
+    ChartStep, Coordinates, GeographicFrame, GeometryErrorKind, MOrdinate, Point, Result,
+    RetainedChartDisplacement, RetainedComputedSample, RetainedLongitudeClass, ZOrdinate,
     interpolate_subdivision_ordinate, retained_computed_samples_connection,
     retained_edge_from_chart_witness, retained_edge_from_lifted_binary64_pair,
     retained_exact_interval_class, retained_exact_publisher_sample,
@@ -203,17 +203,22 @@ pub(super) fn collect_edge_intents<'intent, P: Coordinates + ?Sized>(
     Ok(intents)
 }
 
-pub(super) fn interpolate_sample_ordinates(
+pub(super) fn sample_xy_ordinates(
     _edge_index: usize,
     endpoints: &[Point; 2],
     _relation: &ComputedLongitudeRelation<'_>,
     parameter: f64,
     _retained: &RetainedComputedSample,
-) -> ComputedSampleOrdinates {
+) -> Result<ComputedSampleOrdinates> {
     let [start, end] = *endpoints;
-    ComputedSampleOrdinates {
-        y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
-        z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
-        m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
+    if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
+        return Err(GeometryErrorKind::ordinate_dropped(
+            "geographic computed publication",
+        ));
     }
+    Ok(ComputedSampleOrdinates {
+        y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+        z: ZOrdinate(None),
+        m: MOrdinate(None),
+    })
 }

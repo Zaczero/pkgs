@@ -1,8 +1,9 @@
+use super::lineage::{LineageCatalog, MemberId};
 use crate::geographic::{ChartPole, GeographicFrame};
-use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
+use crate::geometry::ordinates::NodeOrdinates;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    ChartMetric, Coordinates, MOrdinate, Point, RootMetricState, SourceArcMetricAccess, ZOrdinate,
+    ChartMetric, Coordinates, MOrdinate, Point, SourceArcMetricAccess, ZOrdinate,
     interpolate_subdivision_ordinate, same_point,
 };
 use crate::work::Unmetered;
@@ -108,6 +109,8 @@ fn segment_coords_core<P: TransitVertex, M: ChartMetric>(
     let coords = dedup_consecutive(coords);
     let mut piece = Vec::new();
     let mut pieces = Vec::new();
+    let mut lineage = LineageCatalog::default();
+    let member = lineage.member()?;
     for (edge, [start, end]) in coords.array_windows::<2>().enumerate() {
         push_distinct(&mut piece, start.clone());
         split_transit(
@@ -118,6 +121,8 @@ fn segment_coords_core<P: TransitVertex, M: ChartMetric>(
             start.edge_index(edge),
             frame,
             metric_access,
+            &mut lineage,
+            member,
         )?;
     }
     let Some(last) = coords.last().cloned() else {
@@ -350,6 +355,8 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     let mut pieces: Vec<Vec<IndexedPoint>> = Vec::new();
     let mut piece = vec![vertex(0)];
     let mut transits = false;
+    let mut lineage = LineageCatalog::default();
+    let member = lineage.member()?;
     let mut offset = 1;
     while offset <= cycle_len {
         let current = vertex(offset);
@@ -379,6 +386,8 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
                 edge,
                 frame,
                 metric_access,
+                &mut lineage,
+                member,
             )?;
             transits |= pieces.len() != cut;
             push_distinct(&mut piece, current.clone());
@@ -506,17 +515,21 @@ fn split_transit<P: TransitVertex, M: ChartMetric>(
     edge: usize,
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    lineage: &mut LineageCatalog,
+    member: MemberId,
 ) -> crate::error::Result<()> {
     let delta = end.x - start.x;
     if delta > 180.0 && delta != 360.0 {
         // Westward exit: close on -180, reopen on 180.
-        let (west, east, parameter) = crossing_points(start, end, frame, metric_access)?;
+        let (west, east, parameter) =
+            crossing_points(start, end, frame, metric_access, lineage, member)?;
         let (west, east) = P::edge_pair(west, east, edge, parameter);
         push_distinct(piece, west);
         pieces.push(std::mem::replace(piece, vec![east]));
     } else if -delta > 180.0 && -delta != 360.0 {
         // Eastward exit: close on 180, reopen on -180.
-        let (west, east, reverse_parameter) = crossing_points(end, start, frame, metric_access)?;
+        let (west, east, reverse_parameter) =
+            crossing_points(end, start, frame, metric_access, lineage, member)?;
         let mut work = Unmetered;
         let parameter =
             ExactRational::one().try_subtract_with_work(&reverse_parameter, &mut work)?;
@@ -534,39 +547,24 @@ fn crossing_points<M: ChartMetric>(
     east: Point,
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    lineage: &mut LineageCatalog,
+    member: MemberId,
 ) -> crate::error::Result<(Point, Point, ExactRational)> {
     let (latitude, parameter, longitude) = crossing_latitude_and_parameter(west, east, frame)?;
     let source = [west, east];
-    let request = SourceArcRequest::new(
-        frame,
-        &source,
-        west.axes().union(east.axes()),
-        &parameter,
-        || Ok(longitude),
-    )?;
-    let mut root_metric = RootMetricState::default();
-    let mut fraction = None;
-    let mut work = Unmetered;
-    let ordinates = source_arc_ordinates(
-        &request,
-        || {
-            let access = metric_access.ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic antimeridian source ordinates require the operation's CRS metric",
-                )
-            })?;
-            access()
-        },
-        &mut root_metric,
-        &mut fraction,
-        &mut work,
-    )?;
+    let axes = west.axes().union(east.axes());
+    let ordinates = if axes.has_z() || axes.has_m() {
+        let root = lineage.edge_root(member, &source, longitude)?;
+        lineage.resolve_root(root, &parameter, axes, frame, metric_access)?
+    } else {
+        NodeOrdinates::default()
+    };
     let make = |lon: f64| {
         Point::new_axes(
             lon,
             latitude,
-            ZOrdinate(ordinates.z.value()),
-            MOrdinate(ordinates.m.value()),
+            ZOrdinate(ordinates.z_value()),
+            MOrdinate(ordinates.m_value()),
         )
     };
     Ok((make(-180.0)?, make(180.0)?, parameter))
