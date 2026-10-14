@@ -225,34 +225,20 @@ fn polygon_parts_shape(
     let mut lineages = Vec::with_capacity(parts.len());
     for part in parts {
         polygons.push(part.polygon);
-        lineages.push(Some(part.lineage));
+        lineages.push(part.lineage);
     }
-    match polygons.len() {
-        0 => Ok((
-            Shape::narrow_polygons(axes, polygons),
-            super::super::lineage::ShapeLineage::Empty,
-        )),
-        1 => Ok((
-            Shape::Polygon(
-                polygons
-                    .pop()
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            ),
-            super::super::lineage::ShapeLineage::Polygon(lineages.pop().flatten().ok_or_else(
-                || GeometryErrorKind::Invalid("split polygon part has no member lineage".into()),
-            )?),
-        )),
-        _ => Ok((
-            Shape::MultiPolygon(MultiPolygon::try_new(
-                axes,
-                polygons.into_iter().map(MultiMember::Value).collect(),
-            )?),
-            super::super::lineage::ShapeLineage::MultiPolygon {
-                axes,
-                members: lineages,
-            },
-        )),
-    }
+    let shape = Shape::narrow_polygons(axes, polygons);
+    let lineage = match lineages.len() {
+        0 => super::super::lineage::ShapeLineage::Empty,
+        1 => super::super::lineage::ShapeLineage::Polygon(
+            lineages.pop().expect("one split polygon lineage exists"),
+        ),
+        _ => super::super::lineage::ShapeLineage::MultiPolygon {
+            axes,
+            members: lineages.into_iter().map(Some).collect(),
+        },
+    };
+    Ok((shape, lineage))
 }
 
 fn append_polygon_edge_uses(

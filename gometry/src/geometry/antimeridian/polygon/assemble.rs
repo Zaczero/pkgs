@@ -127,7 +127,7 @@ fn assemble_fragments(
         ];
         let shell = shells.into_iter().next().expect("one shell is available");
         let shell = close_fragment(shell, catalog.as_deref_mut())?;
-        let mut holes = vec![Ring::try_from_closed(CoordSeq::try_from_points(
+        let holes = vec![Ring::try_from_closed(CoordSeq::try_from_points(
             &shell.points,
         )?)?];
         let lineage = match (shell.lineage, catalog.as_deref_mut()) {
@@ -149,7 +149,7 @@ fn assemble_fragments(
         };
         let polygon = Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
-            std::mem::take(&mut holes),
+            holes,
         );
         return Ok(vec![(polygon, lineage)]);
     }
