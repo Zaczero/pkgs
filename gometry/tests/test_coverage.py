@@ -279,6 +279,23 @@ def test_geographic_nonidentity_clean_assigns_polar_overlap_to_input_owner() -> 
     ]
 
 
+def test_geographic_coverage_simplify_rebuilds_an_unshared_polar_cap() -> None:
+    polar = gm.Polygon(
+        [(0, 80), (90, 80), (180, 80), (270, 80)],
+        crs='OGC:CRS84',
+    )
+    equator = gm.box(-5, -5, 5, 5, crs='OGC:CRS84')
+    rows = gm.GeometryArray([polar, equator])
+    assert gm.coverage_is_valid(rows)
+
+    simplified = gm.coverage_simplify(rows, 1.0, method='dp')
+
+    assert gm.coverage_is_valid(simplified)
+    assert gm.covers(simplified[0], gm.Point(0, 89, crs='OGC:CRS84'))
+    assert not gm.covers(simplified[0], gm.Point(45, 70, crs='OGC:CRS84'))
+    assert gm.covers(simplified[1], gm.Point(0, 0, crs='OGC:CRS84'))
+
+
 def test_geographic_zero_tolerance_simplify_keeps_valid_disjoint_rows_as_identity() -> (
     None
 ):
