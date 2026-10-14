@@ -11,7 +11,6 @@ pub(super) use restrictions::restriction_for_edge;
 #[cfg(test)]
 mod tests {
     use crate::Frame;
-    use crate::geographic::GeographicFrame;
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
         ProducerDrawingReceipt, ProducerReceipt, PublicationCall, PublicationOutcome,
@@ -228,9 +227,7 @@ mod tests {
         )
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
-        let drawing = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
-            .unwrap();
+        let drawing = source.split_antimeridian_captured_in_crs84().unwrap();
         let mut pole_cap = false;
         drawing.shape.for_each_point(|point| {
             pole_cap |= point.y.to_bits() == 90.0_f64.to_bits();
@@ -262,7 +259,7 @@ mod tests {
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
         let mut row = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_crs84()
             .unwrap()
             .into_row(0, 0)
             .unwrap();
