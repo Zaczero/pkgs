@@ -256,6 +256,7 @@ pub(in crate::geometry::topology) fn materialize_native_parts(
         lines,
         polygons,
         literal_uses: NativeLiteralUses {
+            structure: None,
             points: point_uses,
             lines: line_uses,
             polygons: polygon_uses,

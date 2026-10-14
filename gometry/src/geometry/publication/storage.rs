@@ -710,6 +710,34 @@ mod tests {
     }
 
     #[test]
+    fn final_writer_rejects_xym_record_corruption_without_domain_changes() {
+        let expected = Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0)));
+        for actual in [
+            Point::new_raw_axes(0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0))),
+            Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(0.0))),
+            Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(7.0))),
+            Point::new_raw_xy(-0.0, 3.0),
+        ] {
+            let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+            rows.try_push(GeometryOutput::Pending(drawing_pending(
+                Shape::Point(expected),
+                0,
+            )))
+            .unwrap();
+            let mut writer = StreamingShapes::with_capacity(0, 1);
+            writer.try_push(Shape::Point(actual)).unwrap();
+            rows.writer = writer;
+            let Err(error) = rows.finish(Frame::default()) else {
+                panic!("the final writer changed active XYM bits or axes");
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
     fn final_groups_reject_changed_empty_group_domains() {
         for (expected, actual) in [(false, true), (true, false)] {
             let mut rows = PublicationRows::with_groups_capacity(1);

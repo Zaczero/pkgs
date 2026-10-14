@@ -38,7 +38,30 @@ pub(in crate::geometry) struct ShapeStructure {
     kind: crate::geometry::GeometryKind,
     axes: CoordinateAxes,
     empty: bool,
-    members: Vec<ShapeStructure>,
+    members: ShapeMembers,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ShapeMembers {
+    Primitive,
+    Multipart { count: usize, empty: Vec<usize> },
+    Collection(Vec<ShapeStructure>),
+}
+
+impl ShapeMembers {
+    fn multipart(
+        members: impl ExactSizeIterator<Item = crate::geometry::MultiMember<usize>>,
+    ) -> Self {
+        Self::Multipart {
+            count: members.len(),
+            empty: members
+                .enumerate()
+                .filter_map(|(index, member)| {
+                    matches!(member, crate::geometry::MultiMember::Empty).then_some(index)
+                })
+                .collect(),
+        }
+    }
 }
 
 impl ShapeStructure {
@@ -47,43 +70,17 @@ impl ShapeStructure {
         let mut header = Self::primitive(row.kind(), row.axes(), row.is_empty());
         match shape {
             Shape::GeometryCollection(parts) => {
-                header.members = parts.iter().map(Self::capture).collect();
+                header.members =
+                    ShapeMembers::Collection(parts.iter().map(Self::capture).collect());
             },
             Shape::MultiPoint(parts) => {
-                header.members = parts
-                    .members()
-                    .map(|member| {
-                        Self::primitive(
-                            crate::geometry::GeometryKind::Point,
-                            parts.axes(),
-                            matches!(member, crate::geometry::MultiMember::Empty),
-                        )
-                    })
-                    .collect();
+                header.members = ShapeMembers::multipart(parts.members());
             },
             Shape::MultiLineString(parts) => {
-                header.members = parts
-                    .members()
-                    .map(|member| {
-                        Self::primitive(
-                            crate::geometry::GeometryKind::LineString,
-                            parts.axes(),
-                            matches!(member, crate::geometry::MultiMember::Empty),
-                        )
-                    })
-                    .collect();
+                header.members = ShapeMembers::multipart(parts.members());
             },
             Shape::MultiPolygon(parts) => {
-                header.members = parts
-                    .members()
-                    .map(|member| {
-                        Self::primitive(
-                            crate::geometry::GeometryKind::Polygon,
-                            parts.axes(),
-                            matches!(member, crate::geometry::MultiMember::Empty),
-                        )
-                    })
-                    .collect();
+                header.members = ShapeMembers::multipart(parts.members());
             },
             Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..) => {},
         }
@@ -99,7 +96,7 @@ impl ShapeStructure {
             kind,
             axes,
             empty,
-            members: Vec::new(),
+            members: ShapeMembers::Primitive,
         }
     }
 
@@ -110,22 +107,26 @@ impl ShapeStructure {
         let shape = match row {
             ShapeRow::Handle(handle) => handle.shape(),
             ShapeRow::Shape(shape) => shape,
-            ShapeRow::Point(_) | ShapeRow::Packed(_) => return self.members.is_empty(),
+            ShapeRow::Point(_) | ShapeRow::Packed(_) => {
+                return matches!(self.members, ShapeMembers::Primitive);
+            },
         };
         match shape {
-            Shape::GeometryCollection(parts) => {
-                self.members.len() == parts.len()
-                    && self
-                        .members
-                        .iter()
-                        .zip(parts.iter())
-                        .all(|(expected, actual)| expected.matches(ShapeRow::Shape(actual)))
+            Shape::GeometryCollection(parts) => match &self.members {
+                ShapeMembers::Collection(expected) => {
+                    expected.len() == parts.len()
+                        && expected
+                            .iter()
+                            .zip(parts.iter())
+                            .all(|(expected, actual)| expected.matches(ShapeRow::Shape(actual)))
+                },
+                ShapeMembers::Primitive | ShapeMembers::Multipart { .. } => false,
             },
             Shape::MultiPoint(parts) => self.matches_members(parts.members()),
             Shape::MultiLineString(parts) => self.matches_members(parts.members()),
             Shape::MultiPolygon(parts) => self.matches_members(parts.members()),
             Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..) => {
-                self.members.is_empty()
+                matches!(self.members, ShapeMembers::Primitive)
             },
         }
     }
@@ -134,10 +135,17 @@ impl ShapeStructure {
         &self,
         members: impl ExactSizeIterator<Item = crate::geometry::MultiMember<usize>>,
     ) -> bool {
-        self.members.len() == members.len()
-            && self.members.iter().zip(members).all(|(expected, actual)| {
-                expected.empty == matches!(actual, crate::geometry::MultiMember::Empty)
-            })
+        match &self.members {
+            ShapeMembers::Multipart { count, empty } => {
+                *count == members.len()
+                    && empty.iter().copied().eq(members.enumerate().filter_map(
+                        |(index, member)| {
+                            matches!(member, crate::geometry::MultiMember::Empty).then_some(index)
+                        },
+                    ))
+            },
+            ShapeMembers::Primitive | ShapeMembers::Collection(_) => false,
+        }
     }
 }
 
@@ -335,7 +343,6 @@ pub(in crate::geometry) fn visit_shape_literals<I: Copy, W: Work>(
         &mut W,
     ) -> Result<()>,
 ) -> Result<()> {
-    layout.validate_structure(ShapeRow::Shape(shape))?;
     fn visit_sequence<I: Copy, W: Work>(
         sequence: &crate::geometry::CoordSeq,
         locations: &LiteralSequence<I>,
@@ -535,6 +542,7 @@ pub(in crate::geometry) fn visit_shape_literals<I: Copy, W: Work>(
         }
     }
 
+    layout.validate_structure(ShapeRow::Shape(shape))?;
     let mut point_row = 0_usize;
     let mut line_row = 0_usize;
     let mut polygon_row = 0_usize;
