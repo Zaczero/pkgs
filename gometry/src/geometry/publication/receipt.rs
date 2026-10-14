@@ -34,14 +34,17 @@ impl ProducerImageId {
     }
 }
 
-pub(in crate::geometry) struct ProducerLiteral {
+pub(in crate::geometry) struct PublicationLiteral<I> {
     pub(in crate::geometry) address: LiteralAddress,
-    pub(in crate::geometry) image: ProducerImageId,
+    pub(in crate::geometry) image: I,
     pub(in crate::geometry) record: crate::Point,
     pub(in crate::geometry) chart: ExactChartPoint,
 }
 
-impl ProducerLiteral {
+pub(super) type CheckedPublicationLiteral = PublicationLiteral<PublicationImage>;
+pub(in crate::geometry) type ProducerLiteral = PublicationLiteral<ProducerImageId>;
+
+impl PublicationLiteral<ProducerImageId> {
     pub(in crate::geometry) fn from_point(
         address: LiteralAddress,
         image: ProducerImageId,
@@ -66,24 +69,19 @@ pub(in crate::geometry) struct ProducerDrawingReceipt {
 }
 
 impl ProducerDrawingReceipt {
-    const fn drawing(
-        buffers: FrozenLiteralBuffers<ProducerImageId>,
-        literals: Vec<ProducerLiteral>,
-        retain_literals_for_republication: bool,
-    ) -> Self {
-        if retain_literals_for_republication {
-            Self::new_for_republication(buffers, literals)
-        } else {
-            Self::new(buffers, literals)
-        }
+    pub(in crate::geometry) fn point_selection(shape: Shape) -> Result<Self> {
+        let (layout, literals) = Self::point_selection_layout(&shape)?;
+        Ok(Self::new(
+            FrozenLiteralBuffers::shapes(shape, layout),
+            literals,
+        ))
     }
 
-    pub(in crate::geometry) fn point_selection(
-        shape: Shape,
-        retain_literals_for_republication: bool,
-    ) -> Result<Self> {
+    pub(super) fn point_selection_layout(
+        shape: &Shape,
+    ) -> Result<(ShapeLiteralLayout<ProducerImageId>, Vec<ProducerLiteral>)> {
         if !matches!(
-            &shape,
+            shape,
             Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..)
         ) {
             return Err(GeometryErrorKind::Invalid(
@@ -93,13 +91,7 @@ impl ProducerDrawingReceipt {
         }
         let mut next_image = 0;
         let mut outputs = (0, 0, 0);
-        let (layout, literals) =
-            Self::drawing_layout(&shape, 0, None, None, &mut next_image, &mut outputs)?;
-        Ok(Self::drawing(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            literals,
-            retain_literals_for_republication,
-        ))
+        Self::drawing_layout(shape, 0, None, None, &mut next_image, &mut outputs)
     }
 
     pub(in crate::geometry) fn point(shape: Shape) -> Result<Self> {
@@ -116,10 +108,9 @@ impl ProducerDrawingReceipt {
         let mut outputs = (0, 0, 0);
         let (layout, literals) =
             Self::drawing_layout(&shape, 0, None, None, &mut next_image, &mut outputs)?;
-        Ok(Self::drawing(
+        Ok(Self::new(
             FrozenLiteralBuffers::shapes(shape, layout),
             literals,
-            false,
         ))
     }
 
@@ -127,15 +118,6 @@ impl ProducerDrawingReceipt {
         let mut next_image = 0;
         let (layout, literals) = Self::line_layout(&shape, 0, None, None, 0, &mut next_image)?;
         Ok(Self::new(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            literals,
-        ))
-    }
-
-    pub(in crate::geometry) fn line_for_republication(shape: Shape) -> Result<Self> {
-        let mut next_image = 0;
-        let (layout, literals) = Self::line_layout(&shape, 0, None, None, 0, &mut next_image)?;
-        Ok(Self::new_for_republication(
             FrozenLiteralBuffers::shapes(shape, layout),
             literals,
         ))
@@ -500,14 +482,6 @@ impl ProducerDrawingReceipt {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct CheckedPublicationLiteral {
-    pub(super) address: LiteralAddress,
-    pub(super) image: PublicationImage,
-    pub(super) record: crate::Point,
-    pub(super) chart: ExactChartPoint,
-}
-
 pub(crate) struct PendingPublicationRow {
     pub(super) shape: Shape,
     pub(super) logical_row: usize,
@@ -528,6 +502,43 @@ pub(super) struct StoredPublicationRow {
 }
 
 impl PendingPublicationRow {
+    pub(super) fn producer_drawing(
+        shape: Shape,
+        layout: ShapeLiteralLayout<ProducerImageId>,
+        mut producer_literals: Vec<ProducerLiteral>,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<Self> {
+        for literal in &mut producer_literals {
+            literal.address = LiteralAddress {
+                operation: 0,
+                logical_row,
+                group_row: None,
+                value_row: None,
+                output: literal.address.output,
+            };
+        }
+        let layout = super::finish::map_shape_layout(layout, &|image| {
+            Ok(PublicationImage::ProducerDrawn(image))
+        })?;
+        let work = EvaluationBudget::new(operation, producer_literals.len())?;
+        Ok(Self {
+            shape,
+            logical_row,
+            layout: LiteralRowLayout {
+                operation: 0,
+                logical_row,
+                group_row: None,
+                value_row: None,
+                layout,
+            },
+            checked: Vec::new(),
+            producer_literals,
+            producer_drawing: true,
+            work,
+        })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.shape.is_empty()
     }

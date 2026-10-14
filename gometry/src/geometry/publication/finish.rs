@@ -23,33 +23,24 @@ use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape, ShapeCoun
 use crate::work::{Unmetered, Work};
 
 struct ProducerImageReceiver {
-    snapshot: super::binding::CheckedLiteralSnapshot,
+    snapshot: super::binding::CheckedLiteralSnapshot<ProducerImageId>,
 }
 
 impl ProducerImageReceiver {
     fn new(literals: Vec<ProducerLiteral>) -> Result<Self> {
-        let checked = literals
-            .into_iter()
-            .map(|literal| CheckedPublicationLiteral {
-                address: literal.address,
-                image: PublicationImage::ProducerDrawn(literal.image),
-                record: literal.record,
-                chart: literal.chart,
-            });
         Ok(Self {
-            snapshot: super::binding::CheckedLiteralSnapshot::new(checked)?,
+            snapshot: super::binding::CheckedLiteralSnapshot::new(literals)?,
         })
     }
 
-    fn into_literals(self) -> Result<Vec<ProducerLiteral>> {
+    fn into_literals(self) -> Vec<ProducerLiteral> {
         self.snapshot.into_producer_literals()
     }
 }
 
 impl CheckedImages<ProducerImageId> for ProducerImageReceiver {
     fn image(&self, address: LiteralAddress, image: ProducerImageId) -> Result<&ExactChartPoint> {
-        self.snapshot
-            .image(address, PublicationImage::ProducerDrawn(image))
+        self.snapshot.image(address, image)
     }
 }
 
@@ -63,14 +54,8 @@ impl LiteralChart<ProducerImageId> for ProducerImageReceiver {
         stored_axes: CoordinateAxes,
         work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
-        self.snapshot.read_point(
-            address,
-            PublicationImage::ProducerDrawn(image),
-            record,
-            expected_axes,
-            stored_axes,
-            work,
-        )
+        self.snapshot
+            .read_point(address, image, record, expected_axes, stored_axes, work)
     }
 }
 
@@ -427,7 +412,7 @@ fn map_sequence<I: Copy, O>(
     })
 }
 
-fn map_shape_layout<I: Copy, O>(
+pub(super) fn map_shape_layout<I: Copy, O>(
     layout: ShapeLiteralLayout<I>,
     image: &impl Fn(I) -> Result<O>,
 ) -> Result<ShapeLiteralLayout<O>> {
@@ -552,7 +537,7 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
             match bind_final_literals(buffers, &mut receiver, work)? {
                 LiteralCheck::Pass(sealed) => {
                     let producer_literals = if retain_literals_for_republication {
-                        receiver.into_literals()?
+                        receiver.into_literals()
                     } else {
                         Vec::new()
                     };

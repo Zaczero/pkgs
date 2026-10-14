@@ -595,7 +595,7 @@ fn convex_hull_receipt_omission_fails_final_readback() {
         lane: crate::dispatch::Lane::Scalar,
     };
     let output = unary_convex_hull(&data, &context).unwrap();
-    let mut receipt = ProducerDrawingReceipt::point_selection(output, false).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 
@@ -633,7 +633,7 @@ fn degenerate_minimum_rectangle_receipt_omission_fails_final_readback() {
         lane: crate::dispatch::Lane::Scalar,
     };
     let output = unary_minimum_rotated_rectangle(&data, &context).unwrap();
-    let mut receipt = ProducerDrawingReceipt::point_selection(output, false).unwrap();
+    let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
     let omitted = receipt.literals.remove(0);
     let mut work = Unmetered;
 

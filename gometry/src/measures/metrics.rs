@@ -310,7 +310,6 @@ fn snap_output(
         crate::geometry::TopologyDomain::Geographic(_) if context.lane.is_array() => {
             Ok(GeometryOutput::Pending(geographic_snap_pending_row(
                 output,
-                context.frame,
                 context.lane.row(),
                 "snap",
             )?))

@@ -165,12 +165,7 @@ pub(crate) fn unary_convex_hull_array(
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            geographic_point_selection_pending_row(
-                output,
-                ctx.frame,
-                ctx.lane.row(),
-                "convex_hull",
-            )?,
+            geographic_point_selection_pending_row(output, ctx.lane.row(), "convex_hull")?,
         )),
     }
 }
@@ -481,7 +476,6 @@ pub(crate) fn unary_minimum_rotated_rectangle_array(
         TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
             geographic_point_selection_pending_row(
                 output,
-                ctx.frame,
                 ctx.lane.row(),
                 "minimum_rotated_rectangle",
             )?,
@@ -1214,7 +1208,6 @@ pub(crate) fn unary_minimum_clearance_line_array(
         TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(geographic_line_pending_row(
             output,
-            ctx.frame,
             ctx.lane.row(),
             "minimum_clearance_line",
         )?)),

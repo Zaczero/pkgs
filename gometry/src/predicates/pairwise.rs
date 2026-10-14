@@ -25,7 +25,7 @@ fn shortest_line_array_output(
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
-            geographic_line_pending_row(output, ctx.frame, ctx.lane.row(), "shortest_line")?,
+            geographic_line_pending_row(output, ctx.lane.row(), "shortest_line")?,
         )),
     }
 }
