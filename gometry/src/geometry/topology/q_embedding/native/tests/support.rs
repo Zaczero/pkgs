@@ -2,8 +2,7 @@ use crate::work::Work;
     use super::*;
     use crate::Frame;
     use crate::geometry::embedding_completion::literals::{
-        LiteralPoint,
-        LiteralRowLayout,
+        LiteralPoint, LiteralRowLayout, LiteralSequence,
     };
     use crate::geometry::publication::FinishedGeometry;
     use crate::geometry::storage::{

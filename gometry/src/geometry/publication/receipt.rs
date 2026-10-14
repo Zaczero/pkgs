@@ -337,7 +337,7 @@ impl ProducerDrawingReceipt {
         Ok(ProducerImageId::new(index))
     }
 
-    pub(in crate::geometry) fn point_layout(
+    pub(in crate::geometry) const fn point_layout(
         point: Point,
         axes: CoordinateAxes,
         logical_row: usize,

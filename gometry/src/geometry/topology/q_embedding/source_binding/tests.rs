@@ -472,7 +472,7 @@
             shape,
             ShapeLiteralLayout {
                 points: Vec::new(),
-                lines: vec![crate::geometry::embedding_completion::literals::LiteralSequence {
+                lines: vec![LiteralSequence {
                     output: 0,
                     axes: crate::geometry::CoordinateAxes::XY,
                     images: vec![port_id, port_id],
