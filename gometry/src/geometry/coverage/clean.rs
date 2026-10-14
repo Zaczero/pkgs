@@ -62,7 +62,6 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
     } else {
         snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
-    let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
     let declared_axes = snapped
         .iter()
         .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
@@ -80,8 +79,45 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                 "coverage_clean",
                 &mut budget,
             )?;
-            let selection =
-                analysis.assign_cleaning_faces(&row_areas, gap_width, overlaps, &mut budget)?;
+            let has_overlaps = analysis.has_overlapping_faces();
+            let needs_area_ranks = has_overlaps
+                && matches!(
+                    overlaps,
+                    CoverageOverlapRule::MaxArea | CoverageOverlapRule::MinArea
+                );
+            let needs_metric = needs_area_ranks
+                || gap_width > 0.0
+                || (has_overlaps && matches!(overlaps, CoverageOverlapRule::LongestBorder));
+            let metric = if needs_metric {
+                let metric_access = context.metric_access().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "geographic coverage ranking requires the operation's CRS metric".into(),
+                    )
+                })?;
+                Some(metric_access()?)
+            } else {
+                None
+            };
+            let row_surface_areas = if needs_area_ranks {
+                let metric = metric.ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "geographic area ranking is missing the operation's CRS metric".into(),
+                    )
+                })?;
+                snapped
+                    .iter()
+                    .map(|shape| crate::crs::chart_shape_area(metric, shape, frame))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                vec![0.0; snapped.len()]
+            };
+            let selection = analysis.assign_cleaning_faces(
+                &row_surface_areas,
+                gap_width,
+                overlaps,
+                metric,
+                &mut budget,
+            )?;
             let labels_preserve_sources =
                 analysis.face_rows.iter().zip(&selection.owners).all(
                     |(source_rows, selected_row)| match source_rows.as_slice() {
@@ -137,6 +173,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
             }
         },
         crate::geometry::TopologyDomain::Cartesian => {
+            let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
             let prepared = coverage_rows(&snapped, gap_width)?;
             if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
                 return Ok(CoverageCleanOutput::Shapes(snapped));
@@ -414,6 +451,7 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
         &row_areas,
         0.0,
         CoverageOverlapRule::MinIndex,
+        None::<&crate::crs::GeodesicMetric>,
         &mut budget,
     )?;
     // Valid coverage faces have at most one source owner. Assign all occupied

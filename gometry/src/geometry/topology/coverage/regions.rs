@@ -302,6 +302,7 @@ mod tests {
                 &row_areas,
                 gap_width,
                 CoverageOverlapRule::MinIndex,
+                None::<&crate::crs::GeodesicMetric>,
                 &mut Unmetered,
             )
             .expect("geographic face labels")

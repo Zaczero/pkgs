@@ -137,7 +137,12 @@ print(panels(
 
 Geographic cleaning handles full-turn boundaries around a pole, including when
 the inner cap is listed before its surrounding cap. `overlap_rule` still
-determines which row owns an overlapping face:
+determines which row owns an overlapping face. For geographic inputs, `max_area`
+and `min_area` rank rows by ellipsoidal area in square metres, while
+`longest_border` ranks shared borders by ellipsoidal arclength in metres along
+the retained chart-straight edges.
+`gap_width` remains in the CRS's native angular units; it is not converted to
+physical units. Projected and CRS-free inputs keep coordinate-space rankings.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
