@@ -487,7 +487,7 @@ impl LineageCatalog {
             Shape::GeometryCollection(collection) => {
                 let mut members = Vec::with_capacity(collection.len());
                 for member in collection {
-                    members.push(Some(self.identity_shape(member)?));
+                    members.push(self.identity_shape(member)?);
                 }
                 Ok(ShapeLineage::GeometryCollection(members))
             },
@@ -535,6 +535,6 @@ pub(super) enum ShapeLineage {
         axes: CoordinateAxes,
         members: Vec<Option<LineagePolygon>>,
     },
-    GeometryCollection(Vec<Option<Self>>),
+    GeometryCollection(Vec<Self>),
     Empty,
 }

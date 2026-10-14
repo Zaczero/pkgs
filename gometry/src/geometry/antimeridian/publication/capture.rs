@@ -201,11 +201,6 @@ pub(super) fn orient_shape_lineage(
                 .into());
             }
             for (member, lineage) in collection.iter().zip(lineages) {
-                let lineage = lineage.as_mut().ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "antimeridian collection member has no lineage".into(),
-                    )
-                })?;
                 orient_shape_lineage(member, lineage, catalog)?;
             }
         },

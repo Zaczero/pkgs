@@ -488,72 +488,65 @@ fn split_shape_with_lineage<M: ChartMetric>(
                 output_lineages.map(|members| ShapeLineage::MultiPolygon { axes, members });
             Ok((shape, lineage))
         },
-        (Shape::GeometryCollection(collection), Some(ShapeLineage::GeometryCollection(source))) => {
+        (Shape::GeometryCollection(collection), lineage) => {
             let owner = collection
                 .members_are_shared()
                 .then(|| ShapeOwnerKey::new(collection.as_slice()));
-            if let Some((shape, Some(lineage))) = memo.get(owner) {
-                return Ok((shape, Some(lineage)));
-            }
-            if collection.len() != source.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "antimeridian collection members and lineage disagree".into(),
-                )
-                .into());
+            let source_members = match lineage {
+                None => None,
+                Some(ShapeLineage::GeometryCollection(members)) => {
+                    if collection.len() != members.len() {
+                        return Err(GeometryErrorKind::Invalid(
+                            "antimeridian collection members and lineage disagree".into(),
+                        )
+                        .into());
+                    }
+                    Some(members.as_slice())
+                },
+                Some(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian shape and member lineage disagree".into(),
+                    )
+                    .into());
+                },
+            };
+            if let Some((shape, cached_lineage)) = memo.get(owner) {
+                match (source_members, cached_lineage) {
+                    (None, _) => return Ok((shape, None)),
+                    (Some(_), Some(lineage)) => return Ok((shape, Some(lineage))),
+                    (Some(_), None) => {},
+                }
             }
             let mut members = Vec::with_capacity(collection.len());
-            let mut lineages = Vec::with_capacity(collection.len());
-            for (member, lineage) in collection.iter().zip(source) {
-                let lineage = lineage.as_ref().ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "antimeridian collection member has no lineage".into(),
-                    )
-                })?;
+            let mut lineages = source_members.map(|_| Vec::with_capacity(collection.len()));
+            for (index, member) in collection.iter().enumerate() {
+                let source = source_members.map(|source_members| {
+                    source_members
+                        .get(index)
+                        .expect("collection and lineage member counts were checked")
+                });
                 let (member, lineage) = split_shape_with_lineage(
                     member,
-                    Some(lineage),
+                    source,
                     catalog.as_deref_mut(),
                     source_frame,
                     memo,
                     metric_access,
                 )?;
                 members.push(member);
-                lineages.push(lineage);
+                if let Some(lineages) = &mut lineages {
+                    lineages.push(lineage.ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "captured collection member has no split lineage".into(),
+                        )
+                    })?);
+                }
             }
             let shape = Shape::geometry_collection(members)?;
-            let lineage = ShapeLineage::GeometryCollection(lineages);
-            memo.insert(owner, shape.clone(), Some(lineage.clone()));
-            Ok((shape, Some(lineage)))
+            let lineage = lineages.map(ShapeLineage::GeometryCollection);
+            memo.insert(owner, shape.clone(), lineage.clone());
+            Ok((shape, lineage))
         },
-        (Shape::GeometryCollection(collection), None) => {
-            let owner = collection
-                .members_are_shared()
-                .then(|| ShapeOwnerKey::new(collection.as_slice()));
-            if let Some((shape, _)) = memo.get(owner) {
-                return Ok((shape, None));
-            }
-            let mut members = Vec::with_capacity(collection.len());
-            for member in collection {
-                members.push(
-                    split_shape_with_lineage(
-                        member,
-                        None,
-                        catalog.as_deref_mut(),
-                        source_frame,
-                        memo,
-                        metric_access,
-                    )?
-                    .0,
-                );
-            }
-            let shape = Shape::geometry_collection(members)?;
-            memo.insert(owner, shape.clone(), None);
-            Ok((shape, None))
-        },
-        _ => Err(GeometryErrorKind::Invalid(
-            "antimeridian shape and member lineage disagree".into(),
-        )
-        .into()),
     }
 }
 

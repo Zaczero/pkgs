@@ -311,7 +311,7 @@ fn append_shape_edge_uses(
             }
         },
         ShapeLineage::GeometryCollection(members) => {
-            for member in members.iter().flatten() {
+            for member in members {
                 append_shape_edge_uses(member, output)?;
             }
         },

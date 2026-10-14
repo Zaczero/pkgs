@@ -411,6 +411,7 @@ pub(super) fn chart_shape<M: ChartMetric>(
             if let Some(chart) = memo.get(owner) {
                 return Ok(chart);
             }
+            let capture_enabled = capture.is_some();
             let mut lineages = Vec::with_capacity(collection.len());
             let chart = Shape::GeometryCollection(collection.try_map_members(|member| {
                 let (chart, lineage) = chart_shape(
@@ -422,12 +423,18 @@ pub(super) fn chart_shape<M: ChartMetric>(
                     capture.as_deref_mut(),
                     memo,
                 )?;
-                lineages.push(lineage);
+                if capture_enabled {
+                    lineages.push(lineage.ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "captured collection member has no split lineage".into(),
+                        )
+                    })?);
+                }
                 Ok::<Shape, crate::error::Error>(chart)
             })?);
-            let lineage = capture
-                .as_deref()
-                .map(|_| super::super::lineage::ShapeLineage::GeometryCollection(lineages));
+            let lineage = capture_enabled.then_some(
+                super::super::lineage::ShapeLineage::GeometryCollection(lineages),
+            );
             memo.insert(owner, chart.clone(), lineage.clone());
             Ok((chart, lineage))
         },

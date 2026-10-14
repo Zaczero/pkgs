@@ -413,11 +413,6 @@ impl<'a> SourceRootUseBuilder<'a> {
                     .into());
                 }
                 for (member, lineage) in collection.iter().zip(lineages) {
-                    let lineage = lineage.as_ref().ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "antimeridian collection member has no lineage".into(),
-                        )
-                    })?;
                     self.visit(member, lineage, layout)?;
                 }
             },
