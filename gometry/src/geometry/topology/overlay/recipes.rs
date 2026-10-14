@@ -35,7 +35,7 @@ pub(in crate::geometry::topology) fn build_fragment_recipes(
                     })?;
                     let fragments =
                         push_source_ring_recipes(topology, ring, false, &mut recipes, work)?;
-                    recipes.record_walk(RecipeWalkOwner::SourceRing(ring_index), fragments);
+                    recipes.record_walk(RecipeWalkOwner::SourceRing(ring_index, None), fragments);
                 }
             }
         },
@@ -43,7 +43,12 @@ pub(in crate::geometry::topology) fn build_fragment_recipes(
             for planned in rings {
                 work.charge_into_error(1)?;
                 match *planned {
-                    PlannedAreaRing::Source { ring, reverse, .. } => {
+                    PlannedAreaRing::Source {
+                        ring,
+                        region,
+                        reverse,
+                        ..
+                    } => {
                         let source_ring = topology.sources.rings.get(ring).ok_or_else(|| {
                             GeometryErrorKind::Invalid("Q source recipe ring is unknown".into())
                         })?;
@@ -54,7 +59,10 @@ pub(in crate::geometry::topology) fn build_fragment_recipes(
                             &mut recipes,
                             work,
                         )?;
-                        recipes.record_walk(RecipeWalkOwner::SourceRing(ring), fragments);
+                        recipes.record_walk(
+                            RecipeWalkOwner::SourceRing(ring, Some(region)),
+                            fragments,
+                        );
                     },
                     PlannedAreaRing::Cycle {
                         cycle: cycle_index, ..

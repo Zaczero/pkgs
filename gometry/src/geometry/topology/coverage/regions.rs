@@ -33,7 +33,6 @@ pub(in crate::geometry::topology) struct GeographicCoverageRegionId {
 }
 
 pub(in crate::geometry::topology) struct GeographicCoverageBoundaryCycle {
-    pub(in crate::geometry::topology) cycle_index: usize,
     pub(in crate::geometry::topology) uses: Vec<GeographicCoverageDirectedSpanUse>,
 }
 
@@ -166,7 +165,7 @@ impl GeographicCoverageAnalysis {
                 row.whole_sphere = true;
             }
         }
-        for (cycle_index, pending) in boundary_cycles.into_iter().enumerate() {
+        for pending in boundary_cycles {
             work.charge_into_error(1)?;
             let row = rows.get_mut(pending.output_row).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage boundary row is unknown".into())
@@ -227,9 +226,7 @@ impl GeographicCoverageAnalysis {
                     selected_owner: emitted_owner,
                 });
             }
-            region
-                .cycles
-                .push(GeographicCoverageBoundaryCycle { cycle_index, uses });
+            region.cycles.push(GeographicCoverageBoundaryCycle { uses });
         }
 
         Ok(GeographicCoverageBoundaryPlans {

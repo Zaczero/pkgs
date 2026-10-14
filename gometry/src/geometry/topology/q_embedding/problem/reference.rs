@@ -295,12 +295,12 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let mut line_graph_edges = Vec::new();
         let mut reference_ports = Vec::new();
         for walk in self.emission.fragment_walks {
-            if whole_sphere && matches!(walk.owner, RecipeWalkOwner::SourceRing(_)) {
+            if whole_sphere && matches!(walk.owner, RecipeWalkOwner::SourceRing(_, _)) {
                 continue;
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => {
+                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(..)) => {
                     Some(area_facts.get(&owner).copied().ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "native area walk has no selected-region fact".into(),
@@ -322,7 +322,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         })?;
                     diagnostic_line_tag(self.topology, line, budget)?
                 },
-                RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_) => None,
+                RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(..) => None,
             };
             let mut line_run = NativeLineRun::default();
             for &recipe_id in &walk.fragments {

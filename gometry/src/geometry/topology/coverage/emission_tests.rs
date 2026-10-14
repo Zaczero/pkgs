@@ -101,6 +101,33 @@ fn geographic_clean_empty_row_preserves_source_axes() {
 }
 
 #[test]
+fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
+    let outer = crate::io::parse_wkt(
+        "POLYGON ZM ((0 80 1 101, 90 80 11 201, 180 80 21 301, 270 80 31 401, 0 80 1 101))",
+    )
+    .expect("outer polar cap");
+    let inner = crate::io::parse_wkt(
+        "POLYGON ZM ((0 85 10 110, 90 85 20 210, 180 85 30 310, 270 85 40 410, 0 85 10 110))",
+    )
+    .expect("inner polar cap");
+    let model = crate::crs::metric_model(Some("+proj=longlat +a=7000000 +rf=150 +type=crs"))
+        .expect("custom ellipsoid");
+    let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");
+    let access = || Ok(&metric);
+    let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
+    let context = SourceArcContext::new(domain, Some(&access));
+    for rows in [[outer.clone(), inner.clone()], [inner, outer]] {
+        let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::MinIndex, &context)
+            .expect("selected polar regions have an admitted drawing");
+        assert!(
+            crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+                .expect("polar coverage validates"),
+        );
+        assert!(!output.first().expect("first selected row").is_empty());
+    }
+}
+
+#[test]
 fn geographic_scalar_coverage_receipt_rejects_two_live_rows() {
     let rows = [
         crate::io::parse_wkt("POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))").expect("first live row"),

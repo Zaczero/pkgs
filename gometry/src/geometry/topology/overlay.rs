@@ -4,8 +4,10 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-pub(in crate::geometry::topology) use self::recipes::build_fragment_recipes;
 use self::recipes::diagnostic_line_paths;
+pub(in crate::geometry::topology) use self::recipes::{
+    build_fragment_recipes, push_source_ring_recipes,
+};
 use self::select_boundaries::selected_area_boundaries;
 use self::select_faces::{AreaSupport, FaceUnion, append_unique_rows, face_regions, select_faces};
 use self::select_lines::{select_line_spans, select_points};

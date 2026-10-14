@@ -528,7 +528,7 @@ impl QEmissionPlan {
                         let vertices = source_ring_emitted_vertices(topology, ring, false, work)?;
                         rings.push(DrawnSourceRing {
                             hole: ring.hole,
-                            recipe_walk: RecipeWalkOwner::SourceRing(ring_index),
+                            recipe_walk: RecipeWalkOwner::SourceRing(ring_index, None),
                             vertices,
                         });
                     }
@@ -562,7 +562,7 @@ impl QEmissionPlan {
                             (
                                 region,
                                 DrawnAreaOrigin::Source,
-                                RecipeWalkOwner::SourceRing(ring),
+                                RecipeWalkOwner::SourceRing(ring, Some(region)),
                                 cycle_start,
                                 vertices,
                             )

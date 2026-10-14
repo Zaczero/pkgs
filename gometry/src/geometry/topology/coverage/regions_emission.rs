@@ -7,10 +7,13 @@ use super::super::emission::plan::{
 };
 use super::super::emission::sites::QCoordinates;
 use super::super::emission::{
-    AssignedSite, EmissionChordId, ExpandedEmissionPlan, FragmentRecipes, NativeAreaEdge,
-    NativeAreaEdgeKind, RecipeWalkOwner, SealedQDrawing, SelectedUse,
+    AssignedSite, DirectedSpan, EmissionChordId, ExpandedEmissionPlan, FragmentRecipes,
+    NativeAreaEdge, NativeAreaEdgeKind, RecipeWalkOwner, SealedQDrawing, SelectedUse,
 };
-use super::super::overlay::{build_fragment_recipes, resolve_q_embedding};
+use super::super::exact::SourceEdgeKind;
+use super::super::overlay::{
+    build_fragment_recipes, push_source_ring_recipes, resolve_q_embedding,
+};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
@@ -29,8 +32,8 @@ use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, HasM, HasZ, Polygon,
-    Ring, Shape, SourceArcContext, TopologyDomain,
+    ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, HasM, HasZ,
+    OverlayOp, Polygon, Ring, Shape, SourceArcContext, TopologyDomain,
 };
 use crate::work::Work;
 
@@ -84,7 +87,7 @@ impl GeographicCoverageAnalysis {
         }
         let mut region_rows = vec![None; plans.topology.q.global_face_count];
         let mut cycles = Vec::new();
-        let mut rings = Vec::new();
+        let mut coverage_cycles = Vec::new();
         let mut selected_regions = Vec::new();
         let mut fragment_recipes = FragmentRecipes::default();
         let whole_sphere = plans.rows.iter().any(|row| row.whole_sphere);
@@ -100,45 +103,16 @@ impl GeographicCoverageAnalysis {
                     poles: region.poles,
                 });
                 for cycle in &region.cycles {
-                    let cycle_index = cycle.cycle_index;
                     let mut darts = Vec::with_capacity(cycle.uses.len());
-                    let mut spans = Vec::with_capacity(cycle.uses.len());
                     for use_ in &cycle.uses {
                         work.charge_into_error(1)?;
                         darts.push(use_.dart);
-                        spans.push(super::super::emission::DirectedSpan {
-                            span: use_.span,
-                            from: use_.from,
-                            to: use_.to,
-                            owner_index: use_.selected_owner,
-                        });
                     }
-                    if let Some(pivot) = spans.iter().position(|span| {
-                        plans
-                            .topology
-                            .q
-                            .ports
-                            .get(span.from.0 as usize)
-                            .is_some_and(|port| !port.cut)
-                    }) {
-                        spans.rotate_left(pivot);
-                    }
-                    let fragments = fragment_recipes.push_walk(
-                        plans.topology,
-                        &spans,
-                        true,
-                        SelectedUse::AreaBoundary,
-                        work,
-                    )?;
-                    fragment_recipes.record_walk(RecipeWalkOwner::Cycle(cycle_index), fragments);
                     cycles.push(BoundaryCycle {
                         darts,
                         region: root,
                     });
-                    rings.push(PlannedAreaRing::Cycle {
-                        cycle: cycle_index,
-                        region: root,
-                    });
+                    coverage_cycles.push(cycle);
                 }
             }
         }
@@ -165,17 +139,119 @@ impl GeographicCoverageAnalysis {
                     })? = Some(region.output_row);
             }
         }
-        let polygons = if whole_sphere {
-            PolygonPlan::WholeSphere((0..plans.topology.sources.polygons.len()).collect())
-        } else {
-            PolygonPlan::Regions {
-                rings,
-                region_count: plans.topology.q.global_face_count,
-            }
-        };
-        if whole_sphere {
-            fragment_recipes =
-                build_fragment_recipes(plans.topology, &polygons, &cycles, &[], work)?;
+        let polygons = PolygonPlan::build_with_source_filter(
+            plans.topology,
+            whole_sphere,
+            OverlayOp::Union,
+            &cycles,
+            |ring, source_cycles, work| {
+                let source_ring = plans.topology.sources.rings.get(ring).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("coverage source ring is unknown".into())
+                })?;
+                for &cycle in source_cycles {
+                    let cycle = coverage_cycles.get(cycle).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("coverage source cycle is unknown".into())
+                    })?;
+                    for use_ in &cycle.uses {
+                        work.charge_into_error(1)?;
+                        let source = plans
+                            .topology
+                            .q
+                            .spans
+                            .get(use_.span.0 as usize)
+                            .and_then(|span| span.owners.get(use_.selected_owner))
+                            .and_then(|owner| {
+                                plans
+                                    .topology
+                                    .sources
+                                    .edges
+                                    .get(owner.source_edge.0 as usize)
+                            })
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "coverage selected source edge is unknown".into(),
+                                )
+                            })?;
+                        if !matches!(source.kind, SourceEdgeKind::Ring { ring, .. } if ring == source_ring.id)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+                Ok(true)
+            },
+            work,
+        )?;
+        match &polygons {
+            PolygonPlan::WholeSphere(_) => {
+                fragment_recipes =
+                    build_fragment_recipes(plans.topology, &polygons, &cycles, &[], work)?;
+            },
+            PolygonPlan::Regions { rings, .. } => {
+                for planned in rings {
+                    match *planned {
+                        PlannedAreaRing::Source {
+                            ring,
+                            region,
+                            reverse,
+                            ..
+                        } => {
+                            let source_ring =
+                                plans.topology.sources.rings.get(ring).ok_or_else(|| {
+                                    GeometryErrorKind::Invalid(
+                                        "coverage retained source ring is unknown".into(),
+                                    )
+                                })?;
+                            let fragments = push_source_ring_recipes(
+                                plans.topology,
+                                source_ring,
+                                reverse,
+                                &mut fragment_recipes,
+                                work,
+                            )?;
+                            fragment_recipes.record_walk(
+                                RecipeWalkOwner::SourceRing(ring, Some(region)),
+                                fragments,
+                            );
+                        },
+                        PlannedAreaRing::Cycle { cycle, .. } => {
+                            let boundary = coverage_cycles.get(cycle).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "coverage recipe cycle is unknown".into(),
+                                )
+                            })?;
+                            let mut spans = boundary
+                                .uses
+                                .iter()
+                                .map(|use_| DirectedSpan {
+                                    span: use_.span,
+                                    from: use_.from,
+                                    to: use_.to,
+                                    owner_index: use_.selected_owner,
+                                })
+                                .collect::<Vec<_>>();
+                            if let Some(pivot) = spans.iter().position(|span| {
+                                plans
+                                    .topology
+                                    .q
+                                    .ports
+                                    .get(span.from.0 as usize)
+                                    .is_some_and(|port| !port.cut)
+                            }) {
+                                spans.rotate_left(pivot);
+                            }
+                            let fragments = fragment_recipes.push_walk(
+                                plans.topology,
+                                &spans,
+                                true,
+                                SelectedUse::AreaBoundary,
+                                work,
+                            )?;
+                            fragment_recipes.record_walk(RecipeWalkOwner::Cycle(cycle), fragments);
+                        },
+                    }
+                }
+            },
         }
         let plan = QEmissionPlan {
             whole_sphere,

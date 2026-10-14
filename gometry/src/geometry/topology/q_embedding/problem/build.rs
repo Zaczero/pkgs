@@ -172,7 +172,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                     })?;
                 },
-                RecipeWalkOwner::SourceRing(ring) => {
+                RecipeWalkOwner::SourceRing(ring, _) => {
                     topology.sources.rings.get(ring).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "Q recipe walk references an unknown source ring".into(),

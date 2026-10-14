@@ -677,7 +677,7 @@ impl super::plan::QEmissionPlan {
                             })?;
                         if source_ring.polygon.0 as usize != polygon_index
                             || drawn.hole != source_ring.hole
-                            || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring_index)
+                            || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring_index, None)
                             || !source_ring_reuse_matches(
                                 topology,
                                 source_ring,
@@ -730,7 +730,7 @@ impl super::plan::QEmissionPlan {
                     )?;
                     if !matches!(drawn.origin, DrawnAreaOrigin::Source)
                         || drawn.region != region
-                        || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring)
+                        || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring, Some(region))
                         || drawn.native_start_port != cycle_start
                         || !source_ring_matches
                     {

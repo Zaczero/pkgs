@@ -36,7 +36,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                             ring.recipe_walk,
                             budget,
                         )?;
-                        let RecipeWalkOwner::SourceRing(ring_id) = ring.recipe_walk else {
+                        let RecipeWalkOwner::SourceRing(ring_id, _) = ring.recipe_walk else {
                             return Err(GeometryErrorKind::Invalid(
                                 "whole-sphere source polygon has a non-source recipe owner".into(),
                             )
@@ -95,7 +95,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     if !matches!(ring.origin, DrawnAreaOrigin::Source) {
                         continue;
                     }
-                    let RecipeWalkOwner::SourceRing(ring_id) = ring.recipe_walk else {
+                    let RecipeWalkOwner::SourceRing(ring_id, _) = ring.recipe_walk else {
                         return Err(GeometryErrorKind::Invalid(
                             "source area ring has a non-source recipe owner".into(),
                         )
