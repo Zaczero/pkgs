@@ -247,7 +247,7 @@ impl ExactSourceInventory {
         }
         if let Some((roles, frame, budget)) = polygon_publication.take() {
             (polygons, polygon_axes) = publish_polygon_parts_with_roles(
-                polygons,
+                &polygons,
                 &roles,
                 frame,
                 budget,
@@ -261,7 +261,7 @@ impl ExactSourceInventory {
 }
 
 fn publish_polygon_parts_with_roles(
-    polygons: Vec<Polygon>,
+    polygons: &[Polygon],
     roles: &[Vec<Vec<bool>>],
     frame: crate::geographic::GeographicFrame,
     budget: &mut ExpansionBudget,
@@ -271,7 +271,7 @@ fn publish_polygon_parts_with_roles(
 ) -> Result<(Vec<Polygon>, crate::geometry::CoordinateAxes)> {
     let mut candidate_budget = budget.clone();
     match crate::geometry::publish_polygon_parts_with_edge_roles(
-        &polygons,
+        polygons,
         roles,
         frame,
         &mut candidate_budget,
@@ -485,7 +485,7 @@ mod tests {
         let frame = crate::geographic::GeographicFrame::crs84();
         let mut strict_budget = ExpansionBudget::new("subdivide", "computed edges");
         let strict_error = publish_polygon_parts_with_roles(
-            vec![polygon.clone()],
+            std::slice::from_ref(&polygon),
             &roles,
             frame,
             &mut strict_budget,
@@ -501,7 +501,7 @@ mod tests {
 
         let mut lenient_budget = ExpansionBudget::new("subdivide", "computed edges");
         let (polygons, axes) = publish_polygon_parts_with_roles(
-            vec![polygon],
+            std::slice::from_ref(&polygon),
             &roles,
             frame,
             &mut lenient_budget,
