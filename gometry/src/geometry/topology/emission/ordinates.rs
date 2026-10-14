@@ -325,7 +325,7 @@ pub(super) fn source_trace_fragment(
         })
 }
 
-pub(super) fn native_chord_points(
+pub(in crate::geometry::topology) fn native_chord_points(
     plan: &ExpandedEmissionPlan<'_>,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],

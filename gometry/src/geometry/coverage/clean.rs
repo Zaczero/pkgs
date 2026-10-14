@@ -137,7 +137,10 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
             drop(admission_phase);
             let receipt = analysis.coverage_drawing_receipt(
                 &selection,
-                declared_axes,
+                &rows
+                    .iter()
+                    .map(|row| row.borrow().axes())
+                    .collect::<Vec<_>>(),
                 context,
                 StorageTarget::Array,
                 &mut budget,
@@ -458,14 +461,12 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
             *owner = Some(0);
         }
     }
-    let declared_axes = coverage
-        .iter()
-        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
-            axes.union(shape.borrow().axes())
-        });
     let receipt = analysis.coverage_drawing_receipt(
         &assignment,
-        declared_axes,
+        &coverage
+            .iter()
+            .map(|row| row.borrow().axes())
+            .collect::<Vec<_>>(),
         context,
         StorageTarget::Scalar,
         &mut budget,

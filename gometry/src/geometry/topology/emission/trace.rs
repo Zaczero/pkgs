@@ -243,7 +243,7 @@ pub(in crate::geometry::topology) struct DirectedSpan {
 pub(in crate::geometry::topology) enum RecipeWalkOwner {
     Cycle(usize),
     Line(usize),
-    SourceRing(usize),
+    SourceRing(usize, Option<usize>),
 }
 
 #[derive(Clone, Debug)]

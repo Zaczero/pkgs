@@ -116,7 +116,7 @@
             .iter()
             .enumerate()
             .find_map(|(index, ring)| {
-                let RecipeWalkOwner::SourceRing(ring_id) = ring.recipe_walk else {
+                let RecipeWalkOwner::SourceRing(ring_id, _) = ring.recipe_walk else {
                     return None;
                 };
                 let Some(PlannedAreaRing::Source {
@@ -149,13 +149,13 @@
         let source_walks = plan.fragment_recipes.walks();
         let source_recipe_ids = source_walks
             .iter()
-            .find(|walk| walk.owner == RecipeWalkOwner::SourceRing(source_ring))
+            .find(|walk| matches!(walk.owner, RecipeWalkOwner::SourceRing(ring, _) if ring == source_ring))
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("difference source shell recipe is missing".into())
             })?;
         let cutter_recipe_ids = source_walks
             .iter()
-            .find(|walk| walk.owner == RecipeWalkOwner::SourceRing(cutter_ring))
+            .find(|walk| matches!(walk.owner, RecipeWalkOwner::SourceRing(ring, _) if ring == cutter_ring))
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("difference cutter shell recipe is missing".into())
             })?;

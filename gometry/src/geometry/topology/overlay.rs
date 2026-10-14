@@ -4,7 +4,10 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use self::recipes::{build_fragment_recipes, diagnostic_line_paths};
+use self::recipes::diagnostic_line_paths;
+pub(in crate::geometry::topology) use self::recipes::{
+    build_fragment_recipes, push_source_ring_recipes,
+};
 use self::select_boundaries::selected_area_boundaries;
 use self::select_faces::{AreaSupport, FaceUnion, append_unique_rows, face_regions, select_faces};
 use self::select_lines::{select_line_spans, select_points};
@@ -81,11 +84,12 @@ pub(in crate::geometry) use self::producer_drawing::{
     exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,
     exact_geographic_linework_pending_row,
 };
+use self::publish::publish_q_overlay;
+pub(in crate::geometry::topology) use self::publish::resolve_q_embedding;
 #[cfg(test)]
 use self::publish::write_certified_q_emission;
 #[cfg(test)]
 use self::publish::{CertifiedQEmission, QEmbeddingChoice};
-use self::publish::{publish_q_overlay, resolve_q_embedding};
 mod plan_boundary;
 mod plan_linework;
 mod plan_overlay;

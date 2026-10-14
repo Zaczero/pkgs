@@ -371,7 +371,11 @@ pub(in crate::geometry::topology::q_embedding) fn native_port_data(
             ),
         }
     };
-    let point = if bank.is_some() {
+    let point = if bank.is_some()
+        || matches!(
+            &spelling,
+            super::super::super::emission::PortSpelling::Pole { .. }
+        ) {
         ExactChartPoint::from_rationals(
             ExactRational::from_f64(longitude),
             source_chart_point.y.try_clone_with_work(budget)?,

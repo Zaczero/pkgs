@@ -203,6 +203,77 @@ def test_geographic_clean_keeps_valid_disjoint_rows_as_identity() -> None:
     assert gm.coverage_is_valid(cleaned)
 
 
+def test_geographic_clean_never_collapses_a_rational_sliver() -> None:
+    rows = [
+        gm.Polygon([(1, 0), (2, 0), (2, 1), (1 + 2**-52, 1)], crs='OGC:CRS84'),
+        gm.Polygon(
+            [(1, 0.25), (1.5, 0.25), (1.5, 0.5), (1, 0.5)],
+            crs='OGC:CRS84',
+        ),
+    ]
+    try:
+        outcome: gm.GeometryArray | gm.GeometryError = gm.coverage_clean(
+            rows, grid_size=0, gap_width=0, overlap_rule='min_index'
+        )
+    except gm.GeometryError as error:
+        outcome = error
+    if isinstance(outcome, gm.GeometryError):
+        assert outcome.code == 'output_unrepresentable'
+    else:
+        assert not outcome[1].is_empty
+        assert outcome[1].area > 0
+        assert outcome[1].is_valid
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('permute_distant', [False, True])
+def test_geographic_clean_keeps_occurrence_local_zm(
+    reverse: bool, permute_distant: bool
+) -> None:
+    rows = [
+        gm.Polygon(
+            [(lo, 0, z, 7), (hi, 0, z, 7), (hi, 1, z, 7), (lo, 1, z, 7)],
+            crs='OGC:CRS84',
+        )
+        for lo, hi, z in [(0, 1, 10), (1, 2, 20), (10, 12, 30), (11, 13, 30)]
+    ]
+    if reverse:
+        rows = [row.reverse() for row in rows]
+    if permute_distant:
+        rows[2], rows[3] = rows[3], rows[2]
+    for selected in [rows[:2], rows]:
+        cleaned = gm.coverage_clean(
+            selected, grid_size=0, gap_width=0, overlap_rule='min_index'
+        )
+        for row, expected_z in zip(cleaned[:2], [10, 20], strict=True):
+            assert row.has_z
+            assert row.has_m
+            assert all(z == expected_z for z in row.coords.z)
+            assert all(m == 7 for m in row.coords.m)
+
+
+@pytest.mark.parametrize('empty_axes', ['XYZM', 'XYM'])
+def test_geographic_clean_empty_row_keeps_source_axes(empty_axes: str) -> None:
+    row = gm.Polygon(
+        [(0, 0, 10, 7), (1, 0, 10, 7), (1, 1, 10, 7), (0, 1, 10, 7)],
+        crs='OGC:CRS84',
+    )
+    second = (
+        row
+        if empty_axes == 'XYZM'
+        else gm.from_wkt(
+            'POLYGON M ((0 0 7, 1 0 7, 1 1 7, 0 1 7, 0 0 7))',
+            crs='OGC:CRS84',
+        )
+    )
+    cleaned = gm.coverage_clean(
+        [row, second], grid_size=0, gap_width=0, overlap_rule='min_index'
+    )
+    assert cleaned[1].is_empty
+    assert cleaned[1].has_z == (empty_axes == 'XYZM')
+    assert cleaned[1].has_m
+
+
 def test_geographic_nonidentity_clean_assigns_seam_overlap_to_input_owner() -> None:
     crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
     first = gm.Polygon(

@@ -308,14 +308,19 @@ pub(in crate::geometry::topology::q_embedding) fn normalize_native_chart_lift(
     let PortSpelling::Interior { periods } = &port.spelling else {
         return Ok(());
     };
-    if *periods == 0 {
-        return Ok(());
+    if *periods != 0 {
+        let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(*periods));
+        let shift = ExactRational::from_f64(frame.longitude().period())
+            .try_product_with_work(&lift, budget)?;
+        port.point.x = port.point.x.try_subtract_with_work(&shift, budget)?;
+        port.spelling = PortSpelling::Interior { periods: 0 };
     }
-    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(*periods));
-    let shift =
-        ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, budget)?;
-    port.point.x = port.point.x.try_subtract_with_work(&shift, budget)?;
-    port.spelling = PortSpelling::Interior { periods: 0 };
+    if port.source_record.is_some_and(|record| {
+        ExactRational::from_f64(record.x) != port.point.x
+            || ExactRational::from_f64(record.y) != port.point.y
+    }) {
+        port.source_record = None;
+    }
     Ok(())
 }
 pub(in crate::geometry::topology::q_embedding) fn normalize_native_chart_lifts(
@@ -890,57 +895,4 @@ impl NativeReferenceGraphBuilder {
             parts: Vec::new(),
         })
     }
-}
-
-pub(in crate::geometry::topology::q_embedding) fn align_producer_fan_target(
-    target: &ExactChartPoint,
-    source_span_target: &ExactChartPoint,
-    base_lift: ExactDyadic,
-    frame: GeographicFrame,
-    work: &mut impl Work,
-) -> Result<ExactChartPoint> {
-    let period = ExactRational::from_f64(frame.longitude().period());
-    // Resolve seam aliases against the retained source-span target so they
-    // preserve the fan ray rather than defaulting to the opposite chart bank.
-    let base_shift = period.try_product_with_work(&ExactRational::from_dyadic(base_lift), work)?;
-    let base_x = target.x.try_add_with_work(&base_shift, work)?;
-    let mut best_offset = 0_i64;
-    let mut best_distance = None;
-    // Split-site normalization has already selected the base image; only an
-    // adjacent image can be nearer after resolving the seam occurrence.
-    for offset in [0_i64, -1, 1] {
-        work.charge_into_error(1)?;
-        let shifted_x = if offset == 0 {
-            base_x.try_clone_with_work(work)?
-        } else {
-            let shift = period.try_product_with_work(
-                &ExactRational::from_dyadic(ExactDyadic::from_i64(offset)),
-                work,
-            )?;
-            base_x.try_add_with_work(&shift, work)?
-        };
-        let difference = shifted_x.try_subtract_with_work(&source_span_target.x, work)?;
-        let distance = difference.try_product_with_work(&difference, work)?;
-        let improves = match &best_distance {
-            Some(best) => distance.try_cmp_with_work(best, work)?.is_lt(),
-            None => true,
-        };
-        if improves {
-            best_offset = offset;
-            best_distance = Some(distance);
-        }
-    }
-    let x = if best_offset == 0 {
-        base_x
-    } else {
-        let shift = period.try_product_with_work(
-            &ExactRational::from_dyadic(ExactDyadic::from_i64(best_offset)),
-            work,
-        )?;
-        base_x.try_add_with_work(&shift, work)?
-    };
-    Ok(ExactChartPoint::from_rationals(
-        x,
-        target.y.try_clone_with_work(work)?,
-    ))
 }

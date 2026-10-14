@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::{
     BoundaryCycle, ExactGeographicTopology, GeometryErrorKind, OverlayOp, PlannedAreaRing,
     PolygonPlan, QEmissionPlan, QProducer, ResourceError, Result, build_fragment_recipes,
@@ -14,6 +16,24 @@ impl PolygonPlan {
         operation: OverlayOp,
         cycles: &[BoundaryCycle],
         work: &mut impl Work,
+    ) -> Result<Self> {
+        Self::build_with_source_filter(
+            topology,
+            whole_sphere,
+            operation,
+            cycles,
+            |_, _, _| Ok(true),
+            work,
+        )
+    }
+
+    pub(in crate::geometry::topology) fn build_with_source_filter<W: Work>(
+        topology: &ExactGeographicTopology,
+        whole_sphere: bool,
+        operation: OverlayOp,
+        cycles: &[BoundaryCycle],
+        mut source_allowed: impl FnMut(usize, &[usize], &mut W) -> Result<bool>,
+        work: &mut W,
     ) -> Result<Self> {
         if whole_sphere {
             let mut source_polygons = Vec::new();
@@ -56,70 +76,75 @@ impl PolygonPlan {
             if source_cycles.is_empty() {
                 continue;
             }
-            if source_ring.summary.exact_axis_band && source_cycles.len() != 2 {
-                continue;
-            }
-            let Some(&first_cycle) = source_cycles.first() else {
-                continue;
-            };
-            let region = cycles
-                .get(first_cycle)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?
-                .region;
-            let mut cycles_are_consistent = true;
+            let mut by_region = BTreeMap::<usize, Vec<usize>>::new();
             for &cycle_index in source_cycles {
                 work.charge_into_error(1)?;
                 let cycle = cycles.get(cycle_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into())
                 })?;
-                let emitted = emitted_cycles.get(cycle_index).copied().ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q source-ring cycle has no emission state".into())
-                })?;
-                if cycle.region != region || emitted {
-                    cycles_are_consistent = false;
-                    break;
-                }
+                by_region.entry(cycle.region).or_default().push(cycle_index);
             }
-            if !cycles_are_consistent
-                || !source_ring_cycles_cover_boundary(
+            for (region, source_cycles) in by_region {
+                if source_ring.summary.exact_axis_band && source_cycles.len() != 2 {
+                    continue;
+                }
+                let mut already_emitted = false;
+                for &cycle_index in &source_cycles {
+                    work.charge_into_error(1)?;
+                    already_emitted |= *emitted_cycles.get(cycle_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "Q source-ring cycle has no emission state".into(),
+                        )
+                    })?;
+                }
+                if already_emitted
+                    || !source_allowed(ring_index, &source_cycles, work)?
+                    || !source_ring_cycles_cover_boundary(
+                        topology,
+                        source_ring,
+                        cycles,
+                        &source_cycles,
+                        work,
+                    )?
+                {
+                    continue;
+                }
+                let Some(follows_source) = source_ring_cycles_follow_source(
                     topology,
                     source_ring,
                     cycles,
-                    source_cycles,
+                    &source_cycles,
                     work,
                 )?
-            {
-                continue;
-            }
-            let Some(follows_source) = source_ring_cycles_follow_source(
-                topology,
-                source_ring,
-                cycles,
-                source_cycles,
-                work,
-            )?
-            else {
-                continue;
-            };
-            let cycle_start = if source_cycles.len() == 1 {
-                let cycle = cycles.get(first_cycle).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q source-ring start cycle is unknown".into())
-                })?;
-                Some(source_cycle_start_port(topology, cycle, work)?)
-            } else {
-                None
-            };
-            rings.push(PlannedAreaRing::Source {
-                ring: ring_index,
-                region,
-                reverse: !follows_source,
-                cycle_start,
-            });
-            for &cycle_index in source_cycles {
-                work.charge_into_error(1)?;
-                *emitted_cycles.get_mut(cycle_index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q source-ring cycle has no emission state".into())
-                })? = true;
+                else {
+                    continue;
+                };
+                let cycle_start = if source_cycles.len() == 1 {
+                    let cycle = cycles
+                        .get(*source_cycles.first().expect("one cycle"))
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q source-ring start cycle is unknown".into(),
+                            )
+                        })?;
+                    Some(source_cycle_start_port(topology, source_ring, cycle, work)?)
+                } else {
+                    None
+                };
+                rings.push(PlannedAreaRing::Source {
+                    ring: ring_index,
+                    region,
+                    reverse: !follows_source,
+                    cycle_start,
+                });
+                for cycle_index in source_cycles {
+                    work.charge_into_error(1)?;
+                    *emitted_cycles.get_mut(cycle_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "Q source-ring cycle has no emission state".into(),
+                        )
+                    })? = true;
+                }
             }
         }
         for (cycle_index, (cycle, &emitted)) in cycles.iter().zip(&emitted_cycles).enumerate() {
@@ -198,6 +223,7 @@ impl QEmissionPlan {
             boundary_support: None,
             producer: QProducer::Overlay,
             retain_literals_for_republication: false,
+            coverage_rows: None,
             polygons,
             cycles,
             selected_regions,

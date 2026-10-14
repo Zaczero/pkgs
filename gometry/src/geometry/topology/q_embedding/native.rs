@@ -1,4 +1,5 @@
 pub(super) mod assignment;
+mod coverage;
 pub(super) mod cut_search;
 pub(super) mod cycles;
 pub(super) mod linework;

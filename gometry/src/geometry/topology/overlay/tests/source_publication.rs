@@ -87,7 +87,7 @@ fn source_ring_rotation_keeps_publication_samples_with_their_recipes() -> Result
     let recipes = (0..edge_count)
         .map(|index| FragmentRecipeId(u32::try_from(index).expect("three recipe IDs")))
         .collect::<Vec<_>>();
-    let owner = RecipeWalkOwner::SourceRing(source_ring.id.0 as usize);
+    let owner = RecipeWalkOwner::SourceRing(source_ring.id.0 as usize, None);
     let walk_rows = [RecipeWalk {
         owner,
         fragments: recipes.clone(),

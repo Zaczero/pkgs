@@ -88,7 +88,7 @@ pub(super) use self::port_authority::{
 pub(super) use self::presentation::{
     AssignedSite, NativeAreaEdge, NativeAreaEdgeKind, NativeGraphEdgeOwner, NativeSeamEvent,
     NativeSeamVertices, NativeSourceFaceGerm, NativeSourceSpanUse, SelectedNativeSeamBand,
-    native_pole_edges, native_seam_edges,
+    native_pole_edges, native_pole_walk_edges, native_seam_edges,
 };
 pub(super) use self::publication::FragmentRecipes;
 pub(super) use self::recipes::{

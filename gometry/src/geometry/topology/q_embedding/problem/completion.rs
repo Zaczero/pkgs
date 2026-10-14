@@ -102,6 +102,27 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         else {
             return Ok(None);
         };
+        let coverage_receipt = self
+            .emission
+            .plan
+            .coverage_rows
+            .as_ref()
+            .map(|rows| {
+                let requests = reference.coverage_request_rows(
+                    self.emission.fragment_recipes,
+                    rows.declared_axes,
+                    budget,
+                )?;
+                rows.drawing_receipt(
+                    &reference.plan,
+                    &assigned_sites,
+                    &requests,
+                    self.metric_access,
+                    budget,
+                )
+            })
+            .transpose()?
+            .map(Box::new);
         let diagnostic_lines = super::super::super::emission::materialize_native_diagnostic_lines(
             &reference.plan,
             &assigned_sites,
@@ -163,6 +184,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     super::super::super::emission::CompletedNativeDrawing {
                         sealed,
                         diagnostic_lines,
+                        coverage_receipt,
                     },
                 )),
                 PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
@@ -200,6 +222,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 super::super::super::emission::CompletedNativeDrawing {
                     sealed,
                     diagnostic_lines,
+                    coverage_receipt,
                 },
             )),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
