@@ -17,6 +17,14 @@ pub(super) struct SimplifiedChain {
     pub(super) kept: Vec<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CoverageEdgeIntent {
+    Source,
+    Constructed,
+}
+
+pub(super) type CoverageEdgeRoles = Vec<Vec<Vec<CoverageEdgeIntent>>>;
+
 pub(super) fn exact_chain(
     partition: &ExactPartition<'_>,
     view: ExactChainView,
