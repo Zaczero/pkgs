@@ -1,8 +1,9 @@
 use super::{
     ExactPartition, GeometryErrorKind, IndexedTopology, IndexedTopologyScratch, NodeId, Ordering,
-    ResourceError, Result, XY, remove_antenna_vertices, same_point, stored_cross_sign,
-    stored_orientation_sign,
+    ResourceError, Result, XY, remove_antenna_vertices, stored_cross_sign,
 };
+#[cfg(any(test, debug_assertions))]
+use super::{same_point, stored_orientation_sign};
 use crate::geometry::graph::{GlobalFaces, RayAxis as Axis, shoot_left};
 use crate::geometry::numerics::product::ExactSign;
 

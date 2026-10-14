@@ -1,7 +1,11 @@
 //! Source-patch representation and subdivision.
 
-use super::cycle::{BoxSplitAxis, BoxSplitStrategy, compare_box_extents, point_in_box};
-use super::support::{span_point, span_projection_parameter};
+#[cfg(any(test, debug_assertions))]
+use super::cycle::point_in_box;
+use super::cycle::{BoxSplitAxis, BoxSplitStrategy, compare_box_extents};
+use super::support::span_point;
+#[cfg(any(test, debug_assertions))]
+use super::support::span_projection_parameter;
 use super::{
     ExactPoint, ExpansionBudget, FloatBox, Ordering, PreparedSupport, Rational, Result,
     SourcePatch, SupportSpan, XY,
