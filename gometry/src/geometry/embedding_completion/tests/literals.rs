@@ -1,5 +1,6 @@
 fn output_id_layout(outputs: &[u32]) -> ShapeLiteralLayout<()> {
     ShapeLiteralLayout {
+        structure: None,
         points: outputs
             .iter()
             .map(|&output| LiteralPoint {
