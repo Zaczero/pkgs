@@ -472,14 +472,14 @@ distances unless `normalized=True`, when `0.0` and `1.0` mean the start and end.
 Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
 With CRS-aware units (the default on a geographic CRS), linework edges are
-straight in the CRS's longitude/latitude chart and LRS measures their
-ellipsoidal arclength, rather than the shortest geodesic between each pair of
-vertices. `line_locate` minimizes against those same chart edges and returns the
-interior projection before a point or endpoint when evaluated backend distances
-compare equal, then uses route order. This ranks available measurements, not an
-exact geodesic continuum minimum. Repeated support and self-crossings
-can have several stations at one location, so locate/interpolate is not a unique
-inverse there.
+straight in the CRS's longitude/latitude chart and LRS measures the ellipsoidal
+arclength of the retained chart-straight source edge, rather than geodesic
+distance between each pair of vertices. `line_locate` minimizes against those
+same chart edges. When backend distances compare equal, it returns the interior
+projection before a point or endpoint, then uses route order. This ranks
+available measurements, not an exact geodesic continuum minimum. Repeated
+support and self-crossings can have several stations at one location, so
+locate/interpolate is not a unique inverse there.
 An independently interpolated point has canonical longitude, while a
 `line_substring` cut stays in the retained source edge's lifted chart.
 `unit='planar'` instead uses Cartesian distance in the stored coordinate space.
@@ -542,7 +542,7 @@ measures, a requested `m` selects the arclength fraction
 `(m - m0) / (m1 - m0)`; equal endpoint measures remain constant.
 Z is carried at that same fraction, and `line_locate(..., basis='m')`
 converts the nearest point's arclength fraction back to M. On a geographic
-CRS this is ellipsoidal arclength along the straight source-chart edge;
+CRS this is ellipsoidal arclength of the retained chart-straight source edge;
 the fraction is generally different from its longitude/latitude parameter.
 For example, a WGS 84 meridian from latitude −10° to 10° with endpoint
 measures 100 and 300 places M=150 at latitude approximately
@@ -603,17 +603,22 @@ derivable and drop only the axis that cannot be sourced:
   [`subdivide`][gometry.Geometry.subdivide],
   [`line_merge`][gometry.Geometry.line_merge],
   [`coverage_union_all`][gometry.coverage_union_all], and
-  [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
-  inserted vertex when its producer traces it to a source edge. They interpolate
-  from that edge's original endpoints by ellipsoidal arclength on the CRS
-  ellipsoid, not by its longitude/latitude parameter or a later cut fragment.
+   [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
+   inserted vertex when its producer traces it to a source edge. They interpolate
+   from that edge's original endpoints by ellipsoidal arclength of the retained
+   chart-straight source edge, not by its longitude/latitude parameter or a
+   later cut fragment.
   Source vertices retain their own ordinates; when sources disagree, Z and M
   are resolved independently and only a conflicting or unavailable axis is
   dropped. A planar `unit=` choice for a nearest witness does not change how
   its geographic source-edge ordinates are carried. A computed point with no
-  sourceable edge has no source Z/M. Recursive subdivision retains original
-  input-edge traces through later cuts, including seam vertices (±180° in
-  EPSG:4326).
+   sourceable edge has no source Z/M. Recursive subdivision retains original
+   input-edge traces through later cuts, including seam vertices (±180° in
+   EPSG:4326). On a certified zero-length source edge, an interior sample
+   retains an axis only when both endpoint values have identical bits; a
+   disagreement follows the operation's per-axis conflict policy. Exact source
+   endpoints keep their own values. A nonzero edge whose measured length
+   underflows to zero raises a metric error.
 - A degenerate [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle]
   that follows geographic source-edge support carries resolvable Z/M by the
   same original-edge arclength rule. A computed areal rectangle is a new

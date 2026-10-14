@@ -154,7 +154,12 @@ impl ChartEdge {
         }
         let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
         if total == 0.0 {
-            return Ok(0.0);
+            if self.is_degenerate() {
+                return Ok(0.0);
+            }
+            return Err(GeometryErrorKind::message(
+                "nonzero chart-edge length underflowed to zero metres",
+            ));
         }
         Ok(
             (self.arclength_with_work(parameter, Some(total), geodesic, work)? / total)
