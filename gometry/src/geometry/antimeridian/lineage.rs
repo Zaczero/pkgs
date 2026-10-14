@@ -353,28 +353,20 @@ impl LineageCatalog {
                 )
                 .into());
             }
-            if restriction.is_none() {
-                restriction = source.restriction;
+            if let Some(inherited) = source.restriction {
+                if restriction.is_some_and(|current| current != inherited) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "split edge composition combines incompatible chart restrictions".into(),
+                    )
+                    .into());
+                }
+                restriction = Some(inherited);
             }
             for range in &source.roots {
-                let Some(source_start) = range.parameter_at_with_work(local_start, &mut work)?
+                let Some(child) = range.compose_with_work(local_start, local_end, &mut work)?
                 else {
                     continue;
                 };
-                let Some(source_end) = range.parameter_at_with_work(local_end, &mut work)? else {
-                    continue;
-                };
-                if source_start.try_eq_with_work(&source_end, &mut work)? {
-                    continue;
-                }
-                let child = RootRange::from_mapped_with_work(
-                    range.root(),
-                    source_start,
-                    source_end,
-                    ExactRational::zero(),
-                    ExactRational::one(),
-                    &mut work,
-                )?;
                 let mut found = false;
                 for existing in &roots {
                     if existing.try_eq_with_work(&child, &mut work)? {
@@ -514,4 +506,273 @@ pub(super) enum ShapeLineage {
     },
     GeometryCollection(Vec<Self>),
     Empty,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geographic::ChartPole;
+    use crate::geometry::{MOrdinate, ZOrdinate};
+
+    fn edge_root(
+        catalog: &mut LineageCatalog,
+        member: MemberId,
+        frame: GeographicFrame,
+        points: &[Point; 2],
+    ) -> RootId {
+        let longitude = frame
+            .longitude()
+            .chart_connection(points[0].x, points[1].x)
+            .expect("test edge longitudes are admitted")
+            .retained();
+        catalog
+            .edge_root(member, points, longitude)
+            .expect("test source root fits the catalog")
+    }
+
+    fn source_point(x: f64, y: f64, z: f64, m: f64) -> Point {
+        Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
+            .expect("test source point is finite")
+    }
+
+    fn mapped_partial_range(root: RootId) -> RootRange {
+        RootRange::from_mapped(
+            root,
+            ExactRational::zero(),
+            ExactRational::one(),
+            ExactRational::from_f64(0.25),
+            ExactRational::from_f64(0.75),
+        )
+        .expect("test root range is inside the unit interval")
+    }
+
+    fn catalog_edge() -> (LineageCatalog, MemberId, RootId) {
+        let frame = GeographicFrame::crs84();
+        let mut catalog = LineageCatalog::default();
+        let member = catalog.member().expect("test member fits the catalog");
+        let points = [Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 20.0)];
+        let root = edge_root(&mut catalog, member, frame, &points);
+        (catalog, member, root)
+    }
+
+    #[test]
+    fn edge_composition_retains_partial_root_support() {
+        let (mut catalog, member, root) = catalog_edge();
+        let parent = catalog
+            .push_edge_use(member, vec![mapped_partial_range(root)], None)
+            .expect("parent edge use is valid");
+
+        let child = catalog
+            .compose_edge_uses(
+                member,
+                [(parent, &ExactRational::zero(), &ExactRational::one())],
+                None,
+            )
+            .expect("full child edge composes");
+        let roots = &catalog.edge_use_at(child).roots;
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].source_start(), &ExactRational::zero());
+        assert_eq!(roots[0].source_end(), &ExactRational::one());
+        assert_eq!(roots[0].producer_start(), &ExactRational::from_f64(0.25));
+        assert_eq!(roots[0].producer_end(), &ExactRational::from_f64(0.75));
+    }
+
+    #[test]
+    fn reversed_edge_composition_retains_partial_support_and_direction() {
+        let (mut catalog, member, root) = catalog_edge();
+        let parent = catalog
+            .push_edge_use(member, vec![mapped_partial_range(root)], None)
+            .expect("parent edge use is valid");
+
+        let child = catalog
+            .compose_edge_uses(
+                member,
+                [(parent, &ExactRational::one(), &ExactRational::zero())],
+                None,
+            )
+            .expect("reversed child edge composes");
+        let roots = &catalog.edge_use_at(child).roots;
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].source_start(), &ExactRational::one());
+        assert_eq!(roots[0].source_end(), &ExactRational::zero());
+        assert_eq!(roots[0].producer_start(), &ExactRational::from_f64(0.25));
+        assert_eq!(roots[0].producer_end(), &ExactRational::from_f64(0.75));
+    }
+
+    #[test]
+    fn edge_composition_retains_endpoint_only_root_support() {
+        let (mut catalog, member, root) = catalog_edge();
+        let parent = catalog
+            .push_edge_use(
+                member,
+                vec![
+                    RootRange::point(
+                        root,
+                        ExactRational::from_f64(0.5),
+                        ExactRational::from_f64(0.5),
+                    )
+                    .expect("endpoint-only root support is valid"),
+                ],
+                None,
+            )
+            .expect("parent edge use is valid");
+
+        let child = catalog
+            .compose_edge_uses(
+                member,
+                [(parent, &ExactRational::zero(), &ExactRational::one())],
+                None,
+            )
+            .expect("child edge retains endpoint-only support");
+        let roots = &catalog.edge_use_at(child).roots;
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].source_start(), &ExactRational::from_f64(0.5));
+        assert_eq!(roots[0].source_end(), &ExactRational::from_f64(0.5));
+        assert_eq!(roots[0].producer_start(), &ExactRational::from_f64(0.5));
+        assert_eq!(roots[0].producer_end(), &ExactRational::from_f64(0.5));
+    }
+
+    #[test]
+    fn edge_composition_rejects_incompatible_inherited_restrictions() {
+        let (mut catalog, member, root) = catalog_edge();
+        let points = [Point::new_raw_xy(20.0, 30.0), Point::new_raw_xy(30.0, 40.0)];
+        let second_root = edge_root(&mut catalog, member, GeographicFrame::crs84(), &points);
+        let first = catalog
+            .push_edge_use(
+                member,
+                vec![RootRange::whole(root)],
+                Some(ChartRestriction::CutChord),
+            )
+            .expect("first restricted edge use is valid");
+        let second = catalog
+            .push_edge_use(
+                member,
+                vec![RootRange::whole(second_root)],
+                Some(ChartRestriction::PolarCap {
+                    pole: ChartPole::North,
+                }),
+            )
+            .expect("second restricted edge use is valid");
+
+        let result = catalog.compose_edge_uses(
+            member,
+            [
+                (first, &ExactRational::zero(), &ExactRational::one()),
+                (second, &ExactRational::zero(), &ExactRational::one()),
+            ],
+            None,
+        );
+
+        let _error = result.expect_err("incompatible chart restrictions must be rejected");
+    }
+
+    fn crs84_metric() -> crate::crs::GeodesicMetric {
+        let model =
+            crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric model is available");
+        crate::crs::GeodesicMetric::from_model(&model).expect("CRS84 metric is valid")
+    }
+
+    #[test]
+    fn zero_length_root_conflicts_are_axis_local_and_direction_independent() {
+        let frame = GeographicFrame::crs84();
+        let metric = crs84_metric();
+        let metric_access = || Ok(&metric);
+        let mut catalog = LineageCatalog::default();
+        let member = catalog.member().expect("test member fits the catalog");
+        let start = source_point(12.0, 5.0, 10.0, 7.0);
+        let end = source_point(12.0, 5.0, 20.0, 7.0);
+        let forward = edge_root(&mut catalog, member, frame, &[start, end]);
+        let reverse = edge_root(&mut catalog, member, frame, &[end, start]);
+        let half = ExactRational::from_f64(0.5);
+        let axes = CoordinateAxes::XYZM;
+        let metric_access: &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric> =
+            &metric_access;
+
+        for root in [forward, reverse] {
+            let middle = catalog
+                .resolve_root(root, &half, axes, frame, Some(metric_access))
+                .expect("zero-length root resolves without choosing an endpoint");
+            assert_eq!(middle.z.value(), None);
+            assert_eq!(middle.m.value(), Some(7.0));
+        }
+
+        let no_metric: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
+        let first = catalog
+            .resolve_root(forward, &ExactRational::zero(), axes, frame, no_metric)
+            .expect("authentic start endpoint needs no metric");
+        let last = catalog
+            .resolve_root(forward, &ExactRational::one(), axes, frame, no_metric)
+            .expect("authentic end endpoint needs no metric");
+        assert_eq!(first.z.value(), Some(10.0));
+        assert_eq!(last.z.value(), Some(20.0));
+    }
+
+    #[test]
+    fn pole_alias_zero_length_root_keeps_equal_bits_and_conflicts_on_m() {
+        let frame = GeographicFrame::crs84();
+        let metric = crs84_metric();
+        let metric_access = || Ok(&metric);
+        let mut catalog = LineageCatalog::default();
+        let member = catalog.member().expect("test member fits the catalog");
+        let start = source_point(0.0, 90.0, -0.0, 10.0);
+        let end = source_point(90.0, 90.0, -0.0, 20.0);
+        let root = edge_root(&mut catalog, member, frame, &[start, end]);
+        let reverse = edge_root(&mut catalog, member, frame, &[end, start]);
+        let half = ExactRational::from_f64(0.5);
+        let metric_access: &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric> =
+            &metric_access;
+
+        for root in [root, reverse] {
+            let middle = catalog
+                .resolve_root(
+                    root,
+                    &half,
+                    CoordinateAxes::XYZM,
+                    frame,
+                    Some(metric_access),
+                )
+                .expect("pole-alias zero-length root resolves symmetrically");
+
+            assert_eq!(
+                middle
+                    .z
+                    .value()
+                    .expect("equal endpoint Z bits remain available")
+                    .to_bits(),
+                (-0.0_f64).to_bits()
+            );
+            assert_eq!(middle.m.value(), None);
+        }
+    }
+
+    #[test]
+    fn numerical_zero_length_underflow_is_an_error() {
+        let frame = GeographicFrame::crs84();
+        let metric = crs84_metric();
+        let metric_access = || Ok(&metric);
+        let mut catalog = LineageCatalog::default();
+        let member = catalog.member().expect("test member fits the catalog");
+        let start = source_point(0.0, 0.0, 10.0, 20.0);
+        let end = source_point(f64::from_bits(1), 0.0, 30.0, 40.0);
+        let root = edge_root(&mut catalog, member, frame, &[start, end]);
+        let half = ExactRational::from_f64(0.5);
+        let metric_access: &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric> =
+            &metric_access;
+
+        let result = catalog.resolve_root(
+            root,
+            &half,
+            CoordinateAxes::XYZM,
+            frame,
+            Some(metric_access),
+        );
+
+        let Err(error) = result else {
+            panic!("a nonzero edge whose metric underflows must fail");
+        };
+        assert!(error.to_string().contains("underflow"), "{error}");
+    }
 }

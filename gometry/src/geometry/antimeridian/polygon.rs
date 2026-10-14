@@ -69,17 +69,18 @@ impl Shape {
     /// coordinates exist only for this operation; source coordinates remain
     /// the storage authority.
     pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
-        if frame == GeographicFrame::crs84() {
-            let metric = std::sync::OnceLock::new();
-            let metric_access = || {
-                metric.get_or_try_init(|| {
-                    let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
-                    crate::crs::GeodesicMetric::from_model(&model)
-                })
-            };
-            return self.split_antimeridian_in_frame_with_metric(frame, Some(&metric_access));
-        }
         self.split_antimeridian_in_frame_with_metric::<crate::crs::GeodesicMetric>(frame, None)
+    }
+
+    pub(crate) fn split_antimeridian_in_crs84(&self) -> Result<Self> {
+        let metric = std::sync::OnceLock::new();
+        let metric_access = || {
+            metric.get_or_try_init(|| {
+                let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
+                crate::crs::GeodesicMetric::from_model(&model)
+            })
+        };
+        self.split_antimeridian_in_frame_with_metric(GeographicFrame::crs84(), Some(&metric_access))
     }
 
     pub(crate) fn split_antimeridian_in_frame_with_metric<M: ChartMetric>(
@@ -92,23 +93,19 @@ impl Shape {
         split_geographic_view(view, metric_access)
     }
 
-    pub(crate) fn split_antimeridian_captured_in_frame(
+    pub(crate) fn split_antimeridian_captured_in_crs84(
         &self,
-        frame: GeographicFrame,
     ) -> Result<super::publication::SplitDrawing> {
-        if frame == GeographicFrame::crs84() {
-            let metric = std::sync::OnceLock::new();
-            let metric_access = || {
-                metric.get_or_try_init(|| {
-                    let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
-                    crate::crs::GeodesicMetric::from_model(&model)
-                })
-            };
-            return self
-                .split_antimeridian_captured_in_frame_with_metric(frame, Some(&metric_access));
-        }
-        self.split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-            frame, None,
+        let metric = std::sync::OnceLock::new();
+        let metric_access = || {
+            metric.get_or_try_init(|| {
+                let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
+                crate::crs::GeodesicMetric::from_model(&model)
+            })
+        };
+        self.split_antimeridian_captured_in_frame_with_metric(
+            GeographicFrame::crs84(),
+            Some(&metric_access),
         )
     }
 
@@ -123,7 +120,7 @@ impl Shape {
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
-        self.split_antimeridian_in_frame(GeographicFrame::crs84())
+        self.split_antimeridian_in_crs84()
     }
 
     /// Split at the antimeridian: parts that cross ±180 come back as

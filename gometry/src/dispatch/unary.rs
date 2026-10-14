@@ -388,7 +388,7 @@ fn split_drawing(
 ) -> Result<crate::geometry::SplitDrawing> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
     if ctx.frame.crs_ref().is_none() {
-        return data.shape().split_antimeridian_captured_in_frame(frame);
+        return data.shape().split_antimeridian_captured_in_crs84();
     }
     let metric_access = || {
         ctx.metric.geographic_chart_metric()?.ok_or_else(|| {

@@ -16,7 +16,7 @@ fn captured_polar_annulus_keeps_its_band_and_roots_under_ring_reversal() {
                     vec![latitude_ring(sign * 80.0, reverse_hole)],
                 ));
                 let split = source
-                    .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+                    .split_antimeridian_captured_in_crs84()
                     .unwrap()
                     .finish_scalar(crate::Frame::None)
                     .unwrap()
@@ -88,7 +88,10 @@ fn captured_full_turn_shell_subtracts_a_crossing_hole_like_plain_split() {
     for (source, hole_witness, shell_witness) in cases {
         let plain = split_crs84(&source);
         let captured = source
-            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+                GeographicFrame::crs84(),
+                None,
+            )
             .unwrap()
             .finish_scalar(crate::Frame::None)
             .unwrap()

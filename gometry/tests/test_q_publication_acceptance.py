@@ -27,9 +27,7 @@ def _countries(codes: tuple[str, ...]) -> dict[str, gm.Geometry]:
 
 def test_au_pg_union_keeps_its_known_public_wkb_digest() -> None:
     countries = _countries(('AU', 'PG'))
-    expected_digest = (
-        'e5cd6a92943e8e13db66c64da5c8b9bd0d621ecd6bf1baa72aa5f393899bc6c0'
-    )
+    expected_digest = 'e5cd6a92943e8e13db66c64da5c8b9bd0d621ecd6bf1baa72aa5f393899bc6c0'
 
     for order in itertools.permutations(('AU', 'PG')):
         result = gm.union(*(countries[code] for code in order))
