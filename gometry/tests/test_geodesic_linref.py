@@ -391,6 +391,69 @@ def test_generated_geographic_half_turns_are_refined_for_public_consumers() -> N
 
 
 @pytest.mark.parametrize(
+    ('z', 'm', 'expected_ordinates'),
+    [
+        pytest.param([-0.0, 40.0], None, [(10.0,), (20.0,), (30.0,)], id='xyz'),
+        pytest.param(None, [100.0, 500.0], [(200.0,), (300.0,), (400.0,)], id='xym'),
+        pytest.param(
+            [-0.0, 40.0],
+            [100.0, 500.0],
+            [(10.0, 200.0), (20.0, 300.0), (30.0, 400.0)],
+            id='xyzm',
+        ),
+    ],
+)
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+@pytest.mark.parametrize('fractional', [False, True], ids=['max-length', 'fraction'])
+def test_chart_segmentize_half_turn_refinement_carries_emitted_source_ordinates(
+    z: list[float] | None,
+    m: list[float] | None,
+    expected_ordinates: list[tuple[float, ...]],
+    array: bool,
+    fractional: bool,
+) -> None:
+    line = gm.LineString([(10.0, 0.0), (370.0, 0.0)], z=z, m=m, crs=4326, epoch=2020.0)
+    target = gm.GeometryArray([line, None], crs=4326, epoch=2020.0) if array else line
+    result = (
+        target.segmentize(fraction=0.5)
+        if fractional
+        else target.segmentize(30_000_000.0)
+    )
+    assert result.crs == line.crs
+    assert result.epoch == line.epoch
+    if isinstance(result, gm.GeometryArray):
+        assert result.is_missing.tolist() == [False, True]
+        result = result[0]
+    assert isinstance(result, gm.LineString)
+    assert result.coordinate_axes == line.coordinate_axes
+    coordinates = list(result.coords)
+    assert [point[:2] for point in coordinates] == [
+        (10.0, 0.0),
+        (100.0, 0.0),
+        (190.0, 0.0),
+        (280.0, 0.0),
+        (370.0, 0.0),
+    ]
+    # The quarter/three-quarter vertices refine half-turn representation, not
+    # the requested half-arclength station; carry must follow their own roots.
+    for point, expected in zip(coordinates[1:-1], expected_ordinates, strict=True):
+        for actual, ordinate, start, end in zip(
+            point[2:], expected, coordinates[0][2:], coordinates[-1][2:], strict=True
+        ):
+            assert actual == pytest.approx(
+                ordinate, rel=0.0, abs=_ordinate_rounding_budget(ordinate, end - start)
+            )
+    for actual, source in zip(
+        (coordinates[0], coordinates[-1]),
+        (line.coords[0], line.coords[-1]),
+        strict=True,
+    ):
+        assert struct.pack(f'{len(actual)}d', *actual) == struct.pack(
+            f'{len(source)}d', *source
+        )
+
+
+@pytest.mark.parametrize(
     'end_latitude',
     [
         pytest.param(math.nextafter(10.0, math.inf), id='increasing-latitude'),
@@ -565,7 +628,10 @@ def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_ro
     coordinates = refined[0].coords.to_nested()
     assert coordinates[0] == (0.0, 0.0, 10.0, 100.0)
     assert coordinates[1][0] == coordinates[1][1]
-    assert coordinates[1][2:] == (20.0, 200.0)
+    # Interior source carry measures the emitted chart parameter; inverse
+    # arclength placement and remeasurement need not recover exact midpoint bits.
+    assert abs(coordinates[1][2] - 20.0) <= _ordinate_rounding_budget(20.0, 20.0)
+    assert abs(coordinates[1][3] - 200.0) <= _ordinate_rounding_budget(200.0, 200.0)
     assert coordinates[2] == (10.0, 10.0, 30.0, 300.0)
 
 
