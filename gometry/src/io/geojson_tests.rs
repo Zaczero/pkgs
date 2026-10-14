@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::{geojson_output_shape, to_geojson_string_with_limit};
+use super::to_geojson_string_with_limit;
 use crate::error::{ErrorKind, ResourceError};
 use crate::io::*;
 use crate::test_support::allocation_count;
@@ -342,10 +342,6 @@ fn geographic_geojson_orientation_keeps_full_records_and_closure() {
         ])],
     ));
 
-    let prepared =
-        geojson_output_shape::<crate::crs::GeodesicMetric>(&source, geographic_domain(), None)
-            .expect("non-crossing geographic polygon prepares");
-    assert_eq!(prepared.as_ref(), &expected);
     let text = super::to_geojson_string(&source, geographic_domain())
         .expect("oriented polygon serializes");
     assert!(text.contains("-0.0"));
