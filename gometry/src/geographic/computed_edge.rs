@@ -11,8 +11,6 @@ use crate::geographic::retained_exact::edges::{
     retained_native_split_piece_count,
 };
 use crate::geographic::retained_exact::sites::RetainedComputedSample;
-#[cfg(test)]
-use crate::geometry::interpolate_optional_ordinate;
 use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
     interpolate_subdivision_ordinate,

@@ -20,7 +20,7 @@ pub(super) fn publish_in(
     steps: &[f64],
 ) -> Vec<Point> {
     let mut budget = ExpansionBudget::new("test", "computed edges");
-    let intent = |index, start: Point, end: Point| {
+    let intent = |index: usize, start: Point, end: Point| {
         let step = *steps
             .get(index)
             .expect("each source edge has one retained test relation");
@@ -31,7 +31,7 @@ pub(super) fn publish_in(
         .iter()
         .any(|point| point.z().is_some() || point.m().is_some())
     {
-        let geodesic = wgs84();
+        let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
         let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
         let metric_access = || Ok(&metric);
         let context = crate::geometry::SourceArcContext::new(
@@ -40,7 +40,7 @@ pub(super) fn publish_in(
         );
         crate::geometry::publish_native_computed_chain(
             frame,
-            &points,
+            points,
             closed_ring,
             &mut budget,
             &context,

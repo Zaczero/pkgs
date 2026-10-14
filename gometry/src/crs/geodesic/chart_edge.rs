@@ -305,8 +305,8 @@ impl ChartEdge {
         let point = Point::new_axes(
             position.x,
             position.y,
-            ZOrdinate(ordinates.z.value()),
-            MOrdinate(ordinates.m.value()),
+            ZOrdinate(ordinates.z_value()),
+            MOrdinate(ordinates.m_value()),
         )
         .expect("an admitted chart-edge witness is finite");
         Ok(self

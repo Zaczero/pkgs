@@ -449,7 +449,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct AxisValue {
+pub(in crate::geometry) struct AxisValue {
     value: Option<f64>,
     conflict: bool,
 }
@@ -466,7 +466,7 @@ impl AxisValue {
         }
     }
 
-    pub(crate) fn value(self) -> Option<f64> {
+    pub(in crate::geometry) fn value(self) -> Option<f64> {
         (!self.conflict).then_some(self.value).flatten()
     }
 
@@ -478,11 +478,19 @@ impl AxisValue {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NodeOrdinates {
-    pub(crate) z: AxisValue,
-    pub(crate) m: AxisValue,
+    pub(in crate::geometry) z: AxisValue,
+    pub(in crate::geometry) m: AxisValue,
 }
 
 impl NodeOrdinates {
+    pub(crate) fn z_value(self) -> Option<f64> {
+        self.z.value()
+    }
+
+    pub(crate) fn m_value(self) -> Option<f64> {
+        self.m.value()
+    }
+
     pub(in crate::geometry) const fn merge(&mut self, other: Self) {
         self.z.merge(other.z);
         self.m.merge(other.m);

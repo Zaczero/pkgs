@@ -194,7 +194,15 @@ fn canonical_period_line_carries_zm_at_original_root_arclength() {
     let output = publish(&[start, end], false, &[360.0]);
 
     assert_eq!(output.first(), Some(&start));
-    assert_eq!(output.last(), Some(&end));
+    assert_eq!(
+        output.last(),
+        Some(&Point::new_raw_axes(
+            10.0,
+            40.0,
+            ZOrdinate(Some(19.0)),
+            MOrdinate(Some(43.0)),
+        ))
+    );
     assert_eq!(
         output
             .iter()
