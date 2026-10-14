@@ -29,8 +29,7 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
-    SourceArcContext, SourceArcMetricAccess, SourceArcRequest, resolve_request_rows,
-    resolve_source_root, source_arc_ordinates,
+    SourceArcContext, SourceArcMetricAccess, resolve_request_rows, resolve_source_root,
 };
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,

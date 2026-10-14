@@ -2,8 +2,8 @@ use super::exact_partition::ordinates::ResolvedNodePoints;
 use crate::error::Result;
 use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{
-    ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
-    overlay_all,
+    ExactLineEmission, ExactPartition, ExactSourceInventory, NodeId, OverlayOp, Strictness,
+    merge_chains, merge_chains_with_origins, overlay_all,
 };
 use crate::geometry::topology::overlay::{QProducer, exact_geographic_linework_from_shapes};
 use crate::geometry::{
@@ -178,7 +178,14 @@ impl Shape {
         &self,
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
-        let merged = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
+        let lineal = self.lineal().ok_or(GeometryErrorKind::LinealRequired)?;
+        if context.domain().is_geographic() {
+            return match lineal {
+                Lineal::MultiLineString(lines) => line_merge_geographic(self, lines, context),
+                Lineal::LineString(_) | Lineal::Empty => Ok(self.clone()),
+            };
+        }
+        let merged = match lineal {
             Lineal::LineString(_) | Lineal::Empty => self.clone(),
             Lineal::MultiLineString(lines) => {
                 // Dissolve the component lines into maximal chains at degree-2
@@ -259,6 +266,226 @@ impl Shape {
         ];
         Self::geometry_collection(result_parts)
     }
+}
+
+fn line_merge_geographic(
+    input: &Shape,
+    lines: &crate::geometry::MultiLineString,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
+    if !input.has_z() && !input.has_m() {
+        let chains = merge_chains(lines)?;
+        return Ok(if chains.is_empty() {
+            Shape::typed_empty(GeometryKind::MultiLineString, input.axes())
+        } else {
+            Shape::narrow_lines(
+                lines.axes(),
+                chains.into_iter().map(LineSeq::from_proven).collect(),
+            )
+        });
+    }
+
+    let (chains, origins) = merge_chains_with_origins(lines)?;
+    if chains.is_empty() {
+        return Ok(Shape::typed_empty(
+            GeometryKind::MultiLineString,
+            input.axes(),
+        ));
+    }
+    if chains.len() != origins.len()
+        || chains
+            .iter()
+            .zip(&origins)
+            .any(|(chain, chain_origins)| chain.len() != chain_origins.len())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "line-merge output coordinates lost their source occurrences".into(),
+        )
+        .into());
+    }
+
+    let inventory = ExactSourceInventory::from_shapes(&[input])?;
+    let mut budget = crate::geometry::ExpansionBudget::new("line_merge", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let source_spans = partition.source_span_views(inventory.source_segments())?;
+    let vertex_nodes = line_vertex_nodes(lines, &source_spans, &partition)?;
+    let mut resolved_nodes = vec![None; partition.node_count()];
+    let mut axes = input.axes();
+    for &origin in origins.iter().flatten() {
+        let node = origin_node(origin, &vertex_nodes)?;
+        let index = node.0 as usize;
+        let ordinates = resolved_nodes.get_mut(index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("line-merge occurrence references an unknown node".into())
+        })?;
+        if ordinates.is_none() {
+            *ordinates = Some(inventory.resolve_node_ordinates(
+                &partition,
+                node,
+                input.axes(),
+                context,
+                None,
+            )?);
+        }
+        let resolved = ordinates.expect("line-merge node was resolved");
+        let (z, m) = resolved;
+        axes = CoordinateAxes::new(
+            crate::geometry::HasZ(axes.has_z() && z.0.is_some()),
+            crate::geometry::HasM(axes.has_m() && m.0.is_some()),
+        );
+    }
+
+    let mut output = Vec::with_capacity(chains.len());
+    for (chain, chain_origins) in chains.into_iter().zip(origins) {
+        let mut points = Vec::with_capacity(chain.len());
+        for (point, origin) in chain.iter().zip(chain_origins) {
+            let node = origin_node(origin, &vertex_nodes)?;
+            let ordinates = resolved_nodes
+                .get(node.0 as usize)
+                .copied()
+                .flatten()
+                .expect("every emitted line-merge occurrence has resolved ordinates");
+            let (z, m) = ordinates;
+            points.push(Point::new_raw_axes(
+                point.x,
+                point.y,
+                crate::geometry::ZOrdinate(
+                    axes.has_z().then(|| z.0.expect("retained Z is resolved")),
+                ),
+                crate::geometry::MOrdinate(
+                    axes.has_m().then(|| m.0.expect("retained M is resolved")),
+                ),
+            ));
+        }
+        output.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+    }
+    Ok(Shape::narrow_lines(axes, output))
+}
+
+fn line_vertex_nodes(
+    lines: &crate::geometry::MultiLineString,
+    source_spans: &[Vec<(u32, bool)>],
+    partition: &ExactPartition<'_>,
+) -> Result<Vec<Vec<Option<NodeId>>>> {
+    let mut source_cursor = 0_usize;
+    let mut result = Vec::with_capacity(lines.len());
+    for line in lines {
+        let segment_count = line.len().saturating_sub(1);
+        let source_end = source_cursor
+            .checked_add(segment_count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let spans = source_spans.get(source_cursor..source_end).ok_or_else(|| {
+            GeometryErrorKind::Invalid("line-merge source segments are out of sync".into())
+        })?;
+        let endpoints = spans
+            .iter()
+            .map(|source| {
+                let Some(&(first, first_reversed)) = source.first() else {
+                    return Ok(None);
+                };
+                let &(last, last_reversed) = source
+                    .last()
+                    .expect("non-empty source span has a last entry");
+                let first_span = partition
+                    .spans
+                    .get(first as usize)
+                    .ok_or_else(|| GeometryErrorKind::Invalid("unknown source span".into()))?;
+                let last_span = partition
+                    .spans
+                    .get(last as usize)
+                    .ok_or_else(|| GeometryErrorKind::Invalid("unknown source span".into()))?;
+                Ok(Some((
+                    if first_reversed {
+                        first_span.end
+                    } else {
+                        first_span.start
+                    },
+                    if last_reversed {
+                        last_span.start
+                    } else {
+                        last_span.end
+                    },
+                )))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut vertices = vec![None; line.len()];
+        for (index, endpoints) in endpoints.into_iter().enumerate() {
+            if let Some((start, end)) = endpoints {
+                assign_line_vertex(vertices.get_mut(index), start)?;
+                assign_line_vertex(vertices.get_mut(index.wrapping_add(1)), end)?;
+            }
+        }
+        let mut index = 0;
+        while index < vertices.len() {
+            if vertices.get(index).is_some_and(Option::is_some) {
+                index = index.wrapping_add(1);
+                continue;
+            }
+            let start = index;
+            while vertices.get(index).is_some_and(Option::is_none) {
+                index = index.wrapping_add(1);
+            }
+            let previous = start
+                .checked_sub(1)
+                .and_then(|prior| vertices.get(prior).copied().flatten());
+            let next = vertices.get(index).copied().flatten();
+            if previous.is_some() && next.is_some() && previous != next {
+                return Err(GeometryErrorKind::Invalid(
+                    "line-merge stutter run has inconsistent partition nodes".into(),
+                )
+                .into());
+            }
+            let node = previous.or(next).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "line-merge source line has no retained partition node".into(),
+                )
+            })?;
+            for vertex in vertices.get_mut(start..index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("line-merge stutter range is invalid".into())
+            })? {
+                *vertex = Some(node);
+            }
+        }
+        result.push(vertices);
+        source_cursor = source_end;
+    }
+    if source_cursor != source_spans.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "line-merge source inventory contains unused segments".into(),
+        )
+        .into());
+    }
+    Ok(result)
+}
+
+fn assign_line_vertex(slot: Option<&mut Option<NodeId>>, node: NodeId) -> Result<()> {
+    let slot = slot.ok_or_else(|| {
+        GeometryErrorKind::Invalid("line-merge source segment exceeds its line".into())
+    })?;
+    if slot.is_some_and(|prior| prior != node) {
+        return Err(GeometryErrorKind::Invalid(
+            "line-merge source vertex has inconsistent partition nodes".into(),
+        )
+        .into());
+    }
+    *slot = Some(node);
+    Ok(())
+}
+
+fn origin_node(
+    (line, vertex): (usize, usize),
+    vertex_nodes: &[Vec<Option<NodeId>>],
+) -> Result<NodeId> {
+    vertex_nodes
+        .get(line)
+        .and_then(|nodes| nodes.get(vertex))
+        .copied()
+        .flatten()
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "line-merge output occurrence has no retained source node".into(),
+            )
+            .into()
+        })
 }
 
 type SharedPathExtraction = (

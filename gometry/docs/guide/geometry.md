@@ -600,14 +600,20 @@ derivable and drop only the axis that cannot be sourced:
   [`nearest_points`][gometry.nearest_points],
   [`shortest_line`][gometry.shortest_line],
   [`minimum_clearance_line`][gometry.Geometry.minimum_clearance_line],
-  and [`subdivide`][gometry.Geometry.subdivide] carry eligible Z/M at an
-  inserted vertex when its producer traces it to a root edge. They interpolate
-  from that edge's original endpoints by its ellipsoidal arclength fraction, not
-  its longitude/latitude parameter or a later cut fragment. A planar `unit=`
-  choice for a nearest witness does not change how its geographic root-edge
-  ordinates are carried. A computed point with no sourceable root has no source
-  Z/M. Recursive subdivision retains original input-edge traces through later
-  cuts, including seam vertices (±180° in EPSG:4326).
+  [`subdivide`][gometry.Geometry.subdivide],
+  [`line_merge`][gometry.Geometry.line_merge],
+  [`coverage_union_all`][gometry.coverage_union_all], and
+  [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
+  inserted vertex when its producer traces it to a source edge. They interpolate
+  from that edge's original endpoints by ellipsoidal arclength on the CRS
+  ellipsoid, not by its longitude/latitude parameter or a later cut fragment.
+  Source vertices retain their own ordinates; when sources disagree, Z and M
+  are resolved independently and only a conflicting or unavailable axis is
+  dropped. A planar `unit=` choice for a nearest witness does not change how
+  its geographic source-edge ordinates are carried. A computed point with no
+  sourceable edge has no source Z/M. Recursive subdivision retains original
+  input-edge traces through later cuts, including seam vertices (±180° in
+  EPSG:4326).
 - A degenerate [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle]
   that follows geographic source-edge support carries resolvable Z/M by the
   same original-edge arclength rule. A computed areal rectangle is a new

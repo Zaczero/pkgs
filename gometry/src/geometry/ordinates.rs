@@ -223,14 +223,13 @@ pub(crate) fn record_root_work(event: RootWorkEvent) {
     });
 }
 
-/// Z/M lookup table for source-preserving operations that have no exact source
-/// parameter at emission time. Exact partition owners resolve their own nodes.
+/// Cartesian Z/M lookup for source-preserving operations without exact source
+/// parameters. Geographic producers retain and resolve their source occurrences.
 pub(super) struct OrdinateSource<'access, 'metric> {
     vertices: HashMap<VertexKey, Vec<Point>>,
     segments: Vec<(Point, Point)>,
     /// Cartesian output from snapped overlay kernels can differ slightly from
-    /// its exact source intersection. Geographic fallback projects into the
-    /// retained chart and tests the rounded local representation instead.
+    /// its exact source intersection.
     tolerance: f64,
     context: SourceArcContext<'access, 'metric>,
 }
@@ -290,6 +289,12 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         inputs: &[S],
         context: &SourceArcContext<'access, 'metric>,
     ) -> Result<Self> {
+        if context.domain().is_geographic() {
+            return Err(GeometryErrorKind::Invalid(
+                "geographic ordinate carry requires retained source occurrences".into(),
+            )
+            .into());
+        }
         let mut result = Self::new(inputs, context)?;
         for input in inputs {
             let shape = Borrow::<Shape>::borrow(input);
@@ -372,14 +377,13 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
                         segment_ordinate_at(start, end, point, self.tolerance)?
                     }
                 },
-                crate::geometry::TopologyDomain::Geographic(source_frame) => {
-                    self.geographic_segment_ordinates(start, end, point, source_frame)?
-                },
+                crate::geometry::TopologyDomain::Geographic(_) => unreachable!(
+                    "geographic source carry is resolved from retained source occurrences"
+                ),
             };
             if let Some((source_z, source_m)) = resolved {
                 // Exact endpoint candidates are already represented by the
-                // vertex table in Cartesian space. Geographic quotient aliases
-                // can spell the same authentic endpoint differently.
+                // vertex table in Cartesian space.
                 if self.context.domain().is_geographic()
                     || !same_point(start, point) && !same_point(end, point)
                 {
@@ -389,62 +393,6 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
             }
         }
         Ok((z.value(), m.value()))
-    }
-
-    fn geographic_segment_ordinates(
-        &self,
-        start: Point,
-        end: Point,
-        point: Point,
-        source_frame: crate::geographic::GeographicFrame,
-    ) -> Result<Option<(Option<f64>, Option<f64>)>> {
-        // This fallback serves source-less operations only. Exact emission
-        // owners use their retained source parameters; contact below certifies
-        // membership in the rounded local chart representation, not the
-        // original exact source edge.
-        let axes = CoordinateAxes::new(
-            HasZ(start.z().is_some() && end.z().is_some()),
-            HasM(start.m().is_some() && end.m().is_some()),
-        );
-        if !axes.has_z() && !axes.has_m() {
-            return Ok(None);
-        }
-        let domain = crate::geometry::TopologyDomain::Geographic(source_frame);
-        if VertexKey::new(point, domain) == VertexKey::new(start, domain)
-            || VertexKey::new(point, domain) == VertexKey::new(end, domain)
-        {
-            return Ok(None);
-        }
-        let longitude = source_frame
-            .longitude()
-            .chart_connection(start.x, end.x)
-            .map(crate::geographic::ChartConnection::retained)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let edge = crate::crs::ChartEdge::from_retained(start, end, source_frame, longitude)?;
-        let (projection, query, segment) = edge.project_source_chart(point)?;
-        let point_segment = Segment {
-            start: query,
-            end: query,
-        };
-        if !matches!(
-            crate::geometry::segment_contact_exact(point_segment, segment),
-            crate::geometry::Contact::Touch(_) | crate::geometry::Contact::Collinear
-        ) {
-            return Ok(None);
-        }
-        let parameter = projection.exact_fraction()?;
-        let source = [start, end];
-        let request =
-            SourceArcRequest::new(source_frame, &source, axes, &parameter, || Ok(longitude))?;
-        let ordinates = source_arc_ordinates_unmetered(&request, || {
-            let access = self.context.metric_access().ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic source-ordinate carry requires the operation's CRS metric",
-                )
-            })?;
-            access()
-        })?;
-        Ok(Some((ordinates.z.value(), ordinates.m.value())))
     }
 }
 

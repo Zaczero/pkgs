@@ -118,6 +118,42 @@ def chart_parallel_length(
     )
 
 
+def oblique_chart_arclength_fraction(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    parameter: float,
+    *,
+    semi_major: float = 7_000_000.0,
+    flattening: float = 1.0 / 150.0,
+) -> float:
+    """Independent Simpson integral for a straight oblique longitude/latitude edge."""
+    eccentricity_squared = flattening * (2.0 - flattening)
+    latitude_delta = math.radians(end[1] - start[1])
+    longitude_delta = math.radians(end[0] - start[0])
+
+    def length(stop: float) -> float:
+        intervals = 4096
+        step = stop / intervals
+        weighted_speeds = []
+        for index in range(intervals + 1):
+            along = index * step
+            latitude = math.radians(start[1]) + along * latitude_delta
+            denominator = 1.0 - eccentricity_squared * math.sin(latitude) ** 2
+            meridian_radius = (
+                semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+            )
+            prime_vertical_radius = semi_major / math.sqrt(denominator)
+            speed = math.hypot(
+                meridian_radius * latitude_delta,
+                prime_vertical_radius * math.cos(latitude) * longitude_delta,
+            )
+            weight = 1 if index in (0, intervals) else 4 if index % 2 else 2
+            weighted_speeds.append(weight * speed)
+        return step * math.fsum(weighted_speeds) / 3.0
+
+    return length(parameter) / length(1.0)
+
+
 def chart_rectangle_perimeter(
     geodesic: Any,
     west: float,

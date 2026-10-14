@@ -8,6 +8,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import oblique_chart_arclength_fraction
+
 
 def grid_rows() -> list[gm.Polygon]:
     return [
@@ -603,6 +605,87 @@ def test_geographic_coverage_union_keeps_original_roots_after_seam_dissolve() ->
         assert not gm.covers(union, gm.Point(0, 0, crs=crs))
 
 
+def test_geographic_coverage_union_keeps_oblique_source_ordinates() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    fraction = oblique_chart_arclength_fraction((0.0, 10.0), (60.0, 40.0), 0.5)
+    expected_z = 10.0 + 200.0 * fraction
+    assert fraction - 0.5 > 0.01
+    left = gm.Polygon(
+        [
+            (0.0, 10.0, 10.0),
+            (30.0, 25.0, expected_z),
+            (60.0, 40.0, 210.0),
+            (60.0, 70.0, 220.0),
+            (0.0, 40.0, 20.0),
+            (0.0, 10.0, 10.0),
+        ],
+        crs=crs,
+    )
+    right = gm.Polygon(
+        [
+            (60.0, 40.0, 210.0),
+            (90.0, 40.0, 30.0),
+            (90.0, 70.0, 40.0),
+            (60.0, 70.0, 220.0),
+            (60.0, 40.0, 210.0),
+        ],
+        crs=crs,
+    )
+    assert gm.coverage_is_valid([left, right])
+
+    union = gm.coverage_union_all([left, right])
+
+    assert union.coordinate_axes == 'XYZ'
+    polygons = union.parts if union.geometry_type == 'MultiPolygon' else [union]
+    samples = [
+        coordinate
+        for polygon in polygons
+        for coordinate in polygon.exterior.coords
+        if coordinate[:2] == (30.0, 25.0)
+    ]
+    assert samples
+    assert all(
+        sample[2] == pytest.approx(expected_z, rel=0.0, abs=2e-9) for sample in samples
+    )
+    assert abs(samples[0][2] - 110.0) > 1.0
+
+
+def test_geographic_coverage_union_keeps_oblique_xyz_at_inserted_seam_vertices() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.Polygon(
+        [
+            (120.0, 10.0, 10.0),
+            (-120.0, 70.0, 210.0),
+            (-120.0, 80.0, 220.0),
+            (120.0, 20.0, 20.0),
+            (120.0, 10.0, 10.0),
+        ],
+        crs=crs,
+    )
+    fraction = oblique_chart_arclength_fraction((120.0, 10.0), (240.0, 70.0), 0.5)
+    expected_z = 10.0 + 200.0 * fraction
+    assert fraction - 0.5 > 0.07
+    assert abs(expected_z - 110.0) > 14.0
+
+    union = gm.coverage_union_all(source)
+
+    assert union.coordinate_axes == 'XYZ'
+    polygons = union.parts if union.geometry_type == 'MultiPolygon' else [union]
+    seam_samples = [
+        coordinate
+        for polygon in polygons
+        for coordinate in polygon.exterior.coords
+        if abs(coordinate[0]) == 180.0 and coordinate[1] == 40.0
+    ]
+    assert seam_samples
+    assert all(
+        coordinate[2] == pytest.approx(expected_z, rel=0.0, abs=2e-8)
+        for coordinate in seam_samples
+    )
+
+
 def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
     scale = 1.0e-162
     rows = gm.GeometryArray([
@@ -1031,8 +1114,10 @@ def test_geographic_coverage_simplifier_carries_inserted_zm_by_ellipsoidal_arcle
     sample = next(
         coordinate for coordinate in coordinates if coordinate[:2] == (137.5, 58.75)
     )
-    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
-    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
+    fraction = oblique_chart_arclength_fraction((0.0, 45.0), (275.0, 72.5), 0.5)
+    assert fraction - 0.5 > 0.09
+    assert math.isclose(sample[2], 35.25 + 14.25 * fraction, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], 551.0 + 175.0 * fraction, abs_tol=2.0e-7)
     assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
     assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
     assert coordinates[0] == (0.0, 45.0, 35.25, 551.0)
@@ -1043,6 +1128,31 @@ def test_geographic_coverage_simplifier_carries_inserted_zm_by_ellipsoidal_arcle
     assert [(x, y) for x, y, *_ in coordinates] == list(
         xy_simplified[0].exterior.coords
     )
+
+
+def test_geographic_coverage_simplifier_keeps_oblique_xyz_chord_ordinates() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    ring = [
+        (0.0, 45.0, 35.25),
+        (90.0, 54.0, 40.0),
+        (180.0, 63.0, 45.0),
+        (275.0, 72.5, 49.5),
+        (275.0, 82.5, 60.0),
+        (180.0, 73.0, 55.0),
+        (90.0, 64.0, 50.0),
+        (0.0, 55.0, 45.0),
+        (0.0, 45.0, 35.25),
+    ]
+    simplified = gm.coverage_simplify(gm.Polygon(ring, crs=crs), 0.1, method='vw')
+    coordinates = list(simplified[0].exterior.coords)
+    sample = next(
+        coordinate for coordinate in coordinates if coordinate[:2] == (137.5, 58.75)
+    )
+    fraction = oblique_chart_arclength_fraction((0.0, 45.0), (275.0, 72.5), 0.5)
+
+    assert simplified[0].coordinate_axes == 'XYZ'
+    assert sample[2] == pytest.approx(35.25 + 14.25 * fraction, rel=0.0, abs=2e-8)
+    assert abs(sample[2] - 42.375) > 1.0
 
 
 def test_coverage_simplify_preserves_topology() -> None:

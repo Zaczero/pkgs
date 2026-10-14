@@ -4,6 +4,8 @@
 
 use crate::geometry::{CoordinateAxes, Shape, TopologyDomain};
 
+pub(crate) type ChainOrigins = Vec<Vec<(usize, usize)>>;
+
 /// Whether synthesized overlay output must source Z/M from inputs (`Strict`)
 /// or may degrade to plain XY (`Lenient`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,7 +117,7 @@ mod shape;
 #[cfg(test)]
 pub(in crate::geometry) use areal::binary_areal_overlay;
 pub(in crate::geometry) use areal::ray_crossing;
-pub(crate) use assembly::merge_chains;
+pub(crate) use assembly::{merge_chains, merge_chains_with_origins};
 pub(crate) use clip::intersect_rectangular_polygonal;
 pub(super) use clip::polygon_parts_to_shape;
 pub(in crate::geometry) use exact_partition::model::{
