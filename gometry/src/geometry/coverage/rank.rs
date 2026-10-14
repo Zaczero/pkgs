@@ -53,8 +53,8 @@ impl ScaledLength {
 
 /// A guarded binary64 reduction of positive lengths without an f64 range cap.
 ///
-/// The rank describes binary64 distance terms, not an exact sum of irrational
-/// Euclidean lengths.
+/// The rank orders binary64 length terms, not an exact sum of generally
+/// non-rational lengths.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ScaledLengthSum {
     high: f64,
