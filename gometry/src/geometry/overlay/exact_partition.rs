@@ -28,8 +28,9 @@ use crate::error::ResourceError;
 use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
-    SourceArcContext, SourceArcMetricAccess, resolve_request_rows, resolve_source_root,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootEvaluationContext, RootEvaluationStates,
+    RootId, RootMetricState, RootRange, RootRequest, RootSourceData, SourceArcContext,
+    resolve_source_root,
 };
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
@@ -109,8 +110,6 @@ use winding::{
 thread_local! {
     static SOURCE_LINE_RUNS_CALLS: Cell<usize> = const { Cell::new(0) };
     static SUBDIVISION_ROOT_XY_POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
-    static SUBDIVISION_RESOLUTION_BATCHES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
     static SOURCE_SPAN_VIEW_SORTS: Cell<usize> = const { Cell::new(0) };
     static SOURCE_SPAN_VIEW_ORDERED: Cell<usize> = const { Cell::new(0) };
     static SOURCE_SPAN_ENDPOINT_PARAMETERS: Cell<usize> = const { Cell::new(0) };
@@ -135,16 +134,6 @@ pub(crate) fn reset_subdivision_root_xy_position_calls() {
 #[cfg(test)]
 pub(crate) fn subdivision_root_xy_position_calls() -> usize {
     SUBDIVISION_ROOT_XY_POSITION_CALLS.with(Cell::get)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_subdivision_resolution_batches() {
-    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| batches.borrow_mut().clear());
-}
-
-#[cfg(test)]
-pub(crate) fn take_subdivision_resolution_batches() -> Vec<(usize, usize, usize)> {
-    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| std::mem::take(&mut *batches.borrow_mut()))
 }
 
 #[cfg(test)]

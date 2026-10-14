@@ -89,7 +89,6 @@ impl<'a> ChartSourceCapture<'a> {
         root: RootId,
         parameter: &ExactRational,
         axes: CoordinateAxes,
-        frame: GeographicFrame,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<NodeOrdinates> {
         let capture = self.capture.as_deref_mut().ok_or_else(|| {
@@ -97,7 +96,7 @@ impl<'a> ChartSourceCapture<'a> {
         })?;
         capture
             .lineage_mut()
-            .resolve_root(root, parameter, axes, frame, metric_access)
+            .resolve_root(root, parameter, axes, metric_access)
     }
 
     pub(super) fn event_ids(&self) -> Vec<super::super::lineage::EventId> {
@@ -263,7 +262,7 @@ fn source_ordinates_at<M: ChartMetric>(
 ) -> Result<(ZOrdinate, MOrdinate)> {
     let axes = event.source[0].axes().union(event.source[1].axes());
     let ordinates = if let Some(root) = event.source_root {
-        source_capture.resolve_root(root, &event.parameter, axes, frame, metric_access)?
+        source_capture.resolve_root(root, &event.parameter, axes, metric_access)?
     } else {
         let mut fraction = None;
         let mut work = Unmetered;

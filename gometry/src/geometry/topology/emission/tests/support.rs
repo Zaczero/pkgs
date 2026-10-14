@@ -5,7 +5,7 @@ use super::*;
 use crate::geometry::embedding_completion::admission::admit_known_graph;
 use crate::geometry::embedding_completion::literals::{LiteralRowAddress, visit_shape_literals};
 use crate::geometry::embedding_completion::points::ExactPoints;
-use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
+use crate::geometry::ordinates::{RootSourceData, source_ordinate_values_at_fraction};
 use crate::work::{Unmetered, Work};
 
 const EMISSION_STORAGE_OPERATION: &str = "emission_storage_test";
@@ -100,30 +100,23 @@ fn assert_emission_work_limit(error: &crate::error::Error) {
 struct ProgressRootCatalog(Rc<Cell<usize>>);
 
 impl RootCatalog for ProgressRootCatalog {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        _root: RootId,
-        _parameter: &ExactRational,
-        axes: CoordinateAxes,
-        _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        _state: &mut RootMetricState,
-        _fraction: &mut Option<f64>,
-        _work: &mut W,
-    ) -> Result<NodeOrdinates> {
+    fn frame(&self) -> crate::geographic::GeographicFrame {
+        crate::geographic::GeographicFrame::crs84()
+    }
+
+    fn source_root(&self, _root: RootId) -> Option<RootSourceData<'_>> {
         self.0.set(
             self.0
                 .get()
                 .checked_add(1)
-                .expect("test resolution count fits usize"),
+                .expect("test source lookup count fits usize"),
         );
-        let mut ordinates = NodeOrdinates::default();
-        if axes.has_z() {
-            ordinates.z.observe(Some(10.0));
-        }
-        if axes.has_m() {
-            ordinates.m.observe(Some(20.0));
-        }
-        Ok(ordinates)
+        Some(RootSourceData::Point(crate::geometry::Point::new_raw_axes(
+            0.0,
+            0.0,
+            crate::geometry::ZOrdinate(Some(10.0)),
+            crate::geometry::MOrdinate(Some(20.0)),
+        )))
     }
 }
 

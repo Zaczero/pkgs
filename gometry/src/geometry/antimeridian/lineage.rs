@@ -1,15 +1,13 @@
-use std::cell::Cell;
-
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::ordinates::{
-    NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, resolve_source_root,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootEvaluationContext, RootEvaluationStates,
+    RootId, RootRange, RootRequest, RootSourceData, SourceArcMetricAccess,
 };
 use crate::geometry::publication::ChartRestriction;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    ChartMetric, CoordinateAxes, GeometryErrorKind, MultiMember, Point, Polygon, RootMetricState,
-    Shape,
+    ChartMetric, CoordinateAxes, GeometryErrorKind, MultiMember, Point, Polygon, Shape,
 };
 use crate::work::{Unmetered, Work};
 
@@ -17,7 +15,6 @@ struct SplitEdgeRoot {
     member: MemberId,
     points: [Point; 2],
     longitude: RetainedChartDisplacement,
-    metric: Cell<RootMetricState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -40,15 +37,50 @@ pub(super) struct SplitEdgeUse {
     pub(super) restriction: Option<ChartRestriction>,
 }
 
-#[derive(Default)]
 pub(super) struct LineageCatalog {
+    frame: GeographicFrame,
     roots: Vec<SplitEdgeRoot>,
+    evaluation_states: RootEvaluationStates,
     next_member: u32,
     events: Vec<SplitEvent>,
     edge_uses: Vec<SplitEdgeUse>,
 }
 
+pub(super) struct LineageRootCatalog<'a> {
+    frame: GeographicFrame,
+    roots: &'a [SplitEdgeRoot],
+}
+
+impl RootCatalog for LineageRootCatalog<'_> {
+    fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
+        let edge = self.roots.get(root.index())?;
+        Some(RootSourceData::Edge {
+            points: &edge.points,
+            longitude: Some(edge.longitude),
+        })
+    }
+}
+
 impl LineageCatalog {
+    pub(super) fn new(frame: GeographicFrame) -> Self {
+        Self {
+            frame,
+            roots: Vec::new(),
+            evaluation_states: RootEvaluationStates::default(),
+            next_member: 0,
+            events: Vec::new(),
+            edge_uses: Vec::new(),
+        }
+    }
+
+    pub(super) const fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
     fn member_of_root(&self, root: RootId) -> Result<MemberId> {
         self.roots
             .get(root.index())
@@ -79,60 +111,76 @@ impl LineageCatalog {
             member,
             points: *points,
             longitude,
-            metric: Cell::new(RootMetricState::default()),
         });
         Ok(RootId::from_index(index))
     }
 
     pub(super) fn resolve_root<M: ChartMetric>(
-        &self,
+        &mut self,
         root: RootId,
         parameter: &ExactRational,
         axes: CoordinateAxes,
-        frame: GeographicFrame,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<NodeOrdinates> {
-        let edge = self.roots.get(root.index()).ok_or_else(|| {
-            GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
-        })?;
-        let mut fraction = None;
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(NodeOrdinates::default());
+        }
         let mut work = Unmetered;
-        let mut metric_state = edge.metric.get();
-        let ordinates = resolve_source_root(
-            frame,
-            &edge.points,
-            edge.longitude,
-            parameter,
-            axes,
-            metric_access,
-            &mut metric_state,
-            &mut fraction,
-            &mut work,
-        )?;
-        edge.metric.set(metric_state);
-        Ok(ordinates)
+        let request =
+            RootRequest::new_with_work(root, parameter.try_clone_with_work(&mut work)?, &mut work)?;
+        self.resolve_requests(vec![request], axes, metric_access, &mut work)
     }
 
     pub(super) fn resolve_vertex_ordinates<M: ChartMetric>(
-        &self,
+        &mut self,
         events: &[EventId],
         axes: CoordinateAxes,
-        frame: GeographicFrame,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<NodeOrdinates> {
-        let mut result = NodeOrdinates::default();
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(NodeOrdinates::default());
+        }
+        let mut work = Unmetered;
+        let request_count = events.iter().try_fold(0_usize, |count, &event| {
+            count
+                .checked_add(self.event_uses(event).len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        let mut requests = Vec::with_capacity(request_count);
         for &event in events {
             for range in self.event_uses(event) {
-                result.merge(self.resolve_root(
+                requests.push(RootRequest::new_with_work(
                     range.root(),
-                    range.source_start(),
-                    axes,
-                    frame,
-                    metric_access,
+                    range.source_start().try_clone_with_work(&mut work)?,
+                    &mut work,
                 )?);
             }
         }
-        Ok(result)
+        self.resolve_requests(requests, axes, metric_access, &mut work)
+    }
+
+    fn resolve_requests<M: ChartMetric>(
+        &mut self,
+        requests: Vec<RootRequest>,
+        axes: CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        work: &mut impl Work,
+    ) -> Result<NodeOrdinates> {
+        let rows = [RequestRowInput { axes, requests }];
+        let roots = LineageRootCatalog {
+            frame: self.frame,
+            roots: &self.roots,
+        };
+        let mut context =
+            RootEvaluationContext::new(&roots, metric_access, &mut self.evaluation_states);
+        context
+            .resolve_rows(&rows, work)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("split source request row was not resolved".into())
+                    .into()
+            })
     }
 
     pub(super) fn event(&mut self, member: MemberId, roots: Vec<RootRange>) -> Result<EventId> {
@@ -465,6 +513,10 @@ pub(super) enum ShapeLineage {
 mod tests {
     use super::*;
     use crate::geographic::ChartPole;
+    use crate::geometry::ordinates::{
+        reset_root_range_mapping_counts, reset_root_work_counters, root_request_table_builds,
+        root_work_counters,
+    };
     use crate::geometry::{MOrdinate, ZOrdinate};
 
     fn edge_root(
@@ -501,7 +553,7 @@ mod tests {
 
     fn catalog_edge() -> (LineageCatalog, MemberId, RootId) {
         let frame = GeographicFrame::crs84();
-        let mut catalog = LineageCatalog::default();
+        let mut catalog = LineageCatalog::new(frame);
         let member = catalog.member().expect("test member fits the catalog");
         let points = [Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 20.0)];
         let root = edge_root(&mut catalog, member, frame, &points);
@@ -622,6 +674,46 @@ mod tests {
         let _error = result.expect_err("incompatible chart restrictions must be rejected");
     }
 
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "request-table assertions are the test oracle while Result propagates setup errors"
+    )]
+    fn repeated_lineage_contributors_share_one_root_request() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let metric = crs84_metric();
+        let metric_access = || Ok(&metric);
+        let mut catalog = LineageCatalog::new(frame);
+        let member = catalog.member()?;
+        let points = [
+            source_point(0.0, 0.0, 1.0, 11.0),
+            source_point(10.0, 10.0, 9.0, 99.0),
+        ];
+        let root = edge_root(&mut catalog, member, frame, &points);
+        let half = ExactRational::from_f64(0.5);
+        let start = ExactRational::zero();
+        let first = catalog.event(member, vec![RootRange::point(
+            root,
+            half.clone(),
+            start.clone(),
+        )?])?;
+        let second = catalog.event(member, vec![RootRange::point(root, half, start)?])?;
+
+        reset_root_range_mapping_counts();
+        reset_root_work_counters();
+        let resolved = catalog.resolve_vertex_ordinates(
+            &[first, second],
+            CoordinateAxes::XYZM,
+            Some(&metric_access),
+        )?;
+
+        assert_eq!(root_request_table_builds(), 1);
+        assert_eq!(root_work_counters().root_catalog_resolutions, 1);
+        assert!(resolved.z.value().is_some());
+        assert!(resolved.m.value().is_some());
+        Ok(())
+    }
+
     fn crs84_metric() -> crate::crs::GeodesicMetric {
         let model =
             crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric model is available");
@@ -633,7 +725,7 @@ mod tests {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
         let metric_access = || Ok(&metric);
-        let mut catalog = LineageCatalog::default();
+        let mut catalog = LineageCatalog::new(frame);
         let member = catalog.member().expect("test member fits the catalog");
         let start = source_point(12.0, 5.0, 10.0, 7.0);
         let end = source_point(12.0, 5.0, 20.0, 7.0);
@@ -646,7 +738,7 @@ mod tests {
 
         for root in [forward, reverse] {
             let middle = catalog
-                .resolve_root(root, &half, axes, frame, Some(metric_access))
+                .resolve_root(root, &half, axes, Some(metric_access))
                 .expect("zero-length root resolves without choosing an endpoint");
             assert_eq!(middle.z.value(), None);
             assert_eq!(middle.m.value(), Some(7.0));
@@ -654,10 +746,10 @@ mod tests {
 
         let no_metric: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
         let first = catalog
-            .resolve_root(forward, &ExactRational::zero(), axes, frame, no_metric)
+            .resolve_root(forward, &ExactRational::zero(), axes, no_metric)
             .expect("authentic start endpoint needs no metric");
         let last = catalog
-            .resolve_root(forward, &ExactRational::one(), axes, frame, no_metric)
+            .resolve_root(forward, &ExactRational::one(), axes, no_metric)
             .expect("authentic end endpoint needs no metric");
         assert_eq!(first.z.value(), Some(10.0));
         assert_eq!(last.z.value(), Some(20.0));
@@ -668,7 +760,7 @@ mod tests {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
         let metric_access = || Ok(&metric);
-        let mut catalog = LineageCatalog::default();
+        let mut catalog = LineageCatalog::new(frame);
         let member = catalog.member().expect("test member fits the catalog");
         let start = source_point(0.0, 90.0, -0.0, 10.0);
         let end = source_point(90.0, 90.0, -0.0, 20.0);
@@ -680,13 +772,7 @@ mod tests {
 
         for root in [root, reverse] {
             let middle = catalog
-                .resolve_root(
-                    root,
-                    &half,
-                    CoordinateAxes::XYZM,
-                    frame,
-                    Some(metric_access),
-                )
+                .resolve_root(root, &half, CoordinateAxes::XYZM, Some(metric_access))
                 .expect("pole-alias zero-length root resolves symmetrically");
 
             assert_eq!(
@@ -706,7 +792,7 @@ mod tests {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
         let metric_access = || Ok(&metric);
-        let mut catalog = LineageCatalog::default();
+        let mut catalog = LineageCatalog::new(frame);
         let member = catalog.member().expect("test member fits the catalog");
         let start = source_point(0.0, 0.0, 10.0, 20.0);
         let end = source_point(f64::from_bits(1), 0.0, 30.0, 40.0);
@@ -715,13 +801,7 @@ mod tests {
         let metric_access: &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric> =
             &metric_access;
 
-        let result = catalog.resolve_root(
-            root,
-            &half,
-            CoordinateAxes::XYZM,
-            frame,
-            Some(metric_access),
-        );
+        let result = catalog.resolve_root(root, &half, CoordinateAxes::XYZM, Some(metric_access));
 
         let Err(error) = result else {
             panic!("a nonzero edge whose metric underflows must fail");

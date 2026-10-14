@@ -133,15 +133,7 @@ impl Shape {
         memo: &mut ShapeTransformMemo,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<Self> {
-        split_shape_with_lineage(
-            self,
-            None,
-            None,
-            GeographicFrame::crs84(),
-            memo,
-            metric_access,
-        )
-        .map(|(shape, _)| shape)
+        split_shape_with_lineage(self, None, None, memo, metric_access).map(|(shape, _)| shape)
     }
 
     /// Split at the antimeridian forcing closure over a specific pole, for
@@ -344,7 +336,6 @@ fn split_shape_with_lineage<M: ChartMetric>(
     shape: &Shape,
     lineage: Option<&ShapeLineage>,
     mut catalog: Option<&mut LineageCatalog>,
-    source_frame: GeographicFrame,
     memo: &mut ShapeTransformMemo,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<(Shape, Option<ShapeLineage>)> {
@@ -406,7 +397,6 @@ fn split_shape_with_lineage<M: ChartMetric>(
                 shape,
                 polygon,
                 source,
-                source_frame,
                 metric_access,
                 catalog.as_deref_mut(),
             )?;
@@ -461,7 +451,6 @@ fn split_shape_with_lineage<M: ChartMetric>(
                             shape,
                             polygon,
                             source,
-                            source_frame,
                             metric_access,
                             catalog.as_deref_mut(),
                         )? {
@@ -522,7 +511,6 @@ fn split_shape_with_lineage<M: ChartMetric>(
                     member,
                     source,
                     catalog.as_deref_mut(),
-                    source_frame,
                     memo,
                     metric_access,
                 )?;
@@ -591,7 +579,8 @@ fn split_geographic_view_captured<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<super::publication::SplitDrawing> {
-    let mut capture = SplitCapture::enabled();
+    let frame = view.frame();
+    let mut capture = SplitCapture::enabled(frame);
     let (shape, _) = split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
     Ok(capture.into_drawing(shape))
 }
@@ -656,7 +645,6 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
             &chart,
             Some(lineage),
             Some(capture.lineage_mut()),
-            frame,
             &mut ShapeTransformMemo::default(),
             metric_access,
         )?

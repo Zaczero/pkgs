@@ -272,67 +272,6 @@ impl SubdivisionRootCatalog {
         self.root_xy_positions_needed
     }
 
-    pub(in crate::geometry) fn resolve_output_requests<M: ChartMetric>(
-        &self,
-        rows: &[RequestRowInput],
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        work: &mut impl Work,
-    ) -> Result<Vec<NodeOrdinates>> {
-        let mut output = Vec::with_capacity(rows.len());
-        #[cfg(test)]
-        let mut request_count = 0_usize;
-        #[cfg(test)]
-        let mut resolved_count = 0_usize;
-        for row in rows {
-            work.charge_into_error(1)?;
-            let mut ordinates = NodeOrdinates::default();
-            let mut state = RootMetricState::default();
-            let mut previous: Option<&RootRequest> = None;
-            for request in &row.requests {
-                work.charge_into_error(1)?;
-                #[cfg(test)]
-                {
-                    request_count = request_count.saturating_add(1);
-                }
-                let duplicate = if let Some(previous) = previous {
-                    previous.root() == request.root()
-                        && previous
-                            .parameter()
-                            .try_cmp_with_work(request.parameter(), work)?
-                            .is_eq()
-                } else {
-                    false
-                };
-                previous = Some(request);
-                if duplicate {
-                    continue;
-                }
-                let mut fraction = None;
-                ordinates.merge(self.resolve(
-                    request.root(),
-                    request.parameter(),
-                    row.axes,
-                    metric_access,
-                    &mut state,
-                    &mut fraction,
-                    work,
-                )?);
-                #[cfg(test)]
-                {
-                    resolved_count = resolved_count.saturating_add(1);
-                }
-            }
-            output.push(ordinates);
-        }
-        #[cfg(test)]
-        SUBDIVISION_RESOLUTION_BATCHES.with(|batches| {
-            batches
-                .borrow_mut()
-                .push((rows.len(), request_count, resolved_count));
-        });
-        Ok(output)
-    }
-
     fn source_pair(&self, root: RootId) -> Result<[Point; 2]> {
         if let Some(points) = self.inventory.source_points.as_ref() {
             return points
@@ -458,46 +397,20 @@ impl SubdivisionRootCatalog {
 }
 
 impl RootCatalog for SubdivisionRootCatalog {
-    fn resolve<M: ChartMetric, W: Work>(
-        &self,
-        root: RootId,
-        parameter: &ExactRational,
-        axes: CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        state: &mut RootMetricState,
-        fraction: &mut Option<f64>,
-        work: &mut W,
-    ) -> Result<NodeOrdinates> {
-        if !axes.has_z() && !axes.has_m() {
-            return Ok(NodeOrdinates::default());
-        }
-        let record = self
-            .inventory
-            .source_points
-            .as_ref()
-            .and_then(|points| points.get(root.index()))
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "ordinary subdivision trace references an unknown original source edge".into(),
-                )
-            })?;
-        let source = record.points;
-        let (displacement, _) = self.source_displacement(&source)?;
-        let mut metric_state = record.metric.get();
-        let result = resolve_source_root(
-            self.frame,
-            &source,
-            displacement,
-            parameter,
-            axes,
-            metric_access,
-            &mut metric_state,
-            fraction,
-            work,
-        );
-        record.metric.set(metric_state);
-        *state = metric_state;
-        result
+    fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
+        let Some(points) = self.inventory.source_points.as_ref() else {
+            let segment = self.inventory.source_segments.get(root.index())?;
+            return Some(RootSourceData::Point(segment.start.point()));
+        };
+        let points = &points.get(root.index())?.points;
+        Some(RootSourceData::Edge {
+            points,
+            longitude: None,
+        })
     }
 }
 
@@ -1083,10 +996,14 @@ impl ExactSourceInventory {
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
         let roots = request.roots;
-        let context = request.context;
-        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
-            roots.resolve_output_requests(rows, context.metric_access(), work)
-        };
+        let mut evaluation_states = RootEvaluationStates::default();
+        let mut evaluation = RootEvaluationContext::new(
+            roots,
+            request.context.metric_access(),
+            &mut evaluation_states,
+        );
+        let mut resolve_rows =
+            |rows: &[RequestRowInput], work: &mut Unmetered| evaluation.resolve_rows(rows, work);
         if request.source_traces.is_none() {
             return self.subdivision_parts_traced(
                 partition,
@@ -1105,15 +1022,25 @@ impl ExactSourceInventory {
                 &mut resolve_rows,
             );
         }
-        self.subdivision_polygon_parts_with_roots(partition, request, budget, trace_work)
+        self.subdivision_polygon_parts_with_roots(
+            partition,
+            request,
+            budget,
+            trace_work,
+            &mut resolve_rows,
+        )
     }
 
-    pub(in crate::geometry) fn subdivision_polygon_parts_with_roots<M: ChartMetric>(
+    pub(in crate::geometry) fn subdivision_polygon_parts_with_roots<
+        M: ChartMetric,
+        F: FnMut(&[RequestRowInput], &mut Unmetered) -> Result<Vec<NodeOrdinates>>,
+    >(
         &self,
         partition: &ExactPartition<'_>,
         request: &SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
         budget: &mut ExpansionBudget,
         trace_work: &mut Unmetered,
+        resolve_rows: &mut F,
     ) -> Result<[SubdivisionPart; 2]> {
         let source_shape = request.source_shape;
         let source_traces = request.source_traces.ok_or_else(|| {
@@ -1123,7 +1050,6 @@ impl ExactSourceInventory {
         let declared_axes = request.declared_axes;
         let strict = request.strict;
         let clip_operands = request.clip_operands;
-        let context = request.context;
         let ring_ranges = polygon_source_ring_ranges(source_shape)?;
         if source_traces.len() != ring_ranges.len() {
             return Err(GeometryErrorKind::Invalid(
@@ -1245,9 +1171,6 @@ impl ExactSourceInventory {
                 trace_work,
             )?);
         }
-        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
-            roots.resolve_output_requests(rows, context.metric_access(), work)
-        };
         let by_node = resolve_traced_node_requests(
             partition,
             &embedding,
@@ -1256,7 +1179,7 @@ impl ExactSourceInventory {
             request,
             polygon_requests.root_xy_nodes.as_deref(),
             trace_work,
-            &mut resolve_rows,
+            resolve_rows,
         )?;
         let old_polygon_xy = node_parts
             .iter()
@@ -1472,6 +1395,7 @@ impl ExactSourceInventory {
                 &by_node,
                 request,
                 trace_work,
+                resolve_rows,
             )?);
         }
         let mut parts = parts.into_iter();
@@ -2283,20 +2207,23 @@ impl ExactSourceInventory {
         Ok(runs)
     }
 
-    fn emit_traced_source_line_shape<M: ChartMetric, C: RootCatalog, W: Work>(
+    fn emit_traced_source_line_shape<
+        M: ChartMetric,
+        C: RootCatalog,
+        F: FnMut(&[RequestRowInput], &mut Unmetered) -> Result<Vec<NodeOrdinates>>,
+    >(
         &self,
         source_kind: GeometryKind,
         runs: Vec<SourceLineRun>,
         source_traces: &[SourceTrace],
         by_node: &ResolvedNodePoints,
         request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
-        work: &mut W,
+        work: &mut Unmetered,
+        resolve_rows: &mut F,
     ) -> Result<SubdivisionPart> {
-        let roots = request.roots;
         let root_positions = request.root_positions;
         let declared_axes = request.declared_axes;
         let strict = request.strict;
-        let context = request.context;
         if root_positions.is_none() {
             let node_count = runs.iter().try_fold(0_usize, |count, run| {
                 count
@@ -2419,7 +2346,7 @@ impl ExactSourceInventory {
                     requests: std::mem::take(&mut sample.requests),
                 });
             }
-            resolve_request_rows(&request_rows, roots, context.metric_access(), work)?
+            resolve_rows(&request_rows, work)?
         } else {
             vec![NodeOrdinates::default(); seam_samples.len()]
         };
