@@ -756,6 +756,27 @@ mod tests {
     }
 
     #[test]
+    fn pending_append_preserves_captured_empty_structure() {
+        let mut pending = drawing_pending(
+            Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ),
+            0,
+        );
+        pending.shape = Shape::Empty(crate::geometry::GeometryKind::Point, CoordinateAxes::XY);
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        let Err(error) = rows.finish(Frame::default()) else {
+            panic!("append recovered its expectation from substituted output geometry");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn final_writer_rejects_xym_record_corruption_without_domain_changes() {
         let expected = Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0)));
         for actual in [

@@ -577,14 +577,12 @@ impl PendingPublicationRow {
         let Self {
             shape,
             logical_row,
-            mut layout,
+            layout,
             checked,
             producer_literals,
             producer_drawing,
             work,
         } = self;
-        layout.layout.structure =
-            Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape));
         (shape, StoredPublicationRow {
             logical_row,
             layout,
