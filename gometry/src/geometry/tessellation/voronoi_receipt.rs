@@ -1,5 +1,4 @@
 use crate::geographic::ChartPointSite;
-use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{Point, XY};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,11 +77,6 @@ pub(in crate::geometry) struct VoronoiSiteReceipt {
     pub(in crate::geometry) source_record: Point,
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "V2 consumes the retained exact site coordinate")
-    )]
-    pub(in crate::geometry) exact_xy: [ExactRational; 2],
-    #[cfg_attr(
-        not(test),
         expect(dead_code, reason = "V2 consumes the retained chart-site identity")
     )]
     pub(in crate::geometry) retained_chart_site: Option<ChartPointSite>,
@@ -113,11 +107,6 @@ pub(in crate::geometry) struct VoronoiSourceSiteReceipt {
 
 #[derive(Clone, Debug)]
 pub(in crate::geometry) struct VoronoiVertexReceipt {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes the exact producer coordinate")
-    )]
-    pub(in crate::geometry) exact_xy: [ExactRational; 2],
     pub(in crate::geometry) origins: Vec<VoronoiVertexOrigin>,
     pub(in crate::geometry) assignment: Option<XY>,
 }

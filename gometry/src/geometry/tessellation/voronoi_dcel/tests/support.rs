@@ -61,7 +61,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
         );
         assert!(site_receipt.source_record.x.is_finite());
         assert!(site_receipt.source_record.y.is_finite());
-        assert_eq!(site_receipt.exact_xy.len(), 2);
         if let Some(retained) = site_receipt.retained_chart_site {
             assert_eq!(retained.source_ordinal(), site_receipt.source_ordinal);
         }
@@ -102,7 +101,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
     }
 
     for vertex_receipt in &receipt.vertices {
-        assert_eq!(vertex_receipt.exact_xy.len(), 2);
         for origin in &vertex_receipt.origins {
             match origin {
                 VoronoiVertexOrigin::SourceSite { site: id } => {

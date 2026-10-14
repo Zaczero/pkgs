@@ -28,7 +28,6 @@ pub(super) fn site_receipts(
             id,
             source_ordinal: site.source_ordinal,
             source_record: site.point,
-            exact_xy: exact_xy_coordinates(&site.exact_point)?,
             retained_chart_site: site.retained_chart_site,
             quotient_aliases: site.quotient_aliases.clone(),
             snapped_sources: site.snapped_sources.clone(),
@@ -62,15 +61,6 @@ pub(super) fn site_receipts(
         .source_sites
         .sort_unstable_by_key(|source| source.source_ordinal);
     Ok(receipt)
-}
-
-pub(super) fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::ExactRational; 2]> {
-    let one = exact::ExactDyadic::one();
-    let zero = exact::ExactDyadic::zero();
-    Ok([
-        point.projected_coordinate(&one, &zero)?,
-        point.projected_coordinate(&zero, &one)?,
-    ])
 }
 
 pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
@@ -160,7 +150,6 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 origins.push(VoronoiVertexOrigin::SourceSite { site: owner });
             }
             receipt.vertices.push(VoronoiVertexReceipt {
-                exact_xy: exact_xy_coordinates(exact_point)?,
                 origins,
                 assignment: Some(point.xy()),
             });
@@ -342,7 +331,7 @@ pub(super) fn exact_diagram_receipt(
         }
     }
     receipt.vertices.reserve(subdivision.vertices.len());
-    for (index, vertex) in subdivision.vertices.iter().enumerate() {
+    for (index, _) in subdivision.vertices.iter().enumerate() {
         let origins = vertex_origins
             .get_mut(index)
             .ok_or_else(|| voronoi_error("diagram vertex origins are absent"))?;
@@ -350,7 +339,6 @@ pub(super) fn exact_diagram_receipt(
             .get(index)
             .ok_or_else(|| voronoi_error("diagram vertex assignment is absent"))?;
         receipt.vertices.push(VoronoiVertexReceipt {
-            exact_xy: exact_xy_coordinates(&vertex.point)?,
             origins: std::mem::take(origins),
             assignment,
         });
