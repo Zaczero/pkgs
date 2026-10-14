@@ -507,6 +507,8 @@ mod tests {
         CheckedPublicationLiteral, PendingPublicationRow, PublicationImage,
     };
     use super::*;
+    use crate::crs::frame::crs_arc_static;
+    use crate::dispatch::kernels::unary_convex_hull_array;
     use crate::geometry::embedding_completion::literals::{
         LiteralAddress, LiteralPoint, ShapeLiteralLayout,
     };
@@ -573,7 +575,7 @@ mod tests {
     }
 
     fn geographic_hull_pending() -> (PendingPublicationRow, Frame) {
-        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("OGC:CRS84")), None).unwrap();
+        let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
         let shape = crate::io::parse_wkt(
             "MULTIPOINT ZM ((0 0 0 0), (3 0 10 100), (2 2 20 200), (0 2 30 300), (1 1 40 400))",
         )
@@ -589,8 +591,7 @@ mod tests {
             metric,
             lane: crate::dispatch::Lane::Array(0),
         };
-        let crate::geometry::publication::receipt::GeometryOutput::Pending(pending) =
-            crate::dispatch::kernels::unary_convex_hull_array(&data, &context).unwrap()
+        let GeometryOutput::Pending(pending) = unary_convex_hull_array(&data, &context).unwrap()
         else {
             panic!("geographic array hull captures a pending producer row");
         };
@@ -712,8 +713,11 @@ mod tests {
 
     #[test]
     fn geographic_groups_final_writer_rejects_a_wrong_group_identity() {
-        assert!(finish_group_with_receipt_identity_error(false).is_ok());
-        assert!(finish_group_with_receipt_identity_error(true).is_err());
+        finish_group_with_receipt_identity_error(false)
+            .expect("valid publication identity is accepted");
+        finish_group_with_receipt_identity_error(true)
+            .err()
+            .expect("a wrong group identity is rejected");
     }
 
     #[test]
