@@ -323,7 +323,7 @@
     }
 
     #[test]
-    fn native_literal_readback_rejects_a_valid_point_with_corrupt_output_layout() -> Result<()> {
+    fn native_sealed_layout_rejects_a_point_mapped_to_another_assigned_port() -> Result<()> {
         use super::super::emission::native_port_point;
         use crate::geometry::Shape;
 
@@ -333,8 +333,30 @@
             native: XY::new(10.0, 1.0),
             periods: 0,
         };
-        let (reference, port_id) =
+        let (mut reference, port_id) =
             single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let vertex = *reference
+            .port_vertices
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample graph vertex is unknown".into()))?;
+        let other_port = EmissionPortId(
+            u32::try_from(reference.plan.ports.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        );
+        let port = reference
+            .plan
+            .ports
+            .get(port_id.0 as usize)
+            .cloned()
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample port is unknown".into()))?;
+        reference.plan.ports.push(port);
+        reference.port_vertices.push(vertex);
+        *reference
+            .plan
+            .points
+            .first_mut()
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample point is missing".into()))? =
+            other_port;
         let checked = admit_candidate(
             &reference.graph.common,
             &reference.dimension,
@@ -358,7 +380,7 @@
             Shape::Point(record),
             ShapeLiteralLayout {
                 points: vec![LiteralPoint {
-                    output: 1,
+                    output: 0,
                     axes: crate::geometry::CoordinateAxes::XY,
                     image: port_id,
                 }],
