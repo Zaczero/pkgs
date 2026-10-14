@@ -5,7 +5,10 @@ use crate::error::Result;
 use crate::geographic::GeographicInputs;
 use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{ExactSourceInventory, overlay_view_error};
-use crate::geometry::topology::overlay::exact_geographic_boundary;
+use crate::geometry::publication::{GeometryOutput, geographic_drawing_pending_row};
+use crate::geometry::topology::overlay::{
+    exact_geographic_boundary, exact_geographic_boundary_pending_row,
+};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates, ExpansionBudget,
     GeographicTopologyRoute, GeometryKind, HashMapExt as _, LineSeq, Point, Polygon, PreparedPlan,
@@ -55,36 +58,78 @@ pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
     }
 }
 
+pub(crate) fn boundary_array_with_metric<M: crate::geometry::ChartMetric>(
+    data: &PreparedPlan,
+    context: &SourceArcContext<'_, '_, M>,
+    output_frame: &crate::Frame,
+    logical_row: usize,
+) -> Result<GeometryOutput> {
+    if !context.domain().is_geographic() {
+        return boundary_with_metric(data, context).map(GeometryOutput::Shape);
+    }
+    let shape = if matches!(data.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
+        if let Some(topology) = boundary_topology(data.shape(), context, output_frame.clone())? {
+            return Ok(GeometryOutput::Pending(
+                exact_geographic_boundary_pending_row(
+                    &topology,
+                    data.shape().axes(),
+                    context.metric_access(),
+                    logical_row,
+                )?,
+            ));
+        }
+        literal_or_partition_boundary(data, context)?
+    } else {
+        boundary_with_metric(data, context)?
+    };
+    Ok(GeometryOutput::Pending(geographic_drawing_pending_row(
+        shape,
+        logical_row,
+        "boundary",
+    )?))
+}
+
 fn polygonal_boundary<M: crate::geometry::ChartMetric>(
     data: &PreparedPlan,
     context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
-    let shape = data.shape();
-    match context.domain() {
-        TopologyDomain::Cartesian => {
-            if data.validate_cached()?.is_none() {
-                return Ok(literal_polygon_boundary(shape));
-            }
-            exact_partition_boundary(shape, context)
-        },
-        TopologyDomain::Geographic(frame) => {
-            let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
-                .map_err(|error| overlay_view_error(&error))?;
-            if geographic_topology_route(inputs.views().iter().copied())
-                == GeographicTopologyRoute::Quotient
-            {
-                let topology = crate::geometry::ExactGeographicTopology::from_views(
-                    frame,
-                    inputs.views().iter().copied(),
-                )?;
-                return exact_geographic_boundary(&topology, shape.axes(), context.metric_access());
-            }
-            if data.validate_cached()?.is_none() {
-                return Ok(literal_polygon_boundary(shape));
-            }
-            exact_partition_boundary(shape, context)
-        },
+    if let Some(topology) = boundary_topology(data.shape(), context, crate::Frame::None)? {
+        return exact_geographic_boundary(&topology, data.shape().axes(), context.metric_access());
     }
+    literal_or_partition_boundary(data, context)
+}
+
+fn boundary_topology<M: crate::geometry::ChartMetric>(
+    shape: &Shape,
+    context: &SourceArcContext<'_, '_, M>,
+    output_frame: crate::Frame,
+) -> Result<Option<crate::geometry::ExactGeographicTopology>> {
+    let TopologyDomain::Geographic(frame) = context.domain() else {
+        return Ok(None);
+    };
+    let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
+        .map_err(|error| overlay_view_error(&error))?;
+    if geographic_topology_route(inputs.views().iter().copied())
+        != GeographicTopologyRoute::Quotient
+    {
+        return Ok(None);
+    }
+    crate::geometry::ExactGeographicTopology::from_views_with_publication_frame(
+        frame,
+        output_frame,
+        inputs.views().iter().copied(),
+    )
+    .map(Some)
+}
+
+fn literal_or_partition_boundary<M: crate::geometry::ChartMetric>(
+    data: &PreparedPlan,
+    context: &SourceArcContext<'_, '_, M>,
+) -> Result<Shape> {
+    if data.validate_cached()?.is_none() {
+        return Ok(literal_polygon_boundary(data.shape()));
+    }
+    exact_partition_boundary(data.shape(), context)
 }
 
 fn exact_partition_boundary<M: crate::geometry::ChartMetric>(

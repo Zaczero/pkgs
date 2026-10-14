@@ -54,6 +54,45 @@ def test_derived_and_preserving_operation_axes() -> None:
     assert (line_xy).simplify(0.1).coordinate_axes == 'XY'
 
 
+def test_boundary_array_keeps_original_root_m_through_mixed_nullable_gathers() -> None:
+    seam = gm.Polygon(
+        [(170, 10), (190, 50), (190, 55), (170, 15), (170, 10)],
+        m=[10, 110, 210, 310, 10],
+        crs=4326,
+        epoch=2020.0,
+    )
+    ordinary = gm.Polygon(
+        [(0, 0), (3, 0), (3, 2), (0, 2), (0, 0)],
+        m=[401, 402, 403, 404, 401],
+        crs=4326,
+        epoch=2020.0,
+    )
+    collection = gm.GeometryCollection([seam, seam])
+    rows = gm.GeometryArray([seam, None, ordinary, collection])[[3, 1, 0, 2, 0]]
+    output = rows.boundary()
+    assert output.is_missing.tolist() == [False, True, False, False, False]
+    assert output.coordinate_axes == ['XYM', None, 'XYM', 'XYM', 'XYM']
+    assert output.crs == rows.crs
+    assert output.epoch == 2020.0
+    assert output[2].to_wkb() == output[4].to_wkb()
+    assert output[3].to_wkb() == ordinary.boundary().to_wkb()
+    assert len(output[0].parts) == 2
+    assert [part.to_wkb() for part in output[0].parts] == [output[2].to_wkb()] * 2
+    fraction = _ellipsoid_chart_fraction(
+        (170, 10), (190, 50), 0.5, 6378137, 298.257223563
+    )
+    expected_m = 10 + 100 * fraction
+    assert abs(expected_m - 60) > 0.1
+    seam_records = [
+        coordinate
+        for coordinate in output[2].coords
+        if abs(coordinate[0]) == 180 and coordinate[1] == 30
+    ]
+    assert seam_records
+    for coordinate in seam_records:
+        assert coordinate[2] == pytest.approx(expected_m, abs=2e-10)
+
+
 def test_clip_by_rect_resolves_zm_where_derivable() -> None:
     """clip_by_rect restores Z/M on kept vertices and interpolates boundary
     crossings; only a clip-rectangle corner entering the output (underivable)

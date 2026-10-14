@@ -3,9 +3,9 @@ use std::sync::Arc;
 use super::binding::CheckedLiteralSnapshot;
 use super::finish::FinishedGeometry;
 use super::receipt::{
-    ArrayPublicationBatch, GeometryOutput, ProducerDrawingReceipt, ProducerLiteral,
-    ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection, StorageTarget,
-    StoredPublicationRow,
+    ArrayPublicationBatch, CheckedPublicationLiteral, GeometryOutput, ProducerDrawingReceipt,
+    ProducerLiteral, ProducerReceipt, PublicationCall, PublicationImage, PublicationOutcome,
+    PublicationRejection, StorageTarget, StoredPublicationRow,
 };
 use crate::Frame;
 use crate::array::{ComputedCaches, StreamingShapes};
@@ -450,6 +450,26 @@ pub(super) fn finish_array_batch<W: Work>(
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             let mut pending = pending;
             pending.work.charge_into_error(admission_ticks)?;
+            let producer_count = pending.producer_literals.len();
+            pending.work.charge_into_error(
+                u64::try_from(producer_count)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            )?;
+            pending.checked.try_reserve(producer_count).map_err(|_| {
+                crate::error::ResourceError::SizeOverflowContext(
+                    "publication literal reservation failed",
+                )
+            })?;
+            pending
+                .checked
+                .extend(pending.producer_literals.into_iter().map(|literal| {
+                    CheckedPublicationLiteral {
+                        address: literal.address,
+                        image: PublicationImage::ProducerDrawn(literal.image),
+                        record: literal.record,
+                        chart: literal.chart,
+                    }
+                }));
             row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
             pending_rows.push((logical, pending.checked, pending.work));
         } else {
@@ -500,6 +520,10 @@ pub(super) fn finish_array_batch<W: Work>(
         FinishedGeometry::from_admitted_rows(rows, frame),
     ))
 }
+
+#[cfg(test)]
+#[path = "storage/boundary_tests.rs"]
+mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
