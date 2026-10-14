@@ -1,5 +1,66 @@
+use super::super::lineage::{EdgeUseId, EventId, MemberId};
 use super::chart_events::{ChartSourceCapture, append_source_edge_events, chart_longitude};
 use super::*;
+
+fn append_source_chart_edge<M: ChartMetric>(
+    output: &mut CoordSeqBuilder,
+    source: [Point; 2],
+    chart_start: Point,
+    chart_end: Point,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    include_seam: bool,
+    circle_witnesses: bool,
+    band: Option<(f64, f64, f64)>,
+    member: Option<MemberId>,
+    mut capture: Option<&mut SplitCapture>,
+    mut lineage_vertices: Option<&mut Vec<Vec<EventId>>>,
+    lineage_edges: &mut Vec<EdgeUseId>,
+) -> Result<()> {
+    if output.len() == 0 {
+        output.push(chart_start);
+        if let Some(vertices) = &mut lineage_vertices {
+            vertices.push(Vec::new());
+        }
+    }
+    let source_root = match (capture.as_deref_mut(), member) {
+        (Some(capture), Some(member)) => Some(capture.edge_root(member, &source, frame)?),
+        _ => None,
+    };
+    let mut source_capture = ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
+    let start_event = source_capture.record(source_root, &ExactRational::zero())?;
+    if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
+        vertices
+            .last_mut()
+            .expect("a chart edge has an opening coordinate")
+            .push(event);
+    }
+    append_source_edge_events(
+        output,
+        &source,
+        frame,
+        longitude_scale,
+        latitude_scale,
+        metric_access,
+        include_seam,
+        circle_witnesses,
+        band,
+        &mut source_capture,
+    )?;
+    let recorded = source_capture.event_ids();
+    if let Some(vertices) = &mut lineage_vertices {
+        vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
+    }
+    let end_event = source_capture.record(source_root, &ExactRational::one())?;
+    output.push(chart_end);
+    if let (Some(vertices), Some(event)) = (lineage_vertices, end_event) {
+        vertices.push(vec![event]);
+    }
+    lineage_edges.extend(source_capture.edge_uses()?);
+    Ok(())
+}
 
 #[cfg(test)]
 pub(super) fn chart_line<M: ChartMetric>(
@@ -37,28 +98,15 @@ fn chart_line_captured<M: ChartMetric>(
     let mut start = line.point_at(0);
     let mut start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
     let mut chart = CoordSeqBuilder::with_capacity(start.axes(), line.len());
-    chart.push(start_chart);
-    let mut lineage_vertices = member.map(|_| vec![Vec::new()]);
+    let mut lineage_vertices = member.map(|_| Vec::new());
     let mut lineage_edges = Vec::new();
     for end in line.iter_coords().skip(1) {
-        let source_root = match (capture.as_deref_mut(), member) {
-            (Some(capture), Some(member)) => {
-                Some(capture.edge_root(member, &[start, end], frame)?)
-            },
-            _ => None,
-        };
-        let mut source_capture =
-            ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-        let start_event = source_capture.record(source_root, &ExactRational::zero())?;
-        if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
-            vertices
-                .last_mut()
-                .expect("a line lineage has its opening coordinate")
-                .push(event);
-        }
-        append_source_edge_events(
+        let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+        append_source_chart_edge(
             &mut chart,
-            &[start, end],
+            [start, end],
+            start_chart,
+            end_chart,
             frame,
             longitude_scale,
             latitude_scale,
@@ -66,20 +114,19 @@ fn chart_line_captured<M: ChartMetric>(
             true,
             true,
             None,
-            &mut source_capture,
+            member,
+            capture.as_deref_mut(),
+            lineage_vertices.as_mut(),
+            &mut lineage_edges,
         )?;
-        let recorded = source_capture.event_ids();
-        if let Some(vertices) = &mut lineage_vertices {
-            vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
-        }
-        start_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-        let end_event = source_capture.record(source_root, &ExactRational::one())?;
-        chart.push(start_chart);
-        if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
-            vertices.push(vec![event]);
-        }
-        lineage_edges.extend(source_capture.edge_uses()?);
         start = end;
+        start_chart = end_chart;
+    }
+    if chart.len() == 0 {
+        chart.push(start_chart);
+        if let Some(vertices) = &mut lineage_vertices {
+            vertices.push(Vec::new());
+        }
     }
     let lineage = lineage_vertices.map(|vertices| super::super::lineage::LineageSequence {
         member: member.expect("captured line lineage has a member"),
@@ -132,7 +179,7 @@ fn chart_ring_captured<M: ChartMetric>(
         .checked_add(maximum_event_count)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let mut points = CoordSeqBuilder::with_capacity(ring.axes(), geographic.len());
-    let mut lineage_vertices = member.map(|_| Vec::<Vec<_>>::new());
+    let mut lineage_vertices = member.map(|_| Vec::new());
     let mut lineage_edges = Vec::new();
     if matches!(summary.domain, RingDomain::FullLongitude(_)) && summary.chart_turn == 0 {
         let unwrapped = super::normalize::unwrap_coordinates(ring.coords(), frame).map_err(
@@ -162,31 +209,13 @@ fn chart_ring_captured<M: ChartMetric>(
         for ([start, end], [source_start, source_end]) in
             unwrapped.segment_pairs().zip(ring.segment_pairs())
         {
-            let source_root = match (capture.as_deref_mut(), member) {
-                (Some(capture), Some(member)) => {
-                    Some(capture.edge_root(member, &[source_start, source_end], frame)?)
-                },
-                _ => None,
-            };
             let start_chart = band_point(start)?;
-            if points.len() == 0 {
-                points.push(start_chart);
-                if let Some(vertices) = &mut lineage_vertices {
-                    vertices.push(Vec::new());
-                }
-            }
-            let mut source_capture =
-                ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-            let start_event = source_capture.record(source_root, &ExactRational::zero())?;
-            if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
-                vertices
-                    .last_mut()
-                    .expect("a ring lineage has an opening coordinate")
-                    .push(event);
-            }
-            append_source_edge_events(
+            let end_chart = band_point(end)?;
+            append_source_chart_edge(
                 &mut points,
-                &[source_start, source_end],
+                [source_start, source_end],
+                start_chart,
+                end_chart,
                 frame,
                 longitude_scale,
                 latitude_scale,
@@ -194,47 +223,21 @@ fn chart_ring_captured<M: ChartMetric>(
                 false,
                 start.y.to_bits() == end.y.to_bits(),
                 Some((start.x, end.x, west)),
-                &mut source_capture,
+                member,
+                capture.as_deref_mut(),
+                lineage_vertices.as_mut(),
+                &mut lineage_edges,
             )?;
-            let recorded = source_capture.event_ids();
-            if let Some(vertices) = &mut lineage_vertices {
-                vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
-            }
-            let end_chart = band_point(end)?;
-            let end_event = source_capture.record(source_root, &ExactRational::one())?;
-            points.push(end_chart);
-            if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
-                vertices.push(vec![event]);
-            }
-            lineage_edges.extend(source_capture.edge_uses()?);
         }
     } else {
         for [start, end] in ring.segment_pairs() {
-            let source_root = match (capture.as_deref_mut(), member) {
-                (Some(capture), Some(member)) => {
-                    Some(capture.edge_root(member, &[start, end], frame)?)
-                },
-                _ => None,
-            };
             let start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
-            if points.len() == 0 {
-                points.push(start_chart);
-                if let Some(vertices) = &mut lineage_vertices {
-                    vertices.push(Vec::new());
-                }
-            }
-            let mut source_capture =
-                ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
-            let start_event = source_capture.record(source_root, &ExactRational::zero())?;
-            if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
-                vertices
-                    .last_mut()
-                    .expect("a ring lineage has an opening coordinate")
-                    .push(event);
-            }
-            append_source_edge_events(
+            let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+            append_source_chart_edge(
                 &mut points,
-                &[start, end],
+                [start, end],
+                start_chart,
+                end_chart,
                 frame,
                 longitude_scale,
                 latitude_scale,
@@ -242,19 +245,11 @@ fn chart_ring_captured<M: ChartMetric>(
                 true,
                 true,
                 None,
-                &mut source_capture,
+                member,
+                capture.as_deref_mut(),
+                lineage_vertices.as_mut(),
+                &mut lineage_edges,
             )?;
-            let recorded = source_capture.event_ids();
-            if let Some(vertices) = &mut lineage_vertices {
-                vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
-            }
-            let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
-            let end_event = source_capture.record(source_root, &ExactRational::one())?;
-            points.push(end_chart);
-            if let (Some(vertices), Some(event)) = (&mut lineage_vertices, end_event) {
-                vertices.push(vec![event]);
-            }
-            lineage_edges.extend(source_capture.edge_uses()?);
         }
     }
     let ring = Ring::try_from_closed(points.finish()?)?;
