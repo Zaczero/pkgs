@@ -4,7 +4,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicInputs;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowAddress, LiteralSequence,
-    ShapeLiteralLayout, visit_shape_literals,
+    ShapeLiteralLayout, ShapeStructure, visit_shape_literals,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
@@ -305,9 +305,7 @@ where
         });
     }
     let layout = ShapeLiteralLayout {
-        structure: Some(
-            crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
-        ),
+        structure: Some(ShapeStructure::capture(shape)),
         points,
         lines,
         polygons,

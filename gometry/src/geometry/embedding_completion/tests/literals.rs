@@ -17,7 +17,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let valid = FrozenLiteralBuffers::shapes(Shape::Point(expected), ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(expected))),
+        structure: Some(ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -44,7 +44,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let buffers = FrozenLiteralBuffers::shapes(Shape::Point(corrupted), ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(expected))),
+        structure: Some(ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -360,7 +360,7 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
-                structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                structure: Some(ShapeStructure::primitive(
                     crate::geometry::GeometryKind::LineString, CoordinateAxes::XYZM, false,
                 )),
                 points: Vec::new(),
@@ -411,7 +411,7 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
-                structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                structure: Some(ShapeStructure::primitive(
                     crate::geometry::GeometryKind::Polygon, CoordinateAxes::XYZM, false,
                 )),
                 points: Vec::new(),

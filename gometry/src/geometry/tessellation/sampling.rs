@@ -185,7 +185,7 @@ pub(crate) fn publish_sampling_array(
 
     use crate::array::StreamingShapes;
     use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
     };
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
@@ -212,11 +212,7 @@ pub(crate) fn publish_sampling_array(
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
-                structure: Some(
-                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
-                        &Shape::Point(draw.point),
-                    ),
-                ),
+                structure: Some(ShapeStructure::capture(&Shape::Point(draw.point))),
                 points: vec![LiteralPoint {
                     output: 0,
                     axes: crate::geometry::CoordinateAxes::from_point(draw.point),
@@ -249,7 +245,7 @@ pub(crate) fn publish_sampling_groups(
 
     use crate::array::StreamingShapes;
     use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
+        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
     };
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
@@ -308,7 +304,7 @@ pub(crate) fn publish_sampling_groups(
                     group_row: Some(logical_row),
                     value_row: Some(value_row),
                     layout: ShapeLiteralLayout {
-                        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(draw.point))),
+                        structure: Some(ShapeStructure::capture(&Shape::Point(draw.point))),
                         points: vec![LiteralPoint {
                             output: 0,
                             axes: crate::geometry::CoordinateAxes::from_point(draw.point),

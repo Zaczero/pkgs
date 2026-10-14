@@ -7,6 +7,7 @@ use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
@@ -454,13 +455,11 @@ fn append_mesh_outputs(
             group_row,
             value_row: value_row_address,
             layout: ShapeLiteralLayout {
-                structure: Some(
-                    crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
-                        crate::geometry::GeometryKind::Polygon,
-                        first.axes,
-                        false,
-                    ),
-                ),
+                structure: Some(ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Polygon,
+                    first.axes,
+                    false,
+                )),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {

@@ -2,7 +2,7 @@ use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -554,9 +554,7 @@ impl PendingPublicationRow {
             .into());
         }
         self.shape = shape;
-        self.layout.layout.structure = Some(
-            crate::geometry::embedding_completion::literals::ShapeStructure::capture(&self.shape),
-        );
+        self.layout.layout.structure = Some(ShapeStructure::capture(&self.shape));
         Ok(())
     }
 

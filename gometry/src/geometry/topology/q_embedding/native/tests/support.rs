@@ -4,6 +4,7 @@ use crate::work::Work;
     use crate::geometry::embedding_completion::literals::{
         LiteralPoint,
         LiteralRowLayout,
+        ShapeStructure,
     };
     use crate::geometry::publication::FinishedGeometry;
     use crate::geometry::storage::{
@@ -71,7 +72,7 @@ use crate::work::Work;
         work: &mut impl Work,
     ) -> Result<SourceFrozenDrawing> {
         let layout = ShapeLiteralLayout {
-            structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(point))),
+            structure: Some(ShapeStructure::capture(&Shape::Point(point))),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::XYZM,

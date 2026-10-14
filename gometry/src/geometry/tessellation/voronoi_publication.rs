@@ -6,13 +6,14 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicFrame;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
     FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
     finish_producer_drawing,
 };
-use crate::geometry::storage::{PackedRow, RowSelection, ShapeRow, ValidityMask};
+use crate::geometry::storage::{ArrayRows, PackedRow, RowSelection, ShapeRow, ValidityMask};
 use crate::geometry::tessellation::{
     VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiPolygonOutputs, VoronoiRingEdgeRole,
 };
@@ -89,11 +90,7 @@ impl VoronoiDrawingWriter {
                 .ok_or_else(|| voronoi_publication_error("Voronoi polygon has no shell"))?;
             let holes = rings.collect();
             let layout = ShapeLiteralLayout {
-                structure: Some(
-                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
-                        &shape,
-                    ),
-                ),
+                structure: Some(ShapeStructure::capture(&shape)),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {
@@ -165,13 +162,11 @@ impl VoronoiDrawingWriter {
                 group_row: address.group_row,
                 value_row: address.value_row,
                 layout: ShapeLiteralLayout {
-                    structure: Some(
-                        crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
-                            crate::geometry::GeometryKind::LineString,
-                            coordinates.axes(),
-                            vertex_count == 0,
-                        ),
-                    ),
+                    structure: Some(ShapeStructure::primitive(
+                        crate::geometry::GeometryKind::LineString,
+                        coordinates.axes(),
+                        vertex_count == 0,
+                    )),
                     points: Vec::new(),
                     lines: vec![LiteralSequence {
                         output: 0,
@@ -250,7 +245,7 @@ impl VoronoiDrawingWriter {
                     .len()
                     .checked_sub(1)
                     .ok_or_else(|| voronoi_publication_error("Voronoi groups have no offsets"))?;
-                crate::geometry::storage::ArrayRows::validate_publication_domain(
+                ArrayRows::validate_publication_domain(
                     group_count,
                     missing.as_ref(),
                     expected_group_present.into_iter(),

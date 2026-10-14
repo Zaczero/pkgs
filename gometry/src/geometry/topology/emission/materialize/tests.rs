@@ -338,7 +338,7 @@ fn completed_native_drawing_pairs_literal_points_with_port_uses() {
             .unwrap(),
     );
     let layout = NativeLiteralUses {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape)),
+        structure: Some(ShapeStructure::capture(&shape)),
         points: vec![
             LiteralPoint {
                 output: 0,
@@ -387,7 +387,7 @@ fn completed_native_drawing_keeps_the_full_ring_closure_binding() {
     .unwrap();
     let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
     let layout = NativeLiteralUses {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape)),
+        structure: Some(ShapeStructure::capture(&shape)),
         points: Vec::new(),
         lines: Vec::new(),
         polygons: vec![NativePolygonLiteralUses {

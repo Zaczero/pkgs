@@ -19,6 +19,7 @@ use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -419,11 +420,7 @@ impl CoverageRows {
             }
             let shape = Shape::narrow_polygons(axes, polygons);
             let layout = ShapeLiteralLayout {
-                structure: Some(
-                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
-                        &shape,
-                    ),
-                ),
+                structure: Some(ShapeStructure::capture(&shape)),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: polygon_layouts,

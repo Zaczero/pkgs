@@ -109,6 +109,7 @@ pub(super) use self::trace::{
 
 #[cfg(test)]
 mod tests {
+    use crate::geometry::embedding_completion::literals::ShapeStructure;
     use crate::geometry::topology::emission::families::{
         FeatureFamilyBound, NativeCutOccurrenceInterval, NativeCutOccurrenceRange,
     };

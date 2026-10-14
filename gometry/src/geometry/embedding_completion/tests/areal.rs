@@ -108,7 +108,7 @@ fn independent_overlapping_logical_rings_bind_across_wall_faces() {
     ])
     .unwrap();
     let literal_layout = ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&sink)),
+        structure: Some(ShapeStructure::capture(&sink)),
         points: Vec::new(),
         lines: Vec::new(),
         polygons: vec![
@@ -303,7 +303,7 @@ fn known_graph_accepts_admitted_midpoint_repair_that_changes_opposition() {
         Vec::new(),
     ));
     let layout = ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape)),
+        structure: Some(ShapeStructure::capture(&shape)),
         points: Vec::new(),
         lines: Vec::new(),
         polygons: vec![LiteralPolygon {
@@ -467,7 +467,7 @@ fn reflected_closed_line_seals_beside_an_unrelated_polygon() {
     ));
     let sink = Shape::geometry_collection(vec![polygon, line]).unwrap();
     let literal_layout = ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&sink)),
+        structure: Some(ShapeStructure::capture(&sink)),
         points: Vec::new(),
         lines: vec![LiteralSequence {
             output: 0,
@@ -592,7 +592,7 @@ fn point_leaving_a_closed_line_face_keeps_its_areal_host() {
     let point = Shape::Point(Point::new_raw_xy(1.0, lower));
     let sink = Shape::geometry_collection(vec![polygon, line, point]).unwrap();
     let literal_layout = ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&sink)),
+        structure: Some(ShapeStructure::capture(&sink)),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XY,
@@ -879,7 +879,7 @@ fn line_only_actual_shape_seals_while_reversed_polygon_face_is_rejected() {
         .unwrap(),
     ));
     let literal_layout = ShapeLiteralLayout {
-        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&line)),
+        structure: Some(ShapeStructure::capture(&line)),
         points: Vec::<LiteralPoint<u32>>::new(),
         lines: vec![LiteralSequence {
             output: 0,

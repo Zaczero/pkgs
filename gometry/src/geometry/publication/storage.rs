@@ -512,8 +512,10 @@ mod tests {
         CheckedPublicationLiteral, PendingPublicationRow, PublicationImage,
     };
     use super::*;
+    use crate::crs::frame::crs_arc_static;
+    use crate::dispatch::kernels::unary_convex_hull_array;
     use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, ShapeLiteralLayout,
+        LiteralAddress, LiteralPoint, ShapeLiteralLayout, ShapeStructure,
     };
     use crate::geometry::embedding_search::account::EvaluationBudget;
     use crate::geometry::tessellation::exact::ExactRational;
@@ -551,7 +553,13 @@ mod tests {
         let mut writer = StreamingShapes::with_capacity(0, 1);
         writer.try_push_missing().unwrap();
         rows.writer = writer;
-        assert!(rows.finish(Frame::default()).is_err());
+        let Err(error) = rows.finish(Frame::default()) else {
+            panic!("the final writer dropped an accepted present row");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
     }
 
     #[test]
@@ -619,7 +627,13 @@ mod tests {
             ))
             .unwrap();
         rows.writer = writer;
-        assert!(rows.finish(Frame::default()).is_err());
+        let Err(error) = rows.finish(Frame::default()) else {
+            panic!("the final writer substituted typed-empty metadata");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
     }
 
     #[test]
@@ -641,7 +655,7 @@ mod tests {
             (
                 "trailing missing row deletion",
                 vec![Some(point.clone()), None],
-                vec![Some(point.clone())],
+                vec![Some(point)],
             ),
             ("all-missing truncation", vec![None, None], vec![None]),
             ("zero-row insertion", vec![], vec![None]),
@@ -859,6 +873,37 @@ mod tests {
     }
 
     #[test]
+    fn final_groups_reject_a_typed_empty_value_substitution() {
+        let mut rows = PublicationRows::with_groups_capacity(1);
+        let mut pending = drawing_pending(
+            Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ),
+            0,
+        );
+        pending.layout.group_row = Some(0);
+        pending.layout.value_row = Some(0);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        rows.end_group(false).unwrap();
+        let mut writer = StreamingShapes::with_capacity(0, 1);
+        writer
+            .try_push(Shape::Empty(
+                crate::geometry::GeometryKind::Point,
+                CoordinateAxes::XY,
+            ))
+            .unwrap();
+        rows.writer = writer;
+        let Err(error) = rows.finish_groups(Frame::default(), None) else {
+            panic!("the final Groups writer replaced an accepted typed-empty value");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn final_groups_reject_shifted_value_boundaries() {
         let mut rows = PublicationRows::with_groups_capacity(2);
         rows.end_group(false).unwrap();
@@ -896,11 +941,7 @@ mod tests {
                 group_row: None,
                 value_row: None,
                 layout: ShapeLiteralLayout {
-                    structure: Some(
-                        crate::geometry::embedding_completion::literals::ShapeStructure::capture(
-                            &Shape::Point(expected),
-                        ),
-                    ),
+                    structure: Some(ShapeStructure::capture(&Shape::Point(expected))),
                     points: vec![LiteralPoint {
                         output: 0,
                         axes: CoordinateAxes::XYZM,
@@ -942,7 +983,7 @@ mod tests {
     }
 
     fn geographic_hull_pending() -> (PendingPublicationRow, Frame) {
-        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("OGC:CRS84")), None).unwrap();
+        let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
         let shape = crate::io::parse_wkt(
             "MULTIPOINT ZM ((0 0 0 0), (3 0 10 100), (2 2 20 200), (0 2 30 300), (1 1 40 400))",
         )
@@ -958,8 +999,7 @@ mod tests {
             metric,
             lane: crate::dispatch::Lane::Array(0),
         };
-        let crate::geometry::publication::receipt::GeometryOutput::Pending(pending) =
-            crate::dispatch::kernels::unary_convex_hull_array(&data, &context).unwrap()
+        let GeometryOutput::Pending(pending) = unary_convex_hull_array(&data, &context).unwrap()
         else {
             panic!("geographic array hull captures a pending producer row");
         };
@@ -1081,7 +1121,7 @@ mod tests {
 
     #[test]
     fn geographic_groups_final_writer_rejects_a_wrong_group_identity() {
-        assert!(finish_group_with_receipt_identity_error(false).is_ok());
+        finish_group_with_receipt_identity_error(false).unwrap();
         assert!(finish_group_with_receipt_identity_error(true).is_err());
     }
 

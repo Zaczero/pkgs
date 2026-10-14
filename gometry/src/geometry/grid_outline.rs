@@ -1,7 +1,7 @@
 use crate::Frame;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
+    LiteralAddress, LiteralPolygon, LiteralSequence, ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
@@ -70,9 +70,7 @@ fn scalar_polygon_literals(
 
     Ok((
         ShapeLiteralLayout {
-            structure: Some(
-                crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
-            ),
+            structure: Some(ShapeStructure::capture(shape)),
             points: Vec::new(),
             lines: Vec::new(),
             polygons,

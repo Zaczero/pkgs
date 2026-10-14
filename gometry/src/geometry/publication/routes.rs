@@ -6,7 +6,9 @@ use super::receipt::{
 };
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::literals::{LiteralRowLayout, ShapeLiteralLayout};
+use crate::geometry::embedding_completion::literals::{
+    LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
+};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, GeometryKind, Shape};
@@ -129,8 +131,7 @@ pub(crate) fn finish_geographic_nearest_point_columns(
                     .into());
                 },
             };
-            let structure =
-                crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape);
+            let structure = ShapeStructure::capture(&shape);
             writer.try_push(shape)?;
             row_map.push(Some(LiteralRowLayout {
                 operation: 0,

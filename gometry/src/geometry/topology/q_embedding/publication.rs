@@ -26,6 +26,10 @@ pub(in crate::geometry) struct NativeCandidatePublication<'call, 'reference, 'to
     pub(super) port_records: &'call mut [Option<Point>],
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "successful admission transfers its sealed buffer owner without a per-candidate allocation"
+)]
 pub(in crate::geometry) enum NativePublicationCheck {
     Pass(SealedOutput<EmissionPortId>),
     Reject,

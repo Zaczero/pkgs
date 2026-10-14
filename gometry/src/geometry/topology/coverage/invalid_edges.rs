@@ -4,7 +4,7 @@ use super::super::q::{ExactGeographicTopology, QSpanOwner};
 use crate::array::StreamingShapes;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{ProducerDrawingReceipt, ProducerImageId, ProducerLiteral};
@@ -141,11 +141,7 @@ pub(super) fn producer_drawing_receipt(
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
-                structure: Some(
-                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
-                        &shape,
-                    ),
-                ),
+                structure: Some(ShapeStructure::capture(&shape)),
                 points: Vec::new(),
                 lines,
                 polygons: Vec::new(),
