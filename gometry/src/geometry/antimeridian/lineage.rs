@@ -353,28 +353,20 @@ impl LineageCatalog {
                 )
                 .into());
             }
-            if restriction.is_none() {
-                restriction = source.restriction;
+            if let Some(inherited) = source.restriction {
+                if restriction.is_some_and(|current| current != inherited) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "split edge composition combines incompatible chart restrictions".into(),
+                    )
+                    .into());
+                }
+                restriction = Some(inherited);
             }
             for range in &source.roots {
-                let Some(source_start) = range.parameter_at_with_work(local_start, &mut work)?
+                let Some(child) = range.compose_with_work(local_start, local_end, &mut work)?
                 else {
                     continue;
                 };
-                let Some(source_end) = range.parameter_at_with_work(local_end, &mut work)? else {
-                    continue;
-                };
-                if source_start.try_eq_with_work(&source_end, &mut work)? {
-                    continue;
-                }
-                let child = RootRange::from_mapped_with_work(
-                    range.root(),
-                    source_start,
-                    source_end,
-                    ExactRational::zero(),
-                    ExactRational::one(),
-                    &mut work,
-                )?;
                 let mut found = false;
                 for existing in &roots {
                     if existing.try_eq_with_work(&child, &mut work)? {
