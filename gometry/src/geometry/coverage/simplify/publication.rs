@@ -192,3 +192,54 @@ pub(super) fn publish_coverage_edge_roles(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::polygon_edge_roles;
+    use crate::geometry::{CoordSeq, Point, Polygon, Ring, ZOrdinate};
+
+    fn point(x: f64, y: f64, z: f64) -> Point {
+        Point::new_axes(x, y, ZOrdinate(Some(z)), crate::geometry::MOrdinate(None))
+            .expect("test coordinate is valid")
+    }
+
+    fn polygon(points: &[Point]) -> Polygon {
+        Polygon::new(
+            Ring::try_from_closed(
+                CoordSeq::try_from_points(points).expect("test coordinates form a sequence"),
+            )
+            .expect("test coordinates form a closed ring"),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn a_constructed_chord_is_not_recovered_from_a_repeated_source_edge_key() {
+        let a = point(0.0, 0.0, 10.0);
+        let b = point(2.0, 0.0, 20.0);
+        let source = polygon(&[
+            a,
+            point(1.0, 0.1, 15.0),
+            b,
+            point(0.0, 0.0, 10.0),
+            point(2.0, 0.0, 200.0),
+            point(2.0, 2.0, 30.0),
+            a,
+        ]);
+        let simplified = polygon(&[a, b, point(2.0, 2.0, 30.0), a]);
+
+        let roles = polygon_edge_roles(&source, &simplified)
+            .expect("polygon role analysis succeeds")
+            .expect("the rings have matching layouts");
+        let shortcut_role = roles
+            .first()
+            .and_then(|ring| ring.first())
+            .copied()
+            .expect("the simplified shell has an A-B edge");
+
+        assert!(
+            shortcut_role,
+            "the A-B shortcut is constructed even though another source occurrence has the same XY key"
+        );
+    }
+}
