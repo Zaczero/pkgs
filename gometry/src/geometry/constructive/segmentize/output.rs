@@ -135,13 +135,7 @@ impl OutputColumns {
         }
     }
 
-    pub(super) fn push_chart_point(
-        &mut self,
-        points: &CoordSeq,
-        segment: usize,
-        point: Point,
-        fraction: f64,
-    ) -> Result<()> {
+    pub(super) fn push_point(&mut self, point: Point) -> Result<()> {
         let length = self
             .xs
             .len()
@@ -150,37 +144,11 @@ impl OutputColumns {
         ensure_coordseq_vertex_capacity(length)?;
         self.xs.push(point.x);
         self.ys.push(point.y);
-        if let (Some(output), Some(column)) = (&mut self.zs, points.zs()) {
-            let start = *column
-                .get(segment)
-                .expect("chart subdivision Z start belongs to its column");
-            let end = *column
-                .get(segment.wrapping_add(1))
-                .expect("chart subdivision Z end belongs to its column");
-            let value = interpolate_subdivision_ordinate(start, end, fraction);
-            output.push(if value.is_finite() {
-                value
-            } else if fraction <= 0.5 {
-                start
-            } else {
-                end
-            });
+        if let Some(output) = &mut self.zs {
+            output.push(point.z().expect("retained Z has a resolved ordinate"));
         }
-        if let (Some(output), Some(column)) = (&mut self.ms, points.ms()) {
-            let start = *column
-                .get(segment)
-                .expect("chart subdivision M start belongs to its column");
-            let end = *column
-                .get(segment.wrapping_add(1))
-                .expect("chart subdivision M end belongs to its column");
-            let value = interpolate_subdivision_ordinate(start, end, fraction);
-            output.push(if value.is_finite() {
-                value
-            } else if fraction <= 0.5 {
-                start
-            } else {
-                end
-            });
+        if let Some(output) = &mut self.ms {
+            output.push(point.m().expect("retained M has a resolved ordinate"));
         }
         Ok(())
     }

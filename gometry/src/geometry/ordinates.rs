@@ -225,23 +225,19 @@ pub(crate) fn record_root_work(event: RootWorkEvent) {
 
 /// Cartesian Z/M lookup for source-preserving operations without exact source
 /// parameters. Geographic producers retain and resolve their source occurrences.
-pub(super) struct OrdinateSource<'access, 'metric> {
+pub(super) struct OrdinateSource {
     vertices: HashMap<VertexKey, Vec<Point>>,
     segments: Vec<(Point, Point)>,
     /// Cartesian output from snapped overlay kernels can differ slightly from
     /// its exact source intersection.
     tolerance: f64,
-    context: SourceArcContext<'access, 'metric>,
 }
 
 /// The engine-snap allowance relative to the inputs' coordinate magnitude.
 const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 
-impl<'access, 'metric> OrdinateSource<'access, 'metric> {
-    fn new<S: Borrow<Shape>>(
-        inputs: &[S],
-        context: &SourceArcContext<'access, 'metric>,
-    ) -> Result<Self> {
+impl OrdinateSource {
+    fn new<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
         // Shared XY owners bound dedup storage without expanding logical
         // occurrences. Non-collection shapes use their exact count.
         let capacity = inputs.iter().try_fold(0_usize, |total, input| {
@@ -259,35 +255,29 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         Ok(Self {
             vertices,
             segments,
-            tolerance: if context.domain().is_geographic() {
-                0.0
-            } else {
-                ordinate_tolerance(inputs)
-            },
-            context: *context,
+            tolerance: ordinate_tolerance(inputs),
         })
     }
 
     fn add_vertex(&mut self, point: Point) {
-        add_vertex(&mut self.vertices, point, self.context.domain());
+        add_vertex(
+            &mut self.vertices,
+            point,
+            crate::geometry::TopologyDomain::Cartesian,
+        );
     }
 
     fn add_source_edge(&mut self, start: Point, end: Point) {
         self.add_vertex(start);
         self.add_vertex(end);
         if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
-            self.segments
-                .push(if self.context.domain().is_geographic() {
-                    (start, end)
-                } else {
-                    canonical_segment(start, end)
-                });
+            self.segments.push(canonical_segment(start, end));
         }
     }
 
     fn build_direct<S: Borrow<Shape>>(
         inputs: &[S],
-        context: &SourceArcContext<'access, 'metric>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         if context.domain().is_geographic() {
             return Err(GeometryErrorKind::Invalid(
@@ -295,7 +285,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
             )
             .into());
         }
-        let mut result = Self::new(inputs, context)?;
+        let mut result = Self::new(inputs)?;
         for input in inputs {
             let shape = Borrow::<Shape>::borrow(input);
             match shape {
@@ -334,9 +324,10 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
     fn resolve(&self, point: Point) -> Result<(Option<f64>, Option<f64>)> {
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
-        let source_vertex = self
-            .vertices
-            .get(&VertexKey::new(point, self.context.domain()));
+        let source_vertex = self.vertices.get(&VertexKey::new(
+            point,
+            crate::geometry::TopologyDomain::Cartesian,
+        ));
         if let Some(candidates) = source_vertex {
             for &candidate in candidates {
                 z.observe(candidate.z());
@@ -346,8 +337,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
         // An exact source occurrence owns its XY even when it is merely near
         // another ordinate-carrying segment. Do not turn that near miss into
         // a fabricated interpolation through a tolerance envelope.
-        if self.context.domain() == crate::geometry::TopologyDomain::Cartesian
-            && source_vertex.is_some()
+        if source_vertex.is_some()
             && !self
                 .segments
                 .iter()
@@ -359,37 +349,27 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
             return Ok((z.value(), m.value()));
         }
         for &(start, end) in &self.segments {
-            let resolved = match self.context.domain() {
-                crate::geometry::TopologyDomain::Cartesian => {
-                    let pad = self.tolerance;
-                    let segment_pad = ON_SEGMENT_EPSILON * point_distance(start, end);
-                    let min_x = start.x.min(end.x) - segment_pad;
-                    let max_x = start.x.max(end.x) + segment_pad;
-                    let min_y = start.y.min(end.y) - segment_pad;
-                    let max_y = start.y.max(end.y) + segment_pad;
-                    if point.x < min_x - pad
-                        || point.x > max_x + pad
-                        || point.y < min_y - pad
-                        || point.y > max_y + pad
-                    {
-                        None
-                    } else {
-                        segment_ordinate_at(start, end, point, self.tolerance)?
-                    }
-                },
-                crate::geometry::TopologyDomain::Geographic(_) => unreachable!(
-                    "geographic source carry is resolved from retained source occurrences"
-                ),
+            let pad = self.tolerance;
+            let segment_pad = ON_SEGMENT_EPSILON * point_distance(start, end);
+            let min_x = start.x.min(end.x) - segment_pad;
+            let max_x = start.x.max(end.x) + segment_pad;
+            let min_y = start.y.min(end.y) - segment_pad;
+            let max_y = start.y.max(end.y) + segment_pad;
+            let resolved = if point.x < min_x - pad
+                || point.x > max_x + pad
+                || point.y < min_y - pad
+                || point.y > max_y + pad
+            {
+                None
+            } else {
+                segment_ordinate_at(start, end, point, self.tolerance)?
             };
-            if let Some((source_z, source_m)) = resolved {
-                // Exact endpoint candidates are already represented by the
-                // vertex table in Cartesian space.
-                if self.context.domain().is_geographic()
-                    || !same_point(start, point) && !same_point(end, point)
-                {
-                    z.observe(source_z);
-                    m.observe(source_m);
-                }
+            if let Some((source_z, source_m)) = resolved
+                && !same_point(start, point)
+                && !same_point(end, point)
+            {
+                z.observe(source_z);
+                m.observe(source_m);
             }
         }
         Ok((z.value(), m.value()))
@@ -425,12 +405,20 @@ impl AxisValue {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(in crate::geometry) struct NodeOrdinates {
+pub(crate) struct NodeOrdinates {
     pub(in crate::geometry) z: AxisValue,
     pub(in crate::geometry) m: AxisValue,
 }
 
 impl NodeOrdinates {
+    pub(crate) fn z_value(self) -> Option<f64> {
+        self.z.value()
+    }
+
+    pub(crate) fn m_value(self) -> Option<f64> {
+        self.m.value()
+    }
+
     pub(in crate::geometry) const fn merge(&mut self, other: Self) {
         self.z.merge(other.z);
         self.m.merge(other.m);
@@ -463,6 +451,18 @@ pub(crate) type ParallelSourceArcMetricAccess<'a> =
 pub(crate) struct RootMetricState {
     edge: Option<crate::crs::ChartEdge>,
     total_length: Option<f64>,
+}
+
+impl RootMetricState {
+    pub(crate) const fn from_admitted_edge(
+        edge: &crate::crs::ChartEdge,
+        total_length: Option<f64>,
+    ) -> Self {
+        Self {
+            edge: Some(*edge),
+            total_length,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -708,16 +708,23 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
     longitude: RetainedChartDisplacement,
     parameter: f64,
     axes: CoordinateAxes,
-    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+    metric_access: Option<&SourceArcMetricAccess<'_, 'm, M>>,
     state: &mut RootMetricState,
     work: &mut impl Work,
 ) -> crate::error::Result<ComputedSampleOrdinates> {
     let chart_parameter = ExactRational::from_f64(parameter);
-    let request = SourceArcRequest::new(source_frame, source, axes, &chart_parameter, || {
-        Ok(longitude)
-    })?;
     let mut fraction = None;
-    let ordinates = source_arc_ordinates(&request, metric, state, &mut fraction, work)?;
+    let ordinates = resolve_source_root(
+        source_frame,
+        source,
+        longitude,
+        &chart_parameter,
+        axes,
+        metric_access,
+        state,
+        &mut fraction,
+        work,
+    )?;
     let [start, end] = *source;
     Ok(ComputedSampleOrdinates {
         y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
@@ -728,6 +735,7 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
 
 /// Standalone ordinary resolution owns one fresh root/request slot and delegates
 /// to the same numerical path with `Unmetered`.
+#[cfg(test)]
 pub(in crate::geometry) fn source_arc_ordinates_unmetered<'m, M: ChartMetric + 'm>(
     request: &SourceArcRequest<'_>,
     metric: impl FnOnce() -> crate::error::Result<&'m M>,
@@ -751,10 +759,7 @@ pub(crate) fn interpolate_source_projection<M: ChartMetric>(
     record_source_arc_projection();
 
     let point = projection.interpolate_point(start, end)?;
-    let axes = CoordinateAxes::new(
-        HasZ(start.z().is_some() && end.z().is_some()),
-        HasM(start.m().is_some() && end.m().is_some()),
-    );
+    let axes = start.axes().union(end.axes());
     if !axes.has_z() && !axes.has_m() {
         return Ok(point);
     }
@@ -781,8 +786,8 @@ pub(crate) fn interpolate_source_projection<M: ChartMetric>(
     Point::new_axes(
         point.x,
         point.y,
-        ZOrdinate(ordinates.z.value().or_else(|| point.z())),
-        MOrdinate(ordinates.m.value().or_else(|| point.m())),
+        ZOrdinate(ordinates.z.value()),
+        MOrdinate(ordinates.m.value()),
     )
 }
 
@@ -984,7 +989,7 @@ pub(crate) fn carry_overlay_ordinates(
 /// have a conflict or an unsourced vertex.
 fn carry_or_degrade(
     output: &Shape,
-    source: &OrdinateSource<'_, '_>,
+    source: &OrdinateSource,
     declared_axes: CoordinateAxes,
     operation: &str,
     strict: bool,
@@ -1356,7 +1361,7 @@ mod tests {
             longitude,
             0.0,
             CoordinateAxes::XYZM,
-            endpoint_metric,
+            Some(&endpoint_metric),
             &mut state,
             &mut work,
         )
@@ -1380,7 +1385,7 @@ mod tests {
             longitude,
             0.25,
             CoordinateAxes::XY,
-            xy_metric,
+            Some(&xy_metric),
             &mut state,
             &mut work,
         )
@@ -1390,6 +1395,37 @@ mod tests {
         assert_eq!(xy.m.0, None);
         assert_eq!(xy_metric_accesses.get(), 0);
         assert!(state.edge.is_none());
+    }
+
+    #[test]
+    fn computed_native_publisher_sample_uses_independent_wgs84_chart_arclength() {
+        let frame = crate::geographic::GeographicFrame::crs84();
+        let source = [
+            Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
+            Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0))).unwrap(),
+        ];
+        let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+        let metric_access = || Ok(&metric);
+        let longitude = retained_source_longitude(frame, &source);
+        let mut state = RootMetricState::default();
+        let mut work = Unmetered;
+
+        let sample = computed_native_sample_ordinates(
+            frame,
+            &source,
+            longitude,
+            0.5,
+            CoordinateAxes::XYZM,
+            Some(&metric_access),
+            &mut state,
+            &mut work,
+        )
+        .unwrap();
+
+        assert_eq!(sample.y, 40.0);
+        assert!((sample.z.0.unwrap() - 124.792_495_251_506_88).abs() <= 2.0e-12);
+        assert!((sample.m.0.unwrap() - 329.584_990_503_013_7).abs() <= 4.0e-12);
     }
 
     #[test]

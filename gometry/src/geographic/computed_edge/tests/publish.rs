@@ -239,6 +239,48 @@ fn computed_ring_keeps_its_start_and_copies_full_closure() {
     ]);
     assert_eq!(result.first(), result.last());
 }
+
+#[test]
+fn metric_free_publisher_preserves_endpoints_and_refuses_ordinate_samples() {
+    let endpoints = [
+        Point::new_raw_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))),
+        Point::new_raw_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0))),
+    ];
+    let mut endpoint_budget = ExpansionBudget::new("computed edge", "computed edges");
+    let preserved = publish_computed_chain(
+        degrees(),
+        endpoints.as_slice(),
+        false,
+        &mut endpoint_budget,
+        |_, start, end| {
+            ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+        },
+    )
+    .unwrap();
+    assert!(preserved.is_none());
+
+    let points = [
+        Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0))),
+        Point::new_raw_axes(260.0, 10.0, ZOrdinate(Some(19.0)), MOrdinate(Some(43.0))),
+    ];
+    let mut budget = ExpansionBudget::new("computed edge", "computed edges");
+    let error = publish_computed_chain(
+        degrees(),
+        points.as_slice(),
+        false,
+        &mut budget,
+        |_, start, end| {
+            ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+    ));
+}
+
 #[test]
 fn positive_half_period_closing_cap_is_not_rotated_or_split() {
     let ring = [

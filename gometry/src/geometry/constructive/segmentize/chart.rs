@@ -2,6 +2,9 @@ use super::output::OutputColumns;
 use super::plan::Route;
 use super::routes::point_from_xy;
 use super::*;
+use crate::geometry::ordinates::{RootMetricState, resolve_source_root};
+use crate::geometry::tessellation::exact::ExactRational;
+use crate::work::Unmetered;
 #[derive(Default)]
 pub(crate) struct ChartSourceParameters {
     /// Cumulative parameter-vector ends for each original chart edge.
@@ -91,6 +94,12 @@ impl ChartEmission<'_, '_> {
     ) -> Result<()> {
         let source_start = self.source.nth_coord(self.source_segment);
         let source_end = self.source.nth_coord(self.source_segment.wrapping_add(1));
+        let source = [source_start, source_end];
+        let axes = self.source.axes();
+        let metric =
+            crate::crs::EllipsoidMetric::for_geodesic_at_frame(self.geodesic, 0, self.edge.frame());
+        let mut metric_state = RootMetricState::from_admitted_edge(&self.edge, Some(self.length));
+        let mut work = Unmetered;
         let mut previous_parameter = 0.0;
         let mut last_emitted_parameter = None;
         for step in 1..=self.pieces {
@@ -124,15 +133,20 @@ impl ChartEmission<'_, '_> {
                             "chart-edge subdivision calculation produced a non-finite coordinate",
                         ));
                     }
-                    let ordinate_fraction = if refined {
-                        self.edge.arclength_fraction(
-                            parameter,
-                            Some(self.length),
-                            self.geodesic,
-                        )?
-                    } else {
-                        fraction
-                    };
+                    let chart_parameter = ExactRational::from_f64(parameter);
+                    let mut fraction_slot = None;
+                    let metric_access = || Ok(&metric);
+                    let ordinates = resolve_source_root(
+                        self.edge.frame(),
+                        &source,
+                        self.edge.retained_displacement(),
+                        &chart_parameter,
+                        axes,
+                        Some(&metric_access),
+                        &mut metric_state,
+                        &mut fraction_slot,
+                        &mut work,
+                    )?;
                     if refined {
                         let additional = refined_generated
                             .checked_add(1)
@@ -143,12 +157,12 @@ impl ChartEmission<'_, '_> {
                         budget.check_additional(requested)?;
                         *refined_generated = additional;
                     }
-                    output.push_chart_point(
-                        self.source,
-                        self.source_segment,
-                        point,
-                        ordinate_fraction,
-                    )?;
+                    output.push_point(Point::new_axes(
+                        point.x,
+                        point.y,
+                        crate::geometry::ZOrdinate(ordinates.z.value()),
+                        crate::geometry::MOrdinate(ordinates.m.value()),
+                    )?)?;
                     record_parameter(parameter);
                     last_emitted_parameter = Some(parameter);
                     Ok(())

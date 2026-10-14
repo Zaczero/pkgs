@@ -4,24 +4,24 @@ use crate::collections::{HashMap, try_hash_map};
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 use crate::geometry::coverage::{
-    BorderTieBreak, CoverageOverlapRule, ScaledLengthSum, longest_border_ranked_owner,
-    scaled_point_distance,
+    BorderTieBreak, CoverageOverlapRule, ScaledLength, ScaledLengthSum, longest_border_ranked_owner,
 };
 use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::ExactRational;
-use crate::geometry::{ExactRationalArea, GeometryErrorKind, XY, point_distance};
+use crate::geometry::{ChartMetric, ExactRationalArea, GeometryErrorKind, XY, point_distance};
 use crate::work::Work;
 
 struct QFaceMetrics {
-    area: ExactRationalArea,
-    perimeter: f64,
+    chart_area: ExactRationalArea,
+    chart_perimeter: f64,
     boundary_darts: Vec<QDartId>,
-    border_lengths: HashMap<usize, ScaledLengthSum>,
+    surface_border_lengths: HashMap<usize, ScaledLengthSum>,
 }
 
-fn q_face_metrics(
+fn q_face_metrics<M: ChartMetric>(
     topology: &ExactGeographicTopology,
     span_rows: &[Vec<usize>],
+    metric: &M,
     work: &mut impl Work,
 ) -> Result<Vec<QFaceMetrics>> {
     let q = &topology.q;
@@ -30,10 +30,10 @@ fn q_face_metrics(
     )?;
     let mut metrics = std::iter::repeat_with(|| {
         Ok(QFaceMetrics {
-            area: ExactRationalArea::new(),
-            perimeter: 0.0,
+            chart_area: ExactRationalArea::new(),
+            chart_perimeter: 0.0,
             boundary_darts: Vec::new(),
-            border_lengths: try_hash_map()?,
+            surface_border_lengths: try_hash_map()?,
         })
     })
     .take(q.global_face_count)
@@ -76,6 +76,55 @@ fn q_face_metrics(
             .copied()
             .flatten()
             .ok_or_else(|| GeometryErrorKind::Invalid("coverage face span has no Q dart".into()))?;
+        let rows_on_span = span_rows.get(span_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage face span has no source rows".into())
+        })?;
+        let border_length = if rows_on_span.is_empty() {
+            ScaledLength::default()
+        } else {
+            let span = q.spans.get(span_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage face span is out of range".into())
+            })?;
+            let owner = span.owners.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage face span has no source owner".into())
+            })?;
+            let source_edge = topology
+                .sources
+                .edges
+                .get(owner.source_edge.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "coverage face span has an unknown source edge".into(),
+                    )
+                })?;
+            let retained_edge = crate::crs::ChartEdge::from_retained(
+                source_edge.source[0],
+                source_edge.source[1],
+                topology.sources.frame,
+                source_edge.retained_longitude(),
+            )?;
+            let start_parameter = owner.source_range.start.round()?;
+            let end_parameter = owner.source_range.end.round()?;
+            ScaledLength::from_finite(metric.chart_edge_interval_length(
+                &retained_edge,
+                start_parameter,
+                end_parameter,
+            )?)
+        };
+        let dart = q.darts.get(forward.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage face references an unknown Q dart".into())
+        })?;
+        let start = q.ports.get(dart.from_port.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage face dart has no start port".into())
+        })?;
+        let end = q.ports.get(dart.to_port.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("coverage face dart has no end port".into())
+        })?;
+        let start_xy = XY::new(start.point.x.round()?, start.point.y.round()?);
+        let end_xy = XY::new(end.point.x.round()?, end.point.y.round()?);
+        let chart_length = point_distance(start_xy, end_xy);
+        // Measure the retained source interval so a Q cut or longitude lift
+        // cannot select a different chart branch for the ellipsoidal length.
         let backward = QDartId(forward.0 ^ 1);
         for (face, dart_id) in [(*left, forward), (*right, backward)] {
             work.charge_into_error(1)?;
@@ -83,26 +132,11 @@ fn q_face_metrics(
                 GeometryErrorKind::Invalid("coverage face references an unknown Q face".into())
             })?;
             metric.boundary_darts.push(dart_id);
-            let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage face references an unknown Q dart".into())
-            })?;
-            let start = q.ports.get(dart.from_port.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage face dart has no start port".into())
-            })?;
-            let end = q.ports.get(dart.to_port.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage face dart has no end port".into())
-            })?;
-            let start_xy = XY::new(start.point.x.round()?, start.point.y.round()?);
-            let end_xy = XY::new(end.point.x.round()?, end.point.y.round()?);
-            let length = point_distance(start_xy, end_xy);
-            metric.perimeter += length;
-            let border_length = scaled_point_distance(start_xy, end_xy);
-            for &row in span_rows.get(span_index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage face span has no source rows".into())
-            })? {
+            metric.chart_perimeter += chart_length;
+            for &row in rows_on_span {
                 work.charge_into_error(1)?;
                 metric
-                    .border_lengths
+                    .surface_border_lengths
                     .entry(row)
                     .or_insert_with(ScaledLengthSum::default)
                     .add(border_length);
@@ -160,7 +194,7 @@ fn q_face_metrics(
                 let start_x = start.point.x.try_add_with_work(&x_offset, work)?;
                 let end_x = end.point.x.try_add_with_work(&x_offset, work)?;
                 add_chart_cross(
-                    &mut metric.area,
+                    &mut metric.chart_area,
                     &start_x,
                     &start.point.y,
                     &end_x,
@@ -223,7 +257,7 @@ fn q_face_metrics(
             };
             let pole_y = ExactRational::from_f64(topology.sources.frame.chart_pole_latitude(pole));
             add_cross_coordinates(
-                &mut metric.area,
+                &mut metric.chart_area,
                 &cycle_end_x,
                 &cycle_end_y,
                 &cycle_end_x,
@@ -231,7 +265,7 @@ fn q_face_metrics(
                 work,
             )?;
             add_cross_coordinates(
-                &mut metric.area,
+                &mut metric.chart_area,
                 &cycle_end_x,
                 &pole_y,
                 &cycle_start_x,
@@ -239,7 +273,7 @@ fn q_face_metrics(
                 work,
             )?;
             add_cross_coordinates(
-                &mut metric.area,
+                &mut metric.chart_area,
                 &cycle_start_x,
                 &pole_y,
                 &cycle_start_x,
@@ -349,18 +383,18 @@ fn next_face_boundary_dart(
 
 fn gap_is_enclosed_and_narrow(metric: &QFaceMetrics, gap_width: f64) -> Result<bool> {
     if metric.boundary_darts.is_empty()
-        || metric.area.sign() != ExactSign::Positive
-        || metric.perimeter == 0.0
+        || metric.chart_area.sign() != ExactSign::Positive
+        || metric.chart_perimeter == 0.0
     {
         return Ok(false);
     }
-    let area = metric.area.round_abs_half()?;
-    Ok(2.0 * area / metric.perimeter < gap_width)
+    let area = metric.chart_area.round_abs_half()?;
+    Ok(2.0 * area / metric.chart_perimeter < gap_width)
 }
 
 fn select_overlap_owner(
     candidates: &[usize],
-    row_areas: &[f64],
+    row_surface_areas: &[f64],
     overlap_rule: CoverageOverlapRule,
     metric: Option<&QFaceMetrics>,
 ) -> Result<usize> {
@@ -372,11 +406,11 @@ fn select_overlap_owner(
             .iter()
             .copied()
             .max_by(|left, right| {
-                row_areas
+                row_surface_areas
                     .get(*left)
                     .expect("row candidate comes from the admitted coverage")
                     .total_cmp(
-                        row_areas
+                        row_surface_areas
                             .get(*right)
                             .expect("row candidate comes from the admitted coverage"),
                     )
@@ -389,11 +423,11 @@ fn select_overlap_owner(
             .iter()
             .copied()
             .min_by(|left, right| {
-                row_areas
+                row_surface_areas
                     .get(*left)
                     .expect("row candidate comes from the admitted coverage")
                     .total_cmp(
-                        row_areas
+                        row_surface_areas
                             .get(*right)
                             .expect("row candidate comes from the admitted coverage"),
                     )
@@ -410,7 +444,7 @@ fn select_overlap_owner(
             })?;
             let ranked = candidates.iter().copied().map(|row| {
                 let rank = metric
-                    .border_lengths
+                    .surface_border_lengths
                     .get(&row)
                     .copied()
                     .unwrap_or_default()
@@ -426,29 +460,46 @@ fn select_overlap_owner(
 }
 
 impl GeographicCoverageAnalysis {
+    pub(crate) fn has_overlapping_faces(&self) -> bool {
+        self.face_rows.iter().any(|occupants| occupants.len() > 1)
+    }
+
     pub(crate) fn assign_cleaning_faces(
         &self,
-        row_areas: &[f64],
+        row_surface_areas: &[f64],
         gap_width: f64,
         overlap_rule: CoverageOverlapRule,
+        metric: Option<&impl ChartMetric>,
         work: &mut impl Work,
     ) -> Result<GeographicCoverageFaceAssignment> {
         if !(gap_width.is_finite() && gap_width >= 0.0) {
             return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
         }
         let row_count = self.topology.sources.row_count;
-        if row_areas.len() != row_count {
+        if row_surface_areas.len() != row_count {
             return Err(GeometryErrorKind::Invalid(
-                "geographic coverage row areas are out of sync with the Q inventory".into(),
+                "geographic coverage row surface areas are out of sync with the Q inventory".into(),
             )
             .into());
         }
-        let metrics =
-            if gap_width > 0.0 || matches!(overlap_rule, CoverageOverlapRule::LongestBorder) {
-                Some(q_face_metrics(&self.topology, &self.span_rows, work)?)
-            } else {
-                None
-            };
+        let metrics = if gap_width > 0.0
+            || (self.has_overlapping_faces()
+                && matches!(overlap_rule, CoverageOverlapRule::LongestBorder))
+        {
+            let metric = metric.ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "geographic border ranking is missing the operation's CRS metric".into(),
+                )
+            })?;
+            Some(q_face_metrics(
+                &self.topology,
+                &self.span_rows,
+                metric,
+                work,
+            )?)
+        } else {
+            None
+        };
         let mut face_owners = vec![None; self.face_rows.len()];
         let mut gap_assignments = vec![false; self.face_rows.len()];
         for (face, occupants) in self.face_rows.iter().enumerate() {
@@ -465,7 +516,7 @@ impl GeographicCoverageAnalysis {
                         })?;
                     if gap_is_enclosed_and_narrow(metric, gap_width)? {
                         let candidates = metric
-                            .border_lengths
+                            .surface_border_lengths
                             .iter()
                             .map(|(&row, &length)| (row, length.rank()));
                         let owner = longest_border_ranked_owner(
@@ -491,7 +542,7 @@ impl GeographicCoverageAnalysis {
                     let metric = metrics.as_ref().and_then(|metrics| metrics.get(face));
                     Some(select_overlap_owner(
                         occupants,
-                        row_areas,
+                        row_surface_areas,
                         overlap_rule,
                         metric,
                     )?)

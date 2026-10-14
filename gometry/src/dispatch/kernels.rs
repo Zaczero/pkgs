@@ -39,34 +39,6 @@ fn scale_area(value: f64, to_metre: f64) -> f64 {
     value * to_metre * to_metre
 }
 
-fn publish_planar_geographic_edges(
-    output: Shape,
-    model: &crate::crs::MetricModel,
-    domain: TopologyDomain,
-    operation: &'static str,
-) -> Result<Shape> {
-    match (model, domain) {
-        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
-            crate::geometry::publish_raw_computed_shape(&output, frame, operation)
-        },
-        _ => Ok(output),
-    }
-}
-
-fn publish_planar_geographic_edges_budgeted(
-    output: Shape,
-    model: &crate::crs::MetricModel,
-    domain: TopologyDomain,
-    budget: &mut crate::geometry::ExpansionBudget,
-) -> Result<Shape> {
-    match (model, domain) {
-        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
-            crate::geometry::publish_raw_computed_shape_with_budget(&output, frame, budget)
-        },
-        _ => Ok(output),
-    }
-}
-
 fn publish_planar_geographic_edges_with_context(
     output: Shape,
     model: &crate::crs::MetricModel,
@@ -326,7 +298,7 @@ pub(crate) fn unary_buffer_budgeted(
             ),
         },
     )?;
-    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
+    publish_planar_geographic_edges_budgeted_with_context(output, model, ctx, budget)
 }
 
 /// Offset-curve kernel shared by the spine-routed free function.
@@ -473,7 +445,7 @@ pub(crate) fn unary_minimum_bounding_circle(
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MinimumBoundingCircle)?;
     let output = metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())?;
-    publish_planar_geographic_edges(output, model, ctx.domain, "minimum_bounding_circle")
+    publish_planar_geographic_edges_with_context(output, model, ctx, "minimum_bounding_circle")
 }
 
 /// Minimum-bounding-circle radius kernel shared by scalar and array methods.

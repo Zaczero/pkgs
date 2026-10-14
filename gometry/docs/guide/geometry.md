@@ -595,7 +595,10 @@ derivable and drop only the axis that cannot be sourced:
   If an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
   corner entering the output), or conflicting source values, that axis is
   dropped while the other axis may remain.
-- On geographic input, [`split`][gometry.split], [`snap`][gometry.snap],
+- On geographic input, overlays and source-preserving linework — including
+  [`boundary`][gometry.Geometry.boundary], [`split`][gometry.split],
+  [`snap`][gometry.snap], the default chart path of
+  [`segmentize`][gometry.Geometry.segmentize],
   [`convex_hull`][gometry.Geometry.convex_hull],
   [`nearest_points`][gometry.nearest_points],
   [`shortest_line`][gometry.shortest_line],
@@ -603,22 +606,22 @@ derivable and drop only the axis that cannot be sourced:
   [`subdivide`][gometry.Geometry.subdivide],
   [`line_merge`][gometry.Geometry.line_merge],
   [`coverage_union_all`][gometry.coverage_union_all], and
-   [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
-   inserted vertex when its producer traces it to a source edge. They interpolate
-   from that edge's original endpoints by ellipsoidal arclength of the retained
-   chart-straight source edge, not by its longitude/latitude parameter or a
-   later cut fragment.
-  Source vertices retain their own ordinates; when sources disagree, Z and M
-  are resolved independently and only a conflicting or unavailable axis is
-  dropped. A planar `unit=` choice for a nearest witness does not change how
-  its geographic source-edge ordinates are carried. A computed point with no
-   sourceable edge has no source Z/M. Recursive subdivision retains original
-   input-edge traces through later cuts, including seam vertices (±180° in
-   EPSG:4326). On a certified zero-length source edge, an interior sample
-   retains an axis only when both endpoint values have identical bits; a
-   disagreement follows the operation's per-axis conflict policy. Exact source
-   endpoints keep their own values. A nonzero edge whose measured length
-   underflows to zero raises a metric error.
+  [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
+  inserted vertex when its producer traces it to a source edge. Z/M follow
+  that edge's original endpoints by ellipsoidal arclength of the retained
+  chart-straight source edge on its CRS ellipsoid, not by its chart parameter
+  or a later cut fragment. This includes vertices inserted at the antimeridian
+  for GeoJSON serialization. Source vertices retain their stored ordinate bits;
+  when sources disagree, Z and M resolve independently and only a conflicting
+  or unavailable axis is dropped. A planar `unit=` choice for a nearest witness
+  does not change how its geographic source-edge ordinates are carried. A
+  computed point with no sourceable edge has no source Z/M. Recursive
+  subdivision retains original input-edge traces through later cuts, including
+  seam vertices (±180° in EPSG:4326). On a certified zero-length source edge,
+  an interior sample retains an axis only when both endpoint values have
+  identical bits; a disagreement follows the operation's per-axis conflict
+  policy. Exact source endpoints keep their own values. A nonzero edge whose
+  measured length underflows to zero raises a metric error.
 - A degenerate [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle]
   that follows geographic source-edge support carries resolvable Z/M by the
   same original-edge arclength rule. A computed areal rectangle is a new
