@@ -7,8 +7,8 @@ use crate::geometry::ordinates::{
     RequestRowInput, RootCatalog, RootId, RootRequest, RootSourceData, resolve_request_rows,
 };
 use crate::geometry::{
-    ChartMetric, CoordinateAxes, ExactRational, MOrdinate, Point, SegmentProjection,
-    SourceArcMetricAccess, ZOrdinate,
+    ChartMetric, CoordinateAxes, MOrdinate, Point, SegmentProjection, SourceArcMetricAccess,
+    ZOrdinate,
 };
 use crate::work::Work;
 
@@ -363,7 +363,7 @@ pub(crate) fn emit_from_original_with_source_roots<M: ChartMetric>(
 mod tests {
     use super::*;
     use crate::geometry::segments::projection::segment_projection;
-    use crate::geometry::{CoordSeq, LineSeq, Segment, Shape, XY};
+    use crate::geometry::{CoordSeq, ExactRational, LineSeq, Segment, Shape, XY};
 
     #[test]
     fn geographic_provenance_rejects_an_on_segment_sample_without_a_root() {
