@@ -145,7 +145,7 @@ impl ChartEmission<'_, '_> {
                     let chart_parameter = ExactRational::from_f64(parameter);
                     // Only the unchanged station shares the inverse solve's measured
                     // arclength; representability refinements retain their own request.
-                    let mut fraction_slot = if !refined {
+                    let mut fraction_slot = if !refined && (axes.has_z() || axes.has_m()) {
                         station.and_then(|station| station.fraction_at(parameter, self.length))
                     } else {
                         None

@@ -168,7 +168,12 @@ fn chart_station_endpoints_parallel_and_degenerate_keep_their_measures() {
     )
     .unwrap();
     let length = parallel.length(&geodesic).unwrap();
-    for (distance, parameter) in [(-1.0, 0.0), (0.0, 0.0), (length, 1.0), (length * 2.0, 1.0)] {
+    for (distance, parameter) in [
+        (-1.0, 0.0_f64),
+        (0.0, 0.0),
+        (length, 1.0),
+        (length * 2.0, 1.0),
+    ] {
         let station = parallel.locate_t(distance, length, &geodesic).unwrap();
         assert_eq!(station.parameter().to_bits(), parameter.to_bits());
         assert_eq!(
