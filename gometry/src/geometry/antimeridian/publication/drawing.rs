@@ -18,7 +18,7 @@ use crate::geometry::publication::{
     ProducerLiteral, ProducerSourceRootUse, StorageTarget, finish_producer_drawing,
 };
 use crate::geometry::storage::StorageLayout;
-use crate::geometry::{GeometryErrorKind, MultiMember, Shape};
+use crate::geometry::{GeometryErrorKind, MultiMember, Polygon, Shape};
 use crate::work::Unmetered;
 
 pub(crate) struct SplitDrawing {
@@ -83,18 +83,17 @@ impl SplitDrawing {
             &mut next_image,
             &mut outputs,
         )?;
-        let mut source_uses = SourceRootUseBuilder::new(logical_row, &self.lineage);
-        source_uses.visit(&self.shape, &self.shape_lineage, &shape_layout)?;
-        let source_root_uses = source_uses.finish(&shape_layout)?;
-        let (chart_restrictions, next_node) = restrictions::chart_restrictions(
-            &self.shape,
-            &self.shape_lineage,
+        let mut source_uses = SourceRootUseBuilder::new(
+            logical_row,
             &self.lineage,
             self.frame,
             self.longitude_scale,
             self.latitude_scale,
             node_start,
-        )?;
+        );
+        source_uses.visit(&self.shape, &self.shape_lineage, &shape_layout)?;
+        let (source_root_uses, chart_restrictions, next_node) =
+            source_uses.finish(&shape_layout)?;
         Ok(SplitRowDrawing {
             shape: self.shape,
             layout: LiteralRowLayout {
@@ -179,18 +178,35 @@ impl SplitArrayPublisher {
 struct SourceRootUseBuilder<'a> {
     logical_row: usize,
     lineage: &'a LineageCatalog,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    next_node: u32,
     source_root_uses: Vec<ProducerSourceRootUse>,
+    chart_restrictions: Vec<DirectedChartRestrictionUse>,
     point: usize,
     line: usize,
     polygon: usize,
 }
 
 impl<'a> SourceRootUseBuilder<'a> {
-    const fn new(logical_row: usize, lineage: &'a LineageCatalog) -> Self {
+    const fn new(
+        logical_row: usize,
+        lineage: &'a LineageCatalog,
+        frame: GeographicFrame,
+        longitude_scale: f64,
+        latitude_scale: f64,
+        next_node: u32,
+    ) -> Self {
         Self {
             logical_row,
             lineage,
+            frame,
+            longitude_scale,
+            latitude_scale,
+            next_node,
             source_root_uses: Vec::new(),
+            chart_restrictions: Vec::new(),
             point: 0,
             line: 0,
             polygon: 0,
@@ -257,6 +273,7 @@ impl<'a> SourceRootUseBuilder<'a> {
 
     fn polygon(
         &mut self,
+        source: &Polygon,
         polygon: &LiteralPolygon<ProducerImageId>,
         lineage: &LineagePolygon,
     ) -> Result<()> {
@@ -267,8 +284,30 @@ impl<'a> SourceRootUseBuilder<'a> {
             .into());
         }
         self.sequence(&polygon.shell, &lineage.shell)?;
+        restrictions::ring_restrictions(
+            &source.shell,
+            &lineage.shell,
+            self.lineage,
+            self.frame,
+            self.longitude_scale,
+            self.latitude_scale,
+            &mut self.next_node,
+            &mut self.chart_restrictions,
+        )?;
         for (hole, lineage) in polygon.holes.iter().zip(&lineage.holes) {
             self.sequence(hole, lineage)?;
+        }
+        for (hole, lineage) in source.holes.iter().zip(&lineage.holes) {
+            restrictions::ring_restrictions(
+                hole,
+                lineage,
+                self.lineage,
+                self.frame,
+                self.longitude_scale,
+                self.latitude_scale,
+                &mut self.next_node,
+                &mut self.chart_restrictions,
+            )?;
         }
         Ok(())
     }
@@ -334,9 +373,9 @@ impl<'a> SourceRootUseBuilder<'a> {
                     }
                 }
             },
-            (Shape::Polygon(_), ShapeLineage::Polygon(lineage)) => {
+            (Shape::Polygon(source), ShapeLineage::Polygon(lineage)) => {
                 let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
-                self.polygon(polygon, lineage)?;
+                self.polygon(source, polygon, lineage)?;
             },
             (
                 Shape::MultiPolygon(polygons),
@@ -353,9 +392,9 @@ impl<'a> SourceRootUseBuilder<'a> {
                 for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
                     match (polygon, lineage) {
                         (MultiMember::Empty, None) => {},
-                        (MultiMember::Value(_), Some(lineage)) => {
+                        (MultiMember::Value(source), Some(lineage)) => {
                             let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
-                            self.polygon(polygon, lineage)?;
+                            self.polygon(source, polygon, lineage)?;
                         },
                         _ => {
                             return Err(GeometryErrorKind::Invalid(
@@ -396,7 +435,11 @@ impl<'a> SourceRootUseBuilder<'a> {
     fn finish(
         self,
         layout: &ShapeLiteralLayout<ProducerImageId>,
-    ) -> Result<Vec<ProducerSourceRootUse>> {
+    ) -> Result<(
+        Vec<ProducerSourceRootUse>,
+        Vec<DirectedChartRestrictionUse>,
+        u32,
+    )> {
         if self.point != layout.points.len()
             || self.line != layout.lines.len()
             || self.polygon != layout.polygons.len()
@@ -406,6 +449,10 @@ impl<'a> SourceRootUseBuilder<'a> {
             )
             .into());
         }
-        Ok(self.source_root_uses)
+        Ok((
+            self.source_root_uses,
+            self.chart_restrictions,
+            self.next_node,
+        ))
     }
 }

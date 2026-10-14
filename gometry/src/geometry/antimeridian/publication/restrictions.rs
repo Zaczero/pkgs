@@ -1,34 +1,10 @@
-use super::super::lineage::{LineageCatalog, LineageSequence, ShapeLineage};
+use super::super::lineage::{LineageCatalog, LineageSequence};
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
 };
-use crate::geometry::{Coordinates as _, GeometryErrorKind, MultiMember, Point, Ring, Shape};
-
-pub(super) fn chart_restrictions(
-    shape: &Shape,
-    lineage: &ShapeLineage,
-    catalog: &LineageCatalog,
-    frame: GeographicFrame,
-    longitude_scale: f64,
-    latitude_scale: f64,
-    node_start: u32,
-) -> Result<(Vec<DirectedChartRestrictionUse>, u32)> {
-    let mut restrictions = Vec::new();
-    let mut next_node_id = node_start;
-    collect_restrictions(
-        shape,
-        lineage,
-        catalog,
-        frame,
-        longitude_scale,
-        latitude_scale,
-        &mut next_node_id,
-        &mut restrictions,
-    )?;
-    Ok((restrictions, next_node_id))
-}
+use crate::geometry::{Coordinates as _, GeometryErrorKind, Point, Ring};
 
 const fn chart_pole(point: Point) -> Option<ChartPole> {
     if point.y.to_bits() == 90.0_f64.to_bits() {
@@ -127,7 +103,7 @@ fn ring_vertex_node(
     Ok(node)
 }
 
-fn ring_restrictions(
+pub(super) fn ring_restrictions(
     ring: &Ring,
     lineage: &LineageSequence,
     catalog: &LineageCatalog,
@@ -222,127 +198,4 @@ fn ring_restrictions(
         });
     }
     Ok(())
-}
-
-fn collect_restrictions(
-    shape: &Shape,
-    lineage: &ShapeLineage,
-    catalog: &LineageCatalog,
-    frame: GeographicFrame,
-    longitude_scale: f64,
-    latitude_scale: f64,
-    next_node_id: &mut u32,
-    output: &mut Vec<DirectedChartRestrictionUse>,
-) -> Result<()> {
-    match (shape, lineage) {
-        (Shape::Polygon(polygon), ShapeLineage::Polygon(polygon_lineage)) => {
-            ring_restrictions(
-                &polygon.shell,
-                &polygon_lineage.shell,
-                catalog,
-                frame,
-                longitude_scale,
-                latitude_scale,
-                next_node_id,
-                output,
-            )?;
-            for (hole, hole_lineage) in polygon.holes.iter().zip(&polygon_lineage.holes) {
-                ring_restrictions(
-                    hole,
-                    hole_lineage,
-                    catalog,
-                    frame,
-                    longitude_scale,
-                    latitude_scale,
-                    next_node_id,
-                    output,
-                )?;
-            }
-            Ok(())
-        },
-        (
-            Shape::MultiPolygon(polygons),
-            ShapeLineage::MultiPolygon {
-                members: lineages, ..
-            },
-        ) => {
-            if polygons.member_count() != lineages.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "antimeridian multipolygon members and lineage disagree".into(),
-                )
-                .into());
-            }
-            for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
-                match (polygon, lineage) {
-                    (MultiMember::Empty, None) => {},
-                    (MultiMember::Value(polygon), Some(lineage)) => {
-                        ring_restrictions(
-                            &polygon.shell,
-                            &lineage.shell,
-                            catalog,
-                            frame,
-                            longitude_scale,
-                            latitude_scale,
-                            next_node_id,
-                            output,
-                        )?;
-                        for (hole, hole_lineage) in polygon.holes.iter().zip(&lineage.holes) {
-                            ring_restrictions(
-                                hole,
-                                hole_lineage,
-                                catalog,
-                                frame,
-                                longitude_scale,
-                                latitude_scale,
-                                next_node_id,
-                                output,
-                            )?;
-                        }
-                    },
-                    _ => {
-                        return Err(GeometryErrorKind::Invalid(
-                            "antimeridian multipolygon members and lineage disagree".into(),
-                        )
-                        .into());
-                    },
-                }
-            }
-            Ok(())
-        },
-        (Shape::GeometryCollection(collection), ShapeLineage::GeometryCollection(lineages)) => {
-            if collection.len() != lineages.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "antimeridian collection members and lineage disagree".into(),
-                )
-                .into());
-            }
-            for (member, lineage) in collection.iter().zip(lineages) {
-                let lineage = lineage.as_ref().ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "antimeridian collection member has no lineage".into(),
-                    )
-                })?;
-                collect_restrictions(
-                    member,
-                    lineage,
-                    catalog,
-                    frame,
-                    longitude_scale,
-                    latitude_scale,
-                    next_node_id,
-                    output,
-                )?;
-            }
-            Ok(())
-        },
-        (Shape::Point(_), ShapeLineage::Point { .. })
-        | (Shape::MultiPoint(_), ShapeLineage::MultiPoint { .. })
-        | (Shape::LineString(_), ShapeLineage::LineString(_))
-        | (Shape::MultiLineString(_), ShapeLineage::MultiLineString { .. })
-        | (Shape::Empty(..), ShapeLineage::Empty) => Ok(()),
-        _ => Err(GeometryErrorKind::Invalid(
-            "antimeridian shape and lineage disagree during chart restriction collection".into(),
-        )
-        .into()),
-    }
 }
