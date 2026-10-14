@@ -202,8 +202,8 @@ impl ArrayRows {
         }
     }
 
-    /// Admit a final writer's row map with the payload, preserving its logical
-    /// row identity through present-only compaction or scattering.
+    /// Check the independently captured logical domain before admitting the
+    /// writer's payload, including present-only compaction or scattering.
     pub(crate) fn admit_with_row_map<T, W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
@@ -228,57 +228,11 @@ impl ArrayRows {
         let logical_rows = missing
             .as_ref()
             .map_or_else(|| storage.len(), ValidityMask::len);
-        let row_map = match (missing.as_ref(), layout) {
-            (Some(mask), StorageLayout::PresentOnly) => {
-                if row_map.len() != mask.present_count() {
-                    return Err(GeometryErrorKind::message(
-                        "present-only writer map must match the payload's present row count",
-                    ));
-                }
-                let mut present_rows = row_map.into_iter();
-                let mut logical_map = Vec::with_capacity(mask.len());
-                for logical in 0..mask.len() {
-                    if mask.is_missing(logical) {
-                        logical_map.push(None);
-                    } else {
-                        logical_map.push(Some(present_rows.next().flatten().ok_or_else(|| {
-                            GeometryErrorKind::message("present writer row has no literal map")
-                        })?));
-                    }
-                }
-                if present_rows.next().is_some() {
-                    return Err(GeometryErrorKind::message(
-                        "present-only writer map contains an unused row",
-                    ));
-                }
-                logical_map
-            },
-            (Some(mask), StorageLayout::LogicalRows) => {
-                if row_map.len() != mask.len() {
-                    return Err(GeometryErrorKind::message(
-                        "logical writer map must match the missing mask",
-                    ));
-                }
-                if row_map
-                    .iter()
-                    .enumerate()
-                    .any(|(logical, row)| mask.is_missing(logical) != row.is_none())
-                {
-                    return Err(GeometryErrorKind::message(
-                        "logical writer map does not match row validity",
-                    ));
-                }
-                row_map
-            },
-            (None, _) => {
-                if row_map.len() != logical_rows || row_map.iter().any(Option::is_none) {
-                    return Err(GeometryErrorKind::message(
-                        "dense writer map must cover every payload row",
-                    ));
-                }
-                row_map
-            },
-        };
+        Self::validate_publication_domain(
+            logical_rows,
+            missing.as_ref(),
+            row_map.iter().map(Option::is_some),
+        )?;
         let rows = Self::admit(storage, missing, layout)?;
         if row_map.len() != rows.len() {
             return Err(GeometryErrorKind::message(
@@ -286,6 +240,26 @@ impl ArrayRows {
             ));
         }
         Ok((rows, row_map))
+    }
+
+    pub(crate) fn validate_publication_domain(
+        actual_count: usize,
+        missing: Option<&ValidityMask>,
+        expected_present: impl ExactSizeIterator<Item = bool>,
+    ) -> Result<()> {
+        if expected_present.len() != actual_count {
+            return Err(GeometryErrorKind::message(
+                "final writer changed the logical output length",
+            ));
+        }
+        for (logical, expected) in expected_present.enumerate() {
+            if expected == missing.is_some_and(|mask| mask.is_missing(logical)) {
+                return Err(GeometryErrorKind::message(
+                    "final writer changed logical row presence",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn storage(&self) -> &GeometryArrayStorage {

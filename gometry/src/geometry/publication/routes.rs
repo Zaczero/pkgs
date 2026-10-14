@@ -90,6 +90,7 @@ pub(crate) fn finish_geographic_nearest_point_columns(
         for (logical_row, shape) in shapes.into_iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(logical_row)) {
                 writer.try_push_missing()?;
+                row_map.push(None);
                 continue;
             }
             let (points, literal) = match &shape {
@@ -128,6 +129,8 @@ pub(crate) fn finish_geographic_nearest_point_columns(
                     .into());
                 },
             };
+            let structure =
+                crate::geometry::embedding_completion::literals::ShapeStructure::capture(&shape);
             writer.try_push(shape)?;
             row_map.push(Some(LiteralRowLayout {
                 operation: 0,
@@ -135,6 +138,7 @@ pub(crate) fn finish_geographic_nearest_point_columns(
                 group_row: None,
                 value_row: None,
                 layout: ShapeLiteralLayout {
+                    structure: Some(structure),
                     points,
                     lines: Vec::new(),
                     polygons: Vec::new(),

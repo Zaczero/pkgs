@@ -17,6 +17,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let valid = FrozenLiteralBuffers::shapes(Shape::Point(expected), ShapeLiteralLayout {
+        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -43,6 +44,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let buffers = FrozenLiteralBuffers::shapes(Shape::Point(corrupted), ShapeLiteralLayout {
+        structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -71,6 +73,7 @@ fn packed_rows_bind_after_present_only_admission() {
         StorageLayout::PresentOnly,
         vec![
             Some(point_literal_row(0, 7, 0, None, None)),
+            None,
             Some(point_literal_row(1, 7, 2, None, None)),
         ],
         &mut work,
@@ -113,6 +116,7 @@ fn packed_rows_bind_after_present_only_admission() {
         StorageLayout::PresentOnly,
         vec![
             Some(point_literal_row(0, 7, 0, None, None)),
+            None,
             Some(point_literal_row(1, 7, 2, None, None)),
         ],
         &mut work,
@@ -227,7 +231,7 @@ fn all_missing_packed_rows_have_no_literal_reads() {
         storage,
         ValidityMask::from_vec(3, vec![true, true, true]),
         StorageLayout::PresentOnly,
-        Vec::new(),
+        vec![None, None, None],
         &mut work,
     )
     .expect("admit all-missing rows");
@@ -287,6 +291,9 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::LineString, CoordinateAxes::XYZM, false,
+                )),
                 points: Vec::new(),
                 lines: vec![LiteralSequence {
                     output: 0,
@@ -335,6 +342,9 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Polygon, CoordinateAxes::XYZM, false,
+                )),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {

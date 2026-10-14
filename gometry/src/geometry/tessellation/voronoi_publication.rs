@@ -25,6 +25,7 @@ pub(crate) struct VoronoiDrawingWriter {
     row_map: Vec<Option<LiteralRowLayout<ProducerImageId>>>,
     literals: Vec<ProducerLiteral>,
     group_offsets: Vec<i64>,
+    expected_group_present: Vec<bool>,
 }
 
 impl VoronoiDrawingWriter {
@@ -47,6 +48,7 @@ impl VoronoiDrawingWriter {
             } else {
                 Vec::new()
             },
+            expected_group_present: Vec::new(),
         }
     }
 
@@ -87,6 +89,11 @@ impl VoronoiDrawingWriter {
                 .ok_or_else(|| voronoi_publication_error("Voronoi polygon has no shell"))?;
             let holes = rings.collect();
             let layout = ShapeLiteralLayout {
+                structure: Some(
+                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
+                        &shape,
+                    ),
+                ),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {
@@ -158,6 +165,13 @@ impl VoronoiDrawingWriter {
                 group_row: address.group_row,
                 value_row: address.value_row,
                 layout: ShapeLiteralLayout {
+                    structure: Some(
+                        crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                            crate::geometry::GeometryKind::LineString,
+                            coordinates.axes(),
+                            vertex_count == 0,
+                        ),
+                    ),
                     points: Vec::new(),
                     lines: vec![LiteralSequence {
                         output: 0,
@@ -171,7 +185,7 @@ impl VoronoiDrawingWriter {
         Ok(())
     }
 
-    pub(crate) fn end_group(&mut self) -> Result<()> {
+    pub(crate) fn end_group(&mut self, missing: bool) -> Result<()> {
         if self.target != StorageTarget::Groups {
             return Err(voronoi_publication_error(
                 "only a Groups writer has logical group boundaries",
@@ -179,6 +193,7 @@ impl VoronoiDrawingWriter {
         }
         let next = i64::try_from(self.row_map.len()).map_err(|_| ResourceError::SizeOverflow)?;
         self.group_offsets.push(next);
+        self.expected_group_present.push(!missing);
         Ok(())
     }
 
@@ -210,6 +225,7 @@ impl VoronoiDrawingWriter {
             row_map,
             literals,
             group_offsets,
+            expected_group_present,
             ..
         } = self;
         let (storage, value_missing, layout) = output.finish_parts()?;
@@ -234,6 +250,11 @@ impl VoronoiDrawingWriter {
                     .len()
                     .checked_sub(1)
                     .ok_or_else(|| voronoi_publication_error("Voronoi groups have no offsets"))?;
+                crate::geometry::storage::ArrayRows::validate_publication_domain(
+                    group_count,
+                    missing.as_ref(),
+                    expected_group_present.into_iter(),
+                )?;
                 if missing
                     .as_ref()
                     .is_some_and(|mask| mask.len() != group_count)

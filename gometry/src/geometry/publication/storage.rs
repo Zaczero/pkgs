@@ -24,7 +24,9 @@ use crate::work::{Unmetered, Work};
 pub(crate) struct PublicationRows {
     writer: StreamingShapes,
     pending: Vec<StoredPublicationRow>,
+    expected_present: Vec<bool>,
     group_offsets: Option<Vec<i64>>,
+    expected_group_present: Vec<bool>,
     value_count: usize,
     producer_drawing_required: bool,
     has_unreceipted_output: bool,
@@ -35,7 +37,9 @@ impl PublicationRows {
         Self {
             writer: StreamingShapes::with_capacity(0, rows),
             pending: Vec::new(),
+            expected_present: Vec::with_capacity(rows),
             group_offsets: None,
+            expected_group_present: Vec::new(),
             value_count: 0,
             producer_drawing_required: false,
             has_unreceipted_output: false,
@@ -54,7 +58,9 @@ impl PublicationRows {
         Self {
             writer: StreamingShapes::with_capacity(0, 0),
             pending: Vec::new(),
+            expected_present: Vec::new(),
             group_offsets: Some(offsets),
+            expected_group_present: Vec::with_capacity(groups),
             value_count: 0,
             producer_drawing_required: true,
             has_unreceipted_output: false,
@@ -75,6 +81,7 @@ impl PublicationRows {
                 self.pending.push(stored);
             },
         }
+        self.expected_present.push(true);
         self.value_count = self
             .value_count
             .checked_add(1)
@@ -90,10 +97,11 @@ impl PublicationRows {
             .into());
         }
         self.writer.try_push_missing()?;
+        self.expected_present.push(false);
         Ok(())
     }
 
-    pub(crate) fn end_group(&mut self) -> Result<()> {
+    pub(crate) fn end_group(&mut self, missing: bool) -> Result<()> {
         let offsets = self.group_offsets.as_mut().ok_or_else(|| {
             GeometryErrorKind::Invalid("only a Groups publication has group boundaries".into())
         })?;
@@ -101,6 +109,7 @@ impl PublicationRows {
             i64::try_from(self.value_count)
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         );
+        self.expected_group_present.push(!missing);
         Ok(())
     }
 
@@ -121,6 +130,11 @@ impl PublicationRows {
                 && self.pending.iter().all(|pending| pending.producer_drawing));
         if self.pending.is_empty() && !producer_drawing {
             let (storage, missing, layout) = self.writer.finish_parts()?;
+            ArrayRows::validate_publication_domain(
+                missing.as_ref().map_or(storage.len(), ValidityMask::len),
+                missing.as_ref(),
+                self.expected_present.into_iter(),
+            )?;
             return crate::PyGeometryArray::from_result_storage(
                 Arc::new(storage),
                 frame,
@@ -131,6 +145,11 @@ impl PublicationRows {
         }
         let (storage, missing, layout) = self.writer.finish_parts()?;
         let logical_count = missing.as_ref().map_or(storage.len(), ValidityMask::len);
+        ArrayRows::validate_publication_domain(
+            logical_count,
+            missing.as_ref(),
+            self.expected_present.into_iter(),
+        )?;
         let mut logical_rows = std::iter::repeat_with(|| None)
             .take(logical_count)
             .collect::<Vec<Option<StoredPublicationRow>>>();
@@ -239,6 +258,11 @@ impl PublicationRows {
             .len()
             .checked_sub(1)
             .ok_or_else(|| GeometryErrorKind::Invalid("Groups offsets have no origin".into()))?;
+        ArrayRows::validate_publication_domain(
+            group_count,
+            missing.as_ref(),
+            self.expected_group_present.into_iter(),
+        )?;
         if missing
             .as_ref()
             .is_some_and(|mask| mask.len() != group_count)
@@ -249,6 +273,13 @@ impl PublicationRows {
             .into());
         }
         let (storage, value_missing, layout) = self.writer.finish_parts()?;
+        ArrayRows::validate_publication_domain(
+            value_missing
+                .as_ref()
+                .map_or(storage.len(), ValidityMask::len),
+            value_missing.as_ref(),
+            self.expected_present.into_iter(),
+        )?;
         let mut row_map = std::iter::repeat_with(|| None)
             .take(storage.len())
             .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
@@ -307,19 +338,6 @@ fn finish_producer_array(
         &mut row_map,
         |pending| Ok(pending.logical_row),
     )?;
-    let row_map = if layout == StorageLayout::PresentOnly {
-        if let Some(missing) = &missing {
-            row_map
-                .into_iter()
-                .enumerate()
-                .filter_map(|(logical, row)| (!missing.is_missing(logical)).then_some(row))
-                .collect()
-        } else {
-            row_map
-        }
-    } else {
-        row_map
-    };
     let mut work = Unmetered;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
@@ -457,25 +475,12 @@ pub(super) fn finish_array_batch<W: Work>(
         }
     }
 
-    let writer_map = if batch.layout == StorageLayout::PresentOnly {
-        match &batch.missing {
-            Some(missing) => row_map
-                .into_iter()
-                .enumerate()
-                .filter_map(|(logical, binding)| (!missing.is_missing(logical)).then_some(binding))
-                .collect(),
-            None => row_map,
-        }
-    } else {
-        row_map
-    };
-
     let mut unmetered = Unmetered;
     let (rows, row_map) = ArrayRows::admit_with_row_map(
         batch.storage,
         batch.missing,
         batch.layout,
-        writer_map,
+        row_map,
         &mut unmetered,
     )?;
     let row_map = Arc::from(row_map);
@@ -519,6 +524,269 @@ mod tests {
         Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
     }
 
+    fn drawing_pending(shape: Shape, row: usize) -> PendingPublicationRow {
+        let mut image = 0;
+        let mut outputs = (0, 0, 0);
+        let (layout, literals) = ProducerDrawingReceipt::drawing_layout(
+            &shape,
+            row,
+            None,
+            None,
+            &mut image,
+            &mut outputs,
+        )
+        .unwrap();
+        PendingPublicationRow::producer_drawing(shape, layout, literals, row, "domain test")
+            .unwrap()
+    }
+
+    #[test]
+    fn final_writer_rejects_present_to_missing() {
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(drawing_pending(
+            Shape::Point(xyzm(2., 3., 4., 5.)),
+            0,
+        )))
+        .unwrap();
+        let mut writer = StreamingShapes::with_capacity(0, 1);
+        writer.try_push_missing().unwrap();
+        rows.writer = writer;
+        assert!(rows.finish(Frame::default()).is_err());
+    }
+
+    #[test]
+    fn final_writer_rejects_typed_empty_substitution() {
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(drawing_pending(
+            Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ),
+            0,
+        )))
+        .unwrap();
+        let mut writer = StreamingShapes::with_capacity(0, 1);
+        writer
+            .try_push(Shape::Empty(
+                crate::geometry::GeometryKind::Point,
+                CoordinateAxes::XY,
+            ))
+            .unwrap();
+        rows.writer = writer;
+        assert!(rows.finish(Frame::default()).is_err());
+    }
+
+    #[test]
+    fn final_writer_rejects_changed_logical_domains() {
+        let point = Shape::Point(xyzm(2., 3., 4., 5.));
+        let empty = Shape::Empty(
+            crate::geometry::GeometryKind::LineString,
+            CoordinateAxes::XYZM,
+        );
+        for (name, expected, actual) in [
+            ("missing becomes present", vec![None], vec![Some(
+                point.clone(),
+            )]),
+            (
+                "same-count validity swap",
+                vec![Some(point.clone()), None],
+                vec![None, Some(point.clone())],
+            ),
+            (
+                "trailing missing row deletion",
+                vec![Some(point.clone()), None],
+                vec![Some(point.clone())],
+            ),
+            ("all-missing truncation", vec![None, None], vec![None]),
+            ("zero-row insertion", vec![], vec![None]),
+            ("present empty becomes missing", vec![Some(empty)], vec![
+                None,
+            ]),
+        ] {
+            let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
+            for (logical, shape) in expected.into_iter().enumerate() {
+                if let Some(shape) = shape {
+                    rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
+                        .unwrap();
+                } else {
+                    rows.try_push_missing().unwrap();
+                }
+            }
+            let mut writer = StreamingShapes::with_capacity(0, actual.len());
+            for shape in actual {
+                if let Some(shape) = shape {
+                    writer.try_push(shape).unwrap();
+                } else {
+                    writer.try_push_missing().unwrap();
+                }
+            }
+            rows.writer = writer;
+            let Err(error) = rows.finish(Frame::default()) else {
+                panic!("{name}: changed final domain was published");
+            };
+            assert!(
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+                ),
+                "{name}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn final_writer_preserves_empty_and_missing_domains() {
+        for expected in [
+            vec![],
+            vec![None, None],
+            vec![Some(Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ))],
+            vec![None, Some(Shape::Point(xyzm(2., 3., 4., 5.))), None],
+        ] {
+            let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
+            for (logical, shape) in expected.iter().cloned().enumerate() {
+                if let Some(shape) = shape {
+                    rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
+                        .unwrap();
+                } else {
+                    rows.try_push_missing().unwrap();
+                }
+            }
+            let result = rows.finish(Frame::default()).unwrap();
+            assert_eq!(result.len(), expected.len());
+        }
+    }
+
+    #[test]
+    fn final_writer_rejects_changed_container_structure() {
+        for (expected, actual) in [
+            ("POINT (2 3)", "MULTIPOINT ((2 3))"),
+            (
+                "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (2 3)))",
+                "GEOMETRYCOLLECTION (POINT (2 3))",
+            ),
+            ("MULTIPOINT (EMPTY, (2 3))", "MULTIPOINT ((2 3), EMPTY)"),
+            ("LINESTRING ZM EMPTY", "LINESTRING EMPTY"),
+            ("LINESTRING ZM EMPTY", "POINT ZM EMPTY"),
+        ] {
+            let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+            rows.try_push(GeometryOutput::Pending(drawing_pending(
+                crate::io::parse_wkt(expected).unwrap(),
+                0,
+            )))
+            .unwrap();
+            let mut writer = StreamingShapes::with_capacity(0, 1);
+            writer
+                .try_push(crate::io::parse_wkt(actual).unwrap())
+                .unwrap();
+            rows.writer = writer;
+            let Err(error) = rows.finish(Frame::default()) else {
+                panic!("{expected} was replaced with {actual}");
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn final_writer_accepts_authorized_typed_empty_normalization() {
+        let mut pending = drawing_pending(
+            Shape::Empty(crate::geometry::GeometryKind::Point, CoordinateAxes::XY),
+            0,
+        );
+        pending
+            .replace_empty_shape(Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ))
+            .unwrap();
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        assert_eq!(rows.finish(Frame::default()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn final_groups_reject_changed_empty_group_domains() {
+        for (expected, actual) in [(false, true), (true, false)] {
+            let mut rows = PublicationRows::with_groups_capacity(1);
+            rows.end_group(expected).unwrap();
+            let missing = ValidityMask::from_vec(1, vec![actual]);
+            let Err(error) = rows.finish_groups(Frame::default(), missing) else {
+                panic!("an empty group's presence changed");
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ));
+        }
+        let mut rows = PublicationRows::with_groups_capacity(2);
+        rows.end_group(false).unwrap();
+        rows.end_group(false).unwrap();
+        rows.group_offsets.as_mut().unwrap().pop();
+        let Err(error) = rows.finish_groups(Frame::default(), None) else {
+            panic!("a trailing empty group was deleted");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn final_groups_preserve_empty_missing_and_typed_empty_values() {
+        let mut rows = PublicationRows::with_groups_capacity(5);
+        rows.end_group(false).unwrap();
+        rows.end_group(true).unwrap();
+        let mut pending = drawing_pending(
+            Shape::Empty(
+                crate::geometry::GeometryKind::LineString,
+                CoordinateAxes::XYZM,
+            ),
+            2,
+        );
+        pending.layout.group_row = Some(2);
+        pending.layout.value_row = Some(0);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        rows.end_group(false).unwrap();
+        rows.end_group(false).unwrap();
+        rows.end_group(false).unwrap();
+        let groups = rows
+            .finish_groups(
+                Frame::default(),
+                ValidityMask::from_vec(5, vec![false, true, false, false, false]),
+            )
+            .unwrap();
+        assert_eq!(groups.geometry_values_view().unwrap().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn final_groups_reject_shifted_value_boundaries() {
+        let mut rows = PublicationRows::with_groups_capacity(2);
+        rows.end_group(false).unwrap();
+        let mut pending = drawing_pending(Shape::Point(xyzm(2., 3., 4., 5.)), 1);
+        pending.layout.group_row = Some(1);
+        pending.layout.value_row = Some(0);
+        for literal in &mut pending.producer_literals {
+            literal.address.logical_row = 1;
+            literal.address.group_row = Some(1);
+            literal.address.value_row = Some(0);
+        }
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        rows.end_group(false).unwrap();
+        *rows.group_offsets.as_mut().unwrap().get_mut(1).unwrap() = 1;
+        let Err(error) = rows.finish_groups(Frame::default(), None) else {
+            panic!("a value moved into another group");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
     fn array_batch(stored: Point, expected: Point) -> (ArrayPublicationBatch, Frame) {
         let frame = Frame::default();
         let image = PublicationImage::SourceOnly(QSourceImage::PublicationSample(0));
@@ -533,6 +801,11 @@ mod tests {
                 group_row: None,
                 value_row: None,
                 layout: ShapeLiteralLayout {
+                    structure: Some(
+                        crate::geometry::embedding_completion::literals::ShapeStructure::capture(
+                            &Shape::Point(expected),
+                        ),
+                    ),
                     points: vec![LiteralPoint {
                         output: 0,
                         axes: CoordinateAxes::XYZM,
@@ -706,7 +979,7 @@ mod tests {
 
         let mut rows = PublicationRows::with_groups_capacity(1);
         rows.try_push(GeometryOutput::Pending(pending))?;
-        rows.end_group()?;
+        rows.end_group(false)?;
         rows.finish_groups(Frame::default(), None)
     }
 

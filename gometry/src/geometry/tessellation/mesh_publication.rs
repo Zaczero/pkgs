@@ -454,6 +454,13 @@ fn append_mesh_outputs(
             group_row,
             value_row: value_row_address,
             layout: ShapeLiteralLayout {
+                structure: Some(
+                    crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                        crate::geometry::GeometryKind::Polygon,
+                        first.axes,
+                        false,
+                    ),
+                ),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {

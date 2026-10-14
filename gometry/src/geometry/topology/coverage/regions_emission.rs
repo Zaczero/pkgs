@@ -419,6 +419,11 @@ impl CoverageRows {
             }
             let shape = Shape::narrow_polygons(axes, polygons);
             let layout = ShapeLiteralLayout {
+                structure: Some(
+                    crate::geometry::embedding_completion::literals::ShapeStructure::capture(
+                        &shape,
+                    ),
+                ),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: polygon_layouts,

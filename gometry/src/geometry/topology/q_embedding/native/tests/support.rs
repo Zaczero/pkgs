@@ -71,6 +71,7 @@ use crate::work::Work;
         work: &mut impl Work,
     ) -> Result<SourceFrozenDrawing> {
         let layout = ShapeLiteralLayout {
+            structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(point))),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::XYZM,

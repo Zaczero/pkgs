@@ -70,6 +70,9 @@ fn scalar_polygon_literals(
 
     Ok((
         ShapeLiteralLayout {
+            structure: Some(
+                crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
+            ),
             points: Vec::new(),
             lines: Vec::new(),
             polygons,

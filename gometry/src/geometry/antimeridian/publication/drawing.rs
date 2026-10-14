@@ -10,7 +10,6 @@ use crate::geometry::publication::{
     FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
     finish_producer_drawing,
 };
-use crate::geometry::storage::StorageLayout;
 use crate::work::Unmetered;
 
 pub(crate) struct SplitDrawing {
@@ -109,13 +108,14 @@ impl SplitArrayPublisher {
 
     pub(crate) fn finish(self, frame: Frame) -> Result<FinishedGeometry> {
         let (storage, missing, layout) = self.writer.finish_parts()?;
-        let row_map = match layout {
-            StorageLayout::PresentOnly => self.row_map.into_iter().flatten().map(Some).collect(),
-            StorageLayout::LogicalRows => self.row_map,
-        };
         let mut work = Unmetered;
-        let buffers =
-            FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
+        let buffers = FrozenLiteralBuffers::rows(
+            Arc::new(storage),
+            missing,
+            layout,
+            self.row_map,
+            &mut work,
+        )?;
         finish_producer_drawing(
             ProducerDrawingReceipt::new(buffers, self.literals),
             frame,

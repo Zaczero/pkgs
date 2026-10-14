@@ -231,6 +231,7 @@
         let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
         let mut port_records = vec![None; reference.plan.ports.len()];
         let buffers = FrozenLiteralBuffers::shapes(Shape::Point(record), ShapeLiteralLayout {
+            structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::capture(&Shape::Point(record))),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: crate::geometry::CoordinateAxes::XY,
@@ -319,6 +320,9 @@
                 crate::geometry::CoordinateAxes::XY,
             ),
             ShapeLiteralLayout {
+                structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Point, crate::geometry::CoordinateAxes::XY, true,
+                )),
                 points: Vec::<LiteralPoint<EmissionPortId>>::new(),
                 lines: Vec::new(),
                 polygons: Vec::new(),

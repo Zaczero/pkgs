@@ -342,6 +342,9 @@ fn point_literal_row(
         group_row,
         value_row,
         layout: ShapeLiteralLayout {
+            structure: Some(crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                crate::geometry::GeometryKind::Point, CoordinateAxes::XYZM, false,
+            )),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::XYZM,

@@ -305,6 +305,9 @@ where
         });
     }
     let layout = ShapeLiteralLayout {
+        structure: Some(
+            crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
+        ),
         points,
         lines,
         polygons,

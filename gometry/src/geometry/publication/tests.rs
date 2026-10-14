@@ -41,6 +41,11 @@ fn point_literal_layout(
         group_row,
         value_row,
         layout: ShapeLiteralLayout {
+            structure: Some(
+                crate::geometry::embedding_completion::literals::ShapeStructure::capture(
+                    &Shape::Point(point),
+                ),
+            ),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::from_point(point),
@@ -140,6 +145,9 @@ fn producer_line_shape_layout(
         group_row: None,
         value_row: None,
         layout: ShapeLiteralLayout {
+            structure: Some(
+                crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
+            ),
             points: Vec::new(),
             lines,
             polygons: Vec::new(),
@@ -305,6 +313,13 @@ fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> Prod
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(
+                    crate::geometry::embedding_completion::literals::ShapeStructure::primitive(
+                        GeometryKind::Polygon,
+                        CoordinateAxes::XY,
+                        false,
+                    ),
+                ),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {
@@ -932,6 +947,9 @@ fn producer_polygon_shape_layout(
         group_row: None,
         value_row: None,
         layout: ShapeLiteralLayout {
+            structure: Some(
+                crate::geometry::embedding_completion::literals::ShapeStructure::capture(shape),
+            ),
             points: Vec::new(),
             lines: Vec::new(),
             polygons: literal_polygons,
