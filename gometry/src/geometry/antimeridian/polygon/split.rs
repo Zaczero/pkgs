@@ -217,28 +217,67 @@ pub(super) fn seam_piece_lineage(
     })
 }
 
-fn polygon_parts_shape(
-    parts: Vec<super::super::lineage::PolygonWithLineage>,
+pub(super) fn polygon_parts_shape(
+    parts: Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>,
     axes: CoordinateAxes,
-) -> Result<(Shape, super::super::lineage::ShapeLineage)> {
+    captured: bool,
+) -> Result<(Shape, Option<super::super::lineage::ShapeLineage>)> {
     let mut polygons = Vec::with_capacity(parts.len());
     let mut lineages = Vec::with_capacity(parts.len());
-    for part in parts {
-        polygons.push(part.polygon);
-        lineages.push(part.lineage);
+    for (polygon, lineage) in parts {
+        polygons.push(polygon);
+        lineages.push(lineage);
     }
     let shape = Shape::narrow_polygons(axes, polygons);
+    if !captured {
+        return Ok((shape, None));
+    }
     let lineage = match lineages.len() {
-        0 => super::super::lineage::ShapeLineage::Empty,
-        1 => super::super::lineage::ShapeLineage::Polygon(
-            lineages.pop().expect("one split polygon lineage exists"),
-        ),
-        _ => super::super::lineage::ShapeLineage::MultiPolygon {
+        0 => ShapeLineage::Empty,
+        1 => ShapeLineage::Polygon(lineages.pop().flatten().ok_or_else(|| {
+            GeometryErrorKind::Invalid("split polygon part has no member lineage".into())
+        })?),
+        _ => ShapeLineage::MultiPolygon {
             axes,
-            members: lineages.into_iter().map(Some).collect(),
+            members: lineages,
         },
     };
-    Ok((shape, lineage))
+    Ok((shape, Some(lineage)))
+}
+
+pub(super) fn split_polygon_member<M: ChartMetric>(
+    source: &Shape,
+    polygon: &Polygon,
+    lineage: Option<&super::super::lineage::LineagePolygon>,
+    source_frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    catalog: Option<&mut super::super::lineage::LineageCatalog>,
+) -> Result<Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>> {
+    match lineage {
+        Some(lineage) => {
+            let catalog = catalog.ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured polygon lineage has no event catalog".into())
+            })?;
+            split_polygon_with_lineage(
+                source,
+                polygon,
+                lineage,
+                PoleClosure::Auto,
+                HoleOverlayMode::Select,
+                source_frame,
+                metric_access,
+                catalog,
+            )
+            .map(|parts| {
+                parts
+                    .into_iter()
+                    .map(|part| (part.polygon, Some(part.lineage)))
+                    .collect()
+            })
+        },
+        None => split_polygon(source, polygon, PoleClosure::Auto, metric_access)
+            .map(|parts| parts.into_iter().map(|polygon| (polygon, None)).collect()),
+    }
 }
 
 fn append_polygon_edge_uses(
@@ -610,7 +649,17 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
             metric_access,
             catalog,
         )?;
-        let (mut result, mut result_lineage) = polygon_parts_shape(shell_parts, polygon.axes())?;
+        let (mut result, result_lineage) = polygon_parts_shape(
+            shell_parts
+                .into_iter()
+                .map(|part| (part.polygon, Some(part.lineage)))
+                .collect(),
+            polygon.axes(),
+            true,
+        )?;
+        let mut result_lineage = result_lineage.ok_or_else(|| {
+            GeometryErrorKind::Invalid("captured shell split has no lineage".into())
+        })?;
         let frame = GeographicFrame::crs84();
         for (hole, hole_lineage) in crossing_holes {
             let hole_polygon = Polygon::new(hole.clone(), Vec::new());
@@ -630,8 +679,17 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
                 metric_access,
                 catalog,
             )?;
-            let (hole_shape, hole_result_lineage) =
-                polygon_parts_shape(hole_parts, hole.coords().axes())?;
+            let (hole_shape, hole_result_lineage) = polygon_parts_shape(
+                hole_parts
+                    .into_iter()
+                    .map(|part| (part.polygon, Some(part.lineage)))
+                    .collect(),
+                hole.coords().axes(),
+                true,
+            )?;
+            let hole_result_lineage = hole_result_lineage.ok_or_else(|| {
+                GeometryErrorKind::Invalid("captured hole split has no lineage".into())
+            })?;
             let operands = [&result, &hole_shape];
             let use_quotient = match overlay_mode {
                 HoleOverlayMode::Select => {

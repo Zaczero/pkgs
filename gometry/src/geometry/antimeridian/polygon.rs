@@ -34,7 +34,7 @@ pub(super) use chart_events::{chart_latitude, chart_point};
 #[cfg(test)]
 use chart_shape::{chart_line, chart_polygon, chart_ring};
 use chart_shape::{chart_shape, map_xy_with_shared_owners};
-use split::{split_polygon, split_polygon_with_lineage};
+use split::{polygon_parts_shape, split_polygon, split_polygon_member};
 
 use super::lineage::{LineageCatalog, ShapeLineage};
 use super::normalize;
@@ -397,115 +397,96 @@ fn split_shape_with_lineage<M: ChartMetric>(
         (Shape::MultiLineString(lines), lineage) => {
             split_multiline(lines, lineage, catalog.as_deref_mut(), metric_access)
         },
-        (Shape::Polygon(polygon), None) => {
-            let parts = split_polygon(shape, polygon, PoleClosure::Auto, metric_access)?;
-            Ok((Shape::narrow_polygons(polygon.axes(), parts), None))
-        },
-        (Shape::Polygon(polygon), Some(ShapeLineage::Polygon(source))) => {
-            let catalog = catalog.as_deref_mut().ok_or_else(|| {
-                GeometryErrorKind::Invalid("captured polygon lineage has no event catalog".into())
-            })?;
-            let parts = split_polygon_with_lineage(
+        (Shape::Polygon(polygon), lineage) => {
+            let source = match lineage {
+                None => None,
+                Some(ShapeLineage::Polygon(source)) => Some(source),
+                Some(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian polygon and lineage disagree".into(),
+                    )
+                    .into());
+                },
+            };
+            let parts = split_polygon_member(
                 shape,
                 polygon,
                 source,
-                PoleClosure::Auto,
-                HoleOverlayMode::Select,
                 source_frame,
                 metric_access,
-                catalog,
+                catalog.as_deref_mut(),
             )?;
-            let lineages = parts
-                .iter()
-                .map(|part| Some(part.lineage.clone()))
-                .collect::<Vec<_>>();
-            let polygons = parts
-                .into_iter()
-                .map(|part| part.polygon)
-                .collect::<Vec<_>>();
-            let lineage = match lineages.as_slice() {
-                [] => ShapeLineage::Empty,
-                [Some(lineage)] => ShapeLineage::Polygon(lineage.clone()),
-                _ => ShapeLineage::MultiPolygon {
-                    axes: polygon.axes(),
-                    members: lineages,
-                },
-            };
-            Ok((
-                Shape::narrow_polygons(polygon.axes(), polygons),
-                Some(lineage),
-            ))
+            polygon_parts_shape(parts, polygon.axes(), source.is_some())
         },
-        (Shape::MultiPolygon(polygons), None) => {
-            let mut split = Vec::with_capacity(polygons.member_count());
-            for member in polygons.members_with_values() {
-                match member {
-                    MultiMember::Empty => split.push(MultiMember::Empty),
-                    MultiMember::Value(polygon) => {
-                        split.extend(
-                            split_polygon(shape, polygon, PoleClosure::Auto, metric_access)?
-                                .into_iter()
-                                .map(MultiMember::Value),
-                        );
-                    },
-                }
-            }
-            Ok((
-                Shape::MultiPolygon(MultiPolygon::try_new(polygons.axes(), split)?),
-                None,
-            ))
-        },
-        (
-            Shape::MultiPolygon(polygons),
-            Some(ShapeLineage::MultiPolygon {
-                axes,
-                members: source_members,
-            }),
-        ) => {
-            let mut split = Vec::with_capacity(polygons.member_count());
-            let mut lineages = Vec::with_capacity(polygons.member_count());
-            for (source, source_lineage) in polygons.members_with_values().zip(source_members) {
-                match (source, source_lineage) {
-                    (MultiMember::Empty, None) => {
-                        split.push(MultiMember::Empty);
-                        lineages.push(None);
-                    },
-                    (MultiMember::Value(polygon), Some(source_lineage)) => {
-                        let catalog = catalog.as_deref_mut().ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "captured multipolygon lineage has no event catalog".into(),
-                            )
-                        })?;
-                        let parts = split_polygon_with_lineage(
-                            shape,
-                            polygon,
-                            source_lineage,
-                            PoleClosure::Auto,
-                            HoleOverlayMode::Select,
-                            source_frame,
-                            metric_access,
-                            catalog,
-                        )?;
-                        for part in parts {
-                            lineages.push(Some(part.lineage));
-                            split.push(MultiMember::Value(part.polygon));
-                        }
-                    },
-                    _ => {
+        (Shape::MultiPolygon(polygons), lineage) => {
+            let (axes, source_members) = match lineage {
+                None => (polygons.axes(), None),
+                Some(ShapeLineage::MultiPolygon { axes, members }) => {
+                    if polygons.member_count() != members.len() {
                         return Err(GeometryErrorKind::Invalid(
                             "antimeridian polygon members and lineage disagree".into(),
                         )
                         .into());
+                    }
+                    (*axes, Some(members.as_slice()))
+                },
+                Some(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "antimeridian shape and member lineage disagree".into(),
+                    )
+                    .into());
+                },
+            };
+            let mut split = Vec::with_capacity(polygons.member_count());
+            let mut output_lineages =
+                source_members.map(|_| Vec::with_capacity(polygons.member_count()));
+            for (index, member) in polygons.members_with_values().enumerate() {
+                match member {
+                    MultiMember::Empty => {
+                        split.push(MultiMember::Empty);
+                        if let Some(lineages) = &mut output_lineages {
+                            lineages.push(None);
+                        }
+                    },
+                    MultiMember::Value(polygon) => {
+                        let source = match source_members {
+                            Some(source_members) => Some(
+                                source_members
+                                    .get(index)
+                                    .and_then(Option::as_ref)
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "antimeridian polygon members and lineage disagree"
+                                                .into(),
+                                        )
+                                    })?,
+                            ),
+                            None => None,
+                        };
+                        for (polygon, lineage) in split_polygon_member(
+                            shape,
+                            polygon,
+                            source,
+                            source_frame,
+                            metric_access,
+                            catalog.as_deref_mut(),
+                        )? {
+                            split.push(MultiMember::Value(polygon));
+                            if let Some(lineages) = &mut output_lineages {
+                                lineages.push(Some(lineage.ok_or_else(|| {
+                                    GeometryErrorKind::Invalid(
+                                        "captured split polygon has no member lineage".into(),
+                                    )
+                                })?));
+                            }
+                        }
                     },
                 }
             }
-            Ok((
-                Shape::MultiPolygon(MultiPolygon::try_new(*axes, split)?),
-                Some(ShapeLineage::MultiPolygon {
-                    axes: *axes,
-                    members: lineages,
-                }),
-            ))
+            let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, split)?);
+            let lineage =
+                output_lineages.map(|members| ShapeLineage::MultiPolygon { axes, members });
+            Ok((shape, lineage))
         },
         (Shape::GeometryCollection(collection), Some(ShapeLineage::GeometryCollection(source))) => {
             let owner = collection
