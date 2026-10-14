@@ -25,6 +25,7 @@ use crate::geometry::ordinates::{
 use crate::geometry::publication::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
 };
+use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
@@ -141,6 +142,9 @@ impl GeographicCoverageAnalysis {
                 }
             }
         }
+        try_sort_by_with_work(&mut selected_regions, work, |left, right, _work| {
+            Ok(left.root.cmp(&right.root))
+        })?;
         let selected_face_roots = plans
             .face_regions
             .iter()
