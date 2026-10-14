@@ -27,31 +27,22 @@ pub(super) fn publish_in(
         assert_eq!(step.to_bits(), (end.x - start.x).to_bits());
         ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
     };
-    if points
-        .iter()
-        .any(|point| point.z().is_some() || point.m().is_some())
-    {
-        let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
-        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
-        let metric_access = || Ok(&metric);
-        let context = crate::geometry::SourceArcContext::new(
-            crate::geometry::TopologyDomain::Geographic(frame),
-            Some(&metric_access),
-        );
-        crate::geometry::publish_native_computed_chain(
-            frame,
-            points,
-            closed_ring,
-            &mut budget,
-            &context,
-            intent,
-            |_, _| ComputedVertexIntent::Canonical,
-        )
-        .unwrap()
-        .unwrap_or_else(|| points.to_vec())
-    } else {
-        publish_computed_chain(frame, points, closed_ring, &mut budget, intent)
-            .unwrap()
-            .unwrap_or_else(|| points.to_vec())
-    }
+    let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+    let metric_access = || Ok(&metric);
+    let context = crate::geometry::SourceArcContext::new(
+        crate::geometry::TopologyDomain::Geographic(frame),
+        Some(&metric_access),
+    );
+    crate::geometry::publish_native_computed_chain(
+        frame,
+        points,
+        closed_ring,
+        &mut budget,
+        &context,
+        intent,
+        |_, _| ComputedVertexIntent::Canonical,
+    )
+    .unwrap()
+    .unwrap_or_else(|| points.to_vec())
 }
