@@ -187,7 +187,8 @@
         Ok(())
     }
     #[test]
-    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+    fn native_literal_readback_rejects_an_unchanged_point_with_a_corrupt_assigned_port(
+    ) -> Result<()> {
         use super::super::emission::native_port_point;
         use crate::geometry::Shape;
 
@@ -205,19 +206,18 @@
             .ok_or_else(|| GeometryErrorKind::Invalid("sample graph vertex is unknown".into()))?;
         let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
         let ordinates = [NodeOrdinates::default()];
-        let mut record = native_port_point(
+        let record = native_port_point(
             &reference.plan,
             &sites,
             &ordinates,
             port_id,
             crate::geometry::CoordinateAxes::XY,
         )?;
-        record.y = record.y.next_up();
         let mut exact_points = reference.graph.points.exact.clone();
         exact_points
             .get_mut(vertex as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("published vertex is unknown".into()))?
-            .y = ExactRational::from_f64(record.y);
+            .y = ExactRational::from_f64(record.y.next_up());
         let candidate_points = NativeReferencePoints::from_exact(exact_points, &mut budget)?;
         let checked = admit_candidate(
             &reference.graph.common,
@@ -258,7 +258,78 @@
                 )?,
                 PublicationOutcome::Reject(PublicationRejection::Native)
             ),
-            "the common Native binder rejects a post-admission endpoint mutation"
+            "the Native receiver rejects the unchanged Point against its assigned exact port"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_literal_readback_rejects_a_valid_point_with_corrupt_output_layout() -> Result<()> {
+        use super::super::emission::native_port_point;
+        use crate::geometry::Shape;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal layout", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (reference, port_id) =
+            single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("unchanged Native reference assignment was rejected".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
+        let ordinates = [NodeOrdinates::default()];
+        let record = native_port_point(
+            &reference.plan,
+            &sites,
+            &ordinates,
+            port_id,
+            crate::geometry::CoordinateAxes::XY,
+        )?;
+        let buffers = FrozenLiteralBuffers::shapes(
+            Shape::Point(record),
+            ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 1,
+                    axes: crate::geometry::CoordinateAxes::XY,
+                    image: port_id,
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        );
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let receipt = NativeCandidatePublication {
+            assignment: &assignment,
+            buffers,
+            sites: &sites,
+            ordinates: &ordinates,
+            port_records: &mut port_records,
+        };
+        assert!(matches!(
+            finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::QNative(receipt),
+                    topology.publication_frame().clone(),
+                    &mut budget,
+                ),
+                StorageTarget::Scalar,
+            )?,
+            PublicationOutcome::Reject(PublicationRejection::Native)
+        ));
+        assert_eq!(
+            port_records.get(port_id.0 as usize).copied().flatten(),
+            Some(record),
+            "materialized-port admission remains effective before layout rejection"
         );
         Ok(())
     }

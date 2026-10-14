@@ -1,7 +1,7 @@
 use super::{
-    CheckedImages, EmittedVertex, ExactChartPoint, ExactGeographicTopology, ExactQuotientKey,
-    ExactRational, ExactSourceEdge, GeometryErrorKind, Latitude, LiteralChart, NodeOrdinates,
-    Ordering, Point, PublicationInventory, QPortId, QSourceImage, Result, SourceEdgeId, XY,
+    EmittedVertex, ExactChartPoint, ExactGeographicTopology, ExactQuotientKey, ExactRational,
+    ExactSourceEdge, GeometryErrorKind, Latitude, LiteralReceiver, NodeOrdinates, Ordering, Point,
+    PublicationInventory, QPortId, QSourceImage, Result, SourceEdgeId, XY,
     exact_coordinate_matches_with_work, quotient_key_for_chart_position_with_work,
     rounded_chart_point_with_work,
 };
@@ -146,7 +146,7 @@ impl QSourceImages<'_> {
         self.source_port(require_q_source_image_port(self.topology, image)?)
     }
 }
-impl CheckedImages<QSourceImage> for QSourceImages<'_> {
+impl QSourceImages<'_> {
     fn image(&self, _address: LiteralAddress, image: QSourceImage) -> Result<&ExactChartPoint> {
         match image {
             QSourceImage::Port(_)
@@ -174,7 +174,7 @@ pub(in crate::geometry::topology::q_embedding) struct AssignedSourceChart<'a> {
     pub(in crate::geometry::topology::q_embedding) publication_points: &'a [XY],
     pub(in crate::geometry::topology::q_embedding) publication_ordinates: &'a [NodeOrdinates],
 }
-impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
+impl AssignedSourceChart<'_> {
     fn read_point<W: Work>(
         &mut self,
         _address: LiteralAddress,
@@ -327,7 +327,7 @@ pub(in crate::geometry::topology::q_embedding) struct SourceOnlyReceipt<'a> {
     pub(in crate::geometry::topology::q_embedding) chart: AssignedSourceChart<'a>,
     pub(in crate::geometry::topology::q_embedding) publication: Option<&'a PublicationInventory>,
 }
-impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
+impl SourceOnlyReceipt<'_> {
     fn image(&self, address: LiteralAddress, image: QSourceImage) -> Result<&ExactChartPoint> {
         if let QSourceImage::PublicationSample(sample) = image
             && self
@@ -343,8 +343,8 @@ impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
         self.images.image(address, image)
     }
 }
-impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
-    fn read_point<W: Work>(
+impl LiteralReceiver<QSourceImage> for SourceOnlyReceipt<'_> {
+    fn accepts_point<W: Work>(
         &mut self,
         address: LiteralAddress,
         image: QSourceImage,
@@ -352,9 +352,14 @@ impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
         expected_axes: crate::geometry::CoordinateAxes,
         stored_axes: crate::geometry::CoordinateAxes,
         work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        self.chart
-            .read_point(address, image, record, expected_axes, stored_axes, work)
+    ) -> Result<bool> {
+        let Some(actual) =
+            self.chart
+                .read_point(address, image, record, expected_axes, stored_axes, work)?
+        else {
+            return Ok(false);
+        };
+        Ok(actual == *self.image(address, image)?)
     }
 }
 #[cfg(test)]

@@ -1,8 +1,7 @@
 use super::receipt::{ProducerImageId, ProducerLiteral, PublicationLiteral};
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::LiteralAddress;
-use crate::geometry::embedding_completion::storage::{CheckedImages, LiteralChart};
-use crate::geometry::topology::ExactChartPoint;
+use crate::geometry::embedding_completion::storage::LiteralReceiver;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
 use crate::work::Work;
 
@@ -20,8 +19,7 @@ impl<I: Copy + Ord> CheckedLiteralSnapshot<I> {
             records.sort_unstable_by_key(key);
         }
         for [left, right] in records.array_windows::<2>() {
-            if key(left) == key(right) && (left.record != right.record || left.chart != right.chart)
-            {
+            if key(left) == key(right) && left.record != right.record {
                 return Err(GeometryErrorKind::Invalid(
                     "checked publication occurrences disagree on one literal identity".into(),
                 )
@@ -39,26 +37,8 @@ impl CheckedLiteralSnapshot<ProducerImageId> {
     }
 }
 
-impl<I: Copy + Ord> CheckedImages<I> for CheckedLiteralSnapshot<I> {
-    fn image(&self, address: LiteralAddress, image: I) -> Result<&ExactChartPoint> {
-        self.records
-            .binary_search_by_key(&(address, image), |literal| {
-                (literal.address, literal.image)
-            })
-            .ok()
-            .and_then(|index| self.records.get(index))
-            .map(|literal| &literal.chart)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "final storage literal has no checked publication identity".into(),
-                )
-                .into()
-            })
-    }
-}
-
-impl<I: Copy + Ord> LiteralChart<I> for CheckedLiteralSnapshot<I> {
-    fn read_point<W: Work>(
+impl<I: Copy + Ord> LiteralReceiver<I> for CheckedLiteralSnapshot<I> {
+    fn accepts_point<W: Work>(
         &mut self,
         address: LiteralAddress,
         image: I,
@@ -66,21 +46,20 @@ impl<I: Copy + Ord> LiteralChart<I> for CheckedLiteralSnapshot<I> {
         expected_axes: CoordinateAxes,
         stored_axes: CoordinateAxes,
         _work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        let Some(literal) = self
+    ) -> Result<bool> {
+        let Ok(index) = self
             .records
             .binary_search_by_key(&(address, image), |literal| {
                 (literal.address, literal.image)
             })
-            .ok()
-            .and_then(|index| self.records.get(index))
         else {
-            return Ok(None);
+            return Ok(false);
         };
-        if expected_axes != stored_axes || record != literal.record {
-            return Ok(None);
-        }
-        Ok(Some(literal.chart.clone()))
+        Ok(self.records.get(index).is_some_and(|literal| {
+            expected_axes == stored_axes
+                && CoordinateAxes::from_point(record) == stored_axes
+                && record == literal.record
+        }))
     }
 }
 
@@ -88,7 +67,6 @@ impl<I: Copy + Ord> LiteralChart<I> for CheckedLiteralSnapshot<I> {
 mod tests {
     use super::super::receipt::{CheckedPublicationLiteral, PublicationImage};
     use super::*;
-    use crate::geometry::tessellation::exact::ExactRational;
     use crate::geometry::topology::{EmissionPortId, QSourceImage};
     use crate::geometry::{MOrdinate, ZOrdinate};
     use crate::work::Unmetered;
@@ -118,10 +96,6 @@ mod tests {
             address,
             image,
             record,
-            chart: ExactChartPoint::from_rationals(
-                ExactRational::from_f64(record.x),
-                ExactRational::from_f64(record.y),
-            ),
         }
     }
 
@@ -166,38 +140,9 @@ mod tests {
             }),
             "the immutable snapshot retains complete-key order"
         );
-        assert_eq!(
-            CheckedImages::image(&snapshot, base, large_image).unwrap(),
-            &literal(base, large_image, base_point).chart
-        );
-        assert_eq!(
-            CheckedImages::image(&snapshot, base, PublicationImage::Native(EmissionPortId(0)))
-                .unwrap(),
-            &literal(
-                base,
-                PublicationImage::Native(EmissionPortId(0)),
-                native_point
-            )
-            .chart
-        );
-        assert_eq!(
-            CheckedImages::image(
-                &snapshot,
-                base,
-                PublicationImage::SourceOnly(QSourceImage::PublicationSample(0))
-            )
-            .unwrap(),
-            &literal(
-                base,
-                PublicationImage::SourceOnly(QSourceImage::PublicationSample(0)),
-                source_point
-            )
-            .chart
-        );
-
         let mut work = Unmetered;
         assert!(
-            LiteralChart::read_point(
+            LiteralReceiver::accepts_point(
                 &mut snapshot,
                 address(0, 1, None, None, 0),
                 large_image,
@@ -207,30 +152,39 @@ mod tests {
                 &mut work,
             )
             .unwrap()
-            .is_some()
         );
-        for (key, point) in [
-            (address(0, 0, Some(2), None, 0), group_point),
-            (address(0, 0, None, Some(3), 0), value_point),
-            (address(0, 0, None, None, 4), output_point),
-            (address(5, 0, None, None, 0), operation_point),
+        for (key, image, point) in [
+            (address(0, 0, Some(2), None, 0), large_image, group_point),
+            (address(0, 0, None, Some(3), 0), large_image, value_point),
+            (address(0, 0, None, None, 4), large_image, output_point),
+            (address(5, 0, None, None, 0), large_image, operation_point),
+            (
+                base,
+                PublicationImage::Native(EmissionPortId(0)),
+                native_point,
+            ),
+            (
+                base,
+                PublicationImage::SourceOnly(QSourceImage::PublicationSample(0)),
+                source_point,
+            ),
+            (base, large_image, base_point),
         ] {
             assert!(
-                LiteralChart::read_point(
+                LiteralReceiver::accepts_point(
                     &mut snapshot,
                     key,
-                    large_image,
+                    image,
                     point,
                     CoordinateAxes::XY,
                     CoordinateAxes::XY,
                     &mut work,
                 )
                 .unwrap()
-                .is_some()
             );
         }
         assert!(
-            LiteralChart::read_point(
+            !LiteralReceiver::accepts_point(
                 &mut snapshot,
                 base,
                 PublicationImage::ProducerDrawn(ProducerImageId::new(17)),
@@ -239,16 +193,22 @@ mod tests {
                 CoordinateAxes::XY,
                 &mut work,
             )
-            .unwrap()
-            .is_none(),
-            "readback returns no record for an absent full key"
+            .unwrap(),
+            "readback rejects a record for an absent full key"
         );
-        CheckedImages::image(
-            &snapshot,
-            base,
-            PublicationImage::ProducerDrawn(ProducerImageId::new(17)),
-        )
-        .expect_err("an absent checked image is rejected");
+        assert!(
+            !LiteralReceiver::accepts_point(
+                &mut snapshot,
+                base,
+                large_image,
+                Point::new_raw_xy(1.0, 0.0),
+                CoordinateAxes::XY,
+                CoordinateAxes::XY,
+                &mut work,
+            )
+            .unwrap(),
+            "readback rejects a changed signed-zero bit"
+        );
     }
 
     #[test]
@@ -273,16 +233,6 @@ mod tests {
             ])
             .is_err(),
             "bitwise point identity does not merge signed-zero occurrences"
-        );
-        let mut changed_chart = literal(address, image, original);
-        changed_chart.chart = ExactChartPoint::from_rationals(
-            ExactRational::from_f64(2.0),
-            ExactRational::from_f64(3.0),
-        );
-        assert!(
-            CheckedLiteralSnapshot::new(vec![literal(address, image, original), changed_chart])
-                .is_err(),
-            "equal records cannot disagree on their retained exact chart"
         );
     }
 }

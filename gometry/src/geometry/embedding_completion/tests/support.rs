@@ -11,7 +11,7 @@ use super::literals::{
     ShapeLiteralLayout,
 };
 use super::points::ExactPoints;
-use super::storage::{CheckedImages, FrozenLiteralBuffers, LiteralChart, LiteralCheck};
+use super::storage::{FrozenLiteralBuffers, LiteralCheck, LiteralReceiver};
 use crate::error::{ErrorKind, Result};
 use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::segment_index::sweep::{
@@ -164,53 +164,23 @@ fn near_one_exact_chart_point() -> ExactChartPoint {
 
 struct ImageRows(Vec<ExactChartPoint>);
 
-impl CheckedImages<u32> for ImageRows {
-    fn image(
-        &self,
-        _address: super::literals::LiteralAddress,
-        image: u32,
-    ) -> Result<&ExactChartPoint> {
-        self.0.get(image as usize).ok_or_else(|| {
+impl ImageRows {
+    fn matches_point(&self, image: u32, record: Point) -> Result<bool> {
+        let expected = self.0.get(image as usize).ok_or_else(|| {
             crate::geometry::GeometryErrorKind::Invalid(
                 "test literal image is outside its receipt".into(),
             )
-            .into()
-        })
-    }
-}
-
-struct IdentityLiteralChart;
-
-impl LiteralChart<u32> for IdentityLiteralChart {
-    fn read_point<W: crate::work::Work>(
-        &mut self,
-        _address: super::literals::LiteralAddress,
-        _image: u32,
-        record: Point,
-        _expected_axes: CoordinateAxes,
-        _stored_axes: CoordinateAxes,
-        _work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        Ok(Some(ExactChartPoint::from_rationals(
-            ExactRational::from_f64(record.x),
-            ExactRational::from_f64(record.y),
-        )))
+        })?;
+        Ok(*expected
+            == ExactChartPoint::from_rationals(
+                ExactRational::from_f64(record.x),
+                ExactRational::from_f64(record.y),
+            ))
     }
 }
 
 struct TestLiteralReceiver {
     images: ImageRows,
-    chart: IdentityLiteralChart,
-}
-
-impl CheckedImages<u32> for TestLiteralReceiver {
-    fn image(
-        &self,
-        address: super::literals::LiteralAddress,
-        image: u32,
-    ) -> Result<&ExactChartPoint> {
-        self.images.image(address, image)
-    }
 }
 
 struct EvaluationRecorder {
@@ -269,18 +239,17 @@ impl Work for EvaluationRecorder {
     }
 }
 
-impl LiteralChart<u32> for TestLiteralReceiver {
-    fn read_point<W: crate::work::Work>(
+impl LiteralReceiver<u32> for TestLiteralReceiver {
+    fn accepts_point<W: crate::work::Work>(
         &mut self,
-        address: super::literals::LiteralAddress,
+        _address: super::literals::LiteralAddress,
         image: u32,
         record: Point,
         expected_axes: CoordinateAxes,
         stored_axes: CoordinateAxes,
-        work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        self.chart
-            .read_point(address, image, record, expected_axes, stored_axes, work)
+        _work: &mut W,
+    ) -> Result<bool> {
+        Ok(expected_axes == stored_axes && self.images.matches_point(image, record)?)
     }
 }
 
@@ -289,18 +258,8 @@ struct FullRecordReceiver {
     expected: Vec<(LiteralAddress, Point)>,
 }
 
-impl CheckedImages<u32> for FullRecordReceiver {
-    fn image(
-        &self,
-        address: super::literals::LiteralAddress,
-        image: u32,
-    ) -> Result<&ExactChartPoint> {
-        self.images.image(address, image)
-    }
-}
-
-impl LiteralChart<u32> for FullRecordReceiver {
-    fn read_point<W: crate::work::Work>(
+impl LiteralReceiver<u32> for FullRecordReceiver {
+    fn accepts_point<W: crate::work::Work>(
         &mut self,
         address: LiteralAddress,
         image: u32,
@@ -308,20 +267,17 @@ impl LiteralChart<u32> for FullRecordReceiver {
         expected_axes: CoordinateAxes,
         stored_axes: CoordinateAxes,
         _work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
+    ) -> Result<bool> {
         let Some((expected_address, expected_record)) = self.expected.get(image as usize) else {
-            return Ok(None);
+            return Ok(false);
         };
         if address != *expected_address
             || record != *expected_record
             || expected_axes != stored_axes
         {
-            return Ok(None);
+            return Ok(false);
         }
-        Ok(Some(ExactChartPoint::from_rationals(
-            ExactRational::from_f64(record.x),
-            ExactRational::from_f64(record.y),
-        )))
+        self.images.matches_point(image, record)
     }
 }
 

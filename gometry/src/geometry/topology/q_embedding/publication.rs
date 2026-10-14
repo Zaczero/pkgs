@@ -7,12 +7,11 @@ pub(in crate::geometry::topology::q_embedding) mod tracing;
 pub(in crate::geometry::topology::q_embedding) mod witness;
 
 use super::{
-    AssignedSite, AssignedSourceChart, CheckedImages, EmissionPortId, ExactChartPoint,
-    ExactGeographicTopology, ExactRational, FrozenLiteralBuffers, GeometryErrorKind, LiteralChart,
-    LiteralCheck, NativeCandidateAssignment, NodeOrdinates, Point, PublicationInventory,
-    QSourceImage, QSourceImages, Result, SealedOutput, SourceFrozenDrawing, SourceOnlyReceipt,
-    StorageTarget, XY, bind_literals, validate_native_materialized_port,
-    validate_native_sealed_layout,
+    AssignedSite, AssignedSourceChart, EmissionPortId, ExactChartPoint, ExactGeographicTopology,
+    FrozenLiteralBuffers, GeometryErrorKind, LiteralCheck, LiteralReceiver,
+    NativeCandidateAssignment, NodeOrdinates, Point, PublicationInventory, QSourceImage,
+    QSourceImages, Result, SealedOutput, SourceFrozenDrawing, SourceOnlyReceipt, StorageTarget, XY,
+    bind_literals, validate_native_materialized_port, validate_native_sealed_layout,
 };
 use crate::geometry::CoordinateAxes;
 use crate::geometry::embedding_completion::literals::LiteralAddress;
@@ -38,31 +37,8 @@ struct NativeLiteralReceiver<'assignment, 'reference, 'topology> {
     port_records: &'assignment mut [Option<Point>],
 }
 
-impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
-    fn image(&self, _address: LiteralAddress, image: EmissionPortId) -> Result<&ExactChartPoint> {
-        let vertex = *self
-            .assignment
-            .reference
-            .port_vertices
-            .get(image.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("native literal image has no graph vertex".into())
-            })?;
-        self.assignment
-            .points()
-            .exact
-            .get(vertex as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "native literal image vertex is outside the graph".into(),
-                )
-                .into()
-            })
-    }
-}
-
-impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
-    fn read_point<W: Work>(
+impl LiteralReceiver<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
+    fn accepts_point<W: Work>(
         &mut self,
         _address: LiteralAddress,
         image: EmissionPortId,
@@ -70,8 +46,8 @@ impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
         _expected_axes: CoordinateAxes,
         stored_axes: CoordinateAxes,
         work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        if !validate_native_materialized_port(
+    ) -> Result<bool> {
+        validate_native_materialized_port(
             self.assignment.reference,
             image,
             record,
@@ -81,13 +57,7 @@ impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
             self.port_records,
             &self.assignment.points().exact,
             work,
-        )? {
-            return Ok(None);
-        }
-        Ok(Some(ExactChartPoint::from_rationals(
-            ExactRational::from_f64(record.x),
-            ExactRational::from_f64(record.y),
-        )))
+        )
     }
 }
 
