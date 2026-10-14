@@ -97,7 +97,7 @@ let
       dry_run=false
       if [ "''${1:-}" = "--dry-run" ] || [ "''${1:-}" = "-n" ]; then
         dry_run=true
-        echo "DRY RUN: build and validation will run; nothing will contact edge."
+        echo "DRY RUN: build and validation will run; nothing will contact compute."
       fi
 
       docs-build
@@ -110,7 +110,7 @@ let
         printf -v command 'fleet-static-publish %q' "$host"
         # The hostname is parsed locally and quoted for the remote shell.
         # shellcheck disable=SC2029
-        tar --dereference -C site -cf - . | ssh edge "$command"
+        tar --dereference -C site -cf - . | ssh compute "$command"
       fi
       echo "Done."
     '')
