@@ -669,20 +669,21 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     )
                 })?;
                 let mut trace_work = Unmetered;
-                inventory.subdivision_polygon_parts_with_roots(
+                let request = SubdivisionTraceRequest {
+                    source_shape: &item.shape,
+                    source_traces: Some(polygon_traces),
+                    roots,
+                    root_positions: roots.root_xy_positions_needed().then_some(roots),
+                    declared_axes,
+                    strict: drop,
+                    clip_operands: [1, 2],
+                    context,
+                    fallback_inventory: Some(&inventory),
+                    reuse_existing_source_vertices: true,
+                };
+                inventory.subdivision_parts_with_roots(
                     &partition,
-                    &SubdivisionTraceRequest {
-                        source_shape: &item.shape,
-                        source_traces: Some(polygon_traces),
-                        roots,
-                        root_positions: roots.root_xy_positions_needed().then_some(roots),
-                        declared_axes,
-                        strict: drop,
-                        clip_operands: [1, 2],
-                        context,
-                        fallback_inventory: Some(&inventory),
-                        reuse_existing_source_vertices: true,
-                    },
+                    &request,
                     budget,
                     &mut trace_work,
                 )?
