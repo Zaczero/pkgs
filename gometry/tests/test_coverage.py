@@ -78,6 +78,47 @@ def test_geographic_overlap_is_invalid_and_reports_source_edges() -> None:
     assert any(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
 
 
+def test_geographic_max_area_overlap_uses_ellipsoidal_area() -> None:
+    rows = [
+        gm.box(0, 60, 10, 85, crs='OGC:CRS84'),
+        gm.box(0, 50, 10, 70, crs='OGC:CRS84'),
+    ]
+
+    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule='max_area')
+    overlap = gm.Point(5, 65, crs='OGC:CRS84')
+
+    assert not gm.covers(cleaned[0], overlap)
+    assert gm.covers(cleaned[1], overlap)
+
+
+def test_geographic_min_area_overlap_uses_ellipsoidal_area() -> None:
+    rows = [
+        gm.box(0, 60, 10, 85, crs='OGC:CRS84'),
+        gm.box(0, 50, 10, 70, crs='OGC:CRS84'),
+    ]
+
+    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule='min_area')
+    overlap = gm.Point(5, 65, crs='OGC:CRS84')
+
+    assert gm.covers(cleaned[0], overlap)
+    assert not gm.covers(cleaned[1], overlap)
+
+
+def test_geographic_longest_border_uses_ellipsoidal_chart_edge_length() -> None:
+    rows = [
+        gm.box(0, 60, 10, 80, crs='OGC:CRS84'),
+        gm.box(0, 70, 10, 90, crs='OGC:CRS84'),
+    ]
+
+    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule='longest_border')
+    overlap = gm.Point(5, 75, crs='OGC:CRS84')
+
+    # The rows share equal chart-length borders with the overlap, but the
+    # border at 70 degrees is longer on the ellipsoid than the one at 80.
+    assert not gm.covers(cleaned[0], overlap)
+    assert gm.covers(cleaned[1], overlap)
+
+
 def test_geographic_t_junction_is_invalid_and_reports_source_edges() -> None:
     rows = [
         gm.box(0, 0, 1, 2, crs='OGC:CRS84'),
@@ -106,6 +147,26 @@ def test_geographic_gap_width_uses_native_coordinate_units() -> None:
     assert any(
         not edge.is_empty for edge in gm.coverage_invalid_edges(rows, gap_width=0.01)
     )
+
+
+def test_geographic_gap_merges_into_ellipsoidally_longest_border_neighbor() -> None:
+    rows = [
+        gm.box(0, 78, 100, 79, crs='OGC:CRS84'),
+        gm.box(-0.1, 79, 0, 79.1, crs='OGC:CRS84'),
+        gm.box(100, 79, 100.1, 79.1, crs='OGC:CRS84'),
+        gm.box(0, 79.1, 100, 80, crs='OGC:CRS84'),
+    ]
+
+    cleaned = gm.coverage_clean(
+        rows,
+        grid_size=0,
+        gap_width=0.2,
+        overlap_rule='min_index',
+    )
+    gap = gm.Point(50, 79.05, crs='OGC:CRS84')
+
+    assert gm.covers(cleaned[0], gap)
+    assert not gm.covers(cleaned[3], gap)
 
 
 def test_geographic_disjoint_coverage_preserves_nullable_rows() -> None:
