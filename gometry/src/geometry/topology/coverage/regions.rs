@@ -1,10 +1,9 @@
 use super::super::emission::plan::{BoundaryCycle, SelectedRegionPoles};
-use super::super::exact::{ExactSourceRange, SourceEdgeId, SourceEdgeKind, SourceRowId};
+use super::super::exact::{SourceEdgeKind, SourceRowId};
 use super::super::overlay;
-use super::super::q::{ChartSpanId, GlobalFaceId, QNodeId, QPortId};
+use super::super::q::{ChartSpanId, GlobalFaceId, QDartId, QPortId};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::error::{ResourceError, Result};
-use crate::geographic::ChartPole;
 use crate::geometry::GeometryErrorKind;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::work::Work;
@@ -13,17 +12,11 @@ pub(in crate::geometry::topology) struct GeographicCoverageBoundaryPlans<'q> {
     pub(in crate::geometry::topology) topology: &'q super::super::q::ExactGeographicTopology,
     pub(in crate::geometry::topology) rows: Vec<GeographicCoverageRowBoundaryPlan>,
     pub(in crate::geometry::topology) face_regions: Vec<Option<GeographicCoverageRegionId>>,
-    pub(in crate::geometry::topology) live_spans: Vec<ChartSpanId>,
-    pub(in crate::geometry::topology) live_ports: Vec<QPortId>,
-    pub(in crate::geometry::topology) live_nodes: Vec<QNodeId>,
 }
 
 pub(in crate::geometry::topology) struct GeographicCoverageRowBoundaryPlan {
     pub(in crate::geometry::topology) output_row: usize,
     pub(in crate::geometry::topology) whole_sphere: bool,
-    pub(in crate::geometry::topology) north_pole: bool,
-    pub(in crate::geometry::topology) south_pole: bool,
-    pub(in crate::geometry::topology) source_polygons: Vec<usize>,
     pub(in crate::geometry::topology) regions: Vec<GeographicCoverageRegionBoundaryPlan>,
 }
 
@@ -45,37 +38,11 @@ pub(in crate::geometry::topology) struct GeographicCoverageBoundaryCycle {
 }
 
 pub(in crate::geometry::topology) struct GeographicCoverageDirectedSpanUse {
+    pub(in crate::geometry::topology) dart: QDartId,
     pub(in crate::geometry::topology) span: ChartSpanId,
     pub(in crate::geometry::topology) from: QPortId,
     pub(in crate::geometry::topology) to: QPortId,
-    pub(in crate::geometry::topology) from_presentation: GeographicCoveragePortPresentation,
-    pub(in crate::geometry::topology) to_presentation: GeographicCoveragePortPresentation,
-    pub(in crate::geometry::topology) root_uses: Vec<GeographicCoverageRootUse>,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::geometry::topology) struct GeographicCoveragePortPresentation {
-    pub(in crate::geometry::topology) port: QPortId,
-    pub(in crate::geometry::topology) node: QNodeId,
-    pub(in crate::geometry::topology) seam_cut: bool,
-    pub(in crate::geometry::topology) pole: Option<ChartPole>,
-}
-
-pub(in crate::geometry::topology) struct GeographicCoverageRootUse {
-    #[cfg(test)]
-    pub(in crate::geometry::topology) owner_index: usize,
-    pub(in crate::geometry::topology) source_edge: SourceEdgeId,
-    #[cfg(test)]
-    pub(in crate::geometry::topology) source_row: SourceRowId,
-    /// The exact source interval is oriented in the directed boundary's walk order.
-    pub(in crate::geometry::topology) source_range: ExactSourceRange,
-    #[cfg(test)]
-    pub(in crate::geometry::topology) source_forward: bool,
-    /// Longitude periods from this Q span to the source ring's continuous lift.
-    #[cfg(test)]
-    pub(in crate::geometry::topology) lift: i64,
-    /// One coowner supplies the emitted source record; all coowners remain in the recipe.
-    pub(in crate::geometry::topology) emitted: bool,
+    pub(in crate::geometry::topology) selected_owner: usize,
 }
 
 struct PendingBoundaryCycle {
@@ -184,30 +151,9 @@ impl GeographicCoverageAnalysis {
             .map(|output_row| GeographicCoverageRowBoundaryPlan {
                 output_row,
                 whole_sphere: false,
-                north_pole: false,
-                south_pole: false,
-                source_polygons: Vec::new(),
                 regions: Vec::new(),
             })
             .collect::<Vec<_>>();
-        for fact in &region_facts {
-            work.charge_into_error(1)?;
-            let owner = assignment
-                .owners
-                .get(fact.root)
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "selected region root has no coverage output owner".into(),
-                    )
-                })?;
-            let row = rows.get_mut(owner).ok_or_else(|| {
-                GeometryErrorKind::Invalid("selected region output row is unknown".into())
-            })?;
-            row.north_pole |= fact.poles.includes(ChartPole::North);
-            row.south_pole |= fact.poles.includes(ChartPole::South);
-        }
         if q.global_face_count != 0 {
             for (output_row, &owned_faces) in owned_face_counts.iter().enumerate() {
                 work.charge_into_error(1)?;
@@ -220,20 +166,6 @@ impl GeographicCoverageAnalysis {
                 row.whole_sphere = true;
             }
         }
-        for (polygon_index, polygon) in topology.sources.polygons.iter().enumerate() {
-            work.charge_into_error(1)?;
-            let row_index = polygon.row.0 as usize;
-            rows.get_mut(row_index)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("coverage source polygon row is unknown".into())
-                })?
-                .source_polygons
-                .push(polygon_index);
-        }
-
-        let mut span_live = vec![false; q.spans.len()];
-        let mut port_live = vec![false; q.ports.len()];
-        let mut node_live = vec![false; q.nodes.len()];
         for (cycle_index, pending) in boundary_cycles.into_iter().enumerate() {
             work.charge_into_error(1)?;
             let row = rows.get_mut(pending.output_row).ok_or_else(|| {
@@ -281,87 +213,18 @@ impl GeographicCoverageAnalysis {
                 let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("coverage boundary has an unknown dart".into())
                 })?;
-                let span = q.spans.get(dart.span.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("coverage boundary has an unknown span".into())
-                })?;
-                let from_presentation = coverage_port_presentation(topology, dart.from_port, work)?;
-                let to_presentation = coverage_port_presentation(topology, dart.to_port, work)?;
                 let emitted_owner = coverage_area_owner_index(
                     topology,
                     pending.output_row,
                     dart.span.0 as usize,
                     work,
                 )?;
-                let mut root_uses = Vec::with_capacity(span.owners.len());
-                for (owner_index, owner) in span.owners.iter().enumerate() {
-                    work.charge_into_error(1)?;
-                    let source_forward = (dart.from_port == span.ports[0]) != owner.reversed;
-                    let source_range = if source_forward {
-                        ExactSourceRange {
-                            start: owner.source_range.start.try_clone_with_work(work)?,
-                            end: owner.source_range.end.try_clone_with_work(work)?,
-                        }
-                    } else {
-                        ExactSourceRange {
-                            start: owner.source_range.end.try_clone_with_work(work)?,
-                            end: owner.source_range.start.try_clone_with_work(work)?,
-                        }
-                    };
-                    root_uses.push(GeographicCoverageRootUse {
-                        #[cfg(test)]
-                        owner_index,
-                        source_edge: owner.source_edge,
-                        #[cfg(test)]
-                        source_row: topology
-                            .sources
-                            .edges
-                            .get(owner.source_edge.0 as usize)
-                            .ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "coverage boundary owner has an unknown source edge".into(),
-                                )
-                            })?
-                            .row,
-                        source_range,
-                        #[cfg(test)]
-                        source_forward,
-                        #[cfg(test)]
-                        lift: owner.lift,
-                        emitted: owner_index == emitted_owner,
-                    });
-                }
-                mark_live(
-                    &mut span_live,
-                    dart.span.0 as usize,
-                    work,
-                    "coverage boundary span",
-                )?;
-                for port_id in [dart.from_port, dart.to_port] {
-                    let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "coverage boundary has an unknown endpoint port".into(),
-                        )
-                    })?;
-                    mark_live(
-                        &mut port_live,
-                        port_id.0 as usize,
-                        work,
-                        "coverage boundary port",
-                    )?;
-                    mark_live(
-                        &mut node_live,
-                        port.node.0 as usize,
-                        work,
-                        "coverage boundary node",
-                    )?;
-                }
                 uses.push(GeographicCoverageDirectedSpanUse {
+                    dart: dart_id,
                     span: dart.span,
                     from: dart.from_port,
                     to: dart.to_port,
-                    from_presentation,
-                    to_presentation,
-                    root_uses,
+                    selected_owner: emitted_owner,
                 });
             }
             region
@@ -369,60 +232,12 @@ impl GeographicCoverageAnalysis {
                 .push(GeographicCoverageBoundaryCycle { cycle_index, uses });
         }
 
-        let live_spans = live_ids(&span_live, work)?
-            .into_iter()
-            .map(|index| {
-                Ok(ChartSpanId(
-                    u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let live_ports = live_ids(&port_live, work)?
-            .into_iter()
-            .map(|index| {
-                Ok(QPortId(
-                    u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let live_nodes = live_ids(&node_live, work)?
-            .into_iter()
-            .map(|index| {
-                Ok(QNodeId(
-                    u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
         Ok(GeographicCoverageBoundaryPlans {
             topology: &self.topology,
             rows,
             face_regions,
-            live_spans,
-            live_ports,
-            live_nodes,
         })
     }
-}
-
-fn coverage_port_presentation(
-    topology: &super::super::q::ExactGeographicTopology,
-    port_id: QPortId,
-    work: &mut impl Work,
-) -> Result<GeographicCoveragePortPresentation> {
-    work.charge_into_error(1)?;
-    let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("coverage presentation port is unknown".into())
-    })?;
-    let node = topology.q.nodes.get(port.node.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("coverage presentation node is unknown".into())
-    })?;
-    Ok(GeographicCoveragePortPresentation {
-        port: port_id,
-        node: port.node,
-        seam_cut: port.cut,
-        pole: node.pole,
-    })
 }
 
 fn coverage_area_owner_index(
@@ -459,23 +274,6 @@ fn coverage_area_owner_index(
         GeometryErrorKind::Invalid("coverage boundary span has no original ring owner".into())
             .into()
     })
-}
-
-fn mark_live(live: &mut [bool], index: usize, work: &mut impl Work, label: &str) -> Result<()> {
-    work.charge_into_error(1)?;
-    *live.get_mut(index).ok_or_else(|| {
-        GeometryErrorKind::Invalid(format!("coverage live {label} index is out of range").into())
-    })? = true;
-    Ok(())
-}
-
-fn live_ids(live: &[bool], work: &mut impl Work) -> Result<Vec<usize>> {
-    work.charge_into_error(u64::try_from(live.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    Ok(live
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &is_live)| is_live.then_some(index))
-        .collect())
 }
 
 #[cfg(test)]
@@ -563,55 +361,33 @@ mod tests {
         let right_use = row_use(1);
         assert_eq!(left_use.from, right_use.to);
         assert_eq!(left_use.to, right_use.from);
-        assert_eq!(
-            plans
-                .live_spans
-                .iter()
-                .filter(|&&span| span == shared_id)
-                .count(),
-            1,
-            "the union reference stores the physical span once",
-        );
-
         for (output_row, directed) in [(0, left_use), (1, right_use)] {
-            let mut emitted_rows = Vec::new();
-            for root_use in &directed.root_uses {
-                let span = analysis
-                    .topology
-                    .q
-                    .spans
-                    .get(directed.span.0 as usize)
-                    .expect("planned span belongs to Q");
-                let source = span
-                    .owners
-                    .get(root_use.owner_index)
-                    .expect("root reference belongs to the span");
-                let source_row = analysis
-                    .topology
-                    .sources
-                    .edges
-                    .get(source.source_edge.0 as usize)
-                    .expect("Q owner resolves to its source root")
-                    .row;
-                assert_eq!(root_use.source_edge, source.source_edge);
-                assert_eq!(root_use.source_row, source_row);
-                assert_eq!(root_use.lift, source.lift);
-                let source_forward = (directed.from == span.ports[0]) != source.reversed;
-                assert_eq!(root_use.source_forward, source_forward);
-                let expected_range = if source_forward {
-                    source.source_range.clone()
-                } else {
-                    ExactSourceRange {
-                        start: source.source_range.end.clone(),
-                        end: source.source_range.start.clone(),
-                    }
-                };
-                assert_eq!(root_use.source_range, expected_range);
-                if root_use.emitted {
-                    emitted_rows.push(source_row.0 as usize);
-                }
-            }
-            assert_eq!(emitted_rows, [output_row]);
+            let span = analysis
+                .topology
+                .q
+                .spans
+                .get(directed.span.0 as usize)
+                .expect("planned span belongs to Q");
+            let source = span
+                .owners
+                .get(directed.selected_owner)
+                .expect("selected occurrence belongs to the span");
+            let source_row = analysis
+                .topology
+                .sources
+                .edges
+                .get(source.source_edge.0 as usize)
+                .expect("Q owner resolves to its source root")
+                .row;
+            assert_eq!(source_row.0 as usize, output_row);
+            let dart = analysis
+                .topology
+                .q
+                .darts
+                .get(directed.dart.0 as usize)
+                .expect("boundary keeps its Q dart");
+            assert_eq!(dart.from_port, directed.from);
+            assert_eq!(dart.to_port, directed.to);
         }
     }
 
@@ -658,7 +434,14 @@ mod tests {
             region
                 .cycles
                 .iter()
-                .all(|cycle| cycle.uses.iter().all(|use_| !use_.root_uses.is_empty())),
+                .all(|cycle| cycle.uses.iter().all(|use_| {
+                    analysis
+                        .topology
+                        .q
+                        .spans
+                        .get(use_.span.0 as usize)
+                        .is_some_and(|span| span.owners.get(use_.selected_owner).is_some())
+                })),
             "both directed ring cycles retain original source roots",
         );
     }
@@ -682,7 +465,6 @@ mod tests {
                 .is_some_and(|region| region.poles.includes(crate::geographic::ChartPole::North)),
             "the selected region records its north-pole sector",
         );
-        assert!(plans.rows.first().is_some_and(|row| row.north_pole));
 
         let full_longitude_band = [crate::io::parse_wkt(
             "POLYGON ((-180 20, -90 20, 0 20, 90 20, 180 20, \
@@ -701,7 +483,16 @@ mod tests {
                 .flat_map(|row| &row.regions)
                 .flat_map(|region| &region.cycles)
                 .flat_map(|cycle| &cycle.uses)
-                .any(|use_| { use_.from_presentation.seam_cut || use_.to_presentation.seam_cut }),
+                .any(|use_| {
+                    [use_.from, use_.to].into_iter().any(|port| {
+                        analysis
+                            .topology
+                            .q
+                            .ports
+                            .get(port.0 as usize)
+                            .is_some_and(|port| port.cut)
+                    })
+                }),
             "directed uses retain the cut-port presentation roles",
         );
 
@@ -717,9 +508,6 @@ mod tests {
             .expect("whole-sphere row plan");
         let row = plans.rows.first().expect("one whole-sphere row");
         assert!(row.whole_sphere);
-        assert!(row.north_pole && row.south_pole);
-        assert_eq!(row.source_polygons, [0]);
         assert!(row.regions.is_empty());
-        assert!(plans.live_spans.is_empty());
     }
 }

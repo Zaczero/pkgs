@@ -12,6 +12,7 @@ mod gaps;
 mod invalid_edges;
 mod regions;
 mod regions_emission;
+pub(in crate::geometry::topology) use regions_emission::CoverageRows;
 #[cfg(test)]
 mod emission_tests;
 #[cfg(test)]

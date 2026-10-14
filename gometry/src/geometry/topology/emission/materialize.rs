@@ -5,10 +5,12 @@ use super::{
     NodeOrdinates, Point, Polygon, QPortId, ResourceError, Result, Ring, Shape, ShapeLiteralLayout,
     SourceEdgeId, native_chord_points, native_port_point,
 };
+use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::work::Work;
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
     pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
+    pub(in crate::geometry::topology) coverage_receipt: Option<Box<ProducerDrawingReceipt>>,
 }
 
 pub(in crate::geometry::topology) struct NativeFrozenDrawing {
@@ -145,9 +147,9 @@ impl NativeMaterializedParts {
     }
 }
 
-pub(super) struct NativeChordPoints {
-    pub(super) points: Vec<Point>,
-    pub(super) ports: Vec<EmissionPortId>,
+pub(in crate::geometry::topology) struct NativeChordPoints {
+    pub(in crate::geometry::topology) points: Vec<Point>,
+    pub(in crate::geometry::topology) ports: Vec<EmissionPortId>,
 }
 
 pub(in crate::geometry::topology) fn materialize_native_parts(

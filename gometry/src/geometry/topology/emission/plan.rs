@@ -142,6 +142,7 @@ pub(in crate::geometry::topology) struct QEmissionPlan {
     pub(in crate::geometry::topology) boundary_support: Option<BoundarySupport>,
     pub(in crate::geometry::topology) producer: QProducer,
     pub(in crate::geometry::topology) retain_literals_for_republication: bool,
+    pub(in crate::geometry::topology) coverage_rows: Option<super::super::coverage::CoverageRows>,
     pub(in crate::geometry::topology) polygons: PolygonPlan,
     pub(in crate::geometry::topology) cycles: Vec<BoundaryCycle>,
     pub(in crate::geometry::topology) selected_regions: Vec<SelectedRegionFact>,

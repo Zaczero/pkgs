@@ -281,7 +281,7 @@ pub(in crate::geometry::topology) fn resolve_emission_ordinates<M: ChartMetric, 
     Ok((output, axes))
 }
 
-pub(super) fn source_requests_at_location(
+pub(in crate::geometry::topology) fn source_requests_at_location(
     publication: &PublicationInventory,
     location: &TraceRequestLocation,
     work: &mut impl Work,
@@ -345,7 +345,7 @@ pub(super) fn source_trace_fragment(
         })
 }
 
-pub(super) fn native_chord_points(
+pub(in crate::geometry::topology) fn native_chord_points(
     plan: &ExpandedEmissionPlan<'_>,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],

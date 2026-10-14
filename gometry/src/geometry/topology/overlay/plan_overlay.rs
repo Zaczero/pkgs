@@ -198,6 +198,7 @@ impl QEmissionPlan {
             boundary_support: None,
             producer: QProducer::Overlay,
             retain_literals_for_republication: false,
+            coverage_rows: None,
             polygons,
             cycles,
             selected_regions,

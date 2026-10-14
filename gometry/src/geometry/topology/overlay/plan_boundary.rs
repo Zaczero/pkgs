@@ -94,6 +94,7 @@ impl QEmissionPlan {
                 boundary_support: Some(support),
                 producer: QProducer::Boundary,
                 retain_literals_for_republication: false,
+                coverage_rows: None,
                 polygons,
                 cycles: Vec::new(),
                 selected_regions,

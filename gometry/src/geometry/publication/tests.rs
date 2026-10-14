@@ -21,6 +21,7 @@ use crate::geometry::embedding_completion::literals::{
     ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
+use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
     ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
@@ -832,7 +833,7 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
     let analysis =
         crate::geometry::analyze_geographic_coverage(&input, frame, 0.0, "coverage_clean")?;
     let areas = input.iter().map(Shape::area).collect::<Vec<_>>();
-    let mut work = Unmetered;
+    let mut work = EvaluationBudget::new("coverage_clean", 0)?;
     let assignment = analysis.assign_cleaning_faces(
         &areas,
         0.0,
@@ -846,7 +847,7 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
         );
     analysis.coverage_drawing_receipt(
         &assignment,
-        CoordinateAxes::XY,
+        &input.iter().map(Shape::axes).collect::<Vec<_>>(),
         &context,
         StorageTarget::Array,
         &mut work,
