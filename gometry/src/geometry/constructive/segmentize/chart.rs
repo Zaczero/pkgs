@@ -104,13 +104,22 @@ impl ChartEmission<'_, '_> {
         let mut last_emitted_parameter = None;
         for step in 1..=self.pieces {
             let fraction = step as f64 / self.pieces as f64;
+            let station = if step < self.pieces && !self.edge.is_parallel() {
+                Some(
+                    self.edge
+                        .locate_t(self.length * fraction, self.length, self.geodesic)?,
+                )
+            } else {
+                None
+            };
             let parameter = if step == self.pieces {
                 1.0
             } else if self.edge.is_parallel() {
                 fraction
             } else {
-                self.edge
-                    .locate_t(self.length * fraction, self.length, self.geodesic)?
+                station
+                    .expect("nonparallel interior station was measured")
+                    .parameter()
             };
             if parameter <= previous_parameter || (step < self.pieces && parameter >= 1.0) {
                 return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
@@ -134,7 +143,13 @@ impl ChartEmission<'_, '_> {
                         ));
                     }
                     let chart_parameter = ExactRational::from_f64(parameter);
-                    let mut fraction_slot = None;
+                    // Only the unchanged station shares the inverse solve's measured
+                    // arclength; representability refinements retain their own request.
+                    let mut fraction_slot = if !refined && (axes.has_z() || axes.has_m()) {
+                        station.and_then(|station| station.fraction_at(parameter, self.length))
+                    } else {
+                        None
+                    };
                     let metric_access = || Ok(&metric);
                     let ordinates = resolve_source_root(
                         self.edge.frame(),

@@ -1,4 +1,3 @@
-
 #[derive(Default)]
 struct CountingWork(u64);
 
@@ -115,7 +114,8 @@ fn chart_edge_partial_arclength_and_inverse_match_mpmath() {
     let length = edge.length(&geodesic).unwrap();
     let parameter = edge
         .locate_t(expected_half_length, length, &geodesic)
-        .unwrap();
+        .unwrap()
+        .parameter();
     assert!(
         (parameter - 0.442_288_586_250_222_77).abs() <= 2.0e-15,
         "parameter={parameter:.17}"
@@ -124,6 +124,114 @@ fn chart_edge_partial_arclength_and_inverse_match_mpmath() {
     let point = edge.chart_position(parameter).unwrap();
     assert!((point.x - 53.074_630_350_026_73).abs() <= 3.0e-14);
     assert!((point.y - 32.114_429_312_511_14).abs() <= 3.0e-14);
+}
+
+#[test]
+fn chart_station_retains_actual_arclength_only_for_its_parameter() {
+    let geodesic = wgs84();
+    let edge = ChartEdge::new(
+        Point::new_raw_xy(0.0, 10.0),
+        Point::new_raw_xy(120.0, 60.0),
+        degrees(),
+    )
+    .unwrap();
+    let length = edge.length(&geodesic).unwrap();
+    let mut differs_from_target = false;
+    for fraction in [0.1, 0.3, 0.7, 0.9] {
+        let target = length * fraction;
+        let station = edge.locate_t(target, length, &geodesic).unwrap();
+        let parameter = station.parameter();
+        let measured_fraction = edge
+            .arclength_fraction(parameter, Some(length), &geodesic)
+            .unwrap();
+        assert_eq!(
+            station.fraction_at(parameter, length).unwrap().to_bits(),
+            measured_fraction.to_bits(),
+        );
+        differs_from_target |= measured_fraction.to_bits() != (target / length).to_bits();
+        assert_eq!(station.fraction_at(parameter.next_up(), length), None);
+        assert_eq!(station.fraction_at(parameter.next_down(), length), None);
+    }
+    assert!(
+        differs_from_target,
+        "the solved measurement must distinguish target substitution"
+    );
+}
+
+#[test]
+fn chart_station_endpoints_parallel_and_degenerate_keep_their_measures() {
+    let geodesic = wgs84();
+    let parallel = ChartEdge::new(
+        Point::new_raw_xy(0.0, 60.0),
+        Point::new_raw_xy(90.0, 60.0),
+        degrees(),
+    )
+    .unwrap();
+    let length = parallel.length(&geodesic).unwrap();
+    for (distance, parameter) in [
+        (-1.0, 0.0_f64),
+        (0.0, 0.0),
+        (length, 1.0),
+        (length * 2.0, 1.0),
+    ] {
+        let station = parallel.locate_t(distance, length, &geodesic).unwrap();
+        assert_eq!(station.parameter().to_bits(), parameter.to_bits());
+        assert_eq!(
+            station.fraction_at(parameter, length).unwrap().to_bits(),
+            parameter.to_bits(),
+        );
+    }
+    let station = parallel.locate_t(length * 0.3, length, &geodesic).unwrap();
+    assert_eq!(
+        station
+            .fraction_at(station.parameter(), length)
+            .unwrap()
+            .to_bits(),
+        parallel
+            .arclength_fraction(station.parameter(), Some(length), &geodesic)
+            .unwrap()
+            .to_bits(),
+    );
+    let point = Point::new_raw_xy(10.0, 20.0);
+    let degenerate = ChartEdge::new(point, point, degrees()).unwrap();
+    let station = degenerate.locate_t(1.0, 0.0, &geodesic).unwrap();
+    assert_eq!(station.parameter().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(station.fraction_at(0.0, 0.0), None);
+    assert_eq!(station.fraction_at(-0.0, length), None);
+}
+
+#[test]
+fn chart_station_adjacent_latitudes_retain_the_measured_best_iterate() {
+    let geodesic = wgs84();
+    let edge = ChartEdge::new(
+        Point::new_raw_xy(0.0, 70.0),
+        Point::new_raw_xy(0.0, 70.0_f64.next_up()),
+        degrees(),
+    )
+    .unwrap();
+    let length = edge.length(&geodesic).unwrap();
+    assert!(length > 0.0);
+    crate::crs::reset_quadrature_test_progress();
+    let station = edge.locate_t(length / 2.0, length, &geodesic).unwrap();
+    let progress = crate::crs::quadrature_test_progress();
+    assert_eq!(progress.station_best_returns, 1);
+    assert_eq!(progress.station_adjacent_stops, 1);
+    assert_eq!(
+        station
+            .fraction_at(station.parameter(), length)
+            .unwrap()
+            .to_bits(),
+        edge.arclength_fraction(station.parameter(), Some(length), &geodesic)
+            .unwrap()
+            .to_bits(),
+    );
+    assert_ne!(
+        station
+            .fraction_at(station.parameter(), length)
+            .unwrap()
+            .to_bits(),
+        0.5_f64.to_bits(),
+    );
 }
 
 #[test]
@@ -138,7 +246,10 @@ fn chart_edge_parallel_inversion_is_exact_and_seam_positions_follow_the_lifted_c
     assert!(parallel.is_parallel());
     let length = parallel.length(&geodesic).unwrap();
     assert_eq!(
-        parallel.locate_t(length / 2.0, length, &geodesic).unwrap(),
+        parallel
+            .locate_t(length / 2.0, length, &geodesic)
+            .unwrap()
+            .parameter(),
         0.5
     );
     assert_eq!(parallel.chart_position(0.5).unwrap().x, 45.0);
@@ -246,8 +357,7 @@ fn chart_edge_witness_uses_canonical_point_emission_and_arclength_axes() {
 #[test]
 fn oblique_wgs84_witness_resolves_ordinates_at_chart_arclength() {
     let start = Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap();
-    let end = Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0)))
-        .unwrap();
+    let end = Point::new_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0))).unwrap();
     let frame = degrees();
     let edge = ChartEdge::new(start, end, frame).unwrap();
     let geodesic = wgs84();

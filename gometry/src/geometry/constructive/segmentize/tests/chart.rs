@@ -1,4 +1,94 @@
 use super::*;
+use crate::geometry::ordinates::take_source_arc_activity;
+
+#[test]
+fn ordinary_chart_stations_keep_common_root_carry_without_remeasurement() {
+    let source = CoordSeq::try_from_vecs(
+        vec![0.0, 120.0],
+        vec![10.0, 60.0],
+        Some(vec![7.0, 47.0]),
+        Some(vec![101.0, 701.0]),
+    )
+    .unwrap();
+    let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+    crate::crs::reset_quadrature_test_progress();
+    let _ = take_source_arc_activity();
+    let mut budget = ExpansionBudget::new("segmentize", "piece_counts");
+    let output = segmentize_points_with_piece_counts_budgeted(
+        &source,
+        &[NonZeroUsize::new(4).unwrap()],
+        &SegmentPlacement::Chart(&geodesic, GeographicFrame::crs84()),
+        &mut budget,
+    )
+    .unwrap();
+    let progress = crate::crs::quadrature_test_progress();
+    let activity = take_source_arc_activity();
+    assert_eq!(output.len(), 5);
+    assert!(progress.station_measurements >= 3);
+    assert_eq!(progress.fraction_measurements, 0);
+    assert_eq!(activity.root_resolutions, 3);
+    assert_eq!(output.nth_coord(0), source.nth_coord(0));
+    assert_eq!(output.nth_coord(4), source.nth_coord(1));
+}
+
+#[test]
+fn chart_station_refinements_measure_their_own_original_root_parameter() {
+    let source = CoordSeq::try_from_vecs(
+        vec![0.0, 360.0],
+        vec![80.0, 10.0],
+        Some(vec![7.0, 47.0]),
+        Some(vec![101.0, 701.0]),
+    )
+    .unwrap();
+    let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+    let frame = GeographicFrame::crs84();
+    let edge = crate::crs::ChartEdge::new(source.nth_coord(0), source.nth_coord(1), frame).unwrap();
+    let length = edge.length(&geodesic).unwrap();
+    let station = edge.locate_t(length / 2.0, length, &geodesic).unwrap();
+    assert!(station.parameter() > 0.5);
+    crate::crs::reset_quadrature_test_progress();
+    let mut budget = ExpansionBudget::new("segmentize", "piece_counts");
+    let (output, ranges) = segmentize_chart_points_with_piece_counts_budgeted(
+        &source,
+        &[NonZeroUsize::new(2).unwrap()],
+        &geodesic,
+        frame,
+        &mut budget,
+    )
+    .unwrap();
+    let progress = crate::crs::quadrature_test_progress();
+    let refinement_count = ranges
+        .parameters
+        .iter()
+        .filter(|&&parameter| {
+            parameter > 0.0
+                && parameter < 1.0
+                && parameter.to_bits() != station.parameter().to_bits()
+        })
+        .count();
+    assert!(refinement_count > 0);
+    assert_eq!(ranges.parameters.len(), output.len());
+    for (index, &parameter) in ranges.parameters.iter().enumerate() {
+        let fraction = edge
+            .arclength_fraction(parameter, Some(length), &geodesic)
+            .unwrap();
+        let (z, m) = crate::geometry::source_ordinate_values_at_fraction(
+            source.nth_coord(0),
+            source.nth_coord(1),
+            source.axes(),
+            fraction,
+        );
+        let actual = output.nth_coord(index);
+        assert_eq!(actual.z().map(f64::to_bits), z.0.map(f64::to_bits));
+        assert_eq!(actual.m().map(f64::to_bits), m.0.map(f64::to_bits));
+    }
+    assert_eq!(
+        usize::try_from(progress.fraction_measurements).unwrap(),
+        refinement_count,
+    );
+    assert_eq!(output.nth_coord(0), source.nth_coord(0));
+    assert_eq!(output.nth_coord(output.len() - 1), source.nth_coord(1));
+}
 
 #[test]
 fn chart_piece_counts_refine_only_requested_edges_and_preserve_ordinates() {
@@ -122,8 +212,10 @@ fn chart_support_parameters_compose_exact_partial_ranges_in_reversed_grad_frames
         )
         .unwrap();
         let length = edge.length(&geodesic).unwrap();
-        let first_equal_arclength_parameter =
-            edge.locate_t(length / 4.0, length, &geodesic).unwrap();
+        let first_equal_arclength_parameter = edge
+            .locate_t(length / 4.0, length, &geodesic)
+            .unwrap()
+            .parameter();
         assert!(
             ranges.parameters.iter().any(|parameter| {
                 parameter.to_bits() == first_equal_arclength_parameter.to_bits()
