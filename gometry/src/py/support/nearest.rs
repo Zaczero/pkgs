@@ -257,7 +257,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                     let pending =
                                         geographic_line_pending_row(
                                             line,
-                                            &output_frame,
                                             logical,
                                             "shortest_line",
                                         )?;

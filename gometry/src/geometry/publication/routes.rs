@@ -8,7 +8,6 @@ use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::literals::{LiteralRowLayout, ShapeLiteralLayout};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, GeometryKind, Shape};
 use crate::py::vectors::Groups;
@@ -26,17 +25,13 @@ pub(crate) fn finish_geographic_line(shape: Shape, frame: crate::Frame) -> Resul
 
 pub(crate) fn geographic_line_pending_row(
     shape: Shape,
-    frame: &crate::Frame,
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let finished = finish_producer_drawing(
-        ProducerDrawingReceipt::line_for_republication(shape)?,
-        frame.clone(),
-        StorageTarget::Scalar,
-    )?;
-    let work = EvaluationBudget::new(operation, finished.output_literal_count())?;
-    finished.into_pending_row(logical_row, work, frame)
+    let mut next_image = 0;
+    let (layout, literals) =
+        ProducerDrawingReceipt::line_layout(&shape, 0, None, None, 0, &mut next_image)?;
+    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
 }
 
 pub(crate) fn finish_geographic_point_selection(
@@ -44,7 +39,7 @@ pub(crate) fn finish_geographic_point_selection(
     frame: crate::Frame,
 ) -> Result<Shape> {
     finish_producer_drawing(
-        ProducerDrawingReceipt::point_selection(shape, false)?,
+        ProducerDrawingReceipt::point_selection(shape)?,
         frame,
         StorageTarget::Scalar,
     )?
@@ -54,17 +49,11 @@ pub(crate) fn finish_geographic_point_selection(
 
 pub(crate) fn geographic_point_selection_pending_row(
     shape: Shape,
-    frame: &crate::Frame,
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let finished = finish_producer_drawing(
-        ProducerDrawingReceipt::point_selection(shape, true)?,
-        frame.clone(),
-        StorageTarget::Scalar,
-    )?;
-    let work = EvaluationBudget::new(operation, finished.output_literal_count())?;
-    finished.into_pending_row(logical_row, work, frame)
+    let (layout, literals) = ProducerDrawingReceipt::point_selection_layout(&shape)?;
+    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
 }
 
 pub(crate) fn finish_geographic_nearest_point(shape: Shape, frame: crate::Frame) -> Result<Shape> {
@@ -323,14 +312,9 @@ pub(crate) fn finish_geographic_snap(shape: Shape, frame: crate::Frame) -> Resul
 
 pub(crate) fn geographic_snap_pending_row(
     shape: Shape,
-    frame: &crate::Frame,
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
     let (layout, literals) = snap_drawing_layout(&shape)?;
-    let buffers = FrozenLiteralBuffers::shapes(shape, layout);
-    let receipt = ProducerDrawingReceipt::new_for_republication(buffers, literals);
-    let finished = finish_producer_drawing(receipt, frame.clone(), StorageTarget::Scalar)?;
-    let work = EvaluationBudget::new(operation, finished.output_literal_count())?;
-    finished.into_pending_row(logical_row, work, frame)
+    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
 }

@@ -503,7 +503,9 @@ pub(super) fn finish_array_batch<W: Work>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::receipt::{CheckedPublicationLiteral, PublicationImage};
+    use super::super::receipt::{
+        CheckedPublicationLiteral, PendingPublicationRow, PublicationImage,
+    };
     use super::*;
     use crate::geometry::embedding_completion::literals::{
         LiteralAddress, LiteralPoint, ShapeLiteralLayout,
@@ -568,6 +570,150 @@ mod tests {
             },
             frame,
         )
+    }
+
+    fn geographic_hull_pending() -> (PendingPublicationRow, Frame) {
+        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("OGC:CRS84")), None).unwrap();
+        let shape = crate::io::parse_wkt(
+            "MULTIPOINT ZM ((0 0 0 0), (3 0 10 100), (2 2 20 200), (0 2 30 300), (1 1 40 400))",
+        )
+        .unwrap();
+        let mut scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut scratch)
+            .unwrap();
+        let data = crate::geometry::PreparedPlan::new(shape);
+        let context = crate::dispatch::CachelessRowContext {
+            frame: &frame,
+            domain,
+            metric,
+            lane: crate::dispatch::Lane::Array(0),
+        };
+        let crate::geometry::publication::receipt::GeometryOutput::Pending(pending) =
+            crate::dispatch::kernels::unary_convex_hull_array(&data, &context).unwrap()
+        else {
+            panic!("geographic array hull captures a pending producer row");
+        };
+        (pending, frame)
+    }
+
+    #[test]
+    fn geographic_array_hull_final_writer_rejects_m_only_corruption() {
+        let (pending, frame) = geographic_hull_pending();
+        let expected = pending.shape.points_vec().unwrap();
+        let changed = std::cell::Cell::new(false);
+        let corrupted = pending
+            .shape
+            .map_points(&|point| {
+                let m = point.m().expect("the hull retains its M ordinate");
+                let m = if changed.replace(true) {
+                    m
+                } else {
+                    f64::from_bits(m.to_bits() ^ 1)
+                };
+                Ok(Point::new_raw_axes(
+                    point.x,
+                    point.y,
+                    ZOrdinate(point.z()),
+                    MOrdinate(Some(m)),
+                ))
+            })
+            .unwrap();
+        assert!(changed.get(), "the hull has at least one captured literal");
+        let corrupted_points = corrupted.points_vec().unwrap();
+        assert_eq!(expected.len(), corrupted_points.len());
+        assert!(
+            expected
+                .iter()
+                .zip(&corrupted_points)
+                .all(|(before, after)| {
+                    before.x.to_bits() == after.x.to_bits()
+                        && before.y.to_bits() == after.y.to_bits()
+                        && before.z().map(f64::to_bits) == after.z().map(f64::to_bits)
+                })
+        );
+        assert!(
+            expected
+                .iter()
+                .zip(&corrupted_points)
+                .any(|(before, after)| before.m() != after.m())
+        );
+
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        let mut writer = StreamingShapes::with_capacity(0, 1);
+        writer.try_push(corrupted).unwrap();
+        rows.writer = writer;
+
+        assert!(
+            rows.finish(frame).is_err(),
+            "final ArrayRows readback must reject the writer's changed M"
+        );
+    }
+
+    #[test]
+    fn geographic_array_hull_final_writer_rejects_an_omitted_literal() {
+        let (mut pending, frame) = geographic_hull_pending();
+        assert!(pending.producer_literals.pop().is_some());
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+
+        assert!(
+            rows.finish(frame).is_err(),
+            "final ArrayRows readback must reject a missing captured literal"
+        );
+    }
+
+    #[test]
+    fn geographic_array_hull_final_writer_rejects_a_wrong_logical_identity() {
+        let (mut pending, frame) = geographic_hull_pending();
+        pending
+            .producer_literals
+            .first_mut()
+            .expect("the hull contains a literal")
+            .address
+            .logical_row = 1;
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+
+        assert!(
+            rows.finish(frame).is_err(),
+            "final ArrayRows readback must match the captured logical row"
+        );
+    }
+
+    fn finish_group_with_receipt_identity_error(
+        corrupt_group_identity: bool,
+    ) -> crate::error::Result<Groups> {
+        let shape = Shape::Point(xyzm(1.0, 2.0, 3.0, 4.0));
+        let (layout, literals) = ProducerDrawingReceipt::point_selection_layout(&shape)?;
+        let mut pending =
+            PendingPublicationRow::producer_drawing(shape, layout, literals, 0, "Groups test")?;
+        pending.layout.group_row = Some(0);
+        pending.layout.value_row = Some(0);
+        for literal in &mut pending.producer_literals {
+            literal.address.group_row = Some(0);
+            literal.address.value_row = Some(0);
+        }
+        if corrupt_group_identity {
+            pending
+                .producer_literals
+                .first_mut()
+                .expect("the point output has a literal")
+                .address
+                .group_row = Some(1);
+        }
+
+        let mut rows = PublicationRows::with_groups_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending))?;
+        rows.end_group()?;
+        rows.finish_groups(Frame::default(), None)
+    }
+
+    #[test]
+    fn geographic_groups_final_writer_rejects_a_wrong_group_identity() {
+        assert!(finish_group_with_receipt_identity_error(false).is_ok());
+        assert!(finish_group_with_receipt_identity_error(true).is_err());
     }
 
     #[test]
