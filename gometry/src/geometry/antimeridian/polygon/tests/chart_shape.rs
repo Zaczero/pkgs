@@ -108,7 +108,7 @@ fn frame_only_capture_requires_metric_authority_for_interior_ordinates() {
     let seam_z = |shape: &Shape| {
         let mut values = Vec::new();
         shape.for_each_point(|point| {
-            if point.x.abs() == 180.0 {
+            if point.x.abs().to_bits() == 180.0_f64.to_bits() {
                 values.push(point.z().expect("seam sample retains its source Z"));
             }
         });
@@ -120,16 +120,23 @@ fn frame_only_capture_requires_metric_authority_for_interior_ordinates() {
     ));
     assert_eq!(wgs84.len(), 2);
     assert_eq!(sphere.len(), 2);
-    assert!(wgs84.iter().all(|value| (*value - 71.0451436549).abs() < 1.0e-7));
-    assert!(sphere.iter().all(|value| (*value - 71.0842603000).abs() < 1.0e-7));
+    assert!(
+        wgs84
+            .iter()
+            .all(|value| (*value - 71.045_143_654_9).abs() < 1.0e-7)
+    );
+    assert!(
+        sphere
+            .iter()
+            .all(|value| (*value - 71.084_260_300_0).abs() < 1.0e-7)
+    );
     assert!((wgs84[0] - sphere[0]).abs() > 0.03);
 
     let result = source.split_antimeridian_captured_in_frame_with_metric::<
         crate::crs::GeodesicMetric,
     >(GeographicFrame::crs84(), None);
-    let error = match result {
-        Ok(_) => panic!("a chart frame alone must not supply an ellipsoid"),
-        Err(error) => error,
+    let Err(error) = result else {
+        panic!("a chart frame alone must not supply an ellipsoid");
     };
     assert!(
         error.to_string().contains("CRS metric"),

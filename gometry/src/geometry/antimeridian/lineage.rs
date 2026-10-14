@@ -666,7 +666,7 @@ mod tests {
             None,
         );
 
-        assert!(result.is_err());
+        let _error = result.expect_err("incompatible chart restrictions must be rejected");
     }
 
     fn crs84_metric() -> crate::crs::GeodesicMetric {
@@ -770,9 +770,8 @@ mod tests {
             Some(metric_access),
         );
 
-        let error = match result {
-            Ok(_) => panic!("a nonzero edge whose metric underflows must fail"),
-            Err(error) => error,
+        let Err(error) = result else {
+            panic!("a nonzero edge whose metric underflows must fail");
         };
         assert!(error.to_string().contains("underflow"), "{error}");
     }
