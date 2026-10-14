@@ -2,10 +2,14 @@ use super::test_support::{
     assert_disjoint_certificate_matches_graph, invalid_zm_bowtie, m_square, polygon, square, wkb,
     z_square, zm_line, zm_square,
 };
+use crate::geometry::overlay::exact_partition::{partition_metrics, reset_partition_builds};
+use crate::geometry::overlay::shape::{
+    line_merge_source_candidates, reset_line_merge_source_candidates,
+};
 use crate::geometry::overlay::{OverlayOp, Strictness, binary_areal_overlay, overlay_all};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, LineSeq, MOrdinate, MultiLineString,
-    MultiMember, Point, Polygon, Shape, ZOrdinate,
+    MultiMember, Point, Polygon, Shape, TopologyDomain, ZOrdinate,
 };
 
 /// The overlay engine preserves INPUT VERTICES bit-exactly — the wart
@@ -307,4 +311,80 @@ fn line_merge_drops_only_conflicting_shared_node_axes() {
     assert_eq!(merged.coordinate_axes(), "XYM");
     merged.for_each_point(|point| assert!(point.z().is_none()));
     merged.for_each_point(|point| assert!(point.m().is_some()));
+}
+
+#[test]
+fn geographic_line_merge_does_not_node_disconnected_crossings() {
+    let axes = CoordinateAxes::XYZ;
+    let input = geographic_line_merge_crossing_grid(axes);
+    let context = crate::geometry::SourceArcContext::new(
+        TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+        None,
+    );
+
+    reset_partition_builds();
+    reset_line_merge_source_candidates();
+    let output = input
+        .line_merge_with_context(&context)
+        .expect("geographic XYZ line merge succeeds");
+    let Shape::MultiLineString(merged) = output else {
+        panic!("endpoint-disconnected lines remain a MultiLineString");
+    };
+    assert_eq!(merged.len(), 32);
+    assert!(merged.iter().all(|line| line.len() == 2));
+    assert_eq!(merged.axes(), axes);
+    let metrics = partition_metrics();
+    let source_candidates = line_merge_source_candidates();
+
+    assert!(
+        metrics.canonical_nodes <= 64,
+        "line merge materialized irrelevant interior crossings: {} nodes for {} endpoint-only lines",
+        metrics.canonical_nodes,
+        32
+    );
+    assert!(
+        source_candidates <= 64,
+        "line merge tested too many source incidences: {source_candidates} candidates for 16 horizontal and vertical pairs"
+    );
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the fixed 16-row test grid bounds its coordinate and Z labels"
+)]
+fn geographic_line_merge_crossing_grid(axes: CoordinateAxes) -> Shape {
+    const COUNT: usize = 16;
+
+    let mut lines = Vec::with_capacity(32);
+    for index in 0..COUNT {
+        let coordinate = (index + 1) as f64 * 10.0 / (COUNT + 1) as f64;
+        for (line, ((start_x, start_y), (end_x, end_y))) in [
+            ((0.0, coordinate), (10.0, coordinate)),
+            ((coordinate, 0.0), (coordinate, 10.0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let start = Point::new_axes(
+                start_x,
+                start_y,
+                ZOrdinate(axes.has_z().then_some((line + index * 2) as f64)),
+                MOrdinate(None),
+            )
+            .unwrap();
+            let end = Point::new_axes(
+                end_x,
+                end_y,
+                ZOrdinate(axes.has_z().then_some((line + index * 2 + 1) as f64)),
+                MOrdinate(None),
+            )
+            .unwrap();
+            lines.push(MultiMember::Value(
+                LineSeq::try_new(CoordSeq::try_from_points(&[start, end]).unwrap()).unwrap(),
+            ));
+        }
+    }
+    Shape::MultiLineString(
+        MultiLineString::try_new(axes, lines).expect("crossing linework has valid members"),
+    )
 }
