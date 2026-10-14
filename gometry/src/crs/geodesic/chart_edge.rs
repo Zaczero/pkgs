@@ -24,7 +24,8 @@ use crate::geographic::{
     RetainedChartDisplacement,
 };
 use crate::geometry::{
-    ChartBox, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, ZOrdinate,
+    ChartBox, ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point,
+    RootMetricState, ZOrdinate, resolve_source_root,
 };
 use crate::work::{Unmetered, Work};
 
@@ -59,6 +60,10 @@ pub(super) struct ChartEdgeDerivatives {
 }
 
 impl ChartEdge {
+    pub(crate) const fn frame(self) -> GeographicFrame {
+        self.frame
+    }
+
     #[expect(
         clippy::float_cmp,
         reason = "exact chart deltas and the native chart-pole magnitude determine physical degeneracy"
@@ -168,7 +173,7 @@ impl ChartEdge {
 
     pub(super) fn geodetic_position(self, parameter: f64) -> Result<Point> {
         let axis = self.frame.longitude();
-        let longitude = self.retained_longitude();
+        let longitude = self.retained_displacement();
         let site: crate::geographic::RetainedLongitudeSite =
             axis.native_site_at(&longitude, parameter)?;
         let native = *site.native();
@@ -182,6 +187,10 @@ impl ChartEdge {
             .to_geodesic_xy(native.get(), latitude)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         Ok(Point::new_raw_xy(longitude, latitude))
+    }
+
+    pub(crate) const fn retained_displacement(self) -> RetainedChartDisplacement {
+        self.longitude
     }
 
     const fn retained_longitude(self) -> RetainedChartDisplacement {
@@ -239,35 +248,28 @@ impl ChartEdge {
         }
     }
 
-    pub(super) fn witness(
+    pub(super) fn witness<M: ChartMetric>(
         self,
         start: Point,
         end: Point,
         parameter: f64,
         total_length: Option<f64>,
-        geodesic: &Geodesic,
+        metric: &M,
     ) -> Result<Point> {
-        self.witness_with_work(
-            start,
-            end,
-            parameter,
-            total_length,
-            geodesic,
-            &mut Unmetered,
-        )
+        self.witness_with_work(start, end, parameter, total_length, metric, &mut Unmetered)
     }
 
     #[expect(
         clippy::float_cmp,
         reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
     )]
-    fn witness_with_work(
+    fn witness_with_work<M: ChartMetric>(
         self,
         start: Point,
         end: Point,
         parameter: f64,
         total_length: Option<f64>,
-        geodesic: &Geodesic,
+        metric: &M,
         work: &mut impl Work,
     ) -> Result<Point> {
         if parameter == 0.0 {
@@ -280,29 +282,34 @@ impl ChartEdge {
             HasZ(start.z().is_some() && end.z().is_some()),
             HasM(start.m().is_some() && end.m().is_some()),
         );
-        let fraction = if axes.has_z() || axes.has_m() {
-            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
-            Some(self.arclength_fraction_with_work(parameter, Some(total), geodesic, work)?)
+        let ordinates = if axes.has_z() || axes.has_m() {
+            let source = [start, end];
+            let chart_parameter =
+                crate::geometry::tessellation::exact::ExactRational::from_f64(parameter);
+            let mut state = RootMetricState::from_admitted_edge(self, total_length);
+            let mut fraction = None;
+            resolve_source_root(
+                self.frame,
+                &source,
+                self.longitude,
+                &chart_parameter,
+                axes,
+                || Ok(metric),
+                &mut state,
+                &mut fraction,
+                work,
+            )?
         } else {
-            None
+            crate::geometry::NodeOrdinates::default()
         };
-        self.witness_interior(start, end, parameter, axes, fraction)
-    }
-
-    fn witness_interior(
-        self,
-        start: Point,
-        end: Point,
-        parameter: f64,
-        axes: CoordinateAxes,
-        fraction: Option<f64>,
-    ) -> Result<Point> {
         let position = self.chart_position(parameter)?;
-        let (z, m) = fraction.map_or((ZOrdinate(None), MOrdinate(None)), |fraction| {
-            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction)
-        });
-        let point = Point::new_axes(position.x, position.y, z, m)
-            .expect("an admitted chart-edge witness is finite");
+        let point = Point::new_axes(
+            position.x,
+            position.y,
+            ZOrdinate(ordinates.z.value()),
+            MOrdinate(ordinates.m.value()),
+        )
+        .expect("an admitted chart-edge witness is finite");
         Ok(self
             .frame
             .canonical_computed_point(point)

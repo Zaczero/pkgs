@@ -449,7 +449,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(in crate::geometry) struct AxisValue {
+pub(crate) struct AxisValue {
     value: Option<f64>,
     conflict: bool,
 }
@@ -466,7 +466,7 @@ impl AxisValue {
         }
     }
 
-    pub(in crate::geometry) fn value(self) -> Option<f64> {
+    pub(crate) fn value(self) -> Option<f64> {
         (!self.conflict).then_some(self.value).flatten()
     }
 
@@ -477,9 +477,9 @@ impl AxisValue {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(in crate::geometry) struct NodeOrdinates {
-    pub(in crate::geometry) z: AxisValue,
-    pub(in crate::geometry) m: AxisValue,
+pub(crate) struct NodeOrdinates {
+    pub(crate) z: AxisValue,
+    pub(crate) m: AxisValue,
 }
 
 impl NodeOrdinates {
@@ -515,6 +515,29 @@ pub(crate) type ParallelSourceArcMetricAccess<'a> =
 pub(crate) struct RootMetricState {
     edge: Option<crate::crs::ChartEdge>,
     total_length: Option<f64>,
+}
+
+impl RootMetricState {
+    pub(crate) const fn from_admitted_edge(
+        edge: crate::crs::ChartEdge,
+        total_length: Option<f64>,
+    ) -> Self {
+        Self {
+            edge: Some(edge),
+            total_length,
+        }
+    }
+
+    pub(crate) const fn from_admitted_edge_with_fraction(
+        edge: crate::crs::ChartEdge,
+        total_length: Option<f64>,
+        fraction: f64,
+    ) -> (Self, Option<f64>) {
+        (
+            Self::from_admitted_edge(edge, total_length),
+            Some(fraction),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -753,11 +776,18 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
     work: &mut impl Work,
 ) -> crate::error::Result<ComputedSampleOrdinates> {
     let chart_parameter = ExactRational::from_f64(parameter);
-    let request = SourceArcRequest::new(source_frame, source, axes, &chart_parameter, || {
-        Ok(longitude)
-    })?;
     let mut fraction = None;
-    let ordinates = source_arc_ordinates(&request, metric, state, &mut fraction, work)?;
+    let ordinates = resolve_source_root(
+        source_frame,
+        source,
+        longitude,
+        &chart_parameter,
+        axes,
+        metric,
+        state,
+        &mut fraction,
+        work,
+    )?;
     let [start, end] = *source;
     Ok(ComputedSampleOrdinates {
         y: interpolate_subdivision_ordinate(start.y, end.y, parameter),

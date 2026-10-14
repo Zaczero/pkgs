@@ -1,12 +1,12 @@
 use super::publish::map_geographic_error;
 use super::{
     ChartStep, Coordinates, GeographicFrame, MOrdinate, Point, Result, RetainedChartDisplacement,
-    RetainedComputedSample, RetainedLongitudeClass, ZOrdinate, interpolate_optional_ordinate,
-    interpolate_subdivision_ordinate, retained_computed_samples_connection,
-    retained_edge_from_chart_witness, retained_edge_from_lifted_binary64_pair,
-    retained_exact_interval_class, retained_exact_publisher_sample,
-    retained_exact_split_piece_count, retained_native_interval_class,
-    retained_native_publisher_sample, retained_native_split_piece_count,
+    RetainedComputedSample, RetainedLongitudeClass, ZOrdinate, interpolate_subdivision_ordinate,
+    retained_computed_samples_connection, retained_edge_from_chart_witness,
+    retained_edge_from_lifted_binary64_pair, retained_exact_interval_class,
+    retained_exact_publisher_sample, retained_exact_split_piece_count,
+    retained_native_interval_class, retained_native_publisher_sample,
+    retained_native_split_piece_count,
 };
 use crate::geographic::PeriodicAxis;
 
@@ -203,7 +203,7 @@ pub(super) fn collect_edge_intents<'intent, P: Coordinates + ?Sized>(
     Ok(intents)
 }
 
-pub(super) fn interpolate_sample_ordinates(
+pub(super) fn sample_xy_ordinates(
     _edge_index: usize,
     endpoints: &[Point; 2],
     _relation: &ComputedLongitudeRelation<'_>,
@@ -213,7 +213,7 @@ pub(super) fn interpolate_sample_ordinates(
     let [start, end] = *endpoints;
     ComputedSampleOrdinates {
         y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
-        z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
-        m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
+        z: ZOrdinate(None),
+        m: MOrdinate(None),
     }
 }

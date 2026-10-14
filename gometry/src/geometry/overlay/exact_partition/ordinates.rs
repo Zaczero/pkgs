@@ -1,8 +1,8 @@
 use super::{
     AxisValue, ChartMetric, CoordinateAxes, ExactLineEmission, ExactPartition, ExactRational,
-    ExactSourceInventory, GeometryErrorKind, MOrdinate, NodeId, Point, Result, SourceArcContext,
-    SourceArcRequest, XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along,
-    source_arc_ordinates,
+    ExactSourceInventory, GeometryErrorKind, MOrdinate, NodeId, Point, Result, RootMetricState,
+    SourceArcContext, XY, ZOrdinate, embedding, interpolate_ordinate, parameter_along,
+    resolve_source_root,
 };
 use crate::work::Unmetered;
 
@@ -154,27 +154,28 @@ impl ExactSourceInventory {
                     let [start, end] = *points;
                     if let Some(source_frame) = source_frame {
                         let parameter = ExactRational::new(along.clone(), den.clone())?;
-                        let request =
-                            SourceArcRequest::new(source_frame, points, axes, &parameter, || {
-                                source_frame
-                                    .longitude()
-                                    .chart_connection(start.x, end.x)
-                                    .map(crate::geographic::ChartConnection::retained)
-                                    .map_err(|error| {
-                                        GeometryErrorKind::Invalid(error.to_string().into()).into()
-                                    })
+                        let longitude = source_frame
+                            .longitude()
+                            .chart_connection(start.x, end.x)
+                            .map(crate::geographic::ChartConnection::retained)
+                            .map_err(|error| {
+                                GeometryErrorKind::Invalid(error.to_string().into())
                             })?;
                         let mut fraction = None;
                         let mut work = Unmetered;
                         let mut metric_state = record.metric.get();
-                        let ordinates = source_arc_ordinates(
-                            &request,
+                        let ordinates = resolve_source_root(
+                            source_frame,
+                            points,
+                            longitude,
+                            &parameter,
+                            axes,
                             || {
                                 let access = context.metric_access().ok_or_else(|| {
-                                crate::crs::CrsError::invalid(
-                                    "geographic source-ordinate carry requires the operation's CRS metric",
-                                )
-                            })?;
+                                    crate::crs::CrsError::invalid(
+                                        "geographic source-ordinate carry requires the operation's CRS metric",
+                                    )
+                                })?;
                                 access()
                             },
                             &mut metric_state,

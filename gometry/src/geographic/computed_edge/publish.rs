@@ -1,5 +1,5 @@
 use super::aliases::{ZeroLongitudeAlias, zero_longitude_aliases};
-use super::intents::{collect_edge_intents, interpolate_sample_ordinates};
+use super::intents::{collect_edge_intents, sample_xy_ordinates};
 use super::vertices::{SampledVertex, observe_sampled_vertex, publish_vertex_at};
 use super::{
     ChartStep, ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates,
@@ -33,7 +33,7 @@ pub(crate) fn publish_computed_chain<'intent, P: Coordinates + ?Sized>(
         &edge_intents,
         |_, _| ComputedVertexIntent::Canonical,
         |edge_index, endpoints, relation, parameter, retained| {
-            Ok(interpolate_sample_ordinates(
+            Ok(sample_xy_ordinates(
                 edge_index, endpoints, relation, parameter, retained,
             ))
         },
@@ -112,7 +112,7 @@ pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates
         intent,
         vertex_intent,
         |edge_index, endpoints, relation, parameter, retained| {
-            Ok(interpolate_sample_ordinates(
+            Ok(sample_xy_ordinates(
                 edge_index, endpoints, relation, parameter, retained,
             ))
         },
