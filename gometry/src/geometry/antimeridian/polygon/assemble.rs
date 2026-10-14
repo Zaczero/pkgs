@@ -8,6 +8,16 @@ use crate::geometry::antimeridian::publication::restriction_for_edge;
 
 pub(super) type SeamSegmentsWithLineage = Vec<(Vec<Point>, LineageSequence)>;
 
+struct SeamFragment {
+    points: Vec<Point>,
+    lineage: Option<LineageSequence>,
+}
+
+struct KeptHole<'a> {
+    ring: &'a Ring,
+    lineage: Option<&'a LineageSequence>,
+}
+
 #[derive(Clone, Copy)]
 struct PoleCap {
     segment: usize,
@@ -32,90 +42,26 @@ pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     }
 }
 
-/// Build the final polygons from stitched seam segments: rings, the
-/// single-ring pole-covering wrap, and kept-hole assignment.
 pub(super) fn assemble_polygons(
     segments: Vec<Vec<Point>>,
     kept_holes: &[&Ring],
 ) -> Result<Vec<Polygon>> {
-    let mut shells = build_rings(segments);
-    if shells.is_empty() {
-        return Err(GeometryErrorKind::antimeridian_split_failed(
-            "no ring could be stitched along the seam",
-        ));
-    }
-    // A single non-CCW result encloses both poles: represent it as the world
-    // rectangle with the ring as a hole.
-    if let [shell] = shells.as_slice()
-        && !ring_is_ccw(shell)
-    {
-        // The fabricated world rectangle carries the ring's axes so shell and
-        // hole stay axis-consistent (a measured/3D pole wrap is rejected
-        // downstream; the placeholder ordinate is never observed).
-        let like = shell.first().copied().unwrap_or(Point::new(0.0, 0.0)?);
-        let corner = |lon: f64, lat: f64| -> Result<Point> {
-            Point::new_axes(lon, lat, ZOrdinate(like.z()), MOrdinate(like.m()))
-        };
-        let world = vec![
-            corner(-180.0, 90.0)?,
-            corner(-180.0, -90.0)?,
-            corner(180.0, -90.0)?,
-            corner(180.0, 90.0)?,
-            corner(-180.0, 90.0)?,
-        ];
-        let hole = close_ring(shells.pop().expect("the shell slice contains one ring"));
-        return Ok(vec![Polygon::new(
-            Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
-            vec![Ring::try_from_closed(CoordSeq::try_from_points(&hole)?)?],
-        )]);
-    }
-    let mut polygons = Vec::with_capacity(shells.len());
-    for shell in shells {
-        polygons.push(Polygon::new(
-            Ring::try_from_closed(CoordSeq::try_from_points(&close_ring(shell))?)?,
-            Vec::new(),
-        ));
-    }
-    // Assign each non-crossing hole to the part that contains it. Accumulate
-    // every hole assigned to the same part.
-    let candidate_shapes = polygons
+    let segments = segments
+        .into_iter()
+        .map(|points| SeamFragment {
+            points,
+            lineage: None,
+        })
+        .collect();
+    let kept_holes = kept_holes
         .iter()
-        .cloned()
-        .map(Shape::Polygon)
+        .map(|ring| KeptHole {
+            ring,
+            lineage: None,
+        })
         .collect::<Vec<_>>();
-    let mut assigned_holes = vec![Vec::<Ring>::new(); polygons.len()];
-    for hole in kept_holes {
-        let hole_shape = Shape::LineString(hole.as_line());
-        let mut owner = None;
-        for (candidate, assigned) in candidate_shapes.iter().zip(&mut assigned_holes) {
-            if candidate.contains(&hole_shape)? {
-                owner = Some(assigned);
-                break;
-            }
-        }
-        match owner {
-            Some(assigned) => assigned.push((*hole).clone()),
-            None => {
-                return Err(GeometryErrorKind::antimeridian_split_failed(
-                    "a hole does not lie inside any split part",
-                ));
-            },
-        }
-    }
-    for (polygon, mut holes) in polygons.iter_mut().zip(assigned_holes) {
-        if holes.is_empty() {
-            continue;
-        }
-        let combined = if polygon.holes.is_empty() {
-            holes
-        } else {
-            let mut combined = polygon.holes.to_vec();
-            combined.append(&mut holes);
-            combined
-        };
-        *polygon = Polygon::new(polygon.shell.clone(), combined);
-    }
-    Ok(polygons)
+    assemble_fragments(segments, &kept_holes, None)
+        .map(|parts| parts.into_iter().map(|(polygon, _)| polygon).collect())
 }
 
 pub(super) fn assemble_polygons_with_lineage(
@@ -123,16 +69,52 @@ pub(super) fn assemble_polygons_with_lineage(
     kept_holes: &[(Ring, LineageSequence)],
     catalog: &mut LineageCatalog,
 ) -> Result<Vec<PolygonWithLineage>> {
-    let shells = build_rings_with_lineage(segments, catalog)?;
+    let segments = segments
+        .into_iter()
+        .map(|(points, lineage)| SeamFragment {
+            points,
+            lineage: Some(lineage),
+        })
+        .collect();
+    let kept_holes = kept_holes
+        .iter()
+        .map(|(ring, lineage)| KeptHole {
+            ring,
+            lineage: Some(lineage),
+        })
+        .collect::<Vec<_>>();
+    assemble_fragments(segments, &kept_holes, Some(catalog))?
+        .into_iter()
+        .map(|(polygon, lineage)| {
+            Ok(PolygonWithLineage {
+                polygon,
+                lineage: lineage.ok_or_else(|| {
+                    GeometryErrorKind::Invalid("assembled polygon has no lineage".into())
+                })?,
+            })
+        })
+        .collect()
+}
+
+/// Assemble seam fragments once, carrying lineage only for captured callers.
+fn assemble_fragments(
+    segments: Vec<SeamFragment>,
+    kept_holes: &[KeptHole<'_>],
+    mut catalog: Option<&mut LineageCatalog>,
+) -> Result<Vec<(Polygon, Option<LineagePolygon>)>> {
+    let shells = build_rings(segments, catalog.as_deref_mut())?;
     if shells.is_empty() {
         return Err(GeometryErrorKind::antimeridian_split_failed(
             "no ring could be stitched along the seam",
         ));
     }
-    if let [shell] = shells.as_slice()
-        && !ring_is_ccw(&shell.0)
-    {
-        let like = shell.0.first().copied().unwrap_or(Point::new(0.0, 0.0)?);
+
+    if shells.len() == 1 && !ring_is_ccw(&shells[0].points) {
+        let like = shells[0]
+            .points
+            .first()
+            .copied()
+            .unwrap_or(Point::new(0.0, 0.0)?);
         let corner = |lon: f64, lat: f64| {
             Point::new_axes(lon, lat, ZOrdinate(like.z()), MOrdinate(like.m()))
         };
@@ -143,40 +125,51 @@ pub(super) fn assemble_polygons_with_lineage(
             corner(180.0, 90.0)?,
             corner(-180.0, 90.0)?,
         ];
-        let member = shell.1.member;
-        let (hole_points, hole_lineage) =
-            close_ring_with_lineage(shell.0.clone(), shell.1.clone(), catalog)?;
-        let world_lineage = synthetic_lineage_ring(member, &world, catalog)?;
+        let shell = shells.into_iter().next().expect("one shell is available");
+        let shell = close_fragment(shell, catalog.as_deref_mut())?;
+        let mut holes = vec![Ring::try_from_closed(CoordSeq::try_from_points(
+            &shell.points,
+        )?)?];
+        let lineage = match (shell.lineage, catalog.as_deref_mut()) {
+            (Some(lineage), Some(catalog)) => {
+                let world_lineage = synthetic_lineage_ring(lineage.member, &world, catalog)?;
+                Some(LineagePolygon {
+                    member: lineage.member,
+                    shell: world_lineage,
+                    holes: vec![lineage],
+                })
+            },
+            (None, None) => None,
+            _ => {
+                return Err(GeometryErrorKind::Invalid(
+                    "assembled shell lineage and catalog disagree".into(),
+                )
+                .into());
+            },
+        };
         let polygon = Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
-            vec![Ring::try_from_closed(CoordSeq::try_from_points(
-                &hole_points,
-            )?)?],
+            std::mem::take(&mut holes),
         );
-        return Ok(vec![PolygonWithLineage {
-            polygon,
-            lineage: LineagePolygon {
-                member,
-                shell: world_lineage,
-                holes: vec![hole_lineage],
-            },
-        }]);
+        return Ok(vec![(polygon, lineage)]);
     }
 
     let mut candidates = Vec::with_capacity(shells.len());
     let mut polygons = Vec::with_capacity(shells.len());
-    let mut lineages = Vec::with_capacity(shells.len());
-    for (shell, lineage) in shells {
-        let (shell, lineage) = close_ring_with_lineage(shell, lineage, catalog)?;
-        let ring = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
+    let mut shell_lineages = Vec::with_capacity(shells.len());
+    for shell in shells {
+        let shell = close_fragment(shell, catalog.as_deref_mut())?;
+        let ring = Ring::try_from_closed(CoordSeq::try_from_points(&shell.points)?)?;
         candidates.push(Shape::Polygon(Polygon::new(ring.clone(), Vec::new())));
         polygons.push(Polygon::new(ring, Vec::new()));
-        lineages.push(lineage);
+        shell_lineages.push(shell.lineage);
     }
 
-    let mut assigned = vec![Vec::<(Ring, LineageSequence)>::new(); polygons.len()];
-    for (hole, lineage) in kept_holes {
-        let hole_shape = Shape::LineString(hole.as_line());
+    let mut assigned = (0..polygons.len())
+        .map(|_| Vec::<(Ring, Option<LineageSequence>)>::new())
+        .collect::<Vec<_>>();
+    for hole in kept_holes {
+        let hole_shape = Shape::LineString(hole.ring.as_line());
         let mut owner = None;
         for (candidate, assigned_holes) in candidates.iter().zip(&mut assigned) {
             if candidate.contains(&hole_shape)? {
@@ -185,7 +178,9 @@ pub(super) fn assemble_polygons_with_lineage(
             }
         }
         match owner {
-            Some(assigned_holes) => assigned_holes.push((hole.clone(), lineage.clone())),
+            Some(assigned_holes) => {
+                assigned_holes.push((hole.ring.clone(), hole.lineage.cloned()));
+            },
             None => {
                 return Err(GeometryErrorKind::antimeridian_split_failed(
                     "a hole does not lie inside any split part",
@@ -195,49 +190,61 @@ pub(super) fn assemble_polygons_with_lineage(
     }
 
     let mut output = Vec::with_capacity(polygons.len());
-    for ((mut polygon, shell_lineage), holes) in polygons.into_iter().zip(lineages).zip(assigned) {
-        let hole_rings = holes
-            .iter()
-            .map(|(ring, _)| ring.clone())
-            .collect::<Vec<_>>();
-        polygon = Polygon::new(polygon.shell.clone(), hole_rings);
-        let hole_lineages = holes.into_iter().map(|(_, lineage)| lineage).collect();
-        output.push(PolygonWithLineage {
-            polygon,
-            lineage: LineagePolygon {
-                member: shell_lineage.member,
-                shell: shell_lineage,
-                holes: hole_lineages,
+    for ((polygon, shell_lineage), holes) in polygons.into_iter().zip(shell_lineages).zip(assigned)
+    {
+        let mut hole_rings = Vec::with_capacity(holes.len());
+        let mut hole_lineages = Vec::with_capacity(holes.len());
+        for (ring, lineage) in holes {
+            hole_rings.push(ring);
+            if let Some(lineage) = lineage {
+                hole_lineages.push(lineage);
+            }
+        }
+        let lineage = match (shell_lineage, catalog.is_some()) {
+            (Some(shell), true) if hole_lineages.len() == hole_rings.len() => {
+                Some(LineagePolygon {
+                    member: shell.member,
+                    shell,
+                    holes: hole_lineages,
+                })
             },
-        });
+            (None, false) => None,
+            _ => {
+                return Err(GeometryErrorKind::Invalid(
+                    "assembled polygon rings and lineage disagree".into(),
+                )
+                .into());
+            },
+        };
+        output.push((Polygon::new(polygon.shell, hole_rings), lineage));
     }
     Ok(output)
 }
 
 #[expect(clippy::float_cmp, reason = "seam banks use exact ±180 chart literals")]
-fn build_rings_with_lineage(
-    mut segments: SeamSegmentsWithLineage,
-    catalog: &mut LineageCatalog,
-) -> Result<SeamSegmentsWithLineage> {
+fn build_rings(
+    mut segments: Vec<SeamFragment>,
+    mut catalog: Option<&mut LineageCatalog>,
+) -> Result<Vec<SeamFragment>> {
     let mut rings = Vec::new();
-    while let Some((mut segment, mut lineage)) = segments.pop() {
-        let end = *segment.last().expect("segments are non-empty");
-        let start = *segment.first().expect("segments are non-empty");
+    while let Some(mut segment) = segments.pop() {
+        let end = *segment.points.last().expect("segments are non-empty");
+        let start = *segment.points.first().expect("segments are non-empty");
         let is_right = end.x == 180.0;
         let mut best: Option<(usize, f64)> = None;
-        let self_candidate = is_self_closing(&segment).then_some(start.y);
-        for (index, (candidate, _)) in segments.iter().enumerate() {
-            let candidate_start = *candidate.first().expect("segments are non-empty");
-            let candidate_end = *candidate.last().expect("segments are non-empty");
+        let self_candidate = is_self_closing(&segment.points).then_some(start.y);
+        for (index, candidate) in segments.iter().enumerate() {
+            let candidate_start = *candidate.points.first().expect("segments are non-empty");
+            let candidate_end = *candidate.points.last().expect("segments are non-empty");
             if candidate_start.x != end.x {
                 continue;
             }
             let toward_pole = if is_right {
                 candidate_start.y > end.y
-                    && (!is_self_closing(candidate) || candidate_end.y < start.y)
+                    && (!is_self_closing(&candidate.points) || candidate_end.y < start.y)
             } else {
                 candidate_start.y < end.y
-                    && (!is_self_closing(candidate) || candidate_end.y > start.y)
+                    && (!is_self_closing(&candidate.points) || candidate_end.y > start.y)
             };
             if toward_pole {
                 let better = best.is_none_or(|(_, latitude)| {
@@ -265,45 +272,80 @@ fn build_rings_with_lineage(
             (None, _) => None,
         };
         if let Some(index) = join {
-            let (joined, joined_lineage) = segments.remove(index);
-            let restriction = restriction_for_edge(
-                *segment.last().expect("segments are non-empty"),
-                *joined.first().expect("segments are non-empty"),
-            );
-            let edge = catalog.push_edge_use(lineage.member, Vec::new(), restriction)?;
-            segment.extend(joined);
-            lineage.edges.push(edge);
-            lineage.edges.extend(joined_lineage.edges);
-            lineage.vertices.extend(joined_lineage.vertices);
-            segments.push((segment, lineage));
+            let mut joined = segments.remove(index);
+            match (segment.lineage.as_mut(), joined.lineage.take()) {
+                (Some(lineage), Some(joined_lineage)) => {
+                    let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "captured seam fragments have no lineage catalog".into(),
+                        )
+                    })?;
+                    let restriction = restriction_for_edge(
+                        *segment.points.last().expect("segments are non-empty"),
+                        *joined.points.first().expect("segments are non-empty"),
+                    );
+                    let edge = catalog.push_edge_use(lineage.member, Vec::new(), restriction)?;
+                    lineage.edges.push(edge);
+                    lineage.edges.extend(joined_lineage.edges);
+                    lineage.vertices.extend(joined_lineage.vertices);
+                },
+                (None, None) => {},
+                _ => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "seam fragment geometry and lineage disagree".into(),
+                    )
+                    .into());
+                },
+            }
+            segment.points.append(&mut joined.points);
+            segments.push(segment);
             continue;
         }
-        if !segment.iter().all(|point| same_point(*point, start)) {
-            rings.push((segment, lineage));
+        if !segment.points.iter().all(|point| same_point(*point, start)) {
+            rings.push(segment);
         }
     }
     Ok(rings)
 }
 
-fn close_ring_with_lineage(
-    mut points: Vec<Point>,
-    mut lineage: LineageSequence,
-    catalog: &mut LineageCatalog,
-) -> Result<(Vec<Point>, LineageSequence)> {
-    if let (Some(first), Some(last)) = (points.first().copied(), points.last().copied())
-        && !same_point(first, last)
+fn close_fragment(
+    mut fragment: SeamFragment,
+    mut catalog: Option<&mut LineageCatalog>,
+) -> Result<SeamFragment> {
+    if let (Some(first), Some(last)) = (
+        fragment.points.first().copied(),
+        fragment.points.last().copied(),
+    ) && !same_point(first, last)
     {
-        let restriction = restriction_for_edge(last, first);
-        let edge = catalog.push_edge_use(lineage.member, Vec::new(), restriction)?;
-        lineage.edges.push(edge);
-        let first_events =
-            lineage.vertices.first().cloned().ok_or_else(|| {
-                GeometryErrorKind::Invalid("ring lineage has no first vertex".into())
-            })?;
-        lineage.vertices.push(first_events);
-        points.push(first);
+        match fragment.lineage.as_mut() {
+            Some(lineage) => {
+                let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "captured seam fragment has no lineage catalog".into(),
+                    )
+                })?;
+                let edge = catalog.push_edge_use(
+                    lineage.member,
+                    Vec::new(),
+                    restriction_for_edge(last, first),
+                )?;
+                lineage.edges.push(edge);
+                let first_events = lineage.vertices.first().cloned().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("ring lineage has no first vertex".into())
+                })?;
+                lineage.vertices.push(first_events);
+            },
+            None if catalog.is_none() => {},
+            None => {
+                return Err(GeometryErrorKind::Invalid(
+                    "seam fragment geometry and lineage disagree".into(),
+                )
+                .into());
+            },
+        }
+        fragment.points.push(first);
     }
-    Ok((points, lineage))
+    Ok(fragment)
 }
 
 fn synthetic_lineage_ring(
@@ -325,15 +367,6 @@ fn synthetic_lineage_ring(
         vertices,
         edges,
     })
-}
-
-fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
-    if let (Some(first), Some(last)) = (coords.first().copied(), coords.last().copied())
-        && !same_point(first, last)
-    {
-        coords.push(first);
-    }
-    coords
 }
 
 /// A seam end with no seam start between it and the pole closes over that pole.
@@ -572,75 +605,4 @@ fn is_self_closing(segment: &[Point]) -> bool {
     let end = *segment.last().expect("segments are non-empty");
     let is_right = end.x == 180.0;
     start.x == end.x && ((is_right && start.y > end.y) || (!is_right && start.y < end.y))
-}
-
-/// Build polygons iteratively: pop a segment, find the closest seam start
-/// toward the pole on the same side (including the donut clause), join and
-/// repeat; a segment with no candidate closes on itself.
-#[expect(
-    clippy::float_cmp,
-    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
-)]
-fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
-    let mut rings = Vec::new();
-    while let Some(mut segment) = segments.pop() {
-        let end = *segment.last().expect("segments are non-empty");
-        let start = *segment.first().expect("segments are non-empty");
-        let is_right = end.x == 180.0;
-        let mut best: Option<(usize, f64)> = None;
-        let self_candidate = is_self_closing(&segment).then_some(start.y);
-        for (index, candidate) in segments.iter().enumerate() {
-            let candidate_start = *candidate.first().expect("segments are non-empty");
-            let candidate_end = *candidate.last().expect("segments are non-empty");
-            if candidate_start.x != end.x {
-                continue;
-            }
-            let toward_pole = if is_right {
-                candidate_start.y > end.y
-                    && (!is_self_closing(candidate) || candidate_end.y < start.y)
-            } else {
-                candidate_start.y < end.y
-                    && (!is_self_closing(candidate) || candidate_end.y > start.y)
-            };
-            if toward_pole {
-                let better = best.is_none_or(|(_, latitude)| {
-                    if is_right {
-                        candidate_start.y < latitude
-                    } else {
-                        candidate_start.y > latitude
-                    }
-                });
-                if better {
-                    best = Some((index, candidate_start.y));
-                }
-            }
-        }
-        // The self-closing latitude competes with the joins: when it is
-        // closer to the end than every candidate start, the segment closes
-        // on itself.
-        let join = match (best, self_candidate) {
-            (Some((index, latitude)), Some(own)) => {
-                let self_wins = if is_right {
-                    own < latitude
-                } else {
-                    own > latitude
-                };
-                if self_wins { None } else { Some(index) }
-            },
-            (Some((index, _)), None) => Some(index),
-            (None, _) => None,
-        };
-        if let Some(index) = join {
-            let joined = segments.remove(index);
-            segment.extend(joined);
-            segments.push(segment);
-            continue;
-        }
-        // Self-closing: drop fully degenerate single-point rings (an input
-        // corner exactly on the seam).
-        if !segment.iter().all(|point| same_point(*point, start)) {
-            rings.push(segment);
-        }
-    }
-    rings
 }
