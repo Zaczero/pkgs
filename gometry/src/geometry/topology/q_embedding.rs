@@ -630,9 +630,9 @@ use self::native::producer_tables::{
 };
 use self::native::reference_builder::{
     NativeKnownSpanBoundary, NativeRayTransform, NativeReferenceGraph, NativeReferenceGraphBuilder,
-    NativeReferenceRayPoints, NativeSplitPoint, align_producer_fan_target, logical_layout_for_plan,
-    native_chart_vertex_key, native_emission_port_key, native_point_contact_vertices,
-    new_native_reference_graph_builder, normalize_native_chart_lifts,
+    NativeReferenceRayPoints, NativeSplitPoint, logical_layout_for_plan, native_chart_vertex_key,
+    native_emission_port_key, native_point_contact_vertices, new_native_reference_graph_builder,
+    normalize_native_chart_lifts,
 };
 use self::native::refinement::common_refine_native_edges;
 use self::native::seam_bands::{

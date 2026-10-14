@@ -4,14 +4,12 @@ use super::super::{
     NativeReferencePoints, NodeAuthority, PublishedEndpoint, QCandidate, QChord, QCoordinates,
     QDartId, QEmbeddingProblem, QFaceStructure, QGraphNode, QNodeId, QPortId, QPublicationChordId,
     QPublishedChord, QVariableNode, ResourceError, Result, SelectedUse, XY,
-    align_native_chart_lift, align_producer_fan_target, assigned_producer_fan_order_matches,
-    candidate_chart_point_with_work, compare_quotient_keys_with_work, emitted_node_key,
-    exact_departures_share_forward_ray, lift_assigned_publication_point,
-    pair_preserves_incidence_with_work, producer_range_fan_dart, producer_range_touches_node,
-    q_port_assigned_point, quotient_key_for_chart_position_with_work, reconstruct_cut_ports,
-    translated_exact_point_with_work, try_sort_by_with_work,
+    align_native_chart_lift, assigned_producer_fan_order_matches, candidate_chart_point_with_work,
+    compare_quotient_keys_with_work, emitted_node_key, exact_departures_share_forward_ray,
+    lift_assigned_publication_point, pair_preserves_incidence_with_work, producer_range_fan_dart,
+    producer_range_touches_node, q_port_assigned_point, quotient_key_for_chart_position_with_work,
+    reconstruct_cut_ports, translated_exact_point_with_work, try_sort_by_with_work,
 };
-use crate::geographic::retained_exact::sites::split_rational_native_site_with_work;
 use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
@@ -592,7 +590,6 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
         source_faces: Option<&QFaceStructure>,
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
-        let frame = self.topology.sources.frame;
         let q = &self.topology.q;
         budget.charge_into_error(
             u64::try_from(self.publication_chords.len())
@@ -846,57 +843,14 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
                         candidate_mismatch = true;
                         break;
                     }
-                    let target_dart = q.darts.get(dart.0 as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "assigned producer fan has an unknown target dart".into(),
-                        )
-                    })?;
-                    let target_source_point = port_points
-                        .get(target_dart.to_port.0 as usize)
-                        .and_then(Option::as_ref)
-                        .ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "assigned producer fan target port has no candidate point".into(),
-                            )
-                        })?;
-                    let longitude = self.topology.sources.frame.longitude();
-                    let (_, source_lift) = split_rational_native_site_with_work(
-                        &target_source_point.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        budget,
-                    )?;
-                    let (output_native, output_lift) = split_rational_native_site_with_work(
-                        &target.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        budget,
-                    )?;
-                    let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
-                    let negative_half = ExactRational::from_f64(-longitude.half_period());
-                    let aligned_target = if output_native
-                        .as_ref()
-                        .try_cmp_with_work(&negative_half, budget)?
-                        .is_eq()
-                    {
-                        align_producer_fan_target(
-                            &target,
-                            target_source_point,
-                            lift_delta,
-                            frame,
-                            budget,
-                        )?
-                    } else {
-                        let longitude_shift = ExactRational::from_f64(longitude.period())
-                            .try_product_with_work(
-                                &ExactRational::from_dyadic(lift_delta),
-                                budget,
-                            )?;
-                        ExactChartPoint::from_rationals(
-                            target.x.try_add_with_work(&longitude_shift, budget)?,
-                            target.y.try_clone_with_work(budget)?,
-                        )
-                    };
+                    // A long producer leaf can cross the seam after its first
+                    // Q span ends; the origin, not that span's target, owns its lift.
+                    let longitude_shift =
+                        source_point.x.try_subtract_with_work(&origin.x, budget)?;
+                    let aligned_target = ExactChartPoint::from_rationals(
+                        target.x.try_add_with_work(&longitude_shift, budget)?,
+                        target.y.try_clone_with_work(budget)?,
+                    );
                     budget.charge_into_error(1)?;
                     let ray = rays_by_port
                         .entry(port)
