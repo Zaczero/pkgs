@@ -4,9 +4,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PySlice, PyTuple};
 
 use super::receipt::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
-    ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
-    StorageTarget,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall,
+    PublicationOutcome, PublicationRejection, StorageTarget,
 };
 use super::routes::snap_drawing_receipt;
 use crate::Frame;
@@ -22,15 +21,10 @@ use crate::geometry::embedding_completion::literals::{
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
-use crate::geometry::ordinates::{RootId, RootRange};
-use crate::geometry::publication::{
-    ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, SyntheticChartVertex,
-};
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{
-    CoordinateAxes, Coordinates as _, ExactRational, GeographicTopologyRoute, GeometryKind,
-    LineSeq, OverlayOp, Point, Polygon, Ring, Shape, Strictness, TopologyDomain,
-    geographic_topology_route,
+    CoordinateAxes, Coordinates as _, GeographicTopologyRoute, GeometryKind, LineSeq, OverlayOp,
+    Point, Polygon, Ring, Shape, Strictness, TopologyDomain, geographic_topology_route,
 };
 use crate::work::Unmetered;
 
@@ -207,26 +201,9 @@ fn producer_point_receipt(
             .unwrap()
         },
     };
-    ProducerDrawingReceipt::new(
-        buffers,
-        vec![ProducerLiteral::from_point(address, image, expected)],
-        vec![ProducerSourceRootUse {
-            address,
-            image,
-            range: RootRange::whole(RootId::from_index(0)),
-        }],
-        vec![DirectedChartRestrictionUse {
-            restriction: ChartRestriction::CutChord,
-            start: SyntheticChartVertex::Cut {
-                node: 0,
-                side: ChartCutSide::East,
-            },
-            end: SyntheticChartVertex::Cut {
-                node: 1,
-                side: ChartCutSide::West,
-            },
-        }],
-    )
+    ProducerDrawingReceipt::new(buffers, vec![ProducerLiteral::from_point(
+        address, image, expected,
+    )])
 }
 
 fn sampling_array_receipt(stored: &[Point], expected: &[Point]) -> ProducerDrawingReceipt {
@@ -257,7 +234,7 @@ fn sampling_array_receipt(stored: &[Point], expected: &[Point]) -> ProducerDrawi
     let mut work = Unmetered;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work).unwrap();
-    ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new())
+    ProducerDrawingReceipt::new(buffers, literals)
 }
 
 fn selected_sampling_draws() -> Vec<Point> {
@@ -302,7 +279,6 @@ fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> Prod
     let images = (0..stored.len())
         .map(ProducerImageId::new)
         .collect::<Vec<_>>();
-    let first_image = ProducerImageId::new(0);
     let address = LiteralAddress {
         operation: 0,
         logical_row: 0,
@@ -352,26 +328,7 @@ fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> Prod
         .zip(images.iter().copied())
         .map(|(point, image)| ProducerLiteral::from_point(address, image, point))
         .collect();
-    ProducerDrawingReceipt::new(
-        buffers,
-        literals,
-        vec![ProducerSourceRootUse {
-            address,
-            image: first_image,
-            range: RootRange::whole(RootId::from_index(0)),
-        }],
-        vec![DirectedChartRestrictionUse {
-            restriction: ChartRestriction::CutChord,
-            start: SyntheticChartVertex::Cut {
-                node: 0,
-                side: ChartCutSide::East,
-            },
-            end: SyntheticChartVertex::Cut {
-                node: 1,
-                side: ChartCutSide::East,
-            },
-        }],
-    )
+    ProducerDrawingReceipt::new(buffers, literals)
 }
 
 #[test]
@@ -502,6 +459,24 @@ fn nearest_points_receipt_omission_fails_final_readback() {
 }
 
 #[test]
+fn nearest_point_columns_reject_different_lengths_without_a_missing_mask() {
+    let result = super::routes::finish_geographic_nearest_point_columns(
+        vec![Shape::Point(Point::new_raw_xy(1.0, 2.0))],
+        Vec::new(),
+        &Frame::default(),
+        None,
+    );
+
+    match result {
+        Err(error) => assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+        )),
+        Ok(_) => panic!("paired nearest-point columns must have matching lengths"),
+    }
+}
+
+#[test]
 fn shortest_line_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
@@ -583,7 +558,7 @@ fn split_groups_receipt_omission_fails_final_readback() {
         &mut work,
     )
     .unwrap();
-    let mut receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let mut receipt = ProducerDrawingReceipt::new(buffers, literals);
     let omitted = receipt.literals.remove(0);
 
     match super::finish::finish_geographic(
@@ -979,7 +954,6 @@ fn geographic_coverage_clean_producer_receipt_binds_all_output_rows() {
     .unwrap()
     {
         PublicationOutcome::Pass(finished) => {
-            assert!(!finished.producer_source_root_uses().is_empty());
             let (rows, _) = finished.into_array().unwrap();
             assert_eq!(rows.len(), 2);
         },
@@ -1107,9 +1081,6 @@ fn geographic_coverage_clean_rejects_an_omitted_producer_literal() {
         .expect("coverage output has a literal")
         .image;
     receipt.literals.retain(|literal| literal.image != omitted);
-    receipt
-        .source_root_uses
-        .retain(|source_use| source_use.image != omitted);
     let mut work = Unmetered;
     match super::finish::finish_geographic(
         PublicationCall::new(
@@ -1134,7 +1105,7 @@ fn geographic_coverage_clean_rejects_an_omitted_producer_literal() {
 }
 
 #[test]
-fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
+fn coverage_duplicate_reversed_edges_merge_as_one_cycle() {
     let input = [
         crate::io::parse_wkt(
             "POLYGON ZM ((0 0 0 0, 2 0 20 200, 2 2 22 220, 2 0 24 240, 0 0 2 20, 0 -2 4 40, -2 -2 6 60, 0 0 0 0))",
@@ -1168,7 +1139,7 @@ fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
     assert_ne!(first_start.m(), reverse_end.m());
     assert_ne!(first_end.m(), reverse_start.m());
 
-    let (analysis, shapes) = crate::geometry::coverage_invalid_edges_geographic_analysis(
+    let (_, shapes) = crate::geometry::coverage_invalid_edges_geographic_analysis(
         &input,
         crate::geographic::GeographicFrame::crs84(),
         0.0,
@@ -1185,42 +1156,6 @@ fn coverage_duplicate_reversed_edges_keep_source_occurrence_images() {
         source_end,
         source_start
     ]);
-
-    let mut work = Unmetered;
-    let receipt = analysis
-        .invalid_edges_drawing_receipt(None, &mut work)
-        .unwrap();
-    for (root_index, expected_image, expected_record) in [
-        (0, ProducerImageId::new(0), source_start),
-        (3, ProducerImageId::new(1), source_end),
-    ] {
-        let uses = receipt
-            .source_root_uses
-            .iter()
-            .filter(|source_use| {
-                source_use.address.logical_row == 0
-                    && source_use.range.root() == RootId::from_index(root_index)
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            !uses.is_empty(),
-            "source edge {root_index} retains at least one exact Q interval",
-        );
-        for source_use in uses {
-            assert_eq!(
-                source_use.image, expected_image,
-                "source edge {root_index} keeps its occurrence through line_merge",
-            );
-            let literal = receipt
-                .literals
-                .iter()
-                .find(|literal| {
-                    literal.address == source_use.address && literal.image == source_use.image
-                })
-                .expect("source use names a retained line literal");
-            assert_eq!(literal.record, expected_record);
-        }
-    }
 }
 
 #[test]
@@ -1301,160 +1236,6 @@ fn producer_drawing_rejects_omitted_cdt_triangle_literal_on_readback() {
 }
 
 #[test]
-fn geographic_cdt_maps_compacted_constraints_to_authored_edge_roots() {
-    crate::test_support::initialize_python();
-    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
-
-    Python::attach(|_| {
-        let repeated = Point::new_raw_xy(0.0, 0.0);
-        let shell = Ring::closed(vec![
-            repeated,
-            repeated,
-            Point::new_raw_xy(10.0, 0.0),
-            Point::new_raw_xy(10.0, 10.0),
-            Point::new_raw_xy(0.0, 10.0),
-            repeated,
-        ])
-        .unwrap();
-        let hole = Ring::closed(vec![
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(4.0, 2.0),
-            Point::new_raw_xy(4.0, 4.0),
-            Point::new_raw_xy(2.0, 4.0),
-            Point::new_raw_xy(2.0, 2.0),
-        ])
-        .unwrap();
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
-        let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) = MetricResolver::GeographicCarry
-            .resolve_topology_ctx(&frame, &mut metric_scratch)
-            .unwrap();
-        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-        let drawing = crate::geometry::prepare_geographic_cdt_drawing(
-            &shape,
-            crate::geometry::CdtRefinement::Off,
-            domain,
-            metric,
-            &mut budget,
-        )
-        .unwrap();
-        let mut writer = crate::geometry::CdtGroupsDrawingWriter::new(1, None).unwrap();
-        writer.append_row(0, Some(drawing)).unwrap();
-        let finished = writer.finish(frame).unwrap();
-
-        let mut roots = Vec::new();
-        for source_use in finished.producer_source_root_uses() {
-            let mut matched_root = None;
-            for root_index in 1_u32..=8 {
-                for reversed in [false, true] {
-                    let (source_start, source_end) = if reversed {
-                        (ExactRational::one(), ExactRational::zero())
-                    } else {
-                        (ExactRational::zero(), ExactRational::one())
-                    };
-                    let expected = RootRange::from_mapped(
-                        RootId::from_index(root_index),
-                        source_start,
-                        source_end,
-                        ExactRational::zero(),
-                        ExactRational::one(),
-                    )
-                    .unwrap();
-                    if source_use
-                        .range
-                        .try_eq_with_work(&expected, &mut Unmetered)
-                        .unwrap()
-                    {
-                        matched_root = Some(root_index);
-                        break;
-                    }
-                }
-                if matched_root.is_some() {
-                    break;
-                }
-            }
-            roots.push(matched_root.expect("each CDT source use retains its authored root"));
-        }
-        roots.sort_unstable();
-        assert_eq!(roots, (1_u32..=8).collect::<Vec<_>>());
-
-        let (groups, _) = finished.into_groups().unwrap();
-        assert_eq!(groups.offsets.len(), 2);
-        assert_eq!(groups.offsets.first(), Some(&0));
-        assert!(groups.values.len() > 0);
-    });
-}
-
-#[test]
-fn geographic_cdt_receipt_retains_selected_polar_restrictions() {
-    use crate::geographic::ChartPole;
-
-    crate::test_support::initialize_python();
-    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
-    let ring = Ring::closed(
-        [
-            (0.0, -80.0),
-            (90.0, -80.0),
-            (180.0, -80.0),
-            (-90.0, -80.0),
-            (0.0, -80.0),
-        ]
-        .into_iter()
-        .map(|(x, y)| Point::new_raw_xy(x, y))
-        .collect(),
-    )
-    .unwrap();
-    let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
-    let mut metric_scratch = crate::dispatch::MetricScratch::default();
-    let (domain, metric) = MetricResolver::GeographicCarry
-        .resolve_topology_ctx(&frame, &mut metric_scratch)
-        .unwrap();
-    let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-    let drawing = crate::geometry::prepare_geographic_cdt_drawing(
-        &shape,
-        crate::geometry::CdtRefinement::Off,
-        domain,
-        metric,
-        &mut budget,
-    )
-    .unwrap();
-    let mut writer = crate::geometry::CdtGroupsDrawingWriter::new(1, None).unwrap();
-    writer.append_row(0, Some(drawing)).unwrap();
-    let finished = writer.finish(frame).unwrap();
-
-    let restrictions = finished.producer_chart_restrictions();
-    assert_eq!(restrictions.len(), 3);
-    assert_eq!(
-        restrictions
-            .iter()
-            .filter(|use_| use_.restriction == ChartRestriction::CutChord)
-            .count(),
-        2
-    );
-    assert!(restrictions.iter().any(|use_| {
-        use_.restriction
-            == ChartRestriction::PolarCap {
-                pole: ChartPole::South,
-            }
-            && matches!(
-                (use_.start, use_.end),
-                (
-                    SyntheticChartVertex::Pole {
-                        pole: ChartPole::South,
-                        ..
-                    },
-                    SyntheticChartVertex::Pole {
-                        pole: ChartPole::South,
-                        ..
-                    }
-                )
-            )
-    }));
-    let (groups, _) = finished.into_groups().unwrap();
-    assert_eq!(groups.offsets, [0, 5]);
-}
-
-#[test]
 fn mesh_receipt_omission_is_rejected_by_final_storage_readback() {
     let shape = Shape::Polygon(Polygon::new(
         Ring::try_from_closed(
@@ -1507,7 +1288,6 @@ fn producer_drawing_rejects_omitted_literal_at_final_storage_readback() -> crate
     let point = Point::new_raw_xy(4.0, -2.0);
     let mut receipt = producer_point_receipt(StorageTarget::Array, point, point);
     receipt.literals.clear();
-    receipt.source_root_uses.clear();
     let mut work = Unmetered;
     match super::finish::finish_geographic(
         PublicationCall::new(

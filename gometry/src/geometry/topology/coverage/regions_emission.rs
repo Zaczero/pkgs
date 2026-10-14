@@ -8,7 +8,7 @@ use super::super::emission::plan::{
 use super::super::emission::sites::QCoordinates;
 use super::super::emission::{
     AssignedSite, DirectedSpan, EmissionChordId, ExpandedEmissionPlan, FragmentRecipes,
-    NativeAreaEdge, NativeAreaEdgeKind, RecipeWalkOwner, SealedQDrawing, SelectedUse,
+    RecipeWalkOwner, SealedQDrawing, SelectedUse,
 };
 use super::super::exact::SourceEdgeKind;
 use super::super::overlay::{
@@ -23,14 +23,13 @@ use crate::geometry::embedding_completion::literals::{
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootRange, SourceArcMetricAccess, resolve_request_rows,
+    NodeOrdinates, RequestRowInput, SourceArcMetricAccess, resolve_request_rows,
 };
 use crate::geometry::publication::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
 };
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::StorageLayout;
-use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, HasM, HasZ,
     OverlayOp, Polygon, Ring, Shape, SourceArcContext, TopologyDomain,
@@ -317,7 +316,6 @@ impl CoverageRows {
         plan: &ExpandedEmissionPlan<'_>,
         sites: &[AssignedSite],
         request_rows: &[RequestRowInput],
-        area_edges: &[NativeAreaEdge],
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         work: &mut impl Work,
     ) -> Result<ProducerDrawingReceipt> {
@@ -351,7 +349,6 @@ impl CoverageRows {
         let mut scalar = None;
         let mut row_map = Vec::with_capacity(row_count);
         let mut literals = Vec::new();
-        let mut source_root_uses = Vec::new();
         for (logical_row, parts) in row_parts.into_iter().enumerate() {
             let mut axes = if parts.is_empty() && self.target == StorageTarget::Array {
                 *self.source_axes.get(logical_row).ok_or_else(|| {
@@ -390,12 +387,10 @@ impl CoverageRows {
                     plan,
                     sites,
                     &ordinates,
-                    request_rows,
                     &part.shell,
                     axes,
                     address,
                     &mut literals,
-                    &mut source_root_uses,
                     work,
                 )?;
                 let mut holes = Vec::with_capacity(part.holes.len());
@@ -405,12 +400,10 @@ impl CoverageRows {
                         plan,
                         sites,
                         &ordinates,
-                        request_rows,
                         hole,
                         axes,
                         address,
                         &mut literals,
-                        &mut source_root_uses,
                         work,
                     )?;
                     holes.push(ring);
@@ -455,20 +448,7 @@ impl CoverageRows {
                 work,
             )?
         };
-        let chart_restrictions = area_edges
-            .iter()
-            .filter_map(|edge| match edge.kind {
-                NativeAreaEdgeKind::Restriction(restriction) => Some(restriction),
-                NativeAreaEdgeKind::Producer { .. }
-                | NativeAreaEdgeKind::WholeSphereCover { .. } => None,
-            })
-            .collect();
-        Ok(ProducerDrawingReceipt::new(
-            buffers,
-            literals,
-            source_root_uses,
-            chart_restrictions,
-        ))
+        Ok(ProducerDrawingReceipt::new(buffers, literals))
     }
 }
 
@@ -476,38 +456,18 @@ fn write_ring(
     plan: &ExpandedEmissionPlan<'_>,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
-    requests: &[RequestRowInput],
     chords: &[EmissionChordId],
     axes: CoordinateAxes,
     address: LiteralAddress,
     literals: &mut Vec<ProducerLiteral>,
-    source_root_uses: &mut Vec<ProducerSourceRootUse>,
     work: &mut impl Work,
 ) -> Result<(Ring, LiteralSequence<ProducerImageId>)> {
     let drawing = native_chord_points(plan, sites, ordinates, chords, axes, true, work)?;
     let mut images = Vec::with_capacity(drawing.points.len());
-    for (&point, port) in drawing.points.iter().zip(drawing.ports) {
+    for &point in &drawing.points {
         work.charge_into_error(1)?;
         let image = ProducerImageId::new(literals.len());
         literals.push(ProducerLiteral::from_point(address, image, point));
-        for request in &requests
-            .get(port.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage literal source requests are unknown".into())
-            })?
-            .requests
-        {
-            source_root_uses.push(ProducerSourceRootUse {
-                address,
-                image,
-                range: RootRange::point_with_work(
-                    request.root(),
-                    request.parameter().try_clone_with_work(work)?,
-                    ExactRational::zero(),
-                    work,
-                )?,
-            });
-        }
         images.push(image);
     }
     Ok((

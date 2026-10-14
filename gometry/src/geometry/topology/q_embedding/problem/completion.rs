@@ -1,15 +1,15 @@
 use super::super::{
-    AssignedProducerProjection, BTreeMap, ChartMetric, EmissionNodeId, EmissionPortId,
-    EvaluationBudget, ExactChartPoint, ExactQuotientKey, GeometryErrorKind, GlobalCheck,
-    NativeAreaEdgeKind, NativeCandidatePublication, NativeCutFeature, NativeCutSearchOutcome,
-    NativeReference, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
-    QCandidate, QCoordinates, QEmbeddingOutput, QEmbeddingProblem, QEmissionDrawing,
-    QFaceStructure, QRingRoleCheck, QSourceImage, QVariableNode, ResourceError, Result,
-    SealedSourceDrawing, SearchAccount, SourceOnlyPublication, StorageTarget,
-    assigned_emission_site, check_q_ring_roles, compare_quotient_keys_with_work,
-    face_structure_mismatch_nodes, finish_geographic, publication_sample_index,
-    quotient_key_for_chart_position_with_work, require_q_source_image_port, rounded_chart_point,
-    subgraph_chart, validate_native_materialized_candidate, validate_native_sealed_layout,
+    AssignedProducerProjection, BTreeMap, ChartMetric, EmissionNodeId, EvaluationBudget,
+    ExactChartPoint, ExactQuotientKey, GeometryErrorKind, GlobalCheck, NativeCandidatePublication,
+    NativeCutFeature, NativeCutSearchOutcome, NativeReference, ProducerReceipt, PublicationCall,
+    PublicationOutcome, PublicationRejection, QCandidate, QCoordinates, QEmbeddingOutput,
+    QEmbeddingProblem, QEmissionDrawing, QFaceStructure, QRingRoleCheck, QSourceImage,
+    QVariableNode, ResourceError, Result, SealedSourceDrawing, SearchAccount,
+    SourceOnlyPublication, StorageTarget, assigned_emission_site, check_q_ring_roles,
+    compare_quotient_keys_with_work, face_structure_mismatch_nodes, finish_geographic,
+    publication_sample_index, quotient_key_for_chart_position_with_work,
+    require_q_source_image_port, rounded_chart_point, subgraph_chart,
+    validate_native_materialized_candidate, validate_native_sealed_layout,
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
@@ -117,7 +117,6 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     &reference.plan,
                     &assigned_sites,
                     &requests,
-                    &reference.area_edges,
                     self.metric_access,
                     budget,
                 )
@@ -159,44 +158,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             )? {
                 return Ok(None);
             }
-            let source_ranges_by_port = reference.plan.source_root_ranges_by_port(
-                self.emission.fragment_recipes,
-                self.emission.publication,
-                budget,
-            )?;
-            let mut chart_restrictions = Vec::new();
-            for edge in reference
-                .area_edges
-                .iter()
-                .chain(&reference.line_graph_edges)
-            {
-                budget.charge_into_error(1)?;
-                if let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind {
-                    chart_restrictions.push(*restriction);
-                }
-            }
             let producer_receipt =
                 super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
                     shape,
                     literal_uses,
-                    |port: EmissionPortId, work: &mut EvaluationBudget| {
-                        let ranges =
-                            source_ranges_by_port.get(port.0 as usize).ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "native producer source-use port is unknown".into(),
-                                )
-                            })?;
-                        work.charge_into_error(
-                            u64::try_from(ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
-                        )?;
-                        let mut output = Vec::with_capacity(ranges.len());
-                        for range in ranges {
-                            work.charge_into_error(1)?;
-                            output.push(range.try_clone_with_work(work)?);
-                        }
-                        Ok(output)
-                    },
-                    chart_restrictions,
                     LiteralAddress {
                         operation: 0,
                         logical_row: 0,
@@ -554,26 +519,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         budget,
                     )?;
                 diagnostic_lines = source_diagnostic_lines;
-                let ranges_by_port =
-                    super::super::super::overlay::producer_drawing::source_root_ranges_by_q_port(
-                        self.topology,
-                        self.emission.fragment_recipes,
-                        budget,
-                    )?;
                 let receipt =
                     super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
                         shape,
                         layout,
-                        |image, work| {
-                            super::super::super::overlay::producer_drawing::source_root_ranges_for_q_image(
-                                self.topology,
-                                &ranges_by_port,
-                                Some(self.emission.publication),
-                                image,
-                                work,
-                            )
-                        },
-                        Vec::new(),
                         LiteralAddress {
                             operation: 0,
                             logical_row: 0,

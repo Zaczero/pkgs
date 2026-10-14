@@ -14,7 +14,7 @@ use crate::work::Unmetered;
 pub(crate) fn finish_grid_outline(shape: Shape, frame: Frame) -> Result<FinishedGeometry> {
     let (layout, literals) = scalar_polygon_literals(&shape)?;
     let buffers = FrozenLiteralBuffers::shapes(shape, layout);
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     let mut work = Unmetered;
 
     match finish_geographic(
@@ -150,7 +150,7 @@ mod tests {
         let corrupted = crate::io::parse_wkt("POLYGON ((0 0, 5 0, 4 4, 0 4, 0 0))").unwrap();
         let (layout, literals) = scalar_polygon_literals(&expected).unwrap();
         let buffers = FrozenLiteralBuffers::shapes(corrupted, layout);
-        let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+        let receipt = ProducerDrawingReceipt::new(buffers, literals);
         let mut work = Unmetered;
 
         match finish_geographic(

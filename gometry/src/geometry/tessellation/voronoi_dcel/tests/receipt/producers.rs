@@ -68,14 +68,6 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
             );
         }
     }
-    assert!(
-        outputs
-            .iter()
-            .flat_map(|output| &output.edge_roles)
-            .flatten()
-            .any(|role| !role.source_uses.is_empty())
-    );
-
     let chart_sites = [
         Shape::Point(Point::new_raw_xy(172.0, 0.0)),
         Shape::Point(Point::new_raw_xy(188.0, 0.0)),
@@ -223,13 +215,6 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             .iter()
             .any(|dart| dart.twin.is_some())
     );
-    assert!(
-        dual_outputs
-            .receipt
-            .clip_segments
-            .iter()
-            .any(|segment| segment.frame_side.is_some() && !segment.atoms.is_empty())
-    );
     for site in &chart_sites {
         assert_eq!(
             dual_outputs
@@ -303,12 +288,6 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             })
     );
     assert!(
-        dual_rectangle_receipt
-            .clip_segments
-            .iter()
-            .any(|segment| !segment.atoms.is_empty())
-    );
-    assert!(
         dual_rectangle_cells
             .iter()
             .flat_map(|cell| &cell.edge_roles)
@@ -316,8 +295,7 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             .any(|role| role
                 .origins
                 .iter()
-                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
-                && !role.source_uses.is_empty())
+                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. })))
     );
 }
 

@@ -195,12 +195,8 @@ pub(crate) fn voronoi_flatten(
             clip,
             operation,
             kernel,
-            move |outputs, boundary, budget| {
-                let source_clip = match boundary.as_borrowed() {
-                    VoronoiBoundary::Polygon(polygon) => Some(polygon),
-                    VoronoiBoundary::Envelope | VoronoiBoundary::Padded => None,
-                };
-                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(source_clip)?;
+            move |outputs, _boundary, budget| {
+                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array();
                 writer.push_polygon_outputs(outputs, geographic_frame, budget)?;
                 writer.finish_array(output_frame.clone())
             },
@@ -268,12 +264,8 @@ pub(crate) fn voronoi_edge_lines_flatten(
             clip,
             "voronoi_edge_lines",
             Shape::voronoi_edge_column_in_frame_budgeted,
-            move |output, boundary, budget| {
-                let source_clip = match boundary.as_borrowed() {
-                    VoronoiBoundary::Polygon(polygon) => Some(polygon),
-                    VoronoiBoundary::Envelope | VoronoiBoundary::Padded => None,
-                };
-                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array(source_clip)?;
+            move |output, _boundary, budget| {
+                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array();
                 writer.push_edge_column(output, geographic_frame, budget)?;
                 writer.finish_array(output_frame.clone())
             },

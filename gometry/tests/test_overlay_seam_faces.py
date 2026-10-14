@@ -278,6 +278,8 @@ def test_geographic_build_area_selects_the_cap_named_by_its_winding() -> None:
     area = linework.build_area()
     array_area = gm.GeometryArray([linework]).build_area()[0]
 
+    assert area.crs == linework.crs
+    assert array_area.crs == linework.crs
     assert gm.covers(area, gm.Point(0, 85, crs='OGC:CRS84'))
     assert not gm.covers(area, gm.Point(0, 0, crs='OGC:CRS84'))
     assert array_area.to_wkb() == area.to_wkb()

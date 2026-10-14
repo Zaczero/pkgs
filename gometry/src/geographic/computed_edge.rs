@@ -27,9 +27,7 @@ pub(crate) use intents::{
 pub(crate) use publish::{
     publish_certified_minor_chain, publish_computed_chain,
     publish_computed_chain_with_vertex_intents,
-    publish_computed_chain_with_vertex_intents_and_samples,
-    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges,
-    publish_preserved_minor_chain,
+    publish_computed_chain_with_vertex_intents_and_samples, publish_preserved_minor_chain,
 };
 
 #[cfg(test)]

@@ -5,11 +5,10 @@ use super::{
     ControlFlow, CoordSeq, ExactCycleContact, ExactPairTouch, ExactSign, ExactSubdivision,
     MappedSourceEdge, NormalizedClip, NormalizedSourceRing, OpenClipRing, Ordering, Point,
     PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result, Ring, SearchAccount,
-    Segment, SegmentParameter, Site, VertexId, VoronoiBoundary, VoronoiClipSourceRoot, XY,
-    YStabbingIndex, clip_source_trace_error, ensure_coordseq_vertex_capacity, exact,
-    exact_cycle_error, polygon_output_baseline, sort_unique_along, try_dedup_by,
-    try_hash_map_with_capacity, try_sort_by, validate_exact_contact_graph,
-    validate_exact_rectangle, voronoi_error,
+    Segment, SegmentParameter, Site, VertexId, VoronoiBoundary, XY, YStabbingIndex,
+    clip_source_trace_error, ensure_coordseq_vertex_capacity, exact, exact_cycle_error,
+    polygon_output_baseline, sort_unique_along, try_dedup_by, try_hash_map_with_capacity,
+    try_sort_by, validate_exact_contact_graph, validate_exact_rectangle, voronoi_error,
 };
 use crate::geographic::retained_exact::sites::retained_site_longitude;
 
@@ -370,7 +369,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
     let mut rings = Vec::new();
     let mut fixed = Vec::new();
     let mut chart_fixed = Vec::new();
-    let mut source_roots;
     let mut contacts = Vec::new();
     let mut polygon_baseline = None;
     let source = match boundary {
@@ -390,10 +388,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
                 .len()
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            let source_point_rings: Vec<Vec<Point>> = std::iter::once(&polygon.shell)
-                .chain(polygon.holes.iter())
-                .map(|ring| ring.iter().collect())
-                .collect();
             let mut clip_rings = Vec::with_capacity(clip_ring_count);
             for (ring_index, ring) in std::iter::once(&polygon.shell)
                 .chain(polygon.holes.iter())
@@ -457,45 +451,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
                 fixed.push(coordinates);
                 chart_fixed.push(chart_coordinates);
             }
-            source_roots = vec![Vec::new(); segment_offset];
-            for (source_ring, edges) in source_edge_map.iter().enumerate() {
-                let normalization = source_ring_map
-                    .get(source_ring)
-                    .copied()
-                    .flatten()
-                    .ok_or_else(exact_cycle_error)?;
-                let source_points = source_point_rings
-                    .get(source_ring)
-                    .ok_or_else(exact_cycle_error)?;
-                for (source_edge, &normalized_edge) in edges.iter().enumerate() {
-                    let Some(normalized_edge) = normalized_edge else {
-                        continue;
-                    };
-                    let source_end = source_edge
-                        .checked_add(1)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    let start = *source_points
-                        .get(source_edge)
-                        .ok_or_else(exact_cycle_error)?;
-                    let end = *source_points
-                        .get(source_end)
-                        .ok_or_else(exact_cycle_error)?;
-                    let segment = normalization
-                        .segment_offset
-                        .checked_add(normalized_edge)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    source_roots
-                        .get_mut(segment)
-                        .ok_or_else(exact_cycle_error)?
-                        .push(VoronoiClipSourceRoot {
-                            ring: source_ring,
-                            edge: source_edge,
-                            reversed: normalization.reversed,
-                            start,
-                            end,
-                        });
-                }
-            }
             let (source_cycle_contacts, pair_touches) = map_source_polygon_contacts(
                 &polygon_contacts,
                 &source_edge_map,
@@ -526,7 +481,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
             rings.reserve(1);
             fixed.reserve(1);
             chart_fixed.reserve(1);
-            source_roots = vec![Vec::new(); ring.len()];
             rings.push(ring);
             fixed.push(corners.clone());
             chart_fixed.push(corners);
@@ -540,7 +494,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
         rings,
         fixed,
         chart_fixed,
-        source_roots,
         source,
         geometry,
         polygon_baseline,

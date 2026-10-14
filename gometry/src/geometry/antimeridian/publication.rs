@@ -10,21 +10,16 @@ pub(super) use restrictions::restriction_for_edge;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use crate::Frame;
-    use crate::geographic::{AngularFactor, GeographicFrame};
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-    use crate::geometry::ordinates::RootId;
     use crate::geometry::publication::{
-        ChartCutSide, ChartRestriction, ProducerDrawingReceipt, ProducerReceipt, PublicationCall,
-        PublicationOutcome, PublicationRejection, StorageTarget, SyntheticChartVertex,
-        finish_geographic,
+        ProducerDrawingReceipt, ProducerReceipt, PublicationCall, PublicationOutcome,
+        PublicationRejection, StorageTarget, finish_geographic,
     };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
-        ChartMetric as _, CoordSeq, CoordinateAxes, LineSeq, MOrdinate, Point, Polygon, Ring,
-        Shape, ZOrdinate,
+        ChartMetric as _, CoordSeq, CoordinateAxes, MOrdinate, Point, Polygon, Ring, Shape,
+        ZOrdinate,
     };
     use crate::work::Unmetered;
 
@@ -81,89 +76,6 @@ mod tests {
             semi_major,
             flattening,
         ) / integrate(1.0, start, end, radians_per_unit, semi_major, flattening)
-    }
-
-    fn measured_crossing_line() -> Shape {
-        let points = [
-            Point::new_axes(170.0, 10.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(100.0))).unwrap(),
-            Point::new_axes(-170.0, 30.0, ZOrdinate(Some(20.0)), MOrdinate(Some(300.0))).unwrap(),
-        ];
-        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap())
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
-    )]
-    fn split_receipt_keeps_both_seam_banks_on_the_exact_source_root() {
-        let row = measured_crossing_line()
-            .split_antimeridian_captured_in_crs84()
-            .unwrap()
-            .into_row(0, 0, 0)
-            .unwrap();
-        let seam = row
-            .literals
-            .iter()
-            .filter(|literal| literal.record.x.abs() == 180.0)
-            .collect::<Vec<_>>();
-        assert_eq!(seam.len(), 2);
-
-        let parameter =
-            ExactRational::new(ExactDyadic::from_i64(1), ExactDyadic::from_i64(2)).unwrap();
-        for literal in seam {
-            let uses = row
-                .source_root_uses
-                .iter()
-                .filter(|source| source.address == literal.address && source.image == literal.image)
-                .collect::<Vec<_>>();
-            assert_eq!(uses.len(), 1);
-            assert_eq!(uses[0].range.root(), RootId::from_index(0));
-            assert_eq!(uses[0].range.source_start(), &parameter);
-            assert_eq!(uses[0].range.source_end(), &parameter);
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
-    )]
-    fn split_receipt_maps_native_unit_roots_after_chart_conversion() {
-        let grad = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
-        let frame = GeographicFrame::try_new(grad, grad, 0.0).unwrap();
-        let source = Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_vecs(vec![185.0, -190.0], vec![10.0, 30.0], None, None).unwrap(),
-            )
-            .unwrap(),
-        );
-        let row = source
-            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-                frame, None,
-            )
-            .unwrap()
-            .into_row(0, 0, 0)
-            .unwrap();
-        let seam = row
-            .literals
-            .iter()
-            .filter(|literal| literal.record.x.abs() == 200.0)
-            .collect::<Vec<_>>();
-        assert_eq!(seam.len(), 2);
-
-        let parameter =
-            ExactRational::new(ExactDyadic::from_i64(3), ExactDyadic::from_i64(5)).unwrap();
-        for literal in seam {
-            let source = row
-                .source_root_uses
-                .iter()
-                .find(|source| source.address == literal.address && source.image == literal.image)
-                .expect("each native seam bank keeps its source edge");
-            assert_eq!(source.range.root(), RootId::from_index(0));
-            assert_eq!(source.range.source_start(), &parameter);
-            assert_eq!(source.range.source_end(), &parameter);
-        }
     }
 
     #[test]
@@ -238,8 +150,8 @@ mod tests {
             (160.0, -50.0, fixture_z, fixture_m),
         ]);
         // The split hole's seam chord partially co-owns the shell's cut chord
-        // in reverse. The point member shares the sample's full record, but
-        // not its polygon-edge ancestry.
+        // in reverse. The point member shares the sample's full record, but is
+        // a separate source occurrence.
         let point = Shape::Point(
             Point::new_axes(
                 200.0,
@@ -261,7 +173,7 @@ mod tests {
         .unwrap()
         .orient_geojson()
         .unwrap();
-        let row = drawing.into_row(0, 0, 0).unwrap();
+        let row = drawing.into_row(0, 0).unwrap();
         let sample = row
             .literals
             .iter()
@@ -278,69 +190,8 @@ mod tests {
             sample.record
         );
 
-        let uses = row
-            .source_root_uses
-            .iter()
-            .filter(|source| source.address == sample.address && source.image == sample.image)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            uses.len(),
-            1,
-            "the seam sample has one source edge use, found {:?}",
-            uses.iter()
-                .map(|source| (
-                    source.range.root(),
-                    source.range.source_start(),
-                    source.range.source_end()
-                ))
-                .collect::<Vec<_>>()
-        );
-        let sample_use = uses
-            .first()
-            .expect("the sample has exactly one source edge use");
-        assert_eq!(sample_use.range.root(), RootId::from_index(5));
-        assert_eq!(sample_use.range.source_start(), &parameter);
-        assert_eq!(sample_use.range.source_end(), &parameter);
-
-        let point_image = row.layout.layout.points[0].image;
-        let point_uses = row
-            .source_root_uses
-            .iter()
-            .filter(|source| source.image == point_image)
-            .collect::<Vec<_>>();
-        let point_parameter = ExactRational::zero();
-        let point_roots = point_uses
-            .iter()
-            .map(|source| source.range.root())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            point_roots,
-            BTreeSet::from([RootId::from_index(8)]),
-            "the independent point member must not inherit its coincident hole-edge root; uses {:?}",
-            point_uses
-                .iter()
-                .map(|source| (
-                    source.range.root(),
-                    source.range.source_start(),
-                    source.range.source_end()
-                ))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            point_uses.iter().all(|source| {
-                source.range.source_start() == &point_parameter
-                    && source.range.source_end() == &point_parameter
-            }),
-            "the point member's source uses must remain zero-length roots"
-        );
-
         let buffers = FrozenLiteralBuffers::shapes(row.shape, row.layout.layout);
-        let receipt = ProducerDrawingReceipt::new(
-            buffers,
-            row.literals,
-            row.source_root_uses,
-            row.chart_restrictions,
-        );
+        let receipt = ProducerDrawingReceipt::new(buffers, row.literals);
         let mut work = Unmetered;
         let outcome = finish_geographic(
             PublicationCall::new(
@@ -369,61 +220,14 @@ mod tests {
     }
 
     #[test]
-    fn split_receipt_marks_both_generated_polygon_cut_chords() {
-        let shell = Ring::closed_coordseq(
-            CoordSeq::try_from_vecs(
-                vec![170.0, -170.0, -170.0, 170.0, 170.0],
-                vec![0.0, 0.0, 10.0, 10.0, 0.0],
-                None,
-                None,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
-        let row = source
-            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-                GeographicFrame::crs84(),
-                None,
-            )
-            .unwrap()
-            .into_row(0, 0, 0)
-            .unwrap();
-
-        assert_eq!(row.chart_restrictions.len(), 2);
-        let mut banks = BTreeSet::new();
-        for restriction in &row.chart_restrictions {
-            assert_eq!(restriction.restriction, ChartRestriction::CutChord);
-            let (
-                SyntheticChartVertex::Cut { side: start, .. },
-                SyntheticChartVertex::Cut { side: end, .. },
-            ) = (restriction.start, restriction.end)
-            else {
-                panic!("a cut chord has two cut vertices");
-            };
-            assert_eq!(start, end);
-            banks.insert(start);
-        }
-        assert_eq!(
-            banks,
-            BTreeSet::from([ChartCutSide::East, ChartCutSide::West])
-        );
-    }
-
-    #[test]
-    fn captured_pole_cap_keeps_edge_lineage_aligned_for_publication() {
+    fn captured_pole_cap_publishes_valid_output() {
         let shell = Ring::closed_coordseq(
             CoordSeq::try_from_vecs(vec![170.0, -70.0, 50.0, 170.0], vec![80.0; 4], None, None)
                 .unwrap(),
         )
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
-        let drawing = source
-            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-                GeographicFrame::crs84(),
-                None,
-            )
-            .unwrap();
+        let drawing = source.split_antimeridian_captured_in_crs84().unwrap();
         let mut pole_cap = false;
         drawing.shape.for_each_point(|point| {
             pole_cap |= point.y.to_bits() == 90.0_f64.to_bits();
@@ -432,7 +236,7 @@ mod tests {
 
         let finished = drawing
             .finish_scalar(Frame::None)
-            .expect("the pole-cap fallback keeps an edge lineage for every ring edge");
+            .expect("the pole-cap output passes final storage readback");
         let (published, _) = finished.into_scalar().unwrap();
         assert_eq!(published.validate().unwrap(), None, "{published:?}");
     }
@@ -455,12 +259,9 @@ mod tests {
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
         let mut row = source
-            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-                GeographicFrame::crs84(),
-                None,
-            )
+            .split_antimeridian_captured_in_crs84()
             .unwrap()
-            .into_row(0, 0, 0)
+            .into_row(0, 0)
             .unwrap();
         let omitted_index = row
             .literals
@@ -468,19 +269,8 @@ mod tests {
             .position(|literal| literal.record.y.abs() == 90.0)
             .expect("the XY polar split emits a synthetic pole literal");
         let omitted = row.literals.remove(omitted_index);
-        assert!(
-            !row.source_root_uses.iter().any(|source| {
-                source.address == omitted.address && source.image == omitted.image
-            }),
-            "a synthetic pole has no source-edge root"
-        );
         let buffers = FrozenLiteralBuffers::shapes(row.shape, row.layout.layout);
-        let receipt = ProducerDrawingReceipt::new(
-            buffers,
-            row.literals,
-            row.source_root_uses,
-            row.chart_restrictions,
-        );
+        let receipt = ProducerDrawingReceipt::new(buffers, row.literals);
         let mut work = Unmetered;
         let outcome = finish_geographic(
             PublicationCall::new(

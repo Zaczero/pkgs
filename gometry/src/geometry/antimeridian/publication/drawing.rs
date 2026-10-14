@@ -1,43 +1,27 @@
 use std::sync::Arc;
 
-use super::super::lineage::{
-    EventId, LineageCatalog, LineagePolygon, LineageSequence, MemberId, ShapeLineage,
-};
-use super::capture::orient_shape_lineage;
-use super::restrictions;
 use crate::Frame;
 use crate::array::StreamingShapes;
-use crate::error::{ResourceError, Result};
-use crate::geographic::GeographicFrame;
-use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
-};
+use crate::error::Result;
+use crate::geometry::Shape;
+use crate::geometry::embedding_completion::literals::LiteralRowLayout;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
-    DirectedChartRestrictionUse, FinishedGeometry, ProducerDrawingReceipt, ProducerImageId,
-    ProducerLiteral, ProducerSourceRootUse, StorageTarget, finish_producer_drawing,
+    FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
+    finish_producer_drawing,
 };
 use crate::geometry::storage::StorageLayout;
-use crate::geometry::{GeometryErrorKind, MultiMember, Polygon, Shape};
 use crate::work::Unmetered;
 
 pub(crate) struct SplitDrawing {
     pub(super) shape: Shape,
-    pub(super) frame: GeographicFrame,
-    pub(super) longitude_scale: f64,
-    pub(super) latitude_scale: f64,
-    pub(super) lineage: LineageCatalog,
-    pub(super) shape_lineage: ShapeLineage,
 }
 
 pub(super) struct SplitRowDrawing {
     pub(super) shape: Shape,
     pub(super) layout: LiteralRowLayout<ProducerImageId>,
     pub(super) literals: Vec<ProducerLiteral>,
-    pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
-    pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
     pub(super) next_image: usize,
-    pub(super) next_node: u32,
 }
 
 impl SplitDrawing {
@@ -46,22 +30,16 @@ impl SplitDrawing {
             &self.shape,
             Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
         ) {
-            orient_shape_lineage(&self.shape, &mut self.shape_lineage, &mut self.lineage)?;
             self.shape = self.shape.orient_polygons(false)?;
         }
         Ok(self)
     }
 
     pub(crate) fn finish_scalar(self, frame: Frame) -> Result<FinishedGeometry> {
-        let row = self.into_row(0, 0, 0)?;
+        let row = self.into_row(0, 0)?;
         let buffers = FrozenLiteralBuffers::shapes(row.shape, row.layout.layout);
         finish_producer_drawing(
-            ProducerDrawingReceipt::new(
-                buffers,
-                row.literals,
-                row.source_root_uses,
-                row.chart_restrictions,
-            ),
+            ProducerDrawingReceipt::new(buffers, row.literals),
             frame,
             StorageTarget::Scalar,
         )
@@ -71,7 +49,6 @@ impl SplitDrawing {
         self,
         logical_row: usize,
         image_start: usize,
-        node_start: u32,
     ) -> Result<SplitRowDrawing> {
         let mut next_image = image_start;
         let mut outputs = (0, 0, 0);
@@ -83,17 +60,6 @@ impl SplitDrawing {
             &mut next_image,
             &mut outputs,
         )?;
-        let mut source_uses = SourceRootUseBuilder::new(
-            logical_row,
-            &self.lineage,
-            self.frame,
-            self.longitude_scale,
-            self.latitude_scale,
-            node_start,
-        );
-        source_uses.visit(&self.shape, &self.shape_lineage, &shape_layout)?;
-        let (source_root_uses, chart_restrictions, next_node) =
-            source_uses.finish(&shape_layout)?;
         Ok(SplitRowDrawing {
             shape: self.shape,
             layout: LiteralRowLayout {
@@ -104,10 +70,7 @@ impl SplitDrawing {
                 layout: shape_layout,
             },
             literals,
-            source_root_uses,
-            chart_restrictions,
             next_image,
-            next_node,
         })
     }
 }
@@ -116,10 +79,7 @@ pub(crate) struct SplitArrayPublisher {
     writer: StreamingShapes,
     row_map: Vec<Option<LiteralRowLayout<ProducerImageId>>>,
     literals: Vec<ProducerLiteral>,
-    source_root_uses: Vec<ProducerSourceRootUse>,
-    chart_restrictions: Vec<DirectedChartRestrictionUse>,
     next_image: usize,
-    next_node: u32,
 }
 
 impl SplitArrayPublisher {
@@ -128,10 +88,7 @@ impl SplitArrayPublisher {
             writer: StreamingShapes::with_capacity(0, rows),
             row_map: Vec::with_capacity(rows),
             literals: Vec::new(),
-            source_root_uses: Vec::new(),
-            chart_restrictions: Vec::new(),
             next_image: 0,
-            next_node: 0,
         }
     }
 
@@ -142,14 +99,11 @@ impl SplitArrayPublisher {
     }
 
     pub(crate) fn push(&mut self, logical_row: usize, drawing: SplitDrawing) -> Result<()> {
-        let row = drawing.into_row(logical_row, self.next_image, self.next_node)?;
+        let row = drawing.into_row(logical_row, self.next_image)?;
         self.writer.try_push(row.shape)?;
         self.row_map.push(Some(row.layout));
         self.literals.extend(row.literals);
-        self.source_root_uses.extend(row.source_root_uses);
-        self.chart_restrictions.extend(row.chart_restrictions);
         self.next_image = row.next_image;
-        self.next_node = row.next_node;
         Ok(())
     }
 
@@ -163,291 +117,9 @@ impl SplitArrayPublisher {
         let buffers =
             FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
         finish_producer_drawing(
-            ProducerDrawingReceipt::new(
-                buffers,
-                self.literals,
-                self.source_root_uses,
-                self.chart_restrictions,
-            ),
+            ProducerDrawingReceipt::new(buffers, self.literals),
             frame,
             StorageTarget::Array,
         )
-    }
-}
-
-struct SourceRootUseBuilder<'a> {
-    logical_row: usize,
-    lineage: &'a LineageCatalog,
-    frame: GeographicFrame,
-    longitude_scale: f64,
-    latitude_scale: f64,
-    next_node: u32,
-    source_root_uses: Vec<ProducerSourceRootUse>,
-    chart_restrictions: Vec<DirectedChartRestrictionUse>,
-    point: usize,
-    line: usize,
-    polygon: usize,
-}
-
-impl<'a> SourceRootUseBuilder<'a> {
-    const fn new(
-        logical_row: usize,
-        lineage: &'a LineageCatalog,
-        frame: GeographicFrame,
-        longitude_scale: f64,
-        latitude_scale: f64,
-        next_node: u32,
-    ) -> Self {
-        Self {
-            logical_row,
-            lineage,
-            frame,
-            longitude_scale,
-            latitude_scale,
-            next_node,
-            source_root_uses: Vec::new(),
-            chart_restrictions: Vec::new(),
-            point: 0,
-            line: 0,
-            polygon: 0,
-        }
-    }
-
-    fn next_layout<'b, T>(values: &'b [T], index: &mut usize) -> Result<&'b T> {
-        let current = *index;
-        *index = current.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-        values.get(current).ok_or_else(|| {
-            GeometryErrorKind::Invalid("split literal layout and lineage disagree".into()).into()
-        })
-    }
-
-    fn source_uses(
-        &mut self,
-        output: u32,
-        image: ProducerImageId,
-        member: MemberId,
-        events: &[EventId],
-    ) -> Result<()> {
-        let address = LiteralAddress {
-            operation: 0,
-            logical_row: self.logical_row,
-            group_row: None,
-            value_row: None,
-            output,
-        };
-        let mut work = Unmetered;
-        for &event in events {
-            if self.lineage.event_member(event) != member {
-                return Err(GeometryErrorKind::Invalid(
-                    "split event belongs to a different source member".into(),
-                )
-                .into());
-            }
-            for range in self.lineage.event_uses(event) {
-                self.source_root_uses.push(ProducerSourceRootUse {
-                    address,
-                    image,
-                    range: range.try_clone_with_work(&mut work)?,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn sequence(
-        &mut self,
-        sequence: &LiteralSequence<ProducerImageId>,
-        lineage: &LineageSequence,
-    ) -> Result<()> {
-        if sequence.images.len() != lineage.vertices.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "split sequence layout and vertex lineage disagree".into(),
-            )
-            .into());
-        }
-        for (&image, events) in sequence.images.iter().zip(&lineage.vertices) {
-            self.source_uses(sequence.output, image, lineage.member, events)?;
-        }
-        Ok(())
-    }
-
-    fn polygon(
-        &mut self,
-        source: &Polygon,
-        polygon: &LiteralPolygon<ProducerImageId>,
-        lineage: &LineagePolygon,
-    ) -> Result<()> {
-        if polygon.holes.len() != lineage.holes.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "split polygon layout and hole lineage disagree".into(),
-            )
-            .into());
-        }
-        self.sequence(&polygon.shell, &lineage.shell)?;
-        restrictions::ring_restrictions(
-            &source.shell,
-            &lineage.shell,
-            self.lineage,
-            self.frame,
-            self.longitude_scale,
-            self.latitude_scale,
-            &mut self.next_node,
-            &mut self.chart_restrictions,
-        )?;
-        for (hole, lineage) in polygon.holes.iter().zip(&lineage.holes) {
-            self.sequence(hole, lineage)?;
-        }
-        for (hole, lineage) in source.holes.iter().zip(&lineage.holes) {
-            restrictions::ring_restrictions(
-                hole,
-                lineage,
-                self.lineage,
-                self.frame,
-                self.longitude_scale,
-                self.latitude_scale,
-                &mut self.next_node,
-                &mut self.chart_restrictions,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn visit(
-        &mut self,
-        shape: &Shape,
-        lineage: &ShapeLineage,
-        layout: &ShapeLiteralLayout<ProducerImageId>,
-    ) -> Result<()> {
-        match (shape, lineage) {
-            (Shape::Point(_), ShapeLineage::Point { member, events }) => {
-                let point = Self::next_layout(&layout.points, &mut self.point)?;
-                self.source_uses(point.output, point.image, *member, events)?;
-            },
-            (
-                Shape::MultiPoint(points),
-                ShapeLineage::MultiPoint {
-                    member,
-                    events: point_events,
-                },
-            ) => {
-                if points.len() != point_events.len() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "antimeridian multipoint members and lineage disagree".into(),
-                    )
-                    .into());
-                }
-                for events in point_events {
-                    let point = Self::next_layout(&layout.points, &mut self.point)?;
-                    self.source_uses(point.output, point.image, *member, events)?;
-                }
-            },
-            (Shape::LineString(_), ShapeLineage::LineString(lineage)) => {
-                let line = Self::next_layout(&layout.lines, &mut self.line)?;
-                self.sequence(line, lineage)?;
-            },
-            (
-                Shape::MultiLineString(lines),
-                ShapeLineage::MultiLineString {
-                    members: lineages, ..
-                },
-            ) => {
-                if lines.member_count() != lineages.len() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "antimeridian line members and lineage disagree".into(),
-                    )
-                    .into());
-                }
-                for (line, lineage) in lines.members_with_values().zip(lineages) {
-                    match (line, lineage) {
-                        (MultiMember::Empty, None) => {},
-                        (MultiMember::Value(_), Some(lineage)) => {
-                            let line = Self::next_layout(&layout.lines, &mut self.line)?;
-                            self.sequence(line, lineage)?;
-                        },
-                        _ => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "antimeridian line members and lineage disagree".into(),
-                            )
-                            .into());
-                        },
-                    }
-                }
-            },
-            (Shape::Polygon(source), ShapeLineage::Polygon(lineage)) => {
-                let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
-                self.polygon(source, polygon, lineage)?;
-            },
-            (
-                Shape::MultiPolygon(polygons),
-                ShapeLineage::MultiPolygon {
-                    members: lineages, ..
-                },
-            ) => {
-                if polygons.member_count() != lineages.len() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "antimeridian polygon members and lineage disagree".into(),
-                    )
-                    .into());
-                }
-                for (polygon, lineage) in polygons.members_with_values().zip(lineages) {
-                    match (polygon, lineage) {
-                        (MultiMember::Empty, None) => {},
-                        (MultiMember::Value(source), Some(lineage)) => {
-                            let polygon = Self::next_layout(&layout.polygons, &mut self.polygon)?;
-                            self.polygon(source, polygon, lineage)?;
-                        },
-                        _ => {
-                            return Err(GeometryErrorKind::Invalid(
-                                "antimeridian polygon members and lineage disagree".into(),
-                            )
-                            .into());
-                        },
-                    }
-                }
-            },
-            (Shape::GeometryCollection(collection), ShapeLineage::GeometryCollection(lineages)) => {
-                if collection.len() != lineages.len() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "antimeridian collection members and lineage disagree".into(),
-                    )
-                    .into());
-                }
-                for (member, lineage) in collection.iter().zip(lineages) {
-                    self.visit(member, lineage, layout)?;
-                }
-            },
-            (Shape::Empty(..), ShapeLineage::Empty) => {},
-            _ => {
-                return Err(GeometryErrorKind::Invalid(
-                    "antimeridian shape and member lineage disagree".into(),
-                )
-                .into());
-            },
-        }
-        Ok(())
-    }
-
-    fn finish(
-        self,
-        layout: &ShapeLiteralLayout<ProducerImageId>,
-    ) -> Result<(
-        Vec<ProducerSourceRootUse>,
-        Vec<DirectedChartRestrictionUse>,
-        u32,
-    )> {
-        if self.point != layout.points.len()
-            || self.line != layout.lines.len()
-            || self.polygon != layout.polygons.len()
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "split literal layout contains an unmatched output".into(),
-            )
-            .into());
-        }
-        Ok((
-            self.source_root_uses,
-            self.chart_restrictions,
-            self.next_node,
-        ))
     }
 }
