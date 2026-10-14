@@ -15,8 +15,10 @@ and are not reproduced here.
 ## Producing a run
 
 ```bash title="template: replace <run> with the directory printed by the first command"
-uv run python benches/drivers/bench.py --profile release --gometry-receipt <release-or-runner-receipt>
-uv run python benches/drivers/bench.py --publish target/bench/results/<run>/run.json
+uv run --group integration python benches/drivers/bench.py \
+  --profile release --gometry-receipt <release-or-runner-receipt>
+uv run --group integration python benches/drivers/bench.py \
+  --publish target/bench/results/<run>/run.json
 ```
 
 Measurement writes raw artifacts and a run manifest under `target/` and never

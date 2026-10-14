@@ -60,15 +60,12 @@ dev = [
   "arro3-core",
   "geopandas",
   "griffe",
-  "h3",
   "markdown",
   "mercantile>=1.2.1",
   "pandas",
   "pandas-stubs",
-  "polars",
   "pyarrow",
   "pyarrow-stubs",
-  "pygeohash",
   "pyproj",
   "pytest>=9.1",
   "pytest-cov",
@@ -90,7 +87,12 @@ docs = [
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
 ]
-ci = ["maturin==1.15.0", "pyo3stubs", "pyyaml"]
+ci = ["maturin==1.15.0", "pyyaml"]
+# Optional providers and test oracles unsupported in the free-threaded test
+# environment run through the standard-only integration group.
+integration = ["h3", "polars", "pygeohash"]
+# Parser and documentation checks run on standard CPython.
+tooling = ["pyo3stubs", { include-group = "docs" }]
 
 [build-system]
 requires = ["maturin==1.15.0"]

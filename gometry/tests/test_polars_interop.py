@@ -10,7 +10,10 @@ from tests._support import canon
 
 pl = pytest.importorskip(
     'polars',
-    reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+    reason=(
+        'Polars integration is installed only on standard CPython cells; '
+        'polars-runtime-32 has no CPython 3.14t wheel'
+    ),
 )
 
 

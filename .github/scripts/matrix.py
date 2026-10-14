@@ -11,8 +11,8 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
   using the newest PyPy minor uv can install that satisfies requires-python.
 * Build runners: pure → ubuntu only; rusty → native multi-arch including
   Windows ARM.
-* A package ``ci`` dependency group augments only the primary stable CPython
-  cell. It owns tools that cannot install on every supported interpreter.
+* The generic test path adds a package ``ci`` group only to the primary stable
+  CPython cell. Gometry selects its groups directly in the shared workflow.
 
 Usage (from repo root):
 
