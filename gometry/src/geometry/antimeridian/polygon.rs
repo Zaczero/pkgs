@@ -276,14 +276,14 @@ fn split_multiline<M: ChartMetric>(
 ) -> Result<(Shape, Option<ShapeLineage>)> {
     let (axes, source_members) = match lineage {
         None => (lines.axes(), None),
-        Some(ShapeLineage::MultiLineString { axes, members }) => {
+        Some(ShapeLineage::MultiLineString { members }) => {
             if lines.member_count() != members.len() {
                 return Err(GeometryErrorKind::Invalid(
                     "antimeridian line members and lineage disagree".into(),
                 )
                 .into());
             }
-            (*axes, Some(members.as_slice()))
+            (lines.axes(), Some(members.as_slice()))
         },
         Some(_) => {
             return Err(GeometryErrorKind::Invalid(
@@ -341,7 +341,7 @@ fn split_multiline<M: ChartMetric>(
         }
     }
     let shape = Shape::MultiLineString(MultiLineString::try_new(axes, members)?);
-    let lineage = output_lineages.map(|members| ShapeLineage::MultiLineString { axes, members });
+    let lineage = output_lineages.map(|members| ShapeLineage::MultiLineString { members });
     Ok((shape, lineage))
 }
 
@@ -389,7 +389,6 @@ fn split_shape_with_lineage<M: ChartMetric>(
             }
             let shape = Shape::multi_line_string(axes, output_lines);
             let lineage = captured.then_some(ShapeLineage::MultiLineString {
-                axes,
                 members: output_lineages,
             });
             Ok((shape, lineage))
@@ -421,14 +420,14 @@ fn split_shape_with_lineage<M: ChartMetric>(
         (Shape::MultiPolygon(polygons), lineage) => {
             let (axes, source_members) = match lineage {
                 None => (polygons.axes(), None),
-                Some(ShapeLineage::MultiPolygon { axes, members }) => {
+                Some(ShapeLineage::MultiPolygon { members }) => {
                     if polygons.member_count() != members.len() {
                         return Err(GeometryErrorKind::Invalid(
                             "antimeridian polygon members and lineage disagree".into(),
                         )
                         .into());
                     }
-                    (*axes, Some(members.as_slice()))
+                    (polygons.axes(), Some(members.as_slice()))
                 },
                 Some(_) => {
                     return Err(GeometryErrorKind::Invalid(
@@ -484,8 +483,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                 }
             }
             let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, split)?);
-            let lineage =
-                output_lineages.map(|members| ShapeLineage::MultiPolygon { axes, members });
+            let lineage = output_lineages.map(|members| ShapeLineage::MultiPolygon { members });
             Ok((shape, lineage))
         },
         (Shape::GeometryCollection(collection), lineage) => {

@@ -150,11 +150,7 @@ fn orient_lineage_polygon(
     for (ring, ring_lineage) in polygon.holes.iter().zip(&lineage.holes) {
         holes.push(orient_lineage_sequence(ring, ring_lineage, true, catalog)?);
     }
-    Ok(LineagePolygon {
-        member: lineage.member,
-        shell,
-        holes,
-    })
+    Ok(LineagePolygon { shell, holes })
 }
 
 pub(super) fn orient_shape_lineage(

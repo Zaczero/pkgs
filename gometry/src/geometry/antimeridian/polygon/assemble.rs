@@ -79,7 +79,6 @@ pub(super) fn assemble_fragments(
             (Some(lineage), Some(catalog)) => {
                 let world_lineage = synthetic_lineage_ring(lineage.member, &world, catalog)?;
                 Some(LineagePolygon {
-                    member: lineage.member,
                     shell: world_lineage,
                     holes: vec![lineage],
                 })
@@ -148,7 +147,6 @@ pub(super) fn assemble_fragments(
         let lineage = match (shell_lineage, catalog.is_some()) {
             (Some(shell), true) if hole_lineages.len() == hole_rings.len() => {
                 Some(LineagePolygon {
-                    member: shell.member,
                     shell,
                     holes: hole_lineages,
                 })

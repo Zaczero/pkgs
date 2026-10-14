@@ -441,10 +441,7 @@ impl LineageCatalog {
                         },
                     });
                 }
-                Ok(ShapeLineage::MultiLineString {
-                    axes: lines.axes(),
-                    members,
-                })
+                Ok(ShapeLineage::MultiLineString { members })
             },
             Shape::Polygon(polygon) => {
                 let member = self.member()?;
@@ -453,11 +450,7 @@ impl LineageCatalog {
                 for hole in polygon.holes.iter() {
                     holes.push(sequence(self, member, hole.coords().len())?);
                 }
-                Ok(ShapeLineage::Polygon(LineagePolygon {
-                    member,
-                    shell,
-                    holes,
-                }))
+                Ok(ShapeLineage::Polygon(LineagePolygon { shell, holes }))
             },
             Shape::MultiPolygon(polygons) => {
                 let mut members = Vec::with_capacity(polygons.member_count());
@@ -471,18 +464,11 @@ impl LineageCatalog {
                             for hole in polygon.holes.iter() {
                                 holes.push(sequence(self, member, hole.coords().len())?);
                             }
-                            Some(LineagePolygon {
-                                member,
-                                shell,
-                                holes,
-                            })
+                            Some(LineagePolygon { shell, holes })
                         },
                     });
                 }
-                Ok(ShapeLineage::MultiPolygon {
-                    axes: polygons.axes(),
-                    members,
-                })
+                Ok(ShapeLineage::MultiPolygon { members })
             },
             Shape::GeometryCollection(collection) => {
                 let mut members = Vec::with_capacity(collection.len());
@@ -505,7 +491,6 @@ pub(super) struct LineageSequence {
 
 #[derive(Clone)]
 pub(super) struct LineagePolygon {
-    pub(super) member: MemberId,
     pub(super) shell: LineageSequence,
     pub(super) holes: Vec<LineageSequence>,
 }
@@ -527,12 +512,10 @@ pub(super) enum ShapeLineage {
     },
     LineString(LineageSequence),
     MultiLineString {
-        axes: CoordinateAxes,
         members: Vec<Option<LineageSequence>>,
     },
     Polygon(LineagePolygon),
     MultiPolygon {
-        axes: CoordinateAxes,
         members: Vec<Option<LineagePolygon>>,
     },
     GeometryCollection(Vec<Self>),

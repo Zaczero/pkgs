@@ -246,10 +246,7 @@ pub(super) fn polygon_parts_shape(
         1 => ShapeLineage::Polygon(lineages.pop().flatten().ok_or_else(|| {
             GeometryErrorKind::Invalid("split polygon part has no member lineage".into())
         })?),
-        _ => ShapeLineage::MultiPolygon {
-            axes,
-            members: lineages,
-        },
+        _ => ShapeLineage::MultiPolygon { members: lineages },
     };
     Ok((shape, Some(lineage)))
 }
@@ -535,7 +532,6 @@ fn overlay_parts_shape<M: ChartMetric>(
         }
         polygons.push(Polygon::new(shell, holes));
         lineages.push(Some(super::super::lineage::LineagePolygon {
-            member,
             shell: shell_lineage,
             holes: hole_lineages,
         }));
@@ -560,10 +556,7 @@ fn overlay_parts_shape<M: ChartMetric>(
                 axes,
                 polygons.into_iter().map(MultiMember::Value).collect(),
             )?),
-            super::super::lineage::ShapeLineage::MultiPolygon {
-                axes,
-                members: lineages,
-            },
+            super::super::lineage::ShapeLineage::MultiPolygon { members: lineages },
         )),
     }
 }
@@ -733,7 +726,6 @@ fn split_polygon_parts_inner<M: ChartMetric>(
                     GeometryErrorKind::Invalid("captured stationary hole has no lineage".into())
                 })?;
             Some(super::super::lineage::LineagePolygon {
-                member: source_lineage.member,
                 shell: source_lineage.shell.clone(),
                 holes,
             })
@@ -757,13 +749,10 @@ fn split_polygon_parts_inner<M: ChartMetric>(
             let hole_polygon = Polygon::new(hole.clone(), Vec::new());
             let hole_shape = Shape::Polygon(hole_polygon.clone());
             let hole_lineage = match (hole_sequence, source_lineage) {
-                (Some(shell), Some(source_lineage)) => {
-                    Some(super::super::lineage::LineagePolygon {
-                        member: source_lineage.member,
-                        shell,
-                        holes: Vec::new(),
-                    })
-                },
+                (Some(shell), Some(_)) => Some(super::super::lineage::LineagePolygon {
+                    shell,
+                    holes: Vec::new(),
+                }),
                 (None, None) => None,
                 _ => {
                     return Err(GeometryErrorKind::Invalid(
@@ -820,6 +809,7 @@ fn split_polygon_parts_inner<M: ChartMetric>(
                     axes,
                     source_lineage
                         .expect("captured split has source lineage")
+                        .shell
                         .member,
                     &source_edges,
                     source_frame,
@@ -892,11 +882,8 @@ fn split_polygon_parts_inner<M: ChartMetric>(
             }
             let polygon = Polygon::new(shell, holes);
             let lineage = match (source_lineage, shell_lineage) {
-                (Some(source_lineage), Some(shell))
-                    if hole_lineages.len() == polygon.holes.len() =>
-                {
+                (Some(_), Some(shell)) if hole_lineages.len() == polygon.holes.len() => {
                     Some(super::super::lineage::LineagePolygon {
-                        member: source_lineage.member,
                         shell,
                         holes: hole_lineages,
                     })

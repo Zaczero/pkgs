@@ -340,7 +340,6 @@ fn chart_polygon_captured<M: ChartMetric>(
         }
     }
     let lineage = shell_lineage.map(|shell| super::super::lineage::LineagePolygon {
-        member: member.expect("captured polygon lineage has a member"),
         shell,
         holes: hole_lineages,
     });
@@ -398,10 +397,8 @@ pub(super) fn chart_shape<M: ChartMetric>(
                 }
             }
             let chart = Shape::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?);
-            let lineage = capture.map(|_| super::super::lineage::ShapeLineage::MultiPolygon {
-                axes: polygons.axes(),
-                members: lineages,
-            });
+            let lineage = capture
+                .map(|_| super::super::lineage::ShapeLineage::MultiPolygon { members: lineages });
             Ok((chart, lineage))
         },
         Shape::GeometryCollection(collection) => {
@@ -479,7 +476,6 @@ pub(super) fn chart_shape<M: ChartMetric>(
             }
             let chart = Shape::MultiLineString(MultiLineString::try_new(lines.axes(), members)?);
             let lineage = capture.map(|_| super::super::lineage::ShapeLineage::MultiLineString {
-                axes: lines.axes(),
                 members: lineages,
             });
             Ok((chart, lineage))
