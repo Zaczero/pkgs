@@ -4,9 +4,18 @@ use super::{
     EmbeddedPolygon, ExactSign, PointKey, Result, Site, VoronoiAssignmentReceipt,
     VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse,
     VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiSeparatorReceipt,
-    VoronoiVertexOrigin, VoronoiVertexReceipt, exact, exact_xy_coordinates, site_receipts,
-    try_hash_map_with_capacity, voronoi_error,
+    VoronoiVertexOrigin, VoronoiVertexReceipt, exact, site_receipts, try_hash_map_with_capacity,
+    voronoi_error,
 };
+
+fn exact_xy_key(point: &exact::ExactPoint) -> Result<[exact::ExactRational; 2]> {
+    let one = exact::ExactDyadic::one();
+    let zero = exact::ExactDyadic::zero();
+    Ok([
+        point.projected_coordinate(&one, &zero)?,
+        point.projected_coordinate(&zero, &one)?,
+    ])
+}
 
 pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt(
     sites: &[Site],
@@ -25,7 +34,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
         try_hash_map_with_capacity::<[exact::ExactRational; 2], u32>(vertex_count)?;
     let mut site_ids = try_hash_map_with_capacity::<[exact::ExactRational; 2], u32>(sites.len())?;
     for site in sites {
-        let _ = site_ids.insert(exact_xy_coordinates(&site.exact_point)?, site.id as u32);
+        let _ = site_ids.insert(exact_xy_key(&site.exact_point)?, site.id as u32);
     }
     let mut edge_ids =
         try_hash_map_with_capacity::<(Vec<VoronoiEdgeOrigin>, u32, u32), u32>(vertex_count)?;
@@ -43,7 +52,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
         for (ring_index, vertices) in cell.producer_vertices.iter().enumerate() {
             let mut ids = Vec::with_capacity(vertices.len());
             for vertex in vertices {
-                let key = exact_xy_coordinates(&vertex.exact_point)?;
+                let key = exact_xy_key(&vertex.exact_point)?;
                 let id = if let Some(&id) = vertex_ids.get(&key) {
                     let assignment = receipt
                         .vertices
@@ -78,7 +87,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
                         origins.push(VoronoiVertexOrigin::SourceSite { site });
                     }
                     receipt.vertices.push(VoronoiVertexReceipt {
-                        exact_xy: key.clone(),
                         origins,
                         assignment: Some(vertex.assignment),
                     });

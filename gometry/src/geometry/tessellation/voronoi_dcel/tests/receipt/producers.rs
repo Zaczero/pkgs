@@ -55,8 +55,20 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
                 .assignment
                 .expect("separator end has an assignment");
             let site_xy = |site_id: u32| {
-                let [x, y] = &receipt_site(&outputs.receipt, site_id).exact_xy;
-                XY::new(x.round().unwrap(), y.round().unwrap())
+                let site = receipt_site(&outputs.receipt, site_id);
+                match site_id {
+                    0 => {
+                        assert_eq!(site.source_ordinal, 0);
+                        assert_eq!(site.source_record.xy(), XY::new(172.0, 0.0));
+                        XY::new(172.0, 0.0)
+                    },
+                    1 => {
+                        assert_eq!(site.source_ordinal, 1);
+                        assert_eq!(site.source_record.xy(), XY::new(-172.0, 0.0));
+                        XY::new(188.0, 0.0)
+                    },
+                    _ => panic!("the collinear seam diagram has two retained sites"),
+                }
             };
             assert_eq!(
                 exact::orient2d(start, end, site_xy(left_owner)),
@@ -244,9 +256,9 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
                 center_components.insert(*component);
                 let mut sites = *sites;
                 sites.sort_unstable();
-                let [x, y] = &vertex.exact_xy;
-                let assigned = XY::new(x.round().unwrap(), y.round().unwrap());
-                assert_eq!(vertex.assignment, Some(assigned));
+                let assigned = vertex
+                    .assignment
+                    .expect("accepted circumcenter has an embedded assignment");
                 center_receipts.push((sites, assigned));
             }
         }

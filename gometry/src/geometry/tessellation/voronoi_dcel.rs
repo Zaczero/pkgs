@@ -205,8 +205,8 @@ use embedding::graph::nearest_site;
 use embedding::graph::{certified_site_adjacency, nearest_site_walk};
 use embedding::publish::embed;
 use receipt::{
-    collinear_polygon_receipt, embedded_exact_ring, exact_diagram_receipt, exact_xy_coordinates,
-    receipt_frame_side, receipt_ring_uses, site_receipts,
+    collinear_polygon_receipt, embedded_exact_ring, exact_diagram_receipt, receipt_frame_side,
+    receipt_ring_uses, site_receipts,
 };
 pub(super) use receipt::{
     empty_polygon_outputs, lone_site_empty_edges, lone_site_empty_polygon_outputs,

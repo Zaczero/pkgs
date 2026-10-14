@@ -10,10 +10,9 @@ use super::{
     VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
     VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, axis_aligned_rectangle,
     between, build_product_with_chart, delaunay_complex, ensure_coordseq_vertex_capacity, exact,
-    exact_bisector_frame_intersections, exact_segment_parameter, exact_xy_coordinates, lex_xy,
-    normalize_clip_with_chart, polygon_is_valid, polygon_output_count, receipt_frame_side, site_at,
-    site_by_id, site_receipts, stored_xy_cycle_matches_orientation, try_hash_map_with_capacity,
-    voronoi_error,
+    exact_bisector_frame_intersections, exact_segment_parameter, lex_xy, normalize_clip_with_chart,
+    polygon_is_valid, polygon_output_count, receipt_frame_side, site_at, site_by_id, site_receipts,
+    stored_xy_cycle_matches_orientation, try_hash_map_with_capacity, voronoi_error,
 };
 
 mod embed;

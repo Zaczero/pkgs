@@ -7,10 +7,9 @@ use super::{
     VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDirectedEdgeUse,
     VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
     VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, certify_convex_cell,
-    dual_clip_segment_for_edge, dual_vertex_point, ensure_coordseq_vertex_capacity, exact,
-    exact_xy_coordinates, lex_xy, polygon_is_valid, polygon_output_count, receipt_frame_side,
-    same_undirected_dual_edge, site_receipts, stored_xy_cycle_matches_orientation,
-    try_hash_map_with_capacity,
+    dual_clip_segment_for_edge, dual_vertex_point, ensure_coordseq_vertex_capacity, exact, lex_xy,
+    polygon_is_valid, polygon_output_count, receipt_frame_side, same_undirected_dual_edge,
+    site_receipts, stored_xy_cycle_matches_orientation, try_hash_map_with_capacity,
 };
 
 /// Round the dual once and run the certificates that survive the redesign.
@@ -564,7 +563,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 .push(VoronoiVertexOrigin::SourceSite { site: site_id });
         }
     }
-    for (id, exact_point) in exact_by_id.iter().enumerate() {
+    for (id, _) in exact_by_id.iter().enumerate() {
         let embedded = *vertex_xy
             .get(id)
             .ok_or(DualEmbeddingError::Unrepresentable)?;
@@ -574,7 +573,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 .ok_or(DualEmbeddingError::Unrepresentable)?,
         );
         receipt.vertices.push(VoronoiVertexReceipt {
-            exact_xy: exact_xy_coordinates(exact_point)?,
             origins,
             assignment: Some(embedded),
         });
