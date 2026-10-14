@@ -97,7 +97,7 @@ pub(crate) trait RootCatalog {
 
 pub(crate) enum SourceRootLongitude<'a> {
     Retained(RetainedChartDisplacement),
-    Catalog(&'a mut Option<RetainedChartDisplacement>),
+    Derived(&'a mut Option<RetainedChartDisplacement>),
 }
 
 impl<'a> From<RetainedChartDisplacement> for SourceRootLongitude<'a> {
@@ -114,7 +114,7 @@ impl SourceRootLongitude<'_> {
     ) -> Result<RetainedChartDisplacement> {
         match self {
             Self::Retained(longitude) => Ok(longitude),
-            Self::Catalog(cached) => {
+            Self::Derived(cached) => {
                 if let Some(longitude) = *cached {
                     return Ok(longitude);
                 }
@@ -258,7 +258,7 @@ impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
                             longitude: cached_longitude,
                         } = state;
                         let longitude = longitude.map_or_else(
-                            || SourceRootLongitude::Catalog(cached_longitude),
+                            || SourceRootLongitude::Derived(cached_longitude),
                             SourceRootLongitude::Retained,
                         );
                         resolve_source_root(
@@ -1707,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn root_slots_are_dense_across_alternating_and_repeated_requests() {
+    fn unique_root_records_are_ordered_and_shared_across_rows() {
         let first_root = RootId::from_index(7);
         let second_root = RootId::from_index(2);
         let third_root = RootId::from_index(5);
@@ -1749,27 +1749,11 @@ mod tests {
         assert_eq!(table.root_count().unwrap(), 3);
         assert_eq!(
             table
-                .root_state_slot(table.request_id_at(first, 0).unwrap())
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            table
-                .root_state_slot(table.request_id_at(first, 1).unwrap())
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            table
-                .root_state_slot(table.request_id_at(second, 0).unwrap())
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            table
-                .root_state_slot(table.request_id_at(second, 1).unwrap())
-                .unwrap(),
-            1
+                .records
+                .iter()
+                .map(|record| record.root)
+                .collect::<Vec<_>>(),
+            vec![second_root, third_root, first_root]
         );
         assert_eq!(
             table.request_id_at(first, 0).unwrap(),
