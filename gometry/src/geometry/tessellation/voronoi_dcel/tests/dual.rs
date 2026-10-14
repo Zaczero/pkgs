@@ -134,7 +134,6 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
         &sites,
         VoronoiProduct::Both,
         &mut restored_budget,
-        None,
     )
     .unwrap();
     let restored_admitted = true;
@@ -155,7 +154,6 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
         &sites,
         VoronoiProduct::Both,
         &mut mutated_budget,
-        None,
     )
     .is_ok();
     assert_ne!(
@@ -257,7 +255,6 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
         &sites,
         VoronoiProduct::Both,
         &mut restored_budget,
-        None,
     )
     .unwrap();
 
@@ -349,7 +346,6 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
                 &sites,
                 VoronoiProduct::Both,
                 &mut budget,
-                None,
             )
             .is_err(),
             "dual mutation unexpectedly admitted: {name}"

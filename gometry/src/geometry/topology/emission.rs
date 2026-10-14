@@ -81,7 +81,6 @@ pub(super) use self::nodes::{
 use self::ordinates::native_chord_points;
 pub(super) use self::ordinates::{
     native_port_point, resolve_emission_ordinates, resolve_publication_ordinates,
-    source_root_ranges_at_location,
 };
 pub(super) use self::port_authority::{
     NativePortData, merge_native_port_data, native_source_record_quotient_key,

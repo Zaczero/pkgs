@@ -1485,10 +1485,16 @@ def test_build_area_keeps_homogeneous_and_empty_output_shapes() -> None:
         (0.0, 0.0, 1.0),
     ]
 
-    empty = gm.from_wkt('LINESTRING Z (0 0 1, 1 1 2)').build_area()
+    empty_source = gm.from_wkt('LINESTRING Z (0 0 1, 1 1 2)')
+    empty = empty_source.build_area()
+    array_empty = gm.GeometryArray([empty_source]).build_area()[0]
     assert empty.geometry_type == 'Polygon'
     assert empty.coordinate_axes == 'XY'
     assert empty.is_empty
+    assert array_empty.to_wkt() == empty.to_wkt()
+    assert array_empty.geometry_type == 'Polygon'
+    assert array_empty.coordinate_axes == 'XY'
+    assert array_empty.is_empty
 
 
 def test_w4b_smooth_catmull_and_chaikin_bit_stable_and_budget() -> None:

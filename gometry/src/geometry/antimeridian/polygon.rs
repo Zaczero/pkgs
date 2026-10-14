@@ -580,14 +580,9 @@ fn split_geographic_view_captured<M: ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<super::publication::SplitDrawing> {
     let frame = view.frame();
-    let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
-    let latitude_scale =
-        frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
     let mut capture = SplitCapture::enabled(frame);
-    let (shape, lineage) =
-        split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
-    let lineage = lineage.expect("captured antimeridian split has member lineage");
-    Ok(capture.into_drawing(shape, frame, longitude_scale, latitude_scale, lineage))
+    let (shape, _) = split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
+    Ok(capture.into_drawing(shape))
 }
 
 #[expect(

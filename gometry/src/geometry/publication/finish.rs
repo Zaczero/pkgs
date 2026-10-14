@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use super::DirectedChartRestrictionUse;
 use super::receipt::{
     CheckedPublicationLiteral, PendingPublicationRow, ProducerDrawingReceipt, ProducerImageId,
-    ProducerLiteral, ProducerReceipt, ProducerSourceRootUse, PublicationCall, PublicationImage,
-    PublicationOutcome, PublicationRejection, StorageTarget,
+    ProducerLiteral, ProducerReceipt, PublicationCall, PublicationImage, PublicationOutcome,
+    PublicationRejection, StorageTarget,
 };
 use crate::Frame;
 use crate::error::Result;
@@ -81,8 +80,6 @@ pub(crate) struct FinishedGeometry {
     scalar_layout: Option<ShapeLiteralLayout<PublicationImage>>,
     checked: Vec<CheckedPublicationLiteral>,
     producer_literals: Vec<ProducerLiteral>,
-    source_root_uses: Vec<ProducerSourceRootUse>,
-    chart_restrictions: Vec<DirectedChartRestrictionUse>,
     producer_drawing: bool,
 }
 
@@ -93,16 +90,6 @@ impl FinishedGeometry {
         } else {
             self.checked.len()
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn producer_source_root_uses(&self) -> &[ProducerSourceRootUse] {
-        &self.source_root_uses
-    }
-
-    #[cfg(test)]
-    pub(super) fn producer_chart_restrictions(&self) -> &[DirectedChartRestrictionUse] {
-        &self.chart_restrictions
     }
 
     pub(super) fn from_sealed<I: Copy>(
@@ -129,26 +116,17 @@ impl FinishedGeometry {
                 })
                 .collect::<Result<Vec<_>>>()?,
             producer_literals: Vec::new(),
-            source_root_uses: Vec::new(),
-            chart_restrictions: Vec::new(),
             producer_drawing: false,
         })
     }
 
-    pub(super) const fn from_admitted_rows(
-        rows: ArrayRows,
-        frame: Frame,
-        source_root_uses: Vec<ProducerSourceRootUse>,
-        chart_restrictions: Vec<DirectedChartRestrictionUse>,
-    ) -> Self {
+    pub(super) const fn from_admitted_rows(rows: ArrayRows, frame: Frame) -> Self {
         Self {
             storage: LiteralStorage::Rows(rows),
             frame,
             scalar_layout: None,
             checked: Vec::new(),
             producer_literals: Vec::new(),
-            source_root_uses,
-            chart_restrictions,
             producer_drawing: false,
         }
     }
@@ -157,8 +135,6 @@ impl FinishedGeometry {
         sealed: SealedOutput<ProducerImageId>,
         frame: Frame,
         producer_literals: Vec<ProducerLiteral>,
-        source_root_uses: Vec<ProducerSourceRootUse>,
-        chart_restrictions: Vec<DirectedChartRestrictionUse>,
     ) -> Result<Self> {
         let (storage, scalar_layout, checked) = sealed.into_publication_parts();
         Ok(Self {
@@ -179,8 +155,6 @@ impl FinishedGeometry {
                 })
                 .collect(),
             producer_literals,
-            source_root_uses,
-            chart_restrictions,
             producer_drawing: true,
         })
     }
@@ -214,13 +188,9 @@ impl FinishedGeometry {
         for literal in &mut producer_literals {
             literal.address.logical_row = logical_row;
         }
-        let mut source_root_uses = self.source_root_uses;
-        for source_use in &mut source_root_uses {
-            source_use.address.logical_row = logical_row;
-        }
         let producer_drawing = self.producer_drawing;
         Ok(PendingPublicationRow {
-            shape: Some(shape),
+            shape,
             logical_row,
             layout: LiteralRowLayout {
                 operation: 0,
@@ -231,8 +201,6 @@ impl FinishedGeometry {
             },
             checked,
             producer_literals,
-            source_root_uses,
-            chart_restrictions: self.chart_restrictions,
             producer_drawing,
             work,
         })
@@ -252,8 +220,6 @@ impl FinishedGeometry {
             scalar_layout,
             checked,
             producer_literals,
-            source_root_uses,
-            chart_restrictions,
             producer_drawing,
         } = self;
         if !producer_drawing {
@@ -314,8 +280,6 @@ impl FinishedGeometry {
             .into());
         }
         let had_producer_literals = !producer_literals.is_empty();
-        let had_source_uses = !source_root_uses.is_empty();
-        let had_chart_restrictions = !chart_restrictions.is_empty();
         let mut literals_by_output = BTreeMap::<u32, Vec<ProducerLiteral>>::new();
         for literal in producer_literals {
             literals_by_output
@@ -323,14 +287,6 @@ impl FinishedGeometry {
                 .or_default()
                 .push(literal);
         }
-        let mut source_uses_by_output = BTreeMap::<u32, Vec<ProducerSourceRootUse>>::new();
-        for source_use in source_root_uses {
-            source_uses_by_output
-                .entry(source_use.address.output)
-                .or_default()
-                .push(source_use);
-        }
-
         let mut output_rows = Vec::with_capacity(polygons.len());
         for (index, (polygon, literal_polygon)) in polygons
             .into_iter()
@@ -361,10 +317,6 @@ impl FinishedGeometry {
             let mut literals = literals_by_output.remove(&output).unwrap_or_default();
             for literal in &mut literals {
                 address(&mut literal.address);
-            }
-            let mut source_uses = source_uses_by_output.remove(&output).unwrap_or_default();
-            for source_use in &mut source_uses {
-                address(&mut source_use.address);
             }
             let row_layout = ShapeLiteralLayout {
                 points: Vec::new(),
@@ -397,7 +349,7 @@ impl FinishedGeometry {
                     )
                 })?;
             output_rows.push(PendingPublicationRow {
-                shape: Some(shape),
+                shape,
                 logical_row,
                 layout: LiteralRowLayout {
                     operation: 0,
@@ -408,25 +360,17 @@ impl FinishedGeometry {
                 },
                 checked: Vec::new(),
                 producer_literals: literals,
-                source_root_uses: source_uses,
-                chart_restrictions: if index == 0 {
-                    chart_restrictions.clone()
-                } else {
-                    Vec::new()
-                },
                 producer_drawing: true,
                 work: EvaluationBudget::new(operation, coordinates)?,
             });
         }
-        if !literals_by_output.is_empty() || !source_uses_by_output.is_empty() {
+        if !literals_by_output.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon producer receipt references an unknown output row".into(),
             )
             .into());
         }
-        if polygon_count == 0
-            && (had_producer_literals || had_source_uses || had_chart_restrictions)
-        {
+        if polygon_count == 0 && had_producer_literals {
             return Err(GeometryErrorKind::Invalid(
                 "empty polygon output retained producer literal uses".into(),
             )
@@ -436,17 +380,8 @@ impl FinishedGeometry {
     }
 
     pub(crate) fn into_scalar(self) -> Result<(Shape, Frame)> {
-        let Self {
-            storage,
-            frame,
-            source_root_uses,
-            chart_restrictions,
-            ..
-        } = self;
-        drop(source_root_uses);
-        drop(chart_restrictions);
-        match storage {
-            LiteralStorage::Scalar(shape) => Ok((shape, frame)),
+        match self.storage {
+            LiteralStorage::Scalar(shape) => Ok((shape, self.frame)),
             LiteralStorage::Rows(_) | LiteralStorage::Groups(_) => Err(GeometryErrorKind::Invalid(
                 "non-scalar finished geometry cannot be adopted as a scalar".into(),
             )
@@ -455,17 +390,8 @@ impl FinishedGeometry {
     }
 
     pub(crate) fn into_array(self) -> Result<(ArrayRows, Frame)> {
-        let Self {
-            storage,
-            frame,
-            source_root_uses,
-            chart_restrictions,
-            ..
-        } = self;
-        drop(source_root_uses);
-        drop(chart_restrictions);
-        match storage {
-            LiteralStorage::Rows(rows) => Ok((rows, frame)),
+        match self.storage {
+            LiteralStorage::Rows(rows) => Ok((rows, self.frame)),
             LiteralStorage::Scalar(_) | LiteralStorage::Groups(_) => {
                 Err(GeometryErrorKind::Invalid(
                     "finished geometry does not own admitted array rows".into(),
@@ -476,17 +402,8 @@ impl FinishedGeometry {
     }
 
     pub(crate) fn into_groups(self) -> Result<(FinalGroupRows, Frame)> {
-        let Self {
-            storage,
-            frame,
-            source_root_uses,
-            chart_restrictions,
-            ..
-        } = self;
-        drop(source_root_uses);
-        drop(chart_restrictions);
-        match storage {
-            LiteralStorage::Groups(groups) => Ok((groups, frame)),
+        match self.storage {
+            LiteralStorage::Groups(groups) => Ok((groups, self.frame)),
             LiteralStorage::Scalar(_) | LiteralStorage::Rows(_) => Err(GeometryErrorKind::Invalid(
                 "finished geometry does not own admitted Groups rows".into(),
             )
@@ -628,32 +545,9 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
         ProducerReceipt::ProducerDrawing(ProducerDrawingReceipt {
             buffers,
             literals,
-            source_root_uses,
-            chart_restrictions,
             retain_literals_for_republication,
         }) => {
             let mut receiver = ProducerImageReceiver::new(literals)?;
-            for source_use in &source_root_uses {
-                work.charge_into_error(1)?;
-                let image = PublicationImage::ProducerDrawn(source_use.image);
-                if !receiver.snapshot.contains(source_use.address, image) {
-                    return Err(GeometryErrorKind::Invalid(
-                        format!(
-                            "producer source-root use for image {:?} at {:?} has no checked output literal; checked image addresses: {:?}",
-                            source_use.image,
-                            source_use.address,
-                            receiver.snapshot.addresses_for_image(image)
-                        )
-                        .into(),
-                    )
-                    .into());
-                }
-                let _ = &source_use.range;
-            }
-            work.charge_into_error(
-                u64::try_from(chart_restrictions.len())
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-            )?;
             let buffers = buffers.admit_target(target)?;
             match bind_final_literals(buffers, &mut receiver, work)? {
                 LiteralCheck::Pass(sealed) => {
@@ -663,13 +557,7 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
                         Vec::new()
                     };
                     Ok(PublicationOutcome::Pass(
-                        FinishedGeometry::from_producer_sealed(
-                            sealed,
-                            frame,
-                            producer_literals,
-                            source_root_uses,
-                            chart_restrictions,
-                        )?,
+                        FinishedGeometry::from_producer_sealed(sealed, frame, producer_literals)?,
                     ))
                 },
                 LiteralCheck::Reject(images) => Ok(PublicationOutcome::Reject(

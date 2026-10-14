@@ -7,7 +7,6 @@ use crate::geographic::{
     ComputedEdgeIntent, ComputedLongitudeRelation, ComputedVertexIntent, GeographicFrame,
     RetainedChartDisplacement, publish_computed_chain, publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_samples,
-    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges,
 };
 use crate::geometry::tessellation::{
     ConstrainedMeshPlan, VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin,

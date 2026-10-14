@@ -505,57 +505,18 @@ pub(super) fn chart_shape<M: ChartMetric>(
             Ok((chart, lineage))
         },
         Shape::Point(point) => {
-            let member = match capture.as_deref_mut() {
-                Some(capture) => Some(capture.next_member()?),
-                None => None,
-            };
-            let root = match capture.as_deref_mut() {
-                Some(capture) => {
-                    Some(capture.point_root(member.expect("captured point has a member"), *point)?)
-                },
-                None => None,
-            };
             let chart = chart_point(*point, frame, longitude_scale, latitude_scale)?;
-            let lineage = match (capture.as_deref_mut(), root, member) {
-                (Some(capture), Some(root), Some(member)) => {
-                    let event = capture.record_root_point(root, member, &ExactRational::zero())?;
-                    Some(super::super::lineage::ShapeLineage::Point {
-                        member,
-                        events: vec![event],
-                    })
-                },
-                _ => None,
-            };
+            let lineage = capture.map(|_| super::super::lineage::ShapeLineage::Point);
             Ok((Shape::Point(chart), lineage))
         },
         Shape::MultiPoint(points) => {
-            let member = match capture.as_deref_mut() {
-                Some(capture) => Some(capture.next_member()?),
-                None => None,
-            };
             let mut chart_points = Vec::with_capacity(points.len());
-            let mut events = Vec::with_capacity(points.len());
             for point in points.points() {
-                let root = match capture.as_deref_mut() {
-                    Some(capture) => Some(
-                        capture
-                            .point_root(member.expect("captured multipoint has a member"), point)?,
-                    ),
-                    None => None,
-                };
                 let chart = chart_point(point, frame, longitude_scale, latitude_scale)?;
-                let event = match (capture.as_deref_mut(), root, member) {
-                    (Some(capture), Some(root), Some(member)) => {
-                        Some(capture.record_root_point(root, member, &ExactRational::zero())?)
-                    },
-                    _ => None,
-                };
                 chart_points.push(chart);
-                events.push(event.into_iter().collect());
             }
             let chart = Shape::MultiPoint(points.with_values(&chart_points)?);
-            let lineage = member
-                .map(|member| super::super::lineage::ShapeLineage::MultiPoint { member, events });
+            let lineage = capture.map(|_| super::super::lineage::ShapeLineage::MultiPoint);
             Ok((chart, lineage))
         },
         Shape::Empty(..) => {

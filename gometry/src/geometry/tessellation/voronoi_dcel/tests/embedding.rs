@@ -576,7 +576,6 @@ fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
         rings: Vec::new(),
         fixed: Vec::new(),
         chart_fixed: Vec::new(),
-        source_roots: Vec::new(),
         source: None,
         geometry: None,
         polygon_baseline: None,

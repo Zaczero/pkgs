@@ -9,8 +9,8 @@ pub(crate) enum ChartCutSide {
 
 /// A generated edge that restricts publication to a chart boundary.
 ///
-/// Authentic source intervals remain in producer source-use receipts; these
-/// roles describe only generated presentation geometry.
+/// These roles describe generated presentation geometry, not authentic source
+/// intervals.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ChartRestriction {
     CutChord,

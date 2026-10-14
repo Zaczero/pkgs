@@ -11,11 +11,6 @@ use crate::geometry::{
 };
 use crate::work::{Unmetered, Work};
 
-enum SplitRootSource {
-    Point { member: MemberId, point: Point },
-    Edge(Box<SplitEdgeRoot>),
-}
-
 struct SplitEdgeRoot {
     member: MemberId,
     points: [Point; 2],
@@ -44,7 +39,7 @@ pub(super) struct SplitEdgeUse {
 
 pub(super) struct LineageCatalog {
     frame: GeographicFrame,
-    roots: Vec<SplitRootSource>,
+    roots: Vec<SplitEdgeRoot>,
     evaluation_states: RootEvaluationStates,
     next_member: u32,
     events: Vec<SplitEvent>,
@@ -53,7 +48,7 @@ pub(super) struct LineageCatalog {
 
 pub(super) struct LineageRootCatalog<'a> {
     frame: GeographicFrame,
-    roots: &'a [SplitRootSource],
+    roots: &'a [SplitEdgeRoot],
 }
 
 impl RootCatalog for LineageRootCatalog<'_> {
@@ -62,13 +57,11 @@ impl RootCatalog for LineageRootCatalog<'_> {
     }
 
     fn source_root(&self, root: RootId) -> Option<RootSourceData<'_>> {
-        match self.roots.get(root.index())? {
-            SplitRootSource::Point { point, .. } => Some(RootSourceData::Point(*point)),
-            SplitRootSource::Edge(edge) => Some(RootSourceData::Edge {
-                points: &edge.points,
-                longitude: Some(edge.longitude),
-            }),
-        }
+        let edge = self.roots.get(root.index())?;
+        Some(RootSourceData::Edge {
+            points: &edge.points,
+            longitude: Some(edge.longitude),
+        })
     }
 }
 
@@ -91,10 +84,7 @@ impl LineageCatalog {
     fn member_of_root(&self, root: RootId) -> Result<MemberId> {
         self.roots
             .get(root.index())
-            .map(|source| match source {
-                SplitRootSource::Point { member, .. } => *member,
-                SplitRootSource::Edge(edge) => edge.member,
-            })
+            .map(|edge| edge.member)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
                     .into()
@@ -110,12 +100,6 @@ impl LineageCatalog {
         Ok(member)
     }
 
-    pub(super) fn point_root(&mut self, member: MemberId, point: Point) -> Result<RootId> {
-        let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots.push(SplitRootSource::Point { member, point });
-        Ok(RootId::from_index(index))
-    }
-
     pub(super) fn edge_root(
         &mut self,
         member: MemberId,
@@ -123,12 +107,11 @@ impl LineageCatalog {
         longitude: RetainedChartDisplacement,
     ) -> Result<RootId> {
         let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots
-            .push(SplitRootSource::Edge(Box::new(SplitEdgeRoot {
-                member,
-                points: *points,
-                longitude,
-            })));
+        self.roots.push(SplitEdgeRoot {
+            member,
+            points: *points,
+            longitude,
+        });
         Ok(RootId::from_index(index))
     }
 
@@ -430,14 +413,8 @@ impl LineageCatalog {
         };
 
         match shape {
-            Shape::Point(_) => Ok(ShapeLineage::Point {
-                member: self.member()?,
-                events: Vec::new(),
-            }),
-            Shape::MultiPoint(points) => Ok(ShapeLineage::MultiPoint {
-                member: self.member()?,
-                events: vec![Vec::new(); points.len()],
-            }),
+            Shape::Point(_) => Ok(ShapeLineage::Point),
+            Shape::MultiPoint(_) => Ok(ShapeLineage::MultiPoint),
             Shape::LineString(line) => {
                 let member = self.member()?;
                 Ok(ShapeLineage::LineString(sequence(
@@ -518,14 +495,8 @@ pub(super) struct PolygonWithLineage {
 
 #[derive(Clone)]
 pub(super) enum ShapeLineage {
-    Point {
-        member: MemberId,
-        events: Vec<EventId>,
-    },
-    MultiPoint {
-        member: MemberId,
-        events: Vec<Vec<EventId>>,
-    },
+    Point,
+    MultiPoint,
     LineString(LineageSequence),
     MultiLineString {
         members: Vec<Option<LineageSequence>>,

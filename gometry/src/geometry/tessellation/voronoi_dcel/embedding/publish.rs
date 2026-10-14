@@ -4,8 +4,8 @@ use super::super::{
     BoxIndex, ClipTrace, EdgeId, EmbeddedEdgeData, EmbeddedEdges, EmbeddedPolygon,
     EmbeddedVertexId, EmbeddedVertices, EmbeddedVoronoi, EvaluationBudget, ExactCellPart,
     ExactEdgeChain, ExactSubdivision, ExpansionBudget, LiveVertices, NormalizedClip, Point,
-    PointSelectionChart, Polygon, Result, Ring, Search, Shape, Site, Strictness, VertexId,
-    VoronoiEmbedding, VoronoiProblem, VoronoiProducer, VoronoiProduct, admit_embedded_clip,
+    Polygon, Result, Ring, Search, Shape, Site, Strictness, VertexId, VoronoiEmbedding,
+    VoronoiProblem, VoronoiProducer, VoronoiProduct, admit_embedded_clip,
     binary_cartesian_difference_without_partition_budget, coverage_is_valid, embedded_exact_ring,
     ensure_coordseq_vertex_capacity, exact, exact_diagram_receipt, exact_embedding_unrepresentable,
     pack_separator_chains, polygon_is_valid, polygon_output_count, receipt_ring_uses,
@@ -21,7 +21,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
     producer: VoronoiProducer,
-    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     let mut live = LiveVertices::new(subdivision.vertices.len());
     let mut live_edges = Vec::new();
@@ -180,10 +179,8 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
         parts,
         chains,
         clip,
-        &clip_trace,
         &exact_to_embedded,
         &points,
-        chart,
     )?;
     let mut labelled = Vec::with_capacity(if product.includes_polygons() {
         parts.len()
@@ -197,27 +194,12 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
         if !product.includes_polygons() {
             continue;
         }
-        let (shell, shell_roles, shell_vertices) = embedded_exact_ring(
-            subdivision,
-            &part.shell,
-            &exact_to_embedded,
-            &points,
-            clip,
-            &clip_trace,
-        )?;
+        let (shell, shell_roles, shell_vertices) =
+            embedded_exact_ring(subdivision, &part.shell, &exact_to_embedded, &points, clip)?;
         let holes_with_roles = part
             .holes
             .iter()
-            .map(|hole| {
-                embedded_exact_ring(
-                    subdivision,
-                    hole,
-                    &exact_to_embedded,
-                    &points,
-                    clip,
-                    &clip_trace,
-                )
-            })
+            .map(|hole| embedded_exact_ring(subdivision, hole, &exact_to_embedded, &points, clip))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let holes: Vec<_> = holes_with_roles
             .iter()

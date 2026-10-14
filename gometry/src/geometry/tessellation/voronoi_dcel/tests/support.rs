@@ -10,8 +10,7 @@ fn receipt_vertex(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiVertexRec
     receipt
         .vertices
         .get(id as usize)
-        .filter(|vertex| vertex.id == id)
-        .expect("receipt vertex IDs are dense")
+        .expect("receipt vertex indices are dense")
 }
 
 fn receipt_edge(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiEdgeReceipt {
@@ -22,32 +21,13 @@ fn receipt_edge(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiEdgeReceipt
         .expect("receipt edge IDs are dense")
 }
 
-fn receipt_clip(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiClipSegmentReceipt {
-    receipt
-        .clip_segments
-        .get(id as usize)
-        .filter(|segment| segment.id == id)
-        .expect("receipt clip-segment IDs are dense")
-}
-
 fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
-    let bounded = |parameter: &exact::ExactRational| {
-        assert_ne!(
-            parameter.try_cmp(&exact::ExactRational::zero()).unwrap(),
-            std::cmp::Ordering::Less
-        );
-        assert_ne!(
-            parameter.try_cmp(&exact::ExactRational::one()).unwrap(),
-            std::cmp::Ordering::Greater
-        );
-    };
     let frame_side = |side| match side {
         VoronoiFrameSide::Bottom
         | VoronoiFrameSide::Right
         | VoronoiFrameSide::Top
         | VoronoiFrameSide::Left => {},
     };
-    let mut clip_ring_edges = std::collections::BTreeSet::new();
     let ring_is_closed = |uses: &[VoronoiDirectedEdgeUse]| {
         let first = uses.first().expect("receipt cell rings are non-empty");
         let first_edge = receipt_edge(receipt, first.edge);
@@ -121,46 +101,7 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
         assert_eq!(receipt_site(receipt, owner).id, owner);
     }
 
-    for (id, segment) in receipt.clip_segments.iter().enumerate() {
-        assert_eq!(
-            segment.id,
-            u32::try_from(id).expect("clip segment receipt fits its stored ID")
-        );
-        assert_eq!(segment.exact_start.len(), 2);
-        assert_eq!(segment.exact_end.len(), 2);
-        assert!(
-            clip_ring_edges.insert((segment.ring, segment.edge)),
-            "clip segment IDs retain unique ring-edge identities"
-        );
-        if let Some(side) = segment.frame_side {
-            frame_side(side);
-        }
-        for root in &segment.source_roots {
-            assert!(root.start.xy().x.is_finite() && root.start.xy().y.is_finite());
-            assert!(root.end.xy().x.is_finite() && root.end.xy().y.is_finite());
-            assert_ne!(
-                PointKey::new(root.start.xy()),
-                PointKey::new(root.end.xy()),
-                "source clip roots retain a real directed segment"
-            );
-        }
-        for atom in &segment.atoms {
-            let edge = receipt_edge(receipt, atom.edge);
-            bounded(&atom.start_parameter);
-            bounded(&atom.end_parameter);
-            if let Some(side) = segment.frame_side {
-                assert_eq!(edge.frame_side, Some(side));
-            } else if !segment.source_roots.is_empty() {
-                assert!(edge.clip_sources.contains(&segment.id));
-            }
-        }
-    }
-
-    for (id, vertex_receipt) in receipt.vertices.iter().enumerate() {
-        assert_eq!(
-            vertex_receipt.id,
-            u32::try_from(id).expect("vertex receipt fits its stored ID")
-        );
+    for vertex_receipt in &receipt.vertices {
         assert_eq!(vertex_receipt.exact_xy.len(), 2);
         for origin in &vertex_receipt.origins {
             match origin {
@@ -176,35 +117,12 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
                         let _ = receipt_site(receipt, id);
                     }
                 },
-                VoronoiVertexOrigin::SourceClip {
-                    segment,
-                    parameter,
-                    source_ring,
-                    source_edge,
-                } => {
-                    let clip_segment = receipt_clip(receipt, *segment);
-                    bounded(parameter);
-                    if let (Some(ring), Some(source_edge)) = (source_ring, source_edge) {
-                        assert!(
-                            clip_segment
-                                .source_roots
-                                .iter()
-                                .any(|root| { root.ring == *ring && root.edge == *source_edge })
-                        );
-                    }
-                },
                 VoronoiVertexOrigin::Bisector { sites } => {
                     for &id in sites {
                         let _ = receipt_site(receipt, id);
                     }
                 },
                 VoronoiVertexOrigin::Frame { side } => frame_side(*side),
-                VoronoiVertexOrigin::Pole { latitude } => {
-                    assert!(latitude.is_finite());
-                },
-                VoronoiVertexOrigin::ChartCut { side } => match side {
-                    VoronoiChartCutSide::Lower | VoronoiChartCutSide::Upper => {},
-                },
             }
         }
     }
@@ -223,7 +141,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
             }
         }
         for &segment_id in &edge_receipt.clip_sources {
-            let _ = receipt_clip(receipt, segment_id);
             assert!(
                 edge_receipt
                     .origins
@@ -246,7 +163,6 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
         for origin in &edge_receipt.origins {
             match origin {
                 VoronoiEdgeOrigin::SourceClip { segment } => {
-                    let _ = receipt_clip(receipt, *segment);
                     assert!(edge_receipt.clip_sources.contains(segment));
                 },
                 VoronoiEdgeOrigin::Bisector { sites } => {

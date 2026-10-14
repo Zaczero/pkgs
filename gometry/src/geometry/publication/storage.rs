@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use super::DirectedChartRestrictionUse;
 use super::binding::CheckedLiteralSnapshot;
 use super::finish::FinishedGeometry;
 use super::receipt::{
-    ArrayPublicationBatch, GeometryOutput, PendingPublicationRow, ProducerDrawingReceipt,
-    ProducerLiteral, ProducerReceipt, ProducerSourceRootUse, PublicationCall, PublicationImage,
-    PublicationOutcome, PublicationRejection, StorageTarget,
+    ArrayPublicationBatch, GeometryOutput, ProducerDrawingReceipt, ProducerLiteral,
+    ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection, StorageTarget,
+    StoredPublicationRow,
 };
 use crate::Frame;
 use crate::array::{ComputedCaches, StreamingShapes};
@@ -24,7 +23,7 @@ use crate::work::{Unmetered, Work};
 
 pub(crate) struct PublicationRows {
     writer: StreamingShapes,
-    pending: Vec<PendingPublicationRow>,
+    pending: Vec<StoredPublicationRow>,
     group_offsets: Option<Vec<i64>>,
     value_count: usize,
     producer_drawing_required: bool,
@@ -70,9 +69,10 @@ impl PublicationRows {
             },
             GeometryOutput::Pending(mut pending) => {
                 pending.precharge_append()?;
-                self.writer.try_push(pending.take_shape())?;
-                self.has_unreceipted_output |= !pending.producer_drawing;
-                self.pending.push(pending);
+                let (shape, stored) = pending.into_stored();
+                self.writer.try_push(shape)?;
+                self.has_unreceipted_output |= !stored.producer_drawing;
+                self.pending.push(stored);
             },
         }
         self.value_count = self
@@ -133,7 +133,7 @@ impl PublicationRows {
         let logical_count = missing.as_ref().map_or(storage.len(), ValidityMask::len);
         let mut logical_rows = std::iter::repeat_with(|| None)
             .take(logical_count)
-            .collect::<Vec<Option<PendingPublicationRow>>>();
+            .collect::<Vec<Option<StoredPublicationRow>>>();
         for pending in self.pending {
             let logical = pending.logical_row;
             let slot = logical_rows.get_mut(logical).ok_or_else(|| {
@@ -252,13 +252,12 @@ impl PublicationRows {
         let mut row_map = std::iter::repeat_with(|| None)
             .take(storage.len())
             .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
-        let (literals, source_root_uses, chart_restrictions) =
-            collect_producer_rows(self.pending, &mut row_map, |pending| {
-                pending.layout.value_row.ok_or_else(|| {
-                    GeometryErrorKind::Invalid("producer-drawn group value has no value row".into())
-                        .into()
-                })
-            })?;
+        let literals = collect_producer_rows(self.pending, &mut row_map, |pending| {
+            pending.layout.value_row.ok_or_else(|| {
+                GeometryErrorKind::Invalid("producer-drawn group value has no value row".into())
+                    .into()
+            })
+        })?;
         let mut work = Unmetered;
         let buffers = FrozenLiteralBuffers::groups(
             Arc::new(storage),
@@ -269,8 +268,7 @@ impl PublicationRows {
             missing,
             &mut work,
         )?;
-        let receipt =
-            ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
+        let receipt = ProducerDrawingReceipt::new(buffers, literals);
         match finish_geographic(
             PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
             StorageTarget::Groups,
@@ -298,13 +296,13 @@ fn finish_producer_array(
     storage: GeometryArrayStorage,
     missing: Option<ValidityMask>,
     layout: StorageLayout,
-    logical_rows: Vec<Option<PendingPublicationRow>>,
+    logical_rows: Vec<Option<StoredPublicationRow>>,
     frame: Frame,
 ) -> Result<crate::PyGeometryArray> {
     let mut row_map = std::iter::repeat_with(|| None)
         .take(logical_rows.len())
         .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
-    let (literals, source_root_uses, chart_restrictions) = collect_producer_rows(
+    let literals = collect_producer_rows(
         logical_rows.into_iter().flatten(),
         &mut row_map,
         |pending| Ok(pending.logical_row),
@@ -325,8 +323,7 @@ fn finish_producer_array(
     let mut work = Unmetered;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt =
-        ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     match finish_geographic(
         PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
         StorageTarget::Array,
@@ -350,17 +347,11 @@ fn finish_producer_array(
 }
 
 fn collect_producer_rows(
-    pending_rows: impl IntoIterator<Item = PendingPublicationRow>,
+    pending_rows: impl IntoIterator<Item = StoredPublicationRow>,
     row_map: &mut [Option<LiteralRowLayout<ProducerImageId>>],
-    row_index: impl Fn(&PendingPublicationRow) -> Result<usize>,
-) -> Result<(
-    Vec<ProducerLiteral>,
-    Vec<ProducerSourceRootUse>,
-    Vec<DirectedChartRestrictionUse>,
-)> {
+    row_index: impl Fn(&StoredPublicationRow) -> Result<usize>,
+) -> Result<Vec<ProducerLiteral>> {
     let mut literals = Vec::new();
-    let mut source_root_uses = Vec::new();
-    let mut chart_restrictions = Vec::new();
     for pending in pending_rows {
         if !pending.producer_drawing {
             return Err(GeometryErrorKind::Invalid(
@@ -380,10 +371,8 @@ fn collect_producer_rows(
         }
         *slot = Some(super::finish::producer_row_layout(pending.layout)?);
         literals.extend(pending.producer_literals);
-        source_root_uses.extend(pending.source_root_uses);
-        chart_restrictions.extend(pending.chart_restrictions);
     }
-    Ok((literals, source_root_uses, chart_restrictions))
+    Ok(literals)
 }
 
 pub(super) fn finish_array_batch<W: Work>(
@@ -438,10 +427,7 @@ pub(super) fn finish_array_batch<W: Work>(
             logical
         };
         if let Some(pending) = pending {
-            if pending.logical_row != logical
-                || pending.shape.is_some()
-                || pending.layout.logical_row != logical
-            {
+            if pending.logical_row != logical || pending.layout.logical_row != logical {
                 return Err(GeometryErrorKind::Invalid(
                     "pending Q row no longer matches its admitted operation slot".into(),
                 )
@@ -465,13 +451,7 @@ pub(super) fn finish_array_batch<W: Work>(
             let mut pending = pending;
             pending.work.charge_into_error(admission_ticks)?;
             row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
-            pending_rows.push((
-                logical,
-                pending.checked,
-                pending.source_root_uses,
-                pending.chart_restrictions,
-                pending.work,
-            ));
+            pending_rows.push((logical, pending.checked, pending.work));
         } else {
             row_map.push(Some(LiteralRowBinding::OtherProducer));
         }
@@ -499,33 +479,13 @@ pub(super) fn finish_array_batch<W: Work>(
         &mut unmetered,
     )?;
     let row_map = Arc::from(row_map);
-    let mut source_root_uses = Vec::new();
-    let mut chart_restrictions = Vec::new();
-    for (logical_row, records, row_source_uses, row_chart_restrictions, mut row_work) in
-        pending_rows
-    {
+    for (logical_row, records, mut row_work) in pending_rows {
         let buffers = FrozenLiteralBuffers::admitted_row_view(
             rows.clone(),
             Arc::clone(&row_map),
             logical_row,
         )?;
         let mut receiver = CheckedLiteralSnapshot::new(records)?;
-        for source_use in &row_source_uses {
-            row_work.charge_into_error(1)?;
-            if !receiver.contains(
-                source_use.address,
-                PublicationImage::ProducerDrawn(source_use.image),
-            ) {
-                return Err(GeometryErrorKind::Invalid(
-                    "producer source-root use has no checked final array literal".into(),
-                )
-                .into());
-            }
-        }
-        row_work.charge_into_error(
-            u64::try_from(row_chart_restrictions.len())
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-        )?;
         match bind_final_literals(buffers, &mut receiver, &mut row_work)? {
             LiteralCheck::Pass(_) => {},
             LiteralCheck::Reject(images) => {
@@ -534,18 +494,16 @@ pub(super) fn finish_array_batch<W: Work>(
                 )));
             },
         }
-        source_root_uses.extend(row_source_uses);
-        chart_restrictions.extend(row_chart_restrictions);
     }
 
     Ok(PublicationOutcome::Pass(
-        FinishedGeometry::from_admitted_rows(rows, frame, source_root_uses, chart_restrictions),
+        FinishedGeometry::from_admitted_rows(rows, frame),
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::receipt::CheckedPublicationLiteral;
+    use super::super::receipt::{CheckedPublicationLiteral, PublicationImage};
     use super::*;
     use crate::geometry::embedding_completion::literals::{
         LiteralAddress, LiteralPoint, ShapeLiteralLayout,
@@ -565,8 +523,7 @@ mod tests {
         let mut writer = StreamingShapes::with_capacity(0, 1);
         writer.try_push(Shape::Point(stored)).unwrap();
         let (storage, missing, layout) = writer.finish_parts().unwrap();
-        let pending = PendingPublicationRow {
-            shape: None,
+        let pending = StoredPublicationRow {
             logical_row: 0,
             layout: LiteralRowLayout {
                 operation: 0,
@@ -599,8 +556,6 @@ mod tests {
                 ),
             }],
             producer_literals: Vec::new(),
-            source_root_uses: Vec::new(),
-            chart_restrictions: Vec::new(),
             producer_drawing: false,
             work: EvaluationBudget::new("array publication test", 0).unwrap(),
         };

@@ -6,7 +6,6 @@ use super::{
     QEmissionPlan, QNodeId, QPortId, RequestRowId, ResourceError, Result, VertexOrigin,
     WrittenOccurrence,
 };
-use crate::geometry::ordinates::RootRange;
 use crate::work::Work;
 
 pub(in crate::geometry::topology) struct ExpandedEmissionPlan<'topology> {
@@ -14,7 +13,6 @@ pub(in crate::geometry::topology) struct ExpandedEmissionPlan<'topology> {
     pub(in crate::geometry::topology) selected_face_roots: Vec<Option<usize>>,
     pub(in crate::geometry::topology) node_registry: EmissionNodeRegistry,
     pub(in crate::geometry::topology) ports: Vec<EmissionPort>,
-    pub(in crate::geometry::topology) source_port_images: Vec<(QPortId, EmissionPortId)>,
     pub(in crate::geometry::topology) occurrences: Vec<WrittenOccurrence>,
     pub(in crate::geometry::topology) chords: Vec<EmissionChord>,
     pub(in crate::geometry::topology) parts: Vec<EmissionPart>,
@@ -23,72 +21,11 @@ pub(in crate::geometry::topology) struct ExpandedEmissionPlan<'topology> {
     pub(in crate::geometry::topology) whole_sphere: bool,
 }
 
-impl ExpandedEmissionPlan<'_> {
-    pub(in crate::geometry::topology) fn source_root_ranges_by_port(
-        &self,
-        selected_recipes: &[super::FragmentRecipe],
-        publication: &super::PublicationInventory,
-        work: &mut impl Work,
-    ) -> Result<Vec<Vec<RootRange>>> {
-        let ranges_by_q_port =
-            super::super::overlay::producer_drawing::source_root_ranges_by_q_port(
-                self.topology,
-                selected_recipes,
-                work,
-            )?;
-        work.charge_into_error(
-            u64::try_from(self.ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut output = Vec::with_capacity(self.ports.len());
-        for port in &self.ports {
-            work.charge_into_error(1)?;
-            let occurrences = self
-                .occurrences
-                .get(port.occurrence_range.clone())
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "emission port source-use range is outside its occurrence table".into(),
-                    )
-                })?;
-            let mut ranges = Vec::new();
-            for occurrence in occurrences {
-                work.charge_into_error(1)?;
-                let Some(location) = &occurrence.source_trace else {
-                    continue;
-                };
-                ranges.extend(super::ordinates::source_root_ranges_at_location(
-                    publication,
-                    location,
-                    work,
-                )?);
-            }
-            output.push(ranges);
-        }
-        for &(source_port, emission_port) in &self.source_port_images {
-            work.charge_into_error(1)?;
-            let source_ranges = ranges_by_q_port
-                .get(source_port.0 as usize)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source-port image has an unknown Q port".into())
-                })?;
-            let output_ranges = output.get_mut(emission_port.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("source-port image is outside the emission plan".into())
-            })?;
-            for range in source_ranges {
-                work.charge_into_error(1)?;
-                output_ranges.push(range.try_clone_with_work(work)?);
-            }
-        }
-        Ok(output)
-    }
-}
-
 pub(in crate::geometry::topology) struct EmissionBuilder<'topology> {
     pub(super) topology: &'topology ExactGeographicTopology,
     pub(super) selected_face_roots: Vec<Option<usize>>,
     pub(super) nodes: EmissionNodeRegistry,
     pub(super) ports: Vec<EmissionPort>,
-    pub(super) source_port_images: Vec<(QPortId, EmissionPortId)>,
     pub(super) occurrences: Vec<WrittenOccurrence>,
     pub(super) chords: Vec<EmissionChord>,
     pub(super) parts: Vec<EmissionPart>,
@@ -110,7 +47,6 @@ impl<'topology> EmissionBuilder<'topology> {
             selected_face_roots: selected.selected_face_roots.clone(),
             nodes: EmissionNodeRegistry::with_sources(topology, live_nodes, work)?,
             ports: Vec::new(),
-            source_port_images: Vec::new(),
             occurrences: Vec::new(),
             chords: Vec::new(),
             parts: Vec::new(),
@@ -139,7 +75,7 @@ impl<'topology> EmissionBuilder<'topology> {
         }
         let node = self.nodes.source_node(source.node)?;
         self.validate_port_origin(node, origin)?;
-        let image = self.push_port(
+        self.push_port(
             EmissionPort {
                 node,
                 position: PortPosition::Source { spelling },
@@ -150,9 +86,7 @@ impl<'topology> EmissionBuilder<'topology> {
                 origin,
                 source_trace: None,
             }],
-        )?;
-        self.source_port_images.push((port, image));
-        Ok(image)
+        )
     }
 
     pub(in crate::geometry::topology) fn source_node(
@@ -280,7 +214,6 @@ impl<'topology> EmissionBuilder<'topology> {
             selected_face_roots: self.selected_face_roots,
             node_registry: self.nodes,
             ports: self.ports,
-            source_port_images: self.source_port_images,
             occurrences: self.occurrences,
             chords: self.chords,
             parts: self.parts,

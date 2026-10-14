@@ -307,12 +307,7 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
         row_map,
         &mut work,
     )?;
-    Ok(ProducerDrawingReceipt::new(
-        buffers,
-        literals,
-        Vec::new(),
-        Vec::new(),
-    ))
+    Ok(ProducerDrawingReceipt::new(buffers, literals))
 }
 
 pub(crate) fn finish_mesh_publication_array(
@@ -391,7 +386,7 @@ pub(crate) fn finish_mesh_publication_groups(
         missing,
         &mut work,
     )?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     finish_producer_drawing(receipt, frame, StorageTarget::Groups)
 }
 

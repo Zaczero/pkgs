@@ -113,8 +113,8 @@ impl Shape {
                 (1, VoronoiBoundary::Polygon(polygon)) => {
                     voronoi_dcel::lone_site_polygon_outputs(&canonical, polygon, chart.as_ref())
                 },
-                (1, _) => voronoi_dcel::lone_site_empty_polygon_outputs(&canonical, chart.as_ref()),
-                _ => voronoi_dcel::empty_polygon_outputs(&canonical, chart.as_ref()),
+                (1, _) => voronoi_dcel::lone_site_empty_polygon_outputs(&canonical),
+                _ => voronoi_dcel::empty_polygon_outputs(&canonical),
             };
         };
         let embedded = if mesh.collinear_order().is_some() {
@@ -201,7 +201,7 @@ impl Shape {
             return if canonical.len() == 1 {
                 voronoi_dcel::lone_site_empty_edges(&canonical, boundary, chart.as_ref())
             } else {
-                voronoi_dcel::empty_packed_edges(chart.as_ref())
+                voronoi_dcel::empty_packed_edges()
             };
         };
         if mesh.collinear_order().is_none() {

@@ -52,7 +52,9 @@ pub(super) fn take_delaunay_output_reserves() -> usize {
 
 #[path = "cdt.rs"]
 mod cdt;
-pub(crate) use cdt::{CdtSideBoundaryUse, ConstrainedMeshPlan};
+#[cfg(test)]
+pub(crate) use cdt::CdtSideBoundaryUse;
+pub(crate) use cdt::ConstrainedMeshPlan;
 mod certified;
 mod hull;
 mod publication;

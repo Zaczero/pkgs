@@ -1,4 +1,4 @@
-use crate::geographic::{ChartPointSite, RetainedLongitudeSite};
+use crate::geographic::ChartPointSite;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{Point, XY};
 
@@ -19,12 +19,6 @@ pub(in crate::geometry) enum VoronoiFrameSide {
     Left,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(in crate::geometry) enum VoronoiChartCutSide {
-    Lower,
-    Upper,
-}
-
 #[derive(Clone, Debug)]
 pub(in crate::geometry) struct VoronoiDiagramReceipt {
     #[cfg_attr(
@@ -34,8 +28,6 @@ pub(in crate::geometry) struct VoronoiDiagramReceipt {
     pub(in crate::geometry) producer: VoronoiProducer,
     pub(in crate::geometry) sites: Vec<VoronoiSiteReceipt>,
     pub(in crate::geometry) source_sites: Vec<VoronoiSourceSiteReceipt>,
-    pub(in crate::geometry) selected_chart_cuts: Option<[RetainedLongitudeSite; 2]>,
-    pub(in crate::geometry) clip_segments: Vec<VoronoiClipSegmentReceipt>,
     pub(in crate::geometry) vertices: Vec<VoronoiVertexReceipt>,
     pub(in crate::geometry) edges: Vec<VoronoiEdgeReceipt>,
     pub(in crate::geometry) darts: Vec<VoronoiDartReceipt>,
@@ -50,8 +42,6 @@ impl VoronoiDiagramReceipt {
             producer,
             sites: Vec::new(),
             source_sites: Vec::new(),
-            selected_chart_cuts: None,
-            clip_segments: Vec::new(),
             vertices: Vec::new(),
             edges: Vec::new(),
             darts: Vec::new(),
@@ -122,65 +112,7 @@ pub(in crate::geometry) struct VoronoiSourceSiteReceipt {
 }
 
 #[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiClipSegmentReceipt {
-    pub(in crate::geometry) id: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes original clip ring identity")
-    )]
-    pub(in crate::geometry) ring: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes original clip edge identity")
-    )]
-    pub(in crate::geometry) edge: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 distinguishes generated frame clips")
-    )]
-    pub(in crate::geometry) frame_side: Option<VoronoiFrameSide>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes exact clip-segment endpoints")
-    )]
-    pub(in crate::geometry) exact_start: [ExactRational; 2],
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes exact clip-segment endpoints")
-    )]
-    pub(in crate::geometry) exact_end: [ExactRational; 2],
-    pub(in crate::geometry) source_roots: Vec<VoronoiClipSourceRoot>,
-    pub(in crate::geometry) atoms: Vec<VoronoiClipAtomReceipt>,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiClipSourceRoot {
-    pub(in crate::geometry) ring: usize,
-    pub(in crate::geometry) edge: usize,
-    pub(in crate::geometry) reversed: bool,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes the original clip-edge start record")
-    )]
-    pub(in crate::geometry) start: Point,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes the original clip-edge end record")
-    )]
-    pub(in crate::geometry) end: Point,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiClipAtomReceipt {
-    pub(in crate::geometry) edge: u32,
-    pub(in crate::geometry) reversed: bool,
-    pub(in crate::geometry) start_parameter: ExactRational,
-    pub(in crate::geometry) end_parameter: ExactRational,
-}
-
-#[derive(Clone, Debug)]
 pub(in crate::geometry) struct VoronoiVertexReceipt {
-    pub(in crate::geometry) id: u32,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "V2 consumes the exact producer coordinate")
@@ -214,12 +146,6 @@ pub(in crate::geometry) enum VoronoiVertexOrigin {
         )]
         sites: [u32; 3],
     },
-    SourceClip {
-        segment: u32,
-        parameter: ExactRational,
-        source_ring: Option<usize>,
-        source_edge: Option<usize>,
-    },
     Bisector {
         #[cfg_attr(
             not(test),
@@ -233,12 +159,6 @@ pub(in crate::geometry) enum VoronoiVertexOrigin {
             expect(dead_code, reason = "V2 consumes the generated frame side")
         )]
         side: VoronoiFrameSide,
-    },
-    Pole {
-        latitude: f64,
-    },
-    ChartCut {
-        side: VoronoiChartCutSide,
     },
 }
 
@@ -337,16 +257,4 @@ pub(in crate::geometry) struct VoronoiRingEdgeRole {
     pub(in crate::geometry) edge: Option<u32>,
     pub(in crate::geometry) forward: bool,
     pub(in crate::geometry) origins: Vec<VoronoiEdgeOrigin>,
-    pub(in crate::geometry) source_uses: Vec<VoronoiEdgeSourceUse>,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiEdgeSourceUse {
-    pub(in crate::geometry) source_segment: u32,
-    pub(in crate::geometry) source_operand: Option<u32>,
-    pub(in crate::geometry) source_ring: Option<u32>,
-    pub(in crate::geometry) source_edge: Option<u32>,
-    pub(in crate::geometry) forward: bool,
-    pub(in crate::geometry) start_parameter: ExactRational,
-    pub(in crate::geometry) end_parameter: ExactRational,
 }

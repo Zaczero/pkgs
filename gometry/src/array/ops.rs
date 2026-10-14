@@ -883,13 +883,7 @@ impl PyGeometryArray {
             let row_count = array.len();
             let finished = py
                 .detach(move || {
-                    let source_clip = match boundary.as_borrowed() {
-                        crate::geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
-                        crate::geometry::VoronoiBoundary::Envelope
-                        | crate::geometry::VoronoiBoundary::Padded => None,
-                    };
-                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
-                        .map_err(|error| (0, error))?;
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups();
                     for row in array.row_operation().rows_with_missing(|| ()) {
                         let logical = match row {
                             ArrayRow::Missing { logical, .. } => logical,
@@ -968,14 +962,7 @@ impl PyGeometryArray {
             let row_count = array.len();
             let finished = py
                 .detach(move || {
-                    let source_clip = match boundary.as_borrowed() {
-                        geometry::VoronoiBoundary::Polygon(polygon) => Some(polygon),
-                        geometry::VoronoiBoundary::Envelope | geometry::VoronoiBoundary::Padded => {
-                            None
-                        },
-                    };
-                    let mut writer = geometry::VoronoiDrawingWriter::new_groups(source_clip)
-                        .map_err(|error| (0, error))?;
+                    let mut writer = geometry::VoronoiDrawingWriter::new_groups();
                     for row in array.row_operation().rows_with_missing(|| ()) {
                         let logical = match row {
                             ArrayRow::Missing { logical, .. } => logical,

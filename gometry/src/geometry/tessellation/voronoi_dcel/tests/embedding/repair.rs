@@ -45,7 +45,6 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
 
     let rings = vec![cycle(&shell_points), cycle(&hole_points)];
     let chart_fixed = vec![shell.clone(), hole.clone()];
-    let source_roots = Vec::new();
     let fixed = vec![shell, hole];
     let source = Some(&clip_polygon);
     let geometry = Some(clip_polygon.clone());
@@ -53,7 +52,6 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
         rings,
         fixed,
         chart_fixed,
-        source_roots,
         source,
         geometry,
         polygon_baseline: None,

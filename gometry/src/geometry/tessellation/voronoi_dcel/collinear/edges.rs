@@ -42,10 +42,10 @@ pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
                 same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
             }
             if same_x || same_y {
-                return empty_packed_edges(chart);
+                return empty_packed_edges();
             }
         } else {
-            return empty_packed_edges(chart);
+            return empty_packed_edges();
         }
     }
     let clip = normalize_clip_with_chart(sites, boundary, false, chart)?;
@@ -88,7 +88,6 @@ pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
         rings: split_rings,
         fixed: split_fixed.clone(),
         chart_fixed: split_fixed,
-        source_roots: Vec::new(),
         source: clip.source,
         geometry: clip.geometry.clone(),
         polygon_baseline: clip.polygon_baseline,
@@ -234,7 +233,6 @@ pub(in crate::geometry::tessellation) fn build_collinear_edges_with_chart(
         VoronoiProduct::Edges,
         budget,
         VoronoiProducer::Collinear,
-        chart,
     )?;
     Ok(embedded.into_edges())
 }
