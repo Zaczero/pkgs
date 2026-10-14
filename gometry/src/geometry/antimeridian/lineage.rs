@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::ordinates::{
@@ -20,7 +22,7 @@ enum SplitRootSource {
         member: MemberId,
         points: [Point; 2],
         longitude: RetainedChartDisplacement,
-        metric: RootMetricId,
+        metric: Cell<RootMetricState>,
     },
 }
 
@@ -32,9 +34,6 @@ pub(super) struct EventId(u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct EdgeUseId(u32);
-
-#[derive(Clone, Copy)]
-struct RootMetricId(usize);
 
 pub(super) struct SplitEvent {
     pub(super) member: MemberId,
@@ -50,7 +49,6 @@ pub(super) struct SplitEdgeUse {
 #[derive(Default)]
 pub(super) struct LineageCatalog {
     roots: Vec<SplitRootSource>,
-    edge_metrics: Vec<std::cell::Cell<RootMetricState>>,
     next_member: u32,
     events: Vec<SplitEvent>,
     edge_uses: Vec<SplitEdgeUse>,
@@ -93,14 +91,11 @@ impl LineageCatalog {
         longitude: RetainedChartDisplacement,
     ) -> Result<RootId> {
         let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        let metric = RootMetricId(self.edge_metrics.len());
-        self.edge_metrics
-            .push(std::cell::Cell::new(RootMetricState::default()));
         self.roots.push(SplitRootSource::Edge {
             member,
             points: *points,
             longitude,
-            metric,
+            metric: Cell::new(RootMetricState::default()),
         });
         Ok(RootId::from_index(index))
     }
@@ -139,11 +134,6 @@ impl LineageCatalog {
                 metric,
                 ..
             } => {
-                let metric = self.edge_metrics.get(metric.0).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "split lineage references an unknown edge metric".into(),
-                    )
-                })?;
                 let mut fraction = None;
                 let mut work = Unmetered;
                 let mut metric_state = metric.get();
@@ -289,42 +279,15 @@ impl LineageCatalog {
             .expect("split edge-use IDs come from this catalog")
     }
 
-    pub(super) fn event_on_edge(
+    pub(super) fn event_from_edge_parameters<'a>(
         &mut self,
         member: MemberId,
-        edge: EdgeUseId,
-        parameter: &ExactRational,
-    ) -> Result<EventId> {
-        let mut work = Unmetered;
-        let mut roots = Vec::new();
-        if self.edge_use_at(edge).member != member {
-            return Err(GeometryErrorKind::Invalid(
-                "split event uses an edge from a different member".into(),
-            )
-            .into());
-        }
-        for range in &self.edge_use_at(edge).roots {
-            if let Some(source_parameter) = range.parameter_at_with_work(parameter, &mut work)? {
-                roots.push(RootRange::point_with_work(
-                    range.root(),
-                    source_parameter,
-                    ExactRational::zero(),
-                    &mut work,
-                )?);
-            }
-        }
-        self.event(member, roots)
-    }
-
-    pub(super) fn event_from_edge_parameters(
-        &mut self,
-        member: MemberId,
-        uses: &[(EdgeUseId, ExactRational)],
+        uses: impl IntoIterator<Item = (EdgeUseId, &'a ExactRational)>,
     ) -> Result<EventId> {
         let mut work = Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, parameter) in uses {
-            let source = self.edge_use_at(*edge);
+            let source = self.edge_use_at(edge);
             if source.member != member {
                 return Err(GeometryErrorKind::Invalid(
                     "split event uses an edge from a different member".into(),
@@ -357,44 +320,6 @@ impl LineageCatalog {
         self.event(member, roots)
     }
 
-    pub(super) fn split_edge_use(
-        &mut self,
-        member: MemberId,
-        edge: EdgeUseId,
-        local_start: &ExactRational,
-        local_end: &ExactRational,
-    ) -> Result<EdgeUseId> {
-        let mut work = Unmetered;
-        let mut roots = Vec::new();
-        if self.edge_use_at(edge).member != member {
-            return Err(GeometryErrorKind::Invalid(
-                "reversed split edge belongs to a different member".into(),
-            )
-            .into());
-        }
-        for range in &self.edge_use_at(edge).roots {
-            let Some(source_start) = range.parameter_at_with_work(local_start, &mut work)? else {
-                continue;
-            };
-            let Some(source_end) = range.parameter_at_with_work(local_end, &mut work)? else {
-                continue;
-            };
-            if source_start.try_eq_with_work(&source_end, &mut work)? {
-                continue;
-            }
-            roots.push(RootRange::from_mapped_with_work(
-                range.root(),
-                source_start,
-                source_end,
-                ExactRational::zero(),
-                ExactRational::one(),
-                &mut work,
-            )?);
-        }
-        let restriction = self.edge_use_at(edge).restriction;
-        self.push_edge_use(member, roots, restriction)
-    }
-
     pub(super) fn reverse_sequence(
         &mut self,
         lineage: &LineageSequence,
@@ -409,7 +334,7 @@ impl LineageCatalog {
         let zero = ExactRational::zero();
         let mut edges = Vec::with_capacity(lineage.edges.len());
         for &edge in lineage.edges.iter().rev() {
-            edges.push(self.split_edge_use(lineage.member, edge, &one, &zero)?);
+            edges.push(self.compose_edge_uses(lineage.member, [(edge, &one, &zero)], None)?);
         }
         Ok(LineageSequence {
             member: lineage.member,
@@ -418,16 +343,16 @@ impl LineageCatalog {
         })
     }
 
-    pub(super) fn compose_edge_uses(
+    pub(super) fn compose_edge_uses<'a>(
         &mut self,
         member: MemberId,
-        source_uses: &[(EdgeUseId, ExactRational, ExactRational)],
+        source_uses: impl IntoIterator<Item = (EdgeUseId, &'a ExactRational, &'a ExactRational)>,
         mut restriction: Option<ChartRestriction>,
     ) -> Result<EdgeUseId> {
         let mut work = Unmetered;
         let mut roots: Vec<RootRange> = Vec::new();
         for (edge, local_start, local_end) in source_uses {
-            let source = self.edge_use_at(*edge);
+            let source = self.edge_use_at(edge);
             if source.member != member {
                 return Err(GeometryErrorKind::Invalid(
                     "split edge use belongs to a different member".into(),

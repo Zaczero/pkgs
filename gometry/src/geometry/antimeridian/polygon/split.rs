@@ -142,7 +142,8 @@ pub(super) fn seam_piece_lineage(
                             "seam fragment references an unknown source edge".into(),
                         )
                     })?;
-                    let event = catalog.event_on_edge(member, source_edge, parameter)?;
+                    let event =
+                        catalog.event_from_edge_parameters(member, [(source_edge, parameter)])?;
                     append_event(&mut events, event);
                 },
             }
@@ -199,7 +200,15 @@ pub(super) fn seam_piece_lineage(
         } else {
             None
         };
-        edges.push(catalog.compose_edge_uses(member, &source_uses, restriction)?);
+        edges.push(
+            catalog.compose_edge_uses(
+                member,
+                source_uses
+                    .iter()
+                    .map(|(edge, start, end)| (*edge, start, end)),
+                restriction,
+            )?,
+        );
     }
     Ok(super::super::lineage::LineageSequence {
         member,
@@ -369,7 +378,10 @@ fn overlay_ring_lineage<M: ChartMetric>(
                 source.start_parameter.try_clone_with_work(&mut Unmetered)?,
             ));
         }
-        let events = vec![catalog.event_from_edge_parameters(member, &uses)?];
+        let events = vec![catalog.event_from_edge_parameters(
+            member,
+            uses.iter().map(|(edge, parameter)| (*edge, parameter)),
+        )?];
         let ordinates =
             catalog.resolve_vertex_ordinates(&events, axes, source_frame, metric_access)?;
         let z = if axes.has_z() {
@@ -439,7 +451,11 @@ fn overlay_ring_lineage<M: ChartMetric>(
         } else {
             None
         };
-        lineage_edges.push(catalog.compose_edge_uses(member, &sources, restriction)?);
+        lineage_edges.push(catalog.compose_edge_uses(
+            member,
+            sources.iter().map(|(edge, start, end)| (*edge, start, end)),
+            restriction,
+        )?);
     }
     Ok((output_ring, super::super::lineage::LineageSequence {
         member,
