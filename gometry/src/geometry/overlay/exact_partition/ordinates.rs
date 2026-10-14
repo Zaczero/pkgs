@@ -109,7 +109,7 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "unique, source, and point IDs come from this inventory's checked provenance and partition"
     )]
-    pub(super) fn resolve_node_ordinates<M: ChartMetric>(
+    pub(in crate::geometry) fn resolve_node_ordinates<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         node: NodeId,
@@ -153,34 +153,56 @@ impl ExactSourceInventory {
                     let [start, end] = *points;
                     if let Some(source_frame) = source_frame {
                         let parameter = ExactRational::new(along.clone(), den.clone())?;
-                        let longitude = source_frame
-                            .longitude()
-                            .chart_connection(start.x, end.x)
-                            .map(crate::geographic::ChartConnection::retained)
-                            .map_err(|error| {
-                                GeometryErrorKind::Invalid(error.to_string().into())
-                            })?;
-                        let mut fraction = None;
-                        let mut work = Unmetered;
-                        let mut metric_state = record.metric.get();
-                        let ordinates = resolve_source_root(
-                            source_frame,
-                            points,
-                            longitude,
-                            &parameter,
-                            axes,
-                            context.metric_access(),
-                            &mut metric_state,
-                            &mut fraction,
-                            &mut work,
-                        );
-                        record.metric.set(metric_state);
-                        let ordinates = ordinates?;
-                        if axes.has_z() {
-                            z.observe(ordinates.z.value());
-                        }
-                        if axes.has_m() {
-                            m.observe(ordinates.m.value());
+                        if parameter.is_zero() {
+                            if axes.has_z() {
+                                z.observe(start.z());
+                            }
+                            if axes.has_m() {
+                                m.observe(start.m());
+                            }
+                        } else if parameter.is_one() {
+                            if axes.has_z() {
+                                z.observe(end.z());
+                            }
+                            if axes.has_m() {
+                                m.observe(end.m());
+                            }
+                        } else {
+                            let eligible_axes = CoordinateAxes::new(
+                                crate::geometry::HasZ(
+                                    axes.has_z() && start.z().is_some() && end.z().is_some(),
+                                ),
+                                crate::geometry::HasM(
+                                    axes.has_m() && start.m().is_some() && end.m().is_some(),
+                                ),
+                            );
+                            if eligible_axes.has_z() || eligible_axes.has_m() {
+                                let longitude = source_frame
+                                    .longitude()
+                                    .chart_connection(start.x, end.x)
+                                    .map(crate::geographic::ChartConnection::retained)
+                                    .map_err(|error| {
+                                        GeometryErrorKind::Invalid(error.to_string().into())
+                                    })?;
+                                let mut fraction = None;
+                                let mut work = Unmetered;
+                                let mut metric_state = record.metric.get();
+                                let ordinates = resolve_source_root(
+                                    source_frame,
+                                    points,
+                                    longitude,
+                                    &parameter,
+                                    eligible_axes,
+                                    context.metric_access(),
+                                    &mut metric_state,
+                                    &mut fraction,
+                                    &mut work,
+                                );
+                                record.metric.set(metric_state);
+                                let ordinates = ordinates?;
+                                z.merge(ordinates.z);
+                                m.merge(ordinates.m);
+                            }
                         }
                     } else {
                         if axes.has_z() {

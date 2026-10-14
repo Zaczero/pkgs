@@ -1,11 +1,28 @@
+use super::ChainOrigins;
 use crate::geometry::{CoordSeq, CoordSeqBuilder, HashMap, PointKey};
 
-fn extend_chain(edge: &CoordSeq, from: PointKey, skip: usize, out: &mut CoordSeqBuilder) {
+fn extend_chain(
+    edge: &CoordSeq,
+    from: PointKey,
+    skip: usize,
+    edge_index: usize,
+    chain_index: usize,
+    out: &mut CoordSeqBuilder,
+    record_origin: &mut impl FnMut(usize, usize, usize),
+) {
     if PointKey::new(edge.first().expect("edge has >= 2 vertices")) == from {
         out.extend_window(edge, skip..edge.len());
+        for vertex in skip..edge.len() {
+            record_origin(chain_index, edge_index, vertex);
+        }
     } else {
-        for point in edge.iter().rev().skip(skip) {
+        for (offset, point) in edge.iter().rev().enumerate().skip(skip) {
             out.push(point);
+            record_origin(
+                chain_index,
+                edge_index,
+                edge.len().wrapping_sub(offset.wrapping_add(1)),
+            );
         }
     }
 }
@@ -16,11 +33,37 @@ fn extend_chain(edge: &CoordSeq, from: PointKey, skip: usize, out: &mut CoordSeq
 /// hash iteration. Node incidence is a CSR over the distinct end keys: one
 /// map lookup per edge end and no per-node allocation, which is what an
 /// overlay of thousands of atomic segments spends its time on otherwise.
+pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Result<Vec<CoordSeq>> {
+    merge_chains_impl(edges, &mut |_, _, _| {})
+}
+
+/// Merge chains while retaining the input vertex occurrence that emitted each
+/// output coordinate. The occurrence is needed when source provenance, rather
+/// than coordinate equality, owns additional ordinate candidates.
+pub(crate) fn merge_chains_with_origins<E: AsRef<CoordSeq>>(
+    edges: &[E],
+) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
+    let mut origins = Vec::with_capacity(edges.len());
+    let chains = merge_chains_impl(edges, &mut |chain, edge, vertex| {
+        while origins.len() <= chain {
+            origins.push(Vec::new());
+        }
+        origins
+            .get_mut(chain)
+            .expect("origin chain row is initialized before appending")
+            .push((edge, vertex));
+    })?;
+    Ok((chains, origins))
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "dense endpoint IDs, aligned live/node columns, checked CSR totals, and CSR-row traversal bound every lookup"
 )]
-pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Result<Vec<CoordSeq>> {
+fn merge_chains_impl<E: AsRef<CoordSeq>>(
+    edges: &[E],
+    record_origin: &mut impl FnMut(usize, usize, usize),
+) -> crate::error::Result<Vec<CoordSeq>> {
     let mut ends: Vec<[PointKey; 2]> = Vec::with_capacity(edges.len());
     let mut live: Vec<usize> = Vec::with_capacity(edges.len());
     for (index, edge) in edges.iter().enumerate() {
@@ -39,13 +82,21 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
     }
     if live.len() <= 1 {
         let mut result = Vec::with_capacity(live.len());
-        for (index, [start, _]) in live.into_iter().zip(ends) {
+        for (chain_index, (index, [start, _])) in live.into_iter().zip(ends).enumerate() {
             let edge = edges
                 .get(index)
                 .expect("live edge ordinal comes from the input edges")
                 .as_ref();
             let mut coords = CoordSeqBuilder::with_capacity(edge.axes(), edge.len());
-            extend_chain(edge, start, 0, &mut coords);
+            extend_chain(
+                edge,
+                start,
+                0,
+                index,
+                chain_index,
+                &mut coords,
+                record_origin,
+            );
             result.push(coords.finish()?);
         }
         return Ok(result);
@@ -112,13 +163,16 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
 
     let mut used = vec![false; ends.len()];
     let mut chains: Vec<CoordSeq> = Vec::with_capacity(ends.len());
-    let walk = |seed: usize, mut from: u32, used: &mut [bool]| -> crate::error::Result<CoordSeq> {
+    let mut walk = |seed: usize,
+                    mut from: u32,
+                    chain_index: usize,
+                    used: &mut [bool]|
+     -> crate::error::Result<CoordSeq> {
+        let input_index = *live
+            .get(seed)
+            .expect("chain seed belongs to the live edges");
         let first = edges
-            .get(
-                *live
-                    .get(seed)
-                    .expect("chain seed belongs to the live edges"),
-            )
+            .get(input_index)
             .expect("live edge ordinal comes from the input edges")
             .as_ref();
         let mut coords = CoordSeqBuilder::with_capacity(first.axes(), first.len());
@@ -132,7 +186,10 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
                 edges[live[edge]].as_ref(),
                 from_key,
                 usize::from(coords.len() != 0),
+                live[edge],
+                chain_index,
                 &mut coords,
+                record_origin,
             );
             let far = if a == from { b } else { a };
             if degree[far as usize] != 2 {
@@ -160,14 +217,16 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
             continue;
         }
         if let Some(from) = [a, b].into_iter().find(|&node| degree[node as usize] != 2) {
-            chains.push(walk(seed, from, &mut used)?);
+            let chain_index = chains.len();
+            chains.push(walk(seed, from, chain_index, &mut used)?);
         }
     }
     // Whatever remains is an all-degree-2 cycle; walk each from its lowest
     // unused edge.
     for (seed, [from, _]) in node_ends.iter().copied().enumerate() {
         if !used[seed] {
-            chains.push(walk(seed, from, &mut used)?);
+            let chain_index = chains.len();
+            chains.push(walk(seed, from, chain_index, &mut used)?);
         }
     }
     Ok(chains)

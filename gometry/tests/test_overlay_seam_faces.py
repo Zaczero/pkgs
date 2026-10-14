@@ -10,6 +10,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import oblique_chart_arclength_fraction
+
 
 def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:
     return gm.Polygon(
@@ -418,6 +420,53 @@ def test_ordinary_geographic_line_merge_reconciles_a_split_source_vertex_by_arcl
     for _, _, z, m in cut_nodes:
         assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
         assert m == 101.0
+
+
+def test_geographic_line_merge_keeps_an_oblique_retained_source_occurrence() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt('LINESTRING Z (0 10 10, 120 70 210)', crs=crs)
+    partial = gm.from_wkt('LINESTRING (0 10, 60 40)', crs=crs)
+    sample = source.line_interpolate(partial.length)
+    fraction = oblique_chart_arclength_fraction((0.0, 10.0), (120.0, 70.0), 0.5)
+    expected_z = 10.0 + 200.0 * fraction
+    assert fraction - 0.5 > 0.07
+    assert (sample.x, sample.y) == pytest.approx((60.0, 40.0), rel=0.0, abs=1e-12)
+    assert sample.z == pytest.approx(expected_z, rel=0.0, abs=2e-9)
+
+    lines = gm.MultiLineString(
+        [
+            list(source.coords),
+            [(60.0, 40.0, sample.z), (60.0, 50.0, sample.z + 1.0)],
+            [(179.0, 0.0, 30.0), (180.0, 0.0, 31.0)],
+            [(-180.0, 0.0, 99.0), (-179.0, 0.0, 98.0)],
+        ],
+        crs=crs,
+    )
+    merged = lines.line_merge()
+
+    assert merged.coordinate_axes == 'XYZ'
+    cut_nodes = [
+        coordinate
+        for part in merged.parts
+        for coordinate in part.coords
+        if coordinate[:2] == (60.0, 40.0)
+    ]
+    assert cut_nodes
+    assert all(
+        coordinate[2] == pytest.approx(expected_z, rel=0.0, abs=2e-9)
+        for coordinate in cut_nodes
+    )
+    assert abs(cut_nodes[0][2] - 110.0) > 14.0
+    seam_records = [
+        coordinate
+        for part in merged.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0 and coordinate[1] == 0.0
+    ]
+    assert {(coordinate[0], coordinate[2]) for coordinate in seam_records} == {
+        (180.0, 31.0),
+        (-180.0, 99.0),
+    }
 
 
 @pytest.mark.parametrize(

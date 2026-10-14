@@ -3,7 +3,7 @@ use crate::geometry::coverage::{
     HashMap, coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };
 use crate::geometry::embedding_search::account::EvaluationBudget;
-use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::overlay::{ExactSourceInventory, overlay_declared_axes};
 use crate::geometry::publication::{
     FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, finish_geographic,
@@ -269,6 +269,12 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
         let shape = sole.map_or_else(Shape::empty_polygon, |polygon| {
             Shape::Polygon(polygon.clone())
         });
+        if context.domain().is_geographic() && !shape.is_empty() {
+            return Ok(shape);
+        }
+        if context.domain().is_geographic() {
+            return Ok(empty_coverage_union(&source_refs));
+        }
         return carry_overlay_ordinates(shape, &source_refs, OverlayOp::Union, false, context);
     }
     // If validation found no repeated edge, rows are pairwise disjoint except
@@ -300,6 +306,18 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
                 },
             }
         }
+        if context.domain().is_geographic() {
+            let Some(first) = parts.first() else {
+                return Ok(empty_coverage_union(&source_refs));
+            };
+            if !first.axes().has_z()
+                && !first.axes().has_m()
+                && parts.iter().all(|polygon| polygon.axes() == first.axes())
+            {
+                return Ok(Shape::narrow_polygons(first.axes(), parts));
+            }
+            return coverage_union_geographic_ordinary(&source_refs, context);
+        }
         // The direct path already proves these parts are the complete union.
         // Make only its temporary payload homogeneous; keep source_refs intact
         // so carry_overlay_ordinates remains the owner of ordinate retention.
@@ -323,6 +341,15 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
             context,
         );
     }
+    if context.domain().is_geographic() {
+        if !source_refs
+            .iter()
+            .any(|shape| shape.has_z() || shape.has_m())
+        {
+            return dissolve_edge_incidences(prepared.edge_incidences);
+        }
+        return coverage_union_geographic_ordinary(&source_refs, context);
+    }
     carry_overlay_ordinates(
         dissolve_edge_incidences(prepared.edge_incidences)?,
         &source_refs,
@@ -330,6 +357,31 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
         false,
         context,
     )
+}
+
+fn empty_coverage_union(source_refs: &[&Shape]) -> Shape {
+    Shape::typed_empty(
+        crate::geometry::GeometryKind::Polygon,
+        overlay_declared_axes(source_refs, OverlayOp::Union),
+    )
+}
+
+fn coverage_union_geographic_ordinary(
+    source_refs: &[&Shape],
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
+    let crate::geometry::TopologyDomain::Geographic(_) = context.domain() else {
+        unreachable!("the ordinary geographic dissolve requires its source frame")
+    };
+    let inventory = ExactSourceInventory::from_shapes(source_refs)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union_all", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let declared_axes = source_refs
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
+            axes.union(shape.axes())
+        });
+    inventory.overlay_shape(&partition, OverlayOp::Union, declared_axes, false, context)
 }
 
 fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
