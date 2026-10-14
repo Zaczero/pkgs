@@ -462,7 +462,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 let (pole_edges, pole_events) = native_pole_walk_edges(
                     self.topology.sources.frame,
                     region,
-                    &area_edges[area_walk_start..],
+                    area_edges
+                        .get(area_walk_start..)
+                        .expect("native area walk starts in the current edge table"),
                     budget,
                 )?;
                 area_edges.extend(pole_edges);
