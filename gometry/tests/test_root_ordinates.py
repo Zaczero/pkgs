@@ -387,7 +387,7 @@ def test_oblique_wgs84_intersection_uses_original_root_arclength() -> None:
         crs='OGC:CRS84',
     )
     crossing = gm.from_wkt('LINESTRING (60 0, 60 80)', crs='OGC:CRS84')
-    intersection = source.intersection(crossing)
+    intersection = gm.intersection(source, crossing)
     assert isinstance(intersection, gm.Point)
     assert isclose(intersection.x, 60.0, rel_tol=0.0, abs_tol=2e-12)
     assert isclose(intersection.y, 40.0, rel_tol=0.0, abs_tol=2e-12)
