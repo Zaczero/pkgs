@@ -101,7 +101,10 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
             drop(admission_phase);
             let receipt = analysis.coverage_drawing_receipt(
                 &selection,
-                &snapped.iter().map(Shape::axes).collect::<Vec<_>>(),
+                &rows
+                    .iter()
+                    .map(|row| row.borrow().axes())
+                    .collect::<Vec<_>>(),
                 context,
                 StorageTarget::Array,
                 &mut budget,

@@ -281,7 +281,7 @@ pub(in crate::geometry::topology) fn resolve_emission_ordinates<M: ChartMetric, 
     Ok((output, axes))
 }
 
-pub(in crate::geometry::topology) fn source_requests_at_location(
+pub(super) fn source_requests_at_location(
     publication: &PublicationInventory,
     location: &TraceRequestLocation,
     work: &mut impl Work,

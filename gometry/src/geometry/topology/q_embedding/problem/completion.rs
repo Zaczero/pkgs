@@ -108,11 +108,15 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             .coverage_rows
             .as_ref()
             .map(|rows| {
+                let requests = reference.coverage_request_rows(
+                    self.emission.fragment_recipes,
+                    rows.declared_axes,
+                    budget,
+                )?;
                 rows.drawing_receipt(
                     &reference.plan,
                     &assigned_sites,
-                    self.emission.publication,
-                    self.emission.fragment_recipes,
+                    requests,
                     &reference.area_edges,
                     self.metric_access,
                     budget,

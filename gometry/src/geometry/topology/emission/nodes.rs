@@ -167,7 +167,7 @@ pub(in crate::geometry::topology) struct EmissionPort {
     pub(in crate::geometry::topology) node: EmissionNodeId,
     pub(in crate::geometry::topology) position: PortPosition,
     pub(in crate::geometry::topology) source_record: Option<Point>,
-    pub(in crate::geometry::topology) occurrence_range: Range<usize>,
+    pub(super) occurrence_range: Range<usize>,
 }
 
 #[derive(Debug)]

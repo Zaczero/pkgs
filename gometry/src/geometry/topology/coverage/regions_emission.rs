@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use super::super::emission::draw::source_point_coordinates_with_work;
-use super::super::emission::ordinates::{native_chord_points, source_requests_at_location};
+use super::super::emission::ordinates::native_chord_points;
 use super::super::emission::plan::{
     BoundaryCycle, PlannedAreaRing, PolygonPlan, QEmissionPlan, QProducer, SelectedRegionFact,
 };
 use super::super::emission::sites::QCoordinates;
 use super::super::emission::{
-    AssignedSite, EmissionChordId, ExpandedEmissionPlan, FragmentRecipe, FragmentRecipes,
-    NativeAreaEdge, NativeAreaEdgeKind, PublicationInventory, RecipeWalkOwner, SealedQDrawing,
-    SelectedUse, TraceRequestLocation,
+    AssignedSite, EmissionChordId, ExpandedEmissionPlan, FragmentRecipes, NativeAreaEdge,
+    NativeAreaEdgeKind, RecipeWalkOwner, SealedQDrawing, SelectedUse,
 };
 use super::super::overlay::{build_fragment_recipes, resolve_q_embedding};
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
@@ -21,8 +20,7 @@ use crate::geometry::embedding_completion::literals::{
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootId, RootRange, RootRequest, SourceArcMetricAccess,
-    resolve_request_rows,
+    NodeOrdinates, RequestRowInput, RootRange, SourceArcMetricAccess, resolve_request_rows,
 };
 use crate::geometry::publication::{
     ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
@@ -36,7 +34,7 @@ use crate::geometry::{
 use crate::work::Work;
 
 pub(in crate::geometry::topology) struct CoverageRows {
-    declared_axes: CoordinateAxes,
+    pub(in crate::geometry::topology) declared_axes: CoordinateAxes,
     source_axes: Vec<CoordinateAxes>,
     region_rows: Vec<Option<usize>>,
     target: StorageTarget,
@@ -197,7 +195,12 @@ impl GeographicCoverageAnalysis {
         };
         let nearest = QCoordinates::build_with_work(plans.topology, work)?;
         let source_points = source_point_coordinates_with_work(plans.topology, work)?;
-        let mut expansion = ExpansionBudget::new("coverage_clean", "computed edges");
+        let operation = if target == StorageTarget::Scalar {
+            "coverage_union_all"
+        } else {
+            "coverage_clean"
+        };
+        let mut expansion = ExpansionBudget::new(operation, "computed edges");
         let embedding = resolve_q_embedding(
             plans.topology,
             &plan,
@@ -205,7 +208,7 @@ impl GeographicCoverageAnalysis {
             &nearest,
             CoordinateAxes::XY,
             false,
-            "coverage_clean",
+            operation,
             context.metric_access(),
             &mut expansion,
             work,
@@ -233,37 +236,11 @@ impl CoverageRows {
         &self,
         plan: &ExpandedEmissionPlan<'_>,
         sites: &[AssignedSite],
-        publication: &PublicationInventory,
-        recipes: &[FragmentRecipe],
+        request_rows: Vec<RequestRowInput>,
         area_edges: &[NativeAreaEdge],
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         work: &mut impl Work,
     ) -> Result<ProducerDrawingReceipt> {
-        let mut request_rows = Vec::with_capacity(plan.ports.len());
-        for port in &plan.ports {
-            let mut requests = Vec::new();
-            for occurrence in plan
-                .occurrences
-                .get(port.occurrence_range.clone())
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("coverage occurrence range is unknown".into())
-                })?
-            {
-                work.charge_into_error(1)?;
-                let Some(location) = &occurrence.source_trace else {
-                    continue;
-                };
-                for request in source_requests_at_location(publication, location, work)? {
-                    if selected_request(recipes, location, &request)? {
-                        requests.push(request);
-                    }
-                }
-            }
-            request_rows.push(RequestRowInput {
-                axes: self.declared_axes,
-                requests,
-            });
-        }
         let ordinates = resolve_request_rows(&request_rows, plan.topology, metric_access, work)?;
         let row_count = if self.target == StorageTarget::Scalar {
             1
@@ -413,26 +390,6 @@ impl CoverageRows {
             chart_restrictions,
         ))
     }
-}
-
-fn selected_request(
-    recipes: &[FragmentRecipe],
-    location: &TraceRequestLocation,
-    request: &RootRequest,
-) -> Result<bool> {
-    let recipe = match location {
-        TraceRequestLocation::Root { .. } => return Ok(false),
-        TraceRequestLocation::Edge { recipe, .. } | TraceRequestLocation::Sample { recipe, .. } => {
-            recipe
-        },
-    };
-    let recipe = recipes.get(recipe.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("coverage occurrence recipe is unknown".into())
-    })?;
-    Ok(recipe
-        .ranges
-        .iter()
-        .any(|range| range.emitted && RootId::from_index(range.source_edge.0) == request.root()))
 }
 
 fn write_ring(
