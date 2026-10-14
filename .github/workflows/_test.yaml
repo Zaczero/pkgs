@@ -306,7 +306,11 @@ jobs:
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
           if [ "$PACKAGE" = gometry ]; then
-            uv sync --group ci --no-install-project --python "${{ matrix.python-version }}"
+            uv_sync_args=(--group ci --no-install-project --python "${{ matrix.python-version }}")
+            if [ "$FREETHREADED" != "true" ]; then
+              uv_sync_args+=(--extra viz)
+            fi
+            uv sync "${uv_sync_args[@]}"
             uv run --no-sync --python "${{ matrix.python-version }}" python -c '
           import sys
           from pathlib import Path

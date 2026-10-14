@@ -90,7 +90,7 @@ docs = [
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
 ]
-ci = ["lonboard", "maturin==1.15.0", "pyo3stubs", "pyyaml"]
+ci = ["maturin==1.15.0", "pyo3stubs", "pyyaml"]
 
 [build-system]
 requires = ["maturin==1.15.0"]
