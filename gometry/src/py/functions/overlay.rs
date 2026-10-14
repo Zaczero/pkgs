@@ -375,9 +375,10 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// `union_all` there.
 ///
 /// In a geographic CRS, rows whose raw bounds are unsound at the periodic seam,
-/// a pole, or a non-canonical longitude are split into chart-safe pieces before
-/// dissolve. Canonical seam-free and pole-free rows retain the direct path. The
-/// result preserves the shared CRS and coordinate epoch.
+/// a pole, or a non-canonical longitude are dissolved in the exact geographic
+/// topology and drawn as admitted chart-safe pieces. Canonical seam-free and
+/// pole-free rows retain the direct path. The result preserves the shared CRS
+/// and coordinate epoch; polygon order and cyclic ring starts are unspecified.
 ///
 /// Parameters
 /// ----------
