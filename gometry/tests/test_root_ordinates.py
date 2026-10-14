@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import struct
 from math import isclose
 
 import gometry as gm
+import pytest
 
 CRS_CASES = (
     'OGC:CRS84',
@@ -395,19 +397,60 @@ def test_oblique_wgs84_intersection_uses_original_root_arclength() -> None:
     assert isclose(intersection.m, 329.5849905030137, rel_tol=0.0, abs_tol=2e-7)
 
 
-def test_oblique_wgs84_segmentize_uses_independent_chart_arclength() -> None:
-    line = gm.from_wkt(
-        'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
+@pytest.mark.parametrize(
+    ('z', 'm', 'expected_ordinates'),
+    [
+        pytest.param([10.0, 210.0], None, (110.0,), id='xyz'),
+        pytest.param(None, [100.0, 500.0], (300.0,), id='xym'),
+        pytest.param([10.0, 210.0], [100.0, 500.0], (110.0, 300.0), id='xyzm'),
+    ],
+)
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+@pytest.mark.parametrize('fractional', [False, True], ids=['max-length', 'fraction'])
+def test_oblique_wgs84_segmentize_uses_independent_chart_arclength(
+    z: list[float] | None,
+    m: list[float] | None,
+    expected_ordinates: tuple[float, ...],
+    array: bool,
+    fractional: bool,
+) -> None:
+    line = gm.LineString(
+        [(0.0, 10.0), (120.0, 70.0)],
+        z=z,
+        m=m,
         crs='OGC:CRS84',
+        epoch=2020.0,
     )
-    total_length = line.length
-    segmented = list(line.segmentize(total_length * 0.5001).coords)
+    target = (
+        gm.GeometryArray([line, None], crs=line.crs, epoch=line.epoch)
+        if array
+        else line
+    )
+    result = (
+        target.segmentize(fraction=0.5)
+        if fractional
+        else target.segmentize(line.length * 0.5001)
+    )
+    assert result.crs == line.crs
+    assert result.epoch == line.epoch
+    if isinstance(result, gm.GeometryArray):
+        assert result.is_missing.tolist() == [False, True]
+        result = result[0]
+    assert isinstance(result, gm.LineString)
+    assert result.coordinate_axes == line.coordinate_axes
+    segmented = list(result.coords)
     assert len(segmented) == 3
+    for actual, source in zip(
+        (segmented[0], segmented[-1]), (line.coords[0], line.coords[-1]), strict=True
+    ):
+        assert struct.pack(f'{len(actual)}d', *actual) == struct.pack(
+            f'{len(source)}d', *source
+        )
     midpoint_parameter = OBLIQUE_WGS84_HALF_ARCLENGTH_PARAMETER
     midpoint = segmented[1]
     assert isclose(midpoint[0], 120.0 * midpoint_parameter, rel_tol=0.0, abs_tol=2e-8)
     assert isclose(
         midpoint[1], 10.0 + 60.0 * midpoint_parameter, rel_tol=0.0, abs_tol=2e-8
     )
-    assert isclose(midpoint[2], 110.0, rel_tol=0.0, abs_tol=2e-8)
-    assert isclose(midpoint[3], 300.0, rel_tol=0.0, abs_tol=2e-7)
+    for actual, expected in zip(midpoint[2:], expected_ordinates, strict=True):
+        assert isclose(actual, expected, rel_tol=0.0, abs_tol=2e-8)
