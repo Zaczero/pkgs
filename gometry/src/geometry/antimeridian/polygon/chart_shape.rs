@@ -2,34 +2,43 @@ use super::super::lineage::{EdgeUseId, EventId, MemberId};
 use super::chart_events::{ChartSourceCapture, append_source_edge_events, chart_longitude};
 use super::*;
 
-fn append_source_chart_edge<M: ChartMetric>(
-    output: &mut CoordSeqBuilder,
+struct SourceChartEdge {
     source: [Point; 2],
-    chart_start: Point,
-    chart_end: Point,
-    frame: GeographicFrame,
+    start: Point,
+    end: Point,
+}
+
+#[derive(Clone, Copy)]
+struct ChartEdgeMapping {
     longitude_scale: f64,
     latitude_scale: f64,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     include_seam: bool,
     circle_witnesses: bool,
     band: Option<(f64, f64, f64)>,
+}
+
+fn append_source_chart_edge<M: ChartMetric>(
+    output: &mut CoordSeqBuilder,
+    edge: &SourceChartEdge,
+    frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    mapping: ChartEdgeMapping,
     member: Option<MemberId>,
     mut capture: Option<&mut SplitCapture>,
     mut lineage_vertices: Option<&mut Vec<Vec<EventId>>>,
     lineage_edges: &mut Vec<EdgeUseId>,
 ) -> Result<()> {
     if output.len() == 0 {
-        output.push(chart_start);
+        output.push(edge.start);
         if let Some(vertices) = &mut lineage_vertices {
             vertices.push(Vec::new());
         }
     }
     let source_root = match (capture.as_deref_mut(), member) {
-        (Some(capture), Some(member)) => Some(capture.edge_root(member, &source, frame)?),
+        (Some(capture), Some(member)) => Some(capture.edge_root(member, &edge.source, frame)?),
         _ => None,
     };
-    let mut source_capture = ChartSourceCapture::new(source_root, member, capture.as_deref_mut());
+    let mut source_capture = ChartSourceCapture::new(source_root, member, capture);
     let start_event = source_capture.record(source_root, &ExactRational::zero())?;
     if let (Some(vertices), Some(event)) = (&mut lineage_vertices, start_event) {
         vertices
@@ -39,14 +48,14 @@ fn append_source_chart_edge<M: ChartMetric>(
     }
     append_source_edge_events(
         output,
-        &source,
+        &edge.source,
         frame,
-        longitude_scale,
-        latitude_scale,
+        mapping.longitude_scale,
+        mapping.latitude_scale,
         metric_access,
-        include_seam,
-        circle_witnesses,
-        band,
+        mapping.include_seam,
+        mapping.circle_witnesses,
+        mapping.band,
         &mut source_capture,
     )?;
     let recorded = source_capture.event_ids();
@@ -54,7 +63,7 @@ fn append_source_chart_edge<M: ChartMetric>(
         vertices.extend(recorded.into_iter().skip(1).map(|event| vec![event]));
     }
     let end_event = source_capture.record(source_root, &ExactRational::one())?;
-    output.push(chart_end);
+    output.push(edge.end);
     if let (Some(vertices), Some(event)) = (lineage_vertices, end_event) {
         vertices.push(vec![event]);
     }
@@ -102,18 +111,23 @@ fn chart_line_captured<M: ChartMetric>(
     let mut lineage_edges = Vec::new();
     for end in line.iter_coords().skip(1) {
         let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+        let edge = SourceChartEdge {
+            source: [start, end],
+            start: start_chart,
+            end: end_chart,
+        };
         append_source_chart_edge(
             &mut chart,
-            [start, end],
-            start_chart,
-            end_chart,
+            &edge,
             frame,
-            longitude_scale,
-            latitude_scale,
             metric_access,
-            true,
-            true,
-            None,
+            ChartEdgeMapping {
+                longitude_scale,
+                latitude_scale,
+                include_seam: true,
+                circle_witnesses: true,
+                band: None,
+            },
             member,
             capture.as_deref_mut(),
             lineage_vertices.as_mut(),
@@ -211,18 +225,23 @@ fn chart_ring_captured<M: ChartMetric>(
         {
             let start_chart = band_point(start)?;
             let end_chart = band_point(end)?;
+            let edge = SourceChartEdge {
+                source: [source_start, source_end],
+                start: start_chart,
+                end: end_chart,
+            };
             append_source_chart_edge(
                 &mut points,
-                [source_start, source_end],
-                start_chart,
-                end_chart,
+                &edge,
                 frame,
-                longitude_scale,
-                latitude_scale,
                 metric_access,
-                false,
-                start.y.to_bits() == end.y.to_bits(),
-                Some((start.x, end.x, west)),
+                ChartEdgeMapping {
+                    longitude_scale,
+                    latitude_scale,
+                    include_seam: false,
+                    circle_witnesses: start.y.to_bits() == end.y.to_bits(),
+                    band: Some((start.x, end.x, west)),
+                },
                 member,
                 capture.as_deref_mut(),
                 lineage_vertices.as_mut(),
@@ -233,18 +252,23 @@ fn chart_ring_captured<M: ChartMetric>(
         for [start, end] in ring.segment_pairs() {
             let start_chart = chart_point(start, frame, longitude_scale, latitude_scale)?;
             let end_chart = chart_point(end, frame, longitude_scale, latitude_scale)?;
+            let edge = SourceChartEdge {
+                source: [start, end],
+                start: start_chart,
+                end: end_chart,
+            };
             append_source_chart_edge(
                 &mut points,
-                [start, end],
-                start_chart,
-                end_chart,
+                &edge,
                 frame,
-                longitude_scale,
-                latitude_scale,
                 metric_access,
-                true,
-                true,
-                None,
+                ChartEdgeMapping {
+                    longitude_scale,
+                    latitude_scale,
+                    include_seam: true,
+                    circle_witnesses: true,
+                    band: None,
+                },
                 member,
                 capture.as_deref_mut(),
                 lineage_vertices.as_mut(),

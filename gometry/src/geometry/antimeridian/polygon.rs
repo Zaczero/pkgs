@@ -39,6 +39,8 @@ use split::{polygon_parts_shape, split_polygon, split_polygon_member};
 use super::lineage::{LineageCatalog, ShapeLineage};
 use super::normalize;
 
+type SplitLinePart = (LineSeq, Option<super::lineage::LineageSequence>);
+
 #[derive(Default)]
 struct ShapeTransformMemo {
     owners: Option<HashMap<ShapeOwnerKey, (Shape, Option<ShapeLineage>)>>,
@@ -211,11 +213,11 @@ impl Shape {
 }
 
 fn line_part(
-    points: Vec<Point>,
+    points: &[Point],
     lineage: Option<super::lineage::LineageSequence>,
-) -> Result<(LineSeq, Option<super::lineage::LineageSequence>)> {
+) -> Result<SplitLinePart> {
     Ok((
-        LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
+        LineSeq::from_proven(CoordSeq::try_from_points(points)?),
         lineage,
     ))
 }
@@ -223,48 +225,45 @@ fn line_part(
 fn split_line_member<M: ChartMetric>(
     line: &LineSeq,
     source_lineage: Option<&super::lineage::LineageSequence>,
-    mut catalog: Option<&mut LineageCatalog>,
+    catalog: Option<&mut LineageCatalog>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-) -> Result<Option<Vec<(LineSeq, Option<super::lineage::LineageSequence>)>>> {
-    match source_lineage {
-        Some(source_lineage) => {
-            let pieces = segment_coords_with_occurrences(
-                &collect_points(line),
-                GeographicFrame::crs84(),
-                metric_access,
-            )?;
-            if pieces.is_empty() {
-                return Ok(None);
-            }
-            let catalog = catalog.as_deref_mut().ok_or_else(|| {
-                GeometryErrorKind::Invalid("captured line lineage has no event catalog".into())
-            })?;
-            let source_closed = line_sequence_is_closed(line);
-            pieces
-                .into_iter()
-                .map(|piece| {
-                    let lineage =
-                        split::seam_piece_lineage(&piece, source_lineage, source_closed, catalog)?;
-                    line_part(piece.points, Some(lineage))
-                })
-                .collect::<Result<Vec<_>>>()
-                .map(Some)
-        },
-        None => {
-            let pieces = segment_coords_with_metric(
-                &collect_points(line),
-                GeographicFrame::crs84(),
-                metric_access,
-            )?;
-            if pieces.is_empty() {
-                return Ok(None);
-            }
-            pieces
-                .into_iter()
-                .map(|piece| line_part(piece, None))
-                .collect::<Result<Vec<_>>>()
-                .map(Some)
-        },
+) -> Result<Option<Vec<SplitLinePart>>> {
+    if let Some(source_lineage) = source_lineage {
+        let pieces = segment_coords_with_occurrences(
+            &collect_points(line),
+            GeographicFrame::crs84(),
+            metric_access,
+        )?;
+        if pieces.is_empty() {
+            return Ok(None);
+        }
+        let catalog = catalog.ok_or_else(|| {
+            GeometryErrorKind::Invalid("captured line lineage has no event catalog".into())
+        })?;
+        let source_closed = line_sequence_is_closed(line);
+        pieces
+            .into_iter()
+            .map(|piece| {
+                let lineage =
+                    split::seam_piece_lineage(&piece, source_lineage, source_closed, catalog)?;
+                line_part(&piece.points, Some(lineage))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some)
+    } else {
+        let pieces = segment_coords_with_metric(
+            &collect_points(line),
+            GeographicFrame::crs84(),
+            metric_access,
+        )?;
+        if pieces.is_empty() {
+            return Ok(None);
+        }
+        pieces
+            .into_iter()
+            .map(|piece| line_part(&piece, None))
+            .collect::<Result<Vec<_>>>()
+            .map(Some)
     }
 }
 

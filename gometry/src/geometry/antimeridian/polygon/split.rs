@@ -601,21 +601,25 @@ fn overlay_hole_difference<M: ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     if quotient {
-        match metric_access {
-            Some(metric_access) => crate::geometry::overlay_all_with_metric(
-                operands,
-                TopologyDomain::Geographic(frame),
-                crate::geometry::OverlayOp::Difference,
-                Strictness::Strict,
-                metric_access,
-            ),
-            None => crate::geometry::overlay_all(
-                operands,
-                TopologyDomain::Geographic(frame),
-                crate::geometry::OverlayOp::Difference,
-                Strictness::Strict,
-            ),
-        }
+        metric_access.map_or_else(
+            || {
+                crate::geometry::overlay_all(
+                    operands,
+                    TopologyDomain::Geographic(frame),
+                    crate::geometry::OverlayOp::Difference,
+                    Strictness::Strict,
+                )
+            },
+            |metric_access| {
+                crate::geometry::overlay_all_with_metric(
+                    operands,
+                    TopologyDomain::Geographic(frame),
+                    crate::geometry::OverlayOp::Difference,
+                    Strictness::Strict,
+                    metric_access,
+                )
+            },
+        )
     } else {
         crate::geometry::overlay_all_geographic_chart(
             operands,
@@ -785,7 +789,7 @@ fn split_polygon_parts_inner<M: ChartMetric>(
             if use_quotient {
                 overlay_mode = HoleOverlayMode::Quotient;
             }
-            if source_lineage.is_some() {
+            if let Some(source_lineage) = source_lineage {
                 let mut source_edges = Vec::new();
                 append_shape_edge_uses(
                     result_lineage.as_ref().ok_or_else(|| {
@@ -807,10 +811,7 @@ fn split_polygon_parts_inner<M: ChartMetric>(
                 let (shape, lineage) = overlay_parts_shape(
                     parts,
                     axes,
-                    source_lineage
-                        .expect("captured split has source lineage")
-                        .shell
-                        .member,
+                    source_lineage.shell.member,
                     &source_edges,
                     source_frame,
                     metric_access,

@@ -47,15 +47,20 @@ pub(super) fn assemble_fragments(
     kept_holes: &[KeptHole<'_>],
     mut catalog: Option<&mut LineageCatalog>,
 ) -> Result<Vec<(Polygon, Option<LineagePolygon>)>> {
-    let shells = build_rings(segments, catalog.as_deref_mut())?;
+    let mut shells = build_rings(segments, catalog.as_deref_mut())?;
     if shells.is_empty() {
         return Err(GeometryErrorKind::antimeridian_split_failed(
             "no ring could be stitched along the seam",
         ));
     }
 
-    if shells.len() == 1 && !ring_is_ccw(&shells[0].points) {
-        let like = shells[0]
+    if shells.len() == 1
+        && shells
+            .first()
+            .is_some_and(|shell| !ring_is_ccw(&shell.points))
+    {
+        let shell = shells.pop().expect("one shell is available");
+        let like = shell
             .points
             .first()
             .copied()
@@ -70,7 +75,6 @@ pub(super) fn assemble_fragments(
             corner(180.0, 90.0)?,
             corner(-180.0, 90.0)?,
         ];
-        let shell = shells.into_iter().next().expect("one shell is available");
         let shell = close_fragment(shell, catalog.as_deref_mut())?;
         let holes = vec![Ring::try_from_closed(CoordSeq::try_from_points(
             &shell.points,
@@ -109,8 +113,8 @@ pub(super) fn assemble_fragments(
         shell_lineages.push(shell.lineage);
     }
 
-    let mut assigned = (0..polygons.len())
-        .map(|_| Vec::<(Ring, Option<LineageSequence>)>::new())
+    let mut assigned = std::iter::repeat_with(Vec::<(Ring, Option<LineageSequence>)>::new)
+        .take(polygons.len())
         .collect::<Vec<_>>();
     for hole in kept_holes {
         let hole_shape = Shape::LineString(hole.ring.as_line());
@@ -314,7 +318,7 @@ fn synthetic_lineage_ring(
 
 fn add_pole_cap_lineage(
     segment: &mut SeamFragment,
-    cap: PoleCap,
+    cap: &PoleCap,
     catalog: &mut LineageCatalog,
 ) -> Result<()> {
     let lineage = segment
@@ -526,7 +530,7 @@ fn extend_over_poles_with_direction(
             GeometryErrorKind::Invalid("pole cap references an unknown seam fragment".into())
         })?;
         match (segment.lineage.is_some(), catalog.as_deref_mut()) {
-            (true, Some(catalog)) => add_pole_cap_lineage(segment, cap, catalog)?,
+            (true, Some(catalog)) => add_pole_cap_lineage(segment, &cap, catalog)?,
             (false, None) => {},
             _ => {
                 return Err(GeometryErrorKind::Invalid(

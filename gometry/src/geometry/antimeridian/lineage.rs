@@ -14,16 +14,15 @@ use crate::geometry::{
 use crate::work::{Unmetered, Work};
 
 enum SplitRootSource {
-    Point {
-        member: MemberId,
-        point: Point,
-    },
-    Edge {
-        member: MemberId,
-        points: [Point; 2],
-        longitude: RetainedChartDisplacement,
-        metric: Cell<RootMetricState>,
-    },
+    Point { member: MemberId, point: Point },
+    Edge(Box<SplitEdgeRoot>),
+}
+
+struct SplitEdgeRoot {
+    member: MemberId,
+    points: [Point; 2],
+    longitude: RetainedChartDisplacement,
+    metric: Cell<RootMetricState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -59,9 +58,8 @@ impl LineageCatalog {
         self.roots
             .get(root.index())
             .map(|source| match source {
-                SplitRootSource::Point { member, .. } | SplitRootSource::Edge { member, .. } => {
-                    *member
-                },
+                SplitRootSource::Point { member, .. } => *member,
+                SplitRootSource::Edge(edge) => edge.member,
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
@@ -91,12 +89,13 @@ impl LineageCatalog {
         longitude: RetainedChartDisplacement,
     ) -> Result<RootId> {
         let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots.push(SplitRootSource::Edge {
-            member,
-            points: *points,
-            longitude,
-            metric: Cell::new(RootMetricState::default()),
-        });
+        self.roots
+            .push(SplitRootSource::Edge(Box::new(SplitEdgeRoot {
+                member,
+                points: *points,
+                longitude,
+                metric: Cell::new(RootMetricState::default()),
+            })));
         Ok(RootId::from_index(index))
     }
 
@@ -128,19 +127,14 @@ impl LineageCatalog {
                     value
                 },
             }),
-            SplitRootSource::Edge {
-                points,
-                longitude,
-                metric,
-                ..
-            } => {
+            SplitRootSource::Edge(edge) => {
                 let mut fraction = None;
                 let mut work = Unmetered;
-                let mut metric_state = metric.get();
+                let mut metric_state = edge.metric.get();
                 let ordinates = resolve_source_root(
                     frame,
-                    points,
-                    *longitude,
+                    &edge.points,
+                    edge.longitude,
                     parameter,
                     axes,
                     metric_access,
@@ -148,7 +142,7 @@ impl LineageCatalog {
                     &mut fraction,
                     &mut work,
                 )?;
-                metric.set(metric_state);
+                edge.metric.set(metric_state);
                 Ok(ordinates)
             },
         }

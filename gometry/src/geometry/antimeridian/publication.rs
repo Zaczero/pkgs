@@ -1,3 +1,5 @@
+//! Captured literal layout and ancestry for antimeridian output.
+
 mod capture;
 mod drawing;
 mod restrictions;
