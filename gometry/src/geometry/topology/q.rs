@@ -11,7 +11,7 @@ use super::exact::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::numerics::product::ExactSign;
-use crate::geometry::ordinates::{NodeOrdinates, RootCatalog, RootId};
+use crate::geometry::ordinates::{RootCatalog, RootId};
 use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
