@@ -42,8 +42,8 @@ def _wgs84_chart_fraction(
 
 def test_geographic_earcut_receipt_paths_keep_selected_records() -> None:
     polygon = gm.from_wkt(
-        "POLYGON ZM ((10 0 1 11,14 0 2 12,14 4 3 13,10 4 4 14,10 0 1 11),"
-        "(11 1 5 15,12 1 6 16,12 2 7 17,11 2 8 18,11 1 5 15))",
+        'POLYGON ZM ((10 0 1 11,14 0 2 12,14 4 3 13,10 4 4 14,10 0 1 11),'
+        '(11 1 5 15,12 1 6 16,12 2 7 17,11 2 8 18,11 1 5 15))',
         crs=4326,
     )
     source_records = {
