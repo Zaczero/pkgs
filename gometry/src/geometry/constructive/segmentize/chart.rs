@@ -98,7 +98,7 @@ impl ChartEmission<'_, '_> {
         let axes = self.source.axes();
         let metric =
             crate::crs::EllipsoidMetric::for_geodesic_at_frame(self.geodesic, 0, self.edge.frame());
-        let mut metric_state = RootMetricState::from_admitted_edge(self.edge, Some(self.length));
+        let mut metric_state = RootMetricState::from_admitted_edge(&self.edge, Some(self.length));
         let mut work = Unmetered;
         let mut previous_parameter = 0.0;
         let mut last_emitted_parameter = None;

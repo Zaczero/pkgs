@@ -290,7 +290,7 @@ fn publish_polygon_parts_with_roles(
                 return Err(GeometryErrorKind::ordinate_dropped(operation));
             }
             let polygons = polygons
-                .into_iter()
+                .iter()
                 .map(polygon_xy)
                 .collect::<Result<Vec<_>>>()?;
             let mut fallback_budget = budget.clone();
@@ -307,7 +307,7 @@ fn publish_polygon_parts_with_roles(
     }
 }
 
-fn polygon_xy(polygon: Polygon) -> Result<Polygon> {
+fn polygon_xy(polygon: &Polygon) -> Result<Polygon> {
     let mut rings = polygon.rings().map(|ring| {
         let coordinates = ring.coords().try_map_points(|point| {
             Ok::<_, crate::error::Error>(Point::new_raw_xy(point.x, point.y))
@@ -423,6 +423,46 @@ pub(super) fn with_axes(point: Point, axes: crate::geometry::CoordinateAxes) -> 
     )
 }
 
+impl ExactPartition<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span IDs and source operands match the admitted span and provenance rows"
+    )]
+    pub(super) fn emit_lines(
+        &self,
+        source_operands: &[u32],
+        operation: &'static str,
+    ) -> Result<ExactLineEmission<'_>> {
+        let spans = (0..self.spans.len()).map(|span| span as u32);
+        let emission = self.span_emission(spans);
+        let emissions = [&emission];
+        let embedding = self.embed(&emissions, operation)?;
+
+        let mut offsets = Vec::new();
+        let offset_capacity = self
+            .spans
+            .len()
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        offsets.reserve(offset_capacity);
+        offsets.push(0);
+        let mut owners = Vec::new();
+        for span_index in 0..self.spans.len() {
+            for &(source, reversed) in self.owners(span_index) {
+                let operand = source_operands[source as usize];
+                owners.push(ExactLineSource { operand, reversed });
+            }
+            offsets.push(u32::try_from(owners.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        }
+        Ok(ExactLineEmission {
+            embedding,
+            items: emission.items,
+            owners,
+            offsets,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,45 +516,5 @@ mod tests {
         let coordinates = published.shell.coords().iter().collect::<Vec<_>>();
         assert!(coordinates.contains(&Point::new_raw_xy(0.0, 0.0)));
         assert!(coordinates.contains(&Point::new_raw_xy(0.0, 10.0)));
-    }
-}
-
-impl ExactPartition<'_> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "span IDs and source operands match the admitted span and provenance rows"
-    )]
-    pub(super) fn emit_lines(
-        &self,
-        source_operands: &[u32],
-        operation: &'static str,
-    ) -> Result<ExactLineEmission<'_>> {
-        let spans = (0..self.spans.len()).map(|span| span as u32);
-        let emission = self.span_emission(spans);
-        let emissions = [&emission];
-        let embedding = self.embed(&emissions, operation)?;
-
-        let mut offsets = Vec::new();
-        let offset_capacity = self
-            .spans
-            .len()
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        offsets.reserve(offset_capacity);
-        offsets.push(0);
-        let mut owners = Vec::new();
-        for span_index in 0..self.spans.len() {
-            for &(source, reversed) in self.owners(span_index) {
-                let operand = source_operands[source as usize];
-                owners.push(ExactLineSource { operand, reversed });
-            }
-            offsets.push(u32::try_from(owners.len()).map_err(|_| ResourceError::SizeOverflow)?);
-        }
-        Ok(ExactLineEmission {
-            embedding,
-            items: emission.items,
-            owners,
-            offsets,
-        })
     }
 }

@@ -219,7 +219,7 @@ fn canonical_period_line_carries_zm_at_original_root_arclength() {
     for (point, (expected_z, expected_m)) in output.iter().skip(1).take(3).zip([
         (7.284_932_436_674_63, 19.569_864_873_349_26),
         (11.400_416_857_860_609, 27.800_833_715_721_218),
-        (15.315_320_037_823_382, 35.630_640_075_646_767),
+        (15.315_320_037_823_382, 35.630_640_075_646_77),
     ]) {
         assert!((point.z().unwrap() - expected_z).abs() <= 2.0e-12);
         assert!((point.m().unwrap() - expected_m).abs() <= 4.0e-12);

@@ -527,11 +527,11 @@ pub(crate) struct RootMetricState {
 
 impl RootMetricState {
     pub(crate) const fn from_admitted_edge(
-        edge: crate::crs::ChartEdge,
+        edge: &crate::crs::ChartEdge,
         total_length: Option<f64>,
     ) -> Self {
         Self {
-            edge: Some(edge),
+            edge: Some(*edge),
             total_length,
         }
     }

@@ -136,7 +136,6 @@ fn publish_transformed_chain_with_edges(
                     crate::crs::CrsError::invalid(
                         "geographic transform samples with Z/M require the target CRS metric",
                     )
-                    .into()
                 })
             };
             crate::geometry::computed_native_sample_ordinates(

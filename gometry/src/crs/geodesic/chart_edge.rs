@@ -284,7 +284,7 @@ impl ChartEdge {
         let ordinates = if axes.has_z() || axes.has_m() {
             let source = [start, end];
             let chart_parameter = crate::geometry::ExactRational::from_f64(parameter);
-            let mut state = RootMetricState::from_admitted_edge(self, total_length);
+            let mut state = RootMetricState::from_admitted_edge(&self, total_length);
             let mut fraction = None;
             let metric_access = || Ok(metric);
             resolve_source_root(
