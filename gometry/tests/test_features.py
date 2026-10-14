@@ -267,7 +267,13 @@ def test_from_geojson_features_accepts_pandas_feature_columns() -> None:
 def test_from_geojson_features_decodes_serialized_provider_columns(
     provider: str,
 ) -> None:
-    module = pytest.importorskip(provider)
+    reason = (
+        'Polars integration is installed only on standard CPython cells; '
+        'polars-runtime-32 has no CPython 3.14t wheel'
+        if provider == 'polars'
+        else None
+    )
+    module = pytest.importorskip(provider, reason=reason)
     feature = json.dumps({
         'type': 'Feature',
         'geometry': gm.Point(1, 2).__geo_interface__,

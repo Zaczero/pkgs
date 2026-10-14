@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           cd gometry
-          uv sync --group ci --no-install-project --python 3.14
+          uv sync --no-default-groups --group ci --no-install-project --python 3.14
 
       - name: Stage source distribution
         shell: bash
@@ -306,7 +306,15 @@ jobs:
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
           if [ "$PACKAGE" = gometry ]; then
-            uv sync --group ci --no-install-project --python "${{ matrix.python-version }}"
+            uv_sync_args=(--no-default-groups --no-install-project --python "${{ matrix.python-version }}")
+            if [ "$FREETHREADED" = "true" ]; then
+              uv_sync_args+=(--group ci --group dev)
+              pytest_args=(tests --ignore=tests/tooling)
+            else
+              uv_sync_args+=(--group ci --group dev --group integration --group tooling --extra viz)
+              pytest_args=(tests)
+            fi
+            uv sync "${uv_sync_args[@]}"
             uv run --no-sync --python "${{ matrix.python-version }}" python -c '
           import sys
           from pathlib import Path
@@ -328,7 +336,8 @@ jobs:
               uv run --no-sync --python "${{ matrix.python-version }}" python -c \
                 'import sys; assert not sys._is_gil_enabled()'
             fi
-            uv run --no-sync --python "${{ matrix.python-version }}" python -m pytest tests
+            # pyo3stubs depends on tree-sitter-rust, which has no free-threaded build.
+            uv run --no-sync --python "${{ matrix.python-version }}" python -m pytest "${pytest_args[@]}"
           else
             uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
             if [ "$FREETHREADED" = "true" ]; then
