@@ -49,15 +49,25 @@ fn cleaning_assignments(
     gap_width: f64,
     overlap_rule: CoverageOverlapRule,
 ) -> (Vec<Vec<usize>>, GeographicCoverageFaceAssignment) {
-    let analysis =
-        analyze_geographic_coverage(rows, GeographicFrame::crs84(), 0.0, "coverage_clean")
-            .expect("geographic coverage admits");
+    let frame = GeographicFrame::crs84();
+    let analysis = analyze_geographic_coverage(rows, frame, 0.0, "coverage_clean")
+        .expect("geographic coverage admits");
     let face_rows = analysis.face_rows.clone();
-    let row_areas: Vec<_> = rows.iter().map(Shape::area).collect();
-    let mut work = Unmetered;
-    let assignments = analysis
-        .assign_cleaning_faces(&row_areas, gap_width, overlap_rule, &mut work)
-        .expect("coverage face labels");
+    let source_rows = rows.iter().collect::<Vec<_>>();
+    let assignments = crate::crs::with_ellipsoid_metric("OGC:CRS84", &source_rows, |metric| {
+        let row_surface_areas = rows
+            .iter()
+            .map(|shape| crate::crs::chart_shape_area(metric, shape, frame))
+            .collect::<crate::error::Result<Vec<_>>>()?;
+        analysis.assign_cleaning_faces(
+            &row_surface_areas,
+            gap_width,
+            overlap_rule,
+            Some(metric),
+            &mut Unmetered,
+        )
+    })
+    .expect("coverage face labels");
     (face_rows, assignments)
 }
 
@@ -155,17 +165,26 @@ fn geographic_face_sweep_and_selector_charge_the_supplied_work_account() {
         )
     ));
 
-    let mut selector_budget =
-        EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
-            .expect("empty test budget");
-    let Err(selector_error) = analysis.assign_cleaning_faces(
-        &row_areas,
-        1.0,
-        CoverageOverlapRule::LongestBorder,
-        &mut selector_budget,
-    ) else {
-        panic!("face metrics consume work");
-    };
+    let source_rows = rows.iter().collect::<Vec<_>>();
+    let selector_error = crate::crs::with_ellipsoid_metric("OGC:CRS84", &source_rows, |metric| {
+        let mut selector_budget =
+            EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
+                .expect("empty test budget");
+        match analysis.assign_cleaning_faces(
+            &row_areas,
+            1.0,
+            CoverageOverlapRule::LongestBorder,
+            Some(metric),
+            &mut selector_budget,
+        ) {
+            Err(error) => Ok(error),
+            Ok(_) => Err(crate::geometry::GeometryErrorKind::Invalid(
+                "face metrics did not consume the selector work budget".into(),
+            )
+            .into()),
+        }
+    })
+    .expect("metric-backed selection rejects an exhausted work budget");
     assert!(matches!(
         selector_error.kind(),
         crate::error::ErrorKind::Geometry(
@@ -192,7 +211,13 @@ fn geographic_clean_labels_seam_overlap_without_absorbing_greenwich_rows() {
     let row_areas: Vec<_> = rows.iter().map(Shape::area).collect();
     let mut work = Unmetered;
     let assignment = analysis
-        .assign_cleaning_faces(&row_areas, 0.0, CoverageOverlapRule::MinIndex, &mut work)
+        .assign_cleaning_faces(
+            &row_areas,
+            0.0,
+            CoverageOverlapRule::MinIndex,
+            None::<&crate::crs::GeodesicMetric>,
+            &mut work,
+        )
         .expect("geographic row labels");
 
     let overlap = analysis
@@ -237,7 +262,9 @@ fn geographic_face_labels_fill_only_the_enclosed_narrow_gap() {
     assert_eq!(assigned_gaps.len(), 1);
     let gap_face = *assigned_gaps.first().expect("one selected gap");
     assert!(face_rows.get(gap_face).is_some_and(Vec::is_empty));
-    assert_eq!(assignments.owners.get(gap_face).copied().flatten(), Some(6));
+    // The southern horizontal border is longer in ellipsoidal metres, while
+    // chart lengths tie and select the highest-index eastern neighbor.
+    assert_eq!(assignments.owners.get(gap_face).copied().flatten(), Some(3));
     assert_eq!(
         face_rows
             .iter()

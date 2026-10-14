@@ -13,7 +13,7 @@ use crate::geographic::retained_exact::edges::{
 use crate::geographic::retained_exact::sites::RetainedComputedSample;
 use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
-    interpolate_optional_ordinate, interpolate_subdivision_ordinate,
+    interpolate_subdivision_ordinate,
 };
 
 mod aliases;

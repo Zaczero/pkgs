@@ -812,6 +812,7 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
         &areas,
         0.0,
         crate::geometry::CoverageOverlapRule::MinIndex,
+        None::<&crate::crs::GeodesicMetric>,
         &mut work,
     )?;
     let context: crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric> =

@@ -213,9 +213,12 @@ pub(crate) fn geodesic_by_identity(
     let preserve_input_vertices = plan
         .iter()
         .all(|vertex| matches!(vertex, VertexProvenance::Input(_)));
-    let has_segment_witness = plan
-        .iter()
-        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
+    let has_segment_witness = plan.iter().any(|vertex| {
+        matches!(
+            vertex,
+            VertexProvenance::OnSegment { .. } | VertexProvenance::OnSource { .. }
+        )
+    });
     let source_axes = prepared.source_original(shape).axes();
     let restored = if has_segment_witness {
         let support_points = prepared.source_working(shape).points_vec()?;

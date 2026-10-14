@@ -561,13 +561,14 @@ fn native_source_sample<M: crate::geometry::ChartMetric>(
     work: &mut impl Work,
 ) -> Result<crate::geographic::ComputedSampleOrdinates> {
     let mut root = crate::geometry::RootMetricState::default();
+    let metric_access = || Ok(metric);
     crate::geometry::computed_native_sample_ordinates(
         frame,
         source,
         longitude,
         parameter,
         axes,
-        || Ok(metric),
+        Some(&metric_access),
         &mut root,
         work,
     )

@@ -5,11 +5,12 @@ use crate::geometry::distance::{
     nearest_probe_to_parts, parts_boundary_witness, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::facet_bvh::NearestSourceProjection;
-use crate::geometry::ordinates::source_arc_ordinates_unmetered;
+use crate::geometry::ordinates::{RootMetricState, resolve_source_root};
 use crate::geometry::{
     ChartMetric, CoordinateAxes, FrameDependentCaches, GeodesicMetric, MOrdinate, Point,
     PreparedPlan, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
 };
+use crate::work::Unmetered;
 
 impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
@@ -180,27 +181,25 @@ fn resolve_nearest_source_projection(
     };
     let source = [source_projection.start, source_projection.end];
     let parameter = source_projection.projection.exact_fraction()?;
-    let request = crate::geometry::ordinates::SourceArcRequest::new(
+    let longitude = source_frame
+        .longitude()
+        .chart_connection(source[0].x, source[1].x)
+        .map(crate::geographic::ChartConnection::retained)
+        .map_err(|error| crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let mut state = RootMetricState::default();
+    let mut fraction = None;
+    let mut work = Unmetered;
+    let ordinates = resolve_source_root(
         source_frame,
         &source,
-        axes,
+        longitude,
         &parameter,
-        || {
-            source_frame
-                .longitude()
-                .chart_connection(source[0].x, source[1].x)
-                .map(crate::geographic::ChartConnection::retained)
-                .map_err(|error| {
-                    crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()).into()
-                })
-        },
+        axes,
+        source_context.metric_access(),
+        &mut state,
+        &mut fraction,
+        &mut work,
     )?;
-    let metric_access = source_context.metric_access().ok_or_else(|| {
-        crate::crs::CrsError::invalid(
-            "geographic nearest-witness ordinates require the operation's CRS metric",
-        )
-    })?;
-    let ordinates = source_arc_ordinates_unmetered(&request, metric_access)?;
     Ok(Point::new_axes(
         point.x,
         point.y,

@@ -71,7 +71,9 @@ fn conditioned_position_retains_small_endpoint_after_large_longitude_delta() {
         edge.chart_position(1.0).unwrap().x.to_bits(),
         end.x.to_bits()
     );
-    assert_eq!(edge.witness(start, end, 1.0, None, &wgs84()).unwrap(), end);
+    let geodesic = wgs84();
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, degrees());
+    assert_eq!(edge.witness(start, end, 1.0, None, &metric).unwrap(), end);
 }
 
 #[test]

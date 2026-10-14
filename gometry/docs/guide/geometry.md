@@ -595,7 +595,10 @@ derivable and drop only the axis that cannot be sourced:
   If an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
   corner entering the output), or conflicting source values, that axis is
   dropped while the other axis may remain.
-- On geographic input, [`split`][gometry.split], [`snap`][gometry.snap],
+- On geographic input, overlays and source-preserving linework — including
+  [`boundary`][gometry.Geometry.boundary], [`split`][gometry.split],
+  [`snap`][gometry.snap], the default chart path of
+  [`segmentize`][gometry.Geometry.segmentize],
   [`convex_hull`][gometry.Geometry.convex_hull],
   [`nearest_points`][gometry.nearest_points],
   [`shortest_line`][gometry.shortest_line],
@@ -604,13 +607,15 @@ derivable and drop only the axis that cannot be sourced:
   [`line_merge`][gometry.Geometry.line_merge],
   [`coverage_union_all`][gometry.coverage_union_all], and
   [`coverage_simplify`][gometry.coverage_simplify] carry eligible Z/M at an
-  inserted vertex when its producer traces it to a source edge. They interpolate
-  from that edge's original endpoints by ellipsoidal arclength on the CRS
-  ellipsoid, not by its longitude/latitude parameter or a later cut fragment.
-  Source vertices retain their own ordinates; when sources disagree, Z and M
-  are resolved independently and only a conflicting or unavailable axis is
-  dropped. A planar `unit=` choice for a nearest witness does not change how
-  its geographic source-edge ordinates are carried. A computed point with no
+  inserted vertex when its producer traces it to a source edge. This includes
+  vertices inserted at the antimeridian for GeoJSON serialization. The source
+  is the original retained straight edge in the unwrapped longitude/latitude
+  chart: Z/M follow its ellipsoidal-arclength fraction on that edge's CRS
+  ellipsoid, not the chart parameter or a later cut fragment. Exact source
+  endpoints retain their stored ordinate bits. When sources disagree, Z and M
+  resolve independently and only a conflicting or unavailable axis is dropped.
+  A planar `unit=` choice for a nearest witness does not change how its
+  geographic source-edge ordinates are carried. A computed point with no
   sourceable edge has no source Z/M. Recursive subdivision retains original
   input-edge traces through later cuts, including seam vertices (±180° in
   EPSG:4326).

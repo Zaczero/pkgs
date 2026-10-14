@@ -10,7 +10,6 @@ use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords_with_metric,
     segment_coords_with_occurrences, split_ring_at_seam_with_metric,
 };
-use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryErrorKind,

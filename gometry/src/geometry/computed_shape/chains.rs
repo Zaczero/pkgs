@@ -90,14 +90,7 @@ where
                 longitude,
                 parameter,
                 axes,
-                || {
-                    let metric_access = metric_access.ok_or_else(|| {
-                        crate::crs::CrsError::invalid(
-                            "geographic computed-edge source ordinates require the operation's CRS metric",
-                        )
-                    })?;
-                    metric_access()
-                },
+                metric_access,
                 &mut root_metric_state,
                 &mut work,
             )
