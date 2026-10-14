@@ -76,6 +76,19 @@ fn assert_invalid(result: Result<crate::PyGeometryArray>) {
     ));
 }
 
+fn unique_checked_index(row: &StoredPublicationRow) -> usize {
+    row.checked
+        .iter()
+        .position(|literal| {
+            row.checked
+                .iter()
+                .filter(|other| other.address == literal.address && other.image == literal.image)
+                .count()
+                == 1
+        })
+        .expect("a boundary has a non-closing unique image")
+}
+
 #[test]
 fn mixed_boundary_rows_preserve_q_and_drawing_expectations() {
     let (rows, expected, frame) = mixed_rows();
@@ -136,19 +149,7 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
         if row.producer_drawing {
             assert!(row.producer_literals.pop().is_some());
         } else {
-            let unique = row
-                .checked
-                .iter()
-                .position(|literal| {
-                    row.checked
-                        .iter()
-                        .filter(|other| {
-                            other.address == literal.address && other.image == literal.image
-                        })
-                        .count()
-                        == 1
-                })
-                .expect("a boundary has a non-closing unique image");
+            let unique = unique_checked_index(row);
             drop(row.checked.remove(unique));
         }
         assert_invalid(rows.finish(frame));
@@ -171,7 +172,12 @@ fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories() 
                 .address
                 .logical_row = 3;
         } else {
-            row.checked.first_mut().unwrap().address.logical_row = 3;
+            let unique = unique_checked_index(row);
+            row.checked
+                .get_mut(unique)
+                .expect("the selected unique image exists")
+                .address
+                .logical_row = 3;
         }
         assert_invalid(rows.finish(frame));
     }
