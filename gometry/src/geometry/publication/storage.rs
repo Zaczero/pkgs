@@ -518,8 +518,7 @@ mod tests {
         LiteralAddress, LiteralPoint, ShapeLiteralLayout, ShapeStructure,
     };
     use crate::geometry::embedding_search::account::EvaluationBudget;
-    use crate::geometry::tessellation::exact::ExactRational;
-    use crate::geometry::topology::{ExactChartPoint, QSourceImage};
+    use crate::geometry::topology::QSourceImage;
     use crate::geometry::{CoordinateAxes, MOrdinate, Point, Shape, ZOrdinate};
 
     fn xyzm(x: f64, y: f64, z: f64, m: f64) -> Point {
@@ -961,10 +960,6 @@ mod tests {
                 },
                 image,
                 record: expected,
-                chart: ExactChartPoint::from_rationals(
-                    ExactRational::from_f64(expected.x),
-                    ExactRational::from_f64(expected.y),
-                ),
             }],
             producer_literals: Vec::new(),
             producer_drawing: false,

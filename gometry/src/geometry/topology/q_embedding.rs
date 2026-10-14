@@ -44,7 +44,7 @@ use crate::geometry::embedding_completion::layout::LogicalArealWalk;
 use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
 use crate::geometry::embedding_completion::points::ExactPoints as NativeReferencePoints;
 use crate::geometry::embedding_completion::storage::{
-    CheckedImages, FrozenLiteralBuffers, LiteralChart, LiteralCheck, SealedOutput,
+    FrozenLiteralBuffers, LiteralCheck, LiteralReceiver, SealedOutput,
 };
 use crate::geometry::embedding_search::account::{EvaluationBudget, SearchAccount};
 use crate::geometry::embedding_search::proximity::{proximity_limit, swept_bounds};

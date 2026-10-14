@@ -152,20 +152,15 @@ where
                 rejected.push(image);
                 return Ok(());
             }
-            let Some(actual) =
-                receiver.read_point(address, image, record, expected_axes, stored_axes, work)?
-            else {
+            if !receiver.accepts_point(address, image, record, expected_axes, stored_axes, work)? {
                 rejected.push(image);
                 return Ok(());
-            };
-            if actual != *receiver.image(address, image)? {
-                rejected.push(image);
-            } else if retain_checked {
+            }
+            if retain_checked {
                 checked.push(CheckedLiteralRecord {
                     address,
                     image,
                     record,
-                    chart: actual,
                 });
             }
             Ok(())

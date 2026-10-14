@@ -158,6 +158,68 @@
             );
             assert_eq!(finished_frame, output_frame);
         }
+
+        let wrong_publication_images = [ExactChartPoint::from_rationals(
+            ExactRational::from_f64(7.0),
+            ExactRational::from_f64(6.0_f64.next_up()),
+        )];
+        let source = source_drawing_for_storage(point, StorageTarget::Scalar, &mut work)?;
+        let receipt = SourceOnlyPublication::new(
+            source,
+            &topology,
+            None,
+            &source_ordinates,
+            Some(&publication),
+            &wrong_publication_images,
+            &publication_points,
+            &publication_ordinates,
+        );
+        assert!(matches!(
+            finish_geographic(
+                PublicationCall::new(
+                    ProducerReceipt::QSourceOnly(receipt),
+                    topology.publication_frame().clone(),
+                    &mut work,
+                ),
+                StorageTarget::Scalar,
+            )?,
+            PublicationOutcome::Reject(PublicationRejection::SourceOnly(images))
+                if images == [QSourceImage::PublicationSample(0)]
+        ), "the unchanged record must still match its independently assigned publication image");
+
+        let mut missing_sample_inventory = publication;
+        missing_sample_inventory.samples.clear();
+        let source = source_drawing_for_storage(point, StorageTarget::Scalar, &mut work)?;
+        let receipt = SourceOnlyPublication::new(
+            source,
+            &topology,
+            None,
+            &source_ordinates,
+            Some(&missing_sample_inventory),
+            &publication_images,
+            &publication_points,
+            &publication_ordinates,
+        );
+        let result = finish_geographic(
+            PublicationCall::new(
+                ProducerReceipt::QSourceOnly(receipt),
+                topology.publication_frame().clone(),
+                &mut work,
+            ),
+            StorageTarget::Scalar,
+        );
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "an assigned but out-of-context sample must remain an error".into(),
+            )
+            .into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("source-only literal sample is outside its publication context"),
+            "sample inventory failures retain their SourceOnly error: {error}"
+        );
         Ok(())
     }
     #[test]

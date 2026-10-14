@@ -7,11 +7,10 @@ use crate::geometry::embedding_completion::literals::{
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask};
-use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
-use crate::geometry::topology::{EmissionPortId, ExactChartPoint, QSourceImage};
+use crate::geometry::topology::{EmissionPortId, QSourceImage};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, Point, Polygon,
     Ring, Shape,
@@ -38,14 +37,13 @@ pub(in crate::geometry) struct PublicationLiteral<I> {
     pub(in crate::geometry) address: LiteralAddress,
     pub(in crate::geometry) image: I,
     pub(in crate::geometry) record: crate::Point,
-    pub(in crate::geometry) chart: ExactChartPoint,
 }
 
 pub(super) type CheckedPublicationLiteral = PublicationLiteral<PublicationImage>;
 pub(in crate::geometry) type ProducerLiteral = PublicationLiteral<ProducerImageId>;
 
 impl PublicationLiteral<ProducerImageId> {
-    pub(in crate::geometry) fn from_point(
+    pub(in crate::geometry) const fn from_point(
         address: LiteralAddress,
         image: ProducerImageId,
         record: crate::Point,
@@ -54,10 +52,6 @@ impl PublicationLiteral<ProducerImageId> {
             address,
             image,
             record,
-            chart: ExactChartPoint::from_rationals(
-                ExactRational::from_f64(record.x),
-                ExactRational::from_f64(record.y),
-            ),
         }
     }
 }
@@ -346,7 +340,7 @@ impl ProducerDrawingReceipt {
         Ok(ProducerImageId::new(index))
     }
 
-    pub(in crate::geometry) fn point_layout(
+    pub(in crate::geometry) const fn point_layout(
         point: Point,
         axes: CoordinateAxes,
         logical_row: usize,

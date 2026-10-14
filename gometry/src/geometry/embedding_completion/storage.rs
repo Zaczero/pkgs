@@ -4,7 +4,6 @@ use super::literals::{LiteralAddress, LiteralRowLayout, ShapeLiteralLayout};
 use super::{ResourceError, Result, Work};
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
-use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape};
 
 #[derive(Clone)]
@@ -12,7 +11,6 @@ pub(in crate::geometry) struct CheckedLiteralRecord<I> {
     pub(in crate::geometry) address: LiteralAddress,
     pub(in crate::geometry) image: I,
     pub(in crate::geometry) record: Point,
-    pub(in crate::geometry) chart: ExactChartPoint,
 }
 
 pub(in crate::geometry) enum LiteralRowBinding<I> {
@@ -65,12 +63,8 @@ pub(in crate::geometry) enum LiteralCheck<I> {
     Reject(Vec<I>),
 }
 
-pub(in crate::geometry) trait CheckedImages<I> {
-    fn image(&self, address: LiteralAddress, image: I) -> Result<&ExactChartPoint>;
-}
-
-pub(in crate::geometry) trait LiteralChart<I> {
-    fn read_point<W: Work>(
+pub(in crate::geometry) trait LiteralReceiver<I> {
+    fn accepts_point<W: Work>(
         &mut self,
         address: LiteralAddress,
         image: I,
@@ -78,15 +72,8 @@ pub(in crate::geometry) trait LiteralChart<I> {
         expected_axes: CoordinateAxes,
         stored_axes: CoordinateAxes,
         work: &mut W,
-    ) -> Result<Option<ExactChartPoint>>;
+    ) -> Result<bool>;
 }
-
-pub(in crate::geometry) trait LiteralReceiver<I>:
-    CheckedImages<I> + LiteralChart<I>
-{
-}
-
-impl<I, R> LiteralReceiver<I> for R where R: CheckedImages<I> + LiteralChart<I> {}
 
 impl<I> FrozenLiteralBuffers<I> {
     pub(in crate::geometry) const fn shapes(

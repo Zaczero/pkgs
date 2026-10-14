@@ -136,7 +136,6 @@ fn independent_overlapping_logical_rings_bind_across_wall_faces() {
     };
     let mut receiver = TestLiteralReceiver {
         images: ImageRows(graph.points.exact.clone()),
-        chart: IdentityLiteralChart,
     };
     assert!(matches!(
         bind_literals(
@@ -319,7 +318,6 @@ fn known_graph_accepts_admitted_midpoint_repair_that_changes_opposition() {
     };
     let mut receiver = TestLiteralReceiver {
         images: ImageRows(assignment.points().exact.clone()),
-        chart: IdentityLiteralChart,
     };
     assert!(matches!(
         bind_literals(
@@ -487,7 +485,6 @@ fn reflected_closed_line_seals_beside_an_unrelated_polygon() {
     };
     let mut receiver = TestLiteralReceiver {
         images: ImageRows(repaired.exact),
-        chart: IdentityLiteralChart,
     };
     assert!(matches!(
         bind_literals(
@@ -616,7 +613,6 @@ fn point_leaving_a_closed_line_face_keeps_its_areal_host() {
     };
     let mut receiver = TestLiteralReceiver {
         images: ImageRows(repaired.exact),
-        chart: IdentityLiteralChart,
     };
     assert!(matches!(
         bind_literals(
@@ -903,7 +899,6 @@ fn line_only_actual_shape_seals_while_reversed_polygon_face_is_rejected() {
                 ExactRational::from_f64(-2.0),
             ),
         ]),
-        chart: IdentityLiteralChart,
     };
     let sealed = match bind_literals(
         FrozenLiteralBuffers::shapes(line, literal_layout),

@@ -13,51 +13,13 @@ use crate::geometry::embedding_completion::literals::{
     ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::{
-    CheckedImages, FinalGroupRows, LiteralChart, LiteralCheck, LiteralStorage, SealedOutput,
+    FinalGroupRows, LiteralCheck, LiteralStorage, SealedOutput,
 };
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::storage::ArrayRows;
-use crate::geometry::topology::ExactChartPoint;
 use crate::geometry::topology::q_embedding::publication as q_publication;
-use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape, ShapeCountQuery};
+use crate::geometry::{GeometryErrorKind, Shape, ShapeCountQuery};
 use crate::work::{Unmetered, Work};
-
-struct ProducerImageReceiver {
-    snapshot: super::binding::CheckedLiteralSnapshot<ProducerImageId>,
-}
-
-impl ProducerImageReceiver {
-    fn new(literals: Vec<ProducerLiteral>) -> Result<Self> {
-        Ok(Self {
-            snapshot: super::binding::CheckedLiteralSnapshot::new(literals)?,
-        })
-    }
-
-    fn into_literals(self) -> Vec<ProducerLiteral> {
-        self.snapshot.into_producer_literals()
-    }
-}
-
-impl CheckedImages<ProducerImageId> for ProducerImageReceiver {
-    fn image(&self, address: LiteralAddress, image: ProducerImageId) -> Result<&ExactChartPoint> {
-        self.snapshot.image(address, image)
-    }
-}
-
-impl LiteralChart<ProducerImageId> for ProducerImageReceiver {
-    fn read_point<W: Work>(
-        &mut self,
-        address: LiteralAddress,
-        image: ProducerImageId,
-        record: Point,
-        expected_axes: CoordinateAxes,
-        stored_axes: CoordinateAxes,
-        work: &mut W,
-    ) -> Result<Option<ExactChartPoint>> {
-        self.snapshot
-            .read_point(address, image, record, expected_axes, stored_axes, work)
-    }
-}
 
 pub(crate) struct FinishedGeometry {
     storage: LiteralStorage,
@@ -96,7 +58,6 @@ impl FinishedGeometry {
                         address: literal.address,
                         image: image(literal.image)?,
                         record: literal.record,
-                        chart: literal.chart,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -136,7 +97,6 @@ impl FinishedGeometry {
                     address: literal.address,
                     image: PublicationImage::ProducerDrawn(literal.image),
                     record: literal.record,
-                    chart: literal.chart,
                 })
                 .collect(),
             producer_literals,
@@ -538,12 +498,12 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
             literals,
             retain_literals_for_republication,
         }) => {
-            let mut receiver = ProducerImageReceiver::new(literals)?;
+            let mut receiver = super::binding::CheckedLiteralSnapshot::new(literals)?;
             let buffers = buffers.admit_target(target)?;
             match bind_final_literals(buffers, &mut receiver, work)? {
                 LiteralCheck::Pass(sealed) => {
                     let producer_literals = if retain_literals_for_republication {
-                        receiver.into_literals()
+                        receiver.into_producer_literals()
                     } else {
                         Vec::new()
                     };
