@@ -12,7 +12,9 @@ mod publication;
 mod rebuild;
 
 pub(crate) use chain::vw_area_tolerance;
-use chain::{Chain, SimplifiedChain, exact_chain, simplify_chain_kept};
+use chain::{
+    Chain, CoverageEdgeIntent, CoverageEdgeRoles, SimplifiedChain, exact_chain, simplify_chain_kept,
+};
 pub(in crate::geometry) use chain::{simplify_chain_guarded, triangle_area};
 pub(in crate::geometry) use guard::TopologyGuard;
 use publication::{publish_coverage_edge_roles, simplify_unshared_geographic_rows};
@@ -26,7 +28,7 @@ use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
     Polygon, Ring, Segment, Shape, SimplifyMethod, SourceArcContext, TopologyDomain, XY,
-    dedup_consecutive_points, line_segments, orientation, point_segment_distance, same_point,
+    dedup_consecutive_points, orientation, point_segment_distance, same_point,
     same_topological_coordinate, segment_contact_exact, undirected_segment_edge_key,
 };
 
@@ -78,12 +80,14 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
             }
             .into());
         }
-        // Independent row simplification is safe only without shared spans or
-        // source winding whose directed chart roots must remain joint.
-        if rows.len() > 1
-            && !analysis.has_shared_boundary()
-            && analysis.source_edges_match_shortest_chart()?
-            && analysis.source_rings_are_ordinary()
+        let has_shared_boundary = analysis.has_shared_boundary();
+        let ordinary_source_rings = analysis.source_rings_are_ordinary();
+        // A no-shared full-turn ring can use its source-index plan to retain
+        // directed edges. Ordinary short-chart rows keep the independent path;
+        // ordinary long edges stay on the exact-chain path.
+        if !has_shared_boundary
+            && (!ordinary_source_rings
+                || (rows.len() > 1 && analysis.source_edges_match_shortest_chart()?))
         {
             return simplify_unshared_geographic_rows(
                 rows,
@@ -191,15 +195,17 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     drop(guard);
     drop(all_segments);
 
-    let mut source_cursor = 0;
-    prepared
+    let source_ring_ranges = inventory.source_ring_segment_ranges()?;
+    let mut source_ring_cursor = 0;
+    let output = prepared
         .iter()
         .map(|row| {
             let mut computed_edge_budget =
                 crate::geometry::ExpansionBudget::new("coverage_simplify", "computed edges");
             let (shape, edge_roles) = rebuild_row(
                 row.shape,
-                &mut source_cursor,
+                &mut source_ring_cursor,
+                &source_ring_ranges,
                 inventory.source_segments(),
                 &source_spans,
                 &views.chain_of_span,
@@ -223,5 +229,12 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
                 .into()),
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    if source_ring_cursor != source_ring_ranges.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage rebuild left source ring ranges unused".into(),
+        )
+        .into());
+    }
+    Ok(output)
 }
