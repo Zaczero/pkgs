@@ -1,7 +1,7 @@
 use super::{
     Bounds, Cow, ExactChainView, ExactChainViews, ExactDyadic, ExactPartition, ExactRational,
-    GeometryErrorKind, KeptNodes, NodeId, Ordering, PointKey, ResourceError, Result, Segment,
-    SegmentSource, XY, embedding, parameter_along, walk_exact_chain,
+    ExactSourceInventory, GeometryErrorKind, KeptNodes, NodeId, Ordering, PointKey, ResourceError,
+    Result, Segment, SegmentSource, XY, embedding, parameter_along, walk_exact_chain,
 };
 #[cfg(test)]
 use super::{SOURCE_SPAN_VIEW_ORDERED, SOURCE_SPAN_VIEW_SORTS};
@@ -376,5 +376,50 @@ impl ExactPartition<'_> {
     #[cfg(test)]
     pub(super) fn round_nodes(&self, nodes: &[NodeId]) -> Vec<XY> {
         nodes.iter().map(|&node| self.nearest_xy(node)).collect()
+    }
+}
+
+impl ExactSourceInventory {
+    /// Return the admitted source-segment ordinal range for each input ring.
+    ///
+    /// Ring membership is recorded while the inventory stages each occurrence;
+    /// callers do not need to recover it from endpoint coordinates.
+    pub(in crate::geometry) fn source_ring_segment_ranges(
+        &self,
+    ) -> Result<Vec<std::ops::Range<usize>>> {
+        let mut ranges = Vec::with_capacity(self.ring_count);
+        ranges.resize_with(self.ring_count, || None);
+        for (ordinal, ring) in self.source_rings.iter().copied().enumerate() {
+            let Some(ring) = ring else {
+                continue;
+            };
+            let ring = usize::try_from(ring).map_err(|_| ResourceError::SizeOverflow)?;
+            let end = ordinal.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            let range = ranges.get_mut(ring).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source segment references an unknown input ring".into())
+            })?;
+            match range {
+                None => *range = Some(ordinal..end),
+                Some(range) if range.end == ordinal => range.end = end,
+                Some(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source ring segments are not contiguous in the inventory".into(),
+                    )
+                    .into());
+                },
+            }
+        }
+        ranges
+            .into_iter()
+            .enumerate()
+            .map(|(ring, range)| {
+                range.ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        format!("source ring {ring} has no admitted segments").into(),
+                    )
+                    .into()
+                })
+            })
+            .collect()
     }
 }

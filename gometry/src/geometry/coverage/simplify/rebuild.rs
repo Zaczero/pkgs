@@ -1,6 +1,6 @@
 use super::*;
 
-type ChainReplacement = (Vec<(NodeId, XY)>, Option<Vec<bool>>);
+type ChainReplacement = (Vec<(NodeId, XY)>, Option<Vec<CoverageEdgeIntent>>);
 type ResolvedNodeOrdinates = (crate::geometry::ZOrdinate, crate::geometry::MOrdinate);
 
 #[derive(Clone, Copy)]
@@ -72,26 +72,30 @@ const fn cyclic_index(index: usize, count: NonZeroUsize) -> usize {
 fn source_ordinals_for_ring(
     ring: &CoordSeq,
     source_segments: &[Segment],
-    cursor: &mut usize,
-) -> Result<Vec<u32>> {
+    source_range: &std::ops::Range<usize>,
+) -> Result<Vec<usize>> {
+    if source_range.len() != ring.len().saturating_sub(1) {
+        return Err(GeometryErrorKind::Invalid(
+            "coverage source ring range does not match its coordinate count".into(),
+        )
+        .into());
+    }
     let mut ordinals = Vec::with_capacity(ring.len().saturating_sub(1));
-    for segment in line_segments(ring).filter(|segment| !same_point(segment.start, segment.end)) {
-        let ordinal = (*cursor..source_segments.len()).find(|&index| {
-            let source = *source_segments
-                .get(index)
-                .expect("source ordinal search stays within the inventory");
-            same_point(source.start, segment.start) && same_point(source.end, segment.end)
-        });
-        let Some(ordinal) = ordinal else {
-            return Err(GeometryErrorKind::Invalid(
-                "coverage source ring is absent from the exact inventory".into(),
+    for ordinal in source_range.clone() {
+        let source = source_segments.get(ordinal).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage source ring range exceeds the exact inventory".into(),
             )
-            .into());
-        };
-        *cursor = ordinal.wrapping_add(1);
-        ordinals.push(ordinal as u32);
+        })?;
+        if !same_point(source.start, source.end) {
+            ordinals.push(ordinal);
+        }
     }
     Ok(ordinals)
+}
+
+fn source_edge_intents(source_range: &std::ops::Range<usize>) -> Vec<CoverageEdgeIntent> {
+    vec![CoverageEdgeIntent::Source; source_range.len()]
 }
 
 fn source_run_nodes(partition: &ExactPartition<'_>, run: &[SourceAtom]) -> Result<Vec<NodeId>> {
@@ -240,7 +244,7 @@ fn replacement_for_chain_run(
         GeometryErrorKind::Invalid("coverage source run is absent from its exact chain".into())
     })?;
     let mut replacement = Vec::with_capacity(indices.len());
-    let mut retained_indices = capture_edge_roles.then(|| Vec::with_capacity(indices.len()));
+    let mut retained_positions = capture_edge_roles.then(|| Vec::with_capacity(indices.len()));
     for (position, &index) in indices.iter().enumerate() {
         if position == indices.len().wrapping_sub(1) || simplified.kept.contains(&index) {
             replacement.push((
@@ -253,33 +257,20 @@ fn replacement_for_chain_run(
                     .get(index)
                     .expect("simplified chain index is within its point sequence"),
             ));
-            if let Some(retained_indices) = &mut retained_indices {
-                retained_indices.push(index);
+            if let Some(retained_positions) = &mut retained_positions {
+                retained_positions.push(position);
             }
         }
     }
-    let edge_roles = retained_indices
-        .map(|indices| {
-            let span_count = NonZeroUsize::new(chain.spans.len()).ok_or_else(|| {
-                GeometryErrorKind::Invalid("coverage chain has no source spans".into())
-            })?;
-            let cyclic = chain.nodes.first() == chain.nodes.last();
-            Ok::<_, crate::error::Error>(
-                indices
-                    .array_windows::<2>()
-                    .map(|[left, right]| {
-                        let adjacent = if cyclic {
-                            cyclic_index(left.wrapping_add(1), span_count) == *right
-                                || cyclic_index(right.wrapping_add(1), span_count) == *left
-                        } else {
-                            left.abs_diff(*right) == 1
-                        };
-                        !adjacent
-                    })
-                    .collect(),
-            )
-        })
-        .transpose()?;
+    let edge_roles = retained_positions.map(|positions| {
+        positions
+            .windows(2)
+            .map(|pair| match pair {
+                [left, right] if left.checked_add(1) == Some(*right) => CoverageEdgeIntent::Source,
+                _ => CoverageEdgeIntent::Constructed,
+            })
+            .collect()
+    });
     Ok((replacement, edge_roles))
 }
 
@@ -289,6 +280,8 @@ struct RebuiltVertex {
     node: Option<NodeId>,
 }
 
+type RebuiltRing = (Vec<RebuiltVertex>, Option<Vec<CoverageEdgeIntent>>);
+
 struct RebuiltPolygon {
     rings: Vec<Vec<RebuiltVertex>>,
 }
@@ -296,7 +289,8 @@ struct RebuiltPolygon {
 /// Rebuild one row's polygons by splicing simplified chains into each ring.
 pub(super) fn rebuild_row(
     shape: &Shape,
-    source_cursor: &mut usize,
+    source_ring_cursor: &mut usize,
+    source_ring_ranges: &[std::ops::Range<usize>],
     source_segments: &[Segment],
     source_spans: &[Vec<(u32, bool)>],
     chain_of_span: &[u32],
@@ -304,17 +298,25 @@ pub(super) fn rebuild_row(
     simplified: &[SimplifiedChain],
     partition: &ExactPartition<'_>,
     mut roots: Option<&mut RebuildRoots<'_, '_, '_>>,
-) -> Result<(Shape, Option<crate::geometry::PolygonPartEdgeRoles>)> {
+) -> Result<(Shape, Option<CoverageEdgeRoles>)> {
     let capture_edge_roles = roots.is_some();
-    let mut rebuild_ring = |ring: &CoordSeq| -> Result<(Vec<RebuiltVertex>, Option<Vec<bool>>)> {
+    let mut rebuild_ring = |ring: &CoordSeq| -> Result<RebuiltRing> {
         let original: Vec<Point> = ring.iter_coords().collect();
-        let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_cursor)?;
+        let source_range = source_ring_ranges.get(*source_ring_cursor).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "coverage source ring is absent from the admitted inventory".into(),
+            )
+        })?;
+        *source_ring_cursor = source_ring_cursor
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_range)?;
         if original.len() < 4 {
             let vertices = original
                 .into_iter()
                 .map(|point| RebuiltVertex { point, node: None })
                 .collect();
-            let roles = capture_edge_roles.then(|| vec![false; ring.len().saturating_sub(1)]);
+            let roles = capture_edge_roles.then(|| source_edge_intents(source_range));
             return Ok((vertices, roles));
         }
         // Match collect_polygon_segments: elide stutter vertices so chain
@@ -329,7 +331,7 @@ pub(super) fn rebuild_row(
                 .into_iter()
                 .map(|point| RebuiltVertex { point, node: None })
                 .collect();
-            let roles = capture_edge_roles.then(|| vec![false; ring.len().saturating_sub(1)]);
+            let roles = capture_edge_roles.then(|| source_edge_intents(source_range));
             return Ok((vertices, roles));
         }
         // Geographic rebuilds retain node roots; coordinate-key recovery is
@@ -350,7 +352,7 @@ pub(super) fn rebuild_row(
         };
         let mut atoms = Vec::new();
         for &ordinal in &source_ordinals {
-            let source = source_spans.get(ordinal as usize).ok_or_else(|| {
+            let source = source_spans.get(ordinal).ok_or_else(|| {
                 GeometryErrorKind::Invalid("coverage source ordinal is out of range".into())
             })?;
             if source.is_empty() {
@@ -616,8 +618,8 @@ fn build_ring(
 
 fn rebuild_polygon(
     polygon: &Polygon,
-    rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<(Vec<RebuiltVertex>, Option<Vec<bool>>)>,
-) -> Result<(RebuiltPolygon, Option<Vec<Vec<bool>>>)> {
+    rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<RebuiltRing>,
+) -> Result<(RebuiltPolygon, Option<Vec<Vec<CoverageEdgeIntent>>>)> {
     let (shell, shell_roles) = rebuild_ring(polygon.shell.coords())?;
     let capture_edge_roles = shell_roles.is_some();
     let mut rings = Vec::with_capacity(polygon.holes.len().wrapping_add(1));
