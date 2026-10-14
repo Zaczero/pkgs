@@ -13,12 +13,14 @@ pub(super) struct CheckedLiteralSnapshot<I> {
 impl<I: Copy + Ord> CheckedLiteralSnapshot<I> {
     pub(super) fn new(mut records: Vec<PublicationLiteral<I>>) -> Result<Self> {
         let key = |literal: &PublicationLiteral<I>| (literal.address, literal.image);
-        if records.windows(2).any(|pair| key(&pair[0]) > key(&pair[1])) {
+        if records
+            .array_windows::<2>()
+            .any(|[left, right]| key(left) > key(right))
+        {
             records.sort_unstable_by_key(key);
         }
-        for pair in records.windows(2) {
-            if key(&pair[0]) == key(&pair[1])
-                && (pair[0].record != pair[1].record || pair[0].chart != pair[1].chart)
+        for [left, right] in records.array_windows::<2>() {
+            if key(left) == key(right) && (left.record != right.record || left.chart != right.chart)
             {
                 return Err(GeometryErrorKind::Invalid(
                     "checked publication occurrences disagree on one literal identity".into(),
@@ -44,7 +46,8 @@ impl<I: Copy + Ord> CheckedImages<I> for CheckedLiteralSnapshot<I> {
                 (literal.address, literal.image)
             })
             .ok()
-            .map(|index| &self.records[index].chart)
+            .and_then(|index| self.records.get(index))
+            .map(|literal| &literal.chart)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid(
                     "final storage literal has no checked publication identity".into(),
@@ -64,15 +67,16 @@ impl<I: Copy + Ord> LiteralChart<I> for CheckedLiteralSnapshot<I> {
         stored_axes: CoordinateAxes,
         _work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
-        let Ok(index) = self
+        let Some(literal) = self
             .records
             .binary_search_by_key(&(address, image), |literal| {
                 (literal.address, literal.image)
             })
+            .ok()
+            .and_then(|index| self.records.get(index))
         else {
             return Ok(None);
         };
-        let literal = &self.records[index];
         if expected_axes != stored_axes || record != literal.record {
             return Ok(None);
         }
@@ -157,8 +161,8 @@ mod tests {
 
         assert_eq!(snapshot.records.len(), 8);
         assert!(
-            snapshot.records.windows(2).all(|pair| {
-                (pair[0].address, pair[0].image) <= (pair[1].address, pair[1].image)
+            snapshot.records.array_windows::<2>().all(|[left, right]| {
+                (left.address, left.image) <= (right.address, right.image)
             }),
             "the immutable snapshot retains complete-key order"
         );
@@ -239,14 +243,12 @@ mod tests {
             .is_none(),
             "readback returns no record for an absent full key"
         );
-        assert!(
-            CheckedImages::image(
-                &snapshot,
-                base,
-                PublicationImage::ProducerDrawn(ProducerImageId::new(17))
-            )
-            .is_err()
-        );
+        CheckedImages::image(
+            &snapshot,
+            base,
+            PublicationImage::ProducerDrawn(ProducerImageId::new(17)),
+        )
+        .expect_err("an absent checked image is rejected");
     }
 
     #[test]
