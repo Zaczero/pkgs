@@ -173,7 +173,12 @@ struct RootEvaluationState {
     longitude: Option<RetainedChartDisplacement>,
 }
 
-pub(crate) struct RootEvaluationContext<'authority, 'access, 'metric, C, M>
+#[derive(Default)]
+pub(crate) struct RootEvaluationStates {
+    states: IndexMap<RootId, RootEvaluationState>,
+}
+
+pub(crate) struct RootEvaluationContext<'authority, 'access, 'metric, 'states, C, M>
 where
     C: RootCatalog,
     M: ChartMetric,
@@ -181,21 +186,22 @@ where
     frame: GeographicFrame,
     authority: &'authority C,
     metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
-    states: IndexMap<RootId, RootEvaluationState>,
+    states: &'states mut RootEvaluationStates,
 }
 
-impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
-    RootEvaluationContext<'authority, 'access, 'metric, C, M>
+impl<'authority, 'access, 'metric, 'states, C: RootCatalog, M: ChartMetric>
+    RootEvaluationContext<'authority, 'access, 'metric, 'states, C, M>
 {
     pub(crate) fn new(
         authority: &'authority C,
         metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
+        states: &'states mut RootEvaluationStates,
     ) -> Self {
         Self {
             frame: authority.frame(),
             authority,
             metric_access,
-            states: IndexMap::default(),
+            states,
         }
     }
 
@@ -210,7 +216,7 @@ impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
         for record in &table.records {
             if previous_root != Some(record.root) {
                 previous_root = Some(record.root);
-                if !self.states.contains_key(&record.root) {
+                if !self.states.states.contains_key(&record.root) {
                     new_state_count = new_state_count
                         .checked_add(1)
                         .ok_or(ResourceError::SizeOverflow)?;
@@ -221,7 +227,7 @@ impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
             work.charge_into_error(
                 u64::try_from(new_state_count).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
-            self.states.reserve(new_state_count);
+            self.states.states.reserve(new_state_count);
         }
 
         let mut output = Vec::new();
@@ -248,7 +254,7 @@ impl<'authority, 'access, 'metric, C: RootCatalog, M: ChartMetric>
                         "source request references an unknown source root".into(),
                     )
                 })?;
-                let state = self.states.entry(root).or_default();
+                let state = self.states.states.entry(root).or_default();
                 let record = table.record_mut(request_id)?;
                 let resolved = match source {
                     RootSourceData::Point(point) => super::node_ordinates_at(point, row_axes),
@@ -958,7 +964,8 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     work: &mut impl Work,
 ) -> Result<Vec<NodeOrdinates>> {
-    RootEvaluationContext::new(roots, metric_access).resolve_rows(rows, work)
+    let mut states = RootEvaluationStates::default();
+    RootEvaluationContext::new(roots, metric_access, &mut states).resolve_rows(rows, work)
 }
 
 pub(crate) struct TraceRows {

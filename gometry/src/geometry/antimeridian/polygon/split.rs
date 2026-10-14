@@ -412,8 +412,7 @@ fn overlay_ring_lineage<M: ChartMetric>(
             member,
             uses.iter().map(|(edge, parameter)| (*edge, parameter)),
         )?];
-        let ordinates =
-            catalog.resolve_vertex_ordinates(&events, axes, source_frame, metric_access)?;
+        let ordinates = catalog.resolve_vertex_ordinates(&events, axes, metric_access)?;
         let z = if axes.has_z() {
             ordinates.z.value()
         } else {

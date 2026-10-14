@@ -28,8 +28,9 @@ use crate::error::ResourceError;
 use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootEvaluationContext, RootId, RootMetricState,
-    RootRange, RootRequest, RootSourceData, SourceArcContext, resolve_source_root,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootEvaluationContext, RootEvaluationStates,
+    RootId, RootMetricState, RootRange, RootRequest, RootSourceData, SourceArcContext,
+    resolve_source_root,
 };
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,

@@ -14,14 +14,14 @@ pub(in crate::geometry::antimeridian) struct SplitCapture {
 }
 
 impl SplitCapture {
-    pub(in crate::geometry::antimeridian) fn enabled() -> Self {
+    pub(in crate::geometry::antimeridian) fn enabled(frame: GeographicFrame) -> Self {
         Self {
-            lineage: LineageCatalog::default(),
+            lineage: LineageCatalog::new(frame),
         }
     }
 
     pub(in crate::geometry::antimeridian) fn mark_identity(&mut self) {
-        self.lineage = LineageCatalog::default();
+        self.lineage = LineageCatalog::new(self.lineage.frame());
     }
 
     pub(in crate::geometry::antimeridian) fn next_member(&mut self) -> Result<MemberId> {

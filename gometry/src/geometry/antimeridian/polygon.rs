@@ -595,7 +595,7 @@ fn split_geographic_view_captured<M: ChartMetric>(
     let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
     let latitude_scale =
         frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
-    let mut capture = SplitCapture::enabled();
+    let mut capture = SplitCapture::enabled(frame);
     let (shape, lineage) =
         split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
     let lineage = lineage.expect("captured antimeridian split has member lineage");
