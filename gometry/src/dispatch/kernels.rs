@@ -723,46 +723,7 @@ pub(crate) fn unary_build_area(
             ctx.frame.clone(),
         );
     }
-    let polygons = crate::geometry::Shape::build_area_all_with_publication_frame(
-        &[data.shape()],
-        false,
-        &source_context,
-        ctx.frame.clone(),
-    )?;
-    match polygons.len() {
-        0 => Ok(crate::geometry::Shape::empty_polygon()),
-        1 => polygons.into_iter().next().ok_or_else(|| {
-            crate::geometry::GeometryErrorKind::Invalid(
-                "build-area selected one polygon but returned no value".into(),
-            )
-            .into()
-        }),
-        _ => {
-            let polygons = polygons
-                .into_iter()
-                .map(|shape| match shape {
-                    crate::geometry::Shape::Polygon(polygon) => {
-                        Ok(crate::geometry::MultiMember::Value(polygon))
-                    },
-                    crate::geometry::Shape::Point(_)
-                    | crate::geometry::Shape::MultiPoint(_)
-                    | crate::geometry::Shape::LineString(_)
-                    | crate::geometry::Shape::MultiLineString(_)
-                    | crate::geometry::Shape::MultiPolygon(_)
-                    | crate::geometry::Shape::GeometryCollection(_)
-                    | crate::geometry::Shape::Empty(..) => {
-                        Err(crate::geometry::GeometryErrorKind::Invalid(
-                            "build-area selected a non-polygonal result".into(),
-                        )
-                        .into())
-                    },
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(crate::geometry::Shape::MultiPolygon(
-                crate::geometry::MultiPolygon::try_new(data.shape().axes(), polygons)?,
-            ))
-        },
-    }
+    data.shape().build_area_with_context(false, &source_context)
 }
 
 pub(crate) fn unary_build_area_array(
