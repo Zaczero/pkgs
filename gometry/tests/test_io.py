@@ -496,6 +496,107 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
         _ = gm.Point(1, 2, m=3).__geo_interface__
 
 
+def _independent_wgs84_chart_fraction(
+    parameter: float,
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    intervals = 16_384
+    semi_major = 6_378_137.0
+    flattening = 1.0 / 298.257223563
+    eccentricity_squared = flattening * (2.0 - flattening)
+    longitude_rate = math.radians(end[0] - start[0])
+    latitude_rate = math.radians(end[1] - start[1])
+
+    def integrate(limit: float) -> float:
+        step = limit / intervals
+        total = 0.0
+        for index in range(intervals + 1):
+            fraction = index * step
+            latitude = math.radians(start[1] + (end[1] - start[1]) * fraction)
+            sine = math.sin(latitude)
+            denominator = 1.0 - eccentricity_squared * sine * sine
+            meridional_radius = (
+                semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+            )
+            prime_vertical_radius = semi_major / math.sqrt(denominator)
+            northing_rate = meridional_radius * latitude_rate
+            easting_rate = prime_vertical_radius * math.cos(latitude) * longitude_rate
+            weight = 1.0 if index in (0, intervals) else 2.0 if index % 2 == 0 else 4.0
+            total += weight * math.hypot(northing_rate, easting_rate)
+        return step * total / 3.0
+
+    # Integrate the stored linear lon/lat chart edge, not the endpoint geodesic.
+    return integrate(parameter) / integrate(1.0)
+
+
+def test_geojson_antimeridian_xyz_roundtrips_all_writer_paths() -> None:
+    source_start = (144.0, -40.0)
+    source_end = (216.0, 60.0)
+    fraction = _independent_wgs84_chart_fraction(
+        0.5,
+        source_start,
+        source_end,
+    )
+    expected_z = 20.0 + 100.0 * fraction
+    assert abs(fraction - 0.5) > 1.0e-3
+
+    probe = gm.LineString(
+        [(144.0, -40.0), (-144.0, 60.0)],
+        z=[20.0, 120.0],
+        crs='OGC:CRS84',
+    ).split_antimeridian()
+    probe_seam_zs = [
+        coordinate[2]
+        for part in probe.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0 and coordinate[1] == 10.0
+    ]
+    assert len(probe_seam_zs) == 2
+    assert probe_seam_zs == pytest.approx([expected_z, expected_z], abs=2.0e-7)
+    coowned_z = probe_seam_zs[0]
+
+    source = gm.from_wkt(
+        'POLYGON Z ('
+        f'(135 -80 {coowned_z}, -135 -80 {coowned_z}, '
+        f'-135 80 {coowned_z}, 135 80 {coowned_z}, '
+        f'135 -80 {coowned_z}), '
+        f'(144 -50 500, 144 -40 20, -144 60 120, '
+        f'-144 -50 500, 144 -50 500))',
+        crs='OGC:CRS84',
+    )
+
+    array_text = gm.GeometryArray([source]).to_geojson()
+    array_roundtrip = gm.from_geojson(array_text)
+    assert isinstance(array_roundtrip, gm.GeometryArray)
+    feature = gm.to_feature(source)
+    features = gm.from_geojson(feature, features=True)
+    roundtrips = [
+        ('string', gm.from_geojson(source.to_geojson())),
+        ('array', array_roundtrip[0]),
+        ('interface', gm.from_geojson(source.__geo_interface__)),
+        ('Feature', features.geometries[0]),
+    ]
+    for writer, geometry in roundtrips:
+        assert geometry.coordinate_axes == 'XYZ', writer
+        assert geometry.crs == gm.CRS('OGC:CRS84'), writer
+        polygons = (
+            [geometry] if geometry.geometry_type == 'Polygon' else list(geometry.parts)
+        )
+        seam_zs = [
+            coordinate[2]
+            for polygon in polygons
+            for ring in (polygon.exterior, *polygon.interiors)
+            for coordinate in ring.coords
+            if abs(coordinate[0]) == 180.0 and coordinate[1] == 10.0
+        ]
+        assert len(seam_zs) >= 2, writer
+        assert seam_zs == pytest.approx(
+            [expected_z] * len(seam_zs),
+            abs=2.0e-7,
+        ), writer
+
+
 def test_force_2d_prepares_geometry_for_each_coordinate_writer() -> None:
     line = gm.LineString(
         [(0, 0), (1, 1)],

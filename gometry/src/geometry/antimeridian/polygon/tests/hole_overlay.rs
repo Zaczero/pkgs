@@ -23,6 +23,56 @@ fn crossing_hole_subtraction_keeps_a_zero_turn_world_band_in_its_chart() {
 }
 
 #[test]
+fn captured_full_turn_shell_subtracts_a_crossing_hole_like_plain_split() {
+    let cases = [
+        (
+            polygon(
+                &[(0.0, 60.0), (90.0, 62.0), (180.0, 60.0), (270.0, 62.0)],
+                &[&[(170.0, 70.0), (-170.0, 70.0), (-170.0, 75.0), (170.0, 75.0)]],
+            ),
+            Point::new(175.0, 72.0).unwrap(),
+            Point::new(100.0, 72.0).unwrap(),
+        ),
+        (
+            polygon(
+                &[(0.0, 50.0), (90.0, 52.0), (180.0, 50.0), (270.0, 52.0)],
+                &[&[(0.0, 70.0), (270.0, 72.0), (180.0, 70.0), (90.0, 72.0)]],
+            ),
+            Point::new(0.0, 80.0).unwrap(),
+            Point::new(0.0, 60.0).unwrap(),
+        ),
+    ];
+    for (source, hole_witness, shell_witness) in cases {
+        let plain = split_crs84(&source);
+        let captured = source
+            .split_antimeridian_captured_in_frame(GeographicFrame::crs84())
+            .unwrap()
+            .finish_scalar(crate::Frame::None)
+            .unwrap()
+            .into_scalar()
+            .unwrap()
+            .0;
+
+        for split in [&plain, &captured] {
+            assert_eq!(split.validate().unwrap(), None, "{split:?}");
+            assert!(
+                !split.contains(&Shape::Point(hole_witness)).unwrap(),
+                "the crossing hole must remain empty: {split:?}"
+            );
+            assert!(
+                split.contains(&Shape::Point(shell_witness)).unwrap(),
+                "the surrounding polar shell must remain filled: {split:?}"
+            );
+        }
+        assert_eq!(
+            plain.area(),
+            captured.area(),
+            "plain: {plain:?}\ncaptured: {captured:?}"
+        );
+    }
+}
+
+#[test]
 #[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
 fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;

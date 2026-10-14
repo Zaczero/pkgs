@@ -13,6 +13,7 @@
 // assigned constants (±180.0) and exact-360 jumps must not split.
 
 mod crs;
+mod lineage;
 mod linestring;
 mod normalize;
 mod polygon;
@@ -24,6 +25,7 @@ pub(crate) use crs::{
     crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_topology_route,
     topology_domain, topology_domain_at,
 };
+pub(in crate::geometry) use linestring::segment_coords_with_occurrences;
 use linestring::{SeamRing, collect_points, ring_follows_seam};
 pub(crate) use linestring::{segment_coords_with_metric, split_ring_at_seam_with_metric};
 #[cfg(test)]

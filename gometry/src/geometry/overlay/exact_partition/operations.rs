@@ -364,9 +364,28 @@ impl ExactSourceInventory {
         preserved_operand: u32,
     ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let partition = self.partition_without_budget()?;
+        self.overlay_polygon_parts_from_partition(&partition, operation, preserved_operand)
+    }
+
+    pub(in crate::geometry) fn overlay_polygon_parts_with_source_roles(
+        &self,
+        operation: crate::geometry::OverlayOp,
+        preserved_operand: u32,
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
+        let mut budget = ExpansionBudget::new(operation.name(), "exact partition");
+        let partition = self.partition(&mut budget)?;
+        self.overlay_polygon_parts_from_partition(&partition, operation, preserved_operand)
+    }
+
+    fn overlay_polygon_parts_from_partition(
+        &self,
+        partition: &ExactPartition<'_>,
+        operation: crate::geometry::OverlayOp,
+        preserved_operand: u32,
+    ) -> Result<Vec<OverlayPolygonPartWithSources>> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(&partition, &topology, &edges, &global, operation, false)?;
+        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
         let mut preserved_spans = Vec::with_capacity(partition.spans.len());
         for span in 0..partition.spans.len() {
             let preserved = partition
@@ -417,7 +436,7 @@ impl ExactSourceInventory {
             });
         }
         let plan = cells.emission_plan_with_protected(
-            &partition,
+            partition,
             &topology,
             &edges,
             &global,
@@ -425,7 +444,7 @@ impl ExactSourceInventory {
             Some(&preserved_spans),
         )?;
         plan.emit_xy_polygon_parts_with_source_roles(
-            &partition,
+            partition,
             &topology,
             &edges,
             operation.name(),
