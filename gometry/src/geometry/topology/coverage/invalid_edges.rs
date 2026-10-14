@@ -25,7 +25,7 @@ fn draw_line_sequence<W: Work>(
         u64::try_from(line.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut images = Vec::with_capacity(line.len());
-    for point in line.iter() {
+    for point in line {
         let image = ProducerImageId::new(literals.len());
         let address = LiteralAddress {
             operation: 0,

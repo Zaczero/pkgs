@@ -83,13 +83,6 @@ pub(crate) fn finish_geographic_nearest_point_columns(
     frame: &crate::Frame,
     missing: Option<&ValidityMask>,
 ) -> Result<(crate::PyGeometryArray, crate::PyGeometryArray)> {
-    if left.len() != right.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "nearest-point columns have different lengths".into(),
-        )
-        .into());
-    }
-
     fn publish_column(
         shapes: Vec<Shape>,
         frame: &crate::Frame,
@@ -174,6 +167,12 @@ pub(crate) fn finish_geographic_nearest_point_columns(
         crate::PyGeometryArray::from_finished(finished)
     }
 
+    if left.len() != right.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "nearest-point columns have different lengths".into(),
+        )
+        .into());
+    }
     let left = publish_column(left, frame, missing)?;
     let right = publish_column(right, frame, missing)?;
     Ok((left, right))

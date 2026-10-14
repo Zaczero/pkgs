@@ -42,7 +42,7 @@ pub(super) struct SplitEdgeUse {
 
 #[derive(Default)]
 pub(super) struct LineageCatalog {
-    roots: Vec<Box<SplitEdgeRoot>>,
+    roots: Vec<SplitEdgeRoot>,
     next_member: u32,
     events: Vec<SplitEvent>,
     edge_uses: Vec<SplitEdgeUse>,
@@ -75,12 +75,12 @@ impl LineageCatalog {
         longitude: RetainedChartDisplacement,
     ) -> Result<RootId> {
         let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots.push(Box::new(SplitEdgeRoot {
+        self.roots.push(SplitEdgeRoot {
             member,
             points: *points,
             longitude,
             metric: Cell::new(RootMetricState::default()),
-        }));
+        });
         Ok(RootId::from_index(index))
     }
 
