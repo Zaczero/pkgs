@@ -66,7 +66,6 @@ pub(super) fn split_polygon<M: ChartMetric>(
         None,
         preferred,
         HoleOverlayMode::Select,
-        GeographicFrame::crs84(),
         metric_access,
         None,
     )?;
@@ -254,7 +253,6 @@ pub(super) fn split_polygon_member<M: ChartMetric>(
     source: &Shape,
     polygon: &Polygon,
     lineage: Option<&super::super::lineage::LineagePolygon>,
-    source_frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: Option<&mut super::super::lineage::LineageCatalog>,
 ) -> Result<Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>> {
@@ -269,7 +267,6 @@ pub(super) fn split_polygon_member<M: ChartMetric>(
                 lineage,
                 PoleClosure::Auto,
                 HoleOverlayMode::Select,
-                source_frame,
                 metric_access,
                 catalog,
             )
@@ -631,7 +628,6 @@ fn split_polygon_core<M: ChartMetric>(
     source_lineage: Option<&super::super::lineage::LineagePolygon>,
     preferred: PoleClosure,
     mut overlay_mode: HoleOverlayMode,
-    source_frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     mut catalog: Option<&mut super::super::lineage::LineageCatalog>,
 ) -> Result<Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>> {
@@ -705,7 +701,6 @@ fn split_polygon_core<M: ChartMetric>(
             shell_only_lineage.as_ref(),
             preferred,
             overlay_mode,
-            source_frame,
             metric_access,
             catalog.as_deref_mut(),
         )?;
@@ -732,7 +727,6 @@ fn split_polygon_core<M: ChartMetric>(
                 hole_lineage.as_ref(),
                 pole_closure_for_ring(&hole),
                 overlay_mode,
-                source_frame,
                 metric_access,
                 catalog.as_deref_mut(),
             )?;
@@ -807,7 +801,6 @@ fn split_polygon_core<M: ChartMetric>(
                 lineage.as_ref(),
                 pole_closure_for_ring(&polygon.shell),
                 HoleOverlayMode::Chart,
-                source_frame,
                 metric_access,
                 catalog.as_deref_mut(),
             )?);
@@ -940,7 +933,6 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
     source_lineage: &super::super::lineage::LineagePolygon,
     preferred: PoleClosure,
     overlay_mode: HoleOverlayMode,
-    source_frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: &mut super::super::lineage::LineageCatalog,
 ) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
@@ -949,7 +941,6 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
         Some(source_lineage),
         preferred,
         overlay_mode,
-        source_frame,
         metric_access,
         Some(catalog),
     )?;

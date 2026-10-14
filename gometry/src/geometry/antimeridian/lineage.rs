@@ -542,6 +542,10 @@ pub(super) enum ShapeLineage {
 mod tests {
     use super::*;
     use crate::geographic::ChartPole;
+    use crate::geometry::ordinates::{
+        reset_root_range_mapping_counts, reset_root_work_counters, root_request_table_builds,
+        root_work_counters,
+    };
     use crate::geometry::{MOrdinate, ZOrdinate};
 
     fn edge_root(
@@ -700,6 +704,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "request-table assertions are the test oracle while Result propagates setup errors"
+    )]
     fn repeated_lineage_contributors_share_one_root_request() -> Result<()> {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
@@ -720,19 +728,16 @@ mod tests {
         )?])?;
         let second = catalog.event(member, vec![RootRange::point(root, half, start)?])?;
 
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::ordinates::reset_root_work_counters();
+        reset_root_range_mapping_counts();
+        reset_root_work_counters();
         let resolved = catalog.resolve_vertex_ordinates(
             &[first, second],
             CoordinateAxes::XYZM,
             Some(&metric_access),
         )?;
 
-        assert_eq!(crate::geometry::ordinates::root_request_table_builds(), 1);
-        assert_eq!(
-            crate::geometry::ordinates::root_work_counters().root_catalog_resolutions,
-            1
-        );
+        assert_eq!(root_request_table_builds(), 1);
+        assert_eq!(root_work_counters().root_catalog_resolutions, 1);
         assert!(resolved.z.value().is_some());
         assert!(resolved.m.value().is_some());
         Ok(())
