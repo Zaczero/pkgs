@@ -1,4 +1,4 @@
-use super::super::lineage::{LineageCatalog, LineagePolygon, LineageSequence, PolygonWithLineage};
+use super::super::lineage::{LineageCatalog, LineagePolygon, LineageSequence};
 use super::split::ring_is_ccw;
 use super::{
     ChartPole, CoordSeq, GeographicFrame, GeometryErrorKind, MOrdinate, Point, PoleClosure,
@@ -6,16 +6,15 @@ use super::{
 };
 use crate::geometry::antimeridian::publication::restriction_for_edge;
 
-pub(super) type SeamSegmentsWithLineage = Vec<(Vec<Point>, LineageSequence)>;
-
-struct SeamFragment {
-    points: Vec<Point>,
-    lineage: Option<LineageSequence>,
+#[derive(Clone)]
+pub(super) struct SeamFragment {
+    pub(super) points: Vec<Point>,
+    pub(super) lineage: Option<LineageSequence>,
 }
 
-struct KeptHole<'a> {
-    ring: &'a Ring,
-    lineage: Option<&'a LineageSequence>,
+pub(super) struct KeptHole<'a> {
+    pub(super) ring: &'a Ring,
+    pub(super) lineage: Option<&'a LineageSequence>,
 }
 
 #[derive(Clone, Copy)]
@@ -42,62 +41,8 @@ pub(super) fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     }
 }
 
-pub(super) fn assemble_polygons(
-    segments: Vec<Vec<Point>>,
-    kept_holes: &[&Ring],
-) -> Result<Vec<Polygon>> {
-    let segments = segments
-        .into_iter()
-        .map(|points| SeamFragment {
-            points,
-            lineage: None,
-        })
-        .collect();
-    let kept_holes = kept_holes
-        .iter()
-        .map(|ring| KeptHole {
-            ring,
-            lineage: None,
-        })
-        .collect::<Vec<_>>();
-    assemble_fragments(segments, &kept_holes, None)
-        .map(|parts| parts.into_iter().map(|(polygon, _)| polygon).collect())
-}
-
-pub(super) fn assemble_polygons_with_lineage(
-    segments: SeamSegmentsWithLineage,
-    kept_holes: &[(Ring, LineageSequence)],
-    catalog: &mut LineageCatalog,
-) -> Result<Vec<PolygonWithLineage>> {
-    let segments = segments
-        .into_iter()
-        .map(|(points, lineage)| SeamFragment {
-            points,
-            lineage: Some(lineage),
-        })
-        .collect();
-    let kept_holes = kept_holes
-        .iter()
-        .map(|(ring, lineage)| KeptHole {
-            ring,
-            lineage: Some(lineage),
-        })
-        .collect::<Vec<_>>();
-    assemble_fragments(segments, &kept_holes, Some(catalog))?
-        .into_iter()
-        .map(|(polygon, lineage)| {
-            Ok(PolygonWithLineage {
-                polygon,
-                lineage: lineage.ok_or_else(|| {
-                    GeometryErrorKind::Invalid("assembled polygon has no lineage".into())
-                })?,
-            })
-        })
-        .collect()
-}
-
 /// Assemble seam fragments once, carrying lineage only for captured callers.
-fn assemble_fragments(
+pub(super) fn assemble_fragments(
     segments: Vec<SeamFragment>,
     kept_holes: &[KeptHole<'_>],
     mut catalog: Option<&mut LineageCatalog>,
@@ -369,89 +314,66 @@ fn synthetic_lineage_ring(
     })
 }
 
-/// A seam end with no seam start between it and the pole closes over that pole.
-/// Implying both poles under `Auto` means the winding was inverted, so the
-/// original segments come back reversed. Returns the segments and whether any
-/// pole closure was applied.
-pub(super) fn extend_over_poles(
-    segments: Vec<Vec<Point>>,
-    closure: PoleClosure,
-) -> Result<(Vec<Vec<Point>>, bool)> {
-    let (segments, caps, _) = extend_over_poles_with_direction(segments, closure)?;
-    Ok((segments, !caps.is_empty()))
+fn add_pole_cap_lineage(
+    segment: &mut SeamFragment,
+    cap: PoleCap,
+    catalog: &mut LineageCatalog,
+) -> Result<()> {
+    let lineage = segment
+        .lineage
+        .as_mut()
+        .ok_or_else(|| GeometryErrorKind::Invalid("pole cap has no seam lineage".into()))?;
+    let member = lineage.member;
+    let first_event = catalog.event(member, Vec::new())?;
+    let second_event = catalog.event(member, Vec::new())?;
+    if cap.reverse {
+        let reversed = catalog.reverse_sequence(lineage)?;
+        let mut vertices = vec![vec![second_event], vec![first_event]];
+        vertices.extend(reversed.vertices);
+        let mut edges = vec![
+            catalog.push_edge_use(
+                member,
+                Vec::new(),
+                restriction_for_edge(cap.second, cap.first),
+            )?,
+            catalog.push_edge_use(
+                member,
+                Vec::new(),
+                restriction_for_edge(cap.first, cap.start),
+            )?,
+        ];
+        edges.extend(reversed.edges);
+        *lineage = LineageSequence {
+            member,
+            vertices,
+            edges,
+        };
+    } else {
+        lineage
+            .vertices
+            .extend([vec![first_event], vec![second_event]]);
+        lineage.edges.extend([
+            catalog.push_edge_use(
+                member,
+                Vec::new(),
+                restriction_for_edge(cap.start, cap.first),
+            )?,
+            catalog.push_edge_use(
+                member,
+                Vec::new(),
+                restriction_for_edge(cap.first, cap.second),
+            )?,
+        ]);
+    }
+    Ok(())
 }
 
-pub(super) fn extend_over_poles_with_lineage(
-    segments: SeamSegmentsWithLineage,
+pub(super) fn extend_over_poles_fragments(
+    segments: Vec<SeamFragment>,
     closure: PoleClosure,
-    catalog: &mut LineageCatalog,
-) -> Result<(SeamSegmentsWithLineage, bool)> {
-    let plain_segments = segments.iter().map(|(points, _)| points.clone()).collect();
-    let (stitched, caps, reversed) = extend_over_poles_with_direction(plain_segments, closure)?;
-    if stitched.len() != segments.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "pole extension changed the seam fragment count".into(),
-        )
-        .into());
-    }
-    let mut result = Vec::with_capacity(segments.len());
-    for ((_, lineage), points) in segments.into_iter().zip(stitched) {
-        let lineage = if reversed {
-            catalog.reverse_sequence(&lineage)?
-        } else {
-            lineage
-        };
-        result.push((points, lineage));
-    }
-    let capped = !caps.is_empty();
-    for cap in caps {
-        let (_, lineage) = result.get_mut(cap.segment).ok_or_else(|| {
-            GeometryErrorKind::Invalid("pole cap references an unknown seam fragment".into())
-        })?;
-        let member = lineage.member;
-        let first_event = catalog.event(member, Vec::new())?;
-        let second_event = catalog.event(member, Vec::new())?;
-        if cap.reverse {
-            let reversed = catalog.reverse_sequence(lineage)?;
-            let mut cap_vertices = vec![vec![second_event], vec![first_event]];
-            cap_vertices.extend(reversed.vertices);
-            let mut cap_edges = vec![
-                catalog.push_edge_use(
-                    member,
-                    Vec::new(),
-                    restriction_for_edge(cap.second, cap.first),
-                )?,
-                catalog.push_edge_use(
-                    member,
-                    Vec::new(),
-                    restriction_for_edge(cap.first, cap.start),
-                )?,
-            ];
-            cap_edges.extend(reversed.edges);
-            *lineage = LineageSequence {
-                member,
-                vertices: cap_vertices,
-                edges: cap_edges,
-            };
-        } else {
-            lineage
-                .vertices
-                .extend([vec![first_event], vec![second_event]]);
-            lineage.edges.extend([
-                catalog.push_edge_use(
-                    member,
-                    Vec::new(),
-                    restriction_for_edge(cap.start, cap.first),
-                )?,
-                catalog.push_edge_use(
-                    member,
-                    Vec::new(),
-                    restriction_for_edge(cap.first, cap.second),
-                )?,
-            ]);
-        }
-    }
-    Ok((result, capped))
+    catalog: Option<&mut LineageCatalog>,
+) -> Result<(Vec<SeamFragment>, bool)> {
+    extend_over_poles_with_direction(segments, closure, catalog)
 }
 
 #[expect(
@@ -459,9 +381,10 @@ pub(super) fn extend_over_poles_with_lineage(
     reason = "pole closure classifies exact seam and pole chart literals"
 )]
 fn extend_over_poles_with_direction(
-    mut segments: Vec<Vec<Point>>,
+    mut segments: Vec<SeamFragment>,
     closure: PoleClosure,
-) -> Result<(Vec<Vec<Point>>, Vec<PoleCap>, bool)> {
+    mut catalog: Option<&mut LineageCatalog>,
+) -> Result<(Vec<SeamFragment>, bool)> {
     let chart_frame = GeographicFrame::crs84();
     let north_pole = chart_frame.chart_pole_latitude(ChartPole::North);
     let south_pole = chart_frame.chart_pole_latitude(ChartPole::South);
@@ -480,8 +403,8 @@ fn extend_over_poles_with_direction(
     let mut left_end: Option<(usize, f64)> = None;
     let mut right_end: Option<(usize, f64)> = None;
     for (index, segment) in segments.iter().enumerate() {
-        let start = *segment.first().expect("segments are non-empty");
-        let end = *segment.last().expect("segments are non-empty");
+        let start = *segment.points.first().expect("segments are non-empty");
+        let end = *segment.points.last().expect("segments are non-empty");
         if start.x == -180.0 && left_start.is_none_or(|latitude| start.y < latitude) {
             left_start = Some(start.y);
         } else if start.x == 180.0 && right_start.is_none_or(|latitude| start.y > latitude) {
@@ -507,12 +430,12 @@ fn extend_over_poles_with_direction(
             let segment = segments
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
-            let like = *segment.last().expect("segments are non-empty");
+            let like = *segment.points.last().expect("segments are non-empty");
             let first = pole_vertex(like, -180.0, north_pole)?;
             let second = pole_vertex(like, 180.0, north_pole)?;
-            segment.push(first);
-            segment.push(second);
-            segment.reverse();
+            segment.points.push(first);
+            segment.points.push(second);
+            segment.points.reverse();
             caps.push(PoleCap {
                 segment: index,
                 start: like,
@@ -527,11 +450,11 @@ fn extend_over_poles_with_direction(
             let segment = segments
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
-            let like = *segment.last().expect("segments are non-empty");
+            let like = *segment.points.last().expect("segments are non-empty");
             let first = pole_vertex(like, -180.0, south_pole)?;
             let second = pole_vertex(like, 180.0, south_pole)?;
-            segment.push(first);
-            segment.push(second);
+            segment.points.push(first);
+            segment.points.push(second);
             caps.push(PoleCap {
                 segment: index,
                 start: like,
@@ -550,12 +473,12 @@ fn extend_over_poles_with_direction(
             let segment = segments
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
-            let like = *segment.last().expect("segments are non-empty");
+            let like = *segment.points.last().expect("segments are non-empty");
             let first = pole_vertex(like, 180.0, south_pole)?;
             let second = pole_vertex(like, -180.0, south_pole)?;
-            segment.push(first);
-            segment.push(second);
-            segment.reverse();
+            segment.points.push(first);
+            segment.points.push(second);
+            segment.points.reverse();
             caps.push(PoleCap {
                 segment: index,
                 start: like,
@@ -570,11 +493,11 @@ fn extend_over_poles_with_direction(
             let segment = segments
                 .get_mut(index)
                 .expect("the pole endpoint came from this segment");
-            let like = *segment.last().expect("segments are non-empty");
+            let like = *segment.points.last().expect("segments are non-empty");
             let first = pole_vertex(like, 180.0, north_pole)?;
             let second = pole_vertex(like, -180.0, north_pole)?;
-            segment.push(first);
-            segment.push(second);
+            segment.points.push(first);
+            segment.points.push(second);
             caps.push(PoleCap {
                 segment: index,
                 start: like,
@@ -589,11 +512,33 @@ fn extend_over_poles_with_direction(
         // every original segment instead.
         let mut reversed = original;
         for segment in &mut reversed {
-            segment.reverse();
+            segment.points.reverse();
+            if let Some(lineage) = segment.lineage.as_ref() {
+                let catalog = catalog.as_deref_mut().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("reversed pole chain has no lineage catalog".into())
+                })?;
+                segment.lineage = Some(catalog.reverse_sequence(lineage)?);
+            }
         }
-        return Ok((reversed, Vec::new(), true));
+        return Ok((reversed, false));
     }
-    Ok((segments, caps, false))
+    let capped = !caps.is_empty();
+    for cap in caps {
+        let segment = segments.get_mut(cap.segment).ok_or_else(|| {
+            GeometryErrorKind::Invalid("pole cap references an unknown seam fragment".into())
+        })?;
+        match (segment.lineage.is_some(), catalog.as_deref_mut()) {
+            (true, Some(catalog)) => add_pole_cap_lineage(segment, cap, catalog)?,
+            (false, None) => {},
+            _ => {
+                return Err(GeometryErrorKind::Invalid(
+                    "pole cap and seam lineage disagree".into(),
+                )
+                .into());
+            },
+        }
+    }
+    Ok((segments, capped))
 }
 
 #[expect(
