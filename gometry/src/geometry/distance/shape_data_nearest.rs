@@ -186,11 +186,6 @@ fn resolve_nearest_source_projection(
         .chart_connection(source[0].x, source[1].x)
         .map(crate::geographic::ChartConnection::retained)
         .map_err(|error| crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()))?;
-    let metric_access = source_context.metric_access().ok_or_else(|| {
-        crate::crs::CrsError::invalid(
-            "geographic nearest-witness ordinates require the operation's CRS metric",
-        )
-    })?;
     let mut state = RootMetricState::default();
     let mut fraction = None;
     let mut work = Unmetered;
@@ -200,7 +195,7 @@ fn resolve_nearest_source_projection(
         longitude,
         &parameter,
         axes,
-        Some(metric_access),
+        source_context.metric_access(),
         &mut state,
         &mut fraction,
         &mut work,

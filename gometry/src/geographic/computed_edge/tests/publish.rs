@@ -241,7 +241,24 @@ fn computed_ring_keeps_its_start_and_copies_full_closure() {
 }
 
 #[test]
-fn metric_free_publisher_refuses_to_fabricate_ordinate_samples() {
+fn metric_free_publisher_preserves_endpoints_and_refuses_ordinate_samples() {
+    let endpoints = [
+        Point::new_raw_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))),
+        Point::new_raw_axes(120.0, 70.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0))),
+    ];
+    let mut endpoint_budget = ExpansionBudget::new("computed edge", "computed edges");
+    let preserved = publish_computed_chain(
+        degrees(),
+        endpoints.as_slice(),
+        false,
+        &mut endpoint_budget,
+        |_, start, end| {
+            ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+        },
+    )
+    .unwrap();
+    assert!(preserved.is_none());
+
     let points = [
         Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0))),
         Point::new_raw_axes(260.0, 10.0, ZOrdinate(Some(19.0)), MOrdinate(Some(43.0))),

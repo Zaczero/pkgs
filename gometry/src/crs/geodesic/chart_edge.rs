@@ -23,8 +23,8 @@ use crate::geographic::{
     RetainedChartDisplacement,
 };
 use crate::geometry::{
-    ChartBox, ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point,
-    RootMetricState, ZOrdinate, resolve_source_root,
+    ChartBox, ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, NodeOrdinates,
+    Point, RootMetricState, ZOrdinate, resolve_source_root,
 };
 use crate::work::{Unmetered, Work};
 
@@ -299,7 +299,7 @@ impl ChartEdge {
                 work,
             )?
         } else {
-            crate::geometry::NodeOrdinates::default()
+            NodeOrdinates::default()
         };
         let position = self.chart_position(parameter)?;
         let point = Point::new_axes(

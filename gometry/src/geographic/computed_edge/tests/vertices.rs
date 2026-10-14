@@ -188,14 +188,32 @@ fn published_samples_keep_the_original_root_parameter_and_lift() {
     ]);
 }
 #[test]
-fn canonical_period_line_carries_zm_at_the_original_chart_parameter() {
+fn canonical_period_line_carries_zm_at_original_root_arclength() {
     let start = Point::new_raw_axes(10.0, 20.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0)));
     let end = Point::new_raw_axes(370.0, 40.0, ZOrdinate(Some(19.0)), MOrdinate(Some(43.0)));
-    assert_eq!(publish(&[start, end], false, &[360.0]), [
-        start,
-        Point::new_raw_axes(100.0, 25.0, ZOrdinate(Some(7.0)), MOrdinate(Some(19.0)),),
-        Point::new_raw_axes(-170.0, 30.0, ZOrdinate(Some(11.0)), MOrdinate(Some(27.0)),),
-        Point::new_raw_axes(-80.0, 35.0, ZOrdinate(Some(15.0)), MOrdinate(Some(35.0)),),
-        Point::new_raw_axes(10.0, 40.0, ZOrdinate(Some(19.0)), MOrdinate(Some(43.0)),),
-    ]);
+    let output = publish(&[start, end], false, &[360.0]);
+
+    assert_eq!(output.first(), Some(&start));
+    assert_eq!(output.last(), Some(&end));
+    assert_eq!(
+        output
+            .iter()
+            .map(|point| (point.x, point.y))
+            .collect::<Vec<_>>(),
+        [
+            (10.0, 20.0),
+            (100.0, 25.0),
+            (-170.0, 30.0),
+            (-80.0, 35.0),
+            (10.0, 40.0)
+        ]
+    );
+    for (point, (expected_z, expected_m)) in output.iter().skip(1).take(3).zip([
+        (7.284_932_436_674_63, 19.569_864_873_349_26),
+        (11.400_416_857_860_609, 27.800_833_715_721_218),
+        (15.315_320_037_823_382, 35.630_640_075_646_767),
+    ]) {
+        assert!((point.z().unwrap() - expected_z).abs() <= 2.0e-12);
+        assert!((point.m().unwrap() - expected_m).abs() <= 4.0e-12);
+    }
 }

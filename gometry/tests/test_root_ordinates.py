@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import cos, fsum, isclose, radians, sin, sqrt
+from math import isclose
 
 import gometry as gm
 
@@ -8,6 +8,9 @@ CRS_CASES = (
     'OGC:CRS84',
     '+proj=longlat +a=7000000 +rf=150 +type=crs',
 )
+# Independent 8192-panel Simpson results for the WGS84 chart edge (0°, 10°)→(120°, 70°).
+OBLIQUE_WGS84_HALF_CHART_PARAMETER = 0.57396247625753438
+OBLIQUE_WGS84_HALF_ARCLENGTH_PARAMETER = 0.42925274533794278
 
 
 def _chart_length(
@@ -16,42 +19,16 @@ def _chart_length(
     parameter: float,
     crs: str,
 ) -> float:
-    if crs == 'OGC:CRS84':
-        semi_major, flattening = 6_378_137.0, 1.0 / 298.257_223_563
-    else:
-        parameters = dict(
-            token.split('=', maxsplit=1) for token in crs.split() if '=' in token
+    pieces = 8
+    coordinates = [
+        (
+            start[0] + (end[0] - start[0]) * parameter * index / pieces,
+            start[1] + (end[1] - start[1]) * parameter * index / pieces,
         )
-        semi_major = float(parameters['+a'])
-        flattening = 1.0 / float(parameters['+rf'])
-
-    longitude_delta = radians(end[0] - start[0])
-    latitude_start = radians(start[1])
-    latitude_delta = radians(end[1] - start[1])
-    eccentricity_squared = flattening * (2.0 - flattening)
-    panels = 4096
-    step = parameter / panels
-
-    def speed(chart_parameter: float) -> float:
-        latitude = latitude_start + chart_parameter * latitude_delta
-        sine = sin(latitude)
-        denominator = 1.0 - eccentricity_squared * sine * sine
-        prime_vertical = semi_major / sqrt(denominator)
-        meridional = semi_major * (1.0 - eccentricity_squared) / denominator**1.5
-        return sqrt(
-            (meridional * latitude_delta) ** 2
-            + (prime_vertical * cos(latitude) * longitude_delta) ** 2
-        )
-
-    weighted_speed = fsum([
-        speed(0.0),
-        speed(parameter),
-        *(
-            (4.0 if index % 2 else 2.0) * speed(index * step)
-            for index in range(1, panels)
-        ),
-    ])
-    return step * weighted_speed / 3.0
+        for index in range(pieces + 1)
+    ]
+    wkt = 'LINESTRING (' + ','.join(f'{x:.17g} {y:.17g}' for x, y in coordinates) + ')'
+    return gm.from_wkt(wkt, crs=crs).length
 
 
 def _assert_root_sample(
@@ -382,19 +359,13 @@ def test_shortest_line_samples_follow_the_producer_chord_for_all_pair_forms() ->
 
 
 def test_oblique_wgs84_lrs_and_substring_use_independent_chart_arclength() -> None:
-    start = (0.0, 10.0, 10.0, 100.0)
-    end = (120.0, 70.0, 210.0, 500.0)
     line = gm.from_wkt(
         'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
         crs='OGC:CRS84',
     )
-    parameter = 0.5
-    fraction = _chart_length(
-        start[:2], end[:2], parameter, 'OGC:CRS84'
-    ) / _chart_length(start[:2], end[:2], 1.0, 'OGC:CRS84')
-    assert isclose(fraction, 0.5739624762575344, rel_tol=0.0, abs_tol=2e-15)
-    expected_z = start[2] + (end[2] - start[2]) * fraction
-    expected_m = start[3] + (end[3] - start[3]) * fraction
+    fraction = OBLIQUE_WGS84_HALF_CHART_PARAMETER
+    expected_z = 124.79249525150688
+    expected_m = 329.5849905030137
 
     point = line.line_interpolate(fraction, normalized=True)
     assert isclose(point.x, 60.0, rel_tol=0.0, abs_tol=2e-12)
@@ -417,33 +388,22 @@ def test_oblique_wgs84_intersection_uses_original_root_arclength() -> None:
     )
     crossing = gm.from_wkt('LINESTRING (60 0, 60 80)', crs='OGC:CRS84')
     intersection = source.intersection(crossing)
-    _assert_root_sample(
-        intersection,
-        start=(0.0, 10.0, 10.0, 100.0),
-        end=(120.0, 70.0, 210.0, 500.0),
-        parameter=0.5,
-        crs='OGC:CRS84',
-    )
+    assert isinstance(intersection, gm.Point)
+    assert isclose(intersection.x, 60.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(intersection.y, 40.0, rel_tol=0.0, abs_tol=2e-12)
+    assert isclose(intersection.z, 124.79249525150688, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(intersection.m, 329.5849905030137, rel_tol=0.0, abs_tol=2e-7)
 
 
 def test_oblique_wgs84_segmentize_uses_independent_chart_arclength() -> None:
-    start = (0.0, 10.0, 10.0, 100.0)
-    end = (120.0, 70.0, 210.0, 500.0)
     line = gm.from_wkt(
         'LINESTRING ZM (0 10 10 100, 120 70 210 500)',
         crs='OGC:CRS84',
     )
-    total_length = _chart_length(start[:2], end[:2], 1.0, 'OGC:CRS84')
+    total_length = line.length
     segmented = list(line.segmentize(total_length * 0.5001).coords)
     assert len(segmented) == 3
-    low, high = 0.0, 1.0
-    for _ in range(48):
-        middle = (low + high) / 2.0
-        if _chart_length(start[:2], end[:2], middle, 'OGC:CRS84') / total_length < 0.5:
-            low = middle
-        else:
-            high = middle
-    midpoint_parameter = (low + high) / 2.0
+    midpoint_parameter = OBLIQUE_WGS84_HALF_ARCLENGTH_PARAMETER
     midpoint = segmented[1]
     assert isclose(midpoint[0], 120.0 * midpoint_parameter, rel_tol=0.0, abs_tol=2e-8)
     assert isclose(

@@ -680,7 +680,7 @@ impl<'a> SourceArcRequest<'a> {
 /// rounding and chart-edge measurement.
 pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
     request: &SourceArcRequest<'_>,
-    metric: impl Fn() -> crate::error::Result<&'m M>,
+    metric: impl FnOnce() -> crate::error::Result<&'m M>,
     state: &mut RootMetricState,
     fraction: &mut Option<f64>,
     work: &mut impl Work,
@@ -760,12 +760,11 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
     longitude: RetainedChartDisplacement,
     parameter: f64,
     axes: CoordinateAxes,
-    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+    metric_access: Option<&SourceArcMetricAccess<'_, 'm, M>>,
     state: &mut RootMetricState,
     work: &mut impl Work,
 ) -> crate::error::Result<ComputedSampleOrdinates> {
     let chart_parameter = ExactRational::from_f64(parameter);
-    let metric_access = metric;
     let mut fraction = None;
     let ordinates = resolve_source_root(
         source_frame,
@@ -773,7 +772,7 @@ pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
         longitude,
         &chart_parameter,
         axes,
-        Some(&metric_access),
+        metric_access,
         state,
         &mut fraction,
         work,
@@ -1416,7 +1415,7 @@ mod tests {
             longitude,
             0.0,
             CoordinateAxes::XYZM,
-            endpoint_metric,
+            Some(&endpoint_metric),
             &mut state,
             &mut work,
         )
@@ -1440,7 +1439,7 @@ mod tests {
             longitude,
             0.25,
             CoordinateAxes::XY,
-            xy_metric,
+            Some(&xy_metric),
             &mut state,
             &mut work,
         )
@@ -1453,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn computed_native_sample_uses_independent_wgs84_chart_arclength() {
+    fn computed_native_publisher_sample_uses_independent_wgs84_chart_arclength() {
         let frame = crate::geographic::GeographicFrame::crs84();
         let source = [
             Point::new_axes(0.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
@@ -1461,6 +1460,7 @@ mod tests {
         ];
         let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
         let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+        let metric_access = || Ok(&metric);
         let longitude = retained_source_longitude(frame, &source);
         let mut state = RootMetricState::default();
         let mut work = Unmetered;
@@ -1471,7 +1471,7 @@ mod tests {
             longitude,
             0.5,
             CoordinateAxes::XYZM,
-            || Ok(&metric),
+            Some(&metric_access),
             &mut state,
             &mut work,
         )
