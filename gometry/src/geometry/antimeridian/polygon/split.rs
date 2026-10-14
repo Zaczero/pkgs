@@ -62,7 +62,6 @@ pub(super) fn split_polygon<M: ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<Polygon>> {
     let parts = split_polygon_core(
-        source,
         polygon,
         None,
         preferred,
@@ -632,37 +631,6 @@ fn overlay_hole_difference<M: ChartMetric>(
 }
 
 fn split_polygon_core<M: ChartMetric>(
-    source: &Shape,
-    polygon: &Polygon,
-    source_lineage: Option<&super::super::lineage::LineagePolygon>,
-    preferred: PoleClosure,
-    overlay_mode: HoleOverlayMode,
-    source_frame: GeographicFrame,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-    catalog: Option<&mut super::super::lineage::LineageCatalog>,
-) -> Result<Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>> {
-    let parts = split_polygon_parts_inner(
-        source,
-        polygon,
-        source_lineage,
-        preferred,
-        overlay_mode,
-        source_frame,
-        metric_access,
-        catalog,
-    )?;
-    if source_lineage.is_some() {
-        let polygons = parts
-            .iter()
-            .map(|(polygon, _)| polygon.clone())
-            .collect::<Vec<_>>();
-        reject_fabricated_pole_ordinates(source, &polygons)?;
-    }
-    Ok(parts)
-}
-
-fn split_polygon_parts_inner<M: ChartMetric>(
-    source: &Shape,
     polygon: &Polygon,
     source_lineage: Option<&super::super::lineage::LineagePolygon>,
     preferred: PoleClosure,
@@ -737,7 +705,6 @@ fn split_polygon_parts_inner<M: ChartMetric>(
             None
         };
         let shell_parts = split_polygon_core(
-            source,
             &shell_only,
             shell_only_lineage.as_ref(),
             preferred,
@@ -751,7 +718,6 @@ fn split_polygon_parts_inner<M: ChartMetric>(
         let frame = GeographicFrame::crs84();
         for (hole, hole_sequence) in crossing_holes {
             let hole_polygon = Polygon::new(hole.clone(), Vec::new());
-            let hole_shape = Shape::Polygon(hole_polygon.clone());
             let hole_lineage = match (hole_sequence, source_lineage) {
                 (Some(shell), Some(_)) => Some(super::super::lineage::LineagePolygon {
                     shell,
@@ -766,7 +732,6 @@ fn split_polygon_parts_inner<M: ChartMetric>(
                 },
             };
             let hole_parts = split_polygon_core(
-                &hole_shape,
                 &hole_polygon,
                 hole_lineage.as_ref(),
                 pole_closure_for_ring(&hole),
@@ -843,7 +808,6 @@ fn split_polygon_parts_inner<M: ChartMetric>(
         let mut charted = Vec::new();
         for (polygon, lineage) in parts {
             charted.extend(split_polygon_core(
-                source,
                 &polygon,
                 lineage.as_ref(),
                 pole_closure_for_ring(&polygon.shell),
@@ -986,7 +950,6 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
     catalog: &mut super::super::lineage::LineageCatalog,
 ) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
     let parts = split_polygon_core(
-        source,
         polygon,
         Some(source_lineage),
         preferred,
@@ -995,6 +958,11 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
         metric_access,
         Some(catalog),
     )?;
+    let polygons = parts
+        .iter()
+        .map(|(polygon, _)| polygon.clone())
+        .collect::<Vec<_>>();
+    reject_fabricated_pole_ordinates(source, &polygons)?;
     parts
         .into_iter()
         .map(|(polygon, lineage)| {

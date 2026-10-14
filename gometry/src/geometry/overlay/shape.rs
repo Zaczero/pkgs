@@ -1,15 +1,44 @@
+#[cfg(test)]
+use std::cell::Cell;
+
 use super::exact_partition::ordinates::ResolvedNodePoints;
 use crate::error::Result;
-use crate::geometry::ordinates::SourceArcContext;
-use crate::geometry::overlay::{
-    ExactLineEmission, ExactPartition, ExactSourceInventory, NodeId, OverlayOp, Strictness,
-    merge_chains, merge_chains_with_origins, overlay_all,
+use crate::geometry::ordinates::{
+    NodeOrdinates, RootMetricState, SourceArcContext, resolve_source_root,
 };
+use crate::geometry::overlay::{
+    ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
+    merge_chains_with_origins, overlay_all,
+};
+use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::topology::overlay::{QProducer, exact_geographic_linework_from_shapes};
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, Lineal,
-    Point, PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
+    Bounds, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq,
+    Lineal, Point, PointKey, Segment, Shape, TopologyDomain, carry_ordinates,
+    for_each_overlapping_bounds_cross_pair_with_work, point_on_segment,
+    undirected_segment_edge_key,
 };
+
+#[cfg(test)]
+std::thread_local! {
+    static LINE_MERGE_SOURCE_CANDIDATES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn reset_line_merge_source_candidates() {
+    LINE_MERGE_SOURCE_CANDIDATES.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn line_merge_source_candidates() -> usize {
+    LINE_MERGE_SOURCE_CANDIDATES.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_line_merge_source_candidate() {
+    LINE_MERGE_SOURCE_CANDIDATES.with(|count| count.set(count.get().saturating_add(1)));
+}
+
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
         self.overlay(other, OverlayOp::Intersection, strictness)
@@ -179,9 +208,11 @@ impl Shape {
         context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         let lineal = self.lineal().ok_or(GeometryErrorKind::LinealRequired)?;
-        if context.domain().is_geographic() {
+        if let TopologyDomain::Geographic(frame) = context.domain() {
             return match lineal {
-                Lineal::MultiLineString(lines) => line_merge_geographic(self, lines, context),
+                Lineal::MultiLineString(lines) => {
+                    line_merge_geographic(self, lines, frame, context)
+                },
                 Lineal::LineString(_) | Lineal::Empty => Ok(self.clone()),
             };
         }
@@ -271,6 +302,7 @@ impl Shape {
 fn line_merge_geographic(
     input: &Shape,
     lines: &crate::geometry::MultiLineString,
+    frame: crate::geographic::GeographicFrame,
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     if !input.has_z() && !input.has_m() {
@@ -304,55 +336,136 @@ fn line_merge_geographic(
         .into());
     }
 
-    let inventory = ExactSourceInventory::from_shapes(&[input])?;
-    let mut budget = crate::geometry::ExpansionBudget::new("line_merge", "exact partition");
-    let partition = inventory.partition(&mut budget)?;
-    let source_spans = partition.source_span_views(inventory.source_segments())?;
-    let vertex_nodes = line_vertex_nodes(lines, &source_spans, &partition)?;
-    let mut resolved_nodes = vec![None; partition.node_count()];
-    let mut axes = input.axes();
-    for &origin in origins.iter().flatten() {
-        let node = origin_node(origin, &vertex_nodes)?;
-        let index = node.0 as usize;
-        let ordinates = resolved_nodes.get_mut(index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("line-merge occurrence references an unknown node".into())
-        })?;
-        if ordinates.is_none() {
-            *ordinates = Some(inventory.resolve_node_ordinates(
-                &partition,
-                node,
-                input.axes(),
-                context,
-                None,
-            )?);
+    let mut source_segment_count = 0_usize;
+    for line in lines {
+        source_segment_count = source_segment_count
+            .checked_add(line.len().saturating_sub(1))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    }
+    let hash_state = crate::collections::collection_hash_state()?.clone();
+    let output_occurrences = origins.iter().try_fold(0_usize, |count, chain| {
+        count
+            .checked_add(chain.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut output_node_of = HashMap::<PointKey, usize>::with_hasher(hash_state);
+    output_node_of.reserve(output_occurrences);
+    let mut nodes = Vec::with_capacity(output_occurrences);
+    let mut chain_nodes = Vec::with_capacity(chains.len());
+    for (chain, chain_origins) in chains.iter().zip(&origins) {
+        let mut node_ids = Vec::with_capacity(chain.len());
+        for (point, &(line_index, vertex_index)) in chain.iter().zip(chain_origins) {
+            // The origin selects the source occurrence; the key only joins its exact node incidences.
+            let source_line = lines.get(line_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "line-merge occurrence references an unknown line".into(),
+                )
+            })?;
+            if vertex_index >= source_line.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "line-merge occurrence references an unknown vertex".into(),
+                )
+                .into());
+            }
+            let origin = source_line.point_at(vertex_index);
+            let key = PointKey::new(origin);
+            if PointKey::new(point) != key {
+                return Err(GeometryErrorKind::Invalid(
+                    "line-merge output coordinate differs from its source occurrence".into(),
+                )
+                .into());
+            }
+            let node = match output_node_of.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let index = nodes.len();
+                    nodes.push(LineMergeNode {
+                        point: origin,
+                        ordinates: NodeOrdinates::default(),
+                    });
+                    entry.insert(index);
+                    index
+                },
+            };
+            node_ids.push(node);
         }
-        let resolved = ordinates.expect("line-merge node was resolved");
-        let (z, m) = resolved;
+        chain_nodes.push(node_ids);
+    }
+
+    let mut source_segments = Vec::with_capacity(source_segment_count);
+    for line in lines {
+        for point in line {
+            let Some(&node_index) = output_node_of.get(&PointKey::new(point)) else {
+                continue;
+            };
+            let node = nodes
+                .get_mut(node_index)
+                .expect("source endpoint incidence belongs to its output node table");
+            if input.axes().has_z() {
+                node.ordinates.z.observe(point.z());
+            }
+            if input.axes().has_m() {
+                node.ordinates.m.observe(point.m());
+            }
+        }
+        for vertex in 0..line.len().saturating_sub(1) {
+            let start = line.point_at(vertex);
+            let end = line.point_at(vertex.wrapping_add(1));
+            if PointKey::new(start) == PointKey::new(end) {
+                continue;
+            }
+            let axes = CoordinateAxes::new(
+                crate::geometry::HasZ(
+                    input.axes().has_z() && start.z().is_some() && end.z().is_some(),
+                ),
+                crate::geometry::HasM(
+                    input.axes().has_m() && start.m().is_some() && end.m().is_some(),
+                ),
+            );
+            if axes.has_z() || axes.has_m() {
+                source_segments.push(LineMergeSource {
+                    points: [start, end],
+                    metric_state: RootMetricState::default(),
+                });
+            }
+        }
+    }
+    drop(output_node_of);
+
+    resolve_line_merge_source_incidence(
+        &mut nodes,
+        &mut source_segments,
+        input.axes(),
+        frame,
+        context,
+    )?;
+    drop(source_segments);
+    let mut axes = input.axes();
+    for node in &nodes {
         axes = CoordinateAxes::new(
-            crate::geometry::HasZ(axes.has_z() && z.0.is_some()),
-            crate::geometry::HasM(axes.has_m() && m.0.is_some()),
+            crate::geometry::HasZ(axes.has_z() && node.ordinates.z_value().is_some()),
+            crate::geometry::HasM(axes.has_m() && node.ordinates.m_value().is_some()),
         );
     }
 
     let mut output = Vec::with_capacity(chains.len());
-    for (chain, chain_origins) in chains.into_iter().zip(origins) {
+    for (chain, node_ids) in chains.into_iter().zip(chain_nodes) {
         let mut points = Vec::with_capacity(chain.len());
-        for (point, origin) in chain.iter().zip(chain_origins) {
-            let node = origin_node(origin, &vertex_nodes)?;
-            let ordinates = resolved_nodes
-                .get(node.0 as usize)
-                .copied()
-                .flatten()
-                .expect("every emitted line-merge occurrence has resolved ordinates");
-            let (z, m) = ordinates;
+        for (point, node_id) in chain.iter().zip(node_ids) {
+            let ordinates = nodes
+                .get(node_id)
+                .expect("line-merge output node belongs to its node table")
+                .ordinates;
             points.push(Point::new_raw_axes(
                 point.x,
                 point.y,
                 crate::geometry::ZOrdinate(
-                    axes.has_z().then(|| z.0.expect("retained Z is resolved")),
+                    axes.has_z()
+                        .then(|| ordinates.z_value().expect("retained Z is resolved")),
                 ),
                 crate::geometry::MOrdinate(
-                    axes.has_m().then(|| m.0.expect("retained M is resolved")),
+                    axes.has_m()
+                        .then(|| ordinates.m_value().expect("retained M is resolved")),
                 ),
             ));
         }
@@ -361,131 +474,106 @@ fn line_merge_geographic(
     Ok(Shape::narrow_lines(axes, output))
 }
 
-fn line_vertex_nodes(
-    lines: &crate::geometry::MultiLineString,
-    source_spans: &[Vec<(u32, bool)>],
-    partition: &ExactPartition<'_>,
-) -> Result<Vec<Vec<Option<NodeId>>>> {
-    let mut source_cursor = 0_usize;
-    let mut result = Vec::with_capacity(lines.len());
-    for line in lines {
-        let segment_count = line.len().saturating_sub(1);
-        let source_end = source_cursor
-            .checked_add(segment_count)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let spans = source_spans.get(source_cursor..source_end).ok_or_else(|| {
-            GeometryErrorKind::Invalid("line-merge source segments are out of sync".into())
-        })?;
-        let endpoints = spans
-            .iter()
-            .map(|source| {
-                let Some(&(first, first_reversed)) = source.first() else {
-                    return Ok(None);
-                };
-                let &(last, last_reversed) = source
-                    .last()
-                    .expect("non-empty source span has a last entry");
-                let first_span = partition
-                    .spans
-                    .get(first as usize)
-                    .ok_or_else(|| GeometryErrorKind::Invalid("unknown source span".into()))?;
-                let last_span = partition
-                    .spans
-                    .get(last as usize)
-                    .ok_or_else(|| GeometryErrorKind::Invalid("unknown source span".into()))?;
-                Ok(Some((
-                    if first_reversed {
-                        first_span.end
-                    } else {
-                        first_span.start
-                    },
-                    if last_reversed {
-                        last_span.start
-                    } else {
-                        last_span.end
-                    },
-                )))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut vertices = vec![None; line.len()];
-        for (index, endpoints) in endpoints.into_iter().enumerate() {
-            if let Some((start, end)) = endpoints {
-                assign_line_vertex(vertices.get_mut(index), start)?;
-                assign_line_vertex(vertices.get_mut(index.wrapping_add(1)), end)?;
-            }
-        }
-        let mut index = 0;
-        while index < vertices.len() {
-            if vertices.get(index).is_some_and(Option::is_some) {
-                index = index.wrapping_add(1);
-                continue;
-            }
-            let start = index;
-            while vertices.get(index).is_some_and(Option::is_none) {
-                index = index.wrapping_add(1);
-            }
-            let previous = start
-                .checked_sub(1)
-                .and_then(|prior| vertices.get(prior).copied().flatten());
-            let next = vertices.get(index).copied().flatten();
-            if previous.is_some() && next.is_some() && previous != next {
-                return Err(GeometryErrorKind::Invalid(
-                    "line-merge stutter run has inconsistent partition nodes".into(),
-                )
-                .into());
-            }
-            let node = previous.or(next).ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "line-merge source line has no retained partition node".into(),
-                )
-            })?;
-            for vertex in vertices.get_mut(start..index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("line-merge stutter range is invalid".into())
-            })? {
-                *vertex = Some(node);
-            }
-        }
-        result.push(vertices);
-        source_cursor = source_end;
-    }
-    if source_cursor != source_spans.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "line-merge source inventory contains unused segments".into(),
-        )
-        .into());
-    }
-    Ok(result)
+struct LineMergeNode {
+    point: Point,
+    ordinates: NodeOrdinates,
 }
 
-fn assign_line_vertex(slot: Option<&mut Option<NodeId>>, node: NodeId) -> Result<()> {
-    let slot = slot.ok_or_else(|| {
-        GeometryErrorKind::Invalid("line-merge source segment exceeds its line".into())
-    })?;
-    if slot.is_some_and(|prior| prior != node) {
-        return Err(GeometryErrorKind::Invalid(
-            "line-merge source vertex has inconsistent partition nodes".into(),
-        )
-        .into());
-    }
-    *slot = Some(node);
-    Ok(())
+struct LineMergeSource {
+    points: [Point; 2],
+    metric_state: RootMetricState,
 }
 
-fn origin_node(
-    (line, vertex): (usize, usize),
-    vertex_nodes: &[Vec<Option<NodeId>>],
-) -> Result<NodeId> {
-    vertex_nodes
-        .get(line)
-        .and_then(|nodes| nodes.get(vertex))
-        .copied()
-        .flatten()
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid(
-                "line-merge output occurrence has no retained source node".into(),
+fn resolve_line_merge_source_incidence<M: crate::geometry::ChartMetric>(
+    nodes: &mut [LineMergeNode],
+    sources: &mut [LineMergeSource],
+    input_axes: CoordinateAxes,
+    frame: crate::geographic::GeographicFrame,
+    context: &SourceArcContext<'_, '_, M>,
+) -> Result<()> {
+    // Only retained merge nodes query source interiors; unrelated crossings are not merge incidences.
+    let node_bounds = nodes
+        .iter()
+        .map(|node| Bounds::new_raw(node.point.x, node.point.y, node.point.x, node.point.y))
+        .collect::<Vec<_>>();
+    let source_bounds = sources
+        .iter()
+        .map(|source| {
+            let [start, end] = source.points;
+            Bounds::new_raw(
+                start.x.min(end.x),
+                start.y.min(end.y),
+                start.x.max(end.x),
+                start.y.max(end.y),
             )
-            .into()
         })
+        .collect::<Vec<_>>();
+    let mut work = crate::work::Unmetered;
+    let _flow: std::ops::ControlFlow<()> = for_each_overlapping_bounds_cross_pair_with_work(
+        &node_bounds,
+        &source_bounds,
+        &mut work,
+        |node_index, source_index, work| {
+            #[cfg(test)]
+            record_line_merge_source_candidate();
+
+            let node = nodes
+                .get_mut(node_index)
+                .expect("candidate node belongs to retained line-merge nodes");
+            let source = sources
+                .get_mut(source_index)
+                .expect("candidate source belongs to line-merge source edges");
+            let [start, end] = source.points;
+            let key = PointKey::new(node.point);
+            if key == PointKey::new(start) || key == PointKey::new(end) {
+                return Ok(std::ops::ControlFlow::<()>::Continue(()));
+            }
+
+            let segment = Segment {
+                start: start.into(),
+                end: end.into(),
+            };
+            if !point_on_segment(node.point, segment.start, segment.end) {
+                return Ok(std::ops::ControlFlow::<()>::Continue(()));
+            }
+
+            let axes = CoordinateAxes::new(
+                crate::geometry::HasZ(
+                    input_axes.has_z() && start.z().is_some() && end.z().is_some(),
+                ),
+                crate::geometry::HasM(
+                    input_axes.has_m() && start.m().is_some() && end.m().is_some(),
+                ),
+            );
+            if !axes.has_z() && !axes.has_m() {
+                return Ok(std::ops::ControlFlow::<()>::Continue(()));
+            }
+
+            let parameter = segment_projection(node.point, segment)?.exact_fraction()?;
+            let longitude = frame
+                .longitude()
+                .chart_connection(start.x, end.x)
+                .map(crate::geographic::ChartConnection::retained)
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            let mut fraction = None;
+            let mut metric_state = source.metric_state;
+            let ordinates = resolve_source_root(
+                frame,
+                &source.points,
+                longitude,
+                &parameter,
+                axes,
+                context.metric_access(),
+                &mut metric_state,
+                &mut fraction,
+                work,
+            )?;
+            source.metric_state = metric_state;
+            node.ordinates.merge(ordinates);
+            Ok(std::ops::ControlFlow::<()>::Continue(()))
+        },
+    )?;
+    Ok(())
 }
 
 type SharedPathExtraction = (
