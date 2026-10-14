@@ -264,18 +264,36 @@ pub(in crate::geometry) fn reorder_rows<T>(
 }
 
 fn validate_dense_output_ids(
-    values: impl Iterator<Item = u32>,
+    values: impl ExactSizeIterator<Item = u32>,
     count: usize,
     work: &mut impl Work,
 ) -> Result<()> {
     work.charge_into_error(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut ids = values.collect::<Vec<_>>();
-    if ids.len() != count {
+    if values.len() != count {
         return Err(GeometryErrorKind::Invalid(
             "literal logical output IDs do not cover their rows".into(),
         )
         .into());
     }
+
+    let mut unordered_ids: Option<Vec<u32>> = None;
+    for (index, id) in values.enumerate() {
+        if let Some(ids) = &mut unordered_ids {
+            ids.push(id);
+        } else if usize::try_from(id).ok() != Some(index) {
+            let mut ids = Vec::with_capacity(count);
+            ids.extend(
+                (0..index)
+                    .map(|value| u32::try_from(value).expect("the ordered ID prefix fits in u32")),
+            );
+            ids.push(id);
+            unordered_ids = Some(ids);
+        }
+    }
+
+    let Some(mut ids) = unordered_ids else {
+        return Ok(());
+    };
     try_sort_by_with_work(&mut ids, work, |left, right, work| {
         work.charge_into_error(1)?;
         Ok(left.cmp(right))

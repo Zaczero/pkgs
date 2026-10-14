@@ -295,7 +295,6 @@ impl VoronoiDrawingWriter {
                 "Voronoi polygon coordinates do not match edge roles",
             ));
         }
-        let mut vertices = Vec::with_capacity(ring.len());
         let mut first_vertex = None;
         let mut previous_end = None;
         for role in roles {
@@ -319,18 +318,16 @@ impl VoronoiDrawingWriter {
                 ));
             }
             first_vertex.get_or_insert(start);
-            vertices.push(start);
             previous_end = Some(end);
         }
         let Some(first_vertex) = first_vertex else {
             return Err(voronoi_publication_error("Voronoi polygon ring is empty"));
         };
-        if vertices.len() != edge_count || previous_end != Some(first_vertex) {
+        if previous_end != Some(first_vertex) {
             return Err(voronoi_publication_error(
                 "Voronoi polygon edge identities do not close their ring",
             ));
         }
-        vertices.push(first_vertex);
 
         let mut images = Vec::with_capacity(ring.len());
         for point in ring {
