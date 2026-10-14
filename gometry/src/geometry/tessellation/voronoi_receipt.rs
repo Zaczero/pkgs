@@ -28,7 +28,6 @@ pub(in crate::geometry) struct VoronoiDiagramReceipt {
     pub(in crate::geometry) producer: VoronoiProducer,
     pub(in crate::geometry) sites: Vec<VoronoiSiteReceipt>,
     pub(in crate::geometry) source_sites: Vec<VoronoiSourceSiteReceipt>,
-    pub(in crate::geometry) clip_segments: Vec<VoronoiClipSegmentReceipt>,
     pub(in crate::geometry) vertices: Vec<VoronoiVertexReceipt>,
     pub(in crate::geometry) edges: Vec<VoronoiEdgeReceipt>,
     pub(in crate::geometry) darts: Vec<VoronoiDartReceipt>,
@@ -43,7 +42,6 @@ impl VoronoiDiagramReceipt {
             producer,
             sites: Vec::new(),
             source_sites: Vec::new(),
-            clip_segments: Vec::new(),
             vertices: Vec::new(),
             edges: Vec::new(),
             darts: Vec::new(),
@@ -111,53 +109,6 @@ pub(in crate::geometry) enum VoronoiSourceSiteDecision {
 pub(in crate::geometry) struct VoronoiSourceSiteReceipt {
     pub(in crate::geometry) source_ordinal: usize,
     pub(in crate::geometry) decision: VoronoiSourceSiteDecision,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiClipSegmentReceipt {
-    pub(in crate::geometry) id: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes original clip ring identity")
-    )]
-    pub(in crate::geometry) ring: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes original clip edge identity")
-    )]
-    pub(in crate::geometry) edge: u32,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 distinguishes generated frame clips")
-    )]
-    pub(in crate::geometry) frame_side: Option<VoronoiFrameSide>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes exact clip-segment endpoints")
-    )]
-    pub(in crate::geometry) exact_start: [ExactRational; 2],
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes exact clip-segment endpoints")
-    )]
-    pub(in crate::geometry) exact_end: [ExactRational; 2],
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) struct VoronoiClipSourceRoot {
-    pub(in crate::geometry) ring: usize,
-    pub(in crate::geometry) edge: usize,
-    pub(in crate::geometry) reversed: bool,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes the original clip-edge start record")
-    )]
-    pub(in crate::geometry) start: Point,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "V2 consumes the original clip-edge end record")
-    )]
-    pub(in crate::geometry) end: Point,
 }
 
 #[derive(Clone, Debug)]

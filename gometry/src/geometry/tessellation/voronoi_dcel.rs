@@ -29,11 +29,10 @@ use crate::geometry::segment_index::YStabbingIndex;
 use crate::geometry::segments::ordering::{try_dedup_by, try_sort_by};
 use crate::geometry::tessellation::{
     CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, VoronoiAssignmentReceipt,
-    VoronoiCellReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt,
-    VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt,
-    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
-    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
-    VoronoiVertexReceipt, delaunay_complex, exact,
+    VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse,
+    VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
+    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
+    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, delaunay_complex, exact,
 };
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
@@ -206,8 +205,8 @@ use embedding::graph::nearest_site;
 use embedding::graph::{certified_site_adjacency, nearest_site_walk};
 use embedding::publish::embed;
 use receipt::{
-    clip_segment_receipts, collinear_polygon_receipt, embedded_exact_ring, exact_diagram_receipt,
-    exact_xy_coordinates, receipt_frame_side, receipt_ring_uses, site_receipts,
+    collinear_polygon_receipt, embedded_exact_ring, exact_diagram_receipt, exact_xy_coordinates,
+    receipt_frame_side, receipt_ring_uses, site_receipts,
 };
 pub(super) use receipt::{
     empty_polygon_outputs, lone_site_empty_edges, lone_site_empty_polygon_outputs,
@@ -293,7 +292,6 @@ struct NormalizedClip<'a> {
     rings: Vec<Vec<exact::ExactPoint>>,
     fixed: Vec<Vec<XY>>,
     chart_fixed: Vec<Vec<XY>>,
-    source_roots: Vec<Vec<VoronoiClipSourceRoot>>,
     source: Option<&'a Polygon>,
     geometry: Option<Polygon>,
     polygon_baseline: Option<usize>,
@@ -405,7 +403,6 @@ struct ClipCertificateEdge {
 
 #[derive(Clone, Copy)]
 struct ClipSourceSegment<'a> {
-    segment: u32,
     ring: usize,
     start: &'a exact::ExactPoint,
     end: &'a exact::ExactPoint,
@@ -423,9 +420,6 @@ struct ClipSourceRow {
 struct ClipTraceAtom {
     edge: EdgeId,
     reversed: bool,
-    segment: u32,
-    start_parameter: exact::ExactRational,
-    end_parameter: exact::ExactRational,
 }
 
 #[derive(Default)]
@@ -1274,8 +1268,6 @@ struct DirectedDualEdge {
 
 struct DualClipUse {
     segment: u32,
-    start_parameter: exact::ExactRational,
-    end_parameter: exact::ExactRational,
 }
 
 #[derive(Clone, Copy)]

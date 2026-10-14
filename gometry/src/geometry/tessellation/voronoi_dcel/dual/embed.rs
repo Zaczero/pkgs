@@ -7,10 +7,10 @@ use super::{
     VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDirectedEdgeUse,
     VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
     VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, certify_convex_cell,
-    clip_segment_receipts, dual_clip_segment_for_edge, dual_vertex_point,
-    ensure_coordseq_vertex_capacity, exact, exact_xy_coordinates, lex_xy, polygon_is_valid,
-    polygon_output_count, receipt_frame_side, same_undirected_dual_edge, site_receipts,
-    stored_xy_cycle_matches_orientation, try_hash_map_with_capacity,
+    dual_clip_segment_for_edge, dual_vertex_point, ensure_coordseq_vertex_capacity, exact,
+    exact_xy_coordinates, lex_xy, polygon_is_valid, polygon_output_count, receipt_frame_side,
+    same_undirected_dual_edge, site_receipts, stored_xy_cycle_matches_orientation,
+    try_hash_map_with_capacity,
 };
 
 /// Round the dual once and run the certificates that survive the redesign.
@@ -440,7 +440,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     budget.add(published.saturating_sub(baseline))?;
 
     let mut receipt = site_receipts(VoronoiProducer::Dual, sites)?;
-    receipt.clip_segments = clip_segment_receipts(clip)?;
     let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
         .take(vertex_xy.len())
         .collect();

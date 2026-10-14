@@ -4,13 +4,12 @@ use super::{
     EmbeddedEdges, EmbeddedPolygon, EmbeddedVertices, ExactCellPart, ExactEdgeChain, ExactSign,
     ExactSimpleRing, ExactSubdivision, FrameSide, NormalizedClip, OverlayNodeReceipt,
     OwnerTransition, Point, PointKey, PointSelectionChart, Polygon, Result, Ring, Site,
-    VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt, VoronoiClipSegmentReceipt,
-    VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin,
-    VoronoiEdgeReceipt, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
-    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
-    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY,
-    empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact, exact_chart_point, lex_xy,
-    try_hash_map_with_capacity, voronoi_error,
+    VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt, VoronoiDartReceipt,
+    VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt,
+    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
+    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
+    VoronoiVertexReceipt, XY, empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact,
+    exact_chart_point, lex_xy, try_hash_map_with_capacity, voronoi_error,
 };
 
 mod collinear;
@@ -172,29 +171,11 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             });
         }
         let mut ring_edge_ids = Vec::with_capacity(open_count);
-        for (edge_index, point) in points.iter().enumerate() {
+        for edge_index in 0..open_count {
             let next_index = edge_index
                 .checked_add(1)
                 .filter(|&next| next < open_count)
                 .unwrap_or(0);
-            let exact_start = exact_points
-                .get(edge_index)
-                .expect("lone-site exact source ring aligns with its coordinates")
-                .clone();
-            let exact_end = exact_points
-                .get(next_index)
-                .expect("lone-site exact source ring aligns with its coordinates")
-                .clone();
-            receipt.clip_segments.push(VoronoiClipSegmentReceipt {
-                id: output_edge_id,
-                ring: u32::try_from(ring_index)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                edge: u32::try_from(edge_index)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                frame_side: None,
-                exact_start: exact_xy_coordinates(&exact_start)?,
-                exact_end: exact_xy_coordinates(&exact_end)?,
-            });
             receipt.edges.push(VoronoiEdgeReceipt {
                 id: output_edge_id,
                 endpoints: [
@@ -300,41 +281,6 @@ pub(super) const fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
     }
 }
 
-pub(super) fn clip_segment_receipts(
-    clip: &NormalizedClip<'_>,
-) -> Result<Vec<VoronoiClipSegmentReceipt>> {
-    let mut result = Vec::new();
-    let mut segment_id = 0_usize;
-    for (ring_index, ring) in clip.rings.iter().enumerate() {
-        for (edge_index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
-            let id =
-                u32::try_from(segment_id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-            let frame_side = if clip.source.is_none() && ring_index == 0 {
-                FrameSide::ALL
-                    .get(edge_index)
-                    .copied()
-                    .map(receipt_frame_side)
-            } else {
-                None
-            };
-            result.push(VoronoiClipSegmentReceipt {
-                id,
-                ring: u32::try_from(ring_index)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                edge: u32::try_from(edge_index)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                frame_side,
-                exact_start: exact_xy_coordinates(start)?,
-                exact_end: exact_xy_coordinates(end)?,
-            });
-            segment_id = segment_id
-                .checked_add(1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        }
-    }
-    Ok(result)
-}
-
 pub(super) fn exact_diagram_receipt(
     producer: VoronoiProducer,
     sites: &[Site],
@@ -346,7 +292,6 @@ pub(super) fn exact_diagram_receipt(
     points: &[XY],
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = site_receipts(producer, sites)?;
-    receipt.clip_segments = clip_segment_receipts(clip)?;
 
     let mut assignments = vec![None; subdivision.vertices.len()];
     for (vertex, embedded) in exact_to_embedded.0.iter().enumerate() {

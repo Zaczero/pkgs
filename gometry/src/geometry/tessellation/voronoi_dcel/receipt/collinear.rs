@@ -1,20 +1,18 @@
 //! Receipt construction for the analytic collinear producer.
 
 use super::{
-    EmbeddedPolygon, ExactSign, NormalizedClip, PointKey, Result, Site, VoronoiAssignmentReceipt,
+    EmbeddedPolygon, ExactSign, PointKey, Result, Site, VoronoiAssignmentReceipt,
     VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse,
     VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiSeparatorReceipt,
-    VoronoiVertexOrigin, VoronoiVertexReceipt, clip_segment_receipts, exact, exact_xy_coordinates,
-    site_receipts, try_hash_map_with_capacity, voronoi_error,
+    VoronoiVertexOrigin, VoronoiVertexReceipt, exact, exact_xy_coordinates, site_receipts,
+    try_hash_map_with_capacity, voronoi_error,
 };
 
 pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt(
     sites: &[Site],
-    clip: &NormalizedClip<'_>,
     cells: &mut [EmbeddedPolygon],
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
-    receipt.clip_segments = clip_segment_receipts(clip)?;
     let vertex_count = cells
         .iter()
         .flat_map(|cell| &cell.producer_vertices)

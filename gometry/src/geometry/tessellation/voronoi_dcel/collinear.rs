@@ -235,7 +235,7 @@ pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
         previous = Some(site_index);
     }
     budget.add(published.saturating_sub(baseline))?;
-    let receipt = std::sync::Arc::new(collinear_polygon_receipt(sites, &clip, &mut cells)?);
+    let receipt = std::sync::Arc::new(collinear_polygon_receipt(sites, &mut cells)?);
     Ok(EmbeddedVoronoi {
         polygons: cells,
         edges: EmbeddedEdges {

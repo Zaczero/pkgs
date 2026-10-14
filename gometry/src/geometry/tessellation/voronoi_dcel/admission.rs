@@ -9,10 +9,10 @@ use super::{
     ExactSubdivision, ExactVertexSegment, NodedExactCycle, NodedSegmentIndex, NormalizedClip,
     NormalizedSourceRing, OpenClipRing, Ordering, OwnerCycleContainment, OwnerCycleFailure,
     OwnerShellPosition, Point, PointKey, PointSelectionChart, Polygon, PolygonPointIndex, Result,
-    Ring, SearchAccount, Segment, SegmentParameter, Site, VertexId, VoronoiBoundary,
-    VoronoiClipSourceRoot, XY, YStabbingIndex, ensure_coordseq_vertex_capacity, exact,
-    polygon_is_valid, polygon_output_baseline, sort_unique_along, try_dedup_by,
-    try_hash_map_with_capacity, try_sort_by, uf_union, voronoi_error,
+    Ring, SearchAccount, Segment, SegmentParameter, Site, VertexId, VoronoiBoundary, XY,
+    YStabbingIndex, ensure_coordseq_vertex_capacity, exact, polygon_is_valid,
+    polygon_output_baseline, sort_unique_along, try_dedup_by, try_hash_map_with_capacity,
+    try_sort_by, uf_union, voronoi_error,
 };
 
 mod clip;
@@ -230,8 +230,6 @@ impl ClipTrace {
                 return Err(clip_source_trace_error());
             }
             for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-                let segment = u32::try_from(source_segments.len())
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
                 let start_vertex = subdivision
                     .vertex_at(start)?
                     .expect("every normalized clip source endpoint is interned by noding");
@@ -239,7 +237,6 @@ impl ClipTrace {
                     .vertex_at(end)?
                     .expect("every normalized clip source endpoint is interned by noding");
                 source_segments.push(ClipSourceSegment {
-                    segment,
                     ring: ring_index,
                     start,
                     end,
@@ -341,26 +338,7 @@ impl ClipTrace {
                     "a source atom has distinct endpoints along its segment"
                 );
                 let reversed = along == Ordering::Greater;
-                let (start, end) = if reversed {
-                    (right, left)
-                } else {
-                    (left, right)
-                };
-                atoms.push(ClipTraceAtom {
-                    edge,
-                    reversed,
-                    segment: segment.segment,
-                    start_parameter: exact_segment_parameter(
-                        segment.start,
-                        segment.end,
-                        &subdivision.vertex(start).point,
-                    )?,
-                    end_parameter: exact_segment_parameter(
-                        segment.start,
-                        segment.end,
-                        &subdivision.vertex(end).point,
-                    )?,
-                });
+                atoms.push(ClipTraceAtom { edge, reversed });
             }
             try_sort_by(&mut atoms, |left, right| {
                 let [left_start, left_end] = subdivision.edge(left.edge).endpoints;

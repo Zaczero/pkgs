@@ -295,7 +295,7 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
             .any(|role| role
                 .origins
                 .iter()
-                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. }))
+                .any(|origin| matches!(origin, VoronoiEdgeOrigin::SourceClip { .. })))
     );
 }
 

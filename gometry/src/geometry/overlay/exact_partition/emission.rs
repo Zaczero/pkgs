@@ -46,7 +46,6 @@ pub(in crate::geometry) struct OverlaySourceLocation {
 pub(in crate::geometry) struct OverlaySourceEdgeUse {
     pub(in crate::geometry) source_id: u32,
     pub(in crate::geometry) location: OverlaySourceLocation,
-    pub(in crate::geometry) forward: bool,
     pub(in crate::geometry) start_parameter: ExactRational,
     pub(in crate::geometry) end_parameter: ExactRational,
 }
@@ -239,14 +238,12 @@ impl BoundaryPlan {
                 let start_parameter =
                     partition.parameter_on_source_segment(segment, output_start)?;
                 let end_parameter = partition.parameter_on_source_segment(segment, output_end)?;
-                let forward = start_parameter.try_cmp(&end_parameter)?.is_lt();
                 let location = *source_locations.get(source_id as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("source edge-use origin is unknown".into())
                 })?;
                 result.push(OverlaySourceEdgeUse {
                     source_id,
                     location,
-                    forward,
                     start_parameter,
                     end_parameter,
                 });

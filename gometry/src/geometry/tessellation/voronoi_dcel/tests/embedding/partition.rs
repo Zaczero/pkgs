@@ -284,6 +284,112 @@ fn assign_published_ring(
     }
 }
 
+#[test]
+fn clip_trace_binds_source_atoms_to_rings_and_rejects_out_of_range_ids() {
+    let (sites, polygon) = separator_fixture();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
+    let mut subdivision = grafted_clip_subdivision(&sites, &polygon);
+    let source_segment_count = clip
+        .rings
+        .iter()
+        .try_fold(0_usize, |count, ring| count.checked_add(ring.len()))
+        .expect("the fixture clip segment count fits usize");
+    let mut valid_budget = EvaluationBudget::new("valid clip source trace", 0).unwrap();
+    let trace = ClipTrace::build(&subdivision, &clip, &mut valid_budget).unwrap();
+    assert_eq!(trace.rings.len(), clip.rings.len());
+    let source_atom_count = subdivision
+        .edges
+        .iter()
+        .try_fold(0_usize, |count, edge| count.checked_add(edge.clip_sources.len()))
+        .expect("the fixture source atom count fits usize");
+    let zero = exact::ExactRational::zero();
+    let one = exact::ExactRational::one();
+    let mut segment_index = 0_usize;
+    let mut traced_atom_count = 0_usize;
+    for (ring_index, trace_ring) in trace.rings.iter().enumerate() {
+        let ring = clip
+            .rings
+            .get(ring_index)
+            .expect("clip trace ring aligns with normalized input");
+        for (clip_start, clip_end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+            let segment = ClipSegmentId(
+                u32::try_from(segment_index).expect("clip segment ID fits its stored type"),
+            );
+            let mut segment_atom_count = 0_usize;
+            for atom in &trace_ring.atoms {
+                let edge_index =
+                    usize::try_from(atom.edge.0).expect("subdivision edge ID fits usize");
+                let edge = subdivision
+                    .edges
+                    .get(edge_index)
+                    .expect("clip atom names a subdivision edge");
+                if !edge.clip_sources.contains(&segment) {
+                    continue;
+                }
+                let [left, right] = edge.endpoints;
+                let (start, end) = if atom.reversed {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                let start_parameter = exact_segment_parameter(
+                    clip_start,
+                    clip_end,
+                    &subdivision.vertex(start).point,
+                )
+                .unwrap();
+                let end_parameter = exact_segment_parameter(
+                    clip_start,
+                    clip_end,
+                    &subdivision.vertex(end).point,
+                )
+                .unwrap();
+                assert_ne!(
+                    start_parameter.try_cmp(&zero).unwrap(),
+                    std::cmp::Ordering::Less
+                );
+                assert_ne!(
+                    end_parameter.try_cmp(&one).unwrap(),
+                    std::cmp::Ordering::Greater
+                );
+                assert_ne!(
+                    start_parameter.try_cmp(&end_parameter).unwrap(),
+                    std::cmp::Ordering::Greater
+                );
+                segment_atom_count = segment_atom_count
+                    .checked_add(1)
+                    .expect("fixture atom count fits usize");
+            }
+            assert!(segment_atom_count > 0, "each clip segment contributes atoms");
+            traced_atom_count = traced_atom_count
+                .checked_add(segment_atom_count)
+                .expect("fixture atom count fits usize");
+            segment_index = segment_index
+                .checked_add(1)
+                .expect("fixture segment count fits usize");
+        }
+    }
+    assert_eq!(segment_index, source_segment_count);
+    assert_eq!(traced_atom_count, source_atom_count);
+
+    let invalid_segment = ClipSegmentId(
+        u32::try_from(source_segment_count).expect("the fixture clip segment count fits u32"),
+    );
+    let edge = subdivision
+        .edges
+        .iter_mut()
+        .find(|edge| !edge.clip_sources.is_empty())
+        .expect("the subdivision contains source clip edges");
+    *edge
+        .clip_sources
+        .first_mut()
+        .expect("a source clip edge retains its segment ID") = invalid_segment;
+
+    let mut budget = EvaluationBudget::new("invalid clip source trace", 0).unwrap();
+    let rejection = ClipTrace::build(&subdivision, &clip, &mut budget).err();
+    assert!(rejection.is_some());
+}
+
 fn assigned_clip_from_cells(sites: &[Site], source: &Polygon, cells: &[Shape]) -> Polygon {
     let subdivision = grafted_clip_subdivision(sites, source);
     let parts = assemble_cells(&subdivision).unwrap();

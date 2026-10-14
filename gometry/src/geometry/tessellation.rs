@@ -34,11 +34,10 @@ pub(crate) use prepared_mesh::{
 };
 pub(crate) use voronoi_publication::VoronoiDrawingWriter;
 pub(in crate::geometry) use voronoi_receipt::{
-    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot,
-    VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin,
-    VoronoiEdgeReceipt, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
-    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
-    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt,
+    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt,
+    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiFrameSide,
+    VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt,
+    VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt,
 };
 
 pub(crate) struct VoronoiPolygonOutput {
