@@ -13,6 +13,8 @@ mod invalid_edges;
 mod regions;
 mod regions_emission;
 #[cfg(test)]
+mod emission_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use analysis::{analyze_geographic_coverage, analyze_geographic_coverage_with_work};
