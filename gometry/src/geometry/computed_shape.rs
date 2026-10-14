@@ -35,10 +35,10 @@ pub(crate) use polygons::{
 };
 pub(crate) use raw::{
     publish_changed_raw_computed_shape, publish_computed_point_or_raw_shape,
-    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_capture,
-    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
-    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
+    publish_raw_computed_shape, publish_raw_computed_shape_with_budget_and_context,
+    publish_raw_computed_shape_with_capture, publish_raw_computed_shape_with_context,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
+    publish_stored_computed_shape,
 };
 pub(crate) use tessellation::{
     PublishedTriangleVertices, PublishedVoronoiEdgeColumn, PublishedVoronoiPolygonOutputs,

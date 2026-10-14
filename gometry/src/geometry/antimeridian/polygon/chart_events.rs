@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::ordinates::RootId;
+use crate::geometry::ordinates::{NodeOrdinates, RootId, resolve_source_root};
 use crate::work::Unmetered;
 
 pub(in crate::geometry::antimeridian) fn chart_point(
@@ -82,6 +82,22 @@ impl<'a> ChartSourceCapture<'a> {
         } else {
             Ok(None)
         }
+    }
+
+    pub(super) fn resolve_root<M: ChartMetric>(
+        &mut self,
+        root: RootId,
+        parameter: &ExactRational,
+        axes: CoordinateAxes,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<NodeOrdinates> {
+        let capture = self.capture.as_deref_mut().ok_or_else(|| {
+            GeometryErrorKind::Invalid("captured chart source root has no lineage catalog".into())
+        })?;
+        capture
+            .lineage_mut()
+            .resolve_root(root, parameter, axes, frame, metric_access)
     }
 
     pub(super) fn event_ids(&self) -> Vec<super::super::lineage::EventId> {
@@ -243,30 +259,29 @@ fn source_ordinates_at<M: ChartMetric>(
     frame: GeographicFrame,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     root_metric: &mut RootMetricState,
+    source_capture: &mut ChartSourceCapture<'_>,
 ) -> Result<(ZOrdinate, MOrdinate)> {
     let axes = event.source[0].axes().union(event.source[1].axes());
-    let request = SourceArcRequest::new(frame, &event.source, axes, &event.parameter, || {
-        Ok(event.longitude)
-    })?;
-    let mut fraction = None;
-    let mut work = Unmetered;
-    let ordinates = source_arc_ordinates(
-        &request,
-        || {
-            let access = metric_access.ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic antimeridian source ordinates require the operation's CRS metric",
-                )
-            })?;
-            access()
-        },
-        root_metric,
-        &mut fraction,
-        &mut work,
-    )?;
+    let ordinates = if let Some(root) = event.source_root {
+        source_capture.resolve_root(root, &event.parameter, axes, frame, metric_access)?
+    } else {
+        let mut fraction = None;
+        let mut work = Unmetered;
+        resolve_source_root(
+            frame,
+            &event.source,
+            event.longitude,
+            &event.parameter,
+            axes,
+            metric_access,
+            root_metric,
+            &mut fraction,
+            &mut work,
+        )?
+    };
     Ok((
-        ZOrdinate(ordinates.z.value()),
-        MOrdinate(ordinates.m.value()),
+        ZOrdinate(ordinates.z_value()),
+        MOrdinate(ordinates.m_value()),
     ))
 }
 
@@ -339,7 +354,13 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
         };
         let latitude =
             interpolate_subdivision_ordinate(event.source[0].y, event.source[1].y, parameter);
-        let (z, m) = source_ordinates_at(&event, frame, metric_access, &mut root_metric)?;
+        let (z, m) = source_ordinates_at(
+            &event,
+            frame,
+            metric_access,
+            &mut root_metric,
+            source_capture,
+        )?;
         let point = Point::new_axes(x, chart_latitude(latitude, frame, latitude_scale)?, z, m)?;
         source_capture.record(event.source_root, &event.parameter)?;
         output.push(point);
