@@ -4,6 +4,7 @@ use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
@@ -280,6 +281,7 @@ fn append_drawing(
             images.push(image);
             literals.push(ProducerLiteral::from_point(address, image, point));
         }
+        let structure = ShapeStructure::capture(&shape);
         writer.try_push(shape)?;
         row_map.push(Some(LiteralRowLayout {
             operation: 0,
@@ -287,6 +289,7 @@ fn append_drawing(
             group_row,
             value_row,
             layout: ShapeLiteralLayout {
+                structure: Some(structure),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {

@@ -44,6 +44,7 @@ pub(super) enum FrozenStorage<I> {
     Groups {
         groups: FinalGroupRows,
         row_map: Vec<Option<LiteralRowBinding<I>>>,
+        expected_present: Vec<bool>,
     },
 }
 
@@ -168,6 +169,12 @@ impl<I> FrozenLiteralBuffers<I> {
         missing: Option<ValidityMask>,
         work: &mut W,
     ) -> Result<Self> {
+        let group_count = offsets.len().checked_sub(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("group domain has no offset origin".into())
+        })?;
+        let expected_present = (0..group_count)
+            .map(|group| !missing.as_ref().is_some_and(|mask| mask.is_missing(group)))
+            .collect();
         work.charge_into_error(
             u64::try_from(value_map.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -181,6 +188,7 @@ impl<I> FrozenLiteralBuffers<I> {
                     missing,
                 },
                 row_map: value_map,
+                expected_present,
             },
         })
     }
@@ -228,8 +236,19 @@ impl<I> FrozenLiteralBuffers<I> {
                     visit_rows,
                 },
             }),
-            (StorageTarget::Groups, FrozenStorage::Groups { groups, row_map }) => Ok(Self {
-                storage: FrozenStorage::Groups { groups, row_map },
+            (
+                StorageTarget::Groups,
+                FrozenStorage::Groups {
+                    groups,
+                    row_map,
+                    expected_present,
+                },
+            ) => Ok(Self {
+                storage: FrozenStorage::Groups {
+                    groups,
+                    row_map,
+                    expected_present,
+                },
             }),
             (StorageTarget::Scalar | StorageTarget::Array | StorageTarget::Groups, _) => {
                 Err(GeometryErrorKind::Invalid(

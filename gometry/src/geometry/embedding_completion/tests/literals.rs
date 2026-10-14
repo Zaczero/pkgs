@@ -17,6 +17,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let valid = FrozenLiteralBuffers::shapes(Shape::Point(expected), ShapeLiteralLayout {
+        structure: Some(ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -43,6 +44,7 @@ fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
         )],
     };
     let buffers = FrozenLiteralBuffers::shapes(Shape::Point(corrupted), ShapeLiteralLayout {
+        structure: Some(ShapeStructure::capture(&Shape::Point(expected))),
         points: vec![LiteralPoint {
             output: 0,
             axes: CoordinateAxes::XYZM,
@@ -71,6 +73,7 @@ fn packed_rows_bind_after_present_only_admission() {
         StorageLayout::PresentOnly,
         vec![
             Some(point_literal_row(0, 7, 0, None, None)),
+            None,
             Some(point_literal_row(1, 7, 2, None, None)),
         ],
         &mut work,
@@ -113,6 +116,7 @@ fn packed_rows_bind_after_present_only_admission() {
         StorageLayout::PresentOnly,
         vec![
             Some(point_literal_row(0, 7, 0, None, None)),
+            None,
             Some(point_literal_row(1, 7, 2, None, None)),
         ],
         &mut work,
@@ -227,7 +231,7 @@ fn all_missing_packed_rows_have_no_literal_reads() {
         storage,
         ValidityMask::from_vec(3, vec![true, true, true]),
         StorageLayout::PresentOnly,
-        Vec::new(),
+        vec![None, None, None],
         &mut work,
     )
     .expect("admit all-missing rows");
@@ -269,6 +273,75 @@ fn empty_present_group_has_no_values_and_is_not_missing() {
 }
 
 #[test]
+fn scalar_empty_readback_checks_kind_and_axes_without_literals() {
+    use crate::geometry::embedding_completion::literals::ShapeStructure;
+    use crate::geometry::embedding_completion::storage::FrozenStorage;
+    use crate::geometry::GeometryKind;
+
+    for actual in [
+        Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+        Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY),
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XYZM),
+    ] {
+        let correct = matches!(actual, Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM));
+        let mut buffers = FrozenLiteralBuffers::shapes(
+            Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+            ShapeLiteralLayout::<u32> {
+                structure: Some(ShapeStructure::primitive(GeometryKind::LineString, CoordinateAxes::XYZM, true)),
+                points: Vec::new(),
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        );
+        let FrozenStorage::Scalar { shape, .. } = &mut buffers.storage else {
+            panic!("the scalar sink retains its storage owner");
+        };
+        *shape = actual;
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(Vec::new()),
+            expected: Vec::new(),
+        };
+        let result = bind_literals(buffers, &mut receiver, &mut Unmetered);
+        if correct {
+            assert!(matches!(result.unwrap(), LiteralCheck::Pass(_)));
+        } else {
+            let Err(error) = result else {
+                panic!("typed empty metadata changed after capture");
+            };
+            assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))));
+        }
+    }
+}
+
+#[test]
+fn empty_group_readback_checks_captured_presence_and_length() {
+    use crate::geometry::embedding_completion::storage::FrozenStorage;
+
+    for (offsets, missing) in [
+        (vec![0, 0], ValidityMask::from_vec(1, vec![true])),
+        (vec![0], None),
+    ] {
+        let mut buffers = FrozenLiteralBuffers::<u32>::groups(
+            Arc::new(GeometryArrayStorage::Mixed(Vec::new())),
+            None, StorageLayout::LogicalRows, Vec::new(), vec![0, 0], None, &mut Unmetered,
+        ).unwrap();
+        let FrozenStorage::Groups { groups, .. } = &mut buffers.storage else {
+            panic!("the group sink retains its storage owner");
+        };
+        groups.offsets = offsets;
+        groups.missing = missing;
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(Vec::new()),
+            expected: Vec::new(),
+        };
+        let Err(error) = bind_literals(buffers, &mut receiver, &mut Unmetered) else {
+            panic!("an empty group changed after capture");
+        };
+        assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))));
+    }
+}
+
+#[test]
 fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
     let records = [
         xyzm_point(10.0, 20.0, 110.0, 1010.0),
@@ -287,6 +360,9 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::LineString, CoordinateAxes::XYZM, false,
+                )),
                 points: Vec::new(),
                 lines: vec![LiteralSequence {
                     output: 0,
@@ -335,6 +411,9 @@ fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Polygon, CoordinateAxes::XYZM, false,
+                )),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {

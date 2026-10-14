@@ -912,7 +912,13 @@ impl PyGeometryArray {
                                 logical
                             },
                         };
-                        writer.end_group().map_err(|error| (logical, error))?;
+                        writer
+                            .end_group(
+                                missing
+                                    .as_ref()
+                                    .is_some_and(|mask| mask.is_missing(logical)),
+                            )
+                            .map_err(|error| (logical, error))?;
                     }
                     writer
                         .finish_groups(frame, missing)
@@ -990,7 +996,13 @@ impl PyGeometryArray {
                                 logical
                             },
                         };
-                        writer.end_group().map_err(|error| (logical, error))?;
+                        writer
+                            .end_group(
+                                missing
+                                    .as_ref()
+                                    .is_some_and(|mask| mask.is_missing(logical)),
+                            )
+                            .map_err(|error| (logical, error))?;
                     }
                     writer
                         .finish_groups(frame, missing)
@@ -1118,7 +1130,7 @@ impl PyGeometryArray {
                         .rows_with_missing(Vec::<Shape>::new)
                     {
                         match row {
-                            ArrayRow::Missing { .. } => publication.end_group().map_err(|error| {
+                            ArrayRow::Missing { .. } => publication.end_group(true).map_err(|error| {
                                 (array.len(), error)
                             })?,
                             ArrayRow::Present(row) => {
@@ -1154,7 +1166,7 @@ impl PyGeometryArray {
                                         .map_err(|error| (logical, error))?;
                                 }
                                 publication
-                                    .end_group()
+                                    .end_group(false)
                                     .map_err(|error| (logical, error))?;
                             },
                         }

@@ -305,6 +305,7 @@ where
         });
     }
     let layout = ShapeLiteralLayout {
+        structure: layout.structure,
         points,
         lines,
         polygons,
@@ -350,4 +351,52 @@ where
     } else {
         ProducerDrawingReceipt::new(buffers, literals)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorKind;
+    use crate::geometry::{CoordSeq, Point};
+    use crate::work::Unmetered;
+
+    #[test]
+    fn layout_retyping_preserves_captured_container_structure() {
+        let point = Point::new_raw_xy(2.0, 3.0);
+        let expected = Shape::Point(point);
+        let mut image = 0;
+        let mut outputs = (0, 0, 0);
+        let (layout, _) = ProducerDrawingReceipt::drawing_layout(
+            &expected,
+            0,
+            None,
+            None,
+            &mut image,
+            &mut outputs,
+        )
+        .unwrap();
+        let changed = Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_points(&[point]).unwrap(),
+        );
+        let Err(error) = receipt_from_shape_layout(
+            changed,
+            layout,
+            LiteralAddress {
+                operation: 0,
+                logical_row: 0,
+                group_row: None,
+                value_row: None,
+                output: 0,
+            },
+            false,
+            &mut Unmetered,
+        ) else {
+            panic!("layout retyping blessed a substituted container");
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
 }

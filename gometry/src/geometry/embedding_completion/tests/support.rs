@@ -8,7 +8,7 @@ use super::contacts::{edges_have_only_vertex_contacts, point_edge_contacts_prese
 use super::layout::LogicalArealWalk;
 use super::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    ShapeLiteralLayout, ShapeStructure,
 };
 use super::points::ExactPoints;
 use super::storage::{CheckedImages, FrozenLiteralBuffers, LiteralChart, LiteralCheck};
@@ -342,6 +342,9 @@ fn point_literal_row(
         group_row,
         value_row,
         layout: ShapeLiteralLayout {
+            structure: Some(ShapeStructure::primitive(
+                crate::geometry::GeometryKind::Point, CoordinateAxes::XYZM, false,
+            )),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::XYZM,

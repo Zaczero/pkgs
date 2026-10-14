@@ -375,6 +375,7 @@ impl QEmissionPlan {
             })?;
             layout.in_output_order(&order, work)?
         };
+        let layout = layout.with_structure(&shape);
         Ok((shape, layout, diagnostic_lines))
     }
 
@@ -434,7 +435,9 @@ impl QEmissionPlan {
         let order = order.ok_or_else(|| {
             GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
         })?;
-        let literal_uses = literal_uses.in_output_order(&order, work)?;
+        let literal_uses = literal_uses
+            .in_output_order(&order, work)?
+            .with_structure(&shape);
         Ok(super::super::emission::NativeFrozenDrawing {
             shape,
             literal_uses,

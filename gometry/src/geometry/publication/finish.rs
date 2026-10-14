@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::geometry::embedding_completion::binding::bind_final_literals;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::{
     CheckedImages, FinalGroupRows, LiteralChart, LiteralCheck, LiteralStorage, SealedOutput,
@@ -304,6 +304,11 @@ impl FinishedGeometry {
                 address(&mut literal.address);
             }
             let row_layout = ShapeLiteralLayout {
+                structure: Some(ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Polygon,
+                    literal_polygon.axes,
+                    false,
+                )),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {
@@ -417,6 +422,7 @@ pub(super) fn map_shape_layout<I: Copy, O>(
     image: &impl Fn(I) -> Result<O>,
 ) -> Result<ShapeLiteralLayout<O>> {
     Ok(ShapeLiteralLayout {
+        structure: layout.structure,
         points: layout
             .points
             .into_iter()

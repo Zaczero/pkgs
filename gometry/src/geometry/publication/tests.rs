@@ -17,7 +17,7 @@ use crate::dispatch::kernels::{
 };
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -41,6 +41,7 @@ fn point_literal_layout(
         group_row,
         value_row,
         layout: ShapeLiteralLayout {
+            structure: Some(ShapeStructure::capture(&Shape::Point(point))),
             points: vec![LiteralPoint {
                 output: 0,
                 axes: CoordinateAxes::from_point(point),
@@ -140,6 +141,7 @@ fn producer_line_shape_layout(
         group_row: None,
         value_row: None,
         layout: ShapeLiteralLayout {
+            structure: Some(ShapeStructure::capture(shape)),
             points: Vec::new(),
             lines,
             polygons: Vec::new(),
@@ -305,6 +307,11 @@ fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> Prod
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(ShapeStructure::primitive(
+                    GeometryKind::Polygon,
+                    CoordinateAxes::XY,
+                    false,
+                )),
                 points: Vec::new(),
                 lines: Vec::new(),
                 polygons: vec![LiteralPolygon {
@@ -932,6 +939,7 @@ fn producer_polygon_shape_layout(
         group_row: None,
         value_row: None,
         layout: ShapeLiteralLayout {
+            structure: Some(ShapeStructure::capture(shape)),
             points: Vec::new(),
             lines: Vec::new(),
             polygons: literal_polygons,

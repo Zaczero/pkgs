@@ -370,6 +370,7 @@ fn empty_literal_test_parts() -> NativeMaterializedParts {
         lines: Vec::new(),
         polygons: Vec::new(),
         literal_uses: NativeLiteralUses {
+            structure: None,
             points: Vec::new(),
             lines: Vec::new(),
             polygons: Vec::new(),

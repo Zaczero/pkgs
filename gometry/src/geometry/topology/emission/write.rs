@@ -606,6 +606,7 @@ pub(in crate::geometry::topology) fn write_drawing(
         lines,
         polygons,
         layout: ShapeLiteralLayout {
+            structure: None,
             points: point_locations,
             lines: line_locations,
             polygons: polygon_locations,

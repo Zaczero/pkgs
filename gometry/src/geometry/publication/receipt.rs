@@ -2,7 +2,7 @@ use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout,
+    ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -143,6 +143,7 @@ impl ProducerDrawingReceipt {
                 )?;
                 (
                     ShapeLiteralLayout {
+                        structure: None,
                         points: Vec::new(),
                         lines: vec![sequence],
                         polygons: Vec::new(),
@@ -152,6 +153,7 @@ impl ProducerDrawingReceipt {
             },
             Shape::Empty(crate::geometry::GeometryKind::LineString, _) => (
                 ShapeLiteralLayout {
+                    structure: None,
                     points: Vec::new(),
                     lines: Vec::new(),
                     polygons: Vec::new(),
@@ -179,7 +181,7 @@ impl ProducerDrawingReceipt {
                 .into());
             },
         };
-        Ok((layout, literals))
+        Ok((layout.with_structure(shape), literals))
     }
 
     pub(in crate::geometry) fn drawing_layout(
@@ -317,6 +319,7 @@ impl ProducerDrawingReceipt {
         }
 
         let mut layout = ShapeLiteralLayout {
+            structure: None,
             points: Vec::new(),
             lines: Vec::new(),
             polygons: Vec::new(),
@@ -332,7 +335,7 @@ impl ProducerDrawingReceipt {
             &mut layout,
             &mut literals,
         )?;
-        Ok((layout, literals))
+        Ok((layout.with_structure(shape), literals))
     }
 
     fn next_image(next_image: &mut usize) -> Result<ProducerImageId> {
@@ -551,6 +554,7 @@ impl PendingPublicationRow {
             .into());
         }
         self.shape = shape;
+        self.layout.layout.structure = Some(ShapeStructure::capture(&self.shape));
         Ok(())
     }
 
@@ -608,6 +612,7 @@ pub(in crate::geometry) struct ArrayPublicationBatch {
     pub(super) missing: Option<ValidityMask>,
     pub(super) layout: StorageLayout,
     pub(super) logical_rows: Vec<Option<StoredPublicationRow>>,
+    pub(super) expected_present: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

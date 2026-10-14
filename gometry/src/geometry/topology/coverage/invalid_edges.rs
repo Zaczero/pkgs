@@ -4,7 +4,7 @@ use super::super::q::{ExactGeographicTopology, QSpanOwner};
 use crate::array::StreamingShapes;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
+    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout, ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{ProducerDrawingReceipt, ProducerImageId, ProducerLiteral};
@@ -86,7 +86,10 @@ pub(super) fn producer_drawing_receipt(
     }
 
     let mut writer = StreamingShapes::with_capacity(0, shapes.len());
-    let mut row_map = Vec::with_capacity(shapes.len());
+    let logical_count = missing.as_ref().map_or(shapes.len(), ValidityMask::len);
+    let mut row_map = std::iter::repeat_with(|| None)
+        .take(logical_count)
+        .collect::<Vec<_>>();
     let mut literals = Vec::new();
     for (shape, logical_row) in shapes.into_iter().zip(logical_rows) {
         let mut lines = Vec::new();
@@ -130,17 +133,20 @@ pub(super) fn producer_drawing_receipt(
                 .into());
             },
         }
-        row_map.push(Some(LiteralRowLayout {
+        *row_map
+            .get_mut(logical_row)
+            .expect("source logical row lies in its admitted domain") = Some(LiteralRowLayout {
             operation: 0,
             logical_row,
             group_row: None,
             value_row: None,
             layout: ShapeLiteralLayout {
+                structure: Some(ShapeStructure::capture(&shape)),
                 points: Vec::new(),
                 lines,
                 polygons: Vec::new(),
             },
-        }));
+        });
         writer.try_push(shape)?;
     }
 

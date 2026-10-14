@@ -180,7 +180,18 @@ where
             row_map,
             visit_rows,
         } => visit_array_literals(rows, row_map, visit_rows, work, &mut check)?,
-        FrozenStorage::Groups { groups, row_map } => {
+        FrozenStorage::Groups {
+            groups,
+            row_map,
+            expected_present,
+        } => {
+            ArrayRows::validate_publication_domain(
+                groups.offsets.len().checked_sub(1).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("final group domain has no offset origin".into())
+                })?,
+                groups.missing.as_ref(),
+                expected_present.iter().copied(),
+            )?;
             visit_group_literals(groups, row_map, work, &mut check)?;
         },
     }
