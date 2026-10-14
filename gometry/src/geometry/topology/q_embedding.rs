@@ -676,7 +676,6 @@ use self::publication::tracing::{
 };
 #[cfg(test)]
 pub(in crate::geometry::topology) use self::source_binding::bind_source_only;
-pub(in crate::geometry::topology) use self::source_binding::q_source_image_port;
 pub(in crate::geometry::topology::q_embedding) use self::source_binding::require_q_source_image_port;
 use self::source_binding::{AssignedSourceChart, QSourceImages, SourceOnlyReceipt};
 use super::emission::plan::{

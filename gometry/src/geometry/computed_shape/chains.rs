@@ -38,37 +38,6 @@ where
         source_context,
         intent,
         vertex_intent,
-        None,
-    )
-}
-
-pub(crate) fn publish_native_computed_chain_with_edge_ranges<'intent, 'metric, P, M>(
-    frame: GeographicFrame,
-    points: &P,
-    closed_ring: bool,
-    budget: &mut ExpansionBudget,
-    source_context: &SourceArcContext<'_, 'metric, M>,
-    intent: impl Fn(
-        usize,
-        crate::geometry::Point,
-        crate::geometry::Point,
-    ) -> Result<ComputedEdgeIntent<'intent>>,
-    vertex_intent: impl Fn(usize, crate::geometry::Point) -> ComputedVertexIntent,
-    edge_ranges: &mut Vec<(usize, usize)>,
-) -> Result<Option<Vec<crate::geometry::Point>>>
-where
-    P: crate::geometry::Coordinates + ?Sized,
-    M: ChartMetric + 'metric,
-{
-    publish_native_computed_chain_inner(
-        frame,
-        points,
-        closed_ring,
-        budget,
-        source_context,
-        intent,
-        vertex_intent,
-        Some(edge_ranges),
     )
 }
 
@@ -84,7 +53,6 @@ fn publish_native_computed_chain_inner<'intent, 'metric, P, M>(
         crate::geometry::Point,
     ) -> Result<ComputedEdgeIntent<'intent>>,
     vertex_intent: impl Fn(usize, crate::geometry::Point) -> ComputedVertexIntent,
-    edge_ranges: Option<&mut Vec<(usize, usize)>>,
 ) -> Result<Option<Vec<crate::geometry::Point>>>
 where
     P: crate::geometry::Coordinates + ?Sized,
@@ -99,7 +67,7 @@ where
     let mut active_root = None;
     let mut root_metric_state = RootMetricState::default();
     let mut work = Unmetered;
-    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges(
+    publish_computed_chain_with_vertex_intents_and_samples(
         frame,
         points,
         closed_ring,
@@ -135,7 +103,6 @@ where
             )
         },
         |_, _, _, _, _, _| Ok(()),
-        edge_ranges,
     )
 }
 

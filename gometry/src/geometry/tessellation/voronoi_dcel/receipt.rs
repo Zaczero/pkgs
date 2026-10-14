@@ -1,62 +1,27 @@
 //! Provenance receipts for Voronoi producer outputs.
 
 use super::{
-    ClipSegmentId, ClipTrace, EdgeId, EmbeddedEdges, EmbeddedPolygon, EmbeddedVertices,
-    ExactCellPart, ExactEdgeChain, ExactSign, ExactSimpleRing, ExactSubdivision, FrameSide,
-    NormalizedClip, OverlayNodeReceipt, OwnerTransition, Point, PointKey, PointSelectionChart,
-    Polygon, Result, Ring, Site, VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt,
-    VoronoiChartCutSide, VoronoiClipAtomReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot,
+    EmbeddedEdges, EmbeddedPolygon, EmbeddedVertices, ExactCellPart, ExactEdgeChain, ExactSign,
+    ExactSimpleRing, ExactSubdivision, FrameSide, NormalizedClip, OverlayNodeReceipt,
+    OwnerTransition, Point, PointKey, PointSelectionChart, Polygon, Result, Ring, Site,
+    VoronoiAssignmentReceipt, VoronoiBoundary, VoronoiCellReceipt, VoronoiClipSegmentReceipt,
     VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin,
-    VoronoiEdgeReceipt, VoronoiEdgeSourceUse, VoronoiFrameSide, VoronoiProducer,
-    VoronoiRingEdgeRole, VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
+    VoronoiEdgeReceipt, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
+    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
     VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY,
     empty_edges_with_receipt, ensure_coordseq_vertex_capacity, exact, exact_chart_point, lex_xy,
     try_hash_map_with_capacity, voronoi_error,
 };
-use crate::geographic::retained_exact::sites::retained_site_longitude;
 
 mod collinear;
 
 pub(super) use collinear::collinear_polygon_receipt;
 
-pub(super) fn chart_vertex_origins(
-    chart: Option<&PointSelectionChart>,
-    point: &exact::ExactPoint,
-) -> Result<Vec<VoronoiVertexOrigin>> {
-    let mut origins = Vec::new();
-    if let Some(chart) = chart {
-        let frame = chart.frame();
-        let zero = exact::ExactDyadic::zero();
-        let cuts = chart.cut_longitudes()?;
-        for (side, cut) in [
-            (VoronoiChartCutSide::Lower, cuts[0]),
-            (VoronoiChartCutSide::Upper, cuts[1]),
-        ] {
-            let cut_point = exact::ExactPoint::from_dyadics(
-                retained_site_longitude(frame.longitude(), cut)?,
-                zero.clone(),
-            );
-            if point.compare_x(&cut_point)?.is_eq() {
-                origins.push(VoronoiVertexOrigin::ChartCut { side });
-            }
-        }
-        for latitude in [frame.pole(), -frame.pole()] {
-            let pole = exact::ExactPoint::from_xy(XY::new(0.0, latitude));
-            if point.compare_y(&pole)?.is_eq() {
-                origins.push(VoronoiVertexOrigin::Pole { latitude });
-            }
-        }
-    }
-    Ok(origins)
-}
-
 pub(super) fn site_receipts(
     producer: VoronoiProducer,
     sites: &[Site],
-    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = VoronoiDiagramReceipt::empty(producer);
-    receipt.selected_chart_cuts = chart.map(|chart| chart.cut_longitudes()).transpose()?;
     receipt.sites.reserve(sites.len());
     for site in sites {
         let id = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -111,9 +76,8 @@ pub(super) fn exact_xy_coordinates(point: &exact::ExactPoint) -> Result<[exact::
 
 pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
     sites: &[Site],
-    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites, chart)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Empty, sites)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -122,9 +86,8 @@ pub(in crate::geometry::tessellation) fn empty_polygon_outputs(
 
 pub(in crate::geometry::tessellation) fn lone_site_empty_polygon_outputs(
     sites: &[Site],
-    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
-    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?);
+    let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: Vec::new(),
         receipt,
@@ -141,7 +104,7 @@ pub(in crate::geometry::tessellation) fn lone_site_empty_edges(
             lone_site_polygon_outputs(sites, polygon, chart)?.receipt
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites, chart)?)
+            std::sync::Arc::new(site_receipts(VoronoiProducer::LoneSite, sites)?)
         },
     };
     empty_edges_with_receipt(receipt)
@@ -157,7 +120,7 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             "lone-site receipt requires one admitted site",
         ));
     };
-    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites, chart)?;
+    let mut receipt = site_receipts(VoronoiProducer::LoneSite, sites)?;
     let owner = u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     let mut output_edge_id = 0_u32;
     let mut vertex_id = 0_u32;
@@ -193,12 +156,11 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             vertex_id = vertex_id
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            let mut origins = chart_vertex_origins(chart, exact_point)?;
+            let mut origins = Vec::new();
             if exact_point.same_position(&site.exact_point)? {
                 origins.push(VoronoiVertexOrigin::SourceSite { site: owner });
             }
             receipt.vertices.push(VoronoiVertexReceipt {
-                id,
                 exact_xy: exact_xy_coordinates(exact_point)?,
                 origins,
                 assignment: Some(point.xy()),
@@ -215,9 +177,6 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 .checked_add(1)
                 .filter(|&next| next < open_count)
                 .unwrap_or(0);
-            let next = points
-                .get(next_index)
-                .expect("lone-site ring edge endpoint belongs to its open cycle");
             let exact_start = exact_points
                 .get(edge_index)
                 .expect("lone-site exact source ring aligns with its coordinates")
@@ -226,13 +185,6 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 .get(next_index)
                 .expect("lone-site exact source ring aligns with its coordinates")
                 .clone();
-            let source_root = VoronoiClipSourceRoot {
-                ring: ring_index,
-                edge: edge_index,
-                reversed: false,
-                start: *point,
-                end: *next,
-            };
             receipt.clip_segments.push(VoronoiClipSegmentReceipt {
                 id: output_edge_id,
                 ring: u32::try_from(ring_index)
@@ -242,8 +194,6 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 frame_side: None,
                 exact_start: exact_xy_coordinates(&exact_start)?,
                 exact_end: exact_xy_coordinates(&exact_end)?,
-                source_roots: vec![source_root],
-                atoms: Vec::new(),
             });
             receipt.edges.push(VoronoiEdgeReceipt {
                 id: output_edge_id,
@@ -283,49 +233,11 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 face: None,
                 owner: Some(owner),
             });
-            let root_origin = VoronoiVertexOrigin::SourceClip {
-                segment: output_edge_id,
-                parameter: exact::ExactRational::zero(),
-                source_ring: Some(ring_index),
-                source_edge: Some(edge_index),
-            };
-            receipt
-                .vertices
-                .get_mut(edge_start as usize)
-                .ok_or_else(|| voronoi_error("lone-site start vertex is absent"))?
-                .origins
-                .push(root_origin);
-            receipt
-                .vertices
-                .get_mut(edge_end as usize)
-                .ok_or_else(|| voronoi_error("lone-site end vertex is absent"))?
-                .origins
-                .push(VoronoiVertexOrigin::SourceClip {
-                    segment: output_edge_id,
-                    parameter: exact::ExactRational::one(),
-                    source_ring: Some(ring_index),
-                    source_edge: Some(edge_index),
-                });
             role_row.push(VoronoiRingEdgeRole {
                 edge: Some(output_edge_id),
                 forward: true,
                 origins: vec![VoronoiEdgeOrigin::SourceClip {
                     segment: output_edge_id,
-                }],
-                source_uses: vec![VoronoiEdgeSourceUse {
-                    source_segment: output_edge_id,
-                    source_operand: None,
-                    source_ring: Some(
-                        u32::try_from(ring_index)
-                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                    ),
-                    source_edge: Some(
-                        u32::try_from(edge_index)
-                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                    ),
-                    forward: true,
-                    start_parameter: exact::ExactRational::zero(),
-                    end_parameter: exact::ExactRational::one(),
                 }],
             });
             ring_edge_ids.push(output_edge_id);
@@ -390,7 +302,6 @@ pub(super) const fn receipt_frame_side(side: FrameSide) -> VoronoiFrameSide {
 
 pub(super) fn clip_segment_receipts(
     clip: &NormalizedClip<'_>,
-    trace: Option<&ClipTrace>,
 ) -> Result<Vec<VoronoiClipSegmentReceipt>> {
     let mut result = Vec::new();
     let mut segment_id = 0_usize;
@@ -398,25 +309,6 @@ pub(super) fn clip_segment_receipts(
         for (edge_index, (start, end)) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
             let id =
                 u32::try_from(segment_id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-            let atoms = trace
-                .and_then(|trace| trace.rings.get(ring_index))
-                .map_or_default(|ring| {
-                    ring.atoms
-                        .iter()
-                        .filter(|atom| atom.segment == id)
-                        .map(|atom| VoronoiClipAtomReceipt {
-                            edge: atom.edge.0,
-                            reversed: atom.reversed,
-                            start_parameter: atom.start_parameter.clone(),
-                            end_parameter: atom.end_parameter.clone(),
-                        })
-                        .collect()
-                });
-            let source_roots = clip
-                .source_roots
-                .get(segment_id)
-                .cloned()
-                .unwrap_or_default();
             let frame_side = if clip.source.is_none() && ring_index == 0 {
                 FrameSide::ALL
                     .get(edge_index)
@@ -434,8 +326,6 @@ pub(super) fn clip_segment_receipts(
                 frame_side,
                 exact_start: exact_xy_coordinates(start)?,
                 exact_end: exact_xy_coordinates(end)?,
-                source_roots,
-                atoms,
             });
             segment_id = segment_id
                 .checked_add(1)
@@ -452,13 +342,11 @@ pub(super) fn exact_diagram_receipt(
     parts: &[ExactCellPart],
     chains: &[ExactEdgeChain],
     clip: &NormalizedClip<'_>,
-    clip_trace: &ClipTrace,
     exact_to_embedded: &EmbeddedVertices,
     points: &[XY],
-    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(producer, sites, chart)?;
-    receipt.clip_segments = clip_segment_receipts(clip, Some(clip_trace))?;
+    let mut receipt = site_receipts(producer, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip)?;
 
     let mut assignments = vec![None; subdivision.vertices.len()];
     for (vertex, embedded) in exact_to_embedded.0.iter().enumerate() {
@@ -493,48 +381,6 @@ pub(super) fn exact_diagram_receipt(
                 });
         }
     }
-    for segment in &receipt.clip_segments {
-        let segment_id = ClipSegmentId(segment.id);
-        for atom in &segment.atoms {
-            let edge = subdivision.edge(EdgeId(atom.edge));
-            let [left, right] = edge.endpoints;
-            let [start, end] = if atom.reversed {
-                [right, left]
-            } else {
-                [left, right]
-            };
-            for root in &segment.source_roots {
-                let start_parameter = if root.reversed {
-                    exact::ExactRational::one().try_subtract(&atom.start_parameter)?
-                } else {
-                    atom.start_parameter.clone()
-                };
-                let end_parameter = if root.reversed {
-                    exact::ExactRational::one().try_subtract(&atom.end_parameter)?
-                } else {
-                    atom.end_parameter.clone()
-                };
-                vertex_origins
-                    .get_mut(start.0 as usize)
-                    .ok_or_else(|| voronoi_error("source-clip start vertex is absent"))?
-                    .push(VoronoiVertexOrigin::SourceClip {
-                        segment: segment_id.0,
-                        parameter: start_parameter,
-                        source_ring: Some(root.ring),
-                        source_edge: Some(root.edge),
-                    });
-                vertex_origins
-                    .get_mut(end.0 as usize)
-                    .ok_or_else(|| voronoi_error("source-clip end vertex is absent"))?
-                    .push(VoronoiVertexOrigin::SourceClip {
-                        segment: segment_id.0,
-                        parameter: end_parameter,
-                        source_ring: Some(root.ring),
-                        source_edge: Some(root.edge),
-                    });
-            }
-        }
-    }
     for edge in &subdivision.edges {
         let separator = edge.separator.map(|pair| pair.map(|site| site.0));
         let frame_side = edge.frame_side.map(receipt_frame_side);
@@ -550,13 +396,6 @@ pub(super) fn exact_diagram_receipt(
             }
         }
     }
-    for (vertex, exact_vertex) in subdivision.vertices.iter().enumerate() {
-        vertex_origins
-            .get_mut(vertex)
-            .ok_or_else(|| voronoi_error("diagram vertex is absent from the receipt"))?
-            .extend(chart_vertex_origins(chart, &exact_vertex.point)?);
-    }
-
     receipt.vertices.reserve(subdivision.vertices.len());
     for (index, vertex) in subdivision.vertices.iter().enumerate() {
         let origins = vertex_origins
@@ -566,7 +405,6 @@ pub(super) fn exact_diagram_receipt(
             .get(index)
             .ok_or_else(|| voronoi_error("diagram vertex assignment is absent"))?;
         receipt.vertices.push(VoronoiVertexReceipt {
-            id: u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
             exact_xy: exact_xy_coordinates(&vertex.point)?,
             origins: std::mem::take(origins),
             assignment,
@@ -650,7 +488,6 @@ fn exact_ring_edge_roles(
     subdivision: &ExactSubdivision,
     ring: &ExactSimpleRing,
     clip: &NormalizedClip<'_>,
-    clip_trace: &ClipTrace,
 ) -> Result<Vec<VoronoiRingEdgeRole>> {
     ring.edges
         .iter()
@@ -676,59 +513,10 @@ fn exact_ring_edge_roles(
                 );
             }
             let forward = edge.endpoints == [start, end];
-            let mut source_uses = Vec::new();
-            for trace_ring in &clip_trace.rings {
-                for atom in &trace_ring.atoms {
-                    if atom.edge != edge_id {
-                        continue;
-                    }
-                    if clip.source.is_some()
-                        && let Some(roots) = clip.source_roots.get(atom.segment as usize)
-                    {
-                        for root in roots {
-                            let source_start = if root.reversed {
-                                exact::ExactRational::one().try_subtract(&atom.start_parameter)?
-                            } else {
-                                atom.start_parameter.clone()
-                            };
-                            let source_end = if root.reversed {
-                                exact::ExactRational::one().try_subtract(&atom.end_parameter)?
-                            } else {
-                                atom.end_parameter.clone()
-                            };
-                            let source_forward = (forward != atom.reversed) != root.reversed;
-                            source_uses.push(VoronoiEdgeSourceUse {
-                                source_segment: atom.segment,
-                                source_operand: None,
-                                source_ring: Some(
-                                    u32::try_from(root.ring)
-                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                                ),
-                                source_edge: Some(
-                                    u32::try_from(root.edge)
-                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                                ),
-                                forward: source_forward,
-                                start_parameter: if source_forward {
-                                    source_start.clone()
-                                } else {
-                                    source_end.clone()
-                                },
-                                end_parameter: if source_forward {
-                                    source_end
-                                } else {
-                                    source_start
-                                },
-                            });
-                        }
-                    }
-                }
-            }
             Ok(VoronoiRingEdgeRole {
                 edge: Some(edge_id.0),
                 forward,
                 origins,
-                source_uses,
             })
         })
         .collect()
@@ -756,7 +544,6 @@ pub(super) fn embedded_exact_ring(
     exact_to_embedded: &EmbeddedVertices,
     points: &[XY],
     clip: &NormalizedClip<'_>,
-    clip_trace: &ClipTrace,
 ) -> Result<(Ring, Vec<VoronoiRingEdgeRole>, Vec<OverlayNodeReceipt>)> {
     ensure_coordseq_vertex_capacity(ring.vertices.len())?;
     let (_, open_vertices) = ring
@@ -774,7 +561,7 @@ pub(super) fn embedded_exact_ring(
             assignment: point,
         });
     }
-    let mut roles = exact_ring_edge_roles(subdivision, ring, clip, clip_trace)?;
+    let mut roles = exact_ring_edge_roles(subdivision, ring, clip)?;
     if open_vertices.len() > 2 {
         let (start, _) = coordinates
             .iter()

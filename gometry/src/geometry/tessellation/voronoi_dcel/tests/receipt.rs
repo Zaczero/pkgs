@@ -48,97 +48,9 @@ fn assert_polygon_receipt_alignment(outputs: &crate::geometry::VoronoiPolygonOut
                 let actual_end = *points.get(next_index).expect("ring edge end exists");
                 assert_eq!(PointKey::new(actual_start), PointKey::new(expected_start));
                 assert_eq!(PointKey::new(actual_end), PointKey::new(expected_end));
-                for source_use in &role.source_uses {
-                    bounded_source_use(source_use);
-                    assert_eq!(
-                        source_use.forward,
-                        source_use
-                            .start_parameter
-                            .try_cmp(&source_use.end_parameter)
-                            .unwrap()
-                            != std::cmp::Ordering::Greater
-                    );
-                    if source_use.source_operand == Some(0) {
-                        continue;
-                    }
-                    let segment = receipt_clip(&outputs.receipt, source_use.source_segment);
-                    let source_ring = source_use
-                        .source_ring
-                        .expect("source edge use retains its original ring");
-                    let source_edge = source_use
-                        .source_edge
-                        .expect("source edge use retains its original edge");
-                    let root = segment
-                        .source_roots
-                        .iter()
-                        .find(|root| {
-                            root.ring == source_ring as usize && root.edge == source_edge as usize
-                        })
-                        .expect("source edge use names one of its clip roots");
-                    let [edge_start, edge_end] = edge.endpoints;
-                    let (start_id, end_id) = if role.forward {
-                        (edge_start, edge_end)
-                    } else {
-                        (edge_end, edge_start)
-                    };
-                    let start_parameter = parameter_on_clip_segment(
-                        segment,
-                        receipt_vertex(&outputs.receipt, start_id),
-                    );
-                    let end_parameter = parameter_on_clip_segment(
-                        segment,
-                        receipt_vertex(&outputs.receipt, end_id),
-                    );
-                    let source_parameter = |parameter: &exact::ExactRational| {
-                        if root.reversed {
-                            exact::ExactRational::one().try_subtract(parameter).unwrap()
-                        } else {
-                            parameter.clone()
-                        }
-                    };
-                    assert_eq!(
-                        source_use.start_parameter,
-                        source_parameter(&start_parameter)
-                    );
-                    assert_eq!(source_use.end_parameter, source_parameter(&end_parameter));
-                }
             }
         }
     }
-}
-
-fn bounded_source_use(source_use: &VoronoiEdgeSourceUse) {
-    for parameter in [&source_use.start_parameter, &source_use.end_parameter] {
-        assert_ne!(
-            parameter.try_cmp(&exact::ExactRational::zero()).unwrap(),
-            std::cmp::Ordering::Less
-        );
-        assert_ne!(
-            parameter.try_cmp(&exact::ExactRational::one()).unwrap(),
-            std::cmp::Ordering::Greater
-        );
-    }
-}
-
-fn parameter_on_clip_segment(
-    segment: &VoronoiClipSegmentReceipt,
-    vertex: &VoronoiVertexReceipt,
-) -> exact::ExactRational {
-    let [start_x, start_y] = &segment.exact_start;
-    let [end_x, end_y] = &segment.exact_end;
-    let [point_x, point_y] = &vertex.exact_xy;
-    let (start, end, point) = if start_x == end_x {
-        (start_y, end_y, point_y)
-    } else {
-        (start_x, end_x, point_x)
-    };
-    let denominator = end.try_subtract(start).unwrap();
-    assert!(!denominator.is_zero());
-    point
-        .try_subtract(start)
-        .unwrap()
-        .try_quotient(&denominator)
-        .unwrap()
 }
 
 #[test]
@@ -247,18 +159,6 @@ fn source_clip_contacts_keep_parameters_through_ring_normalization() {
     assert_eq!(outputs.receipt.producer(), VoronoiProducer::Collinear);
     assert_receipt_graph(&outputs.receipt);
     assert_polygon_receipt_alignment(&outputs);
-    assert!(
-        outputs
-            .iter()
-            .flat_map(|output| &output.edge_roles)
-            .flatten()
-            .flat_map(|role| &role.source_uses)
-            .filter(|source_use| source_use.source_operand == Some(1))
-            .any(|source_use| {
-                source_use.start_parameter != exact::ExactRational::zero()
-                    || source_use.end_parameter != exact::ExactRational::one()
-            })
-    );
     let cells: Vec<_> = outputs
         .iter()
         .map(|output| Shape::Polygon(output.polygon.clone()))

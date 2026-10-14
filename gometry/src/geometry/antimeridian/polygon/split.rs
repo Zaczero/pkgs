@@ -312,8 +312,8 @@ fn append_shape_edge_uses(
                 append_shape_edge_uses(member, output)?;
             }
         },
-        ShapeLineage::Point { .. }
-        | ShapeLineage::MultiPoint { .. }
+        ShapeLineage::Point
+        | ShapeLineage::MultiPoint
         | ShapeLineage::LineString(_)
         | ShapeLineage::MultiLineString { .. }
         | ShapeLineage::Empty => {
@@ -581,8 +581,8 @@ fn polygon_lineages(
             }
         },
         super::super::lineage::ShapeLineage::Empty if polygon_count == 0 => Ok(Vec::new()),
-        super::super::lineage::ShapeLineage::Point { .. }
-        | super::super::lineage::ShapeLineage::MultiPoint { .. }
+        super::super::lineage::ShapeLineage::Point
+        | super::super::lineage::ShapeLineage::MultiPoint
         | super::super::lineage::ShapeLineage::LineString(_)
         | super::super::lineage::ShapeLineage::MultiLineString { .. }
         | super::super::lineage::ShapeLineage::Polygon(_)

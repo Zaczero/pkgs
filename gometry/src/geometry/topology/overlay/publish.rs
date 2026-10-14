@@ -281,24 +281,9 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 operation,
                 preparation_work,
             )?;
-            let ranges_by_port = super::producer_drawing::source_root_ranges_by_q_port(
-                topology,
-                plan.fragment_recipes.as_slice(),
-                preparation_work,
-            )?;
             let receipt = super::producer_drawing::receipt_from_shape_layout(
                 shape,
                 layout,
-                |image, work| {
-                    super::producer_drawing::source_root_ranges_for_q_image(
-                        topology,
-                        &ranges_by_port,
-                        None,
-                        image,
-                        work,
-                    )
-                },
-                Vec::new(),
                 LiteralAddress {
                     operation: 0,
                     logical_row: 0,

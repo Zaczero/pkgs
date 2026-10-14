@@ -1,4 +1,3 @@
-use super::DirectedChartRestrictionUse;
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
@@ -7,7 +6,6 @@ use crate::geometry::embedding_completion::literals::{
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
-use crate::geometry::ordinates::RootRange;
 use crate::geometry::storage::{GeometryArrayStorage, StorageLayout, ValidityMask};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::q_embedding::publication::{
@@ -61,17 +59,9 @@ impl ProducerLiteral {
     }
 }
 
-pub(in crate::geometry) struct ProducerSourceRootUse {
-    pub(in crate::geometry) address: LiteralAddress,
-    pub(in crate::geometry) image: ProducerImageId,
-    pub(in crate::geometry) range: RootRange,
-}
-
 pub(in crate::geometry) struct ProducerDrawingReceipt {
     pub(super) buffers: FrozenLiteralBuffers<ProducerImageId>,
     pub(super) literals: Vec<ProducerLiteral>,
-    pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
-    pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
     pub(super) retain_literals_for_republication: bool,
 }
 
@@ -82,9 +72,9 @@ impl ProducerDrawingReceipt {
         retain_literals_for_republication: bool,
     ) -> Self {
         if retain_literals_for_republication {
-            Self::new_for_republication(buffers, literals, Vec::new(), Vec::new())
+            Self::new_for_republication(buffers, literals)
         } else {
-            Self::new(buffers, literals, Vec::new(), Vec::new())
+            Self::new(buffers, literals)
         }
     }
 
@@ -139,8 +129,6 @@ impl ProducerDrawingReceipt {
         Ok(Self::new(
             FrozenLiteralBuffers::shapes(shape, layout),
             literals,
-            Vec::new(),
-            Vec::new(),
         ))
     }
 
@@ -150,8 +138,6 @@ impl ProducerDrawingReceipt {
         Ok(Self::new_for_republication(
             FrozenLiteralBuffers::shapes(shape, layout),
             literals,
-            Vec::new(),
-            Vec::new(),
         ))
     }
 
@@ -494,14 +480,10 @@ impl ProducerDrawingReceipt {
     pub(in crate::geometry) const fn new(
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,
-        source_root_uses: Vec<ProducerSourceRootUse>,
-        chart_restrictions: Vec<DirectedChartRestrictionUse>,
     ) -> Self {
         Self {
             buffers,
             literals,
-            source_root_uses,
-            chart_restrictions,
             retain_literals_for_republication: false,
         }
     }
@@ -509,14 +491,10 @@ impl ProducerDrawingReceipt {
     pub(in crate::geometry) const fn new_for_republication(
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,
-        source_root_uses: Vec<ProducerSourceRootUse>,
-        chart_restrictions: Vec<DirectedChartRestrictionUse>,
     ) -> Self {
         Self {
             buffers,
             literals,
-            source_root_uses,
-            chart_restrictions,
             retain_literals_for_republication: true,
         }
     }
@@ -531,43 +509,41 @@ pub(super) struct CheckedPublicationLiteral {
 }
 
 pub(crate) struct PendingPublicationRow {
-    pub(super) shape: Option<Shape>,
+    pub(super) shape: Shape,
     pub(super) logical_row: usize,
     pub(super) layout: LiteralRowLayout<PublicationImage>,
     pub(super) checked: Vec<CheckedPublicationLiteral>,
     pub(super) producer_literals: Vec<ProducerLiteral>,
-    pub(super) source_root_uses: Vec<ProducerSourceRootUse>,
-    pub(super) chart_restrictions: Vec<DirectedChartRestrictionUse>,
+    pub(super) producer_drawing: bool,
+    pub(super) work: EvaluationBudget,
+}
+
+pub(super) struct StoredPublicationRow {
+    pub(super) logical_row: usize,
+    pub(super) layout: LiteralRowLayout<PublicationImage>,
+    pub(super) checked: Vec<CheckedPublicationLiteral>,
+    pub(super) producer_literals: Vec<ProducerLiteral>,
     pub(super) producer_drawing: bool,
     pub(super) work: EvaluationBudget,
 }
 
 impl PendingPublicationRow {
-    pub(crate) const fn take_shape(&mut self) -> Shape {
-        self.shape
-            .take()
-            .expect("pending geographic row is appended exactly once")
-    }
-
     pub(crate) fn is_empty(&self) -> bool {
-        self.shape.as_ref().is_some_and(Shape::is_empty)
+        self.shape.is_empty()
     }
 
     pub(crate) fn replace_empty_shape(&mut self, shape: Shape) -> Result<()> {
-        if !shape.is_empty()
-            || !self.shape.as_ref().is_some_and(Shape::is_empty)
-            || !self.checked.is_empty()
-        {
+        if !shape.is_empty() || !self.shape.is_empty() || !self.checked.is_empty() {
             return Err(GeometryErrorKind::Invalid(
                 "only an empty pending row can use a typed-empty replacement".into(),
             )
             .into());
         }
-        self.shape = Some(shape);
+        self.shape = shape;
         Ok(())
     }
 
-    pub(crate) fn precharge_append(&mut self) -> Result<()> {
+    pub(super) fn precharge_append(&mut self) -> Result<()> {
         let literal_count = self
             .checked
             .len()
@@ -578,6 +554,26 @@ impl PendingPublicationRow {
             .checked_add(1)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         self.work.charge(ticks)
+    }
+
+    pub(super) fn into_stored(self) -> (Shape, StoredPublicationRow) {
+        let Self {
+            shape,
+            logical_row,
+            layout,
+            checked,
+            producer_literals,
+            producer_drawing,
+            work,
+        } = self;
+        (shape, StoredPublicationRow {
+            logical_row,
+            layout,
+            checked,
+            producer_literals,
+            producer_drawing,
+            work,
+        })
     }
 }
 
@@ -600,7 +596,7 @@ pub(in crate::geometry) struct ArrayPublicationBatch {
     pub(super) storage: std::sync::Arc<GeometryArrayStorage>,
     pub(super) missing: Option<ValidityMask>,
     pub(super) layout: StorageLayout,
-    pub(super) logical_rows: Vec<Option<PendingPublicationRow>>,
+    pub(super) logical_rows: Vec<Option<StoredPublicationRow>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

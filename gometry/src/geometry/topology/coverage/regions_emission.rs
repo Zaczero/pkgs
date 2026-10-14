@@ -14,12 +14,12 @@ use crate::geometry::embedding_completion::literals::{
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRequest,
     SourceArcMetricAccess, resolve_request_rows, resolve_source_root,
 };
 use crate::geometry::predicates::ring_contains_interior;
 use crate::geometry::publication::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerSourceRootUse, StorageTarget,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
 };
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -327,7 +327,6 @@ impl GeographicCoverageAnalysis {
         let mut output_shapes = Vec::with_capacity(output_rows.len());
         let mut row_map = Vec::with_capacity(output_rows.len());
         let mut literals = Vec::new();
-        let mut source_root_uses = Vec::new();
         for row in output_rows {
             let logical_row = row.logical_row;
             let mut axes = declared_axes;
@@ -361,10 +360,8 @@ impl GeographicCoverageAnalysis {
                     axes,
                     output,
                     logical_row,
-                    &node_roots,
                     &resolved,
                     &mut literals,
-                    &mut source_root_uses,
                     work,
                 )?;
                 let mut holes = Vec::with_capacity(polygon.holes.len());
@@ -375,10 +372,8 @@ impl GeographicCoverageAnalysis {
                         axes,
                         output,
                         logical_row,
-                        &node_roots,
                         &resolved,
                         &mut literals,
-                        &mut source_root_uses,
                         work,
                     )?;
                     holes.push(hole);
@@ -451,12 +446,7 @@ impl GeographicCoverageAnalysis {
                 .into());
             },
         };
-        Ok(ProducerDrawingReceipt::new(
-            buffers,
-            literals,
-            source_root_uses,
-            Vec::new(),
-        ))
+        Ok(ProducerDrawingReceipt::new(buffers, literals))
     }
 }
 
@@ -799,10 +789,8 @@ fn write_ring(
     axes: CoordinateAxes,
     output: u32,
     logical_row: usize,
-    node_roots: &[Option<Vec<RootParameter>>],
     resolved: &[NodeOrdinates],
     literals: &mut Vec<ProducerLiteral>,
-    source_root_uses: &mut Vec<ProducerSourceRootUse>,
     work: &mut impl Work,
 ) -> Result<(Ring, LiteralSequence<ProducerImageId>)> {
     let mut points = Vec::with_capacity(vertices.len());
@@ -840,27 +828,6 @@ fn write_ring(
             output,
         };
         literals.push(ProducerLiteral::from_point(address, image, point));
-        if let Some(node) = vertex.node {
-            let roots = node_roots
-                .get(node)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("coverage literal has an inactive Q node".into())
-                })?;
-            for root in roots {
-                work.charge_into_error(1)?;
-                source_root_uses.push(ProducerSourceRootUse {
-                    address,
-                    image,
-                    range: RootRange::point_with_work(
-                        root.root,
-                        root.parameter.try_clone_with_work(work)?,
-                        ExactRational::zero(),
-                        work,
-                    )?,
-                });
-            }
-        }
         points.push(point);
         images.push(image);
     }

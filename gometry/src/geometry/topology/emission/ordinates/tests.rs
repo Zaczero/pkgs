@@ -62,7 +62,6 @@ fn emission_ordinate_rows_and_ports_are_reserved_before_progress() {
                 occurrence_range: 2..3,
             },
         ],
-        source_port_images: Vec::new(),
         occurrences,
         chords: Vec::new(),
         parts: Vec::new(),
@@ -193,7 +192,6 @@ fn live_presentation_use_cannot_inherit_colocated_source_axes() {
             source_record: Some(source_record),
             occurrence_range: 0..2,
         }],
-        source_port_images: Vec::new(),
         occurrences: vec![
             WrittenOccurrence {
                 origin: VertexOrigin::SourceNode(source_node),

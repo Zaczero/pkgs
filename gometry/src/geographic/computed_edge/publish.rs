@@ -39,7 +39,6 @@ pub(crate) fn publish_computed_chain<'intent, P: Coordinates + ?Sized>(
         },
         |_, _, _, _, _, _| Ok(()),
         &[],
-        None,
     )
 }
 
@@ -146,53 +145,9 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_samples<
         Point,
     ) -> Result<()>,
 ) -> Result<Option<Vec<Point>>> {
-    publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges(
-        frame,
-        points,
-        closed_ring,
-        budget,
-        intent,
-        vertex_intent,
-        samples,
-        on_published,
-        None,
-    )
-}
-
-pub(crate) fn publish_computed_chain_with_vertex_intents_and_samples_with_edge_ranges<
-    'intent,
-    P: Coordinates + ?Sized,
->(
-    frame: GeographicFrame,
-    points: &P,
-    closed_ring: bool,
-    budget: &mut ExpansionBudget,
-    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent<'intent>>,
-    vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
-    samples: impl FnMut(
-        usize,
-        &[Point; 2],
-        &ComputedLongitudeRelation<'intent>,
-        f64,
-        &RetainedComputedSample,
-    ) -> Result<ComputedSampleOrdinates>,
-    on_published: impl FnMut(
-        usize,
-        &[Point; 2],
-        &ComputedLongitudeRelation<'intent>,
-        f64,
-        &RetainedComputedSample,
-        Point,
-    ) -> Result<()>,
-    mut edge_ranges: Option<&mut Vec<(usize, usize)>>,
-) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
     if point_count == 0 {
         return Ok(None);
-    }
-    if let Some(edge_ranges) = edge_ranges.as_deref_mut() {
-        edge_ranges.clear();
-        edge_ranges.reserve(point_count.saturating_sub(1));
     }
     let edge_intents = collect_edge_intents(points, intent)?;
     let zero_aliases = zero_longitude_aliases(
@@ -213,7 +168,6 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_samples_with_edge_r
         samples,
         on_published,
         &zero_aliases,
-        edge_ranges,
     )
 }
 
@@ -240,7 +194,6 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
         Point,
     ) -> Result<()>,
     zero_aliases: &[ZeroLongitudeAlias],
-    mut edge_ranges: Option<&mut Vec<(usize, usize)>>,
 ) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
     if point_count == 0 {
@@ -266,13 +219,6 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
     let mut canonical_start = first;
 
     for index in 0..edge_count {
-        let edge_start_index = match output.as_ref() {
-            Some(written) => written
-                .len()
-                .checked_sub(1)
-                .ok_or_else(|| GeometryErrorKind::message("computed output has no edge start"))?,
-            None => index,
-        };
         let source_start = points.nth_coord(index);
         let source_end = points.nth_coord(index.wrapping_add(1));
         let edge_intent = *edge_intents
@@ -366,18 +312,6 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
                 )?;
                 canonical_start = canonical_end;
             },
-        }
-        if let Some(edge_ranges) = edge_ranges.as_deref_mut() {
-            let edge_end_index = match output.as_ref() {
-                Some(written) => written
-                    .len()
-                    .checked_sub(1)
-                    .ok_or_else(|| GeometryErrorKind::message("computed output has no edge end"))?,
-                None => index
-                    .checked_add(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            };
-            edge_ranges.push((edge_start_index, edge_end_index));
         }
     }
 

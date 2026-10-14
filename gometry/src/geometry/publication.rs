@@ -16,9 +16,8 @@ pub(crate) use finish::FinishedGeometry;
 pub(in crate::geometry) use finish::{finish_geographic, finish_producer_drawing};
 pub(crate) use receipt::{GeometryOutput, PendingPublicationRow};
 pub(in crate::geometry) use receipt::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt,
-    ProducerSourceRootUse, PublicationCall, PublicationOutcome, PublicationRejection,
-    StorageTarget,
+    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall,
+    PublicationOutcome, PublicationRejection, StorageTarget,
 };
 pub(crate) use routes::{
     finish_geographic_line, finish_geographic_nearest_point,

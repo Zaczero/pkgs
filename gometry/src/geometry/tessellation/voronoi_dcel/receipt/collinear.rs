@@ -1,22 +1,20 @@
 //! Receipt construction for the analytic collinear producer.
 
 use super::{
-    EmbeddedPolygon, ExactSign, NormalizedClip, PointKey, PointSelectionChart, Result, Site,
-    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiClipAtomReceipt, VoronoiDartReceipt,
-    VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt,
-    VoronoiProducer, VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt,
-    chart_vertex_origins, clip_segment_receipts, exact, exact_xy_coordinates, site_receipts,
-    try_hash_map_with_capacity, voronoi_error,
+    EmbeddedPolygon, ExactSign, NormalizedClip, PointKey, Result, Site, VoronoiAssignmentReceipt,
+    VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse,
+    VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiSeparatorReceipt,
+    VoronoiVertexOrigin, VoronoiVertexReceipt, clip_segment_receipts, exact, exact_xy_coordinates,
+    site_receipts, try_hash_map_with_capacity, voronoi_error,
 };
 
 pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt(
     sites: &[Site],
     clip: &NormalizedClip<'_>,
     cells: &mut [EmbeddedPolygon],
-    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
-    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites, chart)?;
-    receipt.clip_segments = clip_segment_receipts(clip, None)?;
+    let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip)?;
     let vertex_count = cells
         .iter()
         .flat_map(|cell| &cell.producer_vertices)
@@ -76,13 +74,12 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
                 } else {
                     let id = u32::try_from(receipt.vertices.len())
                         .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-                    let mut origins = chart_vertex_origins(chart, &vertex.exact_point)?;
+                    let mut origins = Vec::new();
                     origins.push(VoronoiVertexOrigin::OverlayNode { node: vertex.id });
                     if let Some(&site) = site_ids.get(&key) {
                         origins.push(VoronoiVertexOrigin::SourceSite { site });
                     }
                     receipt.vertices.push(VoronoiVertexReceipt {
-                        id,
                         exact_xy: key.clone(),
                         origins,
                         assignment: Some(vertex.assignment),
@@ -277,40 +274,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
                         vertices: vec![low, high],
                         edges: vec![edge_id],
                     });
-                }
-                for source_use in &role.source_uses {
-                    if source_use.source_operand == Some(1) {
-                        let segment = receipt
-                            .clip_segments
-                            .get_mut(source_use.source_segment as usize)
-                            .ok_or_else(|| voronoi_error("collinear clip segment is absent"))?;
-                        segment.atoms.push(VoronoiClipAtomReceipt {
-                            edge: edge_id,
-                            reversed: !source_use.forward,
-                            start_parameter: source_use.start_parameter.clone(),
-                            end_parameter: source_use.end_parameter.clone(),
-                        });
-                        for (vertex, parameter) in [
-                            (start, &source_use.start_parameter),
-                            (end, &source_use.end_parameter),
-                        ] {
-                            if let Some(receipt_vertex) = receipt.vertices.get_mut(vertex as usize)
-                            {
-                                receipt_vertex
-                                    .origins
-                                    .push(VoronoiVertexOrigin::SourceClip {
-                                        segment: source_use.source_segment,
-                                        parameter: parameter.clone(),
-                                        source_ring: source_use
-                                            .source_ring
-                                            .map(|ring| ring as usize),
-                                        source_edge: source_use
-                                            .source_edge
-                                            .map(|edge| edge as usize),
-                                    });
-                            }
-                        }
-                    }
                 }
                 uses.push(VoronoiDirectedEdgeUse {
                     edge: edge_id,

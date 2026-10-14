@@ -24,7 +24,7 @@ mod voronoi_receipt;
 pub(crate) use cdt_publication::{
     CdtGroupsDrawingWriter, PreparedCdtDrawing, prepare_geographic_cdt_drawing, publish_cdt_array,
 };
-pub(crate) use delaunay::{CdtSideBoundaryUse, ConstrainedMeshPlan, publish_constrained_plan};
+pub(crate) use delaunay::{ConstrainedMeshPlan, publish_constrained_plan};
 #[cfg(test)]
 pub(in crate::geometry) use mesh_publication::mesh_publication_array_receipt;
 pub(crate) use mesh_publication::{finish_mesh_publication_array, finish_mesh_publication_groups};
@@ -34,12 +34,11 @@ pub(crate) use prepared_mesh::{
 };
 pub(crate) use voronoi_publication::VoronoiDrawingWriter;
 pub(in crate::geometry) use voronoi_receipt::{
-    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
-    VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
-    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse,
-    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
-    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
-    VoronoiVertexReceipt,
+    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiClipSegmentReceipt, VoronoiClipSourceRoot,
+    VoronoiDartReceipt, VoronoiDiagramReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin,
+    VoronoiEdgeReceipt, VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole,
+    VoronoiSeparatorReceipt, VoronoiSiteReceipt, VoronoiSourceSiteDecision,
+    VoronoiSourceSiteReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt,
 };
 
 pub(crate) struct VoronoiPolygonOutput {

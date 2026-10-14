@@ -83,6 +83,13 @@ pub(crate) fn finish_geographic_nearest_point_columns(
     frame: &crate::Frame,
     missing: Option<&ValidityMask>,
 ) -> Result<(crate::PyGeometryArray, crate::PyGeometryArray)> {
+    if left.len() != right.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "nearest-point columns have different lengths".into(),
+        )
+        .into());
+    }
+
     fn publish_column(
         shapes: Vec<Shape>,
         frame: &crate::Frame,
@@ -162,7 +169,7 @@ pub(crate) fn finish_geographic_nearest_point_columns(
         let mut work = Unmetered;
         let buffers =
             FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-        let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+        let receipt = ProducerDrawingReceipt::new(buffers, literals);
         let finished = finish_producer_drawing(receipt, (*frame).clone(), StorageTarget::Array)?;
         crate::PyGeometryArray::from_finished(finished)
     }
@@ -203,7 +210,7 @@ pub(crate) fn publish_split_parts_array(
     let mut work = Unmetered;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     crate::PyGeometryArray::from_finished(finish_producer_drawing(
         receipt,
         frame,
@@ -287,7 +294,7 @@ pub(crate) fn publish_split_groups(
         missing,
         &mut work,
     )?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     Groups::from_finished(finish_producer_drawing(
         receipt,
         frame,
@@ -306,12 +313,7 @@ fn snap_drawing_layout(
 pub(in crate::geometry) fn snap_drawing_receipt(shape: Shape) -> Result<ProducerDrawingReceipt> {
     let (layout, literals) = snap_drawing_layout(&shape)?;
     let buffers = FrozenLiteralBuffers::shapes(shape, layout);
-    Ok(ProducerDrawingReceipt::new(
-        buffers,
-        literals,
-        Vec::new(),
-        Vec::new(),
-    ))
+    Ok(ProducerDrawingReceipt::new(buffers, literals))
 }
 
 pub(crate) fn finish_geographic_snap(shape: Shape, frame: crate::Frame) -> Result<Shape> {
@@ -328,8 +330,7 @@ pub(crate) fn geographic_snap_pending_row(
 ) -> Result<PendingPublicationRow> {
     let (layout, literals) = snap_drawing_layout(&shape)?;
     let buffers = FrozenLiteralBuffers::shapes(shape, layout);
-    let receipt =
-        ProducerDrawingReceipt::new_for_republication(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new_for_republication(buffers, literals);
     let finished = finish_producer_drawing(receipt, frame.clone(), StorageTarget::Scalar)?;
     let work = EvaluationBudget::new(operation, finished.output_literal_count())?;
     finished.into_pending_row(logical_row, work, frame)

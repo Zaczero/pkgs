@@ -3,7 +3,7 @@ use std::cell::Cell;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::ordinates::{
-    AxisValue, NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, resolve_source_root,
+    NodeOrdinates, RootId, RootRange, SourceArcMetricAccess, resolve_source_root,
 };
 use crate::geometry::publication::ChartRestriction;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -12,11 +12,6 @@ use crate::geometry::{
     Shape,
 };
 use crate::work::{Unmetered, Work};
-
-enum SplitRootSource {
-    Point { member: MemberId, point: Point },
-    Edge(Box<SplitEdgeRoot>),
-}
 
 struct SplitEdgeRoot {
     member: MemberId,
@@ -47,7 +42,7 @@ pub(super) struct SplitEdgeUse {
 
 #[derive(Default)]
 pub(super) struct LineageCatalog {
-    roots: Vec<SplitRootSource>,
+    roots: Vec<Box<SplitEdgeRoot>>,
     next_member: u32,
     events: Vec<SplitEvent>,
     edge_uses: Vec<SplitEdgeUse>,
@@ -57,10 +52,7 @@ impl LineageCatalog {
     fn member_of_root(&self, root: RootId) -> Result<MemberId> {
         self.roots
             .get(root.index())
-            .map(|source| match source {
-                SplitRootSource::Point { member, .. } => *member,
-                SplitRootSource::Edge(edge) => edge.member,
-            })
+            .map(|edge| edge.member)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
                     .into()
@@ -76,12 +68,6 @@ impl LineageCatalog {
         Ok(member)
     }
 
-    pub(super) fn point_root(&mut self, member: MemberId, point: Point) -> Result<RootId> {
-        let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots.push(SplitRootSource::Point { member, point });
-        Ok(RootId::from_index(index))
-    }
-
     pub(super) fn edge_root(
         &mut self,
         member: MemberId,
@@ -89,13 +75,12 @@ impl LineageCatalog {
         longitude: RetainedChartDisplacement,
     ) -> Result<RootId> {
         let index = u32::try_from(self.roots.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        self.roots
-            .push(SplitRootSource::Edge(Box::new(SplitEdgeRoot {
-                member,
-                points: *points,
-                longitude,
-                metric: Cell::new(RootMetricState::default()),
-            })));
+        self.roots.push(Box::new(SplitEdgeRoot {
+            member,
+            points: *points,
+            longitude,
+            metric: Cell::new(RootMetricState::default()),
+        }));
         Ok(RootId::from_index(index))
     }
 
@@ -107,45 +92,25 @@ impl LineageCatalog {
         frame: GeographicFrame,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<NodeOrdinates> {
-        let source = self.roots.get(root.index()).ok_or_else(|| {
+        let edge = self.roots.get(root.index()).ok_or_else(|| {
             GeometryErrorKind::Invalid("split lineage references an unknown source root".into())
         })?;
-        match source {
-            SplitRootSource::Point { point, .. } => Ok(NodeOrdinates {
-                z: {
-                    let mut value = AxisValue::default();
-                    if axes.has_z() {
-                        value.observe(point.z());
-                    }
-                    value
-                },
-                m: {
-                    let mut value = AxisValue::default();
-                    if axes.has_m() {
-                        value.observe(point.m());
-                    }
-                    value
-                },
-            }),
-            SplitRootSource::Edge(edge) => {
-                let mut fraction = None;
-                let mut work = Unmetered;
-                let mut metric_state = edge.metric.get();
-                let ordinates = resolve_source_root(
-                    frame,
-                    &edge.points,
-                    edge.longitude,
-                    parameter,
-                    axes,
-                    metric_access,
-                    &mut metric_state,
-                    &mut fraction,
-                    &mut work,
-                )?;
-                edge.metric.set(metric_state);
-                Ok(ordinates)
-            },
-        }
+        let mut fraction = None;
+        let mut work = Unmetered;
+        let mut metric_state = edge.metric.get();
+        let ordinates = resolve_source_root(
+            frame,
+            &edge.points,
+            edge.longitude,
+            parameter,
+            axes,
+            metric_access,
+            &mut metric_state,
+            &mut fraction,
+            &mut work,
+        )?;
+        edge.metric.set(metric_state);
+        Ok(ordinates)
     }
 
     pub(super) fn resolve_vertex_ordinates<M: ChartMetric>(
@@ -408,14 +373,8 @@ impl LineageCatalog {
         };
 
         match shape {
-            Shape::Point(_) => Ok(ShapeLineage::Point {
-                member: self.member()?,
-                events: Vec::new(),
-            }),
-            Shape::MultiPoint(points) => Ok(ShapeLineage::MultiPoint {
-                member: self.member()?,
-                events: vec![Vec::new(); points.len()],
-            }),
+            Shape::Point(_) => Ok(ShapeLineage::Point),
+            Shape::MultiPoint(_) => Ok(ShapeLineage::MultiPoint),
             Shape::LineString(line) => {
                 let member = self.member()?;
                 Ok(ShapeLineage::LineString(sequence(
@@ -496,14 +455,8 @@ pub(super) struct PolygonWithLineage {
 
 #[derive(Clone)]
 pub(super) enum ShapeLineage {
-    Point {
-        member: MemberId,
-        events: Vec<EventId>,
-    },
-    MultiPoint {
-        member: MemberId,
-        events: Vec<Vec<EventId>>,
-    },
+    Point,
+    MultiPoint,
     LineString(LineageSequence),
     MultiLineString {
         members: Vec<Option<LineageSequence>>,

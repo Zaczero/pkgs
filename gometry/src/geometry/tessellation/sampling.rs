@@ -227,7 +227,7 @@ pub(crate) fn publish_sampling_array(
     let mut work = Unmetered;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     PyGeometryArray::from_finished(finish_producer_drawing(
         receipt,
         frame,
@@ -331,7 +331,7 @@ pub(crate) fn publish_sampling_groups(
         missing,
         &mut work,
     )?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals, Vec::new(), Vec::new());
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     Groups::from_finished(finish_producer_drawing(
         receipt,
         frame,

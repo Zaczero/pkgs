@@ -10,8 +10,7 @@ fn receipt_vertex(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiVertexRec
     receipt
         .vertices
         .get(id as usize)
-        .filter(|vertex| vertex.id == id)
-        .expect("receipt vertex IDs are dense")
+        .expect("receipt vertex indices are dense")
 }
 
 fn receipt_edge(receipt: &VoronoiDiagramReceipt, id: u32) -> &VoronoiEdgeReceipt {
@@ -135,32 +134,9 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
         if let Some(side) = segment.frame_side {
             frame_side(side);
         }
-        for root in &segment.source_roots {
-            assert!(root.start.xy().x.is_finite() && root.start.xy().y.is_finite());
-            assert!(root.end.xy().x.is_finite() && root.end.xy().y.is_finite());
-            assert_ne!(
-                PointKey::new(root.start.xy()),
-                PointKey::new(root.end.xy()),
-                "source clip roots retain a real directed segment"
-            );
-        }
-        for atom in &segment.atoms {
-            let edge = receipt_edge(receipt, atom.edge);
-            bounded(&atom.start_parameter);
-            bounded(&atom.end_parameter);
-            if let Some(side) = segment.frame_side {
-                assert_eq!(edge.frame_side, Some(side));
-            } else if !segment.source_roots.is_empty() {
-                assert!(edge.clip_sources.contains(&segment.id));
-            }
-        }
     }
 
-    for (id, vertex_receipt) in receipt.vertices.iter().enumerate() {
-        assert_eq!(
-            vertex_receipt.id,
-            u32::try_from(id).expect("vertex receipt fits its stored ID")
-        );
+    for vertex_receipt in &receipt.vertices {
         assert_eq!(vertex_receipt.exact_xy.len(), 2);
         for origin in &vertex_receipt.origins {
             match origin {
@@ -176,35 +152,12 @@ fn assert_receipt_graph(receipt: &VoronoiDiagramReceipt) {
                         let _ = receipt_site(receipt, id);
                     }
                 },
-                VoronoiVertexOrigin::SourceClip {
-                    segment,
-                    parameter,
-                    source_ring,
-                    source_edge,
-                } => {
-                    let clip_segment = receipt_clip(receipt, *segment);
-                    bounded(parameter);
-                    if let (Some(ring), Some(source_edge)) = (source_ring, source_edge) {
-                        assert!(
-                            clip_segment
-                                .source_roots
-                                .iter()
-                                .any(|root| { root.ring == *ring && root.edge == *source_edge })
-                        );
-                    }
-                },
                 VoronoiVertexOrigin::Bisector { sites } => {
                     for &id in sites {
                         let _ = receipt_site(receipt, id);
                     }
                 },
                 VoronoiVertexOrigin::Frame { side } => frame_side(*side),
-                VoronoiVertexOrigin::Pole { latitude } => {
-                    assert!(latitude.is_finite());
-                },
-                VoronoiVertexOrigin::ChartCut { side } => match side {
-                    VoronoiChartCutSide::Lower | VoronoiChartCutSide::Upper => {},
-                },
             }
         }
     }

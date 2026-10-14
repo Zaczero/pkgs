@@ -6,7 +6,7 @@ use super::{
     ExactVertex, ExpansionBudget, FrameSide, IndexedTopology, NormalizedClip, Ordering,
     OverlayNodeReceipt, OverlaySourceEdgeUse, OwnerTransition, PointSelectionChart, Polygon,
     Result, Ring, Shape, Site, SiteId, Transition, VertexId, VoronoiBoundary, VoronoiEdgeOrigin,
-    VoronoiEdgeSourceUse, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole, XY,
+    VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole, XY,
     binary_cartesian_intersection_with_edge_roles, collinear_polygon_receipt, embed,
     empty_packed_edges, exact, exact_cycle_error, fixed_coordinates, lex_position,
     normalize_clip_with_chart, orient_separator, polygon_output_count, receipt_frame_side, site_at,
@@ -71,8 +71,7 @@ pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
             same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
         }
         if same_x || same_y {
-            let receipt =
-                std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites, chart)?);
+            let receipt = std::sync::Arc::new(site_receipts(VoronoiProducer::Collinear, sites)?);
             return Ok(EmbeddedVoronoi {
                 polygons: Vec::new(),
                 edges: EmbeddedEdges {
@@ -176,7 +175,6 @@ pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
                         edge: None,
                         forward: true,
                         origins,
-                        source_uses: Vec::new(),
                     })
                     .collect::<Vec<_>>(),
             ];
@@ -237,7 +235,7 @@ pub(in crate::geometry::tessellation) fn build_collinear_polygons_with_chart(
         previous = Some(site_index);
     }
     budget.add(published.saturating_sub(baseline))?;
-    let receipt = std::sync::Arc::new(collinear_polygon_receipt(sites, &clip, &mut cells, chart)?);
+    let receipt = std::sync::Arc::new(collinear_polygon_receipt(sites, &clip, &mut cells)?);
     Ok(EmbeddedVoronoi {
         polygons: cells,
         edges: EmbeddedEdges {
@@ -418,7 +416,6 @@ fn collinear_overlay_edge_roles(
         let mut roles = Vec::with_capacity(ring.len());
         for edge_sources in ring {
             let mut origins = Vec::new();
-            let mut source_uses = Vec::with_capacity(edge_sources.len());
             for source in edge_sources {
                 let location = source.location;
                 match location.operand {
@@ -438,15 +435,6 @@ fn collinear_overlay_edge_roles(
                                 origins.push(*origin);
                             }
                         }
-                        source_uses.push(VoronoiEdgeSourceUse {
-                            source_segment: source.source_id,
-                            source_operand: Some(location.operand),
-                            source_ring: Some(location.ring),
-                            source_edge: Some(location.edge),
-                            forward: source.forward,
-                            start_parameter: source.start_parameter,
-                            end_parameter: source.end_parameter,
-                        });
                     },
                     1 => {
                         let ring = usize::try_from(location.ring)
@@ -463,37 +451,6 @@ fn collinear_overlay_edge_roles(
                         let origin = VoronoiEdgeOrigin::SourceClip { segment };
                         if !origins.contains(&origin) {
                             origins.push(origin);
-                        }
-                        let roots = clip
-                            .source_roots
-                            .get(segment as usize)
-                            .ok_or_else(|| voronoi_error("clip source root is unknown"))?;
-                        for root in roots {
-                            let start_parameter = if root.reversed {
-                                exact::ExactRational::one().try_subtract(&source.start_parameter)?
-                            } else {
-                                source.start_parameter.clone()
-                            };
-                            let end_parameter = if root.reversed {
-                                exact::ExactRational::one().try_subtract(&source.end_parameter)?
-                            } else {
-                                source.end_parameter.clone()
-                            };
-                            source_uses.push(VoronoiEdgeSourceUse {
-                                source_segment: segment,
-                                source_operand: Some(location.operand),
-                                source_ring: Some(
-                                    u32::try_from(root.ring)
-                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                                ),
-                                source_edge: Some(
-                                    u32::try_from(root.edge)
-                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                                ),
-                                forward: source.forward != root.reversed,
-                                start_parameter,
-                                end_parameter,
-                            });
                         }
                     },
                     _ => {
@@ -512,7 +469,6 @@ fn collinear_overlay_edge_roles(
                 edge: None,
                 forward: true,
                 origins,
-                source_uses,
             });
         }
         rings.push(roles);

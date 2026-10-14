@@ -4,11 +4,10 @@ use super::{
     ExactChartPoint, ExactGeographicTopology, ExpandedEmissionPlan, FragmentRecipeId,
     GeometryErrorKind, MOrdinate, NativeChordPoints, NodeOrdinates, Point, PortPosition,
     PortSpelling, PublicationInventory, PublishedFragment, QSourceImage, RequestRowInput,
-    ResourceError, Result, RootCatalog, RootId, RootRange, RootRequest, SourceArcMetricAccess,
+    ResourceError, Result, RootCatalog, RootId, RootRequest, SourceArcMetricAccess,
     TraceRequestLocation, VertexOrigin, ZOrdinate, resolve_request_rows,
 };
 use crate::geometry::XY;
-use crate::geometry::tessellation::exact::ExactRational;
 use crate::work::Work;
 
 pub(in crate::geometry::topology) fn with_publication_axes(
@@ -308,25 +307,6 @@ pub(super) fn source_requests_at_location(
             fragment.trace.rows.sample_requests_at(row.index(), work)
         },
     }
-}
-
-pub(in crate::geometry::topology) fn source_root_ranges_at_location(
-    publication: &PublicationInventory,
-    location: &TraceRequestLocation,
-    work: &mut impl Work,
-) -> Result<Vec<RootRange>> {
-    let requests = source_requests_at_location(publication, location, work)?;
-    let mut ranges = Vec::with_capacity(requests.len());
-    for request in requests {
-        work.charge_into_error(1)?;
-        ranges.push(RootRange::point_with_work(
-            request.root(),
-            request.parameter().try_clone_with_work(work)?,
-            ExactRational::zero(),
-            work,
-        )?);
-    }
-    Ok(ranges)
 }
 
 pub(super) fn source_trace_fragment(

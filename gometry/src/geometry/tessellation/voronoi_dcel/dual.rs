@@ -6,11 +6,10 @@ use super::{
     EmbeddedVoronoi, ExactSign, ExpansionBudget, FrameSide, IncidenceOutput, IncidentFaceRow,
     IncidentFaces, NormalizedClip, Ordering, OverlayNodeReceipt, Point, PointKey,
     PointSelectionChart, Polygon, Result, Ring, Site, SiteId, Tagged, VoronoiAssignmentReceipt,
-    VoronoiBoundary, VoronoiCellReceipt, VoronoiClipAtomReceipt, VoronoiDartReceipt,
-    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse,
-    VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
-    VoronoiVertexOrigin, VoronoiVertexReceipt, XY, axis_aligned_rectangle, between,
-    build_product_with_chart, chart_vertex_origins, clip_segment_receipts, delaunay_complex,
+    VoronoiBoundary, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDirectedEdgeUse,
+    VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
+    VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, axis_aligned_rectangle,
+    between, build_product_with_chart, clip_segment_receipts, delaunay_complex,
     ensure_coordseq_vertex_capacity, exact, exact_bisector_frame_intersections,
     exact_segment_parameter, exact_xy_coordinates, lex_xy, normalize_clip_with_chart,
     polygon_is_valid, polygon_output_count, receipt_frame_side, site_at, site_by_id, site_receipts,
@@ -837,7 +836,7 @@ pub(super) fn dual_build_product(
     }
     let complex = delaunay_complex(mesh, sites)?;
     let rings = dual_build_rings(sites, mesh, complex, &clip)?;
-    match dual_embed(&rings, &clip, sites, product, budget, chart) {
+    match dual_embed(&rings, &clip, sites, product, budget) {
         Ok(result) => Ok(result),
         Err(DualEmbeddingError::Unrepresentable) => {
             // The optimized lane remains byte-identical when its nearest

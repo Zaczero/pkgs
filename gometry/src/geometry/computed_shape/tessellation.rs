@@ -1,4 +1,3 @@
-use super::chains::publish_native_computed_chain_with_edge_ranges;
 use super::{
     Arc, ComputedEdgeIntent, ComputedVertexIntent, ConstrainedMeshPlan, CoordSeq, CoordSeqBuilder,
     CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, ExpansionBudget, GeographicFrame,
@@ -233,15 +232,13 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
     })
 }
 
-/// Publish selected CDT faces while retaining the written positions of their
-/// four ring occurrences. The map is derived as each source edge is expanded,
-/// so root and restriction uses never need a rounded-coordinate lookup.
+/// Publish each selected CDT face as a closed ring in the geographic chart.
 pub(crate) fn publish_cdt_triangle_vertex_stream_budgeted(
     plan: &ConstrainedMeshPlan,
     frame: GeographicFrame,
     source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
-) -> Result<(PublishedTriangleVertices, Vec<[usize; 4]>)> {
+) -> Result<PublishedTriangleVertices> {
     let source_vertices = publish_constrained_plan(plan, budget)?;
     if !source_vertices.len().is_multiple_of(4)
         || plan.faces.len() != source_vertices.len() / 4
@@ -255,8 +252,6 @@ pub(crate) fn publish_cdt_triangle_vertex_stream_budgeted(
 
     let mut points = Vec::with_capacity(source_vertices.len());
     let mut ring_ends = Vec::with_capacity(plan.faces.len());
-    let mut face_vertex_indices = Vec::with_capacity(plan.faces.len());
-    let mut edge_ranges = Vec::with_capacity(3);
     for (ring, face_uses) in source_vertices
         .as_chunks::<4>()
         .0
@@ -280,8 +275,7 @@ pub(crate) fn publish_cdt_triangle_vertex_stream_budgeted(
                     ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
                 }
             };
-        edge_ranges.clear();
-        let published = publish_native_computed_chain_with_edge_ranges(
+        let published = publish_native_computed_chain(
             frame,
             ring.as_slice(),
             true,
@@ -289,58 +283,17 @@ pub(crate) fn publish_cdt_triangle_vertex_stream_budgeted(
             source_context,
             edge_intent,
             |_, _| ComputedVertexIntent::Canonical,
-            &mut edge_ranges,
         )?;
         let output = published.as_deref().unwrap_or(ring);
-        if edge_ranges.len() != 3 {
-            return Err(GeometryErrorKind::Invalid(
-                "geographic CDT publisher lost an input side range".into(),
-            )
-            .into());
-        }
-        let spans = edge_ranges.as_slice();
-        let first = *spans.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("geographic CDT ring has no first side range".into())
-        })?;
-        let second = *spans.get(1).ok_or_else(|| {
-            GeometryErrorKind::Invalid("geographic CDT ring has no second side range".into())
-        })?;
-        let last = *spans.get(2).ok_or_else(|| {
-            GeometryErrorKind::Invalid("geographic CDT ring has no closing side range".into())
-        })?;
-        if first.0 != 0
-            || first.1 != second.0
-            || second.1 != last.0
-            || last.1.checked_add(1) != Some(output.len())
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "geographic CDT side ranges do not form one closed triangle ring".into(),
-            )
-            .into());
-        }
-        let base = points.len();
-        face_vertex_indices.push([
-            base.checked_add(first.0)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            base.checked_add(first.1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            base.checked_add(second.1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            base.checked_add(last.1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
-        ]);
         points.extend_from_slice(output);
         ring_ends.push(points.len());
     }
 
-    Ok((
-        PublishedTriangleVertices {
-            points,
-            ring_ends,
-            mesh_publication: None,
-        },
-        face_vertex_indices,
-    ))
+    Ok(PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    })
 }
 
 pub(crate) fn publish_mesh_triangle_vertex_stream_budgeted(

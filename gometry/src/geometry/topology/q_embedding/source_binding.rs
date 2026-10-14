@@ -25,7 +25,7 @@ pub(in crate::geometry::topology::q_embedding) fn q_source_edge(
     }
     Ok(source)
 }
-pub(in crate::geometry::topology) fn q_source_image_port(
+fn q_source_image_port(
     topology: &ExactGeographicTopology,
     image: QSourceImage,
 ) -> Result<Option<QPortId>> {

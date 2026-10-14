@@ -3,12 +3,11 @@
 use super::{
     CoordSeq, DirectedDualEdge, DualEdgeDraft, DualEmbeddingError, DualRings, DualVertex, EdgeTag,
     EmbeddedEdgeData, EmbeddedEdges, EmbeddedPolygon, EmbeddedVoronoi, ExactSign, ExpansionBudget,
-    FrameSide, NormalizedClip, Ordering, OverlayNodeReceipt, Point, PointKey, PointSelectionChart,
-    Polygon, Ring, Site, VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiClipAtomReceipt,
-    VoronoiDartReceipt, VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt,
-    VoronoiEdgeSourceUse, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
+    FrameSide, NormalizedClip, OverlayNodeReceipt, Point, PointKey, Polygon, Ring, Site,
+    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDirectedEdgeUse,
+    VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiProducer, VoronoiProduct, VoronoiRingEdgeRole,
     VoronoiSeparatorReceipt, VoronoiVertexOrigin, VoronoiVertexReceipt, XY, certify_convex_cell,
-    chart_vertex_origins, clip_segment_receipts, dual_clip_segment_for_edge, dual_vertex_point,
+    clip_segment_receipts, dual_clip_segment_for_edge, dual_vertex_point,
     ensure_coordseq_vertex_capacity, exact, exact_xy_coordinates, lex_xy, polygon_is_valid,
     polygon_output_count, receipt_frame_side, same_undirected_dual_edge, site_receipts,
     stored_xy_cycle_matches_orientation, try_hash_map_with_capacity,
@@ -36,7 +35,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     sites: &[Site],
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
-    chart: Option<&PointSelectionChart>,
 ) -> std::result::Result<EmbeddedVoronoi, DualEmbeddingError> {
     #[expect(
         clippy::collapsible_if,
@@ -441,8 +439,8 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     };
     budget.add(published.saturating_sub(baseline))?;
 
-    let mut receipt = site_receipts(VoronoiProducer::Dual, sites, chart)?;
-    receipt.clip_segments = clip_segment_receipts(clip, None)?;
+    let mut receipt = site_receipts(VoronoiProducer::Dual, sites)?;
+    receipt.clip_segments = clip_segment_receipts(clip)?;
     let mut vertex_origins: Vec<Vec<VoronoiVertexOrigin>> = std::iter::repeat_with(Vec::new)
         .take(vertex_xy.len())
         .collect();
@@ -538,55 +536,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
             if clip_use.segment != segment {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
-            let (start_parameter, end_parameter) = if draft.first.forward {
-                (
-                    clip_use.start_parameter.clone(),
-                    clip_use.end_parameter.clone(),
-                )
-            } else {
-                (
-                    clip_use.end_parameter.clone(),
-                    clip_use.start_parameter.clone(),
-                )
-            };
-            let reversed = start_parameter.try_cmp(&end_parameter)? == Ordering::Greater;
-            let (low_parameter, high_parameter) = if reversed {
-                (end_parameter.clone(), start_parameter.clone())
-            } else {
-                (start_parameter.clone(), end_parameter.clone())
-            };
-            let clip_segment = receipt
-                .clip_segments
-                .get_mut(segment as usize)
-                .ok_or(DualEmbeddingError::Unrepresentable)?;
-            clip_segment.atoms.push(VoronoiClipAtomReceipt {
-                edge: edge_id,
-                reversed,
-                start_parameter: low_parameter,
-                end_parameter: high_parameter,
-            });
-            if clip.source.is_some() {
-                for (vertex_id, parameter) in
-                    [(start_id, &start_parameter), (end_id, &end_parameter)]
-                {
-                    for root in &clip_segment.source_roots {
-                        let source_parameter = if root.reversed {
-                            exact::ExactRational::one().try_subtract(parameter)?
-                        } else {
-                            parameter.clone()
-                        };
-                        vertex_origins
-                            .get_mut(vertex_id as usize)
-                            .ok_or(DualEmbeddingError::Unrepresentable)?
-                            .push(VoronoiVertexOrigin::SourceClip {
-                                segment,
-                                parameter: source_parameter,
-                                source_ring: Some(root.ring),
-                                source_edge: Some(root.edge),
-                            });
-                    }
-                }
-            }
         }
         for vertex_id in [start_id, end_id] {
             if let Some(sites) = separator {
@@ -617,10 +566,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
         }
     }
     for (id, exact_point) in exact_by_id.iter().enumerate() {
-        vertex_origins
-            .get_mut(id)
-            .ok_or(DualEmbeddingError::Unrepresentable)?
-            .extend(chart_vertex_origins(chart, exact_point)?);
         let embedded = *vertex_xy
             .get(id)
             .ok_or(DualEmbeddingError::Unrepresentable)?;
@@ -630,7 +575,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 .ok_or(DualEmbeddingError::Unrepresentable)?,
         );
         receipt.vertices.push(VoronoiVertexReceipt {
-            id: u32::try_from(id).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
             exact_xy: exact_xy_coordinates(exact_point)?,
             origins,
             assignment: Some(embedded),
@@ -675,7 +619,6 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 .edges
                 .get(edge_id as usize)
                 .ok_or(DualEmbeddingError::Unrepresentable)?;
-            let mut source_uses = Vec::new();
             if let Some(segment) = directed_edge.clip_segment
                 && clip.source.is_some()
             {
@@ -686,45 +629,11 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 if clip_use.segment != segment {
                     return Err(DualEmbeddingError::Unrepresentable);
                 }
-                let start_parameter = &clip_use.start_parameter;
-                let end_parameter = &clip_use.end_parameter;
-                let clip_segment = receipt
-                    .clip_segments
-                    .get(segment as usize)
-                    .ok_or(DualEmbeddingError::Unrepresentable)?;
-                for root in &clip_segment.source_roots {
-                    let source_start = if root.reversed {
-                        exact::ExactRational::one().try_subtract(start_parameter)?
-                    } else {
-                        start_parameter.clone()
-                    };
-                    let source_end = if root.reversed {
-                        exact::ExactRational::one().try_subtract(end_parameter)?
-                    } else {
-                        end_parameter.clone()
-                    };
-                    source_uses.push(VoronoiEdgeSourceUse {
-                        source_segment: segment,
-                        source_operand: None,
-                        source_ring: Some(
-                            u32::try_from(root.ring)
-                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                        ),
-                        source_edge: Some(
-                            u32::try_from(root.edge)
-                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                        ),
-                        forward: source_start.try_cmp(&source_end)? != Ordering::Greater,
-                        start_parameter: source_start,
-                        end_parameter: source_end,
-                    });
-                }
             }
             role_row.push(VoronoiRingEdgeRole {
                 edge: Some(edge_id),
                 forward,
                 origins: edge_record.origins.clone(),
-                source_uses,
             });
             cell_uses.push(VoronoiDirectedEdgeUse {
                 edge: edge_id,

@@ -6,38 +6,30 @@ use crate::geometry::embedding_completion::literals::{
     LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::ordinates::{RootId, RootRange};
 use crate::geometry::publication::{
-    DirectedChartRestrictionUse, FinishedGeometry, ProducerDrawingReceipt, ProducerImageId,
-    ProducerLiteral, ProducerSourceRootUse, StorageTarget, finish_producer_drawing,
+    FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
+    finish_producer_drawing,
 };
 use crate::geometry::storage::ValidityMask;
-use crate::geometry::tessellation::{
-    CdtRefinement, CdtSideBoundaryUse, ConstrainedMeshPlan, exact,
-};
+use crate::geometry::tessellation::CdtRefinement;
 use crate::geometry::{
     Coordinates as _, ExpansionBudget, GeometryErrorKind, PublishedTriangleVertices, Shape,
     TopologyDomain,
 };
-use crate::work::Work;
 use crate::{Frame, PyGeometryArray};
 
 pub(crate) struct PreparedCdtDrawing {
-    plan: Option<ConstrainedMeshPlan>,
     vertices: PublishedTriangleVertices,
-    face_vertex_indices: Vec<[usize; 4]>,
 }
 
 impl PreparedCdtDrawing {
     const fn empty() -> Self {
         Self {
-            plan: None,
             vertices: PublishedTriangleVertices {
                 points: Vec::new(),
                 ring_ends: Vec::new(),
                 mesh_publication: None,
             },
-            face_vertex_indices: Vec::new(),
         }
     }
 
@@ -70,18 +62,13 @@ pub(crate) fn prepare_geographic_cdt_drawing(
         })
     };
     let source_context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-    let (vertices, face_vertex_indices) =
-        crate::geometry::publish_cdt_triangle_vertex_stream_budgeted(
-            &plan,
-            frame,
-            &source_context,
-            budget,
-        )?;
-    Ok(PreparedCdtDrawing {
-        plan: Some(plan),
-        vertices,
-        face_vertex_indices,
-    })
+    let vertices = crate::geometry::publish_cdt_triangle_vertex_stream_budgeted(
+        &plan,
+        frame,
+        &source_context,
+        budget,
+    )?;
+    Ok(PreparedCdtDrawing { vertices })
 }
 
 pub(crate) fn publish_cdt_array(
@@ -93,8 +80,6 @@ pub(crate) fn publish_cdt_array(
     let mut writer = StreamingShapes::with_capacity(capacity, face_count);
     let mut row_map = Vec::with_capacity(face_count);
     let mut literals = Vec::with_capacity(capacity);
-    let mut source_root_uses = Vec::new();
-    let mut chart_restrictions = Vec::new();
     let mut next_image = 0_usize;
     let mut work = crate::work::Unmetered;
     append_drawing(
@@ -104,17 +89,13 @@ pub(crate) fn publish_cdt_array(
         &mut writer,
         &mut row_map,
         &mut literals,
-        &mut source_root_uses,
-        &mut chart_restrictions,
         &mut next_image,
-        &mut work,
     )?;
 
     let (storage, missing, layout) = writer.finish_parts()?;
     let buffers =
         FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt =
-        ProducerDrawingReceipt::new(buffers, literals, source_root_uses, chart_restrictions);
+    let receipt = ProducerDrawingReceipt::new(buffers, literals);
     PyGeometryArray::from_finished(finish_producer_drawing(
         receipt,
         frame,
@@ -128,8 +109,6 @@ pub(crate) struct CdtGroupsDrawingWriter {
     writer: StreamingShapes,
     value_map: Vec<Option<LiteralRowLayout<ProducerImageId>>>,
     literals: Vec<ProducerLiteral>,
-    source_root_uses: Vec<ProducerSourceRootUse>,
-    chart_restrictions: Vec<DirectedChartRestrictionUse>,
     offsets: Vec<i64>,
     next_image: usize,
     work: crate::work::Unmetered,
@@ -154,8 +133,6 @@ impl CdtGroupsDrawingWriter {
             writer: StreamingShapes::new(),
             value_map: Vec::new(),
             literals: Vec::new(),
-            source_root_uses: Vec::new(),
-            chart_restrictions: Vec::new(),
             offsets,
             next_image: 0,
             work: crate::work::Unmetered,
@@ -194,10 +171,7 @@ impl CdtGroupsDrawingWriter {
                 &mut self.writer,
                 &mut self.value_map,
                 &mut self.literals,
-                &mut self.source_root_uses,
-                &mut self.chart_restrictions,
                 &mut self.next_image,
-                &mut self.work,
             )?;
         }
         self.offsets
@@ -226,12 +200,7 @@ impl CdtGroupsDrawingWriter {
             self.missing,
             &mut self.work,
         )?;
-        let receipt = ProducerDrawingReceipt::new(
-            buffers,
-            self.literals,
-            self.source_root_uses,
-            self.chart_restrictions,
-        );
+        let receipt = ProducerDrawingReceipt::new(buffers, self.literals);
         finish_producer_drawing(receipt, frame, StorageTarget::Groups)
     }
 }
@@ -243,29 +212,11 @@ fn append_drawing(
     writer: &mut StreamingShapes,
     row_map: &mut Vec<Option<LiteralRowLayout<ProducerImageId>>>,
     literals: &mut Vec<ProducerLiteral>,
-    source_root_uses: &mut Vec<ProducerSourceRootUse>,
-    chart_restrictions: &mut Vec<DirectedChartRestrictionUse>,
     next_image: &mut usize,
-    work: &mut impl Work,
 ) -> Result<usize> {
-    let PreparedCdtDrawing {
-        plan,
-        vertices,
-        face_vertex_indices,
-    } = drawing;
+    let PreparedCdtDrawing { vertices } = drawing;
     let shapes =
         Shape::triangle_shapes_from_published_rings(&vertices.points, &vertices.ring_ends)?;
-    if shapes.len() != face_vertex_indices.len()
-        || plan.as_ref().is_some_and(|plan| {
-            plan.face_uses.len() != shapes.len() || plan.faces.len() != shapes.len()
-        })
-        || plan.is_none() && !shapes.is_empty()
-    {
-        return Err(GeometryErrorKind::Invalid(
-            "prepared CDT literals do not match their selected faces".into(),
-        )
-        .into());
-    }
 
     let mut start = 0;
     let array_row_base = row_map.len();
@@ -329,64 +280,6 @@ fn append_drawing(
             images.push(image);
             literals.push(ProducerLiteral::from_point(address, image, point));
         }
-        if let Some(plan) = plan.as_ref() {
-            let face_use = plan.face_uses.get(face_index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("CDT face has no directed side map".into())
-            })?;
-            let corners = face_vertex_indices.get(face_index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("CDT face has no published corner map".into())
-            })?;
-            for (side_index, side) in face_use.sides.iter().enumerate() {
-                let Some(boundary) = side.boundary.as_ref() else {
-                    continue;
-                };
-                match boundary {
-                    CdtSideBoundaryUse::Source(source_use_index) => {
-                        let source_use =
-                            plan.source_uses.get(*source_use_index).ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "CDT source side has no retained source-root use".into(),
-                                )
-                            })?;
-                        let start_image =
-                            face_image(&vertices, start, end, *corners, side_index, &images)?;
-                        let source =
-                            plan.source_constraints
-                                .get(source_use.source)
-                                .ok_or_else(|| {
-                                    GeometryErrorKind::Invalid(
-                                        "CDT source use has no authored source occurrence".into(),
-                                    )
-                                })?;
-                        let root = RootId::from_index(
-                            u32::try_from(source.source_root)
-                                .map_err(|_| ResourceError::SizeOverflow)?,
-                        );
-                        let range = RootRange::from_mapped_with_work(
-                            root,
-                            source_use.start.try_clone_with_work(work)?,
-                            source_use.end.try_clone_with_work(work)?,
-                            exact::ExactRational::zero(),
-                            exact::ExactRational::one(),
-                            work,
-                        )?;
-                        source_root_uses.push(ProducerSourceRootUse {
-                            address,
-                            image: start_image,
-                            range,
-                        });
-                    },
-                    CdtSideBoundaryUse::Restriction(piece_index) => {
-                        let piece = plan.restriction_pieces.get(*piece_index).ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "CDT restriction side has no retained directed use".into(),
-                            )
-                        })?;
-                        chart_restrictions.push(piece.use_);
-                    },
-                }
-            }
-        }
         writer.try_push(shape)?;
         row_map.push(Some(LiteralRowLayout {
             operation: 0,
@@ -417,29 +310,4 @@ fn append_drawing(
         .into());
     }
     Ok(row_count)
-}
-
-fn face_image(
-    vertices: &PublishedTriangleVertices,
-    start: usize,
-    end: usize,
-    corners: [usize; 4],
-    side_index: usize,
-    images: &[ProducerImageId],
-) -> Result<ProducerImageId> {
-    let corner = *corners.get(side_index).ok_or_else(|| {
-        GeometryErrorKind::Invalid("CDT source side has no start-corner mapping".into())
-    })?;
-    let local = corner.checked_sub(start).ok_or_else(|| {
-        GeometryErrorKind::Invalid("CDT source corner precedes its output ring".into())
-    })?;
-    if corner >= end || local >= images.len() || vertices.points.get(corner).is_none() {
-        return Err(GeometryErrorKind::Invalid(
-            "CDT source corner is outside its final output ring".into(),
-        )
-        .into());
-    }
-    images.get(local).copied().ok_or_else(|| {
-        GeometryErrorKind::Invalid("CDT source corner has no literal image".into()).into()
-    })
 }
