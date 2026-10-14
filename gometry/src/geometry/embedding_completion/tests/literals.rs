@@ -1,3 +1,59 @@
+fn output_id_layout(outputs: &[u32]) -> ShapeLiteralLayout<()> {
+    ShapeLiteralLayout {
+        points: outputs
+            .iter()
+            .map(|&output| LiteralPoint {
+                output,
+                axes: CoordinateAxes::XY,
+                image: (),
+            })
+            .collect(),
+        lines: Vec::new(),
+        polygons: Vec::new(),
+    }
+}
+
+#[test]
+fn dense_output_ids_skip_scratch_for_ordered_range_and_keep_permutations() {
+    let ordered_layout = output_id_layout(&[0, 1, 2, 3]);
+    let (ordered_result, ordered_allocations) = crate::test_support::allocation_count(|| {
+        let mut work = Unmetered;
+        super::literals::validate_shape_layout(&ordered_layout, &mut work)
+    });
+    ordered_result.expect("ordered dense IDs are valid");
+    assert_eq!(ordered_allocations, 0);
+
+    let mut work = crate::test_support::RecordingWork::with_remaining("dense output IDs", 64)
+        .expect("construct output-ID work recorder");
+    super::literals::validate_shape_layout(&ordered_layout, &mut work)
+        .expect("ordered dense IDs are valid");
+    assert_eq!(work.attempted, [4_u64, 0, 0]);
+
+    let shuffled_layout = output_id_layout(&[2, 0, 3, 1]);
+    let (shuffled_result, shuffled_allocations) = crate::test_support::allocation_count(|| {
+        let mut work = Unmetered;
+        super::literals::validate_shape_layout(&shuffled_layout, &mut work)
+    });
+    shuffled_result.expect("shuffled dense IDs remain valid");
+    assert!(shuffled_allocations > 0);
+
+    for ids in [&[0, 0, 2][..], &[0, 2, 2][..], &[0, 1, 3][..]] {
+        let layout = output_id_layout(ids);
+        let mut work = Unmetered;
+        super::literals::validate_shape_layout(&layout, &mut work).expect_err(
+            "duplicate, missing, or out-of-range IDs are invalid",
+        );
+    }
+
+    let empty_layout = output_id_layout(&[]);
+    let (empty_result, empty_allocations) = crate::test_support::allocation_count(|| {
+        let mut work = Unmetered;
+        super::literals::validate_shape_layout(&empty_layout, &mut work)
+    });
+    empty_result.expect("an empty ID range is valid");
+    assert_eq!(empty_allocations, 0);
+}
+
 #[test]
 fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
     let expected = xyzm_point(10.0, 20.0, 110.0, 1010.0);
