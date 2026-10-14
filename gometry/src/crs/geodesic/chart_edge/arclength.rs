@@ -44,6 +44,23 @@ const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 pub(super) const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartStation {
+    parameter: f64,
+    arclength: f64,
+}
+
+impl ChartStation {
+    pub(crate) const fn parameter(self) -> f64 {
+        self.parameter
+    }
+
+    pub(crate) fn fraction_at(self, parameter: f64, total_length: f64) -> Option<f64> {
+        (parameter.to_bits() == self.parameter.to_bits() && total_length > 0.0)
+            .then(|| (self.arclength / total_length).clamp(0.0, 1.0))
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct QuadratureTestProgress {
@@ -56,6 +73,10 @@ pub(crate) struct QuadratureTestProgress {
     pub(crate) refinements: u32,
     pub(crate) current_refinements: u32,
     pub(crate) max_refinements: u32,
+    pub(crate) station_measurements: u32,
+    pub(crate) station_best_returns: u32,
+    pub(crate) station_adjacent_stops: u32,
+    pub(crate) fraction_measurements: u32,
 }
 
 #[cfg(test)]
@@ -71,6 +92,10 @@ std::thread_local! {
             refinements: 0,
             current_refinements: 0,
             max_refinements: 0,
+            station_measurements: 0,
+            station_best_returns: 0,
+            station_adjacent_stops: 0,
+            fraction_measurements: 0,
         }) };
 }
 
@@ -152,6 +177,10 @@ impl ChartEdge {
         if parameter >= 1.0 {
             return Ok(1.0);
         }
+        #[cfg(test)]
+        update_test_progress(|progress| {
+            progress.fraction_measurements = progress.fraction_measurements.wrapping_add(1);
+        });
         let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
         if total == 0.0 {
             if self.is_degenerate() {
@@ -218,16 +247,31 @@ impl ChartEdge {
         self.integrate_with_work(0.0, t, geodesic, work)
     }
 
-    /// Parameter whose accumulated ellipsoidal arclength is `distance`.
-    pub(crate) fn locate_t(&self, distance: f64, length: f64, geodesic: &Geodesic) -> Result<f64> {
+    /// Station and its measured ellipsoidal arclength at the selected parameter.
+    pub(crate) fn locate_t(
+        &self,
+        distance: f64,
+        length: f64,
+        geodesic: &Geodesic,
+    ) -> Result<ChartStation> {
         if distance <= 0.0 || length == 0.0 {
-            return Ok(0.0);
+            return Ok(ChartStation {
+                parameter: 0.0,
+                arclength: 0.0,
+            });
         }
         if distance >= length {
-            return Ok(1.0);
+            return Ok(ChartStation {
+                parameter: 1.0,
+                arclength: length,
+            });
         }
         if self.latitude_delta == 0.0 {
-            return Ok(distance / length);
+            let parameter = distance / length;
+            return Ok(ChartStation {
+                parameter,
+                arclength: self.finite_length(length * parameter)?,
+            });
         }
 
         let dphi = self.latitude_delta * self.latitude_unit;
@@ -235,18 +279,26 @@ impl ChartEdge {
         let mut lower = 0.0;
         let mut upper = 1.0;
         let mut parameter = distance / length;
-        let mut best = (parameter, f64::INFINITY);
+        let mut best = None;
         let tolerance = RELATIVE_LENGTH_ERROR * length;
 
         for _ in 0..64 {
             let arclength = self.arclength(parameter, geodesic)?;
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.station_measurements = progress.station_measurements.wrapping_add(1);
+            });
+            let station = ChartStation {
+                parameter,
+                arclength,
+            };
             let residual = arclength - distance;
             let error = residual.abs();
-            if error < best.1 {
-                best = (parameter, error);
+            if best.is_none_or(|(_, previous_error)| error < previous_error) {
+                best = Some((station, error));
             }
             if error <= tolerance {
-                return Ok(parameter);
+                return Ok(station);
             }
             if residual > 0.0 {
                 upper = parameter;
@@ -267,11 +319,22 @@ impl ChartEdge {
                 reason = "an iterate equal to a bracket endpoint cannot advance past adjacent binary64 values"
             )]
             if parameter == lower || parameter == upper {
+                #[cfg(test)]
+                update_test_progress(|progress| {
+                    progress.station_adjacent_stops =
+                        progress.station_adjacent_stops.wrapping_add(1);
+                });
                 break;
             }
         }
 
-        Ok(best.0)
+        #[cfg(test)]
+        update_test_progress(|progress| {
+            progress.station_best_returns = progress.station_best_returns.wrapping_add(1);
+        });
+        Ok(best
+            .expect("station inversion measures its first iterate")
+            .0)
     }
 
     pub(in crate::crs::geodesic) fn integrate(

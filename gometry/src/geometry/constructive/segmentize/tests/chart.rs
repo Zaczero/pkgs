@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn ordinary_chart_stations_keep_common_root_carry_without_remeasurement() {
+    let source = CoordSeq::try_from_vecs(
+        vec![0.0, 120.0],
+        vec![10.0, 60.0],
+        Some(vec![7.0, 47.0]),
+        Some(vec![101.0, 701.0]),
+    )
+    .unwrap();
+    let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+    crate::crs::reset_quadrature_test_progress();
+    let _ = crate::geometry::ordinates::take_source_arc_activity();
+    let mut budget = ExpansionBudget::new("segmentize", "piece_counts");
+    let output = segmentize_points_with_piece_counts_budgeted(
+        &source,
+        &[NonZeroUsize::new(4).unwrap()],
+        &SegmentPlacement::Chart(&geodesic, GeographicFrame::crs84()),
+        &mut budget,
+    )
+    .unwrap();
+    let progress = crate::crs::quadrature_test_progress();
+    let activity = crate::geometry::ordinates::take_source_arc_activity();
+    assert_eq!(output.len(), 5);
+    assert!(progress.station_measurements >= 3);
+    assert_eq!(progress.fraction_measurements, 0);
+    assert_eq!(activity.root_resolutions, 3);
+    assert_eq!(output.nth_coord(0), source.nth_coord(0));
+    assert_eq!(output.nth_coord(4), source.nth_coord(1));
+}
+
+#[test]
 fn chart_piece_counts_refine_only_requested_edges_and_preserve_ordinates() {
     let line = CoordSeq::try_from_vecs(
         vec![0.0, 1.0, 1.0, 2.0],
@@ -122,8 +152,10 @@ fn chart_support_parameters_compose_exact_partial_ranges_in_reversed_grad_frames
         )
         .unwrap();
         let length = edge.length(&geodesic).unwrap();
-        let first_equal_arclength_parameter =
-            edge.locate_t(length / 4.0, length, &geodesic).unwrap();
+        let first_equal_arclength_parameter = edge
+            .locate_t(length / 4.0, length, &geodesic)
+            .unwrap()
+            .parameter();
         assert!(
             ranges.parameters.iter().any(|parameter| {
                 parameter.to_bits() == first_equal_arclength_parameter.to_bits()

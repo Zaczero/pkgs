@@ -51,7 +51,7 @@ impl ChartMetric for super::GeodesicMetric {
     }
 
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64> {
-        edge.locate_t(distance, length, &self.geodesic)
+        Ok(edge.locate_t(distance, length, &self.geodesic)?.parameter())
     }
 
     fn chart_edge_interval_length(&self, edge: &ChartEdge, start: f64, end: f64) -> Result<f64> {

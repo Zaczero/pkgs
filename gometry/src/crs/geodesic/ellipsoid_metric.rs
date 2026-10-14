@@ -286,7 +286,7 @@ impl ChartMetric for EllipsoidMetric<'_> {
         distance: f64,
         length: f64,
     ) -> crate::error::Result<f64> {
-        edge.locate_t(distance, length, self.geodesic)
+        Ok(edge.locate_t(distance, length, self.geodesic)?.parameter())
     }
 
     fn chart_edge_interval_length(
