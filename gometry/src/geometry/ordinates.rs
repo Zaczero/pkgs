@@ -364,11 +364,12 @@ impl OrdinateSource {
             } else {
                 segment_ordinate_at(start, end, point, self.tolerance)?
             };
-            if let Some((source_z, source_m)) = resolved {
-                if !same_point(start, point) && !same_point(end, point) {
-                    z.observe(source_z);
-                    m.observe(source_m);
-                }
+            if let Some((source_z, source_m)) = resolved
+                && !same_point(start, point)
+                && !same_point(end, point)
+            {
+                z.observe(source_z);
+                m.observe(source_m);
             }
         }
         Ok((z.value(), m.value()))
@@ -746,10 +747,7 @@ pub(crate) fn interpolate_source_projection<M: ChartMetric>(
     record_source_arc_projection();
 
     let point = projection.interpolate_point(start, end)?;
-    let axes = CoordinateAxes::new(
-        HasZ(start.z().is_some() && end.z().is_some()),
-        HasM(start.m().is_some() && end.m().is_some()),
-    );
+    let axes = start.axes().union(end.axes());
     if !axes.has_z() && !axes.has_m() {
         return Ok(point);
     }
@@ -776,8 +774,8 @@ pub(crate) fn interpolate_source_projection<M: ChartMetric>(
     Point::new_axes(
         point.x,
         point.y,
-        ZOrdinate(ordinates.z.value().or_else(|| point.z())),
-        MOrdinate(ordinates.m.value().or_else(|| point.m())),
+        ZOrdinate(ordinates.z.value()),
+        MOrdinate(ordinates.m.value()),
     )
 }
 

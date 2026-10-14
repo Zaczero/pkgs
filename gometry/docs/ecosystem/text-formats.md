@@ -144,7 +144,10 @@ must be transformed or written with another format. On read, the default
 intentionally want to discard the CRS metadata.
 
 An antimeridian-crossing line is written as separate pieces with corresponding
-vertices at `180` and `-180`:
+vertices at `180` and `-180`. For XYZ input, each inserted seam vertex carries
+altitude from the original CRS84 edge by ellipsoidal arclength, not by the
+longitude/latitude crossing parameter; see
+[Z/M under operations](../guide/geometry.md#zm-under-operations).
 
 ```python exec="on" source="block" result="text"
 import json

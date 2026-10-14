@@ -189,8 +189,8 @@ pub(crate) mod predicate_spec;
 mod predicates;
 mod provenance;
 pub(crate) use provenance::{
-    RefinedChainProvenance, VertexProvenance, emit_from_original,
-    emit_from_original_with_source_roots,
+    GeographicProvenancePlan, RefinedChainProvenance, VertexProvenance, emit_from_original,
+    emit_from_original_with_source_roots, emit_from_original_xy,
 };
 mod relate;
 mod relate_pattern;
