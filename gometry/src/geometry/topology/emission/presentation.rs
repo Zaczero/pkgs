@@ -271,6 +271,127 @@ pub(super) fn native_pole_presentation_occurrence(
     }))
 }
 
+pub(in crate::geometry::topology) fn native_pole_walk_edges(
+    frame: GeographicFrame,
+    region: usize,
+    walk: &[NativeAreaEdge],
+    budget: &mut EvaluationBudget,
+) -> Result<(Vec<NativeAreaEdge>, Vec<NativeSeamVertices>)> {
+    let mut edges = Vec::new();
+    let mut events = Vec::new();
+    let half = ExactRational::from_f64(frame.longitude().half_period());
+    let west = ExactRational::zero().try_subtract_with_work(&half, budget)?;
+    for (previous, next) in walk.iter().zip(walk.iter().cycle().skip(1)) {
+        budget.charge_into_error(1)?;
+        let start = &previous.vertices[1];
+        let end = &next.vertices[0];
+        if start.node != end.node
+            || !start
+                .point
+                .y
+                .try_cmp_with_work(&end.point.y, budget)?
+                .is_eq()
+            || start
+                .point
+                .x
+                .try_cmp_with_work(&end.point.x, budget)?
+                .is_eq()
+        {
+            continue;
+        }
+        let pole = if start
+            .point
+            .y
+            .try_cmp_with_work(
+                &ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North)),
+                budget,
+            )?
+            .is_eq()
+        {
+            ChartPole::North
+        } else if start
+            .point
+            .y
+            .try_cmp_with_work(
+                &ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South)),
+                budget,
+            )?
+            .is_eq()
+        {
+            ChartPole::South
+        } else {
+            continue;
+        };
+        let direction = start.point.x.try_cmp_with_work(&end.point.x, budget)?;
+        let crosses_seam = match pole {
+            ChartPole::North => direction.is_lt(),
+            ChartPole::South => direction.is_gt(),
+        };
+        let mut append =
+            |start: &NativePortData, end: &NativePortData, budget: &mut EvaluationBudget| {
+                if start
+                    .point
+                    .x
+                    .try_cmp_with_work(&end.point.x, budget)?
+                    .is_eq()
+                {
+                    return Ok(());
+                }
+                let vertices = [
+                    start.try_clone_with_work(budget)?,
+                    end.try_clone_with_work(budget)?,
+                ];
+                let kind = NativeAreaEdgeKind::Restriction(directed_chart_restriction_use(
+                    ChartRestriction::PolarCap { pole },
+                    &vertices,
+                )?);
+                edges.push(NativeAreaEdge {
+                    vertices,
+                    owner: NativeGraphEdgeOwner::Area { region },
+                    kind,
+                });
+                Ok::<_, crate::error::Error>(())
+            };
+        if crosses_seam {
+            let bank = |side, longitude: &ExactRational, budget: &mut EvaluationBudget| {
+                Ok::<_, crate::error::Error>(NativePortData {
+                    node: start.node,
+                    point: super::ExactChartPoint::from_rationals(
+                        longitude.try_clone_with_work(budget)?,
+                        start.point.y.try_clone_with_work(budget)?,
+                    ),
+                    spelling: PortSpelling::Seam(side),
+                    source_record: None,
+                    occurrences: vec![OccurrenceSource {
+                        origin: VertexOrigin::Presentation,
+                        source_trace: None,
+                    }],
+                })
+            };
+            let east = bank(ChartSide::East, &half, budget)?;
+            let west = bank(ChartSide::West, &west, budget)?;
+            match pole {
+                ChartPole::North => {
+                    append(start, &west, budget)?;
+                    append(&east, end, budget)?;
+                },
+                ChartPole::South => {
+                    append(start, &east, budget)?;
+                    append(&west, end, budget)?;
+                },
+            }
+            events.push(NativeSeamVertices {
+                latitude: start.point.y.try_clone_with_work(budget)?,
+                east,
+                west,
+            });
+        } else {
+            append(start, end, budget)?;
+        }
+    }
+    Ok((edges, events))
+}
+
 pub(in crate::geometry::topology) fn native_pole_edges(
     frame: GeographicFrame,
     events: &[NativeSeamVertices],

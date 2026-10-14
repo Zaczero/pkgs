@@ -16,8 +16,8 @@ use super::emission::{
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
     PortSpelling, PublicationInventory, RecipeWalk, RecipeWalkOwner, SealedSourceDrawing,
     SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing, SourceSampleOccurrence,
-    TraceRequestLocation, merge_native_port_data, native_pole_edges, native_seam_edges,
-    native_source_sample_occurrences,
+    TraceRequestLocation, merge_native_port_data, native_pole_edges, native_pole_walk_edges,
+    native_seam_edges, native_source_sample_occurrences,
 };
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, FallibleAvl,

@@ -157,29 +157,46 @@ fn geographic_clean_area_rankings_retain_source_ring_anchors() {
 
 #[test]
 fn geographic_clean_longest_border_retains_polar_boundary() {
-    let rows = [
-        crate::io::parse_wkt("POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))")
-            .expect("northern rectangle"),
-        crate::io::parse_wkt("POLYGON ((10 70, 10 90, 0 90, 0 70, 10 70))")
-            .expect("polar rectangle"),
-    ];
     let model = crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric");
     let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");
     let access = || Ok(&metric);
     let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
     let context = SourceArcContext::new(domain, Some(&access));
-    let output = coverage_clean(
-        &rows,
-        0.0,
-        0.0,
-        CoverageOverlapRule::LongestBorder,
-        &context,
-    )
-    .expect("polar ranked coverage drawing");
-    assert!(
-        crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
-            .expect("polar ranked coverage validates"),
-    );
+    for (case, first, second) in [
+        (
+            "north",
+            "POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))",
+            "POLYGON ((10 70, 10 90, 0 90, 0 70, 10 70))",
+        ),
+        (
+            "south",
+            "POLYGON ((0 -60, 0 -80, 10 -80, 10 -60, 0 -60))",
+            "POLYGON ((0 -70, 0 -90, 10 -90, 10 -70, 0 -70))",
+        ),
+        (
+            "north seam",
+            "POLYGON ((-170 60, -170 80, 170 80, 170 60, -170 60))",
+            "POLYGON ((-170 70, -170 90, 170 90, 170 70, -170 70))",
+        ),
+    ] {
+        let rows = [
+            crate::io::parse_wkt(first).expect("overlapping rectangle"),
+            crate::io::parse_wkt(second).expect("polar rectangle"),
+        ];
+        let output = coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &context,
+        )
+        .unwrap_or_else(|error| panic!("{case}: polar ranked coverage has no drawing: {error:?}"));
+        assert!(
+            crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+                .expect("polar ranked coverage validates"),
+            "{case}",
+        );
+    }
 }
 
 #[test]

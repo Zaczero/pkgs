@@ -11,7 +11,7 @@ use super::super::{
     finish_native_line_run, logical_layout_for_plan, merge_native_port_data, native_area_facts,
     native_emission_port_key, native_graph_cycle_recipe, native_graph_cycle_vertex,
     native_graph_face_source_table, native_known_span_boundaries, native_point_contact_vertices,
-    native_pole_closure_regions, native_pole_edges, native_port_data,
+    native_pole_closure_regions, native_pole_edges, native_pole_walk_edges, native_port_data,
     native_reference_cycles_and_parts, native_seam_bands_from_assigned_graph, native_seam_edges,
     native_selected_pole_sectors, native_whole_sphere_cell_edges,
     new_native_reference_graph_builder, normalize_native_chart_lifts, normalize_native_seam_events,
@@ -66,7 +66,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let pole_closure_sectors = native_pole_closure_regions(&selected_poles.sectors, budget)?;
         let mut pole_closures = Vec::new();
         if has_area {
-            for closure in selected_poles.closures {
+            for &closure in &selected_poles.closures {
                 budget.charge_into_error(1)?;
                 let (region, _) = closure;
                 // A source fan already supplies its pole port and sector bounds;
@@ -325,6 +325,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(..) => None,
             };
             let mut line_run = NativeLineRun::default();
+            let area_walk_start = area_edges.len();
             for &recipe_id in &walk.fragments {
                 let fragment = self
                     .emission
@@ -455,7 +456,26 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     }
                 }
             }
-            if area_region.is_none() && !line_run.chords.is_empty() {
+            if let Some(region) = area_region {
+                // Distinct chart occurrences of one pole are connected in Q,
+                // but need the selected walk's pole arc in the planar drawing.
+                let (pole_edges, pole_events) = native_pole_walk_edges(
+                    self.topology.sources.frame,
+                    region,
+                    &area_edges[area_walk_start..],
+                    budget,
+                )?;
+                area_edges.extend(pole_edges);
+                for vertices in pole_events {
+                    seam_events.push(NativeSeamEventData {
+                        event: NativeSeamEvent {
+                            latitude: vertices.latitude.try_clone_with_work(budget)?,
+                            output_vertex: true,
+                        },
+                        vertices,
+                    });
+                }
+            } else if !line_run.chords.is_empty() {
                 let trace_line = line_traces.len();
                 line_traces.push(finish_native_line_run(
                     &mut builder,
@@ -470,6 +490,23 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 }
             }
         }
+
+        let mut walk_poles = Vec::new();
+        for edge in &area_edges {
+            budget.charge_into_error(1)?;
+            if let NativeGraphEdgeOwner::Area { region } = edge.owner
+                && let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind
+                && let ChartRestriction::PolarCap { pole } = restriction.restriction
+            {
+                walk_poles.push((region, pole));
+            }
+        }
+        try_sort_by_with_work(&mut walk_poles, budget, |left, right, budget| {
+            budget.charge_into_error(1)?;
+            Ok(left.cmp(right))
+        })?;
+        walk_poles.dedup();
+        self.register_native_pole_families(&walk_poles, budget)?;
 
         for vertex in &drawing.points {
             let node = builder.source_node(vertex.port.node)?;
@@ -619,7 +656,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 ] {
                     if let Some(band) = band {
                         for region in [band.west_region, band.east_region].into_iter().flatten() {
-                            if !pole_closures.contains(&(region, pole)) {
+                            if !selected_poles.closures.contains(&(region, pole)) {
                                 return Err(GeometryErrorKind::Invalid(
                                     "assigned seam pole has no selected source-sector germ".into(),
                                 )
