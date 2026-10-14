@@ -100,7 +100,7 @@ pub(crate) enum SourceRootLongitude<'a> {
     Derived(&'a mut Option<RetainedChartDisplacement>),
 }
 
-impl<'a> From<RetainedChartDisplacement> for SourceRootLongitude<'a> {
+impl From<RetainedChartDisplacement> for SourceRootLongitude<'_> {
     fn from(longitude: RetainedChartDisplacement) -> Self {
         Self::Retained(longitude)
     }

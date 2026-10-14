@@ -24,8 +24,8 @@ use crate::work::{Unmetered, Work};
 mod trace;
 pub(crate) use trace::{
     RequestRowId, RequestRowInput, RootCatalog, RootEvaluationContext, RootId, RootRange,
-    RootRequest, RootSourceData, SourceRootLongitude, TraceRows, TraceRowsBuilder,
-    resolve_request_rows, resolve_source_root,
+    RootRequest, RootSourceData, TraceRows, TraceRowsBuilder, resolve_request_rows,
+    resolve_source_root,
 };
 #[cfg(test)]
 pub(crate) use trace::{

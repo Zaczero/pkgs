@@ -4,8 +4,7 @@
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::ordinates::{
-    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootRequest, RootSourceData,
-    resolve_request_rows,
+    RequestRowInput, RootCatalog, RootId, RootRequest, RootSourceData, resolve_request_rows,
 };
 use crate::geometry::{
     ChartMetric, CoordinateAxes, ExactRational, MOrdinate, Point, SegmentProjection,
