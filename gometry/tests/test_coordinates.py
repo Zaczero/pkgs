@@ -217,7 +217,9 @@ def test_coordinates_support_numeric_numpy_ufuncs() -> None:
     coords = gm.LineString([(0.0, 1.0), (2.0, 3.0)]).coords
 
     np.testing.assert_array_equal(np.isfinite(coords), [[True, True], [True, True]])
-    np.testing.assert_array_equal(np.add(coords, 1.0), [[1.0, 2.0], [3.0, 4.0]])
+    result = np.add(coords, 1.0)
+    np.testing.assert_array_equal(result, [[1.0, 2.0], [3.0, 4.0]])
+    assert result.flags.writeable is True
     np.testing.assert_array_equal(np.add.reduce(coords, axis=0), [2.0, 4.0])
 
     matrix = np.asarray(coords)

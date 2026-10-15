@@ -183,9 +183,12 @@ result must itself remain a GeoArrow extension array with CRS and epoch metadata
 For dependency-free producers, pass the gometry object itself to any consumer that
 understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
 or `__arrow_c_stream__` and imports the GeoArrow buffers according to its own
-ownership contract. When gometry is the consumer, `from_arrow` accepts those capsules too and copies the
-selected schema plus visible validity, offset, view, variadic-size, coordinate,
-and WKB spans into gometry-owned storage before validation and decode.
+ownership contract. When gometry is the consumer, pass the provider object itself
+to `from_arrow`. The `(schema_capsule, array_capsule)` pair returned by calling
+`__arrow_c_array__()` is the protocol's transfer value, not a supported
+`from_arrow` input. Gometry copies the selected schema plus visible validity,
+offset, view, variadic-size, coordinate, and WKB spans into owned storage before
+validation and decode.
 
 Consumers with Arrow-C support can consume these capsules directly, subject to
 their own GeoArrow and extension-type support. Gometry's supported
@@ -200,13 +203,20 @@ allocate; it does not promise a GeoJSON fallback.
 
 Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
 [`gm.from_geoparquet`][gometry.from_geoparquet]. Write a `GeometryArray` to a
-[GeoParquet](https://geoparquet.org/) file and read it back — CRS metadata is
-embedded as **PROJJSON** in the column header, with the namespaced
+[GeoParquet 1.1](https://geoparquet.org/releases/v1.1.0/) file and read it back —
+CRS metadata is embedded as **PROJJSON** in the column header, with the namespaced
 `gometry:crs_definition` value preserving gometry's exact stored CRS identity.
 Geometry is written with **WKB** encoding (the GeoParquet 1.1 default), and
 gometry's missing rows travel as Arrow validity bits instead of sentinel
 geometries. GeoParquet builds on pyarrow (the `arrow` extra provides it); for an
 in-memory handoff without a file, use `to_arrow`.
+
+GeoParquet 1.x supports XY and XYZ, not M. Gometry rejects M-bearing inputs on
+write, including empty and all-missing arrays whose stored layout still carries
+M, and rejects decoded M geometries or M-typed native storage on read. It never
+drops M implicitly. Use `with_coordinates(m=None)` to remove M while retaining
+Z, or `force_2d()` to remove both Z and M. The broader XYM and XYZM layouts
+available in GeoArrow do not change GeoParquet's axis limit.
 
 The GeoParquet reader and writer also accept binary streams, including
 `io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;

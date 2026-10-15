@@ -158,8 +158,11 @@ impl PyGeometryArray {
     /// Raises
     /// ------
     /// GeometryError
-    ///     If encoding is unknown, or attributes clash with the geometry
-    ///     column or mismatch the row count.
+    ///     If the geometry layout carries M (including empty or all-missing
+    ///     arrays), encoding is unknown, or attributes clash with the geometry
+    ///     column or mismatch the row count. GeoParquet 1.x does not support M;
+    ///     remove it explicitly with ``with_coordinates(m=None)`` before
+    ///     writing, or use ``force_2d()`` to remove both Z and M.
     ///
     /// Examples
     /// --------

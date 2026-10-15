@@ -119,8 +119,34 @@ NumPy ufuncs defer with a clear `TypeError` instead of assigning numeric meaning
 to spatial values. `GeometryArray` and `Coordinates` implement `__array__`, so
 `np.asarray(arr)` gives an `object` array and `np.asarray(coords)` gives an
 `(N, dims)` `float64` matrix. Coordinates therefore work directly with numeric
-ufuncs; the resulting arrays remain read-only where coordinate export is
-read-only, including as a ufunc `out=` target.
+ufuncs. Exported coordinate arrays are read-only inputs; a ufunc that allocates
+its result returns a normal writable NumPy array. A read-only export cannot be
+used as the ufunc's `out=` target.
+
+### NumPy ufunc results and `out=`
+
+This example shows the distinction between a read-only coordinate export, a
+newly allocated ufunc result, and a rejected write into the export:
+
+```python exec="on" source="block" result="text"
+import numpy as np
+import gometry as gm
+
+coords = gm.LineString([(0.0, 1.0), (2.0, 3.0)]).coords
+matrix = np.asarray(coords)
+result = np.add(matrix, 1.0)
+
+print("export read-only:", not matrix.flags.writeable)
+print("new result writable:", result.flags.writeable)
+assert not matrix.flags.writeable
+assert result.flags.writeable
+try:
+    np.add(matrix, 1.0, out=matrix)
+except ValueError:
+    print("read-only out: rejected")
+else:
+    raise AssertionError("NumPy accepted a read-only array as its output")
+```
 
 Integer-array selection preserves known NumPy rank in its result type: a
 zero-dimensional integer array selects one row, while a one-dimensional integer
