@@ -20,10 +20,11 @@ excluded with its reason; an h2corn failure stops the run.
 Trials use two seconds of warmup followed by ten seconds of load, with three to
 nine cold starts, rotated server order, and no CPU pinning. Published rate
 ranges are the observed minimum and maximum across trials; they are not
-confidence intervals. The generated table also reports the 95% bootstrap
-interval used to decide whether the highest median is separated from the
-runner-up. Peak proportional set size (PSS) is the maximum sampled across the
-supervisor and workers.
+confidence intervals. When a comparator is present, the generated conclusion
+states whether the 95% bootstrap intervals separate the highest median from the
+runner-up; for a separated leader it also reports the interval's relative
+half-width, not its endpoints. Peak proportional set size (PSS) is the maximum
+sampled across the supervisor and workers.
 
 ## Workloads and limits
 

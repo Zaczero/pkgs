@@ -27,10 +27,11 @@ than a hijacked socket. Two practical consequences:
 - The proxy → app hop stays on HTTP/2 the whole time — no
   `Upgrade`/`Connection: keep-alive` interaction with HTTP/1.1.
 
-When a reverse proxy translates the browser's `Upgrade` into RFC 8441 extended
-`CONNECT`, WebSocket traffic can ride the same `h2c` connection as the rest of
-the application. See [Behind a reverse proxy](deployment/proxy.md) for the
-HTTP/1.1 split route and the pure HTTP/2 requirements.
+When the client and proxy use RFC 8441 extended `CONNECT`, WebSocket traffic
+can use the same `h2c` connection as ordinary requests. A proxy can translate a
+client's HTTP/1.1 `Upgrade` only when it supports that conversion. See
+[Behind a reverse proxy](deployment/proxy.md) for the HTTP/1.1 split route and
+the HTTP/2 requirements.
 
 ## Limits and keep-alives
 
@@ -83,8 +84,8 @@ h2corn ws:app --no-http1
 
 With [`--no-http1`](configuration.md#option-http1), the server only accepts the HTTP/2 WebSocket
 bootstrap — the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)
-extended `CONNECT`. Browser WebSocket APIs and the reverse proxy need support
-for the upgrade translation. If the proxy does not provide it, route WebSocket
-upgrades over HTTP/1.1 and ordinary requests over `h2c`, and keep HTTP/1
-enabled there. See [Behind a reverse
+extended `CONNECT`. The WebSocket client and proxy path must support RFC 8441;
+HTTP/1.1 clients instead need a proxy that translates their `Upgrade` request.
+If that path is unavailable, route WebSocket upgrades over HTTP/1.1 and
+ordinary requests over `h2c`, and keep HTTP/1 enabled there. See [Behind a reverse
 proxy](deployment/proxy.md#behind-a-reverse-proxy) before dropping HTTP/1.

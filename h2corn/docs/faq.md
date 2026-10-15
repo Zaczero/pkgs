@@ -70,7 +70,7 @@ uv run h2corn myproject.asgi:application --workers 4
 ```
 
 Django Channels and other ASGI frameworks use the same integration boundary.
-For WebSockets, choose HTTP/1.1 or a proxy route that translates to RFC 8441
+For WebSockets, choose HTTP/1.1 or an HTTP/2 path that supports RFC 8441
 extended CONNECT.
 
 ## Which ASGI extensions are supported?

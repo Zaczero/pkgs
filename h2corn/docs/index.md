@@ -59,7 +59,7 @@ WebSocket route determine which protocols each hop uses.
 Configure a reverse proxy to use `h2c` when you want HTTP/2 between the proxy
 and h2corn. The hop is cleartext, so keep it within a private network boundary.
 For WebSockets, the nginx and Caddy examples use a separate HTTP/1.1 upgrade
-route; HTTP/2-only WebSockets require a proxy that translates upgrades to RFC
+route; HTTP/2-only WebSockets require the client and proxy path to support RFC
 8441 extended CONNECT.
 
 The published benchmark page describes its workloads and limits. It contains no
