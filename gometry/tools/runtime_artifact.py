@@ -506,6 +506,11 @@ def inspect_runtime_inputs(
         raise AssertionError('runtime receipt lacks build, source or wheel identity')
     kind = receipt.get('kind')
     quality_receipt = kind == 'gometry-quality-runtime'
+    sanitizer_receipt = kind == 'gometry-sanitizer-runtime'
+    if sanitizer_receipt:
+        from sanitizers import validate_sanitizer_producer_inputs
+
+        validate_sanitizer_producer_inputs(root, receipt)
     python_members = receipt.get('python_members', source.get('python_members'))
     if (
         not isinstance(python_members, dict)
@@ -566,7 +571,7 @@ def inspect_runtime_inputs(
             kind, f'prepared runtime package root is missing: {package_root}'
         )
 
-    if expected_wheel is None and quality_receipt:
+    if expected_wheel is None and (quality_receipt or sanitizer_receipt):
         wheel_path_value = wheel_record.get('path')
         if not isinstance(wheel_path_value, str):
             raise AssertionError('quality runtime receipt has no wheel path')
@@ -608,16 +613,19 @@ def inspect_runtime_inputs(
                     'installed wheel does not match its CIBW identifier'
                 )
             target_policy = build_identifier_policy(identifier)
-        if not wheel_target_compatible(
-            expected_wheel,
-            expected_target,
-            wheel_inspection['tags'],
+        if sanitizer_receipt:
+            from sanitizers import validate_sanitizer_wheel_tags
+
+            validate_sanitizer_wheel_tags(wheel_inspection['tags'], interpreter)
+        elif not wheel_target_compatible(
+            expected_wheel, expected_target, wheel_inspection['tags']
         ):
             raise AssertionError('installed wheel tag is incompatible with its target')
         validate_wheel_native_target(
             wheel_inspection,
             target_policy,
             label=str(expected_wheel),
+            validate_tags=not sanitizer_receipt,
         )
         extension_records = wheel_inspection['extension_members']
         if len(extension_records) != 1:
@@ -704,6 +712,10 @@ def inspect_runtime_inputs(
         _preparation_mismatch(
             kind, 'installed native extension differs from its receipt'
         )
+    if sanitizer_receipt:
+        from sanitizers import verify_asan_image
+
+        verify_asan_image(extension_path)
     distribution_files = distribution.files
     normalized_distribution_files = (
         None
@@ -899,6 +911,11 @@ def verify_runtime_completion(
 ) -> None:
     """Recheck the admitted process and package after its benchmark observation."""
     facade, extension, _ = runtime
+    if admission.receipt.get('kind') == 'gometry-sanitizer-runtime':
+        from sanitizers import validate_sanitizer_producer_inputs, verify_asan_runtime
+
+        validate_sanitizer_producer_inputs(admission.root, admission.receipt)
+        verify_asan_runtime(admission.receipt)
     modules = _resident_gometry_modules()
     if (
         modules.get('gometry') is not facade
@@ -1024,12 +1041,27 @@ def require_runtime(
     root: Path = ROOT,
     *,
     prepare_if_stale: bool = True,
+    build_receipt: Mapping[str, Any] | None = None,
 ) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
     """Admit a runtime before import; prepare only known stale fresh processes."""
     global _ACTIVE_ADMISSION, _ACTIVE_RUNTIME
     root = root.resolve()
     if _ACTIVE_ADMISSION is not None:
+        if (
+            build_receipt is not None
+            and dict(build_receipt) != _ACTIVE_ADMISSION.receipt
+        ):
+            raise AssertionError(
+                'explicit producer differs from active runtime admission'
+            )
         runtime = _verify_active_admission(root)
+        return _report_runtime_selection(runtime)
+
+    if build_receipt is not None:
+        admission = inspect_runtime_inputs(root, build_receipt=build_receipt)
+        runtime = verify_admitted_runtime(admission)
+        _ACTIVE_ADMISSION = admission
+        _ACTIVE_RUNTIME = runtime
         return _report_runtime_selection(runtime)
 
     try:
@@ -1118,6 +1150,10 @@ def verify_admitted_runtime(
 
     facade = importlib.import_module('gometry')
     extension = importlib.import_module('gometry._lib')
+    if receipt.get('kind') == 'gometry-sanitizer-runtime':
+        from sanitizers import verify_asan_runtime
+
+        verify_asan_runtime(receipt)
     extension_payload = extension_path.read_bytes()
     _validate_resident_module_files(
         _resident_gometry_modules(),
@@ -1338,4 +1374,19 @@ def verify_admitted_runtime(
         and sys._is_gil_enabled()
     ):
         raise AssertionError('gometry re-enabled the GIL in a free-threaded runtime')
+    if receipt.get('kind') == 'gometry-sanitizer-runtime':
+        print(
+            'gometry ASan runtime admission: '
+            + json.dumps(
+                {
+                    'extension': str(extension_path),
+                    'sha256': actual_extension_sha256,
+                    'source_inputs_sha256': source_inputs,
+                    'pid': interpreter['pid'],
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
     return facade, extension, runtime_record

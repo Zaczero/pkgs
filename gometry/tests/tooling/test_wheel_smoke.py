@@ -34,6 +34,7 @@ import benchmark_runtime  # noqa: E402
 import quality_runtime  # noqa: E402
 import release_artifact  # noqa: E402
 import runtime_artifact  # noqa: E402
+import sanitizers  # noqa: E402
 import source_artifact  # noqa: E402
 import wheel_smoke as wheel_cli  # noqa: E402
 
@@ -41,6 +42,118 @@ import wheel_smoke as wheel_cli  # noqa: E402
 def _record_digest(payload: bytes) -> str:
     encoded = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
     return 'sha256=' + encoded.rstrip(b'=').decode('ascii')
+
+
+def test_sanitizer_environment_preserves_target_and_offloader_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv('CARGO_BUILD_TARGET', 'x86_64-unknown-linux-gnu')
+    monkeypatch.setenv('RUSTFLAGS', '-C target-cpu=x86-64-v2 -Z threads=16')
+    monkeypatch.setenv('CARGO_ENCODED_RUSTFLAGS', '-C\x1ftarget-cpu=x86-64-v2')
+    monkeypatch.setenv('RUSTC_WRAPPER', '/fleet/rustc-wrapper')
+    monkeypatch.setenv('CFLAGS', '-O2')
+    monkeypatch.setenv('LD_PRELOAD', '/ordinary/preload.so')
+    before = os.environ.copy()
+
+    environment = sanitizers._build_environment(Path(sys.executable), tmp_path)
+
+    for name in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTC_WRAPPER'):
+        assert environment[name] == before[name]
+    assert environment['CFLAGS'] == '-O2 -fsanitize=address -fno-omit-frame-pointer'
+    assert 'LD_PRELOAD' not in environment
+    assert os.environ == before
+
+
+@pytest.mark.parametrize('flags', ['-Zsanitizer=thread', '-Z sanitizer=address'])
+def test_sanitizer_environment_rejects_global_instrumentation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flags: str
+) -> None:
+    monkeypatch.setenv('RUSTFLAGS', flags)
+    with pytest.raises(AssertionError):
+        sanitizers._build_environment(Path(sys.executable), tmp_path)
+
+
+@pytest.mark.parametrize('name', ['CFLAGS', 'CXXFLAGS', 'TARGET_CFLAGS'])
+def test_sanitizer_environment_rejects_incompatible_native_instrumentation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    monkeypatch.setenv(name, '-fsanitize=thread')
+    with pytest.raises(AssertionError):
+        sanitizers._build_environment(Path(sys.executable), tmp_path)
+
+
+def test_sanitizer_admission_rejects_an_ordinary_quality_receipt(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AssertionError):
+        sanitizers.validate_sanitizer_producer_inputs(
+            tmp_path, {'schema': 2, 'kind': 'gometry-quality-runtime'}
+        )
+
+
+@pytest.mark.parametrize(
+    ('gil_disabled', 'tag'),
+    [
+        (False, 'cp314-cp314-linux_x86_64'),
+        (True, 'cp314-cp314t-linux_x86_64'),
+    ],
+)
+def test_sanitizer_wheel_admits_the_selected_native_abi(
+    gil_disabled: bool, tag: str
+) -> None:
+    sanitizers.validate_sanitizer_wheel_tags(
+        [tag],
+        {
+            'cache_tag': 'cpython-314',
+            'implementation': 'CPython',
+            'gil_disabled': gil_disabled,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    'tag',
+    [
+        'cp313-cp313-linux_x86_64',
+        'cp314-cp314t-linux_x86_64',
+        'cp314-cp314-linux_aarch64',
+        'cp314-cp314-manylinux_2_39_x86_64',
+    ],
+)
+def test_sanitizer_wheel_rejects_a_different_native_abi_or_platform(tag: str) -> None:
+    with pytest.raises(AssertionError):
+        sanitizers.validate_sanitizer_wheel_tags(
+            [tag],
+            {
+                'cache_tag': 'cpython-314',
+                'implementation': 'CPython',
+                'gil_disabled': False,
+            },
+        )
+
+
+@pytest.mark.parametrize('ordinary_receipt_present', [False, True])
+def test_explicit_producer_rejection_does_not_consult_quality_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ordinary_receipt_present: bool,
+) -> None:
+    if ordinary_receipt_present:
+        path = quality_runtime.quality_receipt_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_text('invalid ordinary receipt', encoding='utf-8')
+    monkeypatch.setattr(runtime_artifact, '_ACTIVE_ADMISSION', None)
+    monkeypatch.setattr(runtime_artifact, '_ACTIVE_RUNTIME', None)
+    producer = {
+        'schema': 0,
+        'kind': 'gometry-sanitizer-runtime',
+        'build': {},
+        'source': {},
+        'wheel': {},
+    }
+
+    with pytest.raises(AssertionError, match='sanitizer producer receipt'):
+        runtime_artifact.require_runtime(tmp_path, build_receipt=producer)
 
 
 def _record_bytes(
