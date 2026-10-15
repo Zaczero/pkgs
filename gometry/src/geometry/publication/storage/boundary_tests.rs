@@ -4,8 +4,7 @@ use super::*;
 use crate::crs::frame::crs_arc_static;
 use crate::dispatch::{CachelessRowContext, Lane, MetricResolver, MetricScratch, kernels};
 use crate::error::ErrorKind;
-use crate::geometry::publication::PendingPublicationRow;
-use crate::geometry::{MOrdinate, Point, PreparedPlan, Shape, ZOrdinate};
+use crate::geometry::{MOrdinate, Point, PreparedPlan, ZOrdinate};
 
 const SEAM: &str = "POLYGON M ((170 10 10,190 50 110,190 55 210,170 15 310,170 10 10))";
 const ORDINARY: &str = "POLYGON M ((0 0 401,3 0 402,3 2 403,0 2 404,0 0 401))";
@@ -43,7 +42,7 @@ fn mixed_rows() -> (PublicationRows, Vec<Option<Shape>>, Frame) {
     {
         if let Some(source) = source {
             let pending = pending(source, logical, &frame);
-            assert_eq!(pending.producer_drawing, logical == 2);
+            assert_eq!(pending.is_producer_drawing(), logical == 2);
             expected.push(Some(pending.shape.clone()));
             rows.try_push(GeometryOutput::Pending(pending)).unwrap();
         } else {
@@ -76,15 +75,18 @@ fn assert_invalid(result: Result<crate::PyGeometryArray>) {
     ));
 }
 
-fn unique_checked_index(row: &StoredPublicationRow) -> usize {
-    row.checked
+fn unique_checked_index(records: &[CheckedPublicationLiteral], logical: usize) -> usize {
+    records
         .iter()
         .position(|literal| {
-            row.checked
-                .iter()
-                .filter(|other| other.address == literal.address && other.image == literal.image)
-                .count()
-                == 1
+            literal.address.logical_row == logical
+                && records
+                    .iter()
+                    .filter(|other| {
+                        other.address == literal.address && other.image == literal.image
+                    })
+                    .count()
+                    == 1
         })
         .expect("a boundary has a non-closing unique image")
 }
@@ -141,17 +143,8 @@ fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
 fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
     for logical in [0, 2] {
         let (mut rows, _expected, frame) = mixed_rows();
-        let row = rows
-            .pending
-            .iter_mut()
-            .find(|row| row.logical_row == logical)
-            .unwrap();
-        if row.producer_drawing {
-            assert!(row.producer_literals.pop().is_some());
-        } else {
-            let unique = unique_checked_index(row);
-            drop(row.checked.remove(unique));
-        }
+        let unique = unique_checked_index(&rows.records, logical);
+        rows.records.remove(unique);
         assert_invalid(rows.finish(frame));
     }
 }
@@ -160,25 +153,12 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
 fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories() {
     for logical in [0, 2] {
         let (mut rows, _expected, frame) = mixed_rows();
-        let row = rows
-            .pending
-            .iter_mut()
-            .find(|row| row.logical_row == logical)
-            .unwrap();
-        if row.producer_drawing {
-            row.producer_literals
-                .first_mut()
-                .unwrap()
-                .address
-                .logical_row = 3;
-        } else {
-            let unique = unique_checked_index(row);
-            row.checked
-                .get_mut(unique)
-                .expect("the selected unique image exists")
-                .address
-                .logical_row = 3;
-        }
+        let unique = unique_checked_index(&rows.records, logical);
+        rows.records
+            .get_mut(unique)
+            .expect("the selected unique image exists")
+            .address
+            .logical_row = 3;
         assert_invalid(rows.finish(frame));
     }
 }
@@ -254,4 +234,52 @@ fn public_boundary_dispatch_preserves_nullable_mixed_rows_and_epoch() {
             output.geometry_at(3).unwrap().prepared_plan().shape(),
         );
     });
+}
+
+#[test]
+fn boundary_checked_append_preserves_the_remaining_q_account() {
+    let frame = frame();
+    let mut pending = pending(SEAM, 0, &frame);
+    let PendingAdmission::Checked { work, .. } = &mut pending.admission else {
+        panic!("a seam boundary retains authentic Q admission");
+    };
+    *work =
+        EvaluationBudget::with_remaining_ticks_for_test("boundary", work.constructed(), 0).unwrap();
+    let mut rows = PublicationRows::with_capacity(1);
+    let Err(error) = rows.try_push(GeometryOutput::Pending(pending)) else {
+        panic!("checked append reset an exhausted Q account");
+    };
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit { .. }),
+    ));
+}
+
+#[test]
+fn boundary_final_readback_consumes_the_same_remaining_q_account() {
+    let frame = frame();
+    let mut pending = pending(SEAM, 0, &frame);
+    let coordinates = ShapeCountQuery::default()
+        .coordinates(&pending.shape)
+        .unwrap();
+    let PendingAdmission::Checked { work, records, .. } = &mut pending.admission else {
+        panic!("a seam boundary retains authentic Q admission");
+    };
+    let append = records.len() as u128 + 1;
+    let admission = coordinates as u128 + 3;
+    *work = EvaluationBudget::with_remaining_ticks_for_test(
+        "boundary",
+        work.constructed(),
+        append + admission,
+    )
+    .unwrap();
+    let mut rows = PublicationRows::with_capacity(1);
+    rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+    let Err(error) = rows.finish(frame) else {
+        panic!("final readback reset or erased the remaining Q account");
+    };
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit { .. }),
+    ));
 }

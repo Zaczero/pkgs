@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::literals::{LiteralAddress, LiteralRowLayout, ShapeLiteralLayout};
+use super::literals::{FlatLiteralLayout, LiteralAddress, LiteralRowLayout, ShapeLiteralLayout};
 use super::{ResourceError, Result, Work};
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
@@ -13,12 +13,7 @@ pub(in crate::geometry) struct CheckedLiteralRecord<I> {
     pub(in crate::geometry) record: Point,
 }
 
-pub(in crate::geometry) enum LiteralRowBinding<I> {
-    Checked(LiteralRowLayout<I>),
-    OtherProducer,
-}
-
-/// Owns the real finalized sink and its physical-slot-to-logical-use map.
+/// Owns the actual finalized sink and its independent logical-use map.
 pub(in crate::geometry) struct FrozenLiteralBuffers<I> {
     pub(super) storage: FrozenStorage<I>,
 }
@@ -34,14 +29,18 @@ pub(super) enum FrozenStorage<I> {
         shape: Shape,
         layout: ShapeLiteralLayout<I>,
     },
+    FlatScalar {
+        shape: Shape,
+        layout: Box<FlatLiteralLayout<I>>,
+    },
     Rows {
         rows: ArrayRows,
-        row_map: Arc<[Option<LiteralRowBinding<I>>]>,
+        layout: Arc<FlatLiteralLayout<I>>,
         visit_rows: std::ops::Range<usize>,
     },
     Groups {
         groups: FinalGroupRows,
-        row_map: Vec<Option<LiteralRowBinding<I>>>,
+        layout: Box<FlatLiteralLayout<I>>,
         expected_present: Vec<bool>,
     },
 }
@@ -76,14 +75,17 @@ pub(in crate::geometry) trait LiteralReceiver<I> {
 }
 
 impl<I> FrozenLiteralBuffers<I> {
-    pub(in crate::geometry) const fn shapes(
-        shape: Shape,
-        locations: ShapeLiteralLayout<I>,
-    ) -> Self {
+    pub(in crate::geometry) const fn shapes(shape: Shape, layout: ShapeLiteralLayout<I>) -> Self {
         Self {
-            storage: FrozenStorage::Scalar {
+            storage: FrozenStorage::Scalar { shape, layout },
+        }
+    }
+
+    pub(in crate::geometry) fn flat_shape(shape: Shape, layout: FlatLiteralLayout<I>) -> Self {
+        Self {
+            storage: FrozenStorage::FlatScalar {
                 shape,
-                layout: locations,
+                layout: Box::new(layout),
             },
         }
     }
@@ -91,34 +93,34 @@ impl<I> FrozenLiteralBuffers<I> {
     pub(in crate::geometry) fn rows<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
-        layout: StorageLayout,
+        storage_layout: StorageLayout,
         row_map: Vec<Option<LiteralRowLayout<I>>>,
         work: &mut W,
     ) -> Result<Self> {
-        let row_map = row_map
-            .into_iter()
-            .map(|row| row.map(LiteralRowBinding::Checked))
-            .collect();
-        Self::rows_with_producer_bindings(storage, missing, layout, row_map, work)
+        let mut layout = FlatLiteralLayout::with_capacity(row_map.len());
+        for row in row_map {
+            if let Some(row) = row {
+                layout.push_layout(row)?;
+            } else {
+                layout.rows.push(None);
+            }
+        }
+        Self::flat_rows(storage, missing, storage_layout, layout, work)
     }
 
-    pub(in crate::geometry) fn rows_with_producer_bindings<W: Work>(
+    pub(in crate::geometry) fn flat_rows<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
-        layout: StorageLayout,
-        row_map: Vec<Option<LiteralRowBinding<I>>>,
+        storage_layout: StorageLayout,
+        mut layout: FlatLiteralLayout<I>,
         work: &mut W,
     ) -> Result<Self> {
-        work.charge_into_error(
-            u64::try_from(row_map.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let (rows, row_map) =
-            ArrayRows::admit_with_row_map(storage, missing, layout, row_map, work)?;
+        let rows = admit_flat_rows(storage, missing, storage_layout, &mut layout, work)?;
         Ok(Self {
             storage: FrozenStorage::Rows {
                 visit_rows: 0..rows.len(),
                 rows,
-                row_map: row_map.into(),
+                layout: Arc::new(layout),
             },
         })
     }
@@ -132,41 +134,52 @@ impl<I> FrozenLiteralBuffers<I> {
         missing: Option<ValidityMask>,
         work: &mut W,
     ) -> Result<Self> {
-        let value_map = value_map
-            .into_iter()
-            .map(|row| row.map(LiteralRowBinding::Checked))
+        let mut layout = FlatLiteralLayout::with_capacity(value_map.len());
+        for row in value_map {
+            if let Some(row) = row {
+                layout.push_layout(row)?;
+            } else {
+                layout.rows.push(None);
+            }
+        }
+        let group_count = offsets.len().checked_sub(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("group domain has no offset origin".into())
+        })?;
+        if missing
+            .as_ref()
+            .is_some_and(|mask| mask.len() != group_count)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "group validity does not match the declared group count".into(),
+            )
+            .into());
+        }
+        let expected_present = (0..group_count)
+            .map(|group| !missing.as_ref().is_some_and(|mask| mask.is_missing(group)))
             .collect();
-        Self::groups_with_producer_bindings(
+        Self::flat_groups(
             storage,
             value_missing,
             value_layout,
-            value_map,
+            layout,
             offsets,
             missing,
+            expected_present,
             work,
         )
     }
 
-    pub(in crate::geometry) fn groups_with_producer_bindings<W: Work>(
+    pub(in crate::geometry) fn flat_groups<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         value_missing: Option<ValidityMask>,
         value_layout: StorageLayout,
-        value_map: Vec<Option<LiteralRowBinding<I>>>,
+        mut layout: FlatLiteralLayout<I>,
         offsets: Vec<i64>,
         missing: Option<ValidityMask>,
+        expected_present: Vec<bool>,
         work: &mut W,
     ) -> Result<Self> {
-        let group_count = offsets.len().checked_sub(1).ok_or_else(|| {
-            GeometryErrorKind::Invalid("group domain has no offset origin".into())
-        })?;
-        let expected_present = (0..group_count)
-            .map(|group| !missing.as_ref().is_some_and(|mask| mask.is_missing(group)))
-            .collect();
-        work.charge_into_error(
-            u64::try_from(value_map.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let (values, value_map) =
-            ArrayRows::admit_with_row_map(storage, value_missing, value_layout, value_map, work)?;
+        let values = admit_flat_rows(storage, value_missing, value_layout, &mut layout, work)?;
         Ok(Self {
             storage: FrozenStorage::Groups {
                 groups: FinalGroupRows {
@@ -174,7 +187,7 @@ impl<I> FrozenLiteralBuffers<I> {
                     offsets,
                     missing,
                 },
-                row_map: value_map,
+                layout: Box::new(layout),
                 expected_present,
             },
         })
@@ -182,13 +195,13 @@ impl<I> FrozenLiteralBuffers<I> {
 
     pub(in crate::geometry) fn admitted_row_view(
         rows: ArrayRows,
-        row_map: Arc<[Option<LiteralRowBinding<I>>]>,
+        layout: Arc<FlatLiteralLayout<I>>,
         logical_row: usize,
     ) -> Result<Self> {
         let end = logical_row
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        if end > rows.len() || row_map.len() != rows.len() {
+        if end > rows.len() || layout.rows.len() != rows.len() {
             return Err(GeometryErrorKind::Invalid(
                 "final array row view is outside its admitted owner".into(),
             )
@@ -197,61 +210,59 @@ impl<I> FrozenLiteralBuffers<I> {
         Ok(Self {
             storage: FrozenStorage::Rows {
                 rows,
-                row_map,
+                layout,
                 visit_rows: logical_row..end,
             },
         })
     }
 
     pub(in crate::geometry) fn admit_target(self, target: StorageTarget) -> Result<Self> {
-        let Self { storage } = self;
-        match (target, storage) {
-            (StorageTarget::Scalar, FrozenStorage::Scalar { shape, layout }) => Ok(Self {
-                storage: FrozenStorage::Scalar { shape, layout },
-            }),
+        let matches = matches!(
+            (&self.storage, target),
             (
-                StorageTarget::Array,
-                FrozenStorage::Rows {
-                    rows,
-                    row_map,
-                    visit_rows,
-                },
-            ) => Ok(Self {
-                storage: FrozenStorage::Rows {
-                    rows,
-                    row_map,
-                    visit_rows,
-                },
-            }),
-            (
-                StorageTarget::Groups,
-                FrozenStorage::Groups {
-                    groups,
-                    row_map,
-                    expected_present,
-                },
-            ) => Ok(Self {
-                storage: FrozenStorage::Groups {
-                    groups,
-                    row_map,
-                    expected_present,
-                },
-            }),
-            (StorageTarget::Scalar | StorageTarget::Array | StorageTarget::Groups, _) => {
-                Err(GeometryErrorKind::Invalid(
-                    "storage target does not match the producer's final admitted storage".into(),
-                )
-                .into())
-            },
+                FrozenStorage::Scalar { .. } | FrozenStorage::FlatScalar { .. },
+                StorageTarget::Scalar
+            ) | (FrozenStorage::Rows { .. }, StorageTarget::Array)
+                | (FrozenStorage::Groups { .. }, StorageTarget::Groups)
+        );
+        if !matches {
+            return Err(GeometryErrorKind::Invalid(
+                "storage target does not match the producer's final admitted storage".into(),
+            )
+            .into());
         }
+        Ok(self)
     }
+}
+
+pub(in crate::geometry) fn admit_flat_rows<I, W: Work>(
+    storage: Arc<GeometryArrayStorage>,
+    missing: Option<ValidityMask>,
+    storage_layout: StorageLayout,
+    layout: &mut FlatLiteralLayout<I>,
+    work: &mut W,
+) -> Result<ArrayRows> {
+    work.charge_into_error(
+        u64::try_from(layout.rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    let (rows, row_map) = ArrayRows::admit_with_row_map(
+        storage,
+        missing,
+        storage_layout,
+        std::mem::take(&mut layout.rows),
+        work,
+    )?;
+    layout.rows = row_map;
+    Ok(rows)
 }
 
 impl<I> SealedOutput<I> {
     pub(in crate::geometry) const fn shape_layout(&self) -> Option<&ShapeLiteralLayout<I>> {
         match &self.buffers.storage {
             FrozenStorage::Scalar { layout, .. } => Some(layout),
-            FrozenStorage::Rows { .. } | FrozenStorage::Groups { .. } => None,
+            FrozenStorage::FlatScalar { .. }
+            | FrozenStorage::Rows { .. }
+            | FrozenStorage::Groups { .. } => None,
         }
     }
 
@@ -266,6 +277,7 @@ impl<I> SealedOutput<I> {
             FrozenStorage::Scalar { shape, layout } => {
                 (LiteralStorage::Scalar(shape), Some(layout))
             },
+            FrozenStorage::FlatScalar { shape, .. } => (LiteralStorage::Scalar(shape), None),
             FrozenStorage::Rows { rows, .. } => (LiteralStorage::Rows(rows), None),
             FrozenStorage::Groups { groups, .. } => (LiteralStorage::Groups(groups), None),
         };
@@ -275,7 +287,9 @@ impl<I> SealedOutput<I> {
     #[cfg(test)]
     pub(in crate::geometry) fn into_shape(self) -> Result<Shape> {
         match self.buffers.storage {
-            FrozenStorage::Scalar { shape, .. } => Ok(shape),
+            FrozenStorage::Scalar { shape, .. } | FrozenStorage::FlatScalar { shape, .. } => {
+                Ok(shape)
+            },
             FrozenStorage::Rows { .. } | FrozenStorage::Groups { .. } => {
                 Err(GeometryErrorKind::Invalid(
                     "non-scalar sealed geometry cannot be adopted as a scalar shape".into(),

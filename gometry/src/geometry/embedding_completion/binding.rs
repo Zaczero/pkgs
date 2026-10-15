@@ -1,13 +1,13 @@
 use super::literals::{
-    LiteralAddress, LiteralRowAddress, validate_shape_layout, visit_shape_literals,
-    visit_storage_row,
+    FlatLiteralLayout, FlatRowBinding, FlatRowLayout, LiteralAddress, LiteralRowAddress,
+    validate_shape_layout, visit_shape_literals,
 };
 use super::storage::{
     CheckedLiteralRecord, FinalGroupRows, FrozenLiteralBuffers, FrozenStorage, LiteralCheck,
-    LiteralReceiver, LiteralRowBinding, SealedOutput,
+    LiteralReceiver, SealedOutput,
 };
 use super::{ResourceError, Result, Work};
-use crate::geometry::storage::{ArrayRows, LogicalRow, ValidityMask};
+use crate::geometry::storage::{ArrayRows, LogicalRow, ShapeRow, ValidityMask};
 use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point};
 
 fn validate_group_storage(
@@ -50,9 +50,10 @@ fn validate_group_storage(
     Ok(group_count)
 }
 
-fn validate_group_literal_map<I>(
+fn validate_group_literal_map(
     admitted_values: &ArrayRows,
-    values: &[Option<LiteralRowBinding<I>>],
+    values: &[Option<FlatRowBinding>],
+    checked_rows: &[FlatRowLayout],
     group_count: usize,
     offsets: &[i64],
     work: &mut impl Work,
@@ -73,15 +74,19 @@ fn validate_group_literal_map<I>(
             let binding = values.get(value).and_then(Option::as_ref);
             match (admitted_values.logical_row(value), binding) {
                 (Some(LogicalRow::Missing { .. }), None)
-                | (Some(LogicalRow::Present { .. }), Some(LiteralRowBinding::OtherProducer)) => {},
+                | (Some(LogicalRow::Present { .. }), Some(FlatRowBinding::OtherProducer)) => {},
                 (Some(LogicalRow::Missing { .. }), Some(_)) => {
                     return Err(GeometryErrorKind::Invalid(
                         "missing group value has a literal row map".into(),
                     )
                     .into());
                 },
-                (Some(LogicalRow::Present { .. }), Some(LiteralRowBinding::Checked(row))) => {
-                    if row.group_row != Some(group) || row.value_row != Some(value) {
+                (Some(LogicalRow::Present { .. }), Some(FlatRowBinding::Checked(index))) => {
+                    let row = checked_rows.get(*index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("group row has no checked layout".into())
+                    })?;
+                    if row.address.group_row != Some(group) || row.address.value_row != Some(value)
+                    {
                         return Err(GeometryErrorKind::Invalid(
                             "group literal map lost its group or value row identity".into(),
                         )
@@ -170,14 +175,40 @@ where
             validate_shape_layout(layout, work)?;
             visit_shape_literals(shape, layout, LiteralRowAddress::scalar(), work, &mut check)?;
         },
+        FrozenStorage::FlatScalar { shape, layout } => {
+            let [Some(FlatRowBinding::Checked(index))] = layout.rows.as_slice() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "scalar publication does not have exactly one checked row".into(),
+                )
+                .into());
+            };
+            let row = layout.checked_rows.get(*index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("scalar row has no checked layout".into())
+            })?;
+            if row.address
+                != (LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                })
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "scalar publication changed its literal address".into(),
+                )
+                .into());
+            }
+            layout.visit_row(ShapeRow::Shape(shape), row, work, &mut check)?;
+        },
         FrozenStorage::Rows {
             rows,
-            row_map,
+            layout,
             visit_rows,
-        } => visit_array_literals(rows, row_map, visit_rows, work, &mut check)?,
+        } => visit_array_literals(rows, layout, visit_rows, work, &mut check)?,
         FrozenStorage::Groups {
             groups,
-            row_map,
+            layout,
             expected_present,
         } => {
             ArrayRows::validate_publication_domain(
@@ -187,7 +218,7 @@ where
                 groups.missing.as_ref(),
                 expected_present.iter().copied(),
             )?;
-            visit_group_literals(groups, row_map, work, &mut check)?;
+            visit_group_literals(groups, layout, work, &mut check)?;
         },
     }
     if rejected.is_empty() {
@@ -201,7 +232,7 @@ where
 
 fn visit_array_literals<I: Copy, W: Work>(
     rows: &ArrayRows,
-    row_map: &[Option<LiteralRowBinding<I>>],
+    layout: &FlatLiteralLayout<I>,
     visit_rows: &std::ops::Range<usize>,
     work: &mut W,
     visit: &mut impl FnMut(
@@ -213,7 +244,7 @@ fn visit_array_literals<I: Copy, W: Work>(
         &mut W,
     ) -> Result<()>,
 ) -> Result<()> {
-    if row_map.len() != rows.len()
+    if layout.rows.len() != rows.len()
         || visit_rows.start > visit_rows.end
         || visit_rows.end > rows.len()
     {
@@ -231,7 +262,7 @@ fn visit_array_literals<I: Copy, W: Work>(
             GeometryErrorKind::Invalid("final storage has no admitted logical row".into())
         })? {
             LogicalRow::Missing { .. } => {
-                if row_map.get(logical).is_some_and(Option::is_some) {
+                if layout.rows.get(logical).is_some_and(Option::is_some) {
                     return Err(GeometryErrorKind::Invalid(
                         "missing final row has a literal receiver map".into(),
                     )
@@ -239,7 +270,8 @@ fn visit_array_literals<I: Copy, W: Work>(
                 }
             },
             LogicalRow::Present { row, .. } => {
-                let binding = row_map
+                let binding = layout
+                    .rows
                     .get(logical)
                     .and_then(Option::as_ref)
                     .ok_or_else(|| {
@@ -247,31 +279,22 @@ fn visit_array_literals<I: Copy, W: Work>(
                             "present final row has no literal receiver map".into(),
                         )
                     })?;
-                let LiteralRowBinding::Checked(locations) = binding else {
+                let FlatRowBinding::Checked(index) = binding else {
                     continue;
                 };
-                if locations.logical_row != logical
-                    || locations.group_row.is_some()
-                    || locations.value_row.is_some()
+                let locations = layout.checked_rows.get(*index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("final row has no checked layout".into())
+                })?;
+                if locations.address.logical_row != logical
+                    || locations.address.group_row.is_some()
+                    || locations.address.value_row.is_some()
                 {
                     return Err(GeometryErrorKind::Invalid(
                         "final row literal address does not match its logical row".into(),
                     )
                     .into());
                 }
-                validate_shape_layout(&locations.layout, work)?;
-                visit_storage_row(
-                    row,
-                    &locations.layout,
-                    LiteralRowAddress {
-                        operation: locations.operation,
-                        logical_row: locations.logical_row,
-                        group_row: None,
-                        value_row: None,
-                    },
-                    work,
-                    visit,
-                )?;
+                layout.visit_row(row, locations, work, visit)?;
             },
         }
     }
@@ -280,7 +303,7 @@ fn visit_array_literals<I: Copy, W: Work>(
 
 fn visit_group_literals<I: Copy, W: Work>(
     groups: &FinalGroupRows,
-    row_map: &[Option<LiteralRowBinding<I>>],
+    layout: &FlatLiteralLayout<I>,
     work: &mut W,
     visit: &mut impl FnMut(
         LiteralAddress,
@@ -297,7 +320,14 @@ fn visit_group_literals<I: Copy, W: Work>(
         groups.missing.as_ref(),
         work,
     )?;
-    validate_group_literal_map(&groups.values, row_map, group_count, &groups.offsets, work)?;
+    validate_group_literal_map(
+        &groups.values,
+        &layout.rows,
+        &layout.checked_rows,
+        group_count,
+        &groups.offsets,
+        work,
+    )?;
     for (group, (&start, &end)) in groups
         .offsets
         .iter()
@@ -323,7 +353,7 @@ fn visit_group_literals<I: Copy, W: Work>(
                 GeometryErrorKind::Invalid("group value has no admitted logical row".into())
             })? {
                 LogicalRow::Missing { .. } => {
-                    if row_map.get(value).is_some_and(Option::is_some) {
+                    if layout.rows.get(value).is_some_and(Option::is_some) {
                         return Err(GeometryErrorKind::Invalid(
                             "missing group value has a literal receiver map".into(),
                         )
@@ -331,27 +361,23 @@ fn visit_group_literals<I: Copy, W: Work>(
                     }
                 },
                 LogicalRow::Present { row, .. } => {
-                    let binding = row_map.get(value).and_then(Option::as_ref).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "present group value has no literal receiver map".into(),
-                        )
-                    })?;
-                    let LiteralRowBinding::Checked(locations) = binding else {
+                    let binding =
+                        layout
+                            .rows
+                            .get(value)
+                            .and_then(Option::as_ref)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "present group value has no literal receiver map".into(),
+                                )
+                            })?;
+                    let FlatRowBinding::Checked(index) = binding else {
                         continue;
                     };
-                    validate_shape_layout(&locations.layout, work)?;
-                    visit_storage_row(
-                        row,
-                        &locations.layout,
-                        LiteralRowAddress {
-                            operation: locations.operation,
-                            logical_row: locations.logical_row,
-                            group_row: locations.group_row,
-                            value_row: locations.value_row,
-                        },
-                        work,
-                        visit,
-                    )?;
+                    let locations = layout.checked_rows.get(*index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("group value has no checked layout".into())
+                    })?;
+                    layout.visit_row(row, locations, work, visit)?;
                 },
             }
         }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::finish::finish_producer_drawing;
 use super::receipt::{
-    PendingPublicationRow, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
+    PendingPublicationRow, ProducerDrawingReceipt, ProducerImageId, StorageTarget,
 };
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
@@ -30,10 +30,16 @@ pub(crate) fn geographic_line_pending_row(
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let mut next_image = 0;
-    let (layout, literals) =
-        ProducerDrawingReceipt::line_layout(&shape, 0, None, None, 0, &mut next_image)?;
-    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
+    if !matches!(
+        &shape,
+        Shape::LineString(_) | Shape::Empty(GeometryKind::LineString, _)
+    ) {
+        return Err(GeometryErrorKind::Invalid(
+            "producer line receipt requires a LineString output".into(),
+        )
+        .into());
+    }
+    PendingPublicationRow::drawing(shape, logical_row, operation)
 }
 
 pub(crate) fn finish_geographic_point_selection(
@@ -54,8 +60,16 @@ pub(crate) fn geographic_point_selection_pending_row(
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let (layout, literals) = ProducerDrawingReceipt::point_selection_layout(&shape)?;
-    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
+    if !matches!(
+        &shape,
+        Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..)
+    ) {
+        return Err(GeometryErrorKind::Invalid(
+            "point-selection receipt requires a Point, LineString, or Polygon output".into(),
+        )
+        .into());
+    }
+    PendingPublicationRow::drawing(shape, logical_row, operation)
 }
 
 pub(crate) fn finish_geographic_nearest_point(shape: Shape, frame: crate::Frame) -> Result<Shape> {
@@ -295,18 +309,8 @@ pub(crate) fn publish_split_groups(
     )?)
 }
 
-fn drawing_layout(
-    shape: &Shape,
-) -> Result<(ShapeLiteralLayout<ProducerImageId>, Vec<ProducerLiteral>)> {
-    let mut next_image = 0_usize;
-    let mut outputs = (0_u32, 0_u32, 0_u32);
-    ProducerDrawingReceipt::drawing_layout(shape, 0, None, None, &mut next_image, &mut outputs)
-}
-
 pub(in crate::geometry) fn snap_drawing_receipt(shape: Shape) -> Result<ProducerDrawingReceipt> {
-    let (layout, literals) = drawing_layout(&shape)?;
-    let buffers = FrozenLiteralBuffers::shapes(shape, layout);
-    Ok(ProducerDrawingReceipt::new(buffers, literals))
+    ProducerDrawingReceipt::drawing(shape)
 }
 
 pub(crate) fn finish_geographic_snap(shape: Shape, frame: crate::Frame) -> Result<Shape> {
@@ -320,6 +324,5 @@ pub(crate) fn geographic_drawing_pending_row(
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let (layout, literals) = drawing_layout(&shape)?;
-    PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
+    PendingPublicationRow::drawing(shape, logical_row, operation)
 }

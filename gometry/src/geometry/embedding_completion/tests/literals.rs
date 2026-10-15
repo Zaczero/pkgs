@@ -399,6 +399,36 @@ fn empty_group_readback_checks_captured_presence_and_length() {
 }
 
 #[test]
+fn group_readback_rejects_a_shortened_missing_mask_before_access() {
+    use crate::geometry::embedding_completion::storage::FrozenStorage;
+
+    let mut buffers = FrozenLiteralBuffers::<u32>::groups(
+        Arc::new(GeometryArrayStorage::Mixed(Vec::new())),
+        None,
+        StorageLayout::LogicalRows,
+        Vec::new(),
+        vec![0, 0, 0],
+        ValidityMask::from_vec(2, vec![true, false]),
+        &mut Unmetered,
+    ).unwrap();
+    let FrozenStorage::Groups { groups, .. } = &mut buffers.storage else {
+        panic!("the group sink retains its storage owner");
+    };
+    groups.missing = ValidityMask::from_vec(1, vec![true]);
+    let mut receiver = FullRecordReceiver {
+        images: ImageRows(Vec::new()),
+        expected: Vec::new(),
+    };
+    let Err(error) = bind_literals(buffers, &mut receiver, &mut Unmetered) else {
+        panic!("the final group missing mask changed length");
+    };
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_)),
+    ));
+}
+
+#[test]
 fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
     let records = [
         xyzm_point(10.0, 20.0, 110.0, 1010.0),

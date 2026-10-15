@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::receipt::{
-    CheckedPublicationLiteral, PendingPublicationRow, ProducerDrawingReceipt, ProducerImageId,
-    ProducerLiteral, ProducerReceipt, PublicationCall, PublicationImage, PublicationOutcome,
-    PublicationRejection, StorageTarget,
+    CheckedPublicationLiteral, PendingAdmission, PendingPublicationRow, ProducerDrawingReceipt,
+    ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall, PublicationImage,
+    PublicationOutcome, PublicationRejection, StorageTarget,
 };
 use crate::Frame;
 use crate::error::Result;
@@ -134,20 +134,30 @@ impl FinishedGeometry {
             literal.address.logical_row = logical_row;
         }
         let producer_drawing = self.producer_drawing;
+        checked.extend(
+            producer_literals
+                .into_iter()
+                .map(|literal| CheckedPublicationLiteral {
+                    address: literal.address,
+                    image: PublicationImage::ProducerDrawn(literal.image),
+                    record: literal.record,
+                }),
+        );
         Ok(PendingPublicationRow {
             shape,
             logical_row,
-            layout: LiteralRowLayout {
-                operation: 0,
-                logical_row,
-                group_row: None,
-                value_row: None,
-                layout,
+            admission: PendingAdmission::Checked {
+                layout: LiteralRowLayout {
+                    operation: 0,
+                    logical_row,
+                    group_row: None,
+                    value_row: None,
+                    layout,
+                },
+                records: checked,
+                producer_drawing,
+                work,
             },
-            checked,
-            producer_literals,
-            producer_drawing,
-            work,
         })
     }
 
@@ -301,17 +311,25 @@ impl FinishedGeometry {
             output_rows.push(PendingPublicationRow {
                 shape,
                 logical_row,
-                layout: LiteralRowLayout {
-                    operation: 0,
-                    logical_row,
-                    group_row,
-                    value_row,
-                    layout: row_layout,
+                admission: PendingAdmission::Checked {
+                    layout: LiteralRowLayout {
+                        operation: 0,
+                        logical_row,
+                        group_row,
+                        value_row,
+                        layout: row_layout,
+                    },
+                    records: literals
+                        .into_iter()
+                        .map(|literal| CheckedPublicationLiteral {
+                            address: literal.address,
+                            image: PublicationImage::ProducerDrawn(literal.image),
+                            record: literal.record,
+                        })
+                        .collect(),
+                    producer_drawing: true,
+                    work: EvaluationBudget::new(operation, coordinates)?,
                 },
-                checked: Vec::new(),
-                producer_literals: literals,
-                producer_drawing: true,
-                work: EvaluationBudget::new(operation, coordinates)?,
             });
         }
         if !literals_by_output.is_empty() {
@@ -415,34 +433,6 @@ pub(super) fn map_shape_layout<I: Copy, O>(
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-    })
-}
-
-pub(super) fn producer_row_layout(
-    row: LiteralRowLayout<PublicationImage>,
-) -> Result<LiteralRowLayout<ProducerImageId>> {
-    let LiteralRowLayout {
-        operation,
-        logical_row,
-        group_row,
-        value_row,
-        layout,
-    } = row;
-    let layout = map_shape_layout(layout, &|image| match image {
-        PublicationImage::ProducerDrawn(image) => Ok(image),
-        PublicationImage::Native(_) | PublicationImage::SourceOnly(_) => {
-            Err(GeometryErrorKind::Invalid(
-                "producer-drawn storage contains a different publication image family".into(),
-            )
-            .into())
-        },
-    })?;
-    Ok(LiteralRowLayout {
-        operation,
-        logical_row,
-        group_row,
-        value_row,
-        layout,
     })
 }
 

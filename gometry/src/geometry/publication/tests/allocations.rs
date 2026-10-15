@@ -1,10 +1,30 @@
+use crate::crs::frame::crs_arc_static;
 use crate::geometry::publication::{
-    GeometryOutput, PublicationRows, finish_geographic_nearest_point_columns,
-    geographic_line_pending_row,
+    GeometryOutput, PublicationRows, finish_geographic_line,
+    finish_geographic_nearest_point_columns, geographic_line_pending_row,
 };
 use crate::geometry::{Coordinates as _, LineSeq, Point, Shape};
 use crate::test_support::{allocation_count, allocation_stats};
 use crate::{CoordSeq, Frame};
+
+#[test]
+fn scalar_drawing_moves_the_owned_coordinate_buffers() {
+    let points: Vec<_> = (0..4096)
+        .map(|index| Point::new_raw_xy(1.25 + f64::from(index) * 0.000_001, 2.5))
+        .collect();
+    let coordinates = CoordSeq::try_from_points(&points).unwrap();
+    let xs = coordinates.xs().as_ptr();
+    let ys = coordinates.ys().as_ptr();
+    let shape = Shape::LineString(LineSeq::try_new(coordinates).unwrap());
+    let frame = Frame::Crs(crs_arc_static("EPSG:4326"));
+    let output = finish_geographic_line(shape, frame).unwrap();
+    let Shape::LineString(line) = output else {
+        panic!("the scalar line sink preserves its kind");
+    };
+    assert_eq!(line.as_coords().xs().as_ptr(), xs);
+    assert_eq!(line.as_coords().ys().as_ptr(), ys);
+    assert!(line.points().eq(points));
+}
 
 #[test]
 fn accepted_endpoint_publication_allocation_profile() {
@@ -16,14 +36,17 @@ fn accepted_endpoint_publication_allocation_profile() {
         (allocated, allocation_stats())
     });
     assert_eq!(requests, 1);
+    assert_eq!(control.0.requests, 1);
+    assert_eq!(control.0.requested_bytes, 16);
+    assert_eq!(control.1.released_bytes, 16);
     assert_eq!(control.0.live_bytes, 16);
     assert_eq!(control.1.live_bytes, 0);
     assert_eq!(control.1.peak_live_bytes, 16);
-    let frame = Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:4326"));
+    let frame = Frame::Crs(crs_arc_static("EPSG:4326"));
     for count in [1, 8, 64, 10_000, 100_000] {
         let accepted: Vec<_> = (0..count)
             .map(|index| {
-                let step = index as f64 * 0.000001;
+                let step = index as f64 * 0.000_001;
                 [
                     Point::new_raw_xy(1.25 + step, 2.5),
                     Point::new_raw_xy(3.75 + step, 4.5),
