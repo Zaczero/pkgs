@@ -6,6 +6,7 @@ Each case drives the public entry point named by the audit finding.
 from __future__ import annotations
 
 import json
+import math
 import struct
 
 import gometry as gm
@@ -475,6 +476,23 @@ def test_from_polyline_accepts_crs84() -> None:
     decoded = gm.from_polyline(encoded, crs='OGC:CRS84')
     assert decoded.crs == gm.CRS('OGC:CRS84')
     assert decoded.to_wkt() == 'LINESTRING (1 2, 3 4)'
+
+
+@pytest.mark.parametrize(
+    ('latitude', 'expected'),
+    [
+        pytest.param(math.nextafter(0.5, -math.inf), '??', id='positive-below'),
+        pytest.param(0.5, 'A?', id='positive-half'),
+        pytest.param(math.nextafter(0.5, math.inf), 'A?', id='positive-above'),
+        pytest.param(math.nextafter(-0.5, -math.inf), '@?', id='negative-below'),
+        pytest.param(-0.5, '??', id='negative-half'),
+        pytest.param(math.nextafter(-0.5, math.inf), '??', id='negative-above'),
+    ],
+)
+def test_polyline_rounding_matches_javascript_at_adjacent_half_values(
+    latitude: float, expected: str
+) -> None:
+    assert gm.Point(0.0, latitude).to_polyline(precision=0) == expected
 
 
 # ---------------------------------------------------------------------------
