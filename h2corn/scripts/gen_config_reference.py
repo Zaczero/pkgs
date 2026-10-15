@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,11 @@ def _format_default(value: Any) -> str:
 
 
 def _format_type_cell(annotation: Any) -> str:
-    return '`' + format_type(annotation).replace('|', '&#124;') + '`'
+    return (
+        '<code>'
+        + escape(format_type(annotation)).replace('|', '&#124;')
+        + '</code>'
+    )
 
 
 def _format_cli(option: ConfigOption) -> str:

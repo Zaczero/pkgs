@@ -176,7 +176,7 @@ def check_configuration(
             'Python input',
             'Python form',
             'Normalized value',
-            'keyword-only',
+            'Keyword-only',
             format_type(python_input_type(option)),
             format_type(stored_type(option.name)),
             *option.cli_flags,

@@ -34,7 +34,7 @@ def _rendered_configuration() -> dict[str, _Anchors]:
         (
             f'<h3 id="option-{option.name}">{option.name}</h3>'
             f'{option.env_var} Python input {format_type(python_input_type(option))} '
-            f'Python form keyword-only Normalized value '
+            f'Python form Keyword-only Normalized value '
             f'{format_type(stored_type(option.name))} '
             f'{" ".join(option.cli_flags)} '
             'TOML key Precedence'
