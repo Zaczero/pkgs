@@ -46,7 +46,7 @@ def test_strict_docs_build_does_not_inherit_markdown_exec_auto(
         ],
     )
 
-    assert quality_check.run(quality_check.DOCS_BUILD, require_runtime=True)
+    assert quality_check.run(quality_check.DOCS_BUILD.command, require_runtime=True)
 
 
 def test_doctest_pyright_uses_the_selected_interpreter(
@@ -157,19 +157,13 @@ def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
 
     output = capsys.readouterr().err
     expected_source_checks = [
-        (arguments, False)
-        for arguments, runtime_required in quality_check.CHECKS
-        if not runtime_required
+        (check.command, False)
+        for check in quality_check.CHECKS
+        if not check.requires_runtime
     ]
     expected_skips = [
-        ' '.join(arguments)
-        for arguments, runtime_required in quality_check.CHECKS
-        if runtime_required
+        check.label for check in quality_check.CHECKS if check.requires_runtime
     ]
-    expected_skips.extend((
-        ' '.join(quality_check.DOCS_BUILD),
-        ' '.join(quality_check.DOCS_CHECK),
-    ))
     assert status == 1
     assert admissions == [GOMETRY_ROOT]
     assert calls == expected_source_checks
@@ -181,6 +175,126 @@ def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
     assert 'TOTAL QUALITY FAILURES: 1' in output
     assert f'TOTAL QUALITY SKIPPED: {len(expected_skips)}' in output
     assert os.environ == environment_before
+
+
+def test_contracts_only_selects_readonly_public_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['tools/check.py', '--no-fix', '--contracts-only'],
+    )
+    monkeypatch.setattr(
+        quality_check,
+        '_quality_runtime_module',
+        lambda: pytest.fail('contract checks must not prepare a runtime'),
+    )
+    admission = type(
+        'Admission',
+        (),
+        {'receipt': {'package_root': '/identified/gometry'}},
+    )()
+    monkeypatch.setattr(
+        runtime_artifact, 'inspect_runtime_inputs', lambda _root: admission
+    )
+    calls: list[tuple[tuple[str, ...], bool]] = []
+
+    def run(
+        command: tuple[str, ...],
+        *,
+        environment: dict[str, str] | None = None,
+        require_runtime: bool = False,
+    ) -> bool:
+        calls.append((command, require_runtime))
+        return True
+
+    monkeypatch.setattr(quality_check, 'run', run)
+
+    assert quality_check.main() == 0
+    expected = [
+        (check.command, check.requires_runtime)
+        for check in quality_check.CHECKS
+        if check.category is quality_check.CheckCategory.CONTRACT
+    ]
+    assert calls == expected
+    commands = {command for command, _ in calls}
+    assert {
+        ('-m', 'pyo3stubs', 'check-all', '--config', 'tools/stubs/stubconfig.py'),
+        ('tools/gates/_check_typing_runtime.py',),
+        ('tools/stubs/_doc_coverage.py',),
+        ('tools/gates/_check_doc_integrity.py',),
+        ('tools/gates/_check_doc_model.py',),
+        ('tools/gates/_check_docstring_examples.py',),
+        ('tools/gates/_check_doctest_types.py',),
+        ('tools/gates/_check_examples.py',),
+        ('tools/docs/check_nav.py',),
+        ('-m', 'properdocs', 'build', '--strict'),
+        ('tools/docs/check.py',),
+    } <= commands
+    assert {
+        ('ruff', 'check', '.'),
+        ('ruff', 'format', '--check', '.'),
+        ('cargo', 'fmt', '--package', 'gometry', '--', '--check'),
+        ('tools/gates/_check_algebraic_float.py',),
+        ('tools/gates/_check_packed_execution.py',),
+        ('tools/gates/_check_typed_returns.py',),
+        (
+            'cargo',
+            'clippy',
+            '--all-targets',
+            '--locked',
+            '-p',
+            'gometry',
+            '--',
+            '-D',
+            'warnings',
+        ),
+    }.isdisjoint(commands)
+    assert not any(command in quality_check.FIXES for command, _ in calls)
+
+
+def test_contracts_only_stale_runtime_fails_without_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, 'argv', ['tools/check.py', '--contracts-only'])
+
+    def stale(_root: Path) -> None:
+        raise runtime_artifact.QualityPreparationRequired('runtime is stale')
+
+    monkeypatch.setattr(runtime_artifact, 'inspect_runtime_inputs', stale)
+    monkeypatch.setattr(
+        quality_check,
+        '_quality_runtime_module',
+        lambda: pytest.fail('contract checks must not prepare a runtime'),
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def run(
+        command: tuple[str, ...],
+        *,
+        environment: dict[str, str] | None = None,
+        require_runtime: bool = False,
+    ) -> bool:
+        calls.append(command)
+        return True
+
+    monkeypatch.setattr(quality_check, 'run', run)
+
+    assert quality_check.main() == 1
+    output = capsys.readouterr().err
+    assert 'quality runtime prerequisite failed: runtime is stale' in output
+    assert f'run `{sys.executable} tools/check.py --prepare` to prepare it' in output
+    assert calls == [
+        check.command
+        for check in quality_check.CHECKS
+        if check.category is quality_check.CheckCategory.CONTRACT
+        and not check.requires_runtime
+    ]
+    assert 'properdocs build --strict' in output
+    assert 'tools/docs/check.py' in output
+    assert 'TOTAL QUALITY FAILURES: 1' in output
 
 
 def test_no_fix_inert_admission_enables_runtime_child_checks(
@@ -223,15 +337,14 @@ def test_no_fix_inert_admission_enables_runtime_child_checks(
 
     assert status == 0
     assert admissions == [GOMETRY_ROOT]
-    assert len(calls) == len(quality_check.CHECKS) + 2
+    assert len(calls) == len(quality_check.CHECKS)
     runtime_calls = [call for call in calls if call[1]]
-    assert (
-        len(runtime_calls)
-        == sum(runtime_required for _, runtime_required in quality_check.CHECKS) + 2
+    assert len(runtime_calls) == sum(
+        check.requires_runtime for check in quality_check.CHECKS
     )
     assert [call[0] for call in calls[-2:]] == [
-        quality_check.DOCS_BUILD,
-        quality_check.DOCS_CHECK,
+        quality_check.DOCS_BUILD.command,
+        quality_check.DOCS_CHECK.command,
     ]
     assert all(
         call[2] is not None
@@ -357,17 +470,13 @@ def test_default_mode_runs_fixers_before_shared_runtime_preparation(
         ('run', 'ruff format --quiet python/gometry/_lib.pyi'),
         ('refresh', str(GOMETRY_ROOT)),
         ('read', str(GOMETRY_ROOT)),
-        *(('run', ' '.join(step)) for step, _ in quality_check.CHECKS),
-        ('run', ' '.join(quality_check.DOCS_BUILD)),
-        ('run', ' '.join(quality_check.DOCS_CHECK)),
+        *(('run', check.label) for check in quality_check.CHECKS),
     ]
     assert runtime_calls == [
         *([False] * len(quality_check.FIXES)),
         True,
         False,
-        *(runtime_required for _, runtime_required in quality_check.CHECKS),
-        True,
-        True,
+        *(check.requires_runtime for check in quality_check.CHECKS),
     ]
     assert ('run', 'ruff check .') in events
 
@@ -375,10 +484,17 @@ def test_default_mode_runs_fixers_before_shared_runtime_preparation(
 @pytest.mark.parametrize(
     ('failed_step', 'expected_site_calls'),
     [
-        pytest.param('build', [quality_check.DOCS_BUILD], id='build-fails'),
+        pytest.param(
+            'build',
+            [quality_check.DOCS_BUILD.command],
+            id='build-fails',
+        ),
         pytest.param(
             'check',
-            [quality_check.DOCS_BUILD, quality_check.DOCS_CHECK],
+            [
+                quality_check.DOCS_BUILD.command,
+                quality_check.DOCS_CHECK.command,
+            ],
             id='audit-fails',
         ),
     ],
@@ -415,9 +531,11 @@ def test_site_checks_run_in_order_and_propagate_failures(
     ) -> bool:
         del environment
         calls.append((arguments, require_runtime))
-        if failed_step == 'build' and arguments == quality_check.DOCS_BUILD:
+        if failed_step == 'build' and arguments == quality_check.DOCS_BUILD.command:
             return False
-        return not (failed_step == 'check' and arguments == quality_check.DOCS_CHECK)
+        return not (
+            failed_step == 'check' and arguments == quality_check.DOCS_CHECK.command
+        )
 
     monkeypatch.setattr(quality_check, 'run', run)
 
@@ -429,9 +547,14 @@ def test_site_checks_run_in_order_and_propagate_failures(
         expected_site_calls
     )
     assert all(required for _, required in calls[-len(expected_site_calls) :])
-    assert calls[: len(quality_check.CHECKS)] == [
-        (arguments, runtime_required)
-        for arguments, runtime_required in quality_check.CHECKS
+    checks_before_site = [
+        check
+        for check in quality_check.CHECKS
+        if check not in {quality_check.DOCS_BUILD, quality_check.DOCS_CHECK}
+    ]
+    assert calls == [
+        *((check.command, check.requires_runtime) for check in checks_before_site),
+        *((command, True) for command in expected_site_calls),
     ]
     if failed_step == 'build':
         assert stale_page.is_file()
