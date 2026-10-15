@@ -1900,7 +1900,8 @@ def test_a_gate_that_examines_nothing_says_so(tmp_path):
     h2corn and lrucache-rs, `leaked-types` sees 0 public pyclasses on h2corn,
     and `rust-nullability` finds 0 Option surfaces on both -- while all three
     printed the same confident success a project with 99 attributes and 32
-    surfaces gets.
+    surfaces gets. The pytest adapter must report the real zero-subject result
+    as a skip too.
     """
     cfg = make_config(tmp_path, src_text='#[pyclass]\nstruct Shipped;\n')
 
@@ -1908,32 +1909,17 @@ def test_a_gate_that_examines_nothing_says_so(tmp_path):
     assert result.status is Status.NOTHING_TO_CHECK
     assert 'no text_signature attributes' in result.line
 
+    from pyo3stubs.testing import gate_test
+
+    test = gate_test(cfg)
+    with pytest.raises(pytest.skip.Exception, match='nothing to check'):
+        test('text-signature')
+
     # ...and a gate that did examine something reports how much.
     populated = gate('text-signature').run(make_config(tmp_path))
     assert populated.status is Status.OK
     assert populated.examined == 1
     assert '(1 text_signature attribute)' in populated.line
-
-
-def test_pytest_adapter_skips_a_gate_that_examines_no_subjects(tmp_path, monkeypatch):
-    from dataclasses import replace
-
-    from pyo3stubs.report import Findings
-    from pyo3stubs.testing import gate_test
-
-    def collect_nothing(_cfg):
-        return Findings(examined=0)
-
-    empty_gate = replace(
-        gate('duality'),
-        collect=collect_nothing,
-        activated_by='',
-    )
-    monkeypatch.setattr('pyo3stubs.testing.gate', lambda _name: empty_gate)
-    test = gate_test(make_config(tmp_path))
-
-    with pytest.raises(pytest.skip.Exception, match='nothing to check'):
-        test('duality')
 
 
 def test_every_countable_gate_names_its_subject():
@@ -1956,8 +1942,13 @@ def test_every_countable_gate_names_its_subject():
 def test_duality_fixture_builder_reuses_the_same_inputs(
     tmp_path, pristine_stub, pristine_src
 ):
+    override = seeded(
+        _DUALITY_STUB,
+        '"""Kind-preserving."""',
+        '"""Builder-specific prose."""',
+    )
     build = _duality(
-        stub_text=_DUALITY_STUB,
+        stub_text=override,
         exempt={'pieces': 'fixture: deliberately different expansion'},
     )
     first_root = tmp_path / 'first'
@@ -1968,5 +1959,6 @@ def test_duality_fixture_builder_reuses_the_same_inputs(
     first = build(first_root, pristine_stub, pristine_src)
     second = build(second_root, pristine_stub, pristine_src)
 
-    assert first.stub_path.read_text() == second.stub_path.read_text()
+    assert first.stub_path.read_text() == override
+    assert second.stub_path.read_text() == override
     assert first.duality == second.duality

@@ -40,8 +40,9 @@ The cost is drift across three truths:
 | **Hand-authored `.pyi`** | types, overloads, IDE/docs typing surface |
 
 `pyo3stubs` keeps those three from lying about each other. It does **not**
-invent signatures; it validates, and for docs only it injects runtime `__doc__`
-into the stub.
+invent signatures; it validates them and can synchronize runtime docstrings
+into the stub, reading Rust `#[new]` comments where PyO3 does not expose
+constructor prose at runtime.
 
 The [configuration and gate reference](REFERENCE.md) is the canonical list of
 public configuration fields, defaults, gate activation, runtime requirements,
@@ -64,14 +65,6 @@ An active gate that finds no subjects reports `nothing to check`; an optional
 gate with no non-empty configuration reports `inactive`. Neither means that
 the gate found parity. A CLI exit status of 0 means no violation was reported,
 not that every gate examined a subject.
-
-Domain rules stay with their package. `doc-structure` owns the format-agnostic
-half — parameter coverage, `Returns`, prose defaults — while a `Raises`
-taxonomy naming a project's own exception classes does not travel.
-
-Adding a monorepo standard means adding one `Gate` to `pyo3stubs.gates.GATES` —
-there is no plugin bag. A rule that needs one package's own structure stays in
-that package's `tools/` until a second consumer forces promotion.
 
 ## First check
 
@@ -154,6 +147,7 @@ headings in the [configuration reference](REFERENCE.md).
 uv run pyo3stubs check-all --config tools/stubconfig.py
 uv run pyo3stubs rust-nullability --config tools/stubconfig.py
 uv run pyo3stubs gen-docs --config tools/stubconfig.py
+uv run pyo3stubs reference
 uv run pyo3stubs --help
 ```
 
@@ -161,14 +155,14 @@ uv run pyo3stubs --help
 inactive, or `nothing to check` result is visible but does not change its exit
 status; a collector crash is reported as a violation, and the remaining gates
 still run. The pytest adapter skips non-violation outcomes that did not examine
-subjects, with the reason.
+subjects, with the reason. `reference` prints the configuration and gate
+reference to standard output.
 
-`check-all` runs the gates concurrently and prints one total, so a run costs
-about its slowest gate — `stubtest`, which rebuilds from scratch because it
-needs full semantic trees. A single gate by name prints its own time instead:
-under `check-all` the gates wait on each other's imports, and a millisecond
-gate can read seconds. `validity` keeps a mypy cache per stub under
-`$XDG_CACHE_HOME/pyo3stubs`, so it re-analyses only what changed.
+`check-all` runs gates concurrently and reports their outcomes in registry
+order, followed by the total elapsed time. A single gate reports its own
+elapsed time. The `validity` gate keeps mypy's analysis cache under
+`$XDG_CACHE_HOME/pyo3stubs` (or `~/.cache/pyo3stubs` when `XDG_CACHE_HOME` is
+unset).
 
 ## Operator loop
 
@@ -187,14 +181,6 @@ uv run pyo3stubs check-all --config tools/stubconfig.py
 violation, then returns status 1. Review and repair the generated stub before
 using the gate result as certification.
 
-The reference is regenerated in the `pyo3stubs` source checkout under CPython,
-where the doc renderer's LibCST dependency is installed, and is checked by its
-pytest suite:
-
-```bash
-uv run pyo3stubs reference > REFERENCE.md
-```
-
 ## How the Rust source is read
 
 Rust-source gates parse Rust syntax rather than searching comments and strings.
@@ -212,10 +198,10 @@ identifier and `python=1` names the Python export. The macro invocation is
 parsed by syntax, so commas inside string arguments do not affect those
 positions. An `impl` wrapped in a project macro is scanned as well.
 
-`gen-docs` reads a `#[new]`'s `///` from the Rust source, because PyO3 exposes
-it nowhere at runtime — `__new__.__doc__` is CPython's inherited boilerplate,
-and injecting that published *"Create and return a new object. See help(type)
-for accurate signature."* over the real prose.
+`gen-docs` reads the `#[new]` Rust comment because PyO3 does not expose that
+constructor prose through `__new__.__doc__`; CPython supplies boilerplate
+there. The generator places the Rust prose in the stub's constructor
+declaration.
 
 The public exports are `StubConfig`, `MacroExport`, `SurfaceConfig`,
 `DualityConfig`, `TokenConfig`, `TextSignatureDefault`, `Reasons`,
