@@ -174,8 +174,9 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
 def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
     markdown = render_accessible_results(_benchmark_record())
 
-    assert 'Observed range (requests/s)' in markdown
-    assert '| h2corn | 1.6.0 | 3 | 100 | 98-102 | 1.5 |' in markdown
+    assert 'Observed rate range' in markdown
+    assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98-102 |' in markdown
+    assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
     assert '95% bootstrap intervals separate h2corn' in markdown
     assert 'target ±3%' in markdown
     assert 'not a confidence interval' in markdown
@@ -184,8 +185,7 @@ def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
 def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
     markdown = render_accessible_results(_benchmark_record('ws'))
 
-    assert 'Median sessions/s' in markdown
-    assert 'Observed range (sessions/s)' in markdown
+    assert 'Median rate (sessions/s)' in markdown
     assert 'Median p99 session duration (ms)' in markdown
 
 

@@ -50,20 +50,11 @@ def render_accessible_results(record: dict[str, Any]) -> str:
             'runner-up; the largest median is descriptive, not a winner.'
         )
 
-    headers = [
-        'Server',
-        'Version',
-        'Measured trials',
-        f'Median {unit}',
-        f'Observed range ({unit})',
-        'Maximum sampled PSS (MB)',
-    ]
+    headers = ['Server (version)', 'Measure', 'Value', 'Observed rate range']
     percentile_names = sorted(
         {name for result in results.values() for name in result['latency_percentiles']},
         key=lambda name: float(name.removeprefix('p')),
     )
-    duration_name = 'session duration' if websocket else 'latency'
-    headers.extend(f'Median {name} {duration_name} (ms)' for name in percentile_names)
     rows = [
         '| ' + ' | '.join(headers) + ' |',
         '| ' + ' | '.join('---' for _ in headers) + ' |',
@@ -71,21 +62,34 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     versions = record['package_versions']
     for name, result in ordered:
         low, high = result['rps_range']
-        row = [
-            name,
-            str(versions.get(name) or 'unknown'),
-            str(len(result['rps_samples'])),
-            f'{result["rps"]:,.0f}',
-            f'{low:,.0f}-{high:,.0f}',
-            f'{result["peak_memory_bytes"] / 1e6:,.1f}',
+        server = f'{name} ({versions.get(name) or "unknown"})'
+        duration_name = 'session duration' if websocket else 'latency'
+        measurements = [
+            ('Measured trials', str(len(result['rps_samples'])), '-'),
+            (
+                f'Median rate ({unit})',
+                f'{result["rps"]:,.0f}',
+                f'{low:,.0f}-{high:,.0f}',
+            ),
+            (
+                'Maximum sampled PSS (MB)',
+                f'{result["peak_memory_bytes"] / 1e6:,.1f}',
+                '-',
+            ),
+            *(
+                (
+                    f'Median {percentile} {duration_name} (ms)',
+                    f'{result["latency_percentiles"][percentile] * 1000:,.3f}',
+                    '-',
+                )
+                for percentile in percentile_names
+                if percentile in result['latency_percentiles']
+            ),
         ]
-        row.extend(
-            f'{result["latency_percentiles"][percentile] * 1000:,.3f}'
-            if percentile in result['latency_percentiles']
-            else '—'
-            for percentile in percentile_names
+        rows.extend(
+            f'| {server} | {measure} | {value} | {range_} |'
+            for measure, value, range_ in measurements
         )
-        rows.append('| ' + ' | '.join(row) + ' |')
 
     profile = record['network_profile']
     environment = record['system_summary'].replace('\n', '; ')
@@ -100,11 +104,12 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         '',
         *rows,
         '',
-        'Rates are medians across cold-start trials; the range is the observed '
-        'minimum-maximum, not a confidence interval. Latency percentiles are '
-        'medians across trials and have no interval shown. Peak proportional '
-        'set size (PSS) is the maximum sampled value across the supervisor and '
-        'workers; MB uses decimal units.',
+        'Rates are medians across cold-start trials; the observed rate range is '
+        'the trial minimum-maximum, not a confidence interval. A dash means no '
+        'range is reported for that measure. Latency percentiles are medians '
+        'across trials and have no interval shown. Peak proportional set size '
+        '(PSS) is the maximum sampled value across the supervisor and workers; '
+        'MB uses decimal units.',
     ]
     if record['excluded']:
         text.extend((
