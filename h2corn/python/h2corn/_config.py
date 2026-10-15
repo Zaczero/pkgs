@@ -123,6 +123,7 @@ def _invalid_bind_target(kind: str, value: str, detail: str):
 
 
 def _normalize_str_tuple(value: _StringTupleValue):
+    """Map None to (), split strings on commas, and stringify collection entries."""
     if value is None:
         return ()
     if isinstance(value, str):
@@ -145,6 +146,7 @@ def _normalize_header_tuple(value: _StringTupleValue) -> tuple[str, ...]:
 
 
 def _normalize_forwarded_allow_ips(value: _StringTupleValue) -> tuple[str, ...]:
+    """Normalize a string or collection, then validate each proxy peer."""
     return tuple(
         _validate_forwarded_allow_ip(entry) for entry in _normalize_str_tuple(value)
     )
@@ -154,6 +156,7 @@ _FORWARDED_FIELD_NAMES = ('for', 'proto', 'host', 'port', 'prefix', 'forwarded')
 
 
 def _normalize_forwarded_fields(value: _StringTupleValue) -> tuple[str, ...]:
+    """Trim, lowercase, deduplicate, and validate forwarded-field names."""
     fields = tuple(
         dict.fromkeys(
             entry.strip().lower()
@@ -177,6 +180,7 @@ def _normalize_forwarded_fields(value: _StringTupleValue) -> tuple[str, ...]:
 
 
 def _optional_path(value: _PathValue):
+    """Convert string and PathLike inputs to Path while preserving None."""
     if value is None or isinstance(value, Path):
         return value
     return Path(value)
@@ -184,6 +188,7 @@ def _optional_path(value: _PathValue):
 
 def _optional_principal(name: str):
     def normalize(value: _PrincipalValue):
+        """Accept None, an exact int, or a non-empty str; decimal strings become ints."""
         if value is None:
             return None
         # Exact int only: bool is a subclass of int and must not become a uid/gid.
@@ -254,6 +259,7 @@ def format_tcp_bind(host: str, port: int) -> str:
 
 
 def _normalize_bind_specs(value: _BindValue):
+    """Normalize bind strings or collections to validated listener strings."""
     if value is None:
         return DEFAULT_BIND
     if isinstance(value, str):
@@ -344,8 +350,9 @@ def _bounded_int(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
-) -> Callable[[object], int]:
-    def normalize(value: object) -> int:
+) -> Callable[[int], int]:
+    def normalize(value: int) -> int:
+        """Accept exact built-in integers without coercion."""
         # Exact built-in int only: bool and int subclasses are not integers
         # for config purposes, and float/str must not coerce in.
         if type(value) is not int:
@@ -366,10 +373,11 @@ def _optional_bounded_int(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
-) -> Callable[[object], int | None]:
+) -> Callable[[int | None], int | None]:
     normalize_int = _bounded_int(name, minimum=minimum, maximum=maximum)
 
-    def normalize(value: object) -> int | None:
+    def normalize(value: int | None) -> int | None:
+        """Accept None or an exact built-in integer without coercion."""
         if value is None:
             return None
         return normalize_int(value)
@@ -377,8 +385,9 @@ def _optional_bounded_int(
     return normalize
 
 
-def _non_negative_float(name: str) -> Callable[[object], float]:
-    def normalize(value: object) -> float:
+def _non_negative_float(name: str) -> Callable[[int | float], float]:
+    def normalize(value: float) -> float:
+        """Convert exact integers to float; reject bool, non-finite, and negative values."""
         # Exact int or float only; bool is a subclass of int and must not
         # become 1.0/0.0. Normalize ints to float so later code never sees
         # an integer-typed timeout.
@@ -400,8 +409,9 @@ def _non_negative_float(name: str) -> Callable[[object], float]:
     return normalize
 
 
-def _exact_bool(name: str) -> Callable[[object], bool]:
-    def normalize(value: object) -> bool:
+def _exact_bool(name: str) -> Callable[[bool], bool]:
+    def normalize(value: bool) -> bool:
+        """Accept exact bool values without coercion."""
         if type(value) is not bool:
             raise TypeError(f'{name} must be a bool, got {type(value).__name__}')
         return value
@@ -906,7 +916,13 @@ class Config:
     )
     http1: bool = _option(
         default=True,
-        doc='Whether to accept HTTP/1.1 connections. Intended for development; disable in production.',
+        doc=(
+            'Whether to accept HTTP/1.1 connections, including HTTP/1.1 WebSocket '
+            'upgrade routes. Keep enabled when a production route uses HTTP/1.1. '
+            'Disable only when every route uses HTTP/2; WebSocket routes then '
+            'require an RFC 8441 extended CONNECT path supported by the client '
+            'and proxy.'
+        ),
         env_parse=_parse_bool,
         converter=_exact_bool('http1'),
         cli_action='bool',

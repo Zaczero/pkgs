@@ -62,6 +62,31 @@ class _Anchors(HTMLParser):
         super().close()
 
 
+class _BenchmarkContent(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[tuple[str, str]] = []
+        self.images: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == 'img' and 'assets/benchmarks/' in attributes.get('src', ''):
+            source = attributes['src'] or ''
+            alternative = attributes.get('alt') or ''
+            self.images.append((source, alternative))
+            self.events.append(('figure', alternative))
+        elif tag == 'table':
+            self.events.append(('table-start', ''))
+        elif tag == 'th':
+            self.events.append(('header-cell', ''))
+        elif tag == 'td':
+            self.events.append(('data-cell', ''))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == 'table':
+            self.events.append(('table-end', ''))
+
+
 def check_rendered_anchors() -> None:
     """Resolve every local fragment against the rendered HTML IDs.
 
@@ -125,6 +150,12 @@ def check_configuration(
     from h2corn._cli import build_parser
     from h2corn._config import config_options
 
+    from tools.docs.config_reference import (
+        format_type,
+        python_input_type,
+        stored_type,
+    )
+
     rendered = _rendered_site() if rendered is None else rendered
     config_page = rendered.get('configuration/index.html')
     if config_page is None:
@@ -142,6 +173,12 @@ def check_configuration(
         required = [
             option.name,
             option.env_var,
+            'Python input',
+            'Python form',
+            'Normalized value',
+            'keyword-only',
+            format_type(python_input_type(option)),
+            format_type(stored_type(option.name)),
             *option.cli_flags,
             'TOML key',
             'Precedence',
@@ -221,6 +258,52 @@ def check_api(
         )
 
 
+def check_benchmark_results() -> None:
+    """Require each published benchmark chart to have adjacent text data."""
+    page = SITE / 'benchmarks' / 'index.html'
+    if not page.is_file():
+        raise AssertionError('rendered Benchmarks page is missing')
+
+    parser = _BenchmarkContent()
+    parser.feed(page.read_text(encoding='utf-8'))
+    for source, _alternative in parser.images:
+        asset = SITE / source.lstrip('/')
+        if not asset.is_file():
+            raise AssertionError(f'benchmark figure asset is missing: {source}')
+    pending_figure = False
+    in_table = False
+    table_has_header = False
+    table_has_data = False
+    for kind, description in parser.events:
+        if kind == 'figure':
+            if pending_figure:
+                raise AssertionError('a benchmark figure has no adjacent data table')
+            if not description:
+                raise AssertionError('a benchmark figure has no text alternative')
+            pending_figure = True
+        elif kind == 'table-start':
+            if not pending_figure:
+                raise AssertionError('a benchmark data table has no preceding figure')
+            if in_table:
+                raise AssertionError('benchmark data tables must not be nested')
+            in_table = True
+            table_has_header = False
+            table_has_data = False
+        elif kind == 'header-cell' and in_table:
+            table_has_header = True
+        elif kind == 'data-cell' and in_table:
+            table_has_data = True
+        elif kind == 'table-end':
+            if not in_table:
+                raise AssertionError('a benchmark table closed without opening')
+            if not table_has_header or not table_has_data:
+                raise AssertionError('a benchmark table needs header and data cells')
+            in_table = False
+            pending_figure = False
+    if pending_figure or in_table:
+        raise AssertionError('a benchmark figure has no adjacent data table')
+
+
 def check_examples() -> None:
     """Compile examples and exercise the deterministic embedded lifecycle."""
     import h2corn
@@ -256,15 +339,15 @@ def check_examples() -> None:
         )
 
 
-def check_proxy_syntax() -> None:
+def check_proxy_syntax() -> bool:
     """Validate the shipped Caddyfile through caddy's own parser.
 
-    Opportunistic: caddy is not in the development shell, so this passes
-    trivially where it is absent. It says so rather than reporting a silent
-    success, because a gate that cannot tell those apart is worse than none.
+    Caddy is optional in the development shell, so absence is reported rather
+    than described as a successful validation.
     """
     if shutil.which('caddy') is None:
         print('h2corn docs: caddy is not on PATH; examples/Caddyfile was NOT validated')
+        return False
     else:
         subprocess.run(
             [
@@ -280,6 +363,7 @@ def check_proxy_syntax() -> None:
             timeout=30,
             stdout=subprocess.DEVNULL,
         )
+        return True
 
 
 def main() -> int:
@@ -287,9 +371,18 @@ def main() -> int:
     check_rendered_anchors()
     check_configuration(site_text)
     check_api(site_text)
+    check_benchmark_results()
     check_examples()
-    check_proxy_syntax()
-    print('h2corn docs: rendered Config/API, examples, and proxy gates passed')
+    caddy_validated = check_proxy_syntax()
+    status = (
+        'Caddy syntax validation passed'
+        if caddy_validated
+        else 'optional Caddy syntax validation was not run'
+    )
+    print(
+        'h2corn docs: rendered links, Config/API, benchmark alternatives, and '
+        f'examples passed; {status}'
+    )
     return 0
 
 

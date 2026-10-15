@@ -1,5 +1,5 @@
 ---
-description: A drop-in ASGI server for FastAPI, Starlette, Django and Litestar, with end-to-end HTTP/2 and a production worker supervisor.
+description: An HTTP/2 ASGI server for Python applications, with proxy, TLS, WebSocket, and worker configuration.
 hide:
   - navigation
   - toc
@@ -9,13 +9,11 @@ hide:
 
 <img src="assets/logo.svg" alt="h2corn" class="hero-logo">
 
-# Blazing-fast Python ASGI
+# HTTP/2 ASGI server for Python
 
-<p class="hero-stats"><strong>70–95% lower latency</strong> at p50–p99</p>
-
-Switch the server, not your app. h2corn runs FastAPI, Starlette, Django,
-Litestar and any ASGI 3 app, with end-to-end HTTP/2 and a production
-worker supervisor.
+Run an ASGI application with HTTP/1.1, HTTP/2, or direct TLS. For a reverse
+proxy deployment, h2corn can accept ordinary requests over `h2c`; the proxy and
+WebSocket route determine which protocols each hop uses.
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Why h2corn](#why-h2corn){ .md-button }
@@ -24,21 +22,22 @@ worker supervisor.
 
 <div class="grid cards" markdown>
 
--   :material-flash:{ .lg .middle } **Fast by default**
+-   :material-flash:{ .lg .middle } **Native protocol handling**
 
     ---
 
-    HTTP framing, TLS, and stream multiplexing run natively. Requests
-    only cross into Python when there is real handler work to do.
+    HTTP framing, TLS, and stream multiplexing run in Rust. ASGI request
+    handling remains in Python.
 
     [:octicons-arrow-right-24: Benchmarks](benchmarks.md)
 
--   :material-shield-lock:{ .lg .middle } **Secure deployments**
+-   :material-shield-lock:{ .lg .middle } **Choose each protocol hop**
 
     ---
 
-    HTTP/2 end-to-end keeps the proxy → app hop off HTTP/1.1, removing
-    the downgrade surface that request-smuggling research targets.
+    A proxy configured for `h2c` can use HTTP/2 between the proxy and h2corn.
+    That cleartext hop still requires network isolation; HTTP/2 alone does not
+    secure an application.
 
     [:octicons-arrow-right-24: Behind a proxy](deployment/proxy.md)
 
@@ -57,26 +56,14 @@ worker supervisor.
 
 <div class="rationale" markdown>
 
-A browser reaches your edge over HTTP/3 or HTTP/2. What happens on the next hop
-is almost always HTTP/1.1 — the proxy translates the request down before the
-application server ever sees it. That translation is what
-[HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading)
-research targets, and it is the hop most deployments never think about.
+Configure a reverse proxy to use `h2c` when you want HTTP/2 between the proxy
+and h2corn. The hop is cleartext, so keep it within a private network boundary.
+For WebSockets, the nginx and Caddy examples use a separate HTTP/1.1 upgrade
+route; HTTP/2-only WebSockets require a proxy that translates upgrades to RFC
+8441 extended CONNECT.
 
-h2corn removes it. The proxy speaks `h2c` straight into the application, with
-[WebSockets](websockets.md#why-the-http2-transport-matters) on that same connection
-([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)) instead of a
-hijacked HTTP/1.1 socket. The edge keeps doing what edges are good at; the last
-hop stops being the weak one.
-
-Speed comes with it. In most Python services the handler is quick and the server
-around it is what keeps p99 high, so moving connections, TLS and HTTP into Rust
-leaves the event loop doing one thing — running your code. Across the twenty
-comparable scenarios of the benchmark suite, the median one comes out at **84%
-lower p50 and 82% lower p99** than the fastest of `uvicorn`, `hypercorn` and
-`gunicorn` in that same scenario; four workers serve a small plaintext GET at
-**~242k RPS, p99 0.8 ms**, about **5×** the nearest alternative on the identical
-Starlette app and over **20×** on HTTP/2.
-[See benchmarks](benchmarks.md).
+The published benchmark page describes its workloads and limits. It contains no
+current comparison figures because matching aggregate records are not included.
+[Read the benchmark method](benchmarks.md).
 
 </div>

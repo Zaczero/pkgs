@@ -56,6 +56,7 @@ try:
         running_server,
         write_json,
     )
+    from bench.report import alt_text, render_accessible_results
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
     from _core import (  # type: ignore[import-not-found, no-redef]
         RESULTS_DIRECTORY,
@@ -75,6 +76,7 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         running_server,
         write_json,
     )
+    from report import alt_text, render_accessible_results
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -748,6 +750,7 @@ def run_scenario(
     return {
         'leader_separated': leader_is_separated(final_rates, SEED),
         'leader_half_width': leader_half_width,
+        'target_half_width': TARGET_HALF_WIDTH,
         'scenario': scenario.name,
         'type': scenario.type,
         'workers': scenario.workers,
@@ -757,25 +760,6 @@ def run_scenario(
         'server_profiles': server_profiles(scenario),
         'aggregate': {name: aggregate(values) for name, values in samples.items()},
     }
-
-
-def alt_text(title: str, results: dict[str, Any], unit: str) -> str:
-    ordered = sorted(results.items(), key=lambda item: item[1]['rps'], reverse=True)
-    parts = [
-        f'{name} {result["rps"]:,.0f} {unit}'
-        + (
-            f' p99 {result["latency_percentiles"]["p99"] * 1000:.1f}ms'
-            if 'p99' in result['latency_percentiles']
-            else ''
-        )
-        + (
-            f' peak memory (PSS) {result["peak_memory_bytes"] / 1e6:.1f} MB'
-            if 'peak_memory_bytes' in result
-            else ''
-        )
-        for name, result in ordered
-    ]
-    return f'{title}. ' + ', '.join(parts) + '.'
 
 
 def relative_luminance(color: str) -> float:
@@ -808,20 +792,20 @@ def bar_label_color(color: str) -> str:
 
 
 def plot_results(
-    results: dict[str, Any],
-    title: str,
+    record: dict[str, Any],
     path: Path,
-    *,
-    summary: str,
-    websocket: bool = False,
-    excluded: dict[str, str] | None = None,
-    leader_half_width: float | None = None,
 ) -> None:
+    results = record['aggregate']
+    title = record['scenario']
+    summary = record['system_summary']
+    websocket = record['type'] == 'ws'
+    excluded = record['excluded']
+    leader_half_width = record['leader_half_width']
     figure, axes = plt.subplots(1, 2, figsize=(15, 6))
     figure.suptitle(title, fontsize=16)
 
     names = list(results)
-    versions = package_versions()
+    versions = record['package_versions']
     labels = [f'{name}\n{versions.get(name)}' for name in names]
     rates = [results[name]['rps'] for name in names]
     colors = [SERVER_COLORS.get(name, FALLBACK_COLOR) for name in names]
@@ -961,6 +945,10 @@ def plot_results(
     path.write_text(
         '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
     )
+    path.with_suffix('.md').write_text(
+        render_accessible_results(record),
+        encoding='utf-8',
+    )
     print(f'Saved plot to {path}')
     print(alt_text(title, results, unit))
 
@@ -1074,16 +1062,21 @@ def publish(run_directories: Sequence[Path]) -> None:
     for kind, suffix, destination in (
         ('raw', '.json', CHECKED_IN_RAW_DIRECTORY),
         ('plots', '.svg', CHECKED_IN_PLOT_DIRECTORY),
+        ('plots', '.md', CHECKED_IN_PLOT_DIRECTORY),
     ):
         destination.mkdir(parents=True, exist_ok=True)
         for stale in destination.glob(f'*{suffix}'):
             stale.unlink()
         for run_directory in run_directories:
+            profile = json.loads(
+                (run_directory / 'profile.json').read_text(encoding='utf-8')
+            )['profile']
             for artifact in sorted((run_directory / kind).glob(f'*{suffix}')):
-                shutil.copy2(artifact, destination / artifact.name)
+                published_name = f'{artifact.stem}-{profile}{suffix}'
+                shutil.copy2(artifact, destination / published_name)
     print(
-        f'Published {len(run_directories)} profile(s) to {CHECKED_IN_RAW_DIRECTORY} '
-        f'and {CHECKED_IN_PLOT_DIRECTORY}'
+        f'Published {len(run_directories)} profile(s) with matched raw records, '
+        f'tables, and plots to {CHECKED_IN_RAW_DIRECTORY} and {CHECKED_IN_PLOT_DIRECTORY}'
     )
 
 
@@ -1133,6 +1126,7 @@ def run_suite(
     write_hypercorn_config(hypercorn_config)
 
     summary = system_summary()
+    versions = package_versions()
     active_profile = profile_record(
         profile,
         'running',
@@ -1158,15 +1152,14 @@ def run_suite(
         record['network_profile'] = profile.name
         record['target_rtt_ms'] = profile.target_rtt_ms
         record['measured_rtt_ms'] = measured_rtt_ms
+        record['system_summary'] = summary
+        record['package_versions'] = versions
+        record['duration'] = duration
+        record['warmup_duration'] = warmup
         write_json(run_directory / 'raw' / f'{scenario.slug()}.json', record)
         plot_results(
-            record['aggregate'],
-            scenario.name,
+            record,
             run_directory / 'plots' / f'{scenario.slug()}.svg',
-            summary=summary,
-            websocket=scenario.type == 'ws',
-            excluded=record['excluded'],
-            leader_half_width=record['leader_half_width'],
         )
         if time.monotonic() > suite_deadline:
             raise BenchmarkError(

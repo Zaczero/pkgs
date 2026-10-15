@@ -60,15 +60,18 @@ scaling.
 
 ## Can I use it with Django?
 
-Yes — point `h2corn` at the Django ASGI application. Replace
+Pass the Django ASGI application as h2corn's import target. This uses the ASGI
+interface; it does not promise that every Django deployment can replace its
+existing server without configuration changes. Replace
 `myproject.asgi:application` with your project's import target:
 
 ```bash
-h2corn myproject.asgi:application --workers 4 --no-http1
+uv run h2corn myproject.asgi:application --workers 4
 ```
 
-Django Channels and other ASGI frameworks can use the same ASGI boundary;
-validate their lifespan, WebSocket, and middleware behavior before deployment.
+Django Channels and other ASGI frameworks use the same integration boundary.
+For WebSockets, choose HTTP/1.1 or a proxy route that translates to RFC 8441
+extended CONNECT.
 
 ## Which ASGI extensions are supported?
 
