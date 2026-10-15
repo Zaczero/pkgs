@@ -272,5 +272,6 @@ with mkdocs_gen_files.open('configuration.md', 'w') as fh:
     fh.write(render())
 
 
-with mkdocs_gen_files.open('benchmark-results.md', 'w') as fh:
-    fh.write(render_benchmark_results())
+generated_results = ROOT / 'bench' / 'results' / '_generated' / 'benchmark-results.md'
+generated_results.parent.mkdir(parents=True, exist_ok=True)
+generated_results.write_text(render_benchmark_results(), encoding='utf-8')

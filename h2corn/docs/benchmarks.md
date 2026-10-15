@@ -42,4 +42,4 @@ Starlette app. They do not establish framework-wide drop-in compatibility.
 
 ## Current results
 
---8<-- "benchmark-results.md"
+--8<-- "bench/results/_generated/benchmark-results.md"
