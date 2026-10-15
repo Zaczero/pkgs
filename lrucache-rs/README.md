@@ -3,8 +3,8 @@
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/p/lrucache-rs)
 
 `LRUCache` is a bounded mutable mapping for Python applications that need
-least-recently-used eviction without wrapping a function. Its storage and
-individual cache operations are implemented in Rust. It supports CPython 3.10
+least-recently-used eviction without wrapping a function. Rust manages the
+lookup index and recency order; Python owns keys and values. It supports CPython 3.10
 and newer, including free-threaded builds, and PyPy 3.11.
 
 ## Installation
@@ -33,8 +33,7 @@ assert cache.get('3') == 3
 [`MutableMapping`](https://docs.python.org/3/library/collections.abc.html#collections.abc.MutableMapping),
 including `keys`, `items`, `values`, `update`, `pop`, `setdefault`, and
 content equality with other mappings. It is mutable and unhashable.
-See the [public class reference](python/lrucache_rs/__init__.py) and
-[native method reference](python/lrucache_rs/_lib.pyi) for types and
+See the [public class reference](python/lrucache_rs/__init__.py) for types and
 method documentation.
 
 Construction requires a positive maximum number of entries within the native
@@ -75,12 +74,8 @@ across both mappings.
 Removed keys and values are released after the cache state is coherent and
 the lock is released. Their finalizers may reenter the cache. In particular,
 entries inserted by a finalizer during `clear` remain in the cache.
-Cache-owned reference edges are visible to Python's cyclic collector. PyPy
-has an additional C-extension boundary limitation: cycles involving tuples
-passed to native code may remain uncollected, even when that native call
-retains nothing. This can affect tuple keys, tuple values, or a `popitem`
-result stored back into a cycle. See
-[PyO3's PyPy garbage-collection guidance](https://pyo3.rs/v0.29.3/class/protocols.html#garbage-collector-integration).
+Cache-owned reference edges, including tuple payloads, are visible to Python's
+cyclic collector.
 
 The cache reserves storage for its configured maximum. Collection visits
 the reference slots for that capacity, including currently unused slots.

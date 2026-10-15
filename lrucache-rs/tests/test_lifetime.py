@@ -100,6 +100,11 @@ def test_concurrent_disjoint_writes_and_cleanup():
         'value',
         'self',
         'two-caches',
+        'tuple-key',
+        'tuple-value',
+        'nested-value',
+        'missing-error',
+        'type-arguments',
         'key-iterator',
         'item-iterator',
         'value-iterator',
@@ -122,6 +127,20 @@ def test_cycles_are_collectible(owner):
             value.cache = cache
             if {owner!r} == 'key':
                 cache[value] = 23
+            elif {owner!r} == 'tuple-key':
+                cache[(value,)] = 23
+            elif {owner!r} == 'tuple-value':
+                cache['value'] = (value,)
+            elif {owner!r} == 'nested-value':
+                cache['value'] = {{'nested': [(value,)]}}
+            elif {owner!r} == 'missing-error':
+                try:
+                    cache[(value,)]
+                except KeyError as error:
+                    cache['error'] = error
+            elif {owner!r} == 'type-arguments':
+                assert LRUCache[(value,)] is LRUCache
+                cache['value'] = value
             elif {owner!r} == 'self':
                 cache['self'] = cache
                 cache['value'] = value
@@ -130,13 +149,13 @@ def test_cycles_are_collectible(owner):
                 cache['other'] = other
                 other['value'] = value
             elif {owner!r} == 'key-iterator':
-                cache[value] = 23
+                cache[(value,)] = 23
                 cache['iterator'] = iter(cache)
             elif {owner!r} == 'item-iterator':
-                cache['value'] = value
+                cache['value'] = (value,)
                 cache['iterator'] = iter(cache.items())
             elif {owner!r} == 'value-iterator':
-                cache['value'] = value
+                cache['value'] = (value,)
                 cache['iterator'] = iter(cache.values())
             elif {owner!r} == 'popitem-pair':
                 cache['value'] = value
@@ -185,7 +204,9 @@ def test_gc_resurrection_preserves_cache():
     """)
 
 
-@pytest.mark.parametrize('mutation', ['read', 'clear', 'replace', 'error'])
+@pytest.mark.parametrize(
+    'mutation', ['read', 'clear', 'replace', 'idempotent', 'error']
+)
 def test_key_equality_reentry(mutation):
     run_child(f"""
         import gc
@@ -215,6 +236,8 @@ def test_key_equality_reentry(mutation):
                     else:
                         assert cache.peek(self) == 31
                         assert cache.get(self) == 31
+                if {mutation!r} == 'idempotent':
+                    cache[self] = cache.peek(self)
                 return isinstance(other, Key)
 
         stored = Key()
@@ -298,6 +321,165 @@ def test_comparison_result_finalizer_can_reenter():
         assert cache.get(Key(), 'missing') == 'missing'
         gc.collect()
         assert finalized == [1]
+    """)
+
+
+@pytest.mark.parametrize('provider', ['capacity', 'hash', 'equality', 'truth'])
+def test_provider_exception_identity_and_tuple_cycles(provider):
+    run_child(f"""
+        import gc
+        import weakref
+        from lrucache_rs import LRUCache
+
+        class Value:
+            pass
+        class ProviderError(BaseException):
+            pass
+
+        def cycle():
+            cache = LRUCache(4)
+            value = Value()
+            value.cache = cache
+            observed = weakref.ref(value)
+            failure = ProviderError((value,))
+            class Result:
+                def __bool__(self):
+                    raise failure
+            class Key:
+                def __index__(self):
+                    raise failure
+                def __hash__(self):
+                    if {provider!r} == 'hash':
+                        raise failure
+                    return 7
+                def __eq__(self, other):
+                    cache['callback'] = 79
+                    if {provider!r} == 'truth':
+                        return Result()
+                    raise failure
+            if {provider!r} in ('equality', 'truth'):
+                cache[Key()] = 31
+            try:
+                if {provider!r} == 'capacity':
+                    LRUCache(Key())
+                else:
+                    cache[Key()] = (value,)
+            except ProviderError as error:
+                assert error is failure
+                cache['error'] = error
+            else:
+                raise AssertionError('provider exception swallowed')
+            if {provider!r} in ('equality', 'truth'):
+                assert cache['callback'] == 79
+            return observed
+
+        observed = cycle()
+        for _ in range(5):
+            gc.collect()
+        assert observed() is None
+    """)
+
+
+def test_tuple_comparison_result_is_collectible():
+    run_child("""
+        import gc
+        import weakref
+        from lrucache_rs import LRUCache
+
+        class Value:
+            pass
+
+        def cycle():
+            cache = LRUCache(2)
+            value = Value()
+            value.cache = cache
+            class Key:
+                def __hash__(self):
+                    return 7
+                def __eq__(self, other):
+                    return (value,)
+            cache[Key()] = 31
+            assert cache[Key()] == 31
+            return weakref.ref(value)
+
+        observed = cycle()
+        for _ in range(5):
+            gc.collect()
+        assert observed() is None
+    """)
+
+
+def test_replacement_preserves_canonical_key_without_retaining_old_payload():
+    run_child("""
+        import gc
+        import weakref
+        from lrucache_rs import LRUCache
+
+        class Value:
+            pass
+        class Key:
+            def __hash__(self):
+                return 7
+            def __eq__(self, other):
+                return isinstance(other, Key)
+
+        cache = LRUCache(2)
+        first, second = Key(), Key()
+        original, equivalent = (first,), (second,)
+        old = Value()
+        old.cache = cache
+        old_ref, unused_key_ref = weakref.ref(old), weakref.ref(second)
+        cache[original] = (old,)
+        new = (object(),)
+        cache[equivalent] = new
+        assert next(iter(cache)) is original
+        assert cache[original] is new
+        del old, second, equivalent
+        for _ in range(5):
+            gc.collect()
+        assert old_ref() is None
+        assert unused_key_ref() is None
+    """)
+
+
+@pytest.mark.skipif(
+    sys.implementation.name != 'cpython',
+    reason='requires CPython native-call profiling events',
+)
+def test_native_completion_finalizer_observes_atomic_replacement():
+    run_child("""
+        import gc
+        import sys
+        from lrucache_rs import LRUCache
+
+        cache = LRUCache(2)
+        cache.update(a=11, b=23)
+        observed = []
+        class Finalizer:
+            def __del__(self):
+                observed.append(list(cache.items()))
+
+        was_enabled = gc.isenabled()
+        gc.disable()
+        finalizer = Finalizer()
+        finalizer.self = finalizer
+        del finalizer
+        armed = True
+        def profile(frame, event, function):
+            global armed
+            if (armed and event == 'c_return'
+                    and getattr(function, '__self__', None) is cache):
+                armed = False
+                gc.collect()
+        sys.setprofile(profile)
+        try:
+            cache['a'] = 37
+        finally:
+            sys.setprofile(None)
+            if was_enabled:
+                gc.enable()
+        assert not armed
+        assert observed == [[('b', 23), ('a', 37)]], observed
     """)
 
 

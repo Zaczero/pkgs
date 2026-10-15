@@ -17,6 +17,16 @@ def test_maxsize_attribute():
     assert cache.maxsize == 7
 
 
+def test_maxsize_uses_index_protocol():
+    class Capacity:
+        def __index__(self):
+            return 3
+
+    assert LRUCache(Capacity()).maxsize == 3  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        LRUCache(1.5)  # type: ignore[arg-type]
+
+
 def test_maxsize_eviction():
     cache = LRUCache[str, int](2)
     cache['1'] = 1
