@@ -26,8 +26,7 @@ class _LifespanHandoff:
         required: bool,
         startup_timeout: float | None,
         shutdown_timeout: float | None,
-    ) -> _LifespanHandoff:
-        """Create and return a new object.  See help(type) for accurate signature."""
+    ) -> _LifespanHandoff: ...
 
 @final
 class _PreparedTls:
