@@ -1023,9 +1023,9 @@ def _verify_active_admission(
 def require_runtime(
     root: Path = ROOT,
     *,
-    prepare_if_stale: bool = True,
+    prepare_if_stale: bool = False,
 ) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
-    """Admit a runtime before import; prepare only known stale fresh processes."""
+    """Admit an identified runtime, preparing a stale one only when requested."""
     global _ACTIVE_ADMISSION, _ACTIVE_RUNTIME
     root = root.resolve()
     if _ACTIVE_ADMISSION is not None:
@@ -1041,12 +1041,16 @@ def require_runtime(
                 f'{stale}. Start a fresh process after `{sys.executable} '
                 f'{root / "tools" / "check.py"} --prepare`'
             ) from None
-        command = [sys.executable, str(root / 'tools' / 'check.py')]
+        command = [
+            sys.executable,
+            str(root / 'tools' / 'check.py'),
+            '--prepare',
+        ]
         if not prepare_if_stale:
             raise SystemExit(
                 f'identified Gometry runtime is stale: {stale}; run '
                 f'`{sys.executable} {root / "tools" / "check.py"} --prepare` '
-                'to prepare it for tests'
+                'to prepare it'
             ) from None
         print(
             f'identified Gometry runtime is stale ({stale}); preparing it with '

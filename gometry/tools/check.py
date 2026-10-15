@@ -3,9 +3,10 @@
 
 The default command applies Rust and Python formatting, machine-applicable Clippy
 and Ruff fixes, prepares the DEV runtime, generates and formats stub docstrings,
-then runs the checks. `--prepare` skips the lint and format fixers and the checks;
-it prepares the runtime and prints its package root. `--no-fix` runs checks
-without rewriting the checkout.
+then runs all checks. `--prepare` prepares the runtime, regenerates and formats
+stub docstrings, and prints the runtime package root. `--no-fix` runs all checks
+without rewriting the checkout. `--contracts-only` runs the read-only public
+contract checks without applying fixes or preparing a stale runtime.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import argparse
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,14 +49,44 @@ GENERATE_STUBS = (
     'tools/stubs/stubconfig.py',
 )
 
-DOCS_BUILD = ('-m', 'properdocs', 'build', '--strict')
-DOCS_CHECK = ('tools/docs/check.py',)
 
-CHECKS: tuple[tuple[tuple[str, ...], bool], ...] = (
-    (('ruff', 'check', '.'), False),
-    (('ruff', 'format', '--check', '.'), False),
-    (('cargo', 'fmt', '--package', 'gometry', '--', '--check'), False),
-    (
+class CheckCategory(Enum):
+    LOCAL = 'local'
+    CONTRACT = 'contract'
+
+
+@dataclass(frozen=True, slots=True)
+class Check:
+    command: tuple[str, ...]
+    category: CheckCategory
+    requires_runtime: bool = False
+    prerequisites: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        return ' '.join(self.command)
+
+
+DOCS_BUILD = Check(
+    ('-m', 'properdocs', 'build', '--strict'),
+    CheckCategory.CONTRACT,
+    requires_runtime=True,
+)
+DOCS_CHECK = Check(
+    ('tools/docs/check.py',),
+    CheckCategory.CONTRACT,
+    requires_runtime=True,
+    prerequisites=(DOCS_BUILD.label,),
+)
+
+CHECKS: tuple[Check, ...] = (
+    Check(('ruff', 'check', '.'), CheckCategory.LOCAL),
+    Check(('ruff', 'format', '--check', '.'), CheckCategory.LOCAL),
+    Check(
+        ('cargo', 'fmt', '--package', 'gometry', '--', '--check'),
+        CheckCategory.LOCAL,
+    ),
+    Check(
         (
             '-m',
             'pyo3stubs',
@@ -61,22 +94,62 @@ CHECKS: tuple[tuple[tuple[str, ...], bool], ...] = (
             '--config',
             'tools/stubs/stubconfig.py',
         ),
-        True,
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
     ),
-    (('tools/gates/_check_typing_runtime.py',), True),
-    (('tools/gates/_check_typed_returns.py',), False),
-    (('tools/gates/_check_algebraic_float.py',), False),
-    (('tools/gates/_check_packed_execution.py',), False),
-    (('tools/stubs/_doc_coverage.py',), True),
-    (('tools/gates/_check_doc_integrity.py',), True),
-    (('tools/gates/_check_doc_model.py',), True),
-    (('tools/gates/_check_docstring_examples.py',), True),
-    (('tools/gates/_check_doctest_types.py',), True),
-    (('tools/gates/_check_examples.py',), True),
-    (('tools/docs/check_nav.py',), False),
-    # `-D warnings` because clippy exits 0 on warnings, and a lint gate that
-    # cannot fail lets findings accumulate silently.
-    (
+    Check(
+        ('tools/gates/_check_typing_runtime.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_typed_returns.py',),
+        CheckCategory.CONTRACT,
+    ),
+    Check(
+        ('tools/stubs/_doc_coverage.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_doc_integrity.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_doc_model.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_docstring_examples.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_doctest_types.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/gates/_check_examples.py',),
+        CheckCategory.CONTRACT,
+        requires_runtime=True,
+    ),
+    Check(
+        ('tools/docs/check_nav.py',),
+        CheckCategory.CONTRACT,
+    ),
+    Check(
+        ('tools/gates/_check_algebraic_float.py',),
+        CheckCategory.LOCAL,
+    ),
+    Check(
+        ('tools/gates/_check_packed_execution.py',),
+        CheckCategory.LOCAL,
+    ),
+    # `-D warnings` because Clippy exits 0 on warnings.
+    Check(
         (
             'cargo',
             'clippy',
@@ -88,8 +161,10 @@ CHECKS: tuple[tuple[tuple[str, ...], bool], ...] = (
             '-D',
             'warnings',
         ),
-        False,
+        CheckCategory.LOCAL,
     ),
+    DOCS_BUILD,
+    DOCS_CHECK,
 )
 
 
@@ -129,7 +204,7 @@ def run(
 ) -> bool:
     print(f'\n==> {" ".join(arguments)}', file=sys.stderr, flush=True)
     child_environment = os.environ.copy() if environment is None else environment.copy()
-    if require_runtime and arguments == DOCS_BUILD:
+    if require_runtime and arguments == DOCS_BUILD.command:
         child_environment.pop('MARKDOWN_EXEC_AUTO', None)
     if require_runtime:
         interpreter_bin = str(Path(sys.executable).parent)
@@ -230,10 +305,20 @@ def main() -> int:
     mode.add_argument(
         '--prepare',
         action='store_true',
-        help='prepare and print the runtime package root without running checks',
+        help=(
+            'prepare the runtime, regenerate and format stub docstrings, then '
+            'print its package root without running checks'
+        ),
+    )
+    parser.add_argument(
+        '--contracts-only',
+        action='store_true',
+        help='run read-only public contract checks without preparing a stale runtime',
     )
     options = parser.parse_args()
-    no_fix = options.no_fix
+    if options.prepare and options.contracts_only:
+        parser.error('--prepare cannot be combined with --contracts-only')
+    no_fix = options.no_fix or options.contracts_only
     prepare_only = options.prepare
     environment = os.environ.copy()
     runtime_failure: str | None = None
@@ -276,32 +361,26 @@ def main() -> int:
             f'quality runtime prerequisite failed: {runtime_failure}',
             file=sys.stderr,
         )
-    for step, runtime_required in CHECKS:
-        label = ' '.join(step)
-        if runtime_required and runtime_failure is not None:
-            skipped.append(label)
+    selected_checks = (
+        check
+        for check in CHECKS
+        if not options.contracts_only or check.category is CheckCategory.CONTRACT
+    )
+    failed_labels: set[str] = set()
+    for check in selected_checks:
+        if any(prerequisite in failed_labels for prerequisite in check.prerequisites):
+            skipped.append(check.label)
+            continue
+        if check.requires_runtime and runtime_failure is not None:
+            skipped.append(check.label)
             continue
         if not run(
-            step,
+            check.command,
             environment=environment,
-            require_runtime=runtime_required,
+            require_runtime=check.requires_runtime,
         ):
-            failed.append(label)
-    if runtime_failure is not None:
-        skipped.extend((' '.join(DOCS_BUILD), ' '.join(DOCS_CHECK)))
-    elif not run(
-        DOCS_BUILD,
-        environment=environment,
-        require_runtime=True,
-    ):
-        failed.append(' '.join(DOCS_BUILD))
-        skipped.append(' '.join(DOCS_CHECK))
-    elif not run(
-        DOCS_CHECK,
-        environment=environment,
-        require_runtime=True,
-    ):
-        failed.append(' '.join(DOCS_CHECK))
+            failed.append(check.label)
+            failed_labels.add(check.label)
     if failed:
         print('\nFailed quality checks:', file=sys.stderr)
         for label in failed:

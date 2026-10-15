@@ -2030,11 +2030,15 @@ def test_preimport_stale_runtime_prepares_once_then_readmits(
     monkeypatch.setattr(gate, 'verify_admitted_runtime', lambda _admission: runtime)
     monkeypatch.setattr(gate.subprocess, 'run', prepare)
 
-    assert gate.require_runtime(tmp_path) == runtime
+    assert gate.require_runtime(tmp_path, prepare_if_stale=True) == runtime
     assert attempts == [tmp_path.resolve(), tmp_path.resolve()]
     assert commands == [
         (
-            [sys.executable, str(tmp_path.resolve() / 'tools' / 'check.py')],
+            [
+                sys.executable,
+                str(tmp_path.resolve() / 'tools' / 'check.py'),
+                '--prepare',
+            ],
             tmp_path.resolve(),
         )
     ]
@@ -2062,7 +2066,7 @@ def test_readonly_stale_runtime_does_not_prepare(
     )
 
     with pytest.raises(SystemExit, match=r'run .*tools/check\.py'):
-        gate.require_runtime(tmp_path, prepare_if_stale=False)
+        gate.require_runtime(tmp_path)
 
 
 def test_runtime_that_remains_stale_after_preparation_is_not_retried(
@@ -2090,11 +2094,15 @@ def test_runtime_that_remains_stale_after_preparation_is_not_retried(
     monkeypatch.setattr(gate.subprocess, 'run', prepare)
 
     with pytest.raises(SystemExit, match='remains stale after preparation'):
-        gate.require_runtime(tmp_path)
+        gate.require_runtime(tmp_path, prepare_if_stale=True)
 
     assert attempts == [tmp_path.resolve(), tmp_path.resolve()]
     assert commands == [
-        [sys.executable, str(tmp_path.resolve() / 'tools' / 'check.py')]
+        [
+            sys.executable,
+            str(tmp_path.resolve() / 'tools' / 'check.py'),
+            '--prepare',
+        ]
     ]
 
 
