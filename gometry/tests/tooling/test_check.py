@@ -222,7 +222,6 @@ def test_contracts_only_selects_readonly_public_checks(
     assert {
         ('-m', 'pyo3stubs', 'check-all', '--config', 'tools/stubs/stubconfig.py'),
         ('tools/gates/_check_typing_runtime.py',),
-        ('tools/gates/_check_typed_returns.py',),
         ('tools/stubs/_doc_coverage.py',),
         ('tools/gates/_check_doc_integrity.py',),
         ('tools/gates/_check_doc_model.py',),
@@ -239,6 +238,7 @@ def test_contracts_only_selects_readonly_public_checks(
         ('cargo', 'fmt', '--package', 'gometry', '--', '--check'),
         ('tools/gates/_check_algebraic_float.py',),
         ('tools/gates/_check_packed_execution.py',),
+        ('tools/gates/_check_typed_returns.py',),
         (
             'cargo',
             'clippy',

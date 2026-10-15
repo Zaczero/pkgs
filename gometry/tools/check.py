@@ -104,7 +104,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         ('tools/gates/_check_typed_returns.py',),
-        CheckCategory.CONTRACT,
+        CheckCategory.LOCAL,
     ),
     Check(
         ('tools/stubs/_doc_coverage.py',),
