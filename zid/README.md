@@ -2,15 +2,14 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/zid)](https://pypi.org/p/zid)
 
-**zid** is a unique identifier with nice properties:
+**zid** generates sortable, signed-64-bit-compatible integer identifiers for
+Python 3.10 and later. A ZID stores a 47-bit logical UNIX millisecond timestamp
+and a 16-bit sequence. Generation reserves increasing identifiers within one
+process; independently initialized processes can collide.
 
-- It behaves like a 64-bit signed integer, so it can be safely used with external software, e.g., in a database. ZIDs will never overflow into negative values.
-
-- ZIDs are numerically sortable since the timestamp is stored in the most significant bits. Additional randomness is stored only in the least significant bits.
-
-- The specification is very simple, reducing the potential for bugs and making ZIDs highly efficient to generate and parse. Scroll down for the installation-free copy-and-paste code - it's that short!
-
-- CSPRNG-initialized sequence numbers enhance the privacy of the generated identifiers while remaining collision-resistant. You can generate up to 65,536 ZIDs within the same millisecond timestamp on a single machine.
+Install the package below, try [basic usage](#basic-usage), and see the
+[API reference](#api-reference) for inputs and errors.
+[Report issues on GitHub](https://github.com/Zaczero/pkgs/issues).
 
 ## Installation
 
@@ -18,73 +17,146 @@
 pip install zid
 ```
 
-## Installation (copy & paste)
-
-Alternatively, you can copy and paste the following code for an installation-free ZID generator. This code excludes performance optimizations and utility methods for the sake of simplicity and portability:
-
-```py
-from os import urandom
-from time import time_ns
-
-_last_time: int = -1
-_last_sequence: int = -1
-
-def zid() -> int:
-    global _last_time, _last_sequence
-
-    # UNIX timestamp in milliseconds
-    time: int = time_ns() // 1_000_000
-    if time > 0x7FFF_FFFF_FFFF:
-        raise OverflowError('Time value is too large')
-
-    # CSPRNG-initialized sequence numbers
-    sequence: int
-    if _last_time == time:
-        _last_sequence = sequence = (_last_sequence + 1) & 0xFFFF
-    else:
-        _last_sequence = sequence = int.from_bytes(urandom(2))
-        _last_time = time
-
-    return (time << 16) | sequence
-```
-
 ## Basic usage
 
 ```py
-from zid import zid
-zid()  # -> 112723768038396241
-zid()  # -> 112723768130153517
-zid()  # -> 112723768205368402
+from zid import parse_zid_timestamp, zid, zids
 
-from zid import zids
-zids(3)
-# -> [113103096068704205, 113103096068704206, 113103096068704207]
-
-from zid import parse_zid_timestamp
-parse_zid_timestamp(112723768038396241)
-# -> 1720028198828 (UNIX timestamp in milliseconds)
+identifier = zid()
+batch = zids(3)
+assert identifier < batch[0]
+assert batch == list(range(batch[0], batch[0] + 3))
+assert len({parse_zid_timestamp(value) for value in batch}) == 1
+print(identifier, parse_zid_timestamp(identifier))  # Values vary on each run.
 ```
+
+## Reservation and clock behavior
+
+The native generator shares one atomic reservation state across threads in a
+process. Each call reserves an interval after all earlier reservations.
+`zids(n)` reserves one contiguous interval at one timestamp; other threads
+cannot interleave identifiers inside it. Reservation order determines numerical
+order, not the order concurrent calls finish.
+
+At a new physical millisecond, the first sequence is chosen uniformly from the
+starts that leave room for the entire batch. Subsequent reservations increment
+the sequence. When the requested interval no longer fits, the generator advances
+its logical timestamp by one millisecond and chooses a new bounded random start.
+It does not wrap the sequence or wait for the clock. Backward clock movement
+retains the last logical timestamp, so parsed timestamps can lead physical time.
+Times before the UNIX epoch are treated as zero.
+
+The largest supported timestamp is `2**47 - 1` milliseconds since the UNIX epoch
+(approximately year 6429). A physical time beyond this horizon, or a reservation
+requiring logical time beyond it, raises `OverflowError` without reserving an
+interval. Every generated identifier is between `0` and `2**63 - 1`.
+
+## Installation (copy & paste)
+
+This standalone Python implementation provides the same format, logical-time
+policy, batch reservation and thread synchronization. Its random values need
+not match the native generator's. Keep one copy of this state for all callers
+that need a shared reservation order.
+
+```py
+from operator import index
+from secrets import randbelow
+from threading import Lock
+from time import time_ns
+
+_lock = Lock()
+_last_zid = -1
+
+
+def zids(n: int, /) -> list[int]:
+    global _last_zid
+    n = index(n)
+    if n < 0:
+        raise OverflowError('Count must be nonnegative')
+    if n > 65536:
+        raise ValueError('Count must be at most 65536')
+    if n == 0:
+        return []
+    with _lock:
+        now = max(0, time_ns() // 1_000_000)
+        if now > 0x7FFF_FFFF_FFFF:
+            raise OverflowError('ZID timestamp exhausted')
+        timestamp = max(now, _last_zid >> 16)
+        max_start = 65536 - n
+        if _last_zid >= 0 and timestamp == _last_zid >> 16:
+            start = (_last_zid & 0xFFFF) + 1
+            if start > max_start:
+                if timestamp == 0x7FFF_FFFF_FFFF:
+                    raise OverflowError('ZID timestamp exhausted')
+                timestamp += 1
+                start = randbelow(max_start + 1)
+        else:
+            start = randbelow(max_start + 1)
+        first = (timestamp << 16) | start
+        _last_zid = first + n - 1
+    return list(range(first, first + n))
+
+
+def zid() -> int:
+    return zids(1)[0]
+
+
+def parse_zid_timestamp(zid: int) -> int:
+    zid = index(zid)
+    if not 0 <= zid <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise OverflowError('Expected an unsigned 64-bit integer')
+    return zid >> 16
+```
+
+## API reference
+
+### `zid()`
+
+Return one integer identifier using the shared reservation state.
+Raise `OverflowError` when the timestamp horizon is exhausted.
+
+### `zids(n, /)`
+
+Accept an integer count from `0` through `65536` and return a list of that many
+contiguous increasing integers at one logical timestamp. Zero returns an empty
+list without reading the clock or reserving state. A negative count raises
+`OverflowError`; a count above `65536` raises `ValueError`. Timestamp exhaustion
+raises `OverflowError`.
+
+The native package converts counts to a platform-sized unsigned integer first;
+integers too large for that representation raise `OverflowError` during argument
+conversion. Both implementations require integer inputs (`__index__` is
+accepted); non-integer inputs raise `TypeError`.
+
+### `parse_zid_timestamp(zid)`
+
+Accept an unsigned 64-bit integer and return its upper 48 bits as an integer
+UNIX millisecond timestamp. For generated ZIDs only 47 timestamp bits are used.
+This function extracts bits; it does not validate that its input was generated
+by ZID. Out-of-range integers raise `OverflowError`.
 
 ## Format specification
 
-ZID is 64 bits long in binary. Only 63 bits are used to fit in a signed integer. The first 47 bits are a UNIX timestamp in milliseconds. The remaining 16 bits are CSPRNG-initialized sequence numbers.
+ZID uses 63 bits of a 64-bit integer, leaving the sign bit zero. The next 47 bits
+encode the logical UNIX millisecond timestamp. The final 16 bits encode the
+CSPRNG-initialized sequence.
 
-```txt
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|0|1|2|3|4|5|6|7|8|9|A|B|C|D|E|F|0|1|2|3|4|5|6|7|8|9|A|B|C|D|E|F|
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|0|                     timestamp (31 bits)                     |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|      timestamp (16 bits)      |   random+sequence (16 bits)   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```text
+| sign: 0 (1 bit) | logical timestamp (47 bits) | sequence (16 bits) |
 ```
 
 ## Limitations
 
-- Timestamps support years from 1970 to approx. 6429. To verify this, you can follow the formula *1970 + (2^47 − 1) / 1000 / (3600 * 24) / 365.25*
-
-- If several ZIDs are generated with the same millisecond timestamp, knowing one of them will allow you to discover the others due to linearly increasing sequence numbers. Otherwise, guessing ZID values is difficult (but not impossible) due to the millisecond precision of the timestamp and the additional 16 bits of entropy. Do not rely on ZIDs alone for your security!
-
-- You can generate up to 65,536 ZIDs within the same millisecond timestamp on a single machine. With two separate machines, you will generate on average 16,384 ZIDs each before a collision occurs within the same millisecond timestamp. With three separate machines, the average number is 10,240 ZIDs each.
-
-- ZIDs are not strictly increasing within the same millisecond timestamp due to the possible sequence number overflow.
+- Uniqueness and increasing reservation order apply to one generator state,
+  not to all processes on a machine, independent standalone copies, process
+  restarts or different machines. No coordinator or process namespace is
+  encoded. Independent processes have probabilistic starts; two full-size
+  batches at the same logical timestamp contain identical identifiers.
+- Start child generators with a fresh process image, using `spawn` or `exec`.
+  Calling either generator in a forked child before `exec` is unsupported:
+  `fork` copies the reservation state and native buffered randomness, and can
+  leave the standalone lock held by a vanished thread. There is no automatic
+  fork reset. A fresh process does not guarantee uniqueness against its parent.
+- Do not use ZIDs as authentication secrets. Their timestamps are visible,
+  sequence numbers within a timestamp increase predictably, and the randomized
+  origin has at most 16 bits of entropy.
