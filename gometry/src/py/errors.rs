@@ -622,12 +622,45 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use pyo3::exceptions::PyOverflowError;
+    use pyo3::exceptions::{PyOSError, PyOverflowError};
     use pyo3::prelude::*;
 
-    use super::{GeometryError, native_overflow_error};
+    use super::{CRSError, GeometryError, native_overflow_error};
     use crate::error::{Error, ResourceError};
     use crate::geometry::GeometryErrorKind;
+
+    #[test]
+    fn fixed_native_failures_keep_classification_after_annotations() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (error, expected_type, message) in [
+                (
+                    Error::from(ResourceError::Entropy),
+                    py.get_type::<PyOSError>(),
+                    "operating system entropy acquisition failed",
+                ),
+                (
+                    Error::from(ResourceError::SizeOverflow),
+                    py.get_type::<PyOverflowError>(),
+                    "resource size arithmetic overflowed",
+                ),
+                (
+                    Error::from(crate::crs::CrsError::GeodesicExponentOverflow),
+                    py.get_type::<CRSError>(),
+                    "certified geodesic exponent range overflowed",
+                ),
+            ] {
+                let mut error = error
+                    .with_parse_position(7)
+                    .with_parse_position_offset(11)
+                    .with_parse_path("member 3");
+                error.annotate_crs_display("EPSG:4326", Some("WGS 84"));
+                let error: PyErr = error.into();
+                assert!(error.get_type(py).is(&expected_type));
+                assert_eq!(error.value(py).str().unwrap().to_str().unwrap(), message);
+            }
+        });
+    }
 
     #[test]
     fn contextual_overflow_keeps_its_message() {
