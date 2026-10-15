@@ -1,62 +1,62 @@
 # blurhash-rs
 
-High-performance [BlurHash](https://blurha.sh) encoder/decoder for Python.
+Use this Python package to encode Pillow images as [BlurHash](https://blurha.sh) strings and decode them as RGB preview images.
 
-## Installation
+## Install
 
 ```sh
 pip install blurhash-rs
 ```
 
-## Usage
+## Encode and decode an image
 
 ```py
 from PIL import Image
 from blurhash_rs import blurhash_encode, blurhash_decode
 
-with Image.open('image.jpg') as img:
-  # Reduce resolution for faster encoding
-  img.thumbnail((100, 100))
+image = Image.new("RGB", (24, 16), (40, 100, 180))
+blurhash = blurhash_encode(image)
+preview = blurhash_decode(blurhash, 32, 24)
 
-  blurhash = blurhash_encode(img, x_components=4, y_components=3)
-  preview = blurhash_decode(blurhash, 32, 32)
-  preview.save("preview.png")
+assert isinstance(blurhash, str)
+assert preview.mode == "RGB"
+assert preview.size == (32, 24)
+print(blurhash)
 ```
 
-## Benchmarks
+The decoded preview is a lossy reconstruction; its pixels are not expected to match the input image.
 
-### Run
+## Encode an image file
 
-```sh
-benchmark.py --impl blurhash-rs -o blurhash-rs.json --rigorous
-benchmark.py --impl blurhash-python -o blurhash-python.json --rigorous
-benchmark.py --impl blurhash -o blurhash.json --rigorous
+```py
+# Template: replace "photo.jpg" with the path to your image.
+from PIL import Image
+from blurhash_rs import blurhash_encode
+
+with Image.open("photo.jpg") as opened:
+    image = opened.copy()
+
+# thumbnail() changes the caller-owned copy in place.
+image.thumbnail((100, 100))
+blurhash = blurhash_encode(image, x_components=4, y_components=3)
 ```
 
-### Results
+`blurhash_encode("photo.jpg")` also accepts a source supported by `PIL.Image.open`; the facade closes images it opens from a filename or path. A file-like object supplied by the caller remains open. A caller-supplied Pillow `Image` remains open and unchanged. The encoder converts non-RGB modes to RGB. For images with alpha, this discards the alpha channel rather than compositing against a background. Choose and apply any desired background before encoding. See Pillow's [file-handling rules](https://pillow.readthedocs.io/en/stable/reference/open_files.html) for its image and file lifecycle.
 
-Linux x86_64, CPython 3.14.0:
+## API reference
 
-#### blurhash-python vs blurhash-rs
+### `blurhash_encode`
 
-| Benchmark            | blurhash-python-1.2.2 | blurhash-rs-1.0.0       |
-|----------------------|:---------------------:|:-----------------------:|
-| encode 32x32 (4x3)   | 486 us                | 5.57 us: 87.29x faster  |
-| encode 64x64 (4x3)   | 1.91 ms               | 10.8 us: 177.73x faster |
-| encode 128x128 (4x3) | 7.59 ms               | 30.6 us: 247.76x faster |
-| decode 32x32 (4x3)   | 160 us                | 12.0 us: 13.31x faster  |
-| decode 64x64 (4x3)   | 626 us                | 34.6 us: 18.08x faster  |
-| decode 128x128 (4x3) | 2.45 ms               | 122 us: 20.08x faster   |
-| Geometric mean       | (ref)                 | 51.46x faster           |
+Pass a Pillow `Image` or an image source accepted by `Image.open`. The optional x- and y-component counts must each be from 1 through 9 and control the hash's detail. The result is a hash string. Invalid component counts or image dimensions raise `ValueError`; argument extraction can raise `TypeError` or `OverflowError`, and Pillow's image-reading errors propagate.
 
-#### blurhash vs blurhash-rs
+### `blurhash_decode`
 
-| Benchmark            | blurhash-1.1.5 | blurhash-rs-1.0.0        |
-|----------------------|:--------------:|:------------------------:|
-| encode 32x32 (4x3)   | 6.00 ms        | 5.57 us: 1078.28x faster |
-| encode 64x64 (4x3)   | 24.2 ms        | 10.8 us: 2249.49x faster |
-| encode 128x128 (4x3) | 96.4 ms        | 30.6 us: 3146.95x faster |
-| decode 32x32 (4x3)   | 6.91 ms        | 12.0 us: 573.46x faster  |
-| decode 64x64 (4x3)   | 27.6 ms        | 34.6 us: 797.99x faster  |
-| decode 128x128 (4x3) | 112 ms         | 122 us: 912.88x faster   |
-| Geometric mean       | (ref)          | 1213.21x faster          |
+Pass a hash and positive output dimensions; the result is an RGB Pillow `Image`. Invalid hashes, nonpositive dimensions, and dimensions outside the supported storage range raise `BlurhashDecodeError`, which retains the input in its `blurhash` attribute. Python argument-type errors and output-allocation failures are not converted to this exception.
+
+The decoder allocates `width × height × 3` bytes for RGB pixel data. Its representability checks do not impose a memory budget; choose output dimensions with that allocation in mind.
+
+`punch` scales the decoded AC components. Finite values below 1 do not reduce contrast; finite values at least 1 are used as the scale. NaN and negative infinity also behave as 1, while positive infinity is accepted as an infinite scale and can produce degenerate or clipped RGB output.
+
+### `BlurhashDecodeError`
+
+This exception reports a hash or image-dimension error from `blurhash_decode`. Its `blurhash` attribute contains the hash passed to the decoder.

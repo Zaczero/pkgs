@@ -1,6 +1,6 @@
 [project]
 name = "blurhash-rs"
-description = "High-performance BlurHash encoder/decoder"
+description = "BlurHash encoder and decoder for Python"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
