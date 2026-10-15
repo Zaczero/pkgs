@@ -17,6 +17,7 @@ from typing import TypedDict
 import pytest
 from h2corn import Config, Server
 from h2corn import _server as server_module
+from h2corn import _socket as socket_module
 
 from tests._support import (
     HANG_BOUND,
@@ -447,7 +448,7 @@ async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
     environment = os.environ.copy()
     python_path = str(Path(__file__).resolve().parents[1] / 'python')
     environment['PYTHONPATH'] = os.pathsep.join(
-        filter(None, (python_path, environment.get('PYTHONPATH')))
+        filter(None, (environment.get('PYTHONPATH'), python_path))
     )
     child = textwrap.dedent(
         """
@@ -465,11 +466,13 @@ async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
             expected_error,
             expected_message,
             listener_fd,
+            expected_socket_path,
         ) = sys.argv[1:]
         target_fd = int(target_fd)
         endpoint_fd = int(endpoint_fd)
         keep_fd = int(keep_fd)
         listener_fd = int(listener_fd)
+        assert os.path.realpath(_socket.__file__) == expected_socket_path
         if target_fd == 0:
             # The child owns these standard descriptors for the case.
             sys.stdin = sys.__stdin__ = None
@@ -479,44 +482,58 @@ async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
         os.dup2(endpoint_fd, target_fd)
         os.close(endpoint_fd)
 
-        try:
-            if scenario == "bool_quiesce":
-                _socket.lease_owned_fds([], quiesce_fd=True)
-            elif scenario == "bool_listener":
-                _socket.lease_owned_fds([False])
-            elif scenario == "bool_listener_alias":
-                _socket.lease_owned_fds([target_fd, False])
-            elif scenario == "bool_quiesce_alias":
-                _socket.lease_owned_fds([True], quiesce_fd=target_fd)
-            elif scenario == "prior_listener_bool":
-                _socket.lease_owned_fds([listener_fd, False])
-            elif scenario == "duplicate_listener":
-                _socket.lease_owned_fds([target_fd, target_fd])
-            elif scenario == "duplicate_quiesce":
-                _socket.lease_owned_fds([target_fd], quiesce_fd=target_fd)
-            else:
-                raise AssertionError(f"unknown scenario: {scenario}")
-        except (TypeError, ValueError) as error:
-            assert type(error).__name__ == expected_error
-            assert str(error) == expected_message
-        else:
-            raise AssertionError("invalid descriptor ownership was accepted")
+        real_close = os.close
+        replacement_fds = []
 
-        owned_descriptors = [target_fd]
-        if scenario == "prior_listener_bool":
-            owned_descriptors.append(listener_fd)
-        for descriptor in owned_descriptors:
+        def close_and_reuse(fd):
+            # Prove a stale second close cannot retire a new fd owner.
+            real_close(fd)
+            if fd == target_fd and not replacement_fds:
+                replacement_fds.append(os.open(os.devnull, os.O_RDONLY))
+
+        _socket.os.close = close_and_reuse
+        try:
             try:
-                os.fstat(descriptor)
+                if scenario == "bool_quiesce":
+                    _socket.lease_owned_fds([], quiesce_fd=True)
+                elif scenario == "bool_listener":
+                    _socket.lease_owned_fds([False])
+                elif scenario == "bool_listener_alias":
+                    _socket.lease_owned_fds([target_fd, False])
+                elif scenario == "bool_quiesce_alias":
+                    _socket.lease_owned_fds([True], quiesce_fd=target_fd)
+                elif scenario == "prior_listener_bool":
+                    _socket.lease_owned_fds([listener_fd, False])
+                elif scenario == "duplicate_listener":
+                    _socket.lease_owned_fds([target_fd, target_fd])
+                elif scenario == "duplicate_quiesce":
+                    _socket.lease_owned_fds([target_fd], quiesce_fd=target_fd)
+                else:
+                    raise AssertionError(f"unknown scenario: {scenario}")
+            except (TypeError, ValueError) as error:
+                assert type(error).__name__ == expected_error
+                assert str(error) == expected_message
+            else:
+                raise AssertionError("invalid descriptor ownership was accepted")
+        finally:
+            _socket.os.close = real_close
+
+        if scenario == "prior_listener_bool":
+            try:
+                os.fstat(listener_fd)
             except OSError as error:
                 assert error.errno == errno.EBADF
             else:
-                raise AssertionError(f"descriptor {descriptor} remains open")
-        reused_fd = os.open(os.devnull, os.O_RDONLY)
-        assert reused_fd == target_fd
-        os.fstat(reused_fd)
-        os.close(reused_fd)
+                raise AssertionError(f"descriptor {listener_fd} remains open")
+        assert replacement_fds == [target_fd]
+        try:
+            os.fstat(replacement_fds[0])
+        except OSError as error:
+            raise AssertionError(
+                "descriptor reuse was closed by duplicate retirement"
+            ) from error
         os.fstat(keep_fd)
+        real_close(replacement_fds[0])
         """
     )
 
@@ -534,6 +551,7 @@ async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
                 expected_error,
                 expected_message,
                 str(listener_fd if listener_fd is not None else -1),
+                str(Path(socket_module.__file__).resolve()),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=environment,
