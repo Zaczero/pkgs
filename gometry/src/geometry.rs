@@ -110,7 +110,7 @@ pub(crate) use antimeridian::{
     unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
     validate_data_in_frame, validate_shape_in_frame,
 };
-pub(crate) use boundary::boundary_with_metric;
+pub(crate) use boundary::{boundary_array_with_metric, boundary_with_metric};
 mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, PublishedVoronoiEdgeColumn,

@@ -557,6 +557,25 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
     )
 }
 
+pub(crate) fn unary_boundary_array(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<GeometryOutput> {
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic boundary source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    crate::geometry::boundary_array_with_metric(
+        data,
+        &crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+        ctx.frame,
+        ctx.lane.row(),
+    )
+}
+
 /// ``is_empty`` kernel shared by the spine-routed free function.
 #[expect(
     clippy::unnecessary_wraps,

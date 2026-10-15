@@ -295,7 +295,7 @@ pub(crate) fn publish_split_groups(
     )?)
 }
 
-fn snap_drawing_layout(
+fn drawing_layout(
     shape: &Shape,
 ) -> Result<(ShapeLiteralLayout<ProducerImageId>, Vec<ProducerLiteral>)> {
     let mut next_image = 0_usize;
@@ -304,7 +304,7 @@ fn snap_drawing_layout(
 }
 
 pub(in crate::geometry) fn snap_drawing_receipt(shape: Shape) -> Result<ProducerDrawingReceipt> {
-    let (layout, literals) = snap_drawing_layout(&shape)?;
+    let (layout, literals) = drawing_layout(&shape)?;
     let buffers = FrozenLiteralBuffers::shapes(shape, layout);
     Ok(ProducerDrawingReceipt::new(buffers, literals))
 }
@@ -315,11 +315,11 @@ pub(crate) fn finish_geographic_snap(shape: Shape, frame: crate::Frame) -> Resul
         .map(|(shape, _)| shape)
 }
 
-pub(crate) fn geographic_snap_pending_row(
+pub(crate) fn geographic_drawing_pending_row(
     shape: Shape,
     logical_row: usize,
     operation: &'static str,
 ) -> Result<PendingPublicationRow> {
-    let (layout, literals) = snap_drawing_layout(&shape)?;
+    let (layout, literals) = drawing_layout(&shape)?;
     PendingPublicationRow::producer_drawing(shape, layout, literals, logical_row, operation)
 }

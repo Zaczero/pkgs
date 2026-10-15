@@ -3,9 +3,10 @@ use super::{
     CoordinateAxes, EmittedVertex, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
     ExpansionBudget, GeometryErrorKind, OverlayOp, QCoordinates, QEmbeddingCertification,
     QEmissionPlan, QProducer, ResourceError, Result, SealedQDrawing, SealedSourceDrawing,
-    SearchAccount, SearchOutcome, Shape, SourceArcMetricAccess, certify_and_search_q_embedding,
-    certify_nearest_ring_roles, finish_geographic, node_injectivity_collisions_with_work,
-    node_ordinates, source_point_coordinates_with_work, write_completed_native,
+    SearchAccount, SearchOutcome, Shape, SourceArcMetricAccess, SourceRowId,
+    boundary_source_points_with_work, certify_and_search_q_embedding, certify_nearest_ring_roles,
+    finish_geographic, node_injectivity_collisions_with_work, node_ordinates,
+    source_point_coordinates_with_work, write_completed_native,
 };
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::publication::{
@@ -113,6 +114,65 @@ fn certify_geographic_overlay<M: crate::geometry::ChartMetric>(
             declared_axes,
             strict,
             operation.name(),
+            metric_access,
+            &mut expansion_budget,
+            &mut preparation_work,
+        )?
+    };
+    Ok((embedding, budget))
+}
+
+pub(super) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<Shape> {
+    let (embedding, _budget) = certify_geographic_boundary(topology, declared_axes, metric_access)?;
+    publish_q_overlay(embedding)
+}
+
+pub(super) fn exact_geographic_boundary_pending_row<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    let (embedding, budget) = certify_geographic_boundary(topology, declared_axes, metric_access)?;
+    pending_q_array_row(
+        embedding.sealed,
+        logical_row,
+        budget,
+        topology.publication_frame(),
+    )
+}
+
+fn certify_geographic_boundary<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<(CertifiedQEmission, EvaluationBudget)> {
+    if topology.sources.row_count != 1 {
+        return Err(GeometryErrorKind::Invalid(
+            "an exact geographic boundary requires one source row".into(),
+        )
+        .into());
+    }
+    let mut budget = EvaluationBudget::new("geographic boundary", 0)?;
+    let embedding = {
+        let mut preparation_work = EvaluationOnly::new(&mut budget);
+        let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
+        let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
+        let source_points =
+            boundary_source_points_with_work(topology, SourceRowId(0), &mut preparation_work)?;
+        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
+        resolve_q_embedding(
+            topology,
+            &plan,
+            &source_points,
+            &nearest,
+            declared_axes,
+            false,
+            "geographic boundary",
             metric_access,
             &mut expansion_budget,
             &mut preparation_work,

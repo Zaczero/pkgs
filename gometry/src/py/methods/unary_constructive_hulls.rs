@@ -54,7 +54,14 @@ unary_shape_method!(
     kernels::unary_minimum_bounding_radius,
     f64_unit
 );
-unary_shape_method!(boundary, Boundary, doc_boundary, kernels::unary_boundary);
+unary_shape_method!(
+    boundary,
+    Boundary,
+    doc_boundary,
+    kernels::unary_boundary,
+    kernels::unary_boundary_array,
+    synthesized
+);
 unary_shape_method!(
     minimum_clearance,
     (Metric MinimumClearance),

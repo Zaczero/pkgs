@@ -369,20 +369,6 @@ impl<'a> ArrayRowOperation<'a> {
         self.products.frame_cache(logical)
     }
 
-    pub(crate) fn cached_frame_cache(
-        &mut self,
-        logical: usize,
-    ) -> Option<Arc<FrameDependentCaches>> {
-        self.products.cached_frame_cache(logical)
-    }
-
-    pub(crate) fn cached_prepared_with_frame(
-        &mut self,
-        logical: usize,
-    ) -> Option<(&PreparedPlan, &FrameDependentCaches)> {
-        self.products.cached_prepared_with_frame(logical)
-    }
-
     pub(crate) fn bounds_seed(&self, logical: usize) -> BoundsSeed {
         self.array.row_bounds_seed(logical)
     }
@@ -438,23 +424,6 @@ impl RowProductsHandle {
                 .frame
                 .get_or_init(|| Arc::new(FrameDependentCaches::default())),
         )
-    }
-
-    pub(crate) fn cached_frame_cache(
-        &mut self,
-        logical: usize,
-    ) -> Option<Arc<FrameDependentCaches>> {
-        let (chunk, offset) = self.existing_cell(logical)?;
-        chunk.cell(offset).frame.get().cloned()
-    }
-
-    pub(crate) fn cached_prepared_with_frame(
-        &mut self,
-        logical: usize,
-    ) -> Option<(&PreparedPlan, &FrameDependentCaches)> {
-        let (chunk, offset) = self.existing_cell(logical)?;
-        let cell = chunk.cell(offset);
-        Some((cell.prepared.get()?.as_ref(), cell.frame.get()?.as_ref()))
     }
 
     pub(crate) fn prepared_plan<E>(
@@ -918,8 +887,7 @@ mod frame_cache_row_tests {
 
     use super::*;
     use crate::crs::frame::{Frame, crs_arc_static};
-    use crate::geographic::GeographicFrame;
-    use crate::geometry::{CoordSeq, GeographicTopologyRoute, LineSeq, Point};
+    use crate::geometry::{CoordSeq, LineSeq, Point};
     use crate::test_support::allocation_count;
 
     fn points() -> PyGeometryArray {
@@ -1317,38 +1285,6 @@ mod frame_cache_row_tests {
         assert!(handle.cached_prepared_plan(0).is_none());
         assert!(products.owner.chunks.lock().unwrap().is_empty());
         assert_eq!(RowProducts::directory_resolution_count(), 1);
-    }
-
-    #[test]
-    fn borrowed_prepared_frame_lookup_follows_gathered_physical_rows() {
-        let products = RowProducts::fresh(128);
-        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
-        let prepared = products
-            .prepared_plan::<std::convert::Infallible>(64, || Ok(Arc::clone(&shape)))
-            .expect("row 64 prepared plan");
-        let frame_cache = products.frame_cache(64);
-        let frame = GeographicFrame::crs84();
-        frame_cache.record_admission(frame, true, GeographicTopologyRoute::ExactPartition);
-        let selected = products.selected([64, 0, 64, 1]);
-        let mut handle = selected.operation();
-
-        {
-            let (borrowed_plan, borrowed_cache) = handle
-                .cached_prepared_with_frame(0)
-                .expect("logical row 0 resolves physical row 64");
-            assert!(std::ptr::eq(borrowed_plan, prepared.as_ref()));
-            assert!(std::ptr::eq(borrowed_cache, frame_cache.as_ref()));
-            assert_eq!(
-                borrowed_cache.geographic_admission(frame),
-                Some((true, GeographicTopologyRoute::ExactPartition))
-            );
-        }
-        assert!(handle.cached_prepared_with_frame(1).is_none());
-        let (duplicate_plan, duplicate_cache) = handle
-            .cached_prepared_with_frame(2)
-            .expect("duplicate logical row 2 resolves physical row 64");
-        assert!(std::ptr::eq(duplicate_plan, prepared.as_ref()));
-        assert!(std::ptr::eq(duplicate_cache, frame_cache.as_ref()));
     }
 
     #[test]

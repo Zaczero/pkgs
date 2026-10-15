@@ -555,6 +555,9 @@ impl PyGeometryArray {
             Ok(domain) => domain,
             Err(error) => return Some(Err(error.into())),
         };
+        if domain.is_geographic() {
+            return None;
+        }
         if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
@@ -563,86 +566,13 @@ impl PyGeometryArray {
         }) = self.storage()
             && ring_offsets.len() == polygon_offsets.len()
         {
-            match domain {
-                crate::geometry::TopologyDomain::Cartesian => {
-                    let valid = match self.is_valid_unary_packed() {
-                        Some(Ok(valid)) => valid,
-                        Some(Err(error)) => return Some(Err(error)),
-                        None => return None,
-                    };
-                    if !valid.into_iter().all(|valid| valid) {
-                        return None;
-                    }
-                },
-                crate::geometry::TopologyDomain::Geographic(frame) => {
-                    let mut rows = self.row_operation();
-                    let mut missing_admissions: Option<Vec<usize>> = None;
-                    for logical in 0..self.len() {
-                        if let Some((prepared, cache)) = rows.cached_prepared_with_frame(logical)
-                            && let Some((_, route)) = cache.geographic_admission(frame)
-                        {
-                            if route != crate::geometry::GeographicTopologyRoute::ExactPartition {
-                                return None;
-                            }
-                            match prepared.validate_cached() {
-                                Ok(None) => continue,
-                                Ok(Some(_)) | Err(_) => return None,
-                            }
-                        }
-                        let Ok(prepared) = rows.prepared_at(logical, self.storage().row(logical))
-                        else {
-                            return None;
-                        };
-                        let cached_route = rows
-                            .cached_frame_cache(logical)
-                            .and_then(|cache| cache.geographic_admission(frame))
-                            .map(|(_, route)| route);
-                        let route = if let Some(route) = cached_route {
-                            route
-                        } else {
-                            let Ok(view) = crate::geographic::ScalarGeographicView::try_new(
-                                frame,
-                                prepared.shape(),
-                            ) else {
-                                return None;
-                            };
-                            let route = crate::geometry::classify_geographic_chart(view);
-                            if route != crate::geometry::GeographicTopologyRoute::ExactPartition {
-                                return None;
-                            }
-                            missing_admissions
-                                .get_or_insert_with(|| Vec::with_capacity(self.len()))
-                                .push(logical);
-                            route
-                        };
-                        if route != crate::geometry::GeographicTopologyRoute::ExactPartition {
-                            return None;
-                        }
-                        match prepared.validate_cached() {
-                            Ok(None) => (),
-                            Ok(Some(_)) | Err(_) => return None,
-                        }
-                    }
-                    if let Some(admissions) = missing_admissions {
-                        for logical in admissions {
-                            let Ok(prepared) =
-                                rows.prepared_at(logical, self.storage().row(logical))
-                            else {
-                                return None;
-                            };
-                            let bounds_sound = prepared.bounds().is_some_and(|bounds| {
-                                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                                    None, bounds, frame,
-                                )
-                            });
-                            rows.frame_cache(logical).record_admission(
-                                frame,
-                                bounds_sound,
-                                crate::geometry::GeographicTopologyRoute::ExactPartition,
-                            );
-                        }
-                    }
-                },
+            let valid = match self.is_valid_unary_packed() {
+                Some(Ok(valid)) => valid,
+                Some(Err(error)) => return Some(Err(error)),
+                None => return None,
+            };
+            if !valid.into_iter().all(|valid| valid) {
+                return None;
             }
             return Some(
                 Self::from_storage(
@@ -688,79 +618,6 @@ impl PyGeometryArray {
 
 #[path = "map_shapes.rs"]
 mod map_shapes;
-
-#[cfg(test)]
-mod boundary_admission_tests {
-    use super::PyGeometryArray;
-    use crate::crs::frame::{Frame, crs_arc_static};
-    use crate::io::parse_wkt;
-
-    const PREFIX_ROWS: usize = 64;
-    const ORDINARY: &str = "POLYGON ((0 0,4 0,4 4,0 4,0 0))";
-
-    fn array_with_late_row(last: Option<&str>) -> PyGeometryArray {
-        let ordinary = parse_wkt(ORDINARY).expect("ordinary polygon parses");
-        let mut shapes = vec![ordinary; PREFIX_ROWS];
-        if let Some(last) = last {
-            shapes.push(parse_wkt(last).expect("late polygon parses"));
-        }
-        PyGeometryArray::from_shapes(shapes, Frame::Crs(crs_arc_static("EPSG:4326")))
-            .expect("polygon rows pack in one geographic frame")
-    }
-
-    fn assert_declines_without_prefix_admissions(last: &str, label: &str) {
-        let array = array_with_late_row(Some(last));
-        assert!(
-            array.boundary_unary_packed().is_none(),
-            "{label}: packed lane must decline"
-        );
-        let (_, _, frame_cells) = array.row_products.initialized_counts();
-        assert_eq!(
-            frame_cells, 0,
-            "{label}: a late decline must not publish prefix admissions"
-        );
-    }
-
-    #[test]
-    fn successful_packed_preflight_publishes_all_row_admissions() {
-        let array = array_with_late_row(None);
-        assert!(
-            array
-                .boundary_unary_packed()
-                .is_some_and(|result| result.is_ok()),
-            "all ordinary rows should qualify for the packed lane"
-        );
-        assert_eq!(
-            array.row_products.initialized_counts().2,
-            PREFIX_ROWS,
-            "the observation must see the admissions published after successful preflight"
-        );
-    }
-
-    #[test]
-    fn late_spur_decline_does_not_publish_prefix_admissions() {
-        assert_declines_without_prefix_admissions(
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0,-1 0,0 0))",
-            "outward spur",
-        );
-    }
-
-    #[test]
-    fn late_quotient_row_decline_does_not_publish_prefix_admissions() {
-        assert_declines_without_prefix_admissions(
-            "POLYGON ((179 0,181 0,181 2,179 2,179 0))",
-            "seam crossing",
-        );
-    }
-
-    #[test]
-    fn late_domain_error_decline_does_not_publish_prefix_admissions() {
-        assert_declines_without_prefix_admissions(
-            "POLYGON ((0 89,1 89,1 91,0 91,0 89))",
-            "out-of-domain latitude",
-        );
-    }
-}
 
 #[cfg(test)]
 mod geographic_validity_admission_tests {
