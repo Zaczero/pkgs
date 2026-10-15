@@ -84,6 +84,7 @@ pub(in crate::geometry) use self::producer_drawing::{
     exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,
     exact_geographic_linework_pending_row,
 };
+#[cfg(test)]
 use self::publish::publish_q_overlay;
 pub(in crate::geometry::topology) use self::publish::resolve_q_embedding;
 #[cfg(test)]
@@ -138,34 +139,23 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
     declared_axes: CoordinateAxes,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
-    if topology.sources.row_count != 1 {
-        return Err(GeometryErrorKind::Invalid(
-            "an exact geographic boundary requires one source row".into(),
-        )
-        .into());
-    }
-    let row = SourceRowId(0);
-    let mut budget = EvaluationBudget::new("geographic boundary", 0)?;
-    let embedding = {
-        let mut preparation_work = EvaluationOnly::new(&mut budget);
-        let mut expansion_budget = ExpansionBudget::new("geographic boundary", "computed edges");
-        let (plan, _support) = QEmissionPlan::build_boundary(topology, &mut preparation_work)?;
-        let source_points = boundary_source_points_with_work(topology, row, &mut preparation_work)?;
-        let nearest = QCoordinates::build_with_work(topology, &mut preparation_work)?;
-        resolve_q_embedding(
-            topology,
-            &plan,
-            &source_points,
-            &nearest,
-            declared_axes,
-            false,
-            "geographic boundary",
-            metric_access,
-            &mut expansion_budget,
-            &mut preparation_work,
-        )?
-    };
-    publish_q_overlay(embedding)
+    publish::exact_geographic_boundary(topology, declared_axes, metric_access)
+}
+
+pub(in crate::geometry) fn exact_geographic_boundary_pending_row<
+    M: crate::geometry::ChartMetric,
+>(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    logical_row: usize,
+) -> Result<PendingPublicationRow> {
+    publish::exact_geographic_boundary_pending_row(
+        topology,
+        declared_axes,
+        metric_access,
+        logical_row,
+    )
 }
 
 const fn selects_support(

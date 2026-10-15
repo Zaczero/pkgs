@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 
 use crate::dispatch::{MetricCtx, MetricOp, MetricResolver, kernels};
 use crate::geometry::publication::{
-    GeometryOutput, finish_geographic_snap, geographic_snap_pending_row,
+    GeometryOutput, finish_geographic_snap, geographic_drawing_pending_row,
 };
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
@@ -308,7 +308,7 @@ fn snap_output(
     match context.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         crate::geometry::TopologyDomain::Geographic(_) if context.lane.is_array() => {
-            Ok(GeometryOutput::Pending(geographic_snap_pending_row(
+            Ok(GeometryOutput::Pending(geographic_drawing_pending_row(
                 output,
                 context.lane.row(),
                 "snap",
