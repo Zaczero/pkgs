@@ -391,7 +391,7 @@ impl QEmissionPlan {
         operation: &'static str,
         work: &mut impl Work,
     ) -> Result<SourceFrozenDrawing> {
-        let (shape, layout, diagnostic_lines) = self.write_source_drawing_parts(
+        let (shape, layout, _diagnostic_lines) = self.write_source_drawing_parts(
             drawing,
             ring_roles,
             ordinates,
@@ -404,7 +404,6 @@ impl QEmissionPlan {
         )?;
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
-            diagnostic_lines,
         })
     }
     pub(in crate::geometry::topology) fn seal_native_parts(

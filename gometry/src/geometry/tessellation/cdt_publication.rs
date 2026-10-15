@@ -1,16 +1,5 @@
-use std::sync::Arc;
-
-use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
-    ShapeStructure,
-};
-use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::publication::{
-    FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
-    finish_producer_drawing,
-};
+use crate::geometry::publication::{FinishedGeometry, PublicationRows};
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::tessellation::CdtRefinement;
 use crate::geometry::{
@@ -76,43 +65,15 @@ pub(crate) fn publish_cdt_array(
     drawing: PreparedCdtDrawing,
     frame: Frame,
 ) -> Result<PyGeometryArray> {
-    let capacity = drawing.vertices.points.len();
-    let face_count = drawing.face_count();
-    let mut writer = StreamingShapes::with_capacity(capacity, face_count);
-    let mut row_map = Vec::with_capacity(face_count);
-    let mut literals = Vec::with_capacity(capacity);
-    let mut next_image = 0_usize;
-    let mut work = crate::work::Unmetered;
-    append_drawing(
-        drawing,
-        None,
-        0,
-        &mut writer,
-        &mut row_map,
-        &mut literals,
-        &mut next_image,
-    )?;
-
-    let (storage, missing, layout) = writer.finish_parts()?;
-    let buffers =
-        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals);
-    PyGeometryArray::from_finished(finish_producer_drawing(
-        receipt,
-        frame,
-        StorageTarget::Array,
-    )?)
+    let mut rows = PublicationRows::with_producer_drawing_capacity(drawing.face_count());
+    append_drawing(drawing, None, &mut rows)?;
+    rows.finish(frame)
 }
 
 pub(crate) struct CdtGroupsDrawingWriter {
     row_count: usize,
     missing: Option<ValidityMask>,
-    writer: StreamingShapes,
-    value_map: Vec<Option<LiteralRowLayout<ProducerImageId>>>,
-    literals: Vec<ProducerLiteral>,
-    offsets: Vec<i64>,
-    next_image: usize,
-    work: crate::work::Unmetered,
+    rows: PublicationRows,
 }
 
 impl CdtGroupsDrawingWriter {
@@ -123,20 +84,13 @@ impl CdtGroupsDrawingWriter {
             )
             .into());
         }
-        let offset_count = row_count
+        row_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut offsets = Vec::with_capacity(offset_count);
-        offsets.push(0_i64);
         Ok(Self {
             row_count,
             missing,
-            writer: StreamingShapes::new(),
-            value_map: Vec::new(),
-            literals: Vec::new(),
-            offsets,
-            next_image: 0,
-            work: crate::work::Unmetered,
+            rows: PublicationRows::with_groups_capacity(row_count),
         })
     }
 
@@ -145,9 +99,7 @@ impl CdtGroupsDrawingWriter {
         logical_row: usize,
         drawing: Option<PreparedCdtDrawing>,
     ) -> Result<()> {
-        let next_row = self.offsets.len().checked_sub(1).ok_or_else(|| {
-            GeometryErrorKind::Invalid("CDT group writer lost its initial offset".into())
-        })?;
+        let next_row = self.rows.next_group_row();
         if logical_row != next_row || logical_row >= self.row_count {
             return Err(GeometryErrorKind::Invalid(
                 "CDT group rows were not appended in logical order".into(),
@@ -165,64 +117,35 @@ impl CdtGroupsDrawingWriter {
             .into());
         }
         if let Some(drawing) = drawing {
-            append_drawing(
-                drawing,
-                Some(logical_row),
-                self.value_map.len(),
-                &mut self.writer,
-                &mut self.value_map,
-                &mut self.literals,
-                &mut self.next_image,
-            )?;
+            append_drawing(drawing, Some(logical_row), &mut self.rows)?;
         }
-        self.offsets
-            .push(i64::try_from(self.value_map.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        self.rows.end_group(is_missing)?;
         Ok(())
     }
 
-    pub(crate) fn finish(mut self, frame: Frame) -> Result<FinishedGeometry> {
-        let expected_offsets = self
-            .row_count
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        if self.offsets.len() != expected_offsets {
+    pub(crate) fn finish(self, frame: Frame) -> Result<FinishedGeometry> {
+        if self.rows.next_group_row() != self.row_count {
             return Err(GeometryErrorKind::Invalid(
                 "CDT group writer did not receive every logical row".into(),
             )
             .into());
         }
-        let (storage, value_missing, layout) = self.writer.finish_parts()?;
-        let buffers = FrozenLiteralBuffers::groups(
-            Arc::new(storage),
-            value_missing,
-            layout,
-            self.value_map,
-            self.offsets,
-            self.missing,
-            &mut self.work,
-        )?;
-        let receipt = ProducerDrawingReceipt::new(buffers, self.literals);
-        finish_producer_drawing(receipt, frame, StorageTarget::Groups)
+        self.rows.finish_groups_geometry(frame, self.missing)
     }
 }
 
 fn append_drawing(
     drawing: PreparedCdtDrawing,
     group_row: Option<usize>,
-    value_row_base: usize,
-    writer: &mut StreamingShapes,
-    row_map: &mut Vec<Option<LiteralRowLayout<ProducerImageId>>>,
-    literals: &mut Vec<ProducerLiteral>,
-    next_image: &mut usize,
+    rows: &mut PublicationRows,
 ) -> Result<usize> {
     let PreparedCdtDrawing { vertices } = drawing;
     let shapes =
         Shape::triangle_shapes_from_published_rings(&vertices.points, &vertices.ring_ends)?;
 
     let mut start = 0;
-    let array_row_base = row_map.len();
     let row_count = shapes.len();
-    for (face_index, (shape, &end)) in shapes.into_iter().zip(&vertices.ring_ends).enumerate() {
+    for (shape, &end) in shapes.into_iter().zip(&vertices.ring_ends) {
         let ring = vertices.points.get(start..end).ok_or_else(|| {
             GeometryErrorKind::Invalid("CDT ring offsets do not match its vertex stream".into())
         })?;
@@ -249,61 +172,8 @@ fn append_drawing(
             )
             .into());
         }
-        let logical_row = group_row.map_or_else(
-            || {
-                array_row_base
-                    .checked_add(face_index)
-                    .ok_or(ResourceError::SizeOverflow)
-            },
-            Ok,
-        )?;
-        let value_row = group_row
-            .map(|_| {
-                value_row_base
-                    .checked_add(face_index)
-                    .ok_or(ResourceError::SizeOverflow)
-            })
-            .transpose()?;
-        let address = LiteralAddress {
-            operation: 0,
-            logical_row,
-            group_row,
-            value_row,
-            output: 0,
-        };
-        let axes = face_points.axes();
-        let mut images = Vec::with_capacity(ring.len());
-        for &point in ring {
-            let image = ProducerImageId::new(*next_image);
-            *next_image = next_image
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
-            images.push(image);
-            literals.push(ProducerLiteral::from_point(address, image, point));
-        }
-        let structure = ShapeStructure::capture(&shape);
-        writer.try_push(shape)?;
-        row_map.push(Some(LiteralRowLayout {
-            operation: 0,
-            logical_row,
-            group_row,
-            value_row,
-            layout: ShapeLiteralLayout {
-                structure: Some(structure),
-                points: Vec::new(),
-                lines: Vec::new(),
-                polygons: vec![LiteralPolygon {
-                    output: 0,
-                    axes,
-                    shell: LiteralSequence {
-                        output: 0,
-                        axes,
-                        images,
-                    },
-                    holes: Vec::new(),
-                }],
-            },
-        }));
+        let logical_row = group_row.unwrap_or_else(|| rows.next_value_row());
+        rows.try_push_drawing(shape, logical_row, "constrained_delaunay_triangles")?;
         start = end;
     }
     if start != vertices.points.len() {

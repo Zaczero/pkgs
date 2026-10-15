@@ -420,7 +420,7 @@ pub(super) enum NearestQCertificate {
 }
 
 pub(super) struct QEmbeddingOutput {
-    pub(super) sealed: super::emission::SealedQDrawing,
+    pub(super) drawing: super::emission::CompletedQDrawing,
 }
 
 #[derive(Clone, Copy)]

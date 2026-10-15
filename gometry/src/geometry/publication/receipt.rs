@@ -1,8 +1,11 @@
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout, LiteralSequence,
-    ShapeLiteralLayout, ShapeStructure,
+    FlatLiteralLayout, LiteralAddress, LiteralRowLayout, ShapeStructure,
+};
+#[cfg(test)]
+use crate::geometry::embedding_completion::literals::{
+    LiteralPoint, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -11,10 +14,9 @@ use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
 use crate::geometry::topology::{EmissionPortId, QSourceImage};
-use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, Point, Polygon,
-    Ring, Shape,
-};
+#[cfg(test)]
+use crate::geometry::{CoordSeq, CoordinateAxes, Coordinates as _, Point, Polygon, Ring};
+use crate::geometry::{GeometryErrorKind, GeometryKind, Shape};
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -59,18 +61,57 @@ impl PublicationLiteral<ProducerImageId> {
 pub(in crate::geometry) struct ProducerDrawingReceipt {
     pub(super) buffers: FrozenLiteralBuffers<ProducerImageId>,
     pub(super) literals: Vec<ProducerLiteral>,
-    pub(super) retain_literals_for_republication: bool,
 }
 
 impl ProducerDrawingReceipt {
     pub(in crate::geometry) fn point_selection(shape: Shape) -> Result<Self> {
-        let (layout, literals) = Self::point_selection_layout(&shape)?;
+        if !matches!(
+            &shape,
+            Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..)
+        ) {
+            return Err(GeometryErrorKind::Invalid(
+                "point-selection receipt requires a Point, LineString, or Polygon output".into(),
+            )
+            .into());
+        }
+        Self::drawing(shape)
+    }
+
+    pub(in crate::geometry) fn drawing(shape: Shape) -> Result<Self> {
+        let mut layout = FlatLiteralLayout::with_capacity(1);
+        let count = crate::geometry::ShapeCountQuery::default().coordinates(&shape)?;
+        let mut literals = Vec::with_capacity(count);
+        Self::capture_shape(&mut layout, &mut literals, &shape, LiteralAddress {
+            operation: 0,
+            logical_row: 0,
+            group_row: None,
+            value_row: None,
+            output: 0,
+        })?;
         Ok(Self::new(
-            FrozenLiteralBuffers::shapes(shape, layout),
+            FrozenLiteralBuffers::flat_shape(shape, layout),
             literals,
         ))
     }
 
+    pub(in crate::geometry) fn capture_shape(
+        layout: &mut FlatLiteralLayout<ProducerImageId>,
+        literals: &mut Vec<ProducerLiteral>,
+        shape: &Shape,
+        address: LiteralAddress,
+    ) -> Result<()> {
+        layout.capture_shape(shape, address, &mut |address, record| {
+            let index = literals.len();
+            index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let image = ProducerImageId::new(index);
+            literals.push(ProducerLiteral::from_point(address, image, record));
+            Ok(image)
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn point_selection_layout(
         shape: &Shape,
     ) -> Result<(ShapeLiteralLayout<ProducerImageId>, Vec<ProducerLiteral>)> {
@@ -98,25 +139,23 @@ impl ProducerDrawingReceipt {
             )
             .into());
         }
-        let mut next_image = 0;
-        let mut outputs = (0, 0, 0);
-        let (layout, literals) =
-            Self::drawing_layout(&shape, 0, None, None, &mut next_image, &mut outputs)?;
-        Ok(Self::new(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            literals,
-        ))
+        Self::drawing(shape)
     }
 
     pub(in crate::geometry) fn line(shape: Shape) -> Result<Self> {
-        let mut next_image = 0;
-        let (layout, literals) = Self::line_layout(&shape, 0, None, None, 0, &mut next_image)?;
-        Ok(Self::new(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            literals,
-        ))
+        if !matches!(
+            &shape,
+            Shape::LineString(_) | Shape::Empty(GeometryKind::LineString, _)
+        ) {
+            return Err(GeometryErrorKind::Invalid(
+                "producer line receipt requires a LineString output".into(),
+            )
+            .into());
+        }
+        Self::drawing(shape)
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn line_layout(
         shape: &Shape,
         logical_row: usize,
@@ -178,6 +217,7 @@ impl ProducerDrawingReceipt {
         Ok((layout.with_structure(shape), literals))
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn drawing_layout(
         shape: &Shape,
         logical_row: usize,
@@ -332,6 +372,7 @@ impl ProducerDrawingReceipt {
         Ok((layout.with_structure(shape), literals))
     }
 
+    #[cfg(test)]
     fn next_image(next_image: &mut usize) -> Result<ProducerImageId> {
         let index = *next_image;
         *next_image = index
@@ -340,6 +381,7 @@ impl ProducerDrawingReceipt {
         Ok(ProducerImageId::new(index))
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) const fn point_layout(
         point: Point,
         axes: CoordinateAxes,
@@ -369,6 +411,7 @@ impl ProducerDrawingReceipt {
         )
     }
 
+    #[cfg(test)]
     fn sequence_layout(
         coordinates: &CoordSeq,
         logical_row: usize,
@@ -404,6 +447,7 @@ impl ProducerDrawingReceipt {
         ))
     }
 
+    #[cfg(test)]
     fn polygon_layout(
         polygon: &Polygon,
         logical_row: usize,
@@ -438,6 +482,7 @@ impl ProducerDrawingReceipt {
         ))
     }
 
+    #[cfg(test)]
     fn ring_layout(
         ring: &Ring,
         logical_row: usize,
@@ -460,45 +505,53 @@ impl ProducerDrawingReceipt {
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,
     ) -> Self {
-        Self {
-            buffers,
-            literals,
-            retain_literals_for_republication: false,
-        }
-    }
-
-    pub(in crate::geometry) const fn new_for_republication(
-        buffers: FrozenLiteralBuffers<ProducerImageId>,
-        literals: Vec<ProducerLiteral>,
-    ) -> Self {
-        Self {
-            buffers,
-            literals,
-            retain_literals_for_republication: true,
-        }
+        Self { buffers, literals }
     }
 }
 
 pub(crate) struct PendingPublicationRow {
     pub(super) shape: Shape,
     pub(super) logical_row: usize,
-    pub(super) layout: LiteralRowLayout<PublicationImage>,
-    pub(super) checked: Vec<CheckedPublicationLiteral>,
-    pub(super) producer_literals: Vec<ProducerLiteral>,
-    pub(super) producer_drawing: bool,
-    pub(super) work: EvaluationBudget,
+    pub(super) admission: PendingAdmission,
 }
 
-pub(super) struct StoredPublicationRow {
-    pub(super) logical_row: usize,
-    pub(super) layout: LiteralRowLayout<PublicationImage>,
-    pub(super) checked: Vec<CheckedPublicationLiteral>,
-    pub(super) producer_literals: Vec<ProducerLiteral>,
-    pub(super) producer_drawing: bool,
-    pub(super) work: EvaluationBudget,
+#[expect(
+    clippy::large_enum_variant,
+    reason = "pending admission is moved directly into batch storage; boxing would allocate per Q row"
+)]
+pub(super) enum PendingAdmission {
+    Drawing,
+    Checked {
+        layout: LiteralRowLayout<PublicationImage>,
+        records: Vec<CheckedPublicationLiteral>,
+        work: EvaluationBudget,
+        #[cfg(test)]
+        producer_drawing: bool,
+    },
 }
 
 impl PendingPublicationRow {
+    pub(super) fn drawing(
+        shape: Shape,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let count = crate::geometry::ShapeCountQuery::default().coordinates(&shape)?;
+        let mut work = EvaluationBudget::new(operation, count)?;
+        work.charge(
+            u64::try_from(count)
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        Ok(Self {
+            shape,
+            logical_row,
+            admission: PendingAdmission::Drawing,
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn producer_drawing(
         shape: Shape,
         layout: ShapeLiteralLayout<ProducerImageId>,
@@ -519,20 +572,29 @@ impl PendingPublicationRow {
             Ok(PublicationImage::ProducerDrawn(image))
         })?;
         let work = EvaluationBudget::new(operation, producer_literals.len())?;
+        let records = producer_literals
+            .into_iter()
+            .map(|literal| CheckedPublicationLiteral {
+                address: literal.address,
+                image: PublicationImage::ProducerDrawn(literal.image),
+                record: literal.record,
+            })
+            .collect();
         Ok(Self {
             shape,
             logical_row,
-            layout: LiteralRowLayout {
-                operation: 0,
-                logical_row,
-                group_row: None,
-                value_row: None,
-                layout,
+            admission: PendingAdmission::Checked {
+                layout: LiteralRowLayout {
+                    operation: 0,
+                    logical_row,
+                    group_row: None,
+                    value_row: None,
+                    layout,
+                },
+                records,
+                producer_drawing: true,
+                work,
             },
-            checked: Vec::new(),
-            producer_literals,
-            producer_drawing: true,
-            work,
         })
     }
 
@@ -541,48 +603,31 @@ impl PendingPublicationRow {
     }
 
     pub(crate) fn replace_empty_shape(&mut self, shape: Shape) -> Result<()> {
-        if !shape.is_empty() || !self.shape.is_empty() || !self.checked.is_empty() {
+        let has_records = matches!(&self.admission,
+            PendingAdmission::Checked { records, .. } if !records.is_empty());
+        if !shape.is_empty() || !self.shape.is_empty() || has_records {
             return Err(GeometryErrorKind::Invalid(
                 "only an empty pending row can use a typed-empty replacement".into(),
             )
             .into());
         }
         self.shape = shape;
-        self.layout.layout.structure = Some(ShapeStructure::capture(&self.shape));
+        if let PendingAdmission::Checked { layout, .. } = &mut self.admission {
+            layout.layout.structure = Some(ShapeStructure::capture(&self.shape));
+        }
         Ok(())
     }
 
-    pub(super) fn precharge_append(&mut self) -> Result<()> {
-        let literal_count = self
-            .checked
-            .len()
-            .checked_add(self.producer_literals.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let ticks = u64::try_from(literal_count)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        self.work.charge(ticks)
-    }
-
-    pub(super) fn into_stored(self) -> (Shape, StoredPublicationRow) {
-        let Self {
-            shape,
-            logical_row,
-            layout,
-            checked,
-            producer_literals,
-            producer_drawing,
-            work,
-        } = self;
-        (shape, StoredPublicationRow {
-            logical_row,
-            layout,
-            checked,
-            producer_literals,
-            producer_drawing,
-            work,
-        })
+    #[cfg(test)]
+    pub(crate) const fn is_producer_drawing(&self) -> bool {
+        matches!(
+            &self.admission,
+            PendingAdmission::Drawing
+                | PendingAdmission::Checked {
+                    producer_drawing: true,
+                    ..
+                }
+        )
     }
 }
 
@@ -605,8 +650,10 @@ pub(in crate::geometry) struct ArrayPublicationBatch {
     pub(super) storage: std::sync::Arc<GeometryArrayStorage>,
     pub(super) missing: Option<ValidityMask>,
     pub(super) layout: StorageLayout,
-    pub(super) logical_rows: Vec<Option<StoredPublicationRow>>,
-    pub(super) expected_present: Vec<bool>,
+    pub(super) expected: FlatLiteralLayout<PublicationImage>,
+    pub(super) records: Vec<CheckedPublicationLiteral>,
+    pub(super) accounts: Vec<(usize, EvaluationBudget)>,
+    pub(super) drawing_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

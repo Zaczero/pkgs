@@ -247,7 +247,9 @@ impl ArrayRows {
         missing: Option<&ValidityMask>,
         expected_present: impl ExactSizeIterator<Item = bool>,
     ) -> Result<()> {
-        if expected_present.len() != actual_count {
+        if expected_present.len() != actual_count
+            || missing.is_some_and(|mask| mask.len() != actual_count)
+        {
             return Err(GeometryErrorKind::message(
                 "final writer changed the logical output length",
             ));

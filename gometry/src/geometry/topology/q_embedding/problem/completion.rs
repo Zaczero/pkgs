@@ -11,7 +11,6 @@ use super::super::{
     require_q_source_image_port, rounded_chart_point, subgraph_chart,
     validate_native_materialized_candidate, validate_native_sealed_layout,
 };
-use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::work::Work;
 
@@ -22,7 +21,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         features: &[NativeCutFeature],
         feature_candidates: &[QCandidate],
         budget: &mut EvaluationBudget,
-    ) -> Result<Option<super::super::super::emission::CompletedNativeDrawing>> {
+    ) -> Result<Option<super::super::super::emission::CompletedQDrawing>> {
         if reference.feature_nodes.len() != feature_candidates.len()
             || features.len() != feature_candidates.len()
         {
@@ -158,50 +157,13 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             )? {
                 return Ok(None);
             }
-            let producer_receipt =
-                super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
+            return Ok(Some(
+                super::super::super::emission::CompletedQDrawing::Drawing {
                     shape,
-                    literal_uses,
-                    LiteralAddress {
-                        operation: 0,
-                        logical_row: 0,
-                        group_row: None,
-                        value_row: None,
-                        output: 0,
-                    },
-                    self.emission.plan.retain_literals_for_republication,
-                    budget,
-                )?;
-            return match finish_geographic(
-                PublicationCall::new(
-                    ProducerReceipt::ProducerDrawing(producer_receipt),
-                    self.topology.publication_frame().clone(),
-                    budget,
-                ),
-                StorageTarget::Scalar,
-            )? {
-                PublicationOutcome::Pass(sealed) => Ok(Some(
-                    super::super::super::emission::CompletedNativeDrawing {
-                        sealed,
-                        diagnostic_lines,
-                        coverage_receipt,
-                    },
-                )),
-                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-                    Err(GeometryErrorKind::Invalid(
-                        format!(
-                            "pooled Q producer readback changed {} literal images",
-                            images.len()
-                        )
-                        .into(),
-                    )
-                    .into())
+                    frame: self.topology.publication_frame().clone(),
+                    diagnostic_lines,
                 },
-                PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
-                    "pooled Q producer finisher returned a different rejection family".into(),
-                )
-                .into()),
-            };
+            ));
         }
         let receipt = NativeCandidatePublication {
             assignment: &candidate.assignment,
@@ -219,11 +181,12 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             StorageTarget::Scalar,
         )? {
             PublicationOutcome::Pass(sealed) => Ok(Some(
-                super::super::super::emission::CompletedNativeDrawing {
-                    sealed,
-                    diagnostic_lines,
-                    coverage_receipt,
-                },
+                super::super::super::emission::CompletedQDrawing::Native(
+                    super::super::super::emission::CompletedNativeDrawing {
+                        sealed,
+                        coverage_receipt,
+                    },
+                ),
             )),
             PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
             PublicationOutcome::Reject(
@@ -434,7 +397,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             QRingRoleCheck::NativeRequired(_) => true,
             QRingRoleCheck::Reject { .. } => unreachable!("rejected roles returned above"),
         };
-        let sealed = if native_required {
+        let completed = if native_required {
             let budget = budget.budget_mut();
             self.freeze_native_families(budget)?;
             let native_cut_features =
@@ -456,7 +419,8 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     return Ok(GlobalCheck::Reject(classes));
                 },
             };
-            let native = match self.search_native_cut_candidates(
+
+            match self.search_native_cut_candidates(
                 &reference,
                 &native_cut_features,
                 coordinates,
@@ -467,8 +431,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 NativeCutSearchOutcome::Reject(classes) => {
                     return Ok(GlobalCheck::Reject(classes));
                 },
-            };
-            super::super::super::emission::SealedQDrawing::Native(native)
+            }
         } else {
             let QRingRoleCheck::Pass(ring_roles) = &ring_roles else {
                 return Err(GeometryErrorKind::Invalid(
@@ -504,9 +467,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     ordinates: &publication_ordinates,
                     live_samples: &live_publication_samples,
                 };
-            let mut diagnostic_lines = Vec::new();
-            let sealed = if self.emission.plan.producer.is_pooled_linework() {
-                let (shape, layout, source_diagnostic_lines) =
+
+            if self.emission.plan.producer.is_pooled_linework() {
+                let (shape, _layout, source_diagnostic_lines) =
                     self.emission.plan.write_source_drawing_parts(
                         drawing,
                         ring_roles,
@@ -518,46 +481,10 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         self.operation,
                         budget,
                     )?;
-                diagnostic_lines = source_diagnostic_lines;
-                let receipt =
-                    super::super::super::overlay::producer_drawing::receipt_from_shape_layout(
-                        shape,
-                        layout,
-                        LiteralAddress {
-                            operation: 0,
-                            logical_row: 0,
-                            group_row: None,
-                            value_row: None,
-                            output: 0,
-                        },
-                        self.emission.plan.retain_literals_for_republication,
-                        budget,
-                    )?;
-                match finish_geographic(
-                    PublicationCall::new(
-                        ProducerReceipt::ProducerDrawing(receipt),
-                        self.topology.publication_frame().clone(),
-                        budget,
-                    ),
-                    StorageTarget::Scalar,
-                )? {
-                    PublicationOutcome::Pass(finished) => finished,
-                    PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-                        return Err(GeometryErrorKind::Invalid(
-                            format!(
-                                "pooled Q source drawing readback changed {} literal images",
-                                images.len()
-                            )
-                            .into(),
-                        )
-                        .into());
-                    },
-                    PublicationOutcome::Reject(_) => {
-                        return Err(GeometryErrorKind::Invalid(
-                            "pooled Q source finisher returned a different rejection family".into(),
-                        )
-                        .into());
-                    },
+                super::super::super::emission::CompletedQDrawing::Drawing {
+                    shape,
+                    frame: self.topology.publication_frame().clone(),
+                    diagnostic_lines: source_diagnostic_lines,
                 }
             } else {
                 let source = self.emission.plan.seal_source_drawing(
@@ -571,7 +498,6 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     self.operation,
                     budget,
                 )?;
-                diagnostic_lines.clone_from(&source.diagnostic_lines);
                 let receipt = SourceOnlyPublication {
                     source,
                     topology: self.topology,
@@ -582,7 +508,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                     publication_points: &publication_points,
                     publication_ordinates: &publication_ordinates,
                 };
-                match finish_geographic(
+                let sealed = match finish_geographic(
                     PublicationCall::new(
                         ProducerReceipt::QSourceOnly(receipt),
                         self.topology.publication_frame().clone(),
@@ -652,14 +578,13 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         )
                         .into());
                     },
-                }
-            };
-            super::super::super::emission::SealedQDrawing::Source(SealedSourceDrawing {
-                sealed,
-                diagnostic_lines,
-            })
+                };
+                super::super::super::emission::CompletedQDrawing::Source(SealedSourceDrawing {
+                    sealed,
+                })
+            }
         };
-        Ok(GlobalCheck::Pass(QEmbeddingOutput { sealed }))
+        Ok(GlobalCheck::Pass(QEmbeddingOutput { drawing: completed }))
     }
 }
 

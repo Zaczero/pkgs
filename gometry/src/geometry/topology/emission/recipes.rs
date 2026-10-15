@@ -11,12 +11,16 @@ use crate::work::Work;
 
 pub(in crate::geometry::topology) struct SealedSourceDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
-    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
-pub(in crate::geometry::topology) enum SealedQDrawing {
+pub(in crate::geometry::topology) enum CompletedQDrawing {
     Source(SealedSourceDrawing),
     Native(CompletedNativeDrawing),
+    Drawing {
+        shape: crate::geometry::Shape,
+        frame: crate::Frame,
+        diagnostic_lines: Vec<QDiagnosticLine>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

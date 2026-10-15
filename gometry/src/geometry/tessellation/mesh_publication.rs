@@ -5,10 +5,7 @@ use super::prepared_mesh::{
 };
 use crate::Frame;
 use crate::error::Result;
-use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
-    ShapeStructure,
-};
+use crate::geometry::embedding_completion::literals::{FlatLiteralLayout, LiteralAddress};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::publication::{
     FinishedGeometry, ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
@@ -287,9 +284,8 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
 
     let mut points = Vec::new();
     let mut ring_ends = Vec::new();
-    let mut row_map = Vec::new();
+    let mut row_map = FlatLiteralLayout::with_capacity(published.ring_ends.len());
     let mut literals = Vec::new();
-    let mut next_image = 0_usize;
     append_mesh_outputs(
         published,
         None,
@@ -297,11 +293,10 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
         &mut ring_ends,
         &mut row_map,
         &mut literals,
-        &mut next_image,
     )?;
     let storage = mesh_triangle_storage(&points, &ring_ends)?;
     let mut work = Unmetered;
-    let buffers = FrozenLiteralBuffers::rows(
+    let buffers = FrozenLiteralBuffers::flat_rows(
         Arc::new(storage),
         None,
         StorageLayout::LogicalRows,
@@ -340,14 +335,14 @@ pub(crate) fn finish_mesh_publication_groups(
 
     let mut points = Vec::new();
     let mut ring_ends = Vec::new();
-    let mut value_map = Vec::new();
+    let mut value_map = FlatLiteralLayout::with_capacity(0);
     let mut literals = Vec::new();
     let mut offsets = Vec::with_capacity(
         rows.len()
             .checked_add(1)
             .ok_or(crate::error::ResourceError::SizeOverflow)?,
     );
-    let mut next_image = 0_usize;
+    let expected_present = rows.iter().map(Option::is_some).collect();
     offsets.push(0_i64);
     for (group_row, published) in rows.into_iter().enumerate() {
         let is_missing = missing
@@ -367,24 +362,24 @@ pub(crate) fn finish_mesh_publication_groups(
                 &mut ring_ends,
                 &mut value_map,
                 &mut literals,
-                &mut next_image,
             )?;
         }
         offsets.push(
-            i64::try_from(value_map.len())
+            i64::try_from(value_map.rows.len())
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         );
     }
 
     let storage = mesh_triangle_storage(&points, &ring_ends)?;
     let mut work = Unmetered;
-    let buffers = FrozenLiteralBuffers::groups(
+    let buffers = FrozenLiteralBuffers::flat_groups(
         Arc::new(storage),
         None,
         StorageLayout::LogicalRows,
         value_map,
         offsets,
         missing,
+        expected_present,
         &mut work,
     )?;
     let receipt = ProducerDrawingReceipt::new(buffers, literals);
@@ -396,12 +391,11 @@ fn append_mesh_outputs(
     group_row: Option<usize>,
     points: &mut Vec<Point>,
     ring_ends: &mut Vec<usize>,
-    row_map: &mut Vec<Option<LiteralRowLayout<ProducerImageId>>>,
+    row_map: &mut FlatLiteralLayout<ProducerImageId>,
     literals: &mut Vec<ProducerLiteral>,
-    next_image: &mut usize,
 ) -> Result<()> {
     validate_published_mesh(&published)?;
-    if group_row.is_none() && !row_map.is_empty() {
+    if group_row.is_none() && !row_map.rows.is_empty() {
         return Err(GeometryErrorKind::Invalid(
             "a scalar mesh array receipt was appended to existing rows".into(),
         )
@@ -425,7 +419,7 @@ fn append_mesh_outputs(
             .into());
         }
 
-        let value_row = row_map.len();
+        let value_row = row_map.rows.len();
         let logical_row = group_row.unwrap_or(value_row);
         let value_row_address = group_row.map(|_| value_row);
         let address = LiteralAddress {
@@ -435,41 +429,15 @@ fn append_mesh_outputs(
             value_row: value_row_address,
             output: 0,
         };
-        let mut images = Vec::with_capacity(ring.len());
-        for &point in ring {
-            let image = ProducerImageId::new(*next_image);
-            *next_image = (*next_image)
+        row_map.capture_polygon_ring(ring, first.axes, address, &mut |address, point| {
+            let index = literals.len();
+            index
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            images.push(image);
+            let image = ProducerImageId::new(index);
             literals.push(ProducerLiteral::from_point(address, image, point));
-        }
-        let sequence = LiteralSequence {
-            output: 0,
-            axes: first.axes,
-            images,
-        };
-        row_map.push(Some(LiteralRowLayout {
-            operation: 0,
-            logical_row,
-            group_row,
-            value_row: value_row_address,
-            layout: ShapeLiteralLayout {
-                structure: Some(ShapeStructure::primitive(
-                    crate::geometry::GeometryKind::Polygon,
-                    first.axes,
-                    false,
-                )),
-                points: Vec::new(),
-                lines: Vec::new(),
-                polygons: vec![LiteralPolygon {
-                    output: 0,
-                    axes: first.axes,
-                    shell: sequence,
-                    holes: Vec::new(),
-                }],
-            },
-        }));
+            Ok(image)
+        })?;
         ring_ends.push(
             output_base
                 .checked_add(end)

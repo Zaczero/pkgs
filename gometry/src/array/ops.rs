@@ -14,7 +14,7 @@ use crate::array::{
     owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
     row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
-use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_groups};
+use crate::geometry::publication::{PublicationRows, publish_split_groups};
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
@@ -62,7 +62,7 @@ fn publish_split_group_builder(
     missing: Option<ValidityMask>,
 ) -> PyResult<Groups> {
     let (shapes, offsets) = builder.finish();
-    publish_split_groups(shapes, offsets, frame, missing).map_err(PyErr::from)
+    publish_split_groups(shapes, &offsets, frame, missing).map_err(PyErr::from)
 }
 
 fn split_array_groups(
@@ -883,7 +883,8 @@ impl PyGeometryArray {
             let row_count = array.len();
             let finished = py
                 .detach(move || {
-                    let mut writer = geometry::VoronoiDrawingWriter::new_groups();
+                    let mut writer =
+                        geometry::publication::PublicationRows::with_groups_capacity(row_count);
                     for row in array.row_operation().rows_with_missing(|| ()) {
                         let logical = match row {
                             ArrayRow::Missing { logical, .. } => logical,
@@ -902,7 +903,7 @@ impl PyGeometryArray {
                                                 Some(geographic_frame),
                                                 &mut budget,
                                             )?;
-                                        writer.push_polygon_outputs(
+                                        writer.push_voronoi_polygon_outputs(
                                             outputs,
                                             geographic_frame,
                                             &mut budget,
@@ -921,7 +922,7 @@ impl PyGeometryArray {
                             .map_err(|error| (logical, error))?;
                     }
                     writer
-                        .finish_groups(frame, missing)
+                        .finish_groups_geometry(frame, missing)
                         .map_err(|error| (row_count.saturating_sub(1), error))
                 })
                 .map_err(rows_err)?;
@@ -968,7 +969,8 @@ impl PyGeometryArray {
             let row_count = array.len();
             let finished = py
                 .detach(move || {
-                    let mut writer = geometry::VoronoiDrawingWriter::new_groups();
+                    let mut writer =
+                        geometry::publication::PublicationRows::with_groups_capacity(row_count);
                     for row in array.row_operation().rows_with_missing(|| ()) {
                         let logical = match row {
                             ArrayRow::Missing { logical, .. } => logical,
@@ -986,7 +988,7 @@ impl PyGeometryArray {
                                             Some(geographic_frame),
                                             &mut budget,
                                         )?;
-                                        writer.push_edge_column(
+                                        writer.push_voronoi_edge_column(
                                             output,
                                             geographic_frame,
                                             &mut budget,
@@ -1005,7 +1007,7 @@ impl PyGeometryArray {
                             .map_err(|error| (logical, error))?;
                     }
                     writer
-                        .finish_groups(frame, missing)
+                        .finish_groups_geometry(frame, missing)
                         .map_err(|error| (row_count.saturating_sub(1), error))
                 })
                 .map_err(rows_err)?;
@@ -1146,25 +1148,19 @@ impl PyGeometryArray {
                                     domain,
                                     Some(&metric_access),
                                 );
-                                let pending = row
+                                row
                                     .row()
                                     .try_with_shape(|shape| {
-                                        Shape::polygonize_producer_rows(
+                                        Shape::append_polygonize_rows(
                                             &[shape],
                                             false,
                                             &context,
                                             &output_frame,
-                                            logical,
                                             Some(logical),
-                                            Some(publication.next_value_row()),
+                                            &mut publication,
                                         )
                                     })
                                     .map_err(|error| (logical, error))?;
-                                for output in pending {
-                                    publication
-                                        .try_push(GeometryOutput::Pending(output))
-                                        .map_err(|error| (logical, error))?;
-                                }
                                 publication
                                     .end_group(false)
                                     .map_err(|error| (logical, error))?;

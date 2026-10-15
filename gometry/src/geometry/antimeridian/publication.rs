@@ -5,16 +5,17 @@ mod drawing;
 mod restrictions;
 
 pub(super) use capture::SplitCapture;
-pub(crate) use drawing::{SplitArrayPublisher, SplitDrawing};
+pub(crate) use drawing::SplitDrawing;
 pub(super) use restrictions::restriction_for_edge;
 
 #[cfg(test)]
 mod tests {
     use crate::Frame;
+    use crate::geometry::embedding_completion::literals::{FlatLiteralLayout, LiteralAddress};
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::publication::{
-        ProducerDrawingReceipt, ProducerReceipt, PublicationCall, PublicationOutcome,
-        PublicationRejection, StorageTarget, finish_geographic,
+        ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall,
+        PublicationOutcome, PublicationRejection, StorageTarget, finish_geographic,
     };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
@@ -22,6 +23,31 @@ mod tests {
         ZOrdinate,
     };
     use crate::work::Unmetered;
+
+    fn capture(
+        drawing: super::SplitDrawing,
+    ) -> (
+        Shape,
+        FlatLiteralLayout<ProducerImageId>,
+        Vec<ProducerLiteral>,
+    ) {
+        let mut layout = FlatLiteralLayout::with_capacity(1);
+        let mut literals = Vec::new();
+        ProducerDrawingReceipt::capture_shape(
+            &mut layout,
+            &mut literals,
+            &drawing.shape,
+            LiteralAddress {
+                operation: 0,
+                logical_row: 0,
+                group_row: None,
+                value_row: None,
+                output: 0,
+            },
+        )
+        .unwrap();
+        (drawing.shape, layout, literals)
+    }
 
     fn independent_oblique_edge_fraction(
         parameter: f64,
@@ -173,9 +199,8 @@ mod tests {
         .unwrap()
         .orient_geojson()
         .unwrap();
-        let row = drawing.into_row(0, 0).unwrap();
-        let sample = row
-            .literals
+        let (shape, layout, literals) = capture(drawing);
+        let sample = literals
             .iter()
             .find(|literal| literal.record.x.abs() == 200.0 && literal.record.y == 10.0)
             .expect("the hole overlay retains its oblique seam sample");
@@ -190,8 +215,8 @@ mod tests {
             sample.record
         );
 
-        let buffers = FrozenLiteralBuffers::shapes(row.shape, row.layout.layout);
-        let receipt = ProducerDrawingReceipt::new(buffers, row.literals);
+        let buffers = FrozenLiteralBuffers::flat_shape(shape, layout);
+        let receipt = ProducerDrawingReceipt::new(buffers, literals);
         let mut work = Unmetered;
         let outcome = finish_geographic(
             PublicationCall::new(
@@ -258,19 +283,15 @@ mod tests {
         )
         .unwrap();
         let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
-        let mut row = source
-            .split_antimeridian_captured_in_crs84()
-            .unwrap()
-            .into_row(0, 0)
-            .unwrap();
-        let omitted_index = row
-            .literals
+        let drawing = source.split_antimeridian_captured_in_crs84().unwrap();
+        let (shape, layout, mut literals) = capture(drawing);
+        let omitted_index = literals
             .iter()
             .position(|literal| literal.record.y.abs() == 90.0)
             .expect("the XY polar split emits a synthetic pole literal");
-        let omitted = row.literals.remove(omitted_index);
-        let buffers = FrozenLiteralBuffers::shapes(row.shape, row.layout.layout);
-        let receipt = ProducerDrawingReceipt::new(buffers, row.literals);
+        let omitted = literals.remove(omitted_index);
+        let buffers = FrozenLiteralBuffers::flat_shape(shape, layout);
+        let receipt = ProducerDrawingReceipt::new(buffers, literals);
         let mut work = Unmetered;
         let outcome = finish_geographic(
             PublicationCall::new(

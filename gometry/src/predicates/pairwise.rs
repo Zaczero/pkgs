@@ -7,8 +7,8 @@ use crate::geometry::publication::{
 };
 use crate::geometry::storage::validity::union_many;
 use crate::{
-    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py,
-    PyErr, PyGeometry, PyResult, Python, classify_required, crs, exact_geometry_array,
+    Bound, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py, PyErr, PyGeometry,
+    PyResult, Python, classify_required, crs, exact_geometry_array,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
     pyfunction, resolve_metric, validate_dwithin_distance, validate_dwithin_distance_arg,
@@ -630,7 +630,7 @@ pub(crate) fn nearest_points(
                         |source_context| {
                             let mut left_rows = left.row_operation();
                             let mut right_rows = right.row_operation();
-                            left_rows
+                            let pairs = left_rows
                                 .rows_with_missing(|| {
                                     (
                                         None::<(crate::geometry::Point, crate::geometry::Point)>,
@@ -668,14 +668,17 @@ pub(crate) fn nearest_points(
                                             .then_some(source_context),
                                     )
                                     .map(|pair| (pair, common))
-                                })
-                                .collect_rows()
+                                });
+                            nearest_point_columns_masked(pairs, missing.as_ref(), domain)
                         },
                     )
                 })
                 .map_err(crate::broadcast::rows_err)?;
-            nearest_point_columns_masked(pairs, admission.frame, missing, admission.domain)
-                .and_then(|value| value.into_py_any(py))
+            (
+                pairs.0.finish(admission.frame.clone())?,
+                pairs.1.finish(admission.frame)?,
+            )
+                .into_py_any(py)
         },
     }
 }

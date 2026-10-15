@@ -2,10 +2,9 @@ use std::borrow::Borrow;
 
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
-use crate::geometry::publication::PendingPublicationRow;
+use crate::geometry::publication::PublicationRows;
 use crate::geometry::topology::overlay::{
-    QProducer, exact_geographic_linework_finished_from_shapes,
-    exact_geographic_linework_from_shapes,
+    QProducer, exact_geographic_linework_drawing_from_shapes, exact_geographic_linework_from_shapes,
 };
 use crate::geometry::{
     CoordinateAxes, ExpansionBudget, GeometryErrorKind, Polygon, PolygonizeFull, Shape,
@@ -106,37 +105,50 @@ impl Shape {
         )
     }
 
-    pub(crate) fn polygonize_producer_rows<M: crate::geometry::ChartMetric>(
+    pub(crate) fn append_polygonize_rows<M: crate::geometry::ChartMetric>(
         shapes: &[&Self],
         strict: bool,
         context: &SourceArcContext<'_, '_, M>,
         publication_frame: &crate::Frame,
-        base_logical_row: usize,
-        group_row: Option<usize>,
-        value_row_start: Option<usize>,
-    ) -> Result<Vec<PendingPublicationRow>> {
+        logical_row: Option<usize>,
+        output: &mut PublicationRows,
+    ) -> Result<()> {
         let crate::geometry::TopologyDomain::Geographic(_) = context.domain() else {
             return Err(GeometryErrorKind::Invalid(
                 "producer-drawn polygon rows require a geographic source context".into(),
             )
             .into());
         };
-        let (finished, _) = exact_geographic_linework_finished_from_shapes(
+        let (shape, _) = exact_geographic_linework_drawing_from_shapes(
             shapes,
             QProducer::Polygonize,
             false,
             strict,
             context,
             (*publication_frame).clone(),
-            true,
         )?;
-        finished.into_pending_polygon_rows(
-            publication_frame,
-            "polygonize",
-            base_logical_row,
-            group_row,
-            value_row_start,
-        )
+        let mut append = |polygon| {
+            let logical = logical_row.unwrap_or_else(|| output.next_value_row());
+            output.try_push_drawing(Self::Polygon(polygon), logical, "polygonize")
+        };
+        match shape {
+            Self::Polygon(polygon) => append(polygon),
+            Self::MultiPolygon(polygons) => {
+                for polygon in polygons.as_slice() {
+                    append(polygon.clone())?;
+                }
+                Ok(())
+            },
+            Self::Empty(..) => Ok(()),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::GeometryCollection(_) => Err(GeometryErrorKind::Invalid(
+                "polygon publication produced a non-polygonal shape".into(),
+            )
+            .into()),
+        }
     }
 
     /// Assemble noded linework into areal geometry with GEOS `BuildArea`

@@ -196,9 +196,12 @@ fn capture_native_seal(
         match certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget) {
             Err(error) => SealCapture::Failed(error.to_string()),
             Ok(SearchOutcome::Exhausted) => SealCapture::Exhausted,
-            Ok(SearchOutcome::Pass(pass)) => match pass.output.sealed {
-                super::super::emission::SealedQDrawing::Native(_) => SealCapture::Native,
-                super::super::emission::SealedQDrawing::Source(_) => SealCapture::SourceOnly,
+            Ok(SearchOutcome::Pass(pass)) => match pass.output.drawing {
+                super::super::emission::CompletedQDrawing::Native(_) => SealCapture::Native,
+                super::super::emission::CompletedQDrawing::Source(_) => SealCapture::SourceOnly,
+                super::super::emission::CompletedQDrawing::Drawing { .. } => {
+                    SealCapture::Failed("an overlay returned pooled drawing output".into())
+                },
             },
         };
     Ok(PolarCapture {

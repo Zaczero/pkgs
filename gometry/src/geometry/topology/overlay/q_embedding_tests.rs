@@ -203,13 +203,12 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    let super::super::emission::SealedQDrawing::Native(native) = embedding.sealed else {
+    let super::super::emission::CompletedQDrawing::Drawing { diagnostic_lines, .. } = embedding.drawing else {
         panic!("the forced native polygonize plan produces a native drawing");
     };
 
-    assert_eq!(native.diagnostic_lines.len(), 1);
-    let diagnostic = native
-        .diagnostic_lines
+    assert_eq!(diagnostic_lines.len(), 1);
+    let diagnostic = diagnostic_lines
         .first()
         .ok_or_else(|| GeometryErrorKind::Invalid("native Q dangle tag was lost".into()))?;
     assert_eq!(
@@ -344,9 +343,17 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
             .into());
         },
     };
-    let certified = match output.sealed {
-        SealedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
-        SealedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
+    let certified = match output.drawing {
+        CompletedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
+        CompletedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
+        CompletedQDrawing::Drawing { shape, frame, .. } => {
+            use crate::geometry::publication::{ProducerDrawingReceipt, StorageTarget, finish_producer_drawing};
+            finish_producer_drawing(
+                ProducerDrawingReceipt::drawing(shape)?,
+                frame,
+                StorageTarget::Scalar,
+            )?.into_scalar()?.0
+        },
     };
     let expected = crate::io::parse_wkt(
         "POLYGON ((99.9999999999998 80.00000000000007, 100 79.99999999999973, \

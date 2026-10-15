@@ -3,47 +3,14 @@ use std::sync::Arc;
 use super::super::q::{ExactGeographicTopology, QSpanOwner};
 use crate::array::StreamingShapes;
 use crate::error::Result;
-use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout, ShapeStructure,
-};
+use crate::geometry::embedding_completion::literals::{FlatLiteralLayout, LiteralAddress};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::publication::{ProducerDrawingReceipt, ProducerImageId, ProducerLiteral};
+use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::geometry::storage::{StorageLayout, ValidityMask};
 use crate::geometry::{
     CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Segment, Shape, XY,
 };
 use crate::work::Work;
-
-fn draw_line_sequence<W: Work>(
-    line: &LineSeq,
-    logical_row: usize,
-    output: u32,
-    literals: &mut Vec<ProducerLiteral>,
-    work: &mut W,
-) -> Result<LiteralSequence<ProducerImageId>> {
-    work.charge_into_error(
-        u64::try_from(line.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-    )?;
-    let mut images = Vec::with_capacity(line.len());
-    for point in line {
-        let image = ProducerImageId::new(literals.len());
-        let address = LiteralAddress {
-            operation: 0,
-            logical_row,
-            group_row: None,
-            value_row: None,
-            output,
-        };
-        literals.push(ProducerLiteral::from_point(address, image, point));
-        images.push(image);
-    }
-
-    Ok(LiteralSequence {
-        output,
-        axes: line.as_coords().axes(),
-        images,
-    })
-}
 
 pub(super) fn producer_drawing_receipt(
     analysis: &super::GeographicCoverageAnalysis,
@@ -87,30 +54,19 @@ pub(super) fn producer_drawing_receipt(
 
     let mut writer = StreamingShapes::with_capacity(0, shapes.len());
     let logical_count = missing.as_ref().map_or(shapes.len(), ValidityMask::len);
-    let mut row_map = std::iter::repeat_with(|| None)
-        .take(logical_count)
-        .collect::<Vec<_>>();
+    let mut row_map = FlatLiteralLayout::with_capacity(logical_count);
     let mut literals = Vec::new();
     for (shape, logical_row) in shapes.into_iter().zip(logical_rows) {
-        let mut lines = Vec::new();
         match &shape {
-            Shape::LineString(line) => lines.push(draw_line_sequence(
-                line,
-                logical_row,
-                0,
-                &mut literals,
-                work,
-            )?),
+            Shape::LineString(line) => work.charge_into_error(
+                u64::try_from(line.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            )?,
             Shape::MultiLineString(multi_line) => {
-                for (line_output, line) in multi_line.as_slice().iter().enumerate() {
-                    lines.push(draw_line_sequence(
-                        line,
-                        logical_row,
-                        u32::try_from(line_output)
+                for line in multi_line.as_slice() {
+                    work.charge_into_error(
+                        u64::try_from(line.len())
                             .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                        &mut literals,
-                        work,
-                    )?);
+                    )?;
                 }
             },
             Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {},
@@ -133,25 +89,25 @@ pub(super) fn producer_drawing_receipt(
                 .into());
             },
         }
-        *row_map
-            .get_mut(logical_row)
-            .expect("source logical row lies in its admitted domain") = Some(LiteralRowLayout {
-            operation: 0,
-            logical_row,
-            group_row: None,
-            value_row: None,
-            layout: ShapeLiteralLayout {
-                structure: Some(ShapeStructure::capture(&shape)),
-                points: Vec::new(),
-                lines,
-                polygons: Vec::new(),
+        row_map.rows.resize_with(logical_row, || None);
+        ProducerDrawingReceipt::capture_shape(
+            &mut row_map,
+            &mut literals,
+            &shape,
+            LiteralAddress {
+                operation: 0,
+                logical_row,
+                group_row: None,
+                value_row: None,
+                output: 0,
             },
-        });
+        )?;
         writer.try_push(shape)?;
     }
 
+    row_map.rows.resize_with(logical_count, || None);
     let (storage, ..) = writer.finish_parts()?;
-    let buffers = FrozenLiteralBuffers::rows(
+    let buffers = FrozenLiteralBuffers::flat_rows(
         Arc::new(storage),
         missing,
         StorageLayout::PresentOnly,

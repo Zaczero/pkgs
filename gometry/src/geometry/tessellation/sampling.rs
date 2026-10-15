@@ -1,8 +1,5 @@
 use super::{EarcutCornerId, EarcutTriangle, earcut_polygon_with_ids};
-use crate::error::{ResourceError, Result};
-use crate::geometry::publication::{
-    ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
-};
+use crate::error::Result;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
 use crate::py::vectors::Groups;
@@ -181,59 +178,15 @@ pub(crate) fn publish_sampling_array(
     prepared: PreparedSampling,
     frame: Frame,
 ) -> Result<PyGeometryArray> {
-    use std::sync::Arc;
-
-    use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
-    };
-    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
-    use crate::work::Unmetered;
+    use crate::geometry::publication::PublicationRows;
 
     validate_prepared_sampling(&prepared, prepared.logical_row)?;
     let output_count = prepared.draws.len();
-    let mut writer = StreamingShapes::with_capacity(0, output_count);
-    let mut row_map = Vec::with_capacity(output_count);
-    let mut literals = Vec::with_capacity(output_count);
+    let mut rows = PublicationRows::with_producer_drawing_capacity(output_count);
     for (logical_row, draw) in prepared.draws.into_iter().enumerate() {
-        let image = ProducerImageId::new(logical_row);
-        let address = LiteralAddress {
-            operation: 0,
-            logical_row,
-            group_row: None,
-            value_row: None,
-            output: 0,
-        };
-        writer.try_push(Shape::Point(draw.point))?;
-        row_map.push(Some(LiteralRowLayout {
-            operation: 0,
-            logical_row,
-            group_row: None,
-            value_row: None,
-            layout: ShapeLiteralLayout {
-                structure: Some(ShapeStructure::capture(&Shape::Point(draw.point))),
-                points: vec![LiteralPoint {
-                    output: 0,
-                    axes: crate::geometry::CoordinateAxes::from_point(draw.point),
-                    image,
-                }],
-                lines: Vec::new(),
-                polygons: Vec::new(),
-            },
-        }));
-        literals.push(ProducerLiteral::from_point(address, image, draw.point));
+        rows.try_push_drawing(Shape::Point(draw.point), logical_row, "sample_points")?;
     }
-    let (storage, missing, layout) = writer.finish_parts()?;
-    let mut work = Unmetered;
-    let buffers =
-        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals);
-    PyGeometryArray::from_finished(finish_producer_drawing(
-        receipt,
-        frame,
-        StorageTarget::Array,
-    )?)
+    rows.finish(frame)
 }
 
 pub(crate) fn publish_sampling_groups(
@@ -241,21 +194,7 @@ pub(crate) fn publish_sampling_groups(
     frame: Frame,
     missing: Option<ValidityMask>,
 ) -> Result<Groups> {
-    use std::sync::Arc;
-
-    use crate::array::StreamingShapes;
-    use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
-    };
-    use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-    use crate::geometry::publication::{ProducerImageId, ProducerLiteral};
-    use crate::work::Unmetered;
-
-    let output_count = rows.iter().try_fold(0_usize, |total, row| {
-        total
-            .checked_add(row.as_ref().map_or(0, |row| row.draws.len()))
-            .ok_or(ResourceError::SizeOverflow)
-    })?;
+    use crate::geometry::publication::PublicationRows;
     if missing
         .as_ref()
         .is_some_and(|missing| missing.len() != rows.len())
@@ -266,16 +205,7 @@ pub(crate) fn publish_sampling_groups(
         .into());
     }
 
-    let mut writer = StreamingShapes::with_capacity(0, output_count);
-    let offset_count = rows
-        .len()
-        .checked_add(1)
-        .ok_or(ResourceError::SizeOverflow)?;
-    let mut offsets = Vec::with_capacity(offset_count);
-    offsets.push(0_i64);
-    let mut value_map = Vec::with_capacity(output_count);
-    let mut literals = Vec::with_capacity(output_count);
-    let mut value_row = 0_usize;
+    let mut output = PublicationRows::with_groups_capacity(rows.len());
     for (logical_row, prepared) in rows.into_iter().enumerate() {
         let is_missing = missing
             .as_ref()
@@ -289,56 +219,12 @@ pub(crate) fn publish_sampling_groups(
         if let Some(prepared) = prepared {
             validate_prepared_sampling(&prepared, logical_row)?;
             for draw in prepared.draws {
-                let image = ProducerImageId::new(value_row);
-                let address = LiteralAddress {
-                    operation: 0,
-                    logical_row,
-                    group_row: Some(logical_row),
-                    value_row: Some(value_row),
-                    output: 0,
-                };
-                writer.try_push(Shape::Point(draw.point))?;
-                value_map.push(Some(LiteralRowLayout {
-                    operation: 0,
-                    logical_row,
-                    group_row: Some(logical_row),
-                    value_row: Some(value_row),
-                    layout: ShapeLiteralLayout {
-                        structure: Some(ShapeStructure::capture(&Shape::Point(draw.point))),
-                        points: vec![LiteralPoint {
-                            output: 0,
-                            axes: crate::geometry::CoordinateAxes::from_point(draw.point),
-                            image,
-                        }],
-                        lines: Vec::new(),
-                        polygons: Vec::new(),
-                    },
-                }));
-                literals.push(ProducerLiteral::from_point(address, image, draw.point));
-                value_row = value_row
-                    .checked_add(1)
-                    .ok_or(ResourceError::SizeOverflow)?;
+                output.try_push_drawing(Shape::Point(draw.point), logical_row, "sample_points")?;
             }
         }
-        offsets.push(i64::try_from(value_row).map_err(|_| ResourceError::SizeOverflow)?);
+        output.end_group(is_missing)?;
     }
-    let (storage, value_missing, layout) = writer.finish_parts()?;
-    let mut work = Unmetered;
-    let buffers = FrozenLiteralBuffers::groups(
-        Arc::new(storage),
-        value_missing,
-        layout,
-        value_map,
-        offsets,
-        missing,
-        &mut work,
-    )?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals);
-    Groups::from_finished(finish_producer_drawing(
-        receipt,
-        frame,
-        StorageTarget::Groups,
-    )?)
+    output.finish_groups(frame, missing)
 }
 
 /// A common power-of-two factor that keeps weight products finite for

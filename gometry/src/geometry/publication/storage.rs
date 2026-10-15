@@ -3,226 +3,316 @@ use std::sync::Arc;
 use super::binding::CheckedLiteralSnapshot;
 use super::finish::FinishedGeometry;
 use super::receipt::{
-    ArrayPublicationBatch, CheckedPublicationLiteral, GeometryOutput, ProducerDrawingReceipt,
-    ProducerLiteral, ProducerReceipt, PublicationCall, PublicationImage, PublicationOutcome,
-    PublicationRejection, StorageTarget, StoredPublicationRow,
+    ArrayPublicationBatch, CheckedPublicationLiteral, GeometryOutput, PendingAdmission,
+    PendingPublicationRow, ProducerImageId, ProducerReceipt, PublicationCall, PublicationImage,
+    PublicationOutcome, PublicationRejection, StorageTarget,
 };
 use crate::Frame;
-use crate::array::{ComputedCaches, StreamingShapes};
-use crate::error::Result;
+use crate::array::StreamingShapes;
+use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::binding::bind_final_literals;
-use crate::geometry::embedding_completion::literals::LiteralRowLayout;
-use crate::geometry::embedding_completion::storage::{
-    FrozenLiteralBuffers, LiteralCheck, LiteralRowBinding,
+use crate::geometry::embedding_completion::literals::{
+    FlatLiteralLayout, FlatRowBinding, LiteralAddress,
 };
-use crate::geometry::publication::{ProducerImageId, finish_geographic};
-use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
-use crate::geometry::{GeometryErrorKind, ShapeCountQuery};
+use crate::geometry::embedding_completion::storage::{
+    FrozenLiteralBuffers, LiteralCheck, admit_flat_rows,
+};
+use crate::geometry::embedding_search::account::EvaluationBudget;
+use crate::geometry::storage::{ArrayRows, LogicalRow, ShapeRow, ValidityMask};
+use crate::geometry::{Coordinates as _, GeometryErrorKind, Point, Shape, ShapeCountQuery};
 use crate::py::vectors::Groups;
 use crate::work::{Unmetered, Work};
 
+enum ExpectedRows {
+    Unreceipted(Vec<bool>),
+    Checked(FlatLiteralLayout<PublicationImage>),
+}
+
+impl ExpectedRows {
+    const fn len(&self) -> usize {
+        match self {
+            Self::Unreceipted(present) => present.len(),
+            Self::Checked(layout) => layout.rows.len(),
+        }
+    }
+
+    fn checked(&mut self) -> &mut FlatLiteralLayout<PublicationImage> {
+        if let Self::Unreceipted(present) = self {
+            let mut layout = FlatLiteralLayout::with_capacity(present.capacity());
+            layout.rows.extend(
+                present
+                    .iter()
+                    .map(|&present| present.then_some(FlatRowBinding::OtherProducer)),
+            );
+            *self = Self::Checked(layout);
+        }
+        let Self::Checked(layout) = self else {
+            unreachable!("the independent domain was upgraded to checked rows");
+        };
+        layout
+    }
+}
+
 pub(crate) struct PublicationRows {
     writer: StreamingShapes,
-    pending: Vec<StoredPublicationRow>,
-    expected_present: Vec<bool>,
+    expected: ExpectedRows,
+    records: Vec<CheckedPublicationLiteral>,
+    accounts: Vec<(usize, EvaluationBudget)>,
     group_offsets: Option<Vec<i64>>,
     expected_group_present: Vec<bool>,
-    value_count: usize,
     producer_drawing_required: bool,
-    has_unreceipted_output: bool,
+    drawing_only: bool,
 }
 
 impl PublicationRows {
     pub(crate) fn with_capacity(rows: usize) -> Self {
         Self {
             writer: StreamingShapes::with_capacity(0, rows),
-            pending: Vec::new(),
-            expected_present: Vec::with_capacity(rows),
+            expected: ExpectedRows::Unreceipted(Vec::with_capacity(rows)),
+            records: Vec::new(),
+            accounts: Vec::new(),
             group_offsets: None,
             expected_group_present: Vec::new(),
-            value_count: 0,
             producer_drawing_required: false,
-            has_unreceipted_output: false,
+            drawing_only: true,
         }
     }
 
     pub(crate) fn with_producer_drawing_capacity(rows: usize) -> Self {
-        let mut output = Self::with_capacity(rows);
-        output.producer_drawing_required = true;
-        output
+        Self {
+            writer: StreamingShapes::with_capacity(0, rows),
+            expected: ExpectedRows::Checked(FlatLiteralLayout::with_capacity(rows)),
+            producer_drawing_required: true,
+            ..Self::with_capacity(0)
+        }
     }
 
     pub(crate) fn with_groups_capacity(groups: usize) -> Self {
+        let mut output = Self::with_producer_drawing_capacity(0);
         let mut offsets = Vec::with_capacity(groups.saturating_add(1));
         offsets.push(0);
-        Self {
-            writer: StreamingShapes::with_capacity(0, 0),
-            pending: Vec::new(),
-            expected_present: Vec::new(),
-            group_offsets: Some(offsets),
-            expected_group_present: Vec::with_capacity(groups),
-            value_count: 0,
-            producer_drawing_required: true,
-            has_unreceipted_output: false,
+        output.group_offsets = Some(offsets);
+        output.expected_group_present = Vec::with_capacity(groups);
+        output
+    }
+
+    fn next_address(&self, logical_row: usize) -> LiteralAddress {
+        LiteralAddress {
+            operation: 0,
+            logical_row,
+            group_row: self.group_offsets.as_ref().map(|_| logical_row),
+            value_row: self.group_offsets.as_ref().map(|_| self.expected.len()),
+            output: 0,
         }
+    }
+
+    fn capture_shape(&mut self, address: LiteralAddress, shape: &Shape) -> Result<()> {
+        let records = &mut self.records;
+        let layout = self.expected.checked();
+        if records.is_empty() {
+            records.reserve_exact(layout.rows.capacity());
+        }
+        layout.capture_shape(shape, address, &mut |address, record| {
+            capture_record(records, address, record)
+        })
+    }
+
+    pub(crate) fn try_push_drawing(
+        &mut self,
+        shape: Shape,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<()> {
+        self.try_push(GeometryOutput::Pending(PendingPublicationRow::drawing(
+            shape,
+            logical_row,
+            operation,
+        )?))
+    }
+
+    pub(in crate::geometry) fn try_push_drawing_line(
+        &mut self,
+        row: ShapeRow<'_>,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<()> {
+        let coordinates = row
+            .line_coords()
+            .ok_or_else(|| invalid("drawing line has no coordinate window"))?;
+        let count = coordinates.coord_count();
+        let mut work = EvaluationBudget::new(operation, count)?;
+        work.charge(
+            u64::try_from(count)
+                .map_err(|_| ResourceError::SizeOverflow)?
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        )?;
+        let address = self.next_address(logical_row);
+        let records = &mut self.records;
+        let layout = self.expected.checked();
+        if records.is_empty() {
+            records.reserve_exact(layout.rows.capacity());
+        }
+        layout.capture_line(&coordinates, row.axes(), address, &mut |address, record| {
+            capture_record(records, address, record)
+        })?;
+        self.writer.try_push_row(Some(row))
     }
 
     pub(crate) fn try_push(&mut self, output: GeometryOutput) -> Result<()> {
         match output {
             GeometryOutput::Shape(shape) => {
+                match &mut self.expected {
+                    ExpectedRows::Unreceipted(present) => present.push(true),
+                    ExpectedRows::Checked(layout) => {
+                        layout.rows.push(Some(FlatRowBinding::OtherProducer));
+                    },
+                }
+                self.drawing_only = false;
                 self.writer.try_push(shape)?;
-                self.has_unreceipted_output = true;
             },
-            GeometryOutput::Pending(mut pending) => {
-                pending.precharge_append()?;
-                let (shape, stored) = pending.into_stored();
+            GeometryOutput::Pending(PendingPublicationRow {
+                shape,
+                logical_row,
+                admission,
+            }) => {
+                match admission {
+                    PendingAdmission::Drawing => {
+                        self.capture_shape(self.next_address(logical_row), &shape)?;
+                    },
+                    PendingAdmission::Checked {
+                        layout,
+                        records,
+                        mut work,
+                        #[cfg(test)]
+                        producer_drawing,
+                    } => {
+                        #[cfg(not(test))]
+                        let producer_drawing = false;
+                        let ticks = u64::try_from(records.len())
+                            .map_err(|_| ResourceError::SizeOverflow)?
+                            .checked_add(1)
+                            .ok_or(ResourceError::SizeOverflow)?;
+                        work.charge(ticks)?;
+                        if layout.logical_row != logical_row {
+                            return Err(invalid(
+                                "pending row changed its accepted logical address",
+                            ));
+                        }
+                        let index = self.expected.len();
+                        self.expected.checked().push_layout(layout)?;
+                        self.records.extend(records);
+                        if !producer_drawing {
+                            self.accounts.push((index, work));
+                            self.drawing_only = false;
+                        }
+                    },
+                }
                 self.writer.try_push(shape)?;
-                self.has_unreceipted_output |= !stored.producer_drawing;
-                self.pending.push(stored);
             },
         }
-        self.expected_present.push(true);
-        self.value_count = self
-            .value_count
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     }
 
     pub(crate) fn try_push_missing(&mut self) -> Result<()> {
         if self.group_offsets.is_some() {
-            return Err(GeometryErrorKind::Invalid(
-                "a missing group cannot be stored as a missing geometry value".into(),
-            )
-            .into());
+            return Err(invalid(
+                "a missing group cannot be stored as a missing geometry value",
+            ));
         }
-        self.writer.try_push_missing()?;
-        self.expected_present.push(false);
-        Ok(())
+        match &mut self.expected {
+            ExpectedRows::Unreceipted(present) => present.push(false),
+            ExpectedRows::Checked(layout) => layout.rows.push(None),
+        }
+        self.writer.try_push_missing()
     }
 
     pub(crate) fn end_group(&mut self, missing: bool) -> Result<()> {
-        let offsets = self.group_offsets.as_mut().ok_or_else(|| {
-            GeometryErrorKind::Invalid("only a Groups publication has group boundaries".into())
-        })?;
-        offsets.push(
-            i64::try_from(self.value_count)
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-        );
+        let count = self.expected.len();
+        let offsets = self
+            .group_offsets
+            .as_mut()
+            .ok_or_else(|| invalid("only a Groups publication has group boundaries"))?;
+        offsets.push(i64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?);
         self.expected_group_present.push(!missing);
         Ok(())
     }
 
     pub(crate) const fn next_value_row(&self) -> usize {
-        self.value_count
+        self.expected.len()
+    }
+
+    pub(in crate::geometry) const fn next_group_row(&self) -> usize {
+        self.expected_group_present.len()
+    }
+
+    pub(in crate::geometry) const fn next_drawing_row(&self) -> usize {
+        if self.group_offsets.is_some() {
+            self.next_group_row()
+        } else {
+            self.next_value_row()
+        }
     }
 
     pub(crate) fn finish(self, frame: Frame) -> Result<crate::PyGeometryArray> {
+        crate::PyGeometryArray::from_finished(self.finish_geometry(frame)?)
+    }
+
+    pub(crate) fn finish_geometry(self, frame: Frame) -> Result<FinishedGeometry> {
         if self.group_offsets.is_some() {
-            return Err(GeometryErrorKind::Invalid(
-                "a Groups publication must finish through finish_groups".into(),
-            )
-            .into());
-        }
-        let producer_drawing = self.producer_drawing_required
-            || (!self.pending.is_empty()
-                && !self.has_unreceipted_output
-                && self.pending.iter().all(|pending| pending.producer_drawing));
-        if self.pending.is_empty() && !producer_drawing {
-            let (storage, missing, layout) = self.writer.finish_parts()?;
-            ArrayRows::validate_publication_domain(
-                missing.as_ref().map_or(storage.len(), ValidityMask::len),
-                missing.as_ref(),
-                self.expected_present.into_iter(),
-            )?;
-            return crate::PyGeometryArray::from_result_storage(
-                Arc::new(storage),
-                frame,
-                missing,
-                layout,
-                ComputedCaches::fresh(),
-            );
+            return Err(invalid(
+                "a Groups publication must finish through finish_groups",
+            ));
         }
         let (storage, missing, layout) = self.writer.finish_parts()?;
-        let logical_count = missing.as_ref().map_or(storage.len(), ValidityMask::len);
-        ArrayRows::validate_publication_domain(
-            logical_count,
-            missing.as_ref(),
-            self.expected_present.iter().copied(),
-        )?;
-        let mut logical_rows = std::iter::repeat_with(|| None)
-            .take(logical_count)
-            .collect::<Vec<Option<StoredPublicationRow>>>();
-        for pending in self.pending {
-            let logical = pending.logical_row;
-            let slot = logical_rows.get_mut(logical).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q output row is outside final array storage".into())
-            })?;
-            if slot.is_some() {
-                return Err(GeometryErrorKind::Invalid(
-                    "multiple Q receipts claim one final array row".into(),
-                )
-                .into());
-            }
-            *slot = Some(pending);
-        }
-        if producer_drawing {
-            if self.has_unreceipted_output {
-                return Err(GeometryErrorKind::Invalid(
-                    "producer-drawn array publication contains an output without a receipt".into(),
-                )
-                .into());
-            }
-            return finish_producer_array(storage, missing, layout, logical_rows, frame);
+        let expected = match self.expected {
+            ExpectedRows::Checked(expected) => expected,
+            ExpectedRows::Unreceipted(present) => {
+                ArrayRows::validate_publication_domain(
+                    missing.as_ref().map_or(storage.len(), ValidityMask::len),
+                    missing.as_ref(),
+                    present.into_iter(),
+                )?;
+                return Ok(FinishedGeometry::from_admitted_rows(
+                    ArrayRows::admit(Arc::new(storage), missing, layout)?,
+                    frame,
+                ));
+            },
+        };
+        if self.producer_drawing_required
+            && expected
+                .rows
+                .iter()
+                .any(|row| matches!(row, Some(FlatRowBinding::OtherProducer)))
+        {
+            return Err(invalid(
+                "producer-drawn publication contains an output without a receipt",
+            ));
         }
         let batch = ArrayPublicationBatch {
             storage: Arc::new(storage),
             missing,
             layout,
-            logical_rows,
-            expected_present: self.expected_present,
+            expected,
+            records: self.records,
+            accounts: self.accounts,
+            drawing_only: self.drawing_only,
         };
-        let mut unmetered = Unmetered;
+        let mut work = Unmetered;
         match super::finish::finish_geographic(
-            PublicationCall::new(ProducerReceipt::ArrayBatch(batch), frame, &mut unmetered),
+            PublicationCall::new(ProducerReceipt::ArrayBatch(batch), frame, &mut work),
             StorageTarget::Array,
         )? {
-            PublicationOutcome::Pass(finished) => {
-                let (rows, frame) = finished.into_array()?;
-                Ok(crate::PyGeometryArray::from_admitted_rows(
-                    rows,
-                    frame,
-                    ComputedCaches::fresh(),
-                ))
-            },
-            PublicationOutcome::Reject(PublicationRejection::Batch(images)) => {
-                Err(GeometryErrorKind::Invalid(
-                    format!(
-                        "final array writer changed {} checked Q output records",
-                        images.len()
-                    )
-                    .into(),
-                )
-                .into())
-            },
-            PublicationOutcome::Reject(PublicationRejection::Native) => {
-                Err(GeometryErrorKind::Invalid(
-                    "array publication finisher returned a Native candidate rejection".into(),
-                )
-                .into())
-            },
-            PublicationOutcome::Reject(PublicationRejection::SourceOnly(_)) => {
-                Err(GeometryErrorKind::Invalid(
-                    "array publication finisher returned a SourceOnly candidate rejection".into(),
-                )
-                .into())
-            },
-            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
-                Err(GeometryErrorKind::Invalid(
-                    "array publication finisher returned a producer-drawn rejection".into(),
-                )
-                .into())
-            },
+            PublicationOutcome::Pass(finished) => Ok(finished),
+            PublicationOutcome::Reject(PublicationRejection::Batch(images)) => Err(
+                changed_records("array", "checked Q output records", images.len()),
+            ),
+            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => Err(
+                changed_records("array", "producer literal images", images.len()),
+            ),
+            PublicationOutcome::Reject(_) => Err(invalid(
+                "array publication returned a geometric admission rejection",
+            )),
         }
     }
 
@@ -231,167 +321,65 @@ impl PublicationRows {
         frame: Frame,
         missing: Option<ValidityMask>,
     ) -> Result<Groups> {
-        let Some(group_offsets) = self.group_offsets else {
-            return Err(GeometryErrorKind::Invalid(
-                "an ArrayRows publication has no group offsets".into(),
-            )
-            .into());
+        Groups::from_finished(self.finish_groups_geometry(frame, missing)?)
+    }
+
+    pub(crate) fn finish_groups_geometry(
+        self,
+        frame: Frame,
+        missing: Option<ValidityMask>,
+    ) -> Result<FinishedGeometry> {
+        let offsets = self
+            .group_offsets
+            .ok_or_else(|| invalid("an ArrayRows publication has no group offsets"))?;
+        if !self.producer_drawing_required || !self.drawing_only || !self.accounts.is_empty() {
+            return Err(invalid(
+                "Groups publication requires producer-drawn receipts",
+            ));
+        }
+        let ExpectedRows::Checked(expected) = self.expected else {
+            return Err(invalid("Groups publication has no accepted value domain"));
         };
-        if self.has_unreceipted_output {
-            return Err(GeometryErrorKind::Invalid(
-                "producer-drawn Groups publication contains an output without a receipt".into(),
-            )
-            .into());
+        if expected
+            .rows
+            .iter()
+            .any(|row| !matches!(row, Some(FlatRowBinding::Checked(_))))
+        {
+            return Err(invalid(
+                "producer-drawn Groups storage is missing a value receipt",
+            ));
         }
-        if !self.producer_drawing_required {
-            return Err(GeometryErrorKind::Invalid(
-                "Groups publication requires producer-drawn receipts".into(),
-            )
-            .into());
-        }
-        if self.pending.len() != self.value_count {
-            return Err(GeometryErrorKind::Invalid(
-                "producer-drawn Groups storage is missing a value receipt".into(),
-            )
-            .into());
-        }
-        let group_count = group_offsets
+        let group_count = offsets
             .len()
             .checked_sub(1)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Groups offsets have no origin".into()))?;
+            .ok_or_else(|| invalid("Groups offsets have no origin"))?;
         ArrayRows::validate_publication_domain(
             group_count,
             missing.as_ref(),
-            self.expected_group_present.into_iter(),
+            self.expected_group_present.iter().copied(),
         )?;
-        if missing
-            .as_ref()
-            .is_some_and(|mask| mask.len() != group_count)
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "Groups offsets do not match their logical rows".into(),
-            )
-            .into());
-        }
-        let (storage, value_missing, layout) = self.writer.finish_parts()?;
-        ArrayRows::validate_publication_domain(
-            value_missing
-                .as_ref()
-                .map_or(storage.len(), ValidityMask::len),
-            value_missing.as_ref(),
-            self.expected_present.into_iter(),
-        )?;
-        let mut row_map = std::iter::repeat_with(|| None)
-            .take(storage.len())
-            .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
-        let literals = collect_producer_rows(self.pending, &mut row_map, |pending| {
-            pending.layout.value_row.ok_or_else(|| {
-                GeometryErrorKind::Invalid("producer-drawn group value has no value row".into())
-                    .into()
-            })
-        })?;
+        let (storage, value_missing, storage_layout) = self.writer.finish_parts()?;
         let mut work = Unmetered;
-        let buffers = FrozenLiteralBuffers::groups(
+        let buffers = FrozenLiteralBuffers::flat_groups(
             Arc::new(storage),
             value_missing,
-            layout,
-            row_map,
-            group_offsets,
+            storage_layout,
+            expected,
+            offsets,
             missing,
+            self.expected_group_present,
             &mut work,
         )?;
-        let receipt = ProducerDrawingReceipt::new(buffers, literals);
-        match finish_geographic(
-            PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
-            StorageTarget::Groups,
-        )? {
-            PublicationOutcome::Pass(finished) => Groups::from_finished(finished),
-            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-                Err(GeometryErrorKind::Invalid(
-                    format!(
-                        "final Groups writer changed {} producer literal images",
-                        images.len()
-                    )
-                    .into(),
-                )
-                .into())
-            },
-            PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
-                "Groups publication finisher returned a different rejection family".into(),
-            )
-            .into()),
+        let mut receiver = CheckedLiteralSnapshot::new(self.records)?;
+        match bind_final_literals(buffers, &mut receiver, &mut work)? {
+            LiteralCheck::Pass(sealed) => FinishedGeometry::from_sealed(sealed, frame, Ok),
+            LiteralCheck::Reject(images) => Err(changed_records(
+                "Groups",
+                "producer literal images",
+                images.len(),
+            )),
         }
     }
-}
-
-fn finish_producer_array(
-    storage: GeometryArrayStorage,
-    missing: Option<ValidityMask>,
-    layout: StorageLayout,
-    logical_rows: Vec<Option<StoredPublicationRow>>,
-    frame: Frame,
-) -> Result<crate::PyGeometryArray> {
-    let mut row_map = std::iter::repeat_with(|| None)
-        .take(logical_rows.len())
-        .collect::<Vec<Option<LiteralRowLayout<ProducerImageId>>>>();
-    let literals = collect_producer_rows(
-        logical_rows.into_iter().flatten(),
-        &mut row_map,
-        |pending| Ok(pending.logical_row),
-    )?;
-    let mut work = Unmetered;
-    let buffers =
-        FrozenLiteralBuffers::rows(Arc::new(storage), missing, layout, row_map, &mut work)?;
-    let receipt = ProducerDrawingReceipt::new(buffers, literals);
-    match finish_geographic(
-        PublicationCall::new(ProducerReceipt::ProducerDrawing(receipt), frame, &mut work),
-        StorageTarget::Array,
-    )? {
-        PublicationOutcome::Pass(finished) => crate::PyGeometryArray::from_finished(finished),
-        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-            Err(GeometryErrorKind::Invalid(
-                format!(
-                    "final array writer changed {} producer literal images",
-                    images.len()
-                )
-                .into(),
-            )
-            .into())
-        },
-        PublicationOutcome::Reject(_) => Err(GeometryErrorKind::Invalid(
-            "array publication finisher returned a different rejection family".into(),
-        )
-        .into()),
-    }
-}
-
-fn collect_producer_rows(
-    pending_rows: impl IntoIterator<Item = StoredPublicationRow>,
-    row_map: &mut [Option<LiteralRowLayout<ProducerImageId>>],
-    row_index: impl Fn(&StoredPublicationRow) -> Result<usize>,
-) -> Result<Vec<ProducerLiteral>> {
-    let mut literals = Vec::new();
-    for pending in pending_rows {
-        if !pending.producer_drawing {
-            return Err(GeometryErrorKind::Invalid(
-                "publication row lost its producer-drawn receipt".into(),
-            )
-            .into());
-        }
-        let row = row_index(&pending)?;
-        let slot = row_map.get_mut(row).ok_or_else(|| {
-            GeometryErrorKind::Invalid("producer-drawn row is outside final storage".into())
-        })?;
-        if slot.is_some() {
-            return Err(GeometryErrorKind::Invalid(
-                "multiple producer receipts claim one final storage row".into(),
-            )
-            .into());
-        }
-        *slot = Some(super::finish::producer_row_layout(pending.layout)?);
-        literals.extend(pending.producer_literals);
-    }
-    Ok(literals)
 }
 
 pub(super) fn finish_array_batch<W: Work>(
@@ -399,130 +387,100 @@ pub(super) fn finish_array_batch<W: Work>(
     frame: Frame,
     work: &mut W,
 ) -> Result<PublicationOutcome> {
-    let logical_count = batch
-        .missing
-        .as_ref()
-        .map_or_else(|| batch.storage.len(), ValidityMask::len);
-    if batch.logical_rows.len() != logical_count {
-        return Err(GeometryErrorKind::Invalid(
-            "array publication receipts do not match the logical output length".into(),
-        )
-        .into());
-    }
-    ArrayRows::validate_publication_domain(
-        logical_count,
-        batch.missing.as_ref(),
-        batch.expected_present.into_iter(),
-    )?;
-
-    let mut row_map = Vec::with_capacity(logical_count);
-    let mut pending_rows = Vec::new();
-    let mut present_row = 0_usize;
-    for (logical, pending) in batch.logical_rows.into_iter().enumerate() {
-        work.charge_into_error(1)?;
-        let missing = batch
-            .missing
-            .as_ref()
-            .is_some_and(|mask| mask.is_missing(logical));
-        if missing {
-            if pending.is_some() {
-                return Err(GeometryErrorKind::Invalid(
-                    "missing array row retained a checked publication receipt".into(),
-                )
-                .into());
-            }
-            row_map.push(None);
-            continue;
-        }
-
-        let storage_row = if batch.layout == StorageLayout::PresentOnly {
-            let row = present_row;
-            present_row = present_row
-                .checked_add(1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            row
-        } else {
-            logical
-        };
-        if let Some(pending) = pending {
-            if pending.logical_row != logical || pending.layout.logical_row != logical {
-                return Err(GeometryErrorKind::Invalid(
-                    "pending Q row no longer matches its admitted operation slot".into(),
-                )
-                .into());
-            }
-
-            if storage_row >= batch.storage.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "pending Q row is outside final writer storage".into(),
-                )
-                .into());
-            }
-            let coordinates = batch
-                .storage
-                .row(storage_row)
-                .coordinates(&mut ShapeCountQuery::default())?;
-            let admission_ticks = u64::try_from(coordinates)
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?
-                .checked_add(3)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            let mut pending = pending;
-            pending.work.charge_into_error(admission_ticks)?;
-            let producer_count = pending.producer_literals.len();
-            pending.work.charge_into_error(
-                u64::try_from(producer_count)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-            )?;
-            pending.checked.try_reserve(producer_count).map_err(|_| {
-                crate::error::ResourceError::SizeOverflowContext(
-                    "publication literal reservation failed",
-                )
-            })?;
-            pending
-                .checked
-                .extend(pending.producer_literals.into_iter().map(|literal| {
-                    CheckedPublicationLiteral {
-                        address: literal.address,
-                        image: PublicationImage::ProducerDrawn(literal.image),
-                        record: literal.record,
-                    }
-                }));
-            row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
-            pending_rows.push((logical, pending.checked, pending.work));
-        } else {
-            row_map.push(Some(LiteralRowBinding::OtherProducer));
-        }
-    }
-
+    let ArrayPublicationBatch {
+        storage,
+        missing,
+        layout,
+        mut expected,
+        records,
+        accounts,
+        drawing_only,
+    } = batch;
     let mut unmetered = Unmetered;
-    let (rows, row_map) = ArrayRows::admit_with_row_map(
-        batch.storage,
-        batch.missing,
-        batch.layout,
-        row_map,
-        &mut unmetered,
-    )?;
-    let row_map = Arc::from(row_map);
-    for (logical_row, records, mut row_work) in pending_rows {
-        let buffers = FrozenLiteralBuffers::admitted_row_view(
-            rows.clone(),
-            Arc::clone(&row_map),
-            logical_row,
-        )?;
-        let mut receiver = CheckedLiteralSnapshot::new(records)?;
-        match bind_final_literals(buffers, &mut receiver, &mut row_work)? {
-            LiteralCheck::Pass(_) => {},
-            LiteralCheck::Reject(images) => {
-                return Ok(PublicationOutcome::Reject(PublicationRejection::Batch(
-                    images,
-                )));
-            },
+    let rows = admit_flat_rows(storage, missing, layout, &mut expected, &mut unmetered)?;
+    let expected = Arc::new(expected);
+    let mut receiver = CheckedLiteralSnapshot::new(records)?;
+    let mut accounts = accounts.into_iter().peekable();
+    for logical in 0..rows.len() {
+        work.charge_into_error(1)?;
+        let check = if accounts.peek().is_some_and(|(row, _)| *row == logical) {
+            let (_, mut row_work) = accounts.next().expect("the account was peeked");
+            let Some(LogicalRow::Present { row, .. }) = rows.logical_row(logical) else {
+                return Err(invalid("checked Q account has no present final row"));
+            };
+            let coordinates = row.coordinates(&mut ShapeCountQuery::default())?;
+            row_work.charge_into_error(
+                u64::try_from(coordinates)
+                    .map_err(|_| ResourceError::SizeOverflow)?
+                    .checked_add(3)
+                    .ok_or(ResourceError::SizeOverflow)?,
+            )?;
+            let buffers = FrozenLiteralBuffers::admitted_row_view(
+                rows.clone(),
+                Arc::clone(&expected),
+                logical,
+            )?;
+            bind_final_literals(buffers, &mut receiver, &mut row_work)?
+        } else {
+            let buffers = FrozenLiteralBuffers::admitted_row_view(
+                rows.clone(),
+                Arc::clone(&expected),
+                logical,
+            )?;
+            bind_final_literals(buffers, &mut receiver, &mut unmetered)?
+        };
+        if let LiteralCheck::Reject(images) = check {
+            let rejection = if drawing_only {
+                PublicationRejection::ProducerDrawing(
+                    images
+                        .into_iter()
+                        .map(|image| match image {
+                            PublicationImage::ProducerDrawn(image) => Ok(image),
+                            PublicationImage::Native(_) | PublicationImage::SourceOnly(_) => {
+                                Err(invalid("drawing publication contains a Q image"))
+                            },
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                )
+            } else {
+                PublicationRejection::Batch(images)
+            };
+            return Ok(PublicationOutcome::Reject(rejection));
         }
     }
-
+    if accounts.next().is_some() {
+        return Err(invalid(
+            "Q work account is outside the final logical domain",
+        ));
+    }
     Ok(PublicationOutcome::Pass(
         FinishedGeometry::from_admitted_rows(rows, frame),
     ))
+}
+
+fn invalid(message: &'static str) -> crate::error::Error {
+    GeometryErrorKind::Invalid(message.into()).into()
+}
+
+fn capture_record(
+    records: &mut Vec<CheckedPublicationLiteral>,
+    address: LiteralAddress,
+    record: Point,
+) -> Result<PublicationImage> {
+    let index = records.len();
+    index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    let image = PublicationImage::ProducerDrawn(ProducerImageId::new(index));
+    records.push(CheckedPublicationLiteral {
+        address,
+        image,
+        record,
+    });
+    Ok(image)
+}
+
+fn changed_records(target: &'static str, kind: &'static str, count: usize) -> crate::error::Error {
+    GeometryErrorKind::Invalid(format!("final {target} writer changed {count} {kind}").into())
+        .into()
 }
 
 #[cfg(test)]
@@ -531,19 +489,80 @@ mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::super::receipt::PendingPublicationRow;
+    use super::super::receipt::ProducerDrawingReceipt;
     use super::*;
     use crate::crs::frame::crs_arc_static;
     use crate::dispatch::kernels::unary_convex_hull_array;
     use crate::geometry::embedding_completion::literals::{
-        LiteralAddress, LiteralPoint, ShapeLiteralLayout, ShapeStructure,
+        LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
     };
-    use crate::geometry::embedding_search::account::EvaluationBudget;
     use crate::geometry::topology::QSourceImage;
-    use crate::geometry::{CoordinateAxes, MOrdinate, Point, Shape, ZOrdinate};
+    use crate::geometry::{CoordinateAxes, MOrdinate, ZOrdinate};
 
+    fn small_voronoi_writer() -> PublicationRows {
+        use crate::geographic::GeographicFrame;
+        use crate::geometry::{ExpansionBudget, VoronoiBoundary};
+        let source = Shape::MultiPoint(
+            vec![
+                Point::new_raw_xy(-1.0, -1.0),
+                Point::new_raw_xy(1.0, -1.0),
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(-1.0, 1.0),
+            ]
+            .into(),
+        );
+        let frame = GeographicFrame::crs84();
+        let mut budget = ExpansionBudget::new("voronoi_cells", "mesh receipt omission");
+        let outputs = source
+            .voronoi_polygon_outputs_in_frame_budgeted(
+                0.0,
+                VoronoiBoundary::Padded,
+                Some(frame),
+                &mut budget,
+            )
+            .unwrap();
+        let mut writer = PublicationRows::with_producer_drawing_capacity(0);
+        writer
+            .push_voronoi_polygon_outputs(outputs, frame, &mut budget)
+            .unwrap();
+        writer
+    }
+
+    #[test]
+    fn voronoi_receipt_omission_is_rejected_by_final_readback() {
+        let (control_values, _) = small_voronoi_writer()
+            .finish_geometry(Frame::None)
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert_eq!(control_values.len(), 4);
+        let mut writer = small_voronoi_writer();
+        writer.records.pop().expect("Voronoi output has literals");
+        match writer.finish_geometry(Frame::None) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            )),
+            Ok(_) => panic!("the shared readback rejects a missing Voronoi literal"),
+        }
+    }
     fn xyzm(x: f64, y: f64, z: f64, m: f64) -> Point {
         Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
+    }
+
+    fn captured(
+        pending: &mut PendingPublicationRow,
+    ) -> (
+        &mut LiteralRowLayout<PublicationImage>,
+        &mut Vec<CheckedPublicationLiteral>,
+    ) {
+        let PendingAdmission::Checked {
+            layout, records, ..
+        } = &mut pending.admission
+        else {
+            panic!("the fixture owns an independently captured drawing");
+        };
+        (layout, records)
     }
 
     fn drawing_pending(shape: Shape, row: usize) -> PendingPublicationRow {
@@ -594,9 +613,12 @@ mod tests {
             (vec![true, false], vec![true]),
         ] {
             let correct = expected == actual;
-            let logical_rows = std::iter::repeat_with(|| None)
-                .take(expected.len())
-                .collect();
+            let mut domain = FlatLiteralLayout::with_capacity(expected.len());
+            domain.rows.extend(
+                expected
+                    .into_iter()
+                    .map(|present| present.then_some(FlatRowBinding::OtherProducer)),
+            );
             let mut writer = StreamingShapes::with_capacity(0, actual.len());
             for present in actual {
                 if present {
@@ -610,8 +632,10 @@ mod tests {
                 storage: Arc::new(storage),
                 missing,
                 layout,
-                logical_rows,
-                expected_present: expected,
+                expected: domain,
+                records: Vec::new(),
+                accounts: Vec::new(),
+                drawing_only: false,
             };
             let result = finish_array_batch(batch, Frame::default(), &mut Unmetered);
             if correct {
@@ -877,8 +901,9 @@ mod tests {
             ),
             2,
         );
-        pending.layout.group_row = Some(2);
-        pending.layout.value_row = Some(0);
+        let (layout, _) = captured(&mut pending);
+        layout.group_row = Some(2);
+        layout.value_row = Some(0);
         rows.try_push(GeometryOutput::Pending(pending)).unwrap();
         rows.end_group(false).unwrap();
         rows.end_group(false).unwrap();
@@ -902,8 +927,9 @@ mod tests {
             ),
             0,
         );
-        pending.layout.group_row = Some(0);
-        pending.layout.value_row = Some(0);
+        let (layout, _) = captured(&mut pending);
+        layout.group_row = Some(0);
+        layout.value_row = Some(0);
         rows.try_push(GeometryOutput::Pending(pending)).unwrap();
         rows.end_group(false).unwrap();
         let mut writer = StreamingShapes::with_capacity(0, 1);
@@ -928,9 +954,10 @@ mod tests {
         let mut rows = PublicationRows::with_groups_capacity(2);
         rows.end_group(false).unwrap();
         let mut pending = drawing_pending(Shape::Point(xyzm(2., 3., 4., 5.)), 1);
-        pending.layout.group_row = Some(1);
-        pending.layout.value_row = Some(0);
-        for literal in &mut pending.producer_literals {
+        let (layout, records) = captured(&mut pending);
+        layout.group_row = Some(1);
+        layout.value_row = Some(0);
+        for literal in records {
             literal.address.logical_row = 1;
             literal.address.group_row = Some(1);
             literal.address.value_row = Some(0);
@@ -953,9 +980,9 @@ mod tests {
         let mut writer = StreamingShapes::with_capacity(0, 1);
         writer.try_push(Shape::Point(stored)).unwrap();
         let (storage, missing, layout) = writer.finish_parts().unwrap();
-        let pending = StoredPublicationRow {
-            logical_row: 0,
-            layout: LiteralRowLayout {
+        let mut domain = FlatLiteralLayout::with_capacity(1);
+        domain
+            .push_layout(LiteralRowLayout {
                 operation: 0,
                 logical_row: 0,
                 group_row: None,
@@ -970,29 +997,31 @@ mod tests {
                     lines: Vec::new(),
                     polygons: Vec::new(),
                 },
+            })
+            .unwrap();
+        let records = vec![CheckedPublicationLiteral {
+            address: LiteralAddress {
+                operation: 0,
+                logical_row: 0,
+                group_row: None,
+                value_row: None,
+                output: 0,
             },
-            checked: vec![CheckedPublicationLiteral {
-                address: LiteralAddress {
-                    operation: 0,
-                    logical_row: 0,
-                    group_row: None,
-                    value_row: None,
-                    output: 0,
-                },
-                image,
-                record: expected,
-            }],
-            producer_literals: Vec::new(),
-            producer_drawing: false,
-            work: EvaluationBudget::new("array publication test", 0).unwrap(),
-        };
+            image,
+            record: expected,
+        }];
         (
             ArrayPublicationBatch {
                 storage: Arc::new(storage),
                 missing,
                 layout,
-                logical_rows: vec![Some(pending)],
-                expected_present: vec![true],
+                expected: domain,
+                records,
+                accounts: vec![(
+                    0,
+                    EvaluationBudget::new("array publication test", 0).unwrap(),
+                )],
+                drawing_only: false,
             },
             frame,
         )
@@ -1078,10 +1107,10 @@ mod tests {
 
     #[test]
     fn geographic_array_hull_final_writer_rejects_an_omitted_literal() {
-        let (mut pending, frame) = geographic_hull_pending();
-        assert!(pending.producer_literals.pop().is_some());
+        let (pending, frame) = geographic_hull_pending();
         let mut rows = PublicationRows::with_producer_drawing_capacity(1);
         rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        assert!(rows.records.pop().is_some());
 
         assert!(
             rows.finish(frame).is_err(),
@@ -1091,16 +1120,14 @@ mod tests {
 
     #[test]
     fn geographic_array_hull_final_writer_rejects_a_wrong_logical_identity() {
-        let (mut pending, frame) = geographic_hull_pending();
-        pending
-            .producer_literals
+        let (pending, frame) = geographic_hull_pending();
+        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+        rows.records
             .first_mut()
             .expect("the hull contains a literal")
             .address
             .logical_row = 1;
-        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
-        rows.try_push(GeometryOutput::Pending(pending)).unwrap();
-
         assert!(
             rows.finish(frame).is_err(),
             "final ArrayRows readback must match the captured logical row"
@@ -1114,15 +1141,15 @@ mod tests {
         let (layout, literals) = ProducerDrawingReceipt::point_selection_layout(&shape)?;
         let mut pending =
             PendingPublicationRow::producer_drawing(shape, layout, literals, 0, "Groups test")?;
-        pending.layout.group_row = Some(0);
-        pending.layout.value_row = Some(0);
-        for literal in &mut pending.producer_literals {
+        let (layout, records) = captured(&mut pending);
+        layout.group_row = Some(0);
+        layout.value_row = Some(0);
+        for literal in records.iter_mut() {
             literal.address.group_row = Some(0);
             literal.address.value_row = Some(0);
         }
         if corrupt_group_identity {
-            pending
-                .producer_literals
+            records
                 .first_mut()
                 .expect("the point output has a literal")
                 .address

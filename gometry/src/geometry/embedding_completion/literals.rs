@@ -1,8 +1,13 @@
 use super::{ResourceError, Result, Work};
 use crate::geometry::output::CertifiedShapeOrder;
 use crate::geometry::segments::ordering::try_sort_by_with_work;
-use crate::geometry::storage::{PackedRow, ShapeRow};
-use crate::geometry::{CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape};
+use crate::geometry::storage::ShapeRow;
+use crate::geometry::{CoordinateAxes, GeometryErrorKind, Point, Shape};
+
+mod flat;
+mod structures;
+
+pub(in crate::geometry) use flat::{FlatLiteralLayout, FlatRowBinding, FlatRowLayout};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct LiteralPoint<I> {
@@ -101,7 +106,7 @@ impl ShapeStructure {
     }
 
     fn matches(&self, row: ShapeRow<'_>) -> bool {
-        if self.kind != row.kind() || self.axes != row.axes() || self.empty != row.is_empty() {
+        if !matches_shape_header(self.kind, self.axes, self.empty, row) {
             return false;
         }
         let shape = match row {
@@ -137,16 +142,31 @@ impl ShapeStructure {
     ) -> bool {
         match &self.members {
             ShapeMembers::Multipart { count, empty } => {
-                *count == members.len()
-                    && empty.iter().copied().eq(members.enumerate().filter_map(
-                        |(index, member)| {
-                            matches!(member, crate::geometry::MultiMember::Empty).then_some(index)
-                        },
-                    ))
+                matches_multipart_members(*count, empty.iter().copied(), members)
             },
             ShapeMembers::Primitive | ShapeMembers::Collection(_) => false,
         }
     }
+}
+
+fn matches_shape_header(
+    kind: crate::geometry::GeometryKind,
+    axes: CoordinateAxes,
+    empty: bool,
+    row: ShapeRow<'_>,
+) -> bool {
+    kind == row.kind() && axes == row.axes() && empty == row.is_empty()
+}
+
+fn matches_multipart_members(
+    count: usize,
+    empty: impl Iterator<Item = usize>,
+    members: impl ExactSizeIterator<Item = crate::geometry::MultiMember<usize>>,
+) -> bool {
+    count == members.len()
+        && empty.eq(members.enumerate().filter_map(|(index, member)| {
+            matches!(member, crate::geometry::MultiMember::Empty).then_some(index)
+        }))
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -173,15 +193,6 @@ impl LiteralRowAddress {
             logical_row: 0,
             group_row: None,
             value_row: None,
-        }
-    }
-
-    pub(in crate::geometry) const fn from_literal_address(address: LiteralAddress) -> Self {
-        Self {
-            operation: address.operation,
-            logical_row: address.logical_row,
-            group_row: address.group_row,
-            value_row: address.value_row,
         }
     }
 
@@ -584,176 +595,4 @@ pub(in crate::geometry) fn visit_shape_literals<I: Copy, W: Work>(
         .into());
     }
     Ok(())
-}
-
-fn visit_coordinates<I: Copy, C: Coordinates + ?Sized, W: Work>(
-    coordinates: &C,
-    axes: CoordinateAxes,
-    locations: &LiteralSequence<I>,
-    row_address: LiteralRowAddress,
-    work: &mut W,
-    visit: &mut impl FnMut(
-        LiteralAddress,
-        I,
-        Point,
-        CoordinateAxes,
-        CoordinateAxes,
-        &mut W,
-    ) -> Result<()>,
-) -> Result<()> {
-    if coordinates.coord_count() != locations.images.len() || axes != locations.axes {
-        return Err(GeometryErrorKind::Invalid(
-            "sealed row coordinates differ from their physical literal map".into(),
-        )
-        .into());
-    }
-    for (&image, point) in locations.images.iter().zip(coordinates.iter_coords()) {
-        work.charge_into_error(1)?;
-        visit(
-            row_address.output(locations.output),
-            image,
-            point,
-            locations.axes,
-            axes,
-            work,
-        )?;
-    }
-    Ok(())
-}
-
-pub(super) fn visit_storage_row<I: Copy, W: Work>(
-    row: ShapeRow<'_>,
-    layout: &ShapeLiteralLayout<I>,
-    row_address: LiteralRowAddress,
-    work: &mut W,
-    visit: &mut impl FnMut(
-        LiteralAddress,
-        I,
-        Point,
-        CoordinateAxes,
-        CoordinateAxes,
-        &mut W,
-    ) -> Result<()>,
-) -> Result<()> {
-    if matches!(row, ShapeRow::Point(_) | ShapeRow::Packed(_)) {
-        layout.validate_structure(row)?;
-    }
-    match row {
-        ShapeRow::Handle(handle) => {
-            visit_shape_literals(handle.shape(), layout, row_address, work, visit)
-        },
-        ShapeRow::Shape(shape) => visit_shape_literals(shape, layout, row_address, work, visit),
-        ShapeRow::Point(point) => {
-            if layout.points.len() != 1 || !layout.lines.is_empty() || !layout.polygons.is_empty() {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed point row has a non-point literal map".into(),
-                )
-                .into());
-            }
-            let literal = layout
-                .points
-                .first()
-                .ok_or_else(|| GeometryErrorKind::Invalid("point literal row is missing".into()))?;
-            work.charge_into_error(1)?;
-            visit(
-                row_address.output(literal.output),
-                literal.image,
-                point,
-                literal.axes,
-                CoordinateAxes::from_point(point),
-                work,
-            )
-        },
-        ShapeRow::Packed(packed @ PackedRow::Points { .. }) => {
-            let point = packed.point_value().ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed point row has no coordinate".into())
-            })?;
-            if layout.points.len() != 1 || !layout.lines.is_empty() || !layout.polygons.is_empty() {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed point row has a non-point literal map".into(),
-                )
-                .into());
-            }
-            let literal = layout
-                .points
-                .first()
-                .ok_or_else(|| GeometryErrorKind::Invalid("point literal row is missing".into()))?;
-            work.charge_into_error(1)?;
-            visit(
-                row_address.output(literal.output),
-                literal.image,
-                point,
-                literal.axes,
-                packed.axes(),
-                work,
-            )
-        },
-        ShapeRow::Packed(PackedRow::Lines { .. }) => {
-            if !layout.points.is_empty() || layout.lines.len() != 1 || !layout.polygons.is_empty() {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed line row has an incomplete literal map".into(),
-                )
-                .into());
-            }
-            let sequence = row.line_coords().ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed line row has no coordinate window".into())
-            })?;
-            let locations = layout
-                .lines
-                .first()
-                .ok_or_else(|| GeometryErrorKind::Invalid("line literal row is missing".into()))?;
-            visit_coordinates(&sequence, row.axes(), locations, row_address, work, visit)
-        },
-        ShapeRow::Packed(PackedRow::Polygons { .. }) => {
-            if !layout.points.is_empty() || !layout.lines.is_empty() || layout.polygons.len() != 1 {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed polygon row has an incomplete literal map".into(),
-                )
-                .into());
-            }
-            let locations = layout.polygons.first().ok_or_else(|| {
-                GeometryErrorKind::Invalid("polygon literal row is missing".into())
-            })?;
-            if locations.shell.output != locations.output
-                || locations
-                    .holes
-                    .iter()
-                    .any(|hole| hole.output != locations.output)
-            {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed polygon rings lost their logical output identity".into(),
-                )
-                .into());
-            }
-            let mut rings = row.polygon_rings().ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed polygon row has no ring windows".into())
-            })?;
-            let shell = rings.next().ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed polygon row has no shell window".into())
-            })?;
-            visit_coordinates(
-                &shell,
-                row.axes(),
-                &locations.shell,
-                row_address,
-                work,
-                visit,
-            )?;
-            for hole in &locations.holes {
-                let ring = rings.next().ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "packed polygon row has a missing hole window".into(),
-                    )
-                })?;
-                visit_coordinates(&ring, row.axes(), hole, row_address, work, visit)?;
-            }
-            if rings.next().is_some() {
-                return Err(GeometryErrorKind::Invalid(
-                    "packed polygon row has an unmapped hole window".into(),
-                )
-                .into());
-            }
-            Ok(())
-        },
-    }
 }

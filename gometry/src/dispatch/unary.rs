@@ -432,14 +432,13 @@ fn unary_array_split_antimeridian(
     let finished = py
         .detach(
             move || -> std::result::Result<_, (usize, crate::error::Error)> {
-                let mut publication =
-                    crate::geometry::SplitArrayPublisher::with_capacity(array.len());
+                let mut publication = PublicationRows::with_producer_drawing_capacity(array.len());
                 let rows = array.row_operation();
                 for row in rows.rows_with_missing(Shape::empty_point) {
                     match row {
                         ArrayRow::Missing { logical, .. } => {
                             publication
-                                .push_missing()
+                                .try_push_missing()
                                 .map_err(|error| (logical, error))?;
                         },
                         ArrayRow::Present(present) => {
@@ -454,13 +453,15 @@ fn unary_array_split_antimeridian(
                             };
                             let drawing =
                                 split_drawing(&data, &ctx).map_err(|error| (logical, error))?;
-                            publication
-                                .push(logical, drawing)
+                            drawing
+                                .append_to(&mut publication, logical)
                                 .map_err(|error| (logical, error))?;
                         },
                     }
                 }
-                publication.finish(output_frame).map_err(|error| (0, error))
+                publication
+                    .finish_geometry(output_frame)
+                    .map_err(|error| (0, error))
             },
         )
         .map_err(rows_err);

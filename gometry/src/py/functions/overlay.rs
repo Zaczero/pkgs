@@ -9,7 +9,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
-use crate::geometry::publication::{GeometryOutput, PublicationRows};
+use crate::geometry::publication::PublicationRows;
 use crate::geometry::storage::ValidityMask;
 use crate::{
     CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
@@ -565,19 +565,15 @@ pub(crate) fn polygonize_all(
                 let context =
                     crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
                 let shape_refs = shapes.iter().collect::<Vec<_>>();
-                let pending = Shape::polygonize_producer_rows(
+                let mut rows = PublicationRows::with_producer_drawing_capacity(0);
+                Shape::append_polygonize_rows(
                     &shape_refs,
                     false,
                     &context,
                     &output_frame,
-                    0,
                     None,
-                    None,
+                    &mut rows,
                 )?;
-                let mut rows = PublicationRows::with_producer_drawing_capacity(pending.len());
-                for row in pending {
-                    rows.try_push(GeometryOutput::Pending(row))?;
-                }
                 rows.finish(output_frame)
             })?;
             drop(metric_scratch);

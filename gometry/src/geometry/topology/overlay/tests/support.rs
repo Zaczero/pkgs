@@ -98,6 +98,7 @@ fn source_sink<'topology>(
         })?;
         layout.in_output_order(&order, &mut work)?
     };
+    let layout = layout.with_structure(&shape);
     Ok((shape, layout))
 }
 
@@ -111,7 +112,6 @@ fn bind_source_shape(
     super::super::q_embedding::bind_source_only(
         super::super::emission::SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
-            diagnostic_lines: Vec::new(),
         },
         topology,
         None,

@@ -92,8 +92,8 @@ pub(super) use self::presentation::{
 };
 pub(super) use self::publication::FragmentRecipes;
 pub(super) use self::recipes::{
-    DirectedSourceRange, FragmentRecipe, FragmentRecipeId, PublicationInventory, PublishedFragment,
-    PublishedSample, SealedQDrawing, SealedSourceDrawing, SelectedUse,
+    CompletedQDrawing, DirectedSourceRange, FragmentRecipe, FragmentRecipeId, PublicationInventory,
+    PublishedFragment, PublishedSample, SealedSourceDrawing, SelectedUse,
 };
 use self::recipes::{
     EndpointSide, PendingSourceRange, interpolate_exact_reference_coordinate,

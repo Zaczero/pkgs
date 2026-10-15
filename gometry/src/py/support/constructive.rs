@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::geometry::Shape;
+use crate::geometry::publication::PublicationRows;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::py::errors;
@@ -196,9 +197,9 @@ pub(crate) fn voronoi_flatten(
             operation,
             kernel,
             move |outputs, _boundary, budget| {
-                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array();
-                writer.push_polygon_outputs(outputs, geographic_frame, budget)?;
-                writer.finish_array(output_frame.clone())
+                let mut writer = PublicationRows::with_producer_drawing_capacity(0);
+                writer.push_voronoi_polygon_outputs(outputs, geographic_frame, budget)?;
+                writer.finish_geometry(output_frame.clone())
             },
         )?;
         if finished.len() != 1 {
@@ -265,9 +266,9 @@ pub(crate) fn voronoi_edge_lines_flatten(
             "voronoi_edge_lines",
             Shape::voronoi_edge_column_in_frame_budgeted,
             move |output, _boundary, budget| {
-                let mut writer = crate::geometry::VoronoiDrawingWriter::new_array();
-                writer.push_edge_column(output, geographic_frame, budget)?;
-                writer.finish_array(output_frame.clone())
+                let mut writer = PublicationRows::with_producer_drawing_capacity(0);
+                writer.push_voronoi_edge_column(output, geographic_frame, budget)?;
+                writer.finish_geometry(output_frame.clone())
             },
         )?;
         if finished.len() != 1 {

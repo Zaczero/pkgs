@@ -38,6 +38,15 @@ pub(crate) fn nullable_polygon_typed_empty_fixture() -> crate::array::PyGeometry
 
 pub(crate) struct CountingAllocator;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AllocationStats {
+    pub(crate) requests: usize,
+    pub(crate) requested_bytes: usize,
+    pub(crate) released_bytes: usize,
+    pub(crate) live_bytes: i128,
+    pub(crate) peak_live_bytes: i128,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AllocationPhase {
     Admission,
@@ -69,6 +78,33 @@ thread_local! {
     static ALLOCATION_PHASE: Cell<Option<AllocationPhase>> = const { Cell::new(None) };
     static PHASE_ALLOCATIONS: Cell<[usize; AllocationPhase::COUNT]> =
         const { Cell::new([0; AllocationPhase::COUNT]) };
+    static ALLOCATION_STATS: Cell<AllocationStats> = const {
+        Cell::new(AllocationStats {
+            requests: 0,
+            requested_bytes: 0,
+            released_bytes: 0,
+            live_bytes: 0,
+            peak_live_bytes: 0,
+        })
+    };
+}
+
+fn count_memory(allocated: usize, released: usize) {
+    COUNT_ALLOCATIONS.with(|enabled| {
+        if enabled.get() {
+            ALLOCATION_STATS.with(|cell| {
+                let mut stats = cell.get();
+                stats.requested_bytes = stats.requested_bytes.saturating_add(allocated);
+                stats.released_bytes = stats.released_bytes.saturating_add(released);
+                stats.live_bytes = stats
+                    .live_bytes
+                    .saturating_add(allocated as i128)
+                    .saturating_sub(released as i128);
+                stats.peak_live_bytes = stats.peak_live_bytes.max(stats.live_bytes);
+                cell.set(stats);
+            });
+        }
+    });
 }
 
 fn count_allocation() {
@@ -94,16 +130,25 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count_allocation();
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
-        unsafe { System.alloc(layout) }
+        let result = unsafe { System.alloc(layout) };
+        if !result.is_null() {
+            count_memory(layout.size(), 0);
+        }
+        result
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         count_allocation();
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
-        unsafe { System.alloc_zeroed(layout) }
+        let result = unsafe { System.alloc_zeroed(layout) };
+        if !result.is_null() {
+            count_memory(layout.size(), 0);
+        }
+        result
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        count_memory(0, layout.size());
         // SAFETY: `GlobalAlloc` supplies the original pointer and layout.
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -111,7 +156,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         count_allocation();
         // SAFETY: `GlobalAlloc` supplies the original allocation arguments.
-        unsafe { System.realloc(ptr, layout, new_size) }
+        let result = unsafe { System.realloc(ptr, layout, new_size) };
+        if !result.is_null() {
+            count_memory(new_size, layout.size());
+        }
+        result
     }
 }
 
@@ -128,11 +177,19 @@ pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     ALLOCATIONS.with(|allocations| allocations.set(0));
     PHASE_ALLOCATIONS.with(|allocations| allocations.set([0; AllocationPhase::COUNT]));
     ALLOCATION_PHASE.with(|phase| phase.set(None));
+    ALLOCATION_STATS.with(|stats| stats.set(AllocationStats::default()));
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
     let guard = AllocationCountGuard;
     let result = operation();
     drop(guard);
     (result, ALLOCATIONS.with(Cell::get))
+}
+
+/// Requested live bytes at allocator-call boundaries on the measured thread.
+pub(crate) fn allocation_stats() -> AllocationStats {
+    let mut stats = ALLOCATION_STATS.with(Cell::get);
+    stats.requests = ALLOCATIONS.with(Cell::get);
+    stats
 }
 
 pub(crate) fn assert_no_allocations<T>(operation: impl FnOnce() -> T) -> T {

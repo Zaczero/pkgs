@@ -33,7 +33,7 @@ use super::emission::source_reuse::{
     source_ring_cycles_follow_source,
 };
 use super::emission::{
-    DirectedSpan, FragmentRecipes, RecipeWalkOwner, SealedQDrawing, SealedSourceDrawing,
+    CompletedQDrawing, DirectedSpan, FragmentRecipes, RecipeWalkOwner, SealedSourceDrawing,
     SelectedUse, write_completed_native,
 };
 #[cfg(test)]
@@ -81,7 +81,7 @@ fn record_q_overlay_plan_build() {
 mod publish;
 pub(crate) use self::producer_drawing::exact_geographic_polygonize_full_from_shapes;
 pub(in crate::geometry) use self::producer_drawing::{
-    exact_geographic_linework_finished_from_shapes, exact_geographic_linework_from_shapes,
+    exact_geographic_linework_drawing_from_shapes, exact_geographic_linework_from_shapes,
     exact_geographic_linework_pending_row,
 };
 #[cfg(test)]
