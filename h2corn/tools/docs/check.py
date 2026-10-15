@@ -267,7 +267,17 @@ def check_benchmark_results() -> None:
     parser = _BenchmarkContent()
     parser.feed(page.read_text(encoding='utf-8'))
     for source, _alternative in parser.images:
-        asset = SITE / source.lstrip('/')
+        asset_path = Path(unquote(urlparse(source).path))
+        asset = (
+            SITE / asset_path.relative_to('/')
+            if asset_path.is_absolute()
+            else page.parent / asset_path
+        )
+        asset = asset.resolve()
+        if not asset.is_relative_to(SITE.resolve()):
+            raise AssertionError(
+                f'benchmark figure escapes the site directory: {source}'
+            )
         if not asset.is_file():
             raise AssertionError(f'benchmark figure asset is missing: {source}')
     pending_figure = False

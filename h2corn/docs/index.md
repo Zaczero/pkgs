@@ -62,8 +62,7 @@ For WebSockets, the nginx and Caddy examples use a separate HTTP/1.1 upgrade
 route; HTTP/2-only WebSockets require the client and proxy path to support RFC
 8441 extended CONNECT.
 
-The published benchmark page describes its workloads and limits. It contains no
-current comparison figures because matching aggregate records are not included.
+The benchmark page describes its workloads and limits.
 [Read the benchmark method](benchmarks.md).
 
 </div>

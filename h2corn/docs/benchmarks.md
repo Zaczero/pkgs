@@ -5,9 +5,8 @@ description: How h2corn cross-server benchmarks are measured and what workloads 
 # Benchmarks
 
 This page describes h2corn's cross-server benchmark method and workload limits.
-It publishes a chart only with its matching aggregate record and generated data
-table from the same accepted run. No current comparison figures are published
-because the aggregate records needed to audit the comparison are unavailable.
+When results are shown, each chart has a matching data table generated from the
+same aggregate record.
 
 ## Measurement method
 
@@ -40,7 +39,5 @@ sampled across the supervisor and workers.
 These workloads do not measure reverse proxies, TLS, HTTP/3, browser behavior,
 cold-start latency, failure recovery, or applications other than the tested
 Starlette app. They do not establish framework-wide drop-in compatibility.
-
-## Current results
 
 --8<-- "bench/results/_generated/benchmark-results.md"

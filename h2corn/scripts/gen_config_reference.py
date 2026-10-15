@@ -222,12 +222,9 @@ def render_benchmark_results() -> str:
     plot_directory = ROOT / 'bench' / 'results' / 'plots'
     records = sorted(raw_directory.glob('*.json'))
     if not records:
-        return (
-            'No matching per-scenario aggregate records are available, so no '
-            'current benchmark results are published.\n'
-        )
+        return ''
 
-    sections: list[str] = []
+    sections: list[str] = ['## Results\n\n']
     for raw_path in records:
         record = json.loads(raw_path.read_text(encoding='utf-8'))
         scenario = record.get('scenario', raw_path.stem)

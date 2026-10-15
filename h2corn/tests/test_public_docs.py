@@ -14,6 +14,7 @@ from bench.report import render_accessible_results  # noqa: E402
 from tools.docs.check import (  # noqa: E402
     _Anchors,
     check_api,
+    check_benchmark_results,
     check_configuration,
 )
 from tools.docs.config_reference import (  # noqa: E402
@@ -137,6 +138,28 @@ def test_rendered_api_gate_rejects_removed_literal_typeddict_field() -> None:
     page.ids.remove(identifier)
     with pytest.raises(AssertionError, match='TypedDict fields'):
         check_api(rendered=rendered)
+
+
+def test_rendered_benchmark_table_resolves_relative_figure_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.docs import check as docs_check
+
+    page = tmp_path / 'benchmarks' / 'index.html'
+    page.parent.mkdir(parents=True)
+    asset = tmp_path / 'assets' / 'benchmarks' / 'chart.svg'
+    asset.parent.mkdir(parents=True)
+    asset.write_text('<svg></svg>', encoding='utf-8')
+    page.write_text(
+        '<img alt="HTTP/1 request rate" src="../assets/benchmarks/chart.svg">'
+        '<table><thead><tr><th>Server</th></tr></thead>'
+        '<tbody><tr><td>h2corn</td></tr></tbody></table>',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(docs_check, 'SITE', tmp_path)
+
+    check_benchmark_results()
 
 
 def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:

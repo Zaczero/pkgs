@@ -86,8 +86,7 @@ h2corn is not the right choice when:
 ## Benchmarks
 
 The [benchmark page](https://h2corn.monicz.dev/benchmarks/) describes the
-workloads and measurement method. It currently publishes no comparison figures
-because matching aggregate records are not included.
+workloads and measurement method for cross-server comparisons.
 
 ## Support
 
