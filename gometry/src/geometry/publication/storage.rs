@@ -485,7 +485,6 @@ pub(super) fn finish_array_batch<W: Work>(
                         address: literal.address,
                         image: PublicationImage::ProducerDrawn(literal.image),
                         record: literal.record,
-                        chart: literal.chart,
                     }
                 }));
             row_map.push(Some(LiteralRowBinding::Checked(pending.layout)));
