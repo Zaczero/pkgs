@@ -473,9 +473,9 @@ vendor/
 githead/tests/git/HEAD
 jinja2-htmlmin/tests/templates/.*
 
-# h2corn bench: large payloads + machine-run dumps (plots stay tracked for docs)
+# h2corn bench: accepted raw records, tables, and plots are public evidence.
+# Other staged measurements and generated payloads remain local.
 h2corn/bench/*.bin
-h2corn/bench/results/raw/
 h2corn/bench/results/runs/
 h2corn/bench/results/compare/
 h2corn/bench/results/instr/
