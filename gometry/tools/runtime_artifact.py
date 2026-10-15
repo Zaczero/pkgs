@@ -613,16 +613,19 @@ def inspect_runtime_inputs(
                     'installed wheel does not match its CIBW identifier'
                 )
             target_policy = build_identifier_policy(identifier)
-        if not wheel_target_compatible(
-            expected_wheel,
-            expected_target,
-            wheel_inspection['tags'],
+        if sanitizer_receipt:
+            from sanitizers import validate_sanitizer_wheel_tags
+
+            validate_sanitizer_wheel_tags(wheel_inspection['tags'], interpreter)
+        elif not wheel_target_compatible(
+            expected_wheel, expected_target, wheel_inspection['tags']
         ):
             raise AssertionError('installed wheel tag is incompatible with its target')
         validate_wheel_native_target(
             wheel_inspection,
             target_policy,
             label=str(expected_wheel),
+            validate_tags=not sanitizer_receipt,
         )
         extension_records = wheel_inspection['extension_members']
         if len(extension_records) != 1:

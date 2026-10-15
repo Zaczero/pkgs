@@ -91,6 +91,47 @@ def test_sanitizer_admission_rejects_an_ordinary_quality_receipt(
         )
 
 
+@pytest.mark.parametrize(
+    ('gil_disabled', 'tag'),
+    [
+        (False, 'cp314-cp314-linux_x86_64'),
+        (True, 'cp314-cp314t-linux_x86_64'),
+    ],
+)
+def test_sanitizer_wheel_admits_the_selected_native_abi(
+    gil_disabled: bool, tag: str
+) -> None:
+    sanitizers.validate_sanitizer_wheel_tags(
+        [tag],
+        {
+            'cache_tag': 'cpython-314',
+            'implementation': 'CPython',
+            'gil_disabled': gil_disabled,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    'tag',
+    [
+        'cp313-cp313-linux_x86_64',
+        'cp314-cp314t-linux_x86_64',
+        'cp314-cp314-linux_aarch64',
+        'cp314-cp314-manylinux_2_39_x86_64',
+    ],
+)
+def test_sanitizer_wheel_rejects_a_different_native_abi_or_platform(tag: str) -> None:
+    with pytest.raises(AssertionError):
+        sanitizers.validate_sanitizer_wheel_tags(
+            [tag],
+            {
+                'cache_tag': 'cpython-314',
+                'implementation': 'CPython',
+                'gil_disabled': False,
+            },
+        )
+
+
 @pytest.mark.parametrize('ordinary_receipt_present', [False, True])
 def test_explicit_producer_rejection_does_not_consult_quality_state(
     tmp_path: Path,

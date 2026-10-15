@@ -35,7 +35,7 @@ from source_artifact import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = (
@@ -151,9 +151,30 @@ def _verify_bundled_archives(target_dir: Path) -> list[dict[str, str]]:
 
 def verify_asan_image(extension: Path) -> None:
     """Require sanitizer references in the exact extension admitted for import."""
-    symbols = _tool_output(['readelf', '-Ws', str(extension)], cwd=ROOT)
+    environment = os.environ.copy()
+    environment.pop('LD_PRELOAD', None)
+    symbols = _tool_output(
+        ['readelf', '-Ws', str(extension)], cwd=ROOT, env=environment
+    )
     if '__asan_init' not in symbols or '__asan_report_' not in symbols:
         raise AssertionError(f'extension has no ASan instrumentation: {extension}')
+
+
+def validate_sanitizer_wheel_tags(
+    tags: Sequence[str], interpreter: Mapping[str, Any]
+) -> None:
+    """Admit only this interpreter's native Linux diagnostic wheel tag."""
+    cache_tag = interpreter['cache_tag']
+    if interpreter['implementation'] != 'CPython' or not cache_tag.startswith(
+        'cpython-'
+    ):
+        raise AssertionError('ASan diagnostic requires a CPython wheel')
+    python_tag = 'cp' + cache_tag.removeprefix('cpython-')
+    abi_tag = python_tag + ('t' if interpreter['gil_disabled'] else '')
+    if list(tags) != [f'{python_tag}-{abi_tag}-linux_x86_64']:
+        raise AssertionError(
+            'ASan wheel tags differ from the selected native interpreter'
+        )
 
 
 def validate_sanitizer_producer_inputs(root: Path, receipt: Mapping[str, Any]) -> None:
