@@ -39,6 +39,8 @@ mod websocket;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(miri)]
+use mimalloc as _;
 use pyo3::prelude::*;
 
 #[pymodule]

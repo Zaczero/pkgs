@@ -241,6 +241,7 @@ jobs:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           components: miri, rust-src
           cache-key: ${{ env.PACKAGE }}-miri
+          cache-directories: ~/.cache/miri
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           rustflags: ""
@@ -256,6 +257,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/miri-$PACKAGE"
           {
+            git rev-parse HEAD
             rustc -vV
             cargo miri --version
             cargo nextest --version
@@ -286,14 +288,13 @@ jobs:
             --locked -p "$PACKAGE" --lib --profile default-miri --no-tests fail \
             -E "$selection" \
             2>&1 | tee "$RUNNER_TEMP/miri-$PACKAGE/run.log"
+          cp target/nextest/default-miri/junit.xml "$RUNNER_TEMP/miri-$PACKAGE/junit.xml"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: miri-${{ inputs.package }}
-          path: |
-            ${{ runner.temp }}/miri-${{ inputs.package }}
-            target/miri/nextest/default-miri/junit.xml
+          path: ${{ runner.temp }}/miri-${{ inputs.package }}
           if-no-files-found: error
 
   test:
