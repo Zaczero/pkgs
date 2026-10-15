@@ -1,6 +1,6 @@
 [project]
 name = "sizestr"
-description = "Simple and fast formatting of sizes for Python"
+description = "Format byte counts as human-readable binary units"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "0BSD"

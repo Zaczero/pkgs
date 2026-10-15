@@ -6,11 +6,36 @@ _SUFFIXES = (' KiB', ' MiB', ' GiB', ' TiB', ' PiB', ' EiB', ' ZiB')
 
 
 def sizestr(size: float) -> str:
-    """
-    Convert byte size to human-readable string.
+    """Format a byte count as a human-readable string.
 
-    >>> sizestr(10_000)
-    '9.77 KiB'
+    Sub-KiB magnitudes are truncated toward zero to whole bytes. Larger values
+    use powers of 1024 with suffixes from KiB through ZiB. Scaled magnitudes
+    below 10 use two decimal places; other scaled values use one, with ordinary
+    float rounding and no carry into the next suffix. The sign is handled
+    separately, so a negative fraction smaller than one byte displays as
+    ``-0 B``.
+
+    Non-finite floating-point values are returned in parentheses. Values whose
+    computed binary exponent exceeds ZiB return ``(too large to display)``.
+    Extremely large integers may raise ``OverflowError`` during float-oriented
+    finite-value or exponent conversion before that marker can be returned.
+
+    Parameters
+    ----------
+    size
+        Byte count as an integer or floating-point value.
+
+    Returns
+    -------
+    str
+        Formatted display text, not a machine-readable number.
+
+    Raises
+    ------
+    TypeError
+        If ``size`` is not a supported numeric value.
+    OverflowError
+        If an integer is too large for the float-oriented checks.
     """
     # Handle non-finite values
     if not isfinite(size):
