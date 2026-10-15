@@ -89,20 +89,27 @@ async def test_direct_mounts_and_duplicate_transport_routes_are_protected(
 
 
 @pytest.mark.parametrize(
-    'transport',
+    'transport, reason',
     [
         pytest.param(
-            lambda: httpx.AsyncHTTPTransport(proxy='http://proxy.invalid'), id='proxy'
+            lambda: httpx.AsyncHTTPTransport(proxy='http://proxy.invalid'),
+            'Proxy transports are not supported',
+            id='proxy',
         ),
-        pytest.param(lambda: httpx.AsyncHTTPTransport(uds='/unused.sock'), id='unix'),
+        pytest.param(
+            lambda: httpx.AsyncHTTPTransport(uds='/unused.sock'),
+            'Unix-domain socket transports are not supported',
+            id='unix',
+        ),
         pytest.param(
             lambda: httpx.MockTransport(lambda _request: httpx.Response(200)),
+            'Unsupported transport: MockTransport',
             id='custom',
         ),
     ],
 )
 async def test_unsupported_mount_rejects_setup_without_changing_usable_route(
-    server_factory, transport
+    server_factory, transport, reason
 ):
     async with server_factory() as server:
         async with httpx.AsyncClient(
@@ -110,7 +117,7 @@ async def test_unsupported_mount_rejects_setup_without_changing_usable_route(
         ) as client:
             await client.get(f'http://127.0.0.1:{server.port}/before')
             first = server.requests[-1].connection
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match=reason):
                 httpx_ssrf_protection(client)
             await client.get(f'http://127.0.0.1:{server.port}/after')
         assert server.requests[-1].connection == first
@@ -119,7 +126,7 @@ async def test_unsupported_mount_rejects_setup_without_changing_usable_route(
 async def test_actual_environment_proxy_is_rejected(monkeypatch):
     monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.invalid')
     async with httpx.AsyncClient(trust_env=True) as client:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='Proxy transports are not supported'):
             httpx_ssrf_protection(client)
 
 

@@ -107,5 +107,5 @@ async def test_global_check_can_be_disabled_with_custom_policy(server_factory):
 
 def test_disabling_global_check_requires_custom_validator():
     client = httpx.AsyncClient(trust_env=False)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='custom_validator must be provided'):
         httpx_ssrf_protection(client, check_globally_reachable=False)
