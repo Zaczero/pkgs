@@ -205,9 +205,10 @@ impl Store {
         Ok(self.find(hash, eq)?.map(|idx| self.detach(hash, idx)))
     }
 
-    pub(crate) fn clear(&mut self, _py: Python<'_>) {
+    pub(crate) fn clear(&mut self) -> Vec<(Py<PyAny>, Py<PyAny>)> {
+        let mut retired = Vec::with_capacity(self.len());
         if self.len == 0 {
-            return;
+            return retired;
         }
         self.table.clear();
         // Walk LRU -> MRU via `prev`; `next` points toward the LRU end and would
@@ -218,8 +219,6 @@ impl Store {
         self.len = 0;
         while idx != INVALID {
             // SAFETY: walking the LRU chain visits each occupied slot exactly once.
-            // The `_py` argument keeps us attached, so the inlined `drop` decrements
-            // refcounts inline.
             let node = unsafe {
                 self.nodes
                     .get(idx as usize)
@@ -227,11 +226,11 @@ impl Store {
                     .assume_init_read()
             };
             let prev = node.prev;
-            drop(node.key);
-            drop(node.value);
+            retired.push((node.key, node.value));
             self.free.push(idx);
             idx = prev;
         }
+        retired
     }
 
     pub(crate) fn pop_lru(&mut self) -> Option<(Py<PyAny>, Py<PyAny>)> {
@@ -387,7 +386,7 @@ impl Drop for Store {
         if self.len == 0 {
             return;
         }
-        Python::attach(|py| self.clear(py));
+        Python::attach(|_py| drop(self.clear()));
     }
 }
 

@@ -204,7 +204,8 @@ impl LRUCache {
     /// -------
     /// None
     fn clear(&self, py: Python<'_>) {
-        self.inner.lock_py_attached(py).clear(py);
+        let retired = self.inner.lock_py_attached(py).clear();
+        drop(retired);
     }
 
     /// Remove and return the least-recently-used `(key, value)` pair, raising
