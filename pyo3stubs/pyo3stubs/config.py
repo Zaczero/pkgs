@@ -157,6 +157,8 @@ class TokenConfig:
         Callable on the runtime module returning token vocabulary tuples.
     enum_macro:
         Rust macro declaring token enums, written without the ``!``.
+    extra_vocabulary:
+        Additional runtime vocabulary names owned outside the configured macro.
     """
 
     types_module: str
@@ -173,6 +175,13 @@ class TextSignatureDefault:
 
     Use this only where an exposed effective default or sentinel deliberately
     differs from the Rust expression; the expression itself is never evaluated.
+
+    Parameters
+    ----------
+    value:
+        Effective Python value shown by the binding's ``text_signature``.
+    reason:
+        Why that public value differs from the nonliteral Rust expression.
     """
 
     value: object

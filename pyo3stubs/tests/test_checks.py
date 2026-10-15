@@ -95,6 +95,22 @@ def _default(tmp_path: Path, stub: str, src: str) -> StubConfig:
     return make_config(tmp_path)
 
 
+def _write_config_shim(tmp_path: Path, cfg: StubConfig) -> Path:
+    path = tmp_path / 'tools' / 'stubconfig.py'
+    path.parent.mkdir()
+    path.write_text(
+        'from pathlib import Path\n'
+        'from pyo3stubs import StubConfig\n\n'
+        'CONFIG = StubConfig(\n'
+        f'    module={cfg.module!r},\n'
+        f'    stub_path=Path({str(cfg.stub_path)!r}),\n'
+        f'    src_root=Path({str(cfg.src_root)!r}),\n'
+        "    uninspectable_allowlist={'hidden_callable': 'fixture: opaque signature'},\n"
+        ')\n'
+    )
+    return path
+
+
 def _stub(anchor: str, replacement: str, *, count: int = 1) -> Build:
     """A config whose stub carries one seeded mutation."""
 
@@ -116,12 +132,17 @@ def _src(anchor: str, replacement: str) -> Build:
 
 
 def _duality(**overrides: object) -> Build:
+    stub_text = overrides.pop('stub_text', _DUALITY_STUB)
+    duality_options = dict(overrides)
+
     def build(tmp_path: Path, stub: str, src: str) -> StubConfig:
-        text = overrides.pop('stub_text', _DUALITY_STUB)
         return make_config(
             tmp_path,
-            stub_text=text,
-            duality=DualityConfig(pairs=(('Leaf', 'LeafArray'),), **overrides),  # type: ignore[arg-type]
+            stub_text=stub_text,
+            duality=DualityConfig(
+                pairs=(('Leaf', 'LeafArray'),),
+                **duality_options,  # type: ignore[arg-type]
+            ),
         )
 
     return build
@@ -333,6 +354,81 @@ def test_an_unconfigured_gate_reports_itself_inactive(tmp_path):
     cfg = make_config(tmp_path)
     assert gate('duality').run(cfg).status is Status.INACTIVE
     assert 'StubConfig.duality' in gate('duality').run(cfg).line
+
+
+def test_cli_structural_check_accepts_a_clean_stub_and_rejects_a_real_mismatch(
+    tmp_path, pristine_stub, capsys
+):
+    """A consumer can run one gate from its config shim and get both outcomes."""
+    from pyo3stubs.cli import main
+
+    cfg = make_config(tmp_path, stub_text=pristine_stub)
+    shim = _write_config_shim(tmp_path, cfg)
+
+    assert main(['structural', '--config', str(shim)]) == 0
+    assert 'structural checks OK' in capsys.readouterr().out
+
+    cfg.stub_path.write_text(
+        seeded(pristine_stub, 'class Open:', '@final\nclass Open:')
+    )
+    assert main(['structural', '--config', str(shim)]) == 1
+    report = capsys.readouterr().err
+    assert 'Open' in report
+    assert 'drop @final' in report
+
+
+def test_cli_reference_matches_the_published_configuration_and_gate_reference(
+    capsys,
+):
+    from pathlib import Path
+
+    from pyo3stubs.cli import main
+
+    reference = Path(__file__).resolve().parents[1] / 'REFERENCE.md'
+    assert main(['reference']) == 0
+    assert capsys.readouterr().out == reference.read_text()
+
+
+def test_cli_reference_explains_its_libcst_requirement(monkeypatch, capsys):
+    from pyo3stubs.cli import main
+
+    monkeypatch.setattr('pyo3stubs.cli.importlib.util.find_spec', lambda _name: None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(['reference'])
+
+    assert exit_info.value.code == 2
+    assert 'reference requires LibCST' in capsys.readouterr().err
+
+
+def test_gen_docs_writes_the_stub_even_when_its_contract_fails(
+    tmp_path, pristine_stub, capsys
+):
+    """The repair output remains available while the command reports violations."""
+    from pyo3stubs.cli import main
+
+    stub = seeded(
+        pristine_stub,
+        '"""A documented function.',
+        '"""Stale prose.',
+    )
+    stub = seeded(
+        stub,
+        'class Open:\n    """A subclassable class (``#[pyclass(subclass)]`` analogue)."""',
+        'class Open:\n'
+        '    """A subclassable class (``#[pyclass(subclass)]`` analogue)."""\n\n'
+        '    def narrowed(self) -> int: ...',
+    )
+    cfg = make_config(tmp_path, stub_text=stub)
+    shim = _write_config_shim(tmp_path, cfg)
+
+    assert main(['gen-docs', '--config', str(shim)]) == 1
+    report = capsys.readouterr()
+    assert 'wrote ' in report.out
+    assert 'runtime docstring missing or empty' in report.err
+    rendered = cfg.stub_path.read_text()
+    assert 'Stale prose.' not in rendered
+    assert '    def narrowed(self) -> int: ...' in rendered
 
 
 def test_an_empty_optional_config_deactivates_its_gate(tmp_path):
@@ -1804,13 +1900,20 @@ def test_a_gate_that_examines_nothing_says_so(tmp_path):
     h2corn and lrucache-rs, `leaked-types` sees 0 public pyclasses on h2corn,
     and `rust-nullability` finds 0 Option surfaces on both -- while all three
     printed the same confident success a project with 99 attributes and 32
-    surfaces gets.
+    surfaces gets. The pytest adapter must report the real zero-subject result
+    as a skip too.
     """
     cfg = make_config(tmp_path, src_text='#[pyclass]\nstruct Shipped;\n')
 
     result = gate('text-signature').run(cfg)
     assert result.status is Status.NOTHING_TO_CHECK
     assert 'no text_signature attributes' in result.line
+
+    from pyo3stubs.testing import gate_test
+
+    test = gate_test(cfg)
+    with pytest.raises(pytest.skip.Exception, match='nothing to check'):
+        test('text-signature')
 
     # ...and a gate that did examine something reports how much.
     populated = gate('text-signature').run(make_config(tmp_path))
@@ -1834,3 +1937,28 @@ def test_every_countable_gate_names_its_subject():
         'rust-nullability',
         'doc-contract',
     }
+
+
+def test_duality_fixture_builder_reuses_the_same_inputs(
+    tmp_path, pristine_stub, pristine_src
+):
+    override = seeded(
+        _DUALITY_STUB,
+        '"""Kind-preserving."""',
+        '"""Builder-specific prose."""',
+    )
+    build = _duality(
+        stub_text=override,
+        exempt={'pieces': 'fixture: deliberately different expansion'},
+    )
+    first_root = tmp_path / 'first'
+    second_root = tmp_path / 'second'
+    first_root.mkdir()
+    second_root.mkdir()
+
+    first = build(first_root, pristine_stub, pristine_src)
+    second = build(second_root, pristine_stub, pristine_src)
+
+    assert first.stub_path.read_text() == override
+    assert second.stub_path.read_text() == override
+    assert first.duality == second.duality

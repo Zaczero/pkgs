@@ -1,14 +1,16 @@
 """Unified CLI for the PyO3 stub toolkit.
 
-    pyo3stubs <command> --config tools/stubconfig.py
+    pyo3stubs <command> [--config tools/stubconfig.py]
 
 ``--config`` points at a Python file exposing either a ``config()`` callable or
 a ``CONFIG`` attribute returning a :class:`~pyo3stubs.config.StubConfig`.
+The ``reference`` command does not need a config shim.
 
 Commands are the gate names (see :mod:`pyo3stubs.gates`), plus ``gen-docs``,
-``check-all``, and ``init``. Exit status is 0 when every gate that ran was
-clean, and 1 when any reported a violation — a gate that is skipped, disabled,
-or inactive is reported as such and does not affect the status.
+``check-all``, ``init``, and ``reference``. Exit status is 0 when no gate
+reported a violation, and 1 when any did — a gate that is skipped, disabled,
+inactive, or has nothing to check is reported separately and does not affect
+the status.
 """
 
 from __future__ import annotations
@@ -135,8 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         'command',
         metavar='COMMAND',
-        choices=['gen-docs', 'check-all', 'init', *gate_names()],
-        help='a gate name, or gen-docs / check-all / init',
+        choices=['gen-docs', 'check-all', 'init', 'reference', *gate_names()],
+        help='a gate name, or gen-docs / check-all / init / reference',
     )
     parser.add_argument('--config', help='path to the StubConfig shim')
     parser.add_argument('--package', help='init: the package name to scaffold for')
@@ -146,6 +148,13 @@ def main(argv: list[str] | None = None) -> int:
         if not args.package:
             parser.error('init requires --package <name>')
         return _init(args.package)
+    if args.command == 'reference':
+        if importlib.util.find_spec('libcst') is None:
+            parser.error('reference requires LibCST; generate it under CPython')
+        from pyo3stubs.reference import render_reference
+
+        sys.stdout.write(render_reference())
+        return 0
     if not args.config:
         parser.error(f'{args.command} requires --config <path>')
     cfg = load_config(args.config)

@@ -81,15 +81,19 @@ def test_no_generated_line_carries_trailing_whitespace():
 
 
 def _inject(stub: str, runtime: types.ModuleType) -> str:
+    module = ast.parse(stub)
+    classes = {
+        node.name: node for node in module.body if isinstance(node, ast.ClassDef)
+    }
     return (
         cst
         .parse_module(stub)
         .visit(
             DocInjector(
                 runtime,
-                _def_totals(stub),
+                _def_totals(module),
                 {},
-                _descriptor_docs(stub, runtime),
+                _descriptor_docs(classes, runtime),
             )
         )
         .code
@@ -326,7 +330,7 @@ Widget"""
         .visit(
             DocInjector(
                 module,
-                _def_totals(stub),
+                _def_totals(ast.parse(stub)),
                 constructor_doc_sources(cfg).by_class,
             )
         )

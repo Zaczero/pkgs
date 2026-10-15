@@ -61,6 +61,23 @@ class Status(Enum):
     #: Active and configured, but this project has none of what it inspects.
     NOTHING_TO_CHECK = 'nothing to check'
 
+    @property
+    def description(self) -> str:
+        """User-facing meaning shared by the CLI reference and pytest adapter."""
+        return _STATUS_DESCRIPTIONS[self]
+
+
+_STATUS_DESCRIPTIONS = {
+    Status.OK: 'The gate ran and found no violations.',
+    Status.VIOLATIONS: 'The gate found one or more contract violations.',
+    Status.SKIPPED: 'The current Python implementation cannot run this gate.',
+    Status.DISABLED: 'StubConfig.disabled_gates explicitly disabled this gate.',
+    Status.INACTIVE: 'The optional gate has no non-empty activating configuration.',
+    Status.NOTHING_TO_CHECK: (
+        'The gate ran, but its configured input contained no subjects to inspect.'
+    ),
+}
+
 
 def _plural(noun: str, count: int) -> str:
     return noun if count == 1 else f'{noun}s'
@@ -78,6 +95,8 @@ class Gate:
     success: str
     #: What the user should do about a violation.
     remedy: str
+    #: Additional tools, runtime modules, or source inputs this gate reads.
+    requirements: tuple[str, ...] = ()
     #: Singular noun for what the gate inspects, for the "n examined" report.
     #: Every one of these pluralises with a plain `s`.
     subject: str = ''
@@ -199,6 +218,7 @@ GATES: tuple[Gate, ...] = (
         summary='the stub type-checks on its own (mypy)',
         success='stub validity OK: mypy-clean',
         remedy='fix the stub until mypy is clean',
+        requirements=('mypy',),
         requires_cpython=True,
     ),
     Gate(
@@ -208,6 +228,7 @@ GATES: tuple[Gate, ...] = (
         success='pyright OK: stub is clean',
         remedy="fix the stub until pyright is clean, under the project's own "
         '[tool.pyright] settings',
+        requirements=('pyright and its Node.js-based checker',),
         subject='checked file',
     ),
     Gate(
@@ -216,14 +237,16 @@ GATES: tuple[Gate, ...] = (
         summary='overload hygiene, finality, signature coverage, __match_args__',
         success='structural checks OK',
         remedy='see each violation; they name the exact stub line',
+        requirements=('compiled extension',),
         subject='stub definition',
     ),
     Gate(
         name='text-signature',
         collect=_collector('pyo3stubs.text_signature'),
-        summary='a manual text_signature agrees with the real signature',
+        summary='a manual text_signature agrees with the Rust signature attribute',
         success='text_signature OK: matches signature attributes',
         remedy='correct the Rust attribute that documents the wrong shape',
+        requirements=('Rust source', 'tree-sitter-rust'),
         subject='text_signature attribute',
         requires_cpython=True,
         cpython_reason='the Rust source parser has no PyPy wheel',
@@ -234,6 +257,7 @@ GATES: tuple[Gate, ...] = (
         summary='one operation keeps one option block on every surface',
         success='surface parity OK',
         remedy='add the missing option, or register the divergence with a reason',
+        requirements=('configured Python classes or modules',),
         activated_by='surface',
         subject='shared operation',
     ),
@@ -243,6 +267,7 @@ GATES: tuple[Gate, ...] = (
         summary='array method returns are derived from the scalar contract',
         success='scalar↔array duality OK',
         remedy='fix the array return, or exempt it with a reason',
+        requirements=('configured class pairs in the stub',),
         activated_by='duality',
         subject='method pair',
     ),
@@ -252,6 +277,11 @@ GATES: tuple[Gate, ...] = (
         summary='stub Literal unions match the runtime token enums',
         success='token vocabulary OK',
         remedy='regenerate the Literal alias from the runtime vocabulary',
+        requirements=(
+            'Rust source and tree-sitter-rust',
+            'compiled extension vocabulary export',
+            'configured Literal module',
+        ),
         activated_by='tokens',
         subject='token enum',
         requires_cpython=True,
@@ -263,6 +293,7 @@ GATES: tuple[Gate, ...] = (
         summary='every reachable pyclass is registered and publicly stubbed',
         success='no leaked types',
         remedy='register the class, add a public stub class, or allowlist it',
+        requirements=('Rust source and tree-sitter-rust', 'compiled extension'),
         subject='pyclass export',
         requires_cpython=True,
         cpython_reason='the Rust source parser has no PyPy wheel',
@@ -273,6 +304,7 @@ GATES: tuple[Gate, ...] = (
         summary='every Option<..> Rust surface admits None in the stub',
         success='rust nullability OK: every Option surface admits None',
         remedy='widen the stub annotation with `| None`',
+        requirements=('Rust source and tree-sitter-rust',),
         subject='Option surface',
         requires_cpython=True,
         cpython_reason='the Rust source parser has no PyPy wheel',
@@ -283,6 +315,10 @@ GATES: tuple[Gate, ...] = (
         summary='every public symbol is documented, exactly once',
         success='doc contract OK',
         remedy='document it in the Rust `///` comment, or in the stub override',
+        requirements=(
+            'Rust source and tree-sitter-rust',
+            'compiled extension',
+        ),
         subject='public symbol',
         requires_cpython=True,
         cpython_reason='the Rust source parser has no PyPy wheel',
@@ -293,6 +329,10 @@ GATES: tuple[Gate, ...] = (
         summary='documented prose covers callable signatures and descriptor results',
         success='doc structure OK',
         remedy='document the parameter, or the return, in the Rust `///`',
+        requirements=(
+            'Rust source and tree-sitter-rust',
+            'compiled extension',
+        ),
         subject='documented member',
         requires_cpython=True,
         cpython_reason='the Rust source parser has no PyPy wheel',
@@ -303,6 +343,11 @@ GATES: tuple[Gate, ...] = (
         summary='stub docstrings match the runtime ones',
         success='stub docstrings in sync',
         remedy=_GEN_DOCS,
+        requirements=(
+            'Rust source and tree-sitter-rust',
+            'compiled extension',
+            'LibCST',
+        ),
         requires_cpython=True,
         cpython_reason='the doc generator has no PyPy wheel',
     ),
@@ -312,6 +357,7 @@ GATES: tuple[Gate, ...] = (
         summary='the stub matches the compiled runtime (mypy.stubtest)',
         success='stubtest OK: stub matches the runtime',
         remedy='fix the stub, or add a stubtest allowlist entry',
+        requirements=('mypy.stubtest', 'compiled extension'),
         requires_cpython=True,
     ),
 )
