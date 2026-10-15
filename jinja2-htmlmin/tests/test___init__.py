@@ -1,6 +1,18 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
-from jinja2 import DictLoader, Environment, FileSystemLoader
+import pytest
+from htmlmin.parser import HTMLMinParser
+from jinja2 import (
+    ChoiceLoader,
+    DictLoader,
+    Environment,
+    FileSystemLoader,
+    ModuleLoader,
+    PrefixLoader,
+)
 
 import jinja2_htmlmin
 from jinja2_htmlmin import _restore_placeholders, minify_loader
@@ -26,7 +38,7 @@ def render_template_with_environment(
     return env.get_template('template.html').render(**context)
 
 
-def test_minify_loader():
+def test_minify_loader(tmp_path):
     env = Environment(
         loader=minify_loader(
             FileSystemLoader('tests/templates'),
@@ -50,8 +62,8 @@ def test_minify_loader():
 
     try:
         assert rendered == Path('tests/templates/index.html').read_text()
-    except Exception:
-        Path('tests/templates/.index.html').write_text(rendered)
+    except AssertionError:
+        (tmp_path / 'index.html').write_text(rendered)
         raise
 
 
@@ -205,3 +217,80 @@ def test_static_boolean_attribute_value_is_still_reduced():
     rendered = env.get_template('template.html').render()
 
     assert rendered == '<input disabled>'
+
+
+def test_shared_loader_keeps_concurrent_parser_state_separate():
+    fed = Barrier(2, timeout=10)
+
+    class InterleavedParser(HTMLMinParser):
+        def feed(self, data):
+            super().feed(data)
+            fed.wait()
+
+    loader = minify_loader(
+        DictLoader({
+            'one.html': '<p>  {{ value }}  </p>',
+            'two.html': '<b>  {{ value }}  </b>',
+        }),
+        cls=InterleavedParser,
+        remove_all_empty_space=True,
+    )
+
+    def render(name):
+        env = Environment(loader=loader, autoescape=True)
+        return env.get_template(name).render(value=name)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        one = workers.submit(render, 'one.html')
+        two = workers.submit(render, 'two.html')
+        assert one.result(timeout=10) == '<p> one.html </p>'
+        assert two.result(timeout=10) == '<b> two.html </b>'
+
+
+@pytest.mark.parametrize('composite', ['choice', 'prefix'])
+def test_wrapped_source_loader_inside_composite(composite):
+    source = DictLoader({'index.html': '<p>\n {{ value }}\n </p>'})
+    wrapped = minify_loader(source, remove_all_empty_space=True)
+    assert wrapped is source
+    if composite == 'choice':
+        loader = ChoiceLoader([DictLoader({}), wrapped])
+        name = 'index.html'
+    else:
+        loader = PrefixLoader({'pages': wrapped})
+        name = 'pages/index.html'
+    env = Environment(loader=loader, autoescape=True)
+
+    assert env.get_template(name).render(value='<hello>') == '<p> &lt;hello&gt; </p>'
+
+
+def test_source_reload_and_cached_rendering(tmp_path):
+    template = tmp_path / 'index.html'
+    template.write_text('<p>\n {{ value }}\n </p>')
+    env = Environment(
+        loader=minify_loader(FileSystemLoader(tmp_path), remove_all_empty_space=True),
+        autoescape=True,
+    )
+    cached = env.get_template('index.html')
+    assert cached.render(value='one') == '<p> one </p>'
+    assert env.get_template('index.html') is cached
+    template.write_text('<b>\n {{ value }}\n </b>')
+    # Force a distinct timestamp without relying on filesystem clock resolution.
+    stat = template.stat()
+    os.utime(template, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert env.get_template('index.html').render(value='two') == '<b> two </b>'
+
+
+def test_precompiled_module_loader_bypasses_source_minification(tmp_path):
+    source = Environment(
+        loader=DictLoader({'index.html': '<!-- retained --><p>{{ value }}</p>'}),
+        autoescape=True,
+    )
+    source.compile_templates(tmp_path, zip=None)
+    env = Environment(
+        loader=minify_loader(ModuleLoader(tmp_path), remove_comments=True),
+        autoescape=True,
+    )
+
+    assert env.get_template('index.html').render(value='hello') == (
+        '<!-- retained --><p>hello</p>'
+    )

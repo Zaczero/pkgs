@@ -119,31 +119,37 @@ def minify_loader(
     **kwargs: Unpack[_HTMLMinKwargs],
 ) -> _Loader:
     """
-    Enhance a Jinja2 loader to automatically minify HTML templates.
+    Minify HTML source loaded through a Jinja2 loader's get_source method.
 
     Wraps the loader's get_source method to apply HTML minification while
     preserving Jinja2 syntax. The minification occurs at template load time,
-    before Jinja2 compilation.
+    before Jinja2 compilation. Each source load owns its parser; cached renders
+    do not repeat minification. Wrap source-backed children of ChoiceLoader or
+    PrefixLoader. ModuleLoader and Environment.from_string bypass this boundary.
+    Dynamic rendered values are not minified or sanitized.
 
     :param loader: Jinja2 loader instance to enhance
     :param kwargs: Minifier configuration options (see
                    https://htmlmin.readthedocs.io/en/latest/reference.html)
-    :return: The same loader instance with minification enabled
+    :return: The same loader instance, with get_source replaced in place.
+    :raises: Source-loader, Jinja, and htmlmin2 errors propagate. Minifier options
+             are applied when source is loaded.
 
     Example::
 
-        from jinja2 import FileSystemLoader
+        from jinja2 import DictLoader, Environment
         from jinja2_htmlmin import minify_loader
 
-        loader = minify_loader(
-            FileSystemLoader("templates"),
-            remove_comments=True,
-            remove_empty_space=True,
-            remove_all_empty_space=True,
-            reduce_boolean_attributes=True,
+        loader = minify_loader(DictLoader({
+            "index.html": "<!-- greeting --><p>{{ title }}</p>",
+        }), remove_comments=True)
+        env = Environment(loader=loader, autoescape=True)
+        assert env.get_template("index.html").render(title="<Hello>") == (
+            "<p>&lt;Hello&gt;</p>"
         )
     """
-    minifier = Minifier(**kwargs)
+    if 'pre_tags' in kwargs:
+        kwargs['pre_tags'] = tuple(kwargs['pre_tags'])
 
     super_get_source = loader.get_source
 
@@ -159,7 +165,7 @@ def minify_loader(
             template,
             path,
         )
-        source = minifier.minify(source)
+        source = Minifier(**kwargs).minify(source)
 
         if lookup:
             source = _restore_placeholders(source, placeholder_prefix, lookup)
