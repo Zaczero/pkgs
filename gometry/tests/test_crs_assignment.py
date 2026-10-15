@@ -89,9 +89,9 @@ def test_with_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
     ])
     with pytest.raises(ValueError, match='coordinate epoch must be'):
         gm.Point(1, 2, epoch=float('nan'))
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.TransformError):
         gm.Point(1, 90, crs=4326).to_crs(3857)
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.CRSError):
         gm.Point(1, 2).to_crs(3857)
 
 

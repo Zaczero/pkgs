@@ -33,8 +33,9 @@ def test_wrong_geometry_kind_raises_type_error(op) -> None:
 @pytest.mark.parametrize('value', [gm.Point(0, 0), gm.LineString([(0, 0), (1, 1)])])
 @pytest.mark.parametrize('distance', [float('nan'), float('inf')])
 def test_invalid_values_stay_value_error(value, distance) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError) as excinfo:
         value.buffer(distance)
+    assert isinstance(excinfo.value, ValueError)
 
 
 @pytest.mark.parametrize(
@@ -119,7 +120,7 @@ def test_token_rejections_follow_the_canonical_template(
     template cannot drift (the did-you-mean clause appears when a valid
     token is within typo distance).
     """
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(gm.GeometryError) as excinfo:
         trigger()
     prefix, expected = message.split('; ', 1)
     actual = str(excinfo.value)

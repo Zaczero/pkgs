@@ -19,9 +19,7 @@ ignore = [
   "ARG002",  # unused-method-argument
   "ASYNC109",  # async-function-with-timeout
   "ASYNC240",  # blocking-path-method-in-async-function
-  "B006",  # mutable-argument-default
   "B008",  # function-call-in-default-argument
-  "B017",  # assert-raises-exception
   "E731",  # lambda-assignment
   "E741",  # ambiguous-variable-name
   "LOG015",  # root-logger-call
@@ -38,7 +36,6 @@ ignore = [
   "PLW2901",  # redefined-loop-name
   "PT001",  # pytest-fixture-incorrect-parentheses-style
   "PT006",  # pytest-parametrize-names-wrong-type
-  "PT011",  # pytest-raises-too-broad
   "PT018",  # pytest-composite-assertion
   "PT023",  # pytest-incorrect-mark-parentheses-style
   "PYI015",  # assignment-default-in-stub

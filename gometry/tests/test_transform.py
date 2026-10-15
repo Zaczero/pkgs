@@ -220,9 +220,9 @@ def test_scale_array_uses_per_element_centroid():
 
 def test_affine_transform_rejects_bad_matrix():
     point = gm.Point(1.0, 1.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError):
         (point).affine_transform((1.0, 0.0, 0.0, 1.0, 0.0))
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError):
         (point).affine_transform((1.0, 0.0, 0.0, 1.0, 0.0, float('nan')))
 
 

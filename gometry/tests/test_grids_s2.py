@@ -117,7 +117,7 @@ def test_s2_point_cell_boundary_and_parent() -> None:
     assert (
         gm.CellArray([cell.id], type=gm.S2Cell).polygon[0].to_wkt() == boundary.to_wkt()
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError):
         cell.parent(13)
     with pytest.raises(TypeError, match='lat must not be provided'):
         gm.S2Cell(gm.Point(21.0, 52.0, crs=4326), 52.0, level=12)
@@ -149,7 +149,7 @@ def test_s2_bounds_coverage_membership() -> None:
         [True, False],
     )
     assert not gm.contains(polygon, gm.Point(30.0, 52.0, crs=4326))
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError):
         gm.s2_cover(gm.box(0, 0, 1, 1), level=1, max_cells=0)
 
 

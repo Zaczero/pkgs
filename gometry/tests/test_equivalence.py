@@ -667,9 +667,9 @@ def test_antimeridian_and_pole_geodesics_are_symmetric() -> None:
 
 
 def test_degenerate_rings_are_rejected_across_constructors() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.Polygon([(0.0, 0.0), (1.0, 1.0)])
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.ParseError):
         gm.from_wkt('POLYGON ((0 0, 1 1))')
     with pytest.raises(gm.ParseError):
         gm.from_geojson('{"type": "Polygon", "coordinates": [[[0, 0], [1, 1]]]}')

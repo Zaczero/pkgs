@@ -152,14 +152,17 @@ def test_catmull_rom_finite_from_finite_extreme() -> None:
 
 
 def test_segmentize_budget_charges_realized_output() -> None:
-    # 204-vertex sawtooth: requesting steps that would exceed 16M must raise
-    # with a produced count at least as large as the true output size.
+    # Each of 203 length-sqrt(2) edges needs ceil(sqrt(2) / 1e-5) pieces.
+    # Only the inserted vertices count against the generated-output budget.
     pts = [(float(i), float(i % 2)) for i in range(204)]
     ls = gm.LineString(pts)
-    with pytest.raises(Exception) as ei:
+    with pytest.raises(gm.GeometryError) as ei:
         ls.segmentize(1e-5)
-    msg = str(ei.value)
-    assert '16000000' in msg or '16_000_000' in msg or 'exceeding the limit' in msg
+    assert type(ei.value) is gm.GeometryError
+    assert ei.value.operation == 'segmentize'
+    assert ei.value.parameter == 'max_length'
+    assert ei.value.produced == 203 * (math.ceil(math.sqrt(2) / 1e-5) - 1)
+    assert ei.value.limit == 16_000_000
 
 
 @pytest.mark.parametrize(
@@ -288,7 +291,7 @@ def test_geo_hausdorff_identity_validates_latitude() -> None:
     identity-zero shortcut.
     """
     bad = gm.LineString([(0.0, 95.0), (1.0, 95.0)], crs=4326)
-    with pytest.raises(Exception) as ei:
+    with pytest.raises(gm.InvalidGeometryError) as ei:
         gm.hausdorff_distance(bad, bad)
     msg = str(ei.value).lower()
     assert 'lat' in msg or 'domain' in msg or 'geographic' in msg or '90' in msg
@@ -590,7 +593,7 @@ def test_line_index_rejects_nonfinite_total_length() -> None:
     # Two huge segments: each length is finite (~1e308) but the sum is +inf.
     ls = gm.LineString([(0.0, 0.0), (1e308, 0.0), (0.0, 1e308)])
     assert not math.isfinite(ls.length)
-    with pytest.raises(Exception, match=r'finite|length|line index'):
+    with pytest.raises(gm.GeometryError, match=r'finite|length|line index'):
         ls.line_interpolate(0.5)
 
 

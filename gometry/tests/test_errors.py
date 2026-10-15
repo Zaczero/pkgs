@@ -171,8 +171,9 @@ def test_geometry_type_error_on_wrong_kind() -> None:
         line_only.line_locate(gm.Point(0, 0))
     with pytest.raises(TypeError):
         line_only.line_interpolate(0.5)
-    with pytest.raises(ValueError):
+    with pytest.raises(errors.GeometryTypeError) as excinfo:
         line_only.line_interpolate(0.5)
+    assert isinstance(excinfo.value, ValueError)
     # Empty-point ordinate access is an AttributeError so `match Point(x, y)`
     # patterns FAIL (per the match protocol) instead of raising mid-match.
     with pytest.raises(AttributeError, match='empty point'):

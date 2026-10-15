@@ -163,10 +163,6 @@ pub(crate) fn partition_relate_data(left: &PreparedPlan, right: &PreparedPlan) -
     exact_partition_relate(left.shape(), right.shape())
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
-)]
 pub(crate) fn graph_relate_data_geographic(
     left: GeographicPrepared<'_>,
     right: GeographicPrepared<'_>,

@@ -823,7 +823,7 @@ def test_empty_replace_at_consumes_both_inputs_before_returning() -> None:
 
     mismatch_positions = Tracked([])
     mismatch_values = Tracked([object()])
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match='length') as excinfo:
         array._replace_at(mismatch_positions, mismatch_values)
     assert type(excinfo.value) is ValueError
     assert mismatch_positions.started and mismatch_positions.exhausted

@@ -405,7 +405,7 @@ def test_coordinate_matrix_is_readonly() -> None:
     )
 
     assert matrix.flags.writeable is False
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='read-only'):
         matrix[0, 0] = 9.0
 
 

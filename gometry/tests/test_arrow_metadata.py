@@ -433,7 +433,7 @@ def test_from_arrow_geoarrow_wkb_over_point_storage_same_verdict_all_frontends()
     match = 'geoarrow.wkb storage must be'
     errors: list[tuple[str, type[BaseException], str]] = []
     for frontend_id, frontend in _arrow_frontends(table):
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(TypeError) as excinfo:
             gm.from_arrow(frontend)
         errors.append((frontend_id, type(excinfo.value), str(excinfo.value)))
         assert match in str(excinfo.value), (frontend_id, excinfo.value)

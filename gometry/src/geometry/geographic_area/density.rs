@@ -28,10 +28,6 @@ pub(crate) struct GeographicAreaDensity {
 }
 
 impl GeographicAreaDensity {
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "AuthalicSeries::area_density transfers this fixed coefficient array into owned harmonic state"
-    )]
     pub(crate) fn new(
         coefficients: [f64; MAX_AUTHALIC_HARMONICS],
         count: usize,
