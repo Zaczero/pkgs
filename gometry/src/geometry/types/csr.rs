@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::ops::Range;
 
 use crate::collections::csr;
 use crate::error::Result;
@@ -96,32 +97,15 @@ impl CsrOffsetBuilder {
         self.builder.push_end(vertex_index)
     }
 
-    /// Append a prevalidated contiguous CSR window rebased into the current
-    /// output coordinate space. Only its closing ends are appended.
-    pub(crate) fn extend_rebased(
-        &mut self,
-        window: CheckedCsrWindow<'_>,
-        output_base: usize,
-    ) -> Result<()> {
-        if window.start_row == window.end_row {
-            return Ok(());
-        }
-        let start = window
-            .start_row
-            .checked_add(1)
-            .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
-        let Some(ends) = window.source.get(start..=window.end_row) else {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        };
-        for &raw_end in ends {
-            let end = raw_end as usize;
-            let relative = end.wrapping_sub(window.source_start);
-            let rebased = output_base
-                .checked_add(relative)
-                .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
-            self.push_end(rebased, i32::MAX as usize)?;
-        }
-        Ok(())
+    /// Append ends from a source window whose rebased final end was admitted.
+    pub(crate) fn extend_rebased<Level>(&mut self, window: RebasedCsrWindow<'_, Level>) {
+        let source_start = window.window.source_start;
+        let output_base = window.output_base;
+        let ends = window.window.closing_offsets().iter().map(|&raw_end| {
+            let relative = (raw_end as usize).wrapping_sub(source_start);
+            output_base.wrapping_add(relative) as i32
+        });
+        self.builder.extend_admitted_i32_ends(ends);
     }
 
     pub(crate) const fn row_count(&self) -> usize {
@@ -174,6 +158,33 @@ impl<Level> CsrOffsetColumn<Level> {
     pub(crate) fn as_slice(&self) -> &[i32] {
         &self.offsets
     }
+
+    /// Select contiguous rows from this admitted offset owner.
+    ///
+    /// The borrowed owner retains the monotonicity, zero origin, and parent
+    /// value bounds established when this column was constructed.
+    pub(crate) fn window(&self, rows: Range<usize>) -> Result<CsrOffsetWindow<'_, Level>> {
+        if rows.start > rows.end {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        }
+        let Some(boundaries) = self.as_slice().get(rows.start..=rows.end) else {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        };
+        let Some(&source_start) = boundaries.first() else {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        };
+        let Some(&source_end) = boundaries.last() else {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        };
+        Ok(CsrOffsetWindow {
+            owner: self,
+            row_start: rows.start,
+            row_end: rows.end,
+            source_start: source_start as usize,
+            source_end: source_end as usize,
+        })
+    }
+
     /// Single O(n) validation at freeze: monotonic, starts at 0, last <=
     /// `end_cap`.
     ///
@@ -226,69 +237,62 @@ impl<Level> CsrOffsetColumn<Level> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct CheckedCsrWindow<'a> {
-    source: &'a [i32],
-    start_row: usize,
-    end_row: usize,
+pub(crate) struct CsrOffsetWindow<'a, Level> {
+    owner: &'a CsrOffsetColumn<Level>,
+    row_start: usize,
+    row_end: usize,
     source_start: usize,
     source_end: usize,
 }
 
-impl CheckedCsrWindow<'_> {
-    pub(crate) const fn source_start(self) -> usize {
-        self.source_start
+impl<'a, Level> CsrOffsetWindow<'a, Level> {
+    pub(crate) const fn row_count(self) -> usize {
+        self.row_end.wrapping_sub(self.row_start)
     }
 
-    pub(crate) const fn source_end(self) -> usize {
-        self.source_end
+    /// Values addressed by this level's parent CSR column.
+    pub(crate) const fn values(self) -> Range<usize> {
+        self.source_start..self.source_end
+    }
+
+    /// Admit the destination's final offset before any parallel payload is
+    /// appended. Every intermediate rebased end is then representable too.
+    pub(crate) fn rebase(self, output_base: usize) -> Result<RebasedCsrWindow<'a, Level>> {
+        let output_end = output_base
+            .checked_add(self.source_end.wrapping_sub(self.source_start))
+            .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+        i32::try_from(output_end).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?;
+        Ok(RebasedCsrWindow {
+            window: self,
+            output_base,
+        })
+    }
+
+    fn closing_offsets(self) -> &'a [i32] {
+        if self.row_start == self.row_end {
+            return &[];
+        }
+        self.owner
+            .as_slice()
+            .get(self.row_start.wrapping_add(1)..=self.row_end)
+            .expect("CSR row window belongs to its admitted offset owner")
     }
 }
 
-/// Validate every source boundary in a contiguous CSR row range before any
-/// caller indexes or casts its endpoints.
-pub(crate) fn checked_csr_window(
-    source: &[i32],
-    rows: std::ops::Range<usize>,
-    value_cap: usize,
-) -> Result<CheckedCsrWindow<'_>> {
-    if rows.start > rows.end {
-        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RebasedCsrWindow<'a, Level> {
+    window: CsrOffsetWindow<'a, Level>,
+    output_base: usize,
+}
+
+impl<Level> RebasedCsrWindow<'_, Level> {
+    pub(crate) const fn row_count(self) -> usize {
+        self.window.row_count()
     }
-    let Some(values) = source.get(rows.start..=rows.end) else {
-        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-    };
-    let mut previous = None;
-    for &raw in values {
-        if raw < 0 {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        }
-        let value = raw as usize;
-        if value > value_cap {
-            return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
-        }
-        if previous.is_some_and(|previous| value < previous) {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        }
-        previous = Some(value);
+
+    pub(crate) const fn values(self) -> Range<usize> {
+        self.window.values()
     }
-    let source_start = values
-        .first()
-        .copied()
-        .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
-    let source_end = values
-        .last()
-        .copied()
-        .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
-    if rows.start == 0 && source_start != 0 {
-        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-    }
-    Ok(CheckedCsrWindow {
-        source,
-        start_row: rows.start,
-        end_row: rows.end,
-        source_start: source_start as usize,
-        source_end: source_end as usize,
-    })
 }
 
 fn validate_csr_offsets_i32(offsets: &[i32], end_cap: usize) -> Result<()> {
@@ -350,7 +354,7 @@ pub(crate) fn ensure_coordseq_vertex_capacity(len: usize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CsrOffsetBuilder, GeometryErrorKind, checked_csr_window};
+    use super::{CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, PolygonLevel, RingLevel};
     use crate::error::ErrorKind;
 
     #[test]
@@ -404,22 +408,50 @@ mod tests {
     }
 
     #[test]
-    fn checked_csr_window_rejects_malformed_boundaries_without_panicking() {
-        for (offsets, rows, cap) in [
-            (&[0, -1, 2][..], 0..2, 2),
-            (&[0, 2, 1][..], 0..2, 2),
-            (&[0, 2][..], 0..3, 2),
-            (&[0, 3][..], 0..1, 2),
-            (&[1, 2][..], 0..1, 2),
-            (&[0, 2][..], std::ops::Range { start: 2, end: 1 }, 2),
-            (&[][..], 0..0, 0),
-        ] {
-            let result = std::panic::catch_unwind(|| checked_csr_window(offsets, rows, cap));
-            assert!(result.is_ok(), "malformed CSR boundary panicked");
-            assert!(
-                result.unwrap().is_err(),
-                "malformed CSR boundary was accepted"
-            );
-        }
+    fn typed_csr_windows_keep_parent_ranges_and_rebase_from_nonzero_bases() {
+        let polygon_offsets =
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).expect("polygons");
+        let polygon_window = polygon_offsets.window(1..2).expect("selected polygon");
+        assert_eq!(polygon_window.values(), 2..3);
+
+        let ring_offsets =
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 3, 7, 12], 12).expect("rings");
+        let ring_window = ring_offsets
+            .window(polygon_window.values())
+            .expect("the selected polygon's ring range");
+        assert_eq!(ring_window.values(), 7..12);
+
+        let mut output = CsrOffsetBuilder::new();
+        output.push_end(7, 12).expect("existing coordinate base");
+        output.extend_rebased(ring_window.rebase(7).expect("rebased ring"));
+        assert_eq!(output.finish(12).expect("finished offsets").as_slice(), &[
+            0, 7, 12
+        ]);
+    }
+
+    #[test]
+    fn typed_csr_windows_check_row_ranges_and_destination_width() {
+        let offsets = CsrOffsetColumn::<()>::try_new(vec![0, 1], 1).expect("offsets");
+        let error = offsets
+            .window(std::ops::Range { start: 1, end: 0 })
+            .expect_err("reversed rows");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+        let error = offsets.window(0..2).expect_err("past the terminal offset");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+
+        let window = offsets.window(0..1).expect("valid row");
+        let error = window
+            .rebase(i32::MAX as usize)
+            .expect_err("destination end exceeds i32");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
     }
 }

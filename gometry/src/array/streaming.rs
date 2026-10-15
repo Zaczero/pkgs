@@ -9,13 +9,11 @@ use crate::array::{
 use crate::geometry::storage::admission::{CheckedRingWindow, polygon_pack_axes};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, ShapeRow, ValidityBuilder,
-    ValidityMask, admit_packed_total, csr_value_window, materialized_packed_lines_len,
-    materialized_packed_polygons_len,
+    ValidityMask, admit_packed_total, csr_value_window,
 };
-use crate::geometry::types::checked_csr_window;
 use crate::geometry::{
-    CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon,
-    ShapeCountQuery, storage,
+    CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, CsrOffsetWindow, GeometryErrorKind, LineSeq,
+    Polygon, RebasedCsrWindow, ShapeCountQuery, storage,
 };
 
 #[cfg(test)]
@@ -283,7 +281,6 @@ impl StreamingShapes {
                 offsets,
                 row_map,
             }) => {
-                let map = row_map.as_deref();
                 let Some(rows) =
                     contiguous_rows(row_map.as_deref(), offsets.len().saturating_sub(1))
                 else {
@@ -296,7 +293,7 @@ impl StreamingShapes {
                 if !self.admit_kind(RowKind::Line(axes)) {
                     return Ok(false);
                 }
-                let incoming = materialized_packed_lines_len(offsets.as_slice(), map)?;
+                let window: CsrOffsetWindow<'_, ()> = offsets.window(rows.clone())?;
                 let existing = match &self.state {
                     StreamingState::Lines(builder) => builder.coords.len(),
                     StreamingState::Empty
@@ -304,9 +301,9 @@ impl StreamingShapes {
                     | StreamingState::Polygons(_)
                     | StreamingState::Shapes(_) => 0,
                 };
-                admit_packed_total(existing, incoming)?;
+                let window = window.rebase(existing)?;
                 if let StreamingState::Lines(builder) = &mut self.state {
-                    builder.try_extend_admitted(coords, offsets.as_slice(), rows.clone())?;
+                    builder.extend_admitted(coords, window);
                 } else {
                     let mut builder = StreamingLines::try_new(
                         axes,
@@ -314,7 +311,7 @@ impl StreamingShapes {
                         self.row_capacity,
                         self.validity.len(),
                     )?;
-                    builder.try_extend_admitted(coords, offsets.as_slice(), rows.clone())?;
+                    builder.extend_admitted(coords, window);
                     self.state = StreamingState::Lines(builder);
                 }
                 self.validity.extend_present(rows.len());
@@ -328,7 +325,6 @@ impl StreamingShapes {
                 polygon_offsets,
                 row_map,
             }) => {
-                let map = row_map.as_deref();
                 let Some(rows) =
                     contiguous_rows(row_map.as_deref(), polygon_offsets.len().saturating_sub(1))
                 else {
@@ -341,11 +337,10 @@ impl StreamingShapes {
                 if !self.admit_kind(RowKind::Polygon(axes)) {
                     return Ok(false);
                 }
-                let (incoming_vertices, incoming_rings) = materialized_packed_polygons_len(
-                    ring_offsets.as_slice(),
-                    polygon_offsets.as_slice(),
-                    map,
-                )?;
+                let polygon_window: CsrOffsetWindow<'_, PolygonLevel> =
+                    polygon_offsets.window(rows.clone())?;
+                let ring_window: CsrOffsetWindow<'_, RingLevel> =
+                    ring_offsets.window(polygon_window.values())?;
                 let (existing_vertices, existing_rings) = match &self.state {
                     StreamingState::Polygons(builder) => {
                         (builder.coords.len(), builder.ring_offsets.row_count())
@@ -355,15 +350,10 @@ impl StreamingShapes {
                     | StreamingState::Lines(_)
                     | StreamingState::Shapes(_) => (0, 0),
                 };
-                admit_packed_total(existing_vertices, incoming_vertices)?;
-                admit_packed_total(existing_rings, incoming_rings)?;
+                let ring_window = ring_window.rebase(existing_vertices)?;
+                let polygon_window = polygon_window.rebase(existing_rings)?;
                 if let StreamingState::Polygons(builder) = &mut self.state {
-                    builder.try_extend_admitted(
-                        coords,
-                        ring_offsets.as_slice(),
-                        polygon_offsets.as_slice(),
-                        rows.clone(),
-                    )?;
+                    builder.extend_admitted(coords, ring_window, polygon_window);
                 } else {
                     let mut builder = StreamingPolygons::try_new(
                         axes,
@@ -372,12 +362,7 @@ impl StreamingShapes {
                         self.ring_capacity,
                         self.validity.len(),
                     )?;
-                    builder.try_extend_admitted(
-                        coords,
-                        ring_offsets.as_slice(),
-                        polygon_offsets.as_slice(),
-                        rows.clone(),
-                    )?;
+                    builder.extend_admitted(coords, ring_window, polygon_window);
                     self.state = StreamingState::Polygons(builder);
                 }
                 self.validity.extend_present(rows.len());
@@ -750,19 +735,10 @@ impl StreamingLines {
         self.offsets.push_end(output_end, i32::MAX as usize)
     }
 
-    fn try_extend_admitted(
-        &mut self,
-        coords: &CoordSeq,
-        offsets: &[i32],
-        rows: std::ops::Range<usize>,
-    ) -> crate::error::Result<()> {
-        let row_count = rows.len();
-        let window = checked_csr_window(offsets, rows, coords.len())?;
-        self.offsets.reserve_rows(row_count);
-        let output_start = self.coords.len();
-        self.coords
-            .extend_window(coords, window.source_start()..window.source_end());
-        self.offsets.extend_rebased(window, output_start)
+    fn extend_admitted(&mut self, coords: &CoordSeq, window: RebasedCsrWindow<'_, ()>) {
+        self.offsets.reserve_rows(window.row_count());
+        self.coords.extend_window(coords, window.values());
+        self.offsets.extend_rebased(window);
     }
 
     fn try_push_missing(&mut self) -> crate::error::Result<()> {
@@ -859,32 +835,18 @@ impl StreamingPolygons {
             .push_end(output_rings, i32::MAX as usize)
     }
 
-    fn try_extend_admitted(
+    fn extend_admitted(
         &mut self,
         coords: &CoordSeq,
-        ring_offsets: &[i32],
-        polygon_offsets: &[i32],
-        rows: std::ops::Range<usize>,
-    ) -> crate::error::Result<()> {
-        let row_count = rows.len();
-        let polygon_window =
-            checked_csr_window(polygon_offsets, rows, ring_offsets.len().saturating_sub(1))?;
-        let ring_window = checked_csr_window(
-            ring_offsets,
-            polygon_window.source_start()..polygon_window.source_end(),
-            coords.len(),
-        )?;
-        let source_rings = polygon_window.source_start()..polygon_window.source_end();
-        self.ring_offsets.reserve_rows(source_rings.len());
-        self.polygon_offsets.reserve_rows(row_count);
-        let output_coordinate_start = self.coords.len();
-        let output_ring_start = self.ring_offsets.row_count();
-        self.coords
-            .extend_window(coords, ring_window.source_start()..ring_window.source_end());
-        self.ring_offsets
-            .extend_rebased(ring_window, output_coordinate_start)?;
+        ring_window: RebasedCsrWindow<'_, RingLevel>,
+        polygon_window: RebasedCsrWindow<'_, PolygonLevel>,
+    ) {
+        self.ring_offsets.reserve_rows(ring_window.row_count());
         self.polygon_offsets
-            .extend_rebased(polygon_window, output_ring_start)
+            .reserve_rows(polygon_window.row_count());
+        self.coords.extend_window(coords, ring_window.values());
+        self.ring_offsets.extend_rebased(ring_window);
+        self.polygon_offsets.extend_rebased(polygon_window);
     }
 
     fn try_push_missing(&mut self) -> crate::error::Result<()> {
@@ -943,7 +905,7 @@ impl StreamingPolygons {
 #[cfg(test)]
 mod demotion_tests {
     use super::*;
-    use crate::geometry::{Point, Ring};
+    use crate::geometry::{MColumn, Point, Ring, SharedSlice};
 
     fn xy_line(points: &[(f64, f64)]) -> Shape {
         let coords = CoordSeq::try_from_points(
@@ -1112,6 +1074,64 @@ mod demotion_tests {
             storage::shape_iter_materializations(),
             0,
             "native row append must not stage Shape values"
+        );
+    }
+
+    #[test]
+    fn typed_window_append_preserves_parent_ranges_and_local_m() {
+        let coords = CoordSeq::from_shared_columns(
+            SharedSlice::from_vec((0..12).map(f64::from).collect()),
+            SharedSlice::from_vec((0..12).map(|value| f64::from(value * 2)).collect()),
+            None,
+            Some(MColumn::Local {
+                owner: SharedSlice::from_vec((0..16).map(f64::from).collect()),
+                offset: 2,
+            }),
+        )
+        .expect("local-M coordinates");
+
+        let line_offsets = CsrOffsetColumn::<()>::try_new(vec![0, 2, 5], 5).expect("line offsets");
+        let line_window = line_offsets.window(1..2).expect("second line");
+        assert_eq!(line_window.values(), 2..5);
+        let mut lines = StreamingLines::try_new(coords.axes(), 0, 2, 0).expect("line builder");
+        lines
+            .try_push_span(&coords, 0..2)
+            .expect("first line prefix");
+        lines.extend_admitted(&coords, line_window.rebase(2).expect("line destination"));
+        let (line_coords, line_offsets) = lines.into_parts().expect("line parts");
+        assert_eq!(line_offsets.as_slice(), &[0, 2, 5]);
+        assert_eq!(line_coords.ms(), Some(&[2.0, 3.0, 4.0, 5.0, 6.0][..]));
+
+        let ring_offsets =
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 3, 7, 12], 12).expect("ring offsets");
+        let polygon_offsets =
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).expect("polygon offsets");
+        let polygon_window = polygon_offsets.window(1..2).expect("second polygon");
+        let ring_window = ring_offsets
+            .window(polygon_window.values())
+            .expect("selected polygon's rings");
+        assert_eq!(ring_window.values(), 7..12);
+
+        let mut polygons =
+            StreamingPolygons::try_new(coords.axes(), 0, 2, 3, 0).expect("polygon builder");
+        polygons
+            .try_push_spans(&coords, ring_offsets.as_slice(), 0..2)
+            .expect("first polygon prefix");
+        polygons.extend_admitted(
+            &coords,
+            ring_window.rebase(7).expect("coordinate destination"),
+            polygon_window.rebase(2).expect("ring destination"),
+        );
+        let (polygon_coords, rings, polygons) = polygons.into_parts().expect("polygon parts");
+        assert_eq!(rings.as_slice(), &[0, 3, 7, 12]);
+        assert_eq!(polygons.as_slice(), &[0, 2, 3]);
+        assert_eq!(
+            polygon_coords.ms(),
+            Some(
+                &[
+                    2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
+                ][..]
+            )
         );
     }
 }

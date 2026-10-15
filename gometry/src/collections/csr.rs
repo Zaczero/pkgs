@@ -106,21 +106,19 @@ impl<T, Offset: CsrOffset> CsrBuilder<T, Offset> {
     }
 }
 
-#[cfg(test)]
-impl<T> CsrBuilder<T> {
-    pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
-        let next_row = row
-            .checked_add(1)
-            .expect("a CSR row index has a following offset");
-        let start = self
-            .offsets
-            .get(row)
-            .expect("row index belongs to the CSR builder");
-        let end = self
-            .offsets
-            .get(next_row)
-            .expect("every CSR row has a terminal offset");
-        *start as usize..*end as usize
+impl<T> CsrBuilder<T, i32> {
+    /// Append ends admitted by their owning packed CSR window. That owner has
+    /// established their monotonicity and the destination's `i32` width.
+    pub(crate) fn extend_admitted_i32_ends(&mut self, ends: impl IntoIterator<Item = i32>) {
+        let mut ends = ends.into_iter();
+        let Some(first) = ends.next() else {
+            return;
+        };
+        if self.offsets.is_empty() {
+            self.offsets.push(i32::default());
+        }
+        self.offsets.push(first);
+        self.offsets.extend(ends);
     }
 }
 
@@ -136,7 +134,6 @@ mod tests {
         builder
             .push_row(std::iter::empty())
             .expect("second empty row");
-        assert_eq!(builder.row_range(1), 0..2);
         let (values, offsets) = builder.finish();
         assert_eq!(values, [1, 2]);
         assert_eq!(offsets, [0, 0, 2, 2]);
