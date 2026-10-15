@@ -73,11 +73,11 @@ fn overlapping_rows() -> [Shape; 2] {
 }
 
 #[test]
-fn ordinary_coverage_preparation_preserves_the_evaluation_balance() -> Result<()> {
+fn ordinary_coverage_preparation_preserves_the_evaluation_balance() {
     let rows = overlapping_rows();
-    let mut budget = EvaluationBudget::new("coverage_clean", 0)?;
+    let mut budget = EvaluationBudget::new("coverage_clean", 0).expect("coverage budget");
     let mut work = RecordingPreparation::new(&mut budget);
-    work.charge_evaluations(1)?;
+    work.charge_evaluations(1).expect("first evaluation");
     let before = work.budget_mut().spent_ticks_for_test();
     assert!(before > 0);
     let analysis = analyze_geographic_coverage_with_work(
@@ -86,52 +86,59 @@ fn ordinary_coverage_preparation_preserves_the_evaluation_balance() -> Result<()
         0.0,
         "coverage_clean",
         &mut work,
-    )?;
+    )
+    .expect("ordinary source analysis");
     assert!(!analysis.is_valid());
-    analysis.assign_cleaning_faces(
-        &rows.each_ref().map(Shape::area),
-        0.0,
-        CoverageOverlapRule::MinIndex,
-        None::<&crate::crs::GeodesicMetric>,
-        &mut work,
-    )?;
+    analysis
+        .assign_cleaning_faces(
+            &rows.each_ref().map(Shape::area),
+            0.0,
+            CoverageOverlapRule::MinIndex,
+            None::<&crate::crs::GeodesicMetric>,
+            &mut work,
+        )
+        .expect("ordinary face selection");
     assert!(work.primitive_ticks > 0);
     assert_eq!(work.budget_mut().spent_ticks_for_test(), before);
-    work.charge_evaluations(1)?;
+    work.charge_evaluations(1).expect("second evaluation");
     assert_eq!(
         work.budget_mut().spent_ticks_for_test(),
         before.checked_mul(2).expect("two evaluation events fit"),
     );
-    Ok(())
 }
 
 #[test]
-fn coverage_native_admission_debits_the_ordinary_accounts_budget() -> Result<()> {
+fn coverage_native_admission_debits_the_ordinary_accounts_budget() {
     let rows = overlapping_rows();
     let frame = GeographicFrame::crs84();
-    let mut budget = EvaluationBudget::new("coverage_clean", 0)?;
+    let mut budget = EvaluationBudget::new("coverage_clean", 0).expect("coverage budget");
     let mut work = RecordingPreparation::new(&mut budget);
-    work.charge_evaluations(1)?;
+    work.charge_evaluations(1).expect("prepaid evaluation");
     let evaluation_ticks = work.budget_mut().spent_ticks_for_test();
     assert!(evaluation_ticks > 0);
     let analysis =
-        analyze_geographic_coverage_with_work(&rows, frame, 0.0, "coverage_clean", &mut work)?;
-    let assignment = analysis.assign_cleaning_faces(
-        &rows.each_ref().map(Shape::area),
-        0.0,
-        CoverageOverlapRule::MinIndex,
-        None::<&crate::crs::GeodesicMetric>,
-        &mut work,
-    )?;
+        analyze_geographic_coverage_with_work(&rows, frame, 0.0, "coverage_clean", &mut work)
+            .expect("ordinary source analysis");
+    let assignment = analysis
+        .assign_cleaning_faces(
+            &rows.each_ref().map(Shape::area),
+            0.0,
+            CoverageOverlapRule::MinIndex,
+            None::<&crate::crs::GeodesicMetric>,
+            &mut work,
+        )
+        .expect("ordinary face selection");
     let context: SourceArcContext<'_, '_> =
         SourceArcContext::new(TopologyDomain::Geographic(frame), None);
-    let _receipt = analysis.coverage_drawing_receipt(
-        &assignment,
-        &rows.each_ref().map(Shape::axes),
-        &context,
-        StorageTarget::Array,
-        &mut work,
-    )?;
+    let _receipt = analysis
+        .coverage_drawing_receipt(
+            &assignment,
+            &rows.each_ref().map(Shape::axes),
+            &context,
+            StorageTarget::Array,
+            &mut work,
+        )
+        .expect("genuine Native coverage receipt");
     let evaluations = work.evaluations;
     let spent = work.budget_mut().spent_ticks_for_test();
     assert!(evaluations > 1);
@@ -140,7 +147,6 @@ fn coverage_native_admission_debits_the_ordinary_accounts_budget() -> Result<()>
             > u128::from(evaluations)
                 .checked_mul(evaluation_ticks)
                 .expect("fixture evaluation work fits"),
-        "actual Native admission must charge primitive work on the same budget",
+        "Native admission must debit the same budget beyond outer evaluation events",
     );
-    Ok(())
 }

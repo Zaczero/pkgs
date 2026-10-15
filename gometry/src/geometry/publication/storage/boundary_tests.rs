@@ -150,7 +150,7 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
             assert!(row.producer_literals.pop().is_some());
         } else {
             let unique = unique_checked_index(row);
-            drop(row.checked.remove(unique));
+            row.checked.remove(unique);
         }
         assert_invalid(rows.finish(frame));
     }
