@@ -7783,8 +7783,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If encoding is unknown, or attributes clash with the geometry
-            column or mismatch the row count.
+            If the geometry layout carries M (including empty or all-missing
+            arrays), encoding is unknown, or attributes clash with the geometry
+            column or mismatch the row count. GeoParquet 1.x does not support M;
+            remove it explicitly with ``with_coordinates(m=None)`` before
+            writing, or use ``force_2d()`` to remove both Z and M.
 
         Examples
         --------
@@ -21372,7 +21375,9 @@ def from_arrow(
         A foreign PyArrow ``Array``, ``ChunkedArray``, ``Table``,
         ``RecordBatch``, or ``RecordBatchReader``, or an object implementing
         ``__arrow_c_array__`` or ``__arrow_c_stream__``. The input must use a
-        supported GeoArrow encoding, including GeoArrow WKB.
+        supported GeoArrow encoding, including GeoArrow WKB. Pass the provider
+        object itself; the capsule tuple returned by manually calling
+        ``__arrow_c_array__`` is not a supported input.
 
     crs : str, int, or CRS-like object, optional
         CRS to attach when the input has no embedded CRS. If embedded metadata

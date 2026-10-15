@@ -359,6 +359,12 @@ def test_from_arrow_rejects_non_arrow_objects() -> None:
         gm.from_arrow(object())
 
 
+def test_from_arrow_rejects_bare_capsule_tuple() -> None:
+    capsules = gm.points([1.0], [2.0]).__arrow_c_array__()
+    with pytest.raises(TypeError, match='expected a GeoArrow-encoded Arrow'):
+        gm.from_arrow(capsules)
+
+
 def test_index_construction_frame_conflict() -> None:
     with pytest.raises(
         errors.CRSMismatchError, match='spatial index requires one shared CRS'

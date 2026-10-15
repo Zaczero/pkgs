@@ -983,7 +983,9 @@ def from_geoparquet(
     ModuleNotFoundError
         If pyarrow is not installed.
     ParseError
-        If GeoParquet metadata is missing, malformed, or unsupported.
+        If GeoParquet metadata is missing, malformed, or unsupported, including
+        decoded M ordinates or M-typed native storage. Empty and all-null native
+        columns are rejected when their stored layout carries M.
     """
     pa = _pyarrow()
     pq = _pyarrow_parquet()

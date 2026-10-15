@@ -796,7 +796,9 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 ///     A foreign PyArrow ``Array``, ``ChunkedArray``, ``Table``,
 ///     ``RecordBatch``, or ``RecordBatchReader``, or an object implementing
 ///     ``__arrow_c_array__`` or ``__arrow_c_stream__``. The input must use a
-///     supported GeoArrow encoding, including GeoArrow WKB.
+///     supported GeoArrow encoding, including GeoArrow WKB. Pass the provider
+///     object itself; the capsule tuple returned by manually calling
+///     ``__arrow_c_array__`` is not a supported input.
 ///
 /// crs : str, int, or CRS-like object, optional
 ///     CRS to attach when the input has no embedded CRS. If embedded metadata
