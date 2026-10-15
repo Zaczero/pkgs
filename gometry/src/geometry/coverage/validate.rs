@@ -5,7 +5,7 @@ use rstar::{AABB, Envelope as _};
 
 use crate::collections::{try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
-use crate::geometry::embedding_search::account::EvaluationBudget;
+use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::publication::{
     FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
     StorageTarget, finish_geographic,
@@ -534,12 +534,13 @@ pub(crate) fn coverage_is_valid_with_domain<S: std::borrow::Borrow<Shape>>(
             validate_gap_width(gap_width)?;
             validate_polygonal_rows(rows)?;
             let mut budget = EvaluationBudget::new("coverage_is_valid", 0)?;
+            let mut work = EvaluationOnly::new(&mut budget);
             Ok(crate::geometry::analyze_geographic_coverage_with_work(
                 rows,
                 frame,
                 gap_width,
                 "coverage_is_valid",
-                &mut budget,
+                &mut work,
             )?
             .is_valid())
         },
@@ -572,9 +573,9 @@ pub(crate) fn coverage_invalid_edges_geographic_analysis<S: std::borrow::Borrow<
     operation: &'static str,
 ) -> Result<(crate::geometry::GeographicCoverageAnalysis, Vec<Shape>)> {
     let mut budget = EvaluationBudget::new(operation, 0)?;
-    let analysis =
-        analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut budget)?;
-    let shapes = analysis.invalid_source_shapes(&mut budget)?;
+    let mut work = EvaluationOnly::new(&mut budget);
+    let analysis = analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut work)?;
+    let shapes = analysis.invalid_source_shapes(&mut work)?;
     Ok((analysis, shapes))
 }
 
@@ -587,9 +588,9 @@ pub(crate) fn coverage_invalid_edges_geographic_finished<S: std::borrow::Borrow<
     missing: Option<ValidityMask>,
 ) -> Result<FinishedGeometry> {
     let mut budget = EvaluationBudget::new(operation, 0)?;
-    let analysis =
-        analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut budget)?;
-    let receipt = analysis.invalid_edges_drawing_receipt(missing, &mut budget)?;
+    let mut work = EvaluationOnly::new(&mut budget);
+    let analysis = analyze_geographic_invalid_edges(rows, frame, gap_width, operation, &mut work)?;
+    let receipt = analysis.invalid_edges_drawing_receipt(missing, &mut work)?;
     match finish_geographic(
         PublicationCall::new(
             ProducerReceipt::ProducerDrawing(receipt),

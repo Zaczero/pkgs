@@ -6,6 +6,8 @@ use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::geometry::storage::ValidityMask;
 use crate::work::Work;
 
+#[cfg(test)]
+mod accounting_tests;
 mod analysis;
 mod faces;
 mod gaps;

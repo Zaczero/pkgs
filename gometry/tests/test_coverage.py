@@ -203,6 +203,44 @@ def test_geographic_clean_keeps_valid_disjoint_rows_as_identity() -> None:
     assert gm.coverage_is_valid(cleaned)
 
 
+@pytest.mark.parametrize('gathered_nullable', [False, True])
+def test_geographic_grid_coverage_preserves_source_identity(
+    gathered_nullable: bool,
+) -> None:
+    polygons: list[gm.Polygon | None] = [
+        gm.Polygon(
+            [
+                (x, y, 5.0, 7.0),
+                (x + 1, y, 5.0, 7.0),
+                (x + 1, y + 1, 5.0, 7.0),
+                (x, y + 1, 5.0, 7.0),
+                (x, y, 5.0, 7.0),
+            ],
+            crs='OGC:CRS84',
+        )
+        for y in range(16)
+        for x in range(32)
+    ]
+    if gathered_nullable:
+        polygons[0] = None
+    rows = gm.GeometryArray(polygons)
+    if gathered_nullable:
+        rows = rows[np.arange(len(rows) - 1, -1, -1, dtype=np.int64)]
+
+    cleaned = gm.coverage_clean(
+        rows, grid_size=0.0, gap_width=0.0, overlap_rule='min_index'
+    )
+
+    assert cleaned.to_wkb() == rows.to_wkb()
+    assert cleaned.crs == gm.CRS('OGC:CRS84')
+    assert cleaned.is_missing.tolist() == rows.is_missing.tolist()
+    assert all(row.coordinate_axes == 'XYZM' for row in cleaned if row is not None)
+    assert gm.coverage_is_valid(rows)
+    edges = gm.coverage_invalid_edges(rows)
+    assert edges.is_missing.tolist() == rows.is_missing.tolist()
+    assert all(edge.is_empty for edge in edges if edge is not None)
+
+
 def test_geographic_clean_never_collapses_a_rational_sliver() -> None:
     rows = [
         gm.Polygon([(1, 0), (2, 0), (2, 1), (1 + 2**-52, 1)], crs='OGC:CRS84'),
