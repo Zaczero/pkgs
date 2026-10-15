@@ -127,6 +127,9 @@ impl<T> FallibleAvl<T> {
                 Ordering::Less => {
                     let (left, inserted) =
                         descend(tree, tree.nodes[root].left, value, work, compare)?;
+                    if !inserted {
+                        return Ok((root, false));
+                    }
                     work.charge_into_error(1)?;
                     tree.nodes[root].left = Some(left);
                     Ok((tree.balance(root), inserted))
@@ -134,6 +137,9 @@ impl<T> FallibleAvl<T> {
                 Ordering::Greater => {
                     let (right, inserted) =
                         descend(tree, tree.nodes[root].right, value, work, compare)?;
+                    if !inserted {
+                        return Ok((root, false));
+                    }
                     work.charge_into_error(1)?;
                     tree.nodes[root].right = Some(right);
                     Ok((tree.balance(root), inserted))

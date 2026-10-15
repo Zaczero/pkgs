@@ -125,8 +125,8 @@ impl ExactGeographicChartInventory {
                 let left_piece = proxy_piece_ids[left];
                 let right_piece = proxy_piece_ids[right];
                 match self.refine_piece_pair(
-                    left_piece,
-                    right_piece,
+                    [left_piece, right_piece],
+                    None,
                     &mut cuts,
                     &mut constructed_nodes,
                     &mut compare_cuts,
@@ -157,8 +157,8 @@ impl ExactGeographicChartInventory {
                 work.charge_into_error(1)?;
                 if is_proxyable {
                     self.refine_piece_pair(
-                        right,
-                        left,
+                        [right, left],
+                        None,
                         &mut cuts,
                         &mut constructed_nodes,
                         &mut compare_cuts,
@@ -171,8 +171,8 @@ impl ExactGeographicChartInventory {
             for right in left + 1..self.pieces.len() {
                 work.charge_into_error(1)?;
                 self.refine_piece_pair(
-                    left,
-                    right,
+                    [left, right],
+                    None,
                     &mut cuts,
                     &mut constructed_nodes,
                     &mut compare_cuts,

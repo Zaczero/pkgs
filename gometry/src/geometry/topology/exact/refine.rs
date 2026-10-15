@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use super::events::{exact_piece_contacts, insert_cut_event};
+use super::events::{ContactPoint, exact_piece_contacts, insert_cut_event};
 use super::{
     CutEvent, ExactChartPiece, ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey,
     FallibleAvl, parameter_on_exact_segment, point_on_exact_segment, quotient_key,
@@ -81,10 +81,9 @@ impl ExactGeographicChartInventory {
                     if left_piece == right_piece {
                         return std::ops::ControlFlow::Continue(());
                     }
-                    match self.refine_piece_pair_shifted(
-                        left_piece,
-                        right_piece,
-                        &period,
+                    match self.refine_piece_pair(
+                        [left_piece, right_piece],
+                        Some(&period),
                         cuts,
                         constructed_nodes,
                         compare_cuts,
@@ -108,10 +107,9 @@ impl ExactGeographicChartInventory {
             for &right in &negative_ids {
                 work.charge_into_error(1)?;
                 if left != right {
-                    self.refine_piece_pair_shifted(
-                        left,
-                        right,
-                        &period,
+                    self.refine_piece_pair(
+                        [left, right],
+                        Some(&period),
                         cuts,
                         constructed_nodes,
                         compare_cuts,
@@ -126,10 +124,9 @@ impl ExactGeographicChartInventory {
             for &right in &negative_unproxyable {
                 work.charge_into_error(1)?;
                 if left != right {
-                    self.refine_piece_pair_shifted(
-                        left,
-                        right,
-                        &period,
+                    self.refine_piece_pair(
+                        [left, right],
+                        Some(&period),
                         cuts,
                         constructed_nodes,
                         compare_cuts,
@@ -141,42 +138,6 @@ impl ExactGeographicChartInventory {
             }
         }
         Ok(())
-    }
-
-    fn refine_piece_pair_shifted<W: Work>(
-        &self,
-        left: usize,
-        right: usize,
-        shift: &ExactRational,
-        cuts: &mut FallibleAvl<CutEvent>,
-        constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
-        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey, &mut W) -> Result<Ordering>,
-        budget: &mut ExpansionBudget,
-        work: &mut W,
-    ) -> Result<()> {
-        let left_piece = self.pieces.get(left).ok_or_else(|| {
-            GeometryErrorKind::Invalid("seam pair references an unknown left piece".into())
-        })?;
-        let right_piece = self.pieces.get(right).ok_or_else(|| {
-            GeometryErrorKind::Invalid("seam pair references an unknown right piece".into())
-        })?;
-        let shifted_right = right_piece.shifted_x(shift)?;
-        exact_piece_contacts(
-            left_piece,
-            &shifted_right,
-            work,
-            |point, left_t, right_t, work| {
-                let right_point =
-                    ExactChartPoint::from_rationals(point.x.try_subtract(shift)?, point.y.clone());
-                let key = quotient_key(self.frame, &point)?;
-                if constructed_nodes.insert_with_work(key, work, compare_keys)? {
-                    budget.add(1)?;
-                }
-                insert_cut_event(cuts, left_piece, left_t, point, work, compare_cuts)?;
-                insert_cut_event(cuts, right_piece, right_t, right_point, work, compare_cuts)
-            },
-        )
     }
 
     pub(in crate::geometry::topology::exact) fn refine_source_points<W: Work>(
@@ -356,8 +317,8 @@ impl ExactGeographicChartInventory {
     )]
     pub(in crate::geometry::topology::exact) fn refine_piece_pair<W: Work>(
         &self,
-        left: usize,
-        right: usize,
+        pair: [usize; 2],
+        right_shift: Option<&ExactRational>,
         cuts: &mut FallibleAvl<CutEvent>,
         constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
         compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
@@ -365,16 +326,32 @@ impl ExactGeographicChartInventory {
         budget: &mut ExpansionBudget,
         work: &mut W,
     ) -> Result<()> {
+        let [left, right] = pair;
         let a = &self.pieces[left];
         let b = &self.pieces[right];
+        let shifted = right_shift.map(|shift| b.shifted_x(shift)).transpose()?;
+        let right = shifted.as_ref().unwrap_or(b);
         work.charge_into_error(1)?;
-        exact_piece_contacts(a, b, work, |point, left_t, right_t, work| {
-            let key = quotient_key(self.frame, &point)?;
-            if constructed_nodes.insert_with_work(key, work, compare_keys)? {
-                budget.add(1)?;
-            }
-            insert_cut_event(cuts, a, left_t, point.clone(), work, compare_cuts)?;
-            insert_cut_event(cuts, b, right_t, point, work, compare_cuts)?;
+        exact_piece_contacts(a, right, work, |point, left_t, right_t, work| {
+            let point = match point {
+                // Original and chart-split endpoints were seeded before pair refinement.
+                ContactPoint::Endpoint(point) => point.clone(),
+                ContactPoint::Constructed(point) => {
+                    let key = quotient_key(self.frame, &point)?;
+                    if constructed_nodes.insert_with_work(key, work, compare_keys)? {
+                        budget.add(1)?;
+                    }
+                    point
+                },
+            };
+            let right_point = match right_shift {
+                Some(shift) => {
+                    ExactChartPoint::from_rationals(point.x.try_subtract(shift)?, point.y.clone())
+                },
+                None => point.clone(),
+            };
+            insert_cut_event(cuts, a, left_t, point, work, compare_cuts)?;
+            insert_cut_event(cuts, b, right_t, right_point, work, compare_cuts)?;
             Ok(())
         })
     }

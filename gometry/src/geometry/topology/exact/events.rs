@@ -10,6 +10,11 @@ use crate::geometry::GeometryErrorKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::work::Work;
 
+pub(super) enum ContactPoint<'a> {
+    Endpoint(&'a ExactChartPoint),
+    Constructed(ExactChartPoint),
+}
+
 pub(in crate::geometry::topology::exact) fn compare_cut_events(
     left: &CutEvent,
     right: &CutEvent,
@@ -72,11 +77,11 @@ pub(in crate::geometry::topology::exact) fn insert_cut_event<W: Work>(
     Ok(())
 }
 
-pub(in crate::geometry::topology::exact) fn exact_piece_contacts<W: Work>(
-    left: &ExactChartPiece,
-    right: &ExactChartPiece,
+pub(in crate::geometry::topology::exact) fn exact_piece_contacts<'a, W: Work>(
+    left: &'a ExactChartPiece,
+    right: &'a ExactChartPiece,
     work: &mut W,
-    mut contact: impl FnMut(ExactChartPoint, ExactRational, ExactRational, &mut W) -> Result<()>,
+    mut contact: impl FnMut(ContactPoint<'a>, ExactRational, ExactRational, &mut W) -> Result<()>,
 ) -> Result<()> {
     work.charge_into_error(1)?;
     let r = vector_difference(&left.start, &left.end)?;
@@ -91,14 +96,26 @@ pub(in crate::geometry::topology::exact) fn exact_piece_contacts<W: Work>(
         if !vector_cross(&q_minus_p, &r)?.is_zero() {
             return Ok(());
         }
-        for point in [&left.start, &left.end, &right.start, &right.end] {
+        let endpoints = [&left.start, &left.end, &right.start, &right.end];
+        for (index, &point) in endpoints.iter().enumerate() {
             work.charge_into_error(1)?;
+            let mut duplicate = false;
+            for previous in endpoints.iter().take(index) {
+                work.charge_into_error(1)?;
+                if point.same_position(previous)? {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if duplicate {
+                continue;
+            }
             if point_on_exact_segment(point, &left.start, &left.end)?
                 && point_on_exact_segment(point, &right.start, &right.end)?
             {
                 work.charge_into_error(2)?;
                 contact(
-                    (*point).clone(),
+                    ContactPoint::Endpoint(point),
                     parameter_on_exact_segment(point, &left.start, &left.end)?,
                     parameter_on_exact_segment(point, &right.start, &right.end)?,
                     work,
@@ -121,6 +138,20 @@ pub(in crate::geometry::topology::exact) fn exact_piece_contacts<W: Work>(
         return Ok(());
     }
     work.charge_into_error(1)?;
-    let point = interpolate_exact_segment(&left.start, &left.end, &left_parameter)?;
+    let point = if left_parameter.is_zero() {
+        ContactPoint::Endpoint(&left.start)
+    } else if left_parameter.is_one() {
+        ContactPoint::Endpoint(&left.end)
+    } else if right_parameter.is_zero() {
+        ContactPoint::Endpoint(&right.start)
+    } else if right_parameter.is_one() {
+        ContactPoint::Endpoint(&right.end)
+    } else {
+        ContactPoint::Constructed(interpolate_exact_segment(
+            &left.start,
+            &left.end,
+            &left_parameter,
+        )?)
+    };
     contact(point, left_parameter, right_parameter, work)
 }
