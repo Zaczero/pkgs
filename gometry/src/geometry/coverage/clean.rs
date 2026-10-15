@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::geometry::coverage::{
     HashMap, coverage_rows, valid_coverage_rows, validate_polygonal_rows, visit_invalid_segments,
 };
-use crate::geometry::embedding_search::account::EvaluationBudget;
+use crate::geometry::embedding_search::account::{EvaluationBudget, EvaluationOnly};
 use crate::geometry::overlay::{ExactSourceInventory, overlay_declared_axes};
 use crate::geometry::publication::{
     FinishedGeometry, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
@@ -72,12 +72,13 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
         crate::geometry::TopologyDomain::Geographic(frame) => {
             validate_polygonal_rows(&snapped)?;
             let mut budget = EvaluationBudget::new("coverage_clean", 0)?;
+            let mut work = EvaluationOnly::new(&mut budget);
             let analysis = crate::geometry::analyze_geographic_coverage_with_work(
                 &snapped,
                 frame,
                 gap_width,
                 "coverage_clean",
-                &mut budget,
+                &mut work,
             )?;
             let has_overlaps = analysis.has_overlapping_faces();
             let needs_area_ranks = has_overlaps
@@ -116,7 +117,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                 gap_width,
                 overlaps,
                 metric,
-                &mut budget,
+                &mut work,
             )?;
             let labels_preserve_sources =
                 analysis.face_rows.iter().zip(&selection.owners).all(
@@ -143,7 +144,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                     .collect::<Vec<_>>(),
                 context,
                 StorageTarget::Array,
-                &mut budget,
+                &mut work,
             )?;
             match finish_geographic(
                 PublicationCall::new(
@@ -430,12 +431,13 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
     context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let mut budget = EvaluationBudget::new("coverage_union_all", 0)?;
+    let mut work = EvaluationOnly::new(&mut budget);
     let analysis = crate::geometry::analyze_geographic_coverage_with_work(
         coverage,
         frame,
         0.0,
         "coverage_union_all",
-        &mut budget,
+        &mut work,
     )?;
     if !analysis.is_valid() {
         return Err(GeometryErrorKind::InvalidCoverage {
@@ -452,7 +454,7 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
         0.0,
         CoverageOverlapRule::MinIndex,
         None::<&crate::crs::GeodesicMetric>,
-        &mut budget,
+        &mut work,
     )?;
     // Valid coverage faces have at most one source owner. Assign all occupied
     // faces to the scalar result so Q cancels shared boundaries before writing.
@@ -469,7 +471,7 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
             .collect::<Vec<_>>(),
         context,
         StorageTarget::Scalar,
-        &mut budget,
+        &mut work,
     )?;
     match finish_geographic(
         PublicationCall::new(

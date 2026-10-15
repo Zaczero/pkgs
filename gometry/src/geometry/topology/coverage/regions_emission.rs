@@ -22,7 +22,7 @@ use crate::geometry::embedding_completion::literals::{
     ShapeStructure,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
-use crate::geometry::embedding_search::account::EvaluationBudget;
+use crate::geometry::embedding_search::account::SearchAccount;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, SourceArcMetricAccess, resolve_request_rows,
 };
@@ -45,13 +45,13 @@ pub(in crate::geometry::topology) struct CoverageRows {
 }
 
 impl GeographicCoverageAnalysis {
-    pub(in crate::geometry) fn coverage_drawing_receipt<M: ChartMetric>(
+    pub(in crate::geometry) fn coverage_drawing_receipt<M: ChartMetric, A: SearchAccount>(
         &self,
         assignment: &GeographicCoverageFaceAssignment,
         source_axes: &[CoordinateAxes],
         context: &SourceArcContext<'_, '_, M>,
         target: StorageTarget,
-        work: &mut EvaluationBudget,
+        work: &mut A,
     ) -> Result<ProducerDrawingReceipt> {
         let TopologyDomain::Geographic(frame) = context.domain() else {
             return Err(GeometryErrorKind::Invalid(
