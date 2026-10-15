@@ -29,6 +29,8 @@ from tests.tooling._bench_support import (  # noqa: E402
     producer,
 )
 
+_CURRENT_COMMIT = 'a' * 40
+
 
 def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, object]:
     lead = 'ab' if index % 2 == 0 else 'ba'
@@ -58,8 +60,16 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
         warmup_iterations=2,
         calibration_iterations=5,
     )
-    provenance_a = producer(operation.gometry, 'A', lock_path)
-    provenance_b = producer(operation.competitor, 'B', lock_path)
+    provenance_a = producer(
+        operation.gometry,
+        'A',
+        lock_path,
+        source_commit=_CURRENT_COMMIT,
+        harness_commit=_CURRENT_COMMIT,
+    )
+    provenance_b = producer(
+        operation.competitor, 'B', lock_path, harness_commit=_CURRENT_COMMIT
+    )
     observation_a['producer_identity'] = provenance_a
     observation_b['producer_identity'] = provenance_b
     block_id = (
@@ -165,7 +175,7 @@ def _build_result(tmp_path: Path) -> dict[str, object]:
     )
     artifacts.insert(0, str(oracle))
     metadata = {
-        'harness_commit': 'deadbeef',
+        'harness_commit': _CURRENT_COMMIT,
         'source_inputs_sha256': HASH,
         'native_source_inputs_sha256': HASH,
         'python_executable': '/python',
@@ -302,7 +312,7 @@ def _synthetic_subject() -> dict[str, object]:
         'path': binding['path'],
         'receipt_sha256': binding['sha256'],
         'source': {
-            'commit': None,
+            'commit': _CURRENT_COMMIT,
             'version': '1',
             'source_inputs_sha256': identity['source_inputs_sha256'],
             'native_source_inputs_sha256': HASH,
@@ -324,6 +334,9 @@ def prevalidated_receipt_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
     subject = _synthetic_subject()
+    monkeypatch.setattr(
+        bench_driver, '_current_checkout_commit', lambda: _CURRENT_COMMIT
+    )
 
     def read_subject(path: Path) -> dict[str, object]:
         if str(path.resolve()) != subject['path']:
@@ -622,7 +635,9 @@ def test_publication_rejects_native_library_mutation(
         payload['arms']['A']['observation']['producer_identity'] = identity
 
     _mutate_first_block(run_manifest, mutate)
-    with pytest.raises(SystemExit, match='native-library identity mismatch'):
+    with pytest.raises(
+        SystemExit, match='source receipt extension differs from arm native identity'
+    ):
         _publish(run_manifest, tmp_path)
 
 
@@ -743,6 +758,62 @@ def test_publication_rejects_mismatched_external_oracle_artifact(
         _publish(run_manifest, tmp_path)
 
 
+def test_publication_rejects_stale_harness_commit(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    result = _result(publication_baseline)
+    result['doctor']['metadata']['harness_commit'] = 'b' * 40  # type: ignore[index]
+
+    with pytest.raises(SystemExit, match='harness is not at the current checkout'):
+        _publish(_run_manifest(tmp_path, publication_baseline, result), tmp_path)
+
+    assert not (tmp_path / 'current' / 'summary.md').exists()
+
+
+@pytest.mark.parametrize(
+    ('producer_commit', 'clear_attribution'),
+    [
+        pytest.param('b' * 40, False, id='older-source'),
+        pytest.param(None, True, id='unattributed-source'),
+    ],
+)
+def test_publication_rejects_noncurrent_gometry_producer(
+    tmp_path: Path,
+    publication_baseline: str,
+    producer_commit: str | None,
+    clear_attribution: bool,
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+
+    def set_producer_commit(payload: dict[str, object]) -> None:
+        arms = payload['arms']
+        assert isinstance(arms, dict)
+        for arm in arms.values():
+            assert isinstance(arm, dict)
+            identity = arm['provenance_before']
+            assert isinstance(identity, dict)
+            implementation = identity['implementation']
+            assert isinstance(implementation, dict)
+            if implementation['runtime'] == 'gometry':
+                implementation['source_commit'] = producer_commit
+                if clear_attribution:
+                    implementation['source_receipt'] = None
+                    implementation['source_wheel'] = None
+            arm['provenance_after'] = identity
+            observation = arm['observation']
+            assert isinstance(observation, dict)
+            observation['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, set_producer_commit)
+
+    with pytest.raises(
+        SystemExit, match='producer is not at the current checkout commit'
+    ):
+        _publish(run_manifest, tmp_path)
+
+    assert not (tmp_path / 'current' / 'summary.md').exists()
+
+
 def test_publication_rejects_absent_or_untracked_lock_identity(
     tmp_path: Path, publication_baseline: str
 ) -> None:
@@ -780,7 +851,10 @@ def test_publication_writes_only_the_deterministic_summary(
     summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
     assert 'Measured on test with Linux' in summary_md
-    assert 'CPython 3.14. Benchmark harness commit: `deadbeef`.' in summary_md
+    assert (
+        f'CPython 3.14. Benchmark harness commit: `{_CURRENT_COMMIT[:8]}`.'
+        in summary_md
+    )
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md

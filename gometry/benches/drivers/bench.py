@@ -807,6 +807,7 @@ def _validate_block_identity(
     metadata: dict[str, Any],
     *,
     receipt_cache: dict[tuple[str, str], dict[str, Any]],
+    current_commit: str,
 ) -> None:
     """Check one measured arm against the run's recorded build and dependencies."""
     try:
@@ -923,6 +924,10 @@ def _validate_block_identity(
     source_commit = implementation.get('source_commit')
     source_receipt = implementation.get('source_receipt')
     source_wheel = implementation.get('source_wheel')
+    if implementation.get('runtime') == 'gometry' and source_commit != current_commit:
+        raise SystemExit(
+            'publication rejected: measured Gometry producer is not at the current checkout commit'
+        )
     runtime_binding = identity.get('runtime_binding')
     if not isinstance(runtime_binding, dict):
         raise SystemExit('publication rejected: measured runtime binding is missing')
@@ -1108,7 +1113,11 @@ def _validate_block_identity(
 
 
 def _render_publication(
-    result: dict[str, Any], metadata: dict[str, Any], run_directory: Path
+    result: dict[str, Any],
+    metadata: dict[str, Any],
+    run_directory: Path,
+    *,
+    current_commit: str,
 ) -> str:
     """Validate every measured block of one release run and render its table."""
     support = _SUPPORT
@@ -1137,6 +1146,7 @@ def _render_publication(
                     identity,
                     metadata,
                     receipt_cache=receipt_cache,
+                    current_commit=current_commit,
                 )
     sampling = result['sampling']
     rows = _build_rows(
@@ -1150,8 +1160,30 @@ def _render_publication(
     return '\n'.join(lines) + '\n'
 
 
+def _current_checkout_commit() -> str:
+    """Return the full commit ID of the checkout that will publish the run."""
+    try:
+        completed = subprocess.run(
+            ['git', 'rev-parse', '--verify', 'HEAD'],
+            cwd=GOMETRY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(
+            f'publication rejected: cannot identify the current checkout commit: {error}'
+        ) from error
+    commit = completed.stdout.strip()
+    if not commit:
+        raise SystemExit(
+            'publication rejected: cannot identify the current checkout commit'
+        )
+    return commit
+
+
 def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
-    """Validate one complete release run and write its documentation table.
+    """Validate one complete current-checkout release run and write its table.
 
     The table is the only published artifact: it names the measured commit and
     host, and git versions it. Run directories stay local evidence.
@@ -1162,8 +1194,18 @@ def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
         or result.get('schema_version') != _MANIFEST_SCHEMA_VERSION
     ):
         raise SystemExit(f'{run_manifest} is not a gometry benchmark run manifest')
+    current_commit = _current_checkout_commit()
     metadata = _validate_publication_result(result)
-    summary = _render_publication(result, metadata, run_manifest.resolve().parent)
+    if metadata['harness_commit'] != current_commit:
+        raise SystemExit(
+            'publication rejected: benchmark harness is not at the current checkout commit'
+        )
+    summary = _render_publication(
+        result,
+        metadata,
+        run_manifest.resolve().parent,
+        current_commit=current_commit,
+    )
     if current_dir is None:
         current_dir = GOMETRY_ROOT / 'benches' / 'results' / 'current'
     current_dir.mkdir(parents=True, exist_ok=True)

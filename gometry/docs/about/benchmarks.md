@@ -1,35 +1,16 @@
 ---
-description: Whether a gometry release benchmark run is published, and how one is produced.
+description: Current release benchmark results for gometry and how to interpret their scope.
 ---
 
 # Benchmarks
 
 --8<-- "benches/results/current/summary.md"
 
-This page reports one accepted full release run or nothing at all. It does not
-combine runs, publish smoke or filtered measurements, or repeat a timing claim
-whose evidence is absent. Numbers you find elsewhere — an issue, a commit
-message, a comparison someone ran on their laptop — are not release evidence
-and are not reproduced here.
-
-## Producing a run
-
-```bash title="template: replace <run> with the directory printed by the first command"
-uv run --group integration python benches/drivers/bench.py \
-  --profile release --gometry-receipt <release-or-runner-receipt>
-uv run --group integration python benches/drivers/bench.py \
-  --publish target/bench/results/<run>/run.json
-```
-
-Measurement writes raw artifacts and a run manifest under `target/` and never
-touches tracked files. Smoke runs default to this worktree's
-`target/quality-runtime/receipt.json`; release runs must select an existing
-release manifest or runner receipt. The driver never prepares a missing runtime.
-DEV quality receipts are diagnostic subjects and cannot publish release results.
-Publication validates that one run — complete, release profile, oracle passed,
-every block measured the recorded build — and rewrites
-`benches/results/current/summary.md`, the table above. Git versions the table;
-the raw evidence stays with the run.
+A published table represents one complete release comparison. The existing
+publisher requires the benchmark harness and measured Gometry source to match
+the current checkout commit, then verifies each measured extension against its
+release receipt and wheel. Smoke, filtered, incomplete, unattributed, and
+older-source runs do not appear as current results.
 
 ## What the run measures
 
@@ -55,10 +36,9 @@ The driver checks the process's ready record before allowing its first timed
 operation; an import-path fallback, a different worktree facade, or an extension
 whose bytes do not match the receipt's wheel member is rejected. The process
 identity binds its interpreter and ABI, build profile, Python package members
-and distribution owner, native extension, wheel archive, and receipt digest.
-A null producer commit leaves source attribution unknown but still requires
-those exact byte bindings. Per-invocation process IDs identify the observation;
-they are not treated as stable producer identity.
+and distribution owner, native extension, wheel archive, source commit, and
+receipt digest. Per-invocation process IDs identify the observation; they are
+not treated as stable producer identity.
 
 The operation timers begin after admission and setup. `bench_ab.py --perf`
 attaches user-mode counters to the case's main thread for one interval per

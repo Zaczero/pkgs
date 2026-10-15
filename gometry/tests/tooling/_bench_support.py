@@ -37,7 +37,14 @@ def package_identity(name: str) -> dict[str, object]:
     }
 
 
-def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
+def producer(
+    row: str,
+    side: str,
+    lock_path: str = 'lock',
+    *,
+    source_commit: str | None = None,
+    harness_commit: str = 'deadbeef',
+) -> dict[str, object]:
     packages = {
         name: package_identity(name)
         for name in (
@@ -118,9 +125,24 @@ def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
             'gometry/_lib.pyi': HASH,
         },
     }
+    if runtime == 'gometry' and source_commit is not None:
+        wheel = runtime_binding['wheel']
+        implementation.update({
+            'source_commit': source_commit,
+            'source_receipt': {
+                'path': runtime_binding['path'],
+                'sha256': runtime_binding['sha256'],
+            },
+            'source_wheel': {
+                'filename': wheel['filename'],
+                'sha256': wheel['archive']['sha256'],
+                'extension_member': wheel['extension_member'],
+                'extension_sha256': wheel['extension_sha256'],
+            },
+        })
     return {
         'identity_schema_version': 3,
-        'harness_commit': 'deadbeef',
+        'harness_commit': harness_commit,
         'source_inputs_sha256': HASH,
         'extension': extension,
         'uv_lock': {'path': lock_path, 'sha256': HASH, 'size_bytes': 1},
