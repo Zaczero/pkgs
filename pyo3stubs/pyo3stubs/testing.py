@@ -10,7 +10,8 @@ A consuming package writes two lines::
 and gets one test per gate in :data:`pyo3stubs.gates.GATES`, addressable by its
 plain name (``test_pyo3stubs_gate[validity]``). A gate that cannot run — wrong
 interpreter, disabled, or not configured — is *skipped* with its reason, never
-reported as a pass.
+reported as a pass. A gate that examines no subjects is also skipped as
+``nothing to check`` rather than passed.
 
 A relative config path is resolved against the calling test file and its
 parent directories, so the suite runs the same from the repository root and
@@ -78,7 +79,7 @@ def gate_test(config: str | Path | StubConfig) -> Callable[..., None]:
     def test_pyo3stubs_gate(name: str) -> None:
         cfg = config if isinstance(config, StubConfig) else _load(config)
         result = gate(name).run(cfg)
-        if result.status in (Status.OK, Status.NOTHING_TO_CHECK):
+        if result.status is Status.OK:
             return
         if result.status is not Status.VIOLATIONS:
             pytest.skip(result.line)

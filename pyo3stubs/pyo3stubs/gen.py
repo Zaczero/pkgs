@@ -161,7 +161,7 @@ def _counted_defs(
             yield from _counted_defs(stmt.orelse)
 
 
-def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
+def _def_totals(module: ast.Module) -> Counter[tuple[str, str]]:
     """``(scope, name) -> def count`` for module- and class-level functions.
 
     A `@x.setter` is not an overload variant — it shares the getter's name by
@@ -174,7 +174,6 @@ def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
             if 'setter' not in decorator_names(node):
                 totals[(scope, node.name)] += 1
 
-    module = ast.parse(stub_source)
     count('', module.body)
     for node in module.body:
         if isinstance(node, ast.ClassDef):
@@ -183,21 +182,18 @@ def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
 
 
 def _descriptor_docs(
-    stub_source: str,
+    classes: Mapping[str, ast.ClassDef],
     runtime: types.ModuleType,
 ) -> dict[str, dict[str, str]]:
     """Native prose for annotated data descriptors, keyed by class/member."""
     docs: dict[str, dict[str, str]] = {}
-    module = ast.parse(stub_source)
-    for node in module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        cls = getattr(runtime, node.name, None)
+    for class_name, node in classes.items():
+        cls = getattr(runtime, class_name, None)
         if not isinstance(cls, type):
             continue
-        for name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
-            if doc := _runtime_doc_for_stub(name, descriptor):
-                docs.setdefault(node.name, {})[name] = doc
+        for member_name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
+            if doc := _runtime_doc_for_stub(member_name, descriptor):
+                docs.setdefault(class_name, {})[member_name] = doc
     return docs
 
 
@@ -330,10 +326,12 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
     """
     ctx = CheckContext(cfg)
     source = ctx.stub_text
+    module = ctx.stub_ast
+    runtime = ctx.runtime_module
     injector = DocInjector(
-        ctx.runtime_module,
-        _def_totals(source),
+        runtime,
+        _def_totals(module),
         constructor_doc_sources(cfg).by_class,
-        _descriptor_docs(source, ctx.runtime_module),
+        _descriptor_docs(ctx.stub_classes, runtime),
     )
     return cst.parse_module(source).visit(injector).code
