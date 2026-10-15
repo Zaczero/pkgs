@@ -214,6 +214,11 @@
         let buffers = FrozenLiteralBuffers::shapes(
             crate::geometry::Shape::Point(Point::new_raw_xy(0.0, 0.0)),
             ShapeLiteralLayout {
+                structure: Some(ShapeStructure::primitive(
+                    crate::geometry::GeometryKind::Point,
+                    crate::geometry::CoordinateAxes::XY,
+                    false,
+                )),
                 points: vec![LiteralPoint {
                     output: 0,
                     axes: crate::geometry::CoordinateAxes::XY,
