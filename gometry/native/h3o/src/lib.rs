@@ -253,6 +253,11 @@
 
 extern crate alloc;
 
+// The dependency supplies the no-std math backend; Cargo cannot disable a
+// dependency when an additive feature such as std is enabled.
+#[cfg(feature = "std")]
+use libm as _;
+
 mod base_cell;
 mod boundary;
 mod coord;
