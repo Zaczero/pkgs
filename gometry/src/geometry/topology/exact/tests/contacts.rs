@@ -7,6 +7,7 @@ use super::super::{
 use super::support::{degrees, inventory, line, ring};
 use crate::error::ErrorKind;
 use crate::geometry::embedding_search::account::EvaluationBudget;
+use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ExpansionBudget, GeometryErrorKind, Polygon, Shape, for_each_candidate_pair,
@@ -121,7 +122,7 @@ fn interior_crossing_remains_constructed_and_refuses_new_node_expansion() {
 
     let mut budget = ExpansionBudget::new("contact_test", "exact chart");
     budget
-        .add(crate::geometry::generated_budget::GENERATED_ITEM_LIMIT)
+        .add(GENERATED_ITEM_LIMIT)
         .expect("full generated allowance");
     let error = sources
         .node(&mut budget)
@@ -166,12 +167,7 @@ fn pair_refinement_refuses_primitive_work_before_emitting_a_contact() {
 
 #[test]
 fn coincident_contacts_keep_each_source_occurrence_across_seam_aliases() {
-    for longitude in [0.0, 180.0] {
-        let alias = if longitude == 180.0 {
-            -180.0
-        } else {
-            longitude
-        };
+    for (longitude, alias) in [(0.0, 0.0), (180.0, -180.0)] {
         let sources = inventory(degrees(), &[
             line(&[(longitude, 0.0), (longitude, 4.0)]),
             line(&[(alias, 4.0), (alias, 0.0)]),
