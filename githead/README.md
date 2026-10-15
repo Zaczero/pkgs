@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/githead)](https://pypi.org/p/githead)
 
-Simple utility for getting the current git commit hash (HEAD).
+`githead` is a Python helper that reads a `HEAD` file from a Git metadata directory and follows a symbolic reference only when its target is a loose file beneath that directory. It does not discover a repository from an arbitrary working directory or run Git.
 
 ## Installation
 
@@ -10,13 +10,40 @@ Simple utility for getting the current git commit hash (HEAD).
 pip install githead
 ```
 
-## Basic usage
+## First result
+
+```py
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from githead import githead
+
+with TemporaryDirectory() as temporary:
+    git_dir = Path(temporary) / ".git"
+    ref_path = git_dir / "refs" / "heads" / "main"
+    ref_path.parent.mkdir(parents=True)
+    ref_path.write_text("abc123\n", encoding="utf-8")
+    (git_dir / "HEAD").write_text(
+        "ref: refs/heads/main\n",
+        encoding="utf-8",
+    )
+
+    assert githead(git_dir) == "abc123"
+```
+
+## Read a checkout's HEAD
+
+The default `githead()` reads `.git/HEAD` relative to the current working directory. The argument must name the metadata directory itself, such as `.git`, rather than the repository's working-tree root. A `.git` file used by a worktree or submodule is not supported.
 
 ```py
 from githead import githead
 
-githead() # -> 'bca663418428d603eea8243d08a5ded19eb19a34'
-
-# defaults to '.git' directory but can be changed:
-githead('path/to/.git')
+# Run from a checkout where .git is a directory and HEAD targets a loose ref.
+print(githead())
 ```
+
+The returned string is the stripped contents of detached `HEAD` or its loose reference file; it is not validated as a full object ID. Packed refs, reftable, unborn branches, and common-directory reference lookup are not supported. Git documents these distinct [repository layouts](https://git-scm.com/docs/gitrepository-layout).
+
+## `githead`
+
+`githead(git_dir=".git")` returns a string. A missing `HEAD` or loose reference raises `FileNotFoundError`; a symbolic reference that resolves outside `git_dir` raises `ValueError`. Other I/O and text-decoding errors propagate.

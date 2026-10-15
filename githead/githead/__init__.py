@@ -10,10 +10,34 @@ if TYPE_CHECKING:
 
 
 def githead(git_dir: PathLike[str] | str = '.git') -> str:
-    """Get the current git commit hash.
+    """Read detached HEAD text or a loose symbolic reference.
 
-    >>> githead()
-    'bca663418428d603eea8243d08a5ded19eb19a34'
+    Parameters
+    ----------
+    git_dir
+        Path to the Git metadata directory itself.
+
+    Returns
+    -------
+    str
+        The stripped contents of ``HEAD`` or of its referenced loose file.
+        Detached contents are not validated as an object ID.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``HEAD`` or its loose reference file is missing.
+    ValueError
+        If a symbolic reference resolves outside ``git_dir``.
+    OSError
+        For other filesystem read errors.
+    UnicodeError
+        If the file contents cannot be decoded as text.
+
+    Notes
+    -----
+    This function does not discover repository metadata, invoke Git, read
+    packed refs or reftable, or follow a worktree's common-directory file.
     """
     dir_path = Path(git_dir)
     head_path = dir_path.joinpath('HEAD')
