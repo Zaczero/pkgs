@@ -8,7 +8,7 @@ use super::receipt::{
     PublicationOutcome, PublicationRejection, StorageTarget,
 };
 use crate::Frame;
-use crate::array::{ComputedCaches, StreamingShapes};
+use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
 use crate::geometry::embedding_completion::binding::bind_final_literals;
 use crate::geometry::embedding_completion::literals::{
@@ -18,8 +18,8 @@ use crate::geometry::embedding_completion::storage::{
     FrozenLiteralBuffers, LiteralCheck, admit_flat_rows,
 };
 use crate::geometry::embedding_search::account::EvaluationBudget;
-use crate::geometry::storage::{ArrayRows, LogicalRow, ValidityMask};
-use crate::geometry::{GeometryErrorKind, Shape, ShapeCountQuery};
+use crate::geometry::storage::{ArrayRows, LogicalRow, ShapeRow, ValidityMask};
+use crate::geometry::{Coordinates as _, GeometryErrorKind, Point, Shape, ShapeCountQuery};
 use crate::py::vectors::Groups;
 use crate::work::{Unmetered, Work};
 
@@ -108,19 +108,55 @@ impl PublicationRows {
 
     fn capture_shape(&mut self, address: LiteralAddress, shape: &Shape) -> Result<()> {
         let records = &mut self.records;
-        self.expected
-            .checked()
-            .capture_shape(shape, address, &mut |address, record| {
-                let index = records.len();
-                index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                let image = PublicationImage::ProducerDrawn(ProducerImageId::new(index));
-                records.push(CheckedPublicationLiteral {
-                    address,
-                    image,
-                    record,
-                });
-                Ok(image)
-            })
+        let layout = self.expected.checked();
+        if records.is_empty() {
+            records.reserve_exact(layout.rows.capacity());
+        }
+        layout.capture_shape(shape, address, &mut |address, record| {
+            capture_record(records, address, record)
+        })
+    }
+
+    pub(crate) fn try_push_drawing(
+        &mut self,
+        shape: Shape,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<()> {
+        self.try_push(GeometryOutput::Pending(PendingPublicationRow::drawing(
+            shape,
+            logical_row,
+            operation,
+        )?))
+    }
+
+    pub(in crate::geometry) fn try_push_drawing_line(
+        &mut self,
+        row: ShapeRow<'_>,
+        logical_row: usize,
+        operation: &'static str,
+    ) -> Result<()> {
+        let coordinates = row
+            .line_coords()
+            .ok_or_else(|| invalid("drawing line has no coordinate window"))?;
+        let count = coordinates.coord_count();
+        let mut work = EvaluationBudget::new(operation, count)?;
+        work.charge(
+            u64::try_from(count)
+                .map_err(|_| ResourceError::SizeOverflow)?
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        )?;
+        let address = self.next_address(logical_row);
+        let records = &mut self.records;
+        let layout = self.expected.checked();
+        if records.is_empty() {
+            records.reserve_exact(layout.rows.capacity());
+        }
+        layout.capture_line(&coordinates, row.axes(), address, &mut |address, record| {
+            capture_record(records, address, record)
+        })?;
+        self.writer.try_push_row(Some(row))
     }
 
     pub(crate) fn try_push(&mut self, output: GeometryOutput) -> Result<()> {
@@ -203,7 +239,23 @@ impl PublicationRows {
         self.expected.len()
     }
 
+    pub(in crate::geometry) const fn next_group_row(&self) -> usize {
+        self.expected_group_present.len()
+    }
+
+    pub(in crate::geometry) const fn next_drawing_row(&self) -> usize {
+        if self.group_offsets.is_some() {
+            self.next_group_row()
+        } else {
+            self.next_value_row()
+        }
+    }
+
     pub(crate) fn finish(self, frame: Frame) -> Result<crate::PyGeometryArray> {
+        crate::PyGeometryArray::from_finished(self.finish_geometry(frame)?)
+    }
+
+    pub(crate) fn finish_geometry(self, frame: Frame) -> Result<FinishedGeometry> {
         if self.group_offsets.is_some() {
             return Err(invalid(
                 "a Groups publication must finish through finish_groups",
@@ -218,13 +270,10 @@ impl PublicationRows {
                     missing.as_ref(),
                     present.into_iter(),
                 )?;
-                return crate::PyGeometryArray::from_result_storage(
-                    Arc::new(storage),
+                return Ok(FinishedGeometry::from_admitted_rows(
+                    ArrayRows::admit(Arc::new(storage), missing, layout)?,
                     frame,
-                    missing,
-                    layout,
-                    ComputedCaches::fresh(),
-                );
+                ));
             },
         };
         if self.producer_drawing_required
@@ -251,7 +300,7 @@ impl PublicationRows {
             PublicationCall::new(ProducerReceipt::ArrayBatch(batch), frame, &mut work),
             StorageTarget::Array,
         )? {
-            PublicationOutcome::Pass(finished) => crate::PyGeometryArray::from_finished(finished),
+            PublicationOutcome::Pass(finished) => Ok(finished),
             PublicationOutcome::Reject(PublicationRejection::Batch(images)) => Err(
                 changed_records("array", "checked Q output records", images.len()),
             ),
@@ -269,6 +318,14 @@ impl PublicationRows {
         frame: Frame,
         missing: Option<ValidityMask>,
     ) -> Result<Groups> {
+        Groups::from_finished(self.finish_groups_geometry(frame, missing)?)
+    }
+
+    pub(crate) fn finish_groups_geometry(
+        self,
+        frame: Frame,
+        missing: Option<ValidityMask>,
+    ) -> Result<FinishedGeometry> {
         let offsets = self
             .group_offsets
             .ok_or_else(|| invalid("an ArrayRows publication has no group offsets"))?;
@@ -312,9 +369,7 @@ impl PublicationRows {
         )?;
         let mut receiver = CheckedLiteralSnapshot::new(self.records)?;
         match bind_final_literals(buffers, &mut receiver, &mut work)? {
-            LiteralCheck::Pass(sealed) => {
-                Groups::from_finished(FinishedGeometry::from_sealed(sealed, frame, Ok)?)
-            },
+            LiteralCheck::Pass(sealed) => FinishedGeometry::from_sealed(sealed, frame, Ok),
             LiteralCheck::Reject(images) => Err(changed_records(
                 "Groups",
                 "producer literal images",
@@ -404,6 +459,22 @@ fn invalid(message: &'static str) -> crate::error::Error {
     GeometryErrorKind::Invalid(message.into()).into()
 }
 
+fn capture_record(
+    records: &mut Vec<CheckedPublicationLiteral>,
+    address: LiteralAddress,
+    record: Point,
+) -> Result<PublicationImage> {
+    let index = records.len();
+    index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    let image = PublicationImage::ProducerDrawn(ProducerImageId::new(index));
+    records.push(CheckedPublicationLiteral {
+        address,
+        image,
+        record,
+    });
+    Ok(image)
+}
+
 fn changed_records(target: &'static str, kind: &'static str, count: usize) -> crate::error::Error {
     GeometryErrorKind::Invalid(format!("final {target} writer changed {count} {kind}").into())
         .into()
@@ -423,8 +494,55 @@ mod tests {
         LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
     };
     use crate::geometry::topology::QSourceImage;
-    use crate::geometry::{CoordinateAxes, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::{CoordinateAxes, MOrdinate, ZOrdinate};
 
+    fn small_voronoi_writer() -> PublicationRows {
+        use crate::geographic::GeographicFrame;
+        use crate::geometry::{ExpansionBudget, VoronoiBoundary};
+        let source = Shape::MultiPoint(
+            vec![
+                Point::new_raw_xy(-1.0, -1.0),
+                Point::new_raw_xy(1.0, -1.0),
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(-1.0, 1.0),
+            ]
+            .into(),
+        );
+        let frame = GeographicFrame::crs84();
+        let mut budget = ExpansionBudget::new("voronoi_cells", "mesh receipt omission");
+        let outputs = source
+            .voronoi_polygon_outputs_in_frame_budgeted(
+                0.0,
+                VoronoiBoundary::Padded,
+                Some(frame),
+                &mut budget,
+            )
+            .unwrap();
+        let mut writer = PublicationRows::with_producer_drawing_capacity(0);
+        writer
+            .push_voronoi_polygon_outputs(outputs, frame, &mut budget)
+            .unwrap();
+        writer
+    }
+
+    #[test]
+    fn voronoi_receipt_omission_is_rejected_by_final_readback() {
+        let (control_values, _) = small_voronoi_writer()
+            .finish_geometry(Frame::None)
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert_eq!(control_values.len(), 4);
+        let mut writer = small_voronoi_writer();
+        writer.records.pop().expect("Voronoi output has literals");
+        match writer.finish_geometry(Frame::None) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            )),
+            Ok(_) => panic!("the shared readback rejects a missing Voronoi literal"),
+        }
+    }
     fn xyzm(x: f64, y: f64, z: f64, m: f64) -> Point {
         Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
     }

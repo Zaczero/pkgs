@@ -20,8 +20,7 @@ pub(in crate::geometry) use receipt::{
     PublicationOutcome, PublicationRejection, StorageTarget,
 };
 pub(crate) use routes::{
-    finish_geographic_line, finish_geographic_nearest_point,
-    finish_geographic_nearest_point_columns, finish_geographic_point_selection,
+    finish_geographic_line, finish_geographic_nearest_point, finish_geographic_point_selection,
     finish_geographic_snap, geographic_drawing_pending_row, geographic_line_pending_row,
     geographic_point_selection_pending_row, publish_split_groups, publish_split_parts_array,
 };

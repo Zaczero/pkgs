@@ -88,7 +88,7 @@ pub(crate) use array::PyGeometryArray;
 pub(crate) use geometry::storage::{GeometryArrayStorage, PointRows, ShapeRow};
 mod broadcast;
 use broadcast::{
-    CollectRows, DistanceUnit, GeometryInput, LonLatPointsError, broadcast2, broadcast2_geometry,
+    DistanceUnit, GeometryInput, LonLatPointsError, broadcast2, broadcast2_geometry,
     classify_input, classify_required, coerce_geometry, ensure_same_len, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, lonlat_points, lonlat_shape,
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,

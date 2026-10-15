@@ -1,13 +1,16 @@
 use std::ops::Range;
 
-use super::structures::StructureHeaders;
+use super::structures::{CapturedStructure, StructureHeaders};
 use super::{
-    LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, validate_dense_output_ids,
+    LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout, ShapeStructure,
+    validate_dense_output_ids,
 };
 use crate::error::{ResourceError, Result};
 use crate::geometry::storage::row::CoordRow;
 use crate::geometry::storage::{PackedRow, ShapeRow};
-use crate::geometry::{CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon, Shape};
+use crate::geometry::{
+    CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, Point, Polygon, Shape,
+};
 use crate::work::Work;
 
 pub(in crate::geometry) enum FlatRowBinding {
@@ -17,10 +20,10 @@ pub(in crate::geometry) enum FlatRowBinding {
 
 pub(in crate::geometry) struct FlatRowLayout {
     pub(in crate::geometry) address: LiteralAddress,
-    structure: usize,
-    points: Range<usize>,
-    lines: Range<usize>,
-    polygons: Range<usize>,
+    structure: CapturedStructure,
+    points: usize,
+    lines: usize,
+    polygons: usize,
 }
 
 pub(in crate::geometry) struct FlatLiteralLayout<I> {
@@ -50,7 +53,7 @@ impl<I> FlatLiteralLayout<I> {
     pub(in crate::geometry) fn with_capacity(rows: usize) -> Self {
         Self {
             rows: Vec::with_capacity(rows),
-            checked_rows: Vec::new(),
+            checked_rows: Vec::with_capacity(rows),
             headers: StructureHeaders::default(),
             points: Vec::new(),
             lines: Vec::new(),
@@ -70,9 +73,6 @@ impl<I> FlatLiteralLayout<I> {
         let structure = self.headers.adopt(
             structure.ok_or_else(|| invalid("final publication has no accepted structure"))?,
         );
-        let point_start = self.points.len();
-        let line_start = self.lines.len();
-        let polygon_start = self.polygons.len();
         self.points.extend(points);
         for line in lines {
             let start = self.images.len();
@@ -110,9 +110,9 @@ impl<I> FlatLiteralLayout<I> {
                 output: 0,
             },
             structure,
-            points: point_start..self.points.len(),
-            lines: line_start..self.lines.len(),
-            polygons: polygon_start..self.polygons.len(),
+            points: self.points.len(),
+            lines: self.lines.len(),
+            polygons: self.polygons.len(),
         });
         self.rows.push(Some(FlatRowBinding::Checked(index)));
         Ok(())
@@ -127,18 +127,80 @@ impl<I> FlatLiteralLayout<I> {
         let mut row = FlatRowLayout {
             address,
             structure: self.headers.capture(shape),
-            points: self.points.len()..self.points.len(),
-            lines: self.lines.len()..self.lines.len(),
-            polygons: self.polygons.len()..self.polygons.len(),
+            points: self.points.len(),
+            lines: self.lines.len(),
+            polygons: self.polygons.len(),
         };
         self.capture_parts(shape, &row, emit)?;
-        row.points.end = self.points.len();
-        row.lines.end = self.lines.len();
-        row.polygons.end = self.polygons.len();
+        row.points = self.points.len();
+        row.lines = self.lines.len();
+        row.polygons = self.polygons.len();
         let index = self.checked_rows.len();
         self.checked_rows.push(row);
         self.rows.push(Some(FlatRowBinding::Checked(index)));
         Ok(())
+    }
+
+    pub(in crate::geometry) fn capture_line(
+        &mut self,
+        coordinates: &(impl Coordinates + ?Sized),
+        axes: CoordinateAxes,
+        address: LiteralAddress,
+        emit: &mut impl FnMut(LiteralAddress, Point) -> Result<I>,
+    ) -> Result<()> {
+        let sequence = self.capture_sequence(coordinates, axes, address, 0, emit)?;
+        self.lines.push(sequence);
+        self.push_primitive(
+            GeometryKind::LineString,
+            axes,
+            coordinates.coord_count() == 0,
+            address,
+        );
+        Ok(())
+    }
+
+    pub(in crate::geometry) fn capture_polygon_ring(
+        &mut self,
+        coordinates: &(impl Coordinates + ?Sized),
+        axes: CoordinateAxes,
+        address: LiteralAddress,
+        emit: &mut impl FnMut(LiteralAddress, Point) -> Result<I>,
+    ) -> Result<()> {
+        let start = self.rings.len();
+        let ring = self.capture_sequence(coordinates, axes, address, 0, emit)?;
+        self.rings.push(ring);
+        self.polygons.push(FlatPolygon {
+            output: 0,
+            axes,
+            rings: start..self.rings.len(),
+        });
+        self.push_primitive(
+            GeometryKind::Polygon,
+            axes,
+            coordinates.coord_count() == 0,
+            address,
+        );
+        Ok(())
+    }
+
+    fn push_primitive(
+        &mut self,
+        kind: GeometryKind,
+        axes: CoordinateAxes,
+        empty: bool,
+        address: LiteralAddress,
+    ) {
+        let index = self.checked_rows.len();
+        self.checked_rows.push(FlatRowLayout {
+            address,
+            structure: self
+                .headers
+                .adopt(ShapeStructure::primitive(kind, axes, empty)),
+            points: self.points.len(),
+            lines: self.lines.len(),
+            polygons: self.polygons.len(),
+        });
+        self.rows.push(Some(FlatRowBinding::Checked(index)));
     }
 
     fn capture_parts(
@@ -158,7 +220,7 @@ impl<I> FlatLiteralLayout<I> {
                 let output = output_id(
                     self.lines
                         .len()
-                        .checked_sub(row.lines.start)
+                        .checked_sub(row.lines)
                         .ok_or(ResourceError::SizeOverflow)?,
                 )?;
                 let sequence = self.capture_sequence(
@@ -175,7 +237,7 @@ impl<I> FlatLiteralLayout<I> {
                     let output = output_id(
                         self.lines
                             .len()
-                            .checked_sub(row.lines.start)
+                            .checked_sub(row.lines)
                             .ok_or(ResourceError::SizeOverflow)?,
                     )?;
                     let sequence = self.capture_sequence(
@@ -214,7 +276,7 @@ impl<I> FlatLiteralLayout<I> {
         let output = output_id(
             self.points
                 .len()
-                .checked_sub(row.points.start)
+                .checked_sub(row.points)
                 .ok_or(ResourceError::SizeOverflow)?,
         )?;
         let image = emit(
@@ -224,6 +286,9 @@ impl<I> FlatLiteralLayout<I> {
             },
             point,
         )?;
+        if self.points.is_empty() {
+            self.points.reserve_exact(self.rows.capacity());
+        }
         self.points.push(LiteralPoint {
             output,
             axes,
@@ -262,7 +327,7 @@ impl<I> FlatLiteralLayout<I> {
         let output = output_id(
             self.polygons
                 .len()
-                .checked_sub(row.polygons.start)
+                .checked_sub(row.polygons)
                 .ok_or(ResourceError::SizeOverflow)?,
         )?;
         let start = self.rings.len();
@@ -289,7 +354,7 @@ impl<I: Copy> FlatLiteralLayout<I> {
     pub(in crate::geometry) fn visit_row<W: Work>(
         &self,
         actual: ShapeRow<'_>,
-        row: &FlatRowLayout,
+        index: usize,
         work: &mut W,
         visit: &mut impl FnMut(
             LiteralAddress,
@@ -300,22 +365,29 @@ impl<I: Copy> FlatLiteralLayout<I> {
             &mut W,
         ) -> Result<()>,
     ) -> Result<()> {
-        if !self.headers.matches(row.structure, actual) {
+        let row = self
+            .checked_rows
+            .get(index)
+            .ok_or_else(|| invalid("row has no checked layout"))?;
+        let previous = index
+            .checked_sub(1)
+            .and_then(|previous| self.checked_rows.get(previous));
+        if !self.headers.matches(&row.structure, actual) {
             return Err(invalid(
                 "final geometry kind, axes, empty state, or member structure changed",
             ));
         }
         let points = self
             .points
-            .get(row.points.clone())
+            .get(previous.map_or(0, |row| row.points)..row.points)
             .ok_or_else(|| invalid("point range is outside its publication"))?;
         let lines = self
             .lines
-            .get(row.lines.clone())
+            .get(previous.map_or(0, |row| row.lines)..row.lines)
             .ok_or_else(|| invalid("line range is outside its publication"))?;
         let polygons = self
             .polygons
-            .get(row.polygons.clone())
+            .get(previous.map_or(0, |row| row.polygons)..row.polygons)
             .ok_or_else(|| invalid("polygon range is outside its publication"))?;
         validate_dense_output_ids(points.iter().map(|point| point.output), points.len(), work)?;
         validate_dense_output_ids(lines.iter().map(|line| line.output), lines.len(), work)?;

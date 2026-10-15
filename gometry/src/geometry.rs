@@ -101,8 +101,8 @@ mod boundary;
 #[cfg(test)]
 pub(crate) use antimeridian::self_intersections_in_frame;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, SplitArrayPublisher,
-    SplitDrawing, antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, SplitDrawing,
+    antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
     classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
     geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
     is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
@@ -422,9 +422,9 @@ pub(crate) use tessellation::exact::{
 pub(in crate::geometry) use tessellation::mesh_publication_array_receipt;
 pub(crate) use tessellation::{
     CdtGroupsDrawingWriter, CdtRefinement, PreparedMeshPublication, PreparedSampling,
-    VoronoiDrawingWriter, VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs,
-    finish_mesh_publication_array, finish_mesh_publication_groups, prepare_geographic_cdt_drawing,
-    publish_cdt_array, publish_sampling_array, publish_sampling_groups, row_sample_seed,
+    VoronoiEdgeColumn, VoronoiPolygonOutput, VoronoiPolygonOutputs, finish_mesh_publication_array,
+    finish_mesh_publication_groups, prepare_geographic_cdt_drawing, publish_cdt_array,
+    publish_sampling_array, publish_sampling_groups, row_sample_seed,
 };
 #[expect(
     unused_imports,

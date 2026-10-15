@@ -1,8 +1,11 @@
 use crate::Frame;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::{
-    FlatLiteralLayout, LiteralAddress, LiteralPoint, LiteralPolygon, LiteralRowLayout,
-    LiteralSequence, ShapeLiteralLayout, ShapeStructure,
+    FlatLiteralLayout, LiteralAddress, LiteralRowLayout, ShapeStructure,
+};
+#[cfg(test)]
+use crate::geometry::embedding_completion::literals::{
+    LiteralPoint, LiteralPolygon, LiteralSequence, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
@@ -11,10 +14,9 @@ use crate::geometry::topology::q_embedding::publication::{
     NativeCandidatePublication, SourceOnlyPublication,
 };
 use crate::geometry::topology::{EmissionPortId, QSourceImage};
-use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, Point, Polygon,
-    Ring, Shape,
-};
+#[cfg(test)]
+use crate::geometry::{CoordSeq, CoordinateAxes, Coordinates as _, Point, Polygon, Ring};
+use crate::geometry::{GeometryErrorKind, GeometryKind, Shape};
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -80,29 +82,34 @@ impl ProducerDrawingReceipt {
         let mut layout = FlatLiteralLayout::with_capacity(1);
         let count = crate::geometry::ShapeCountQuery::default().coordinates(&shape)?;
         let mut literals = Vec::with_capacity(count);
-        layout.capture_shape(
-            &shape,
-            LiteralAddress {
-                operation: 0,
-                logical_row: 0,
-                group_row: None,
-                value_row: None,
-                output: 0,
-            },
-            &mut |address, record| {
-                let index = literals.len();
-                index
-                    .checked_add(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                let image = ProducerImageId::new(index);
-                literals.push(ProducerLiteral::from_point(address, image, record));
-                Ok(image)
-            },
-        )?;
+        Self::capture_shape(&mut layout, &mut literals, &shape, LiteralAddress {
+            operation: 0,
+            logical_row: 0,
+            group_row: None,
+            value_row: None,
+            output: 0,
+        })?;
         Ok(Self::new(
             FrozenLiteralBuffers::flat_shape(shape, layout),
             literals,
         ))
+    }
+
+    pub(in crate::geometry) fn capture_shape(
+        layout: &mut FlatLiteralLayout<ProducerImageId>,
+        literals: &mut Vec<ProducerLiteral>,
+        shape: &Shape,
+        address: LiteralAddress,
+    ) -> Result<()> {
+        layout.capture_shape(shape, address, &mut |address, record| {
+            let index = literals.len();
+            index
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let image = ProducerImageId::new(index);
+            literals.push(ProducerLiteral::from_point(address, image, record));
+            Ok(image)
+        })
     }
 
     #[cfg(test)]
@@ -149,6 +156,7 @@ impl ProducerDrawingReceipt {
         Self::drawing(shape)
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn line_layout(
         shape: &Shape,
         logical_row: usize,
@@ -210,6 +218,7 @@ impl ProducerDrawingReceipt {
         Ok((layout.with_structure(shape), literals))
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn drawing_layout(
         shape: &Shape,
         logical_row: usize,
@@ -364,6 +373,7 @@ impl ProducerDrawingReceipt {
         Ok((layout.with_structure(shape), literals))
     }
 
+    #[cfg(test)]
     fn next_image(next_image: &mut usize) -> Result<ProducerImageId> {
         let index = *next_image;
         *next_image = index
@@ -372,6 +382,7 @@ impl ProducerDrawingReceipt {
         Ok(ProducerImageId::new(index))
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) const fn point_layout(
         point: Point,
         axes: CoordinateAxes,
@@ -401,6 +412,7 @@ impl ProducerDrawingReceipt {
         )
     }
 
+    #[cfg(test)]
     fn sequence_layout(
         coordinates: &CoordSeq,
         logical_row: usize,
@@ -436,6 +448,7 @@ impl ProducerDrawingReceipt {
         ))
     }
 
+    #[cfg(test)]
     fn polygon_layout(
         polygon: &Polygon,
         logical_row: usize,
@@ -470,6 +483,7 @@ impl ProducerDrawingReceipt {
         ))
     }
 
+    #[cfg(test)]
     fn ring_layout(
         ring: &Ring,
         logical_row: usize,

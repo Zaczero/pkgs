@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::literals::{FlatLiteralLayout, LiteralAddress, LiteralRowLayout, ShapeLiteralLayout};
+#[cfg(test)]
+use super::literals::LiteralRowLayout;
+use super::literals::{FlatLiteralLayout, LiteralAddress, ShapeLiteralLayout};
 use super::{ResourceError, Result, Work};
 use crate::geometry::publication::StorageTarget;
 use crate::geometry::storage::{ArrayRows, GeometryArrayStorage, StorageLayout, ValidityMask};
@@ -90,6 +92,7 @@ impl<I> FrozenLiteralBuffers<I> {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn rows<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
@@ -125,6 +128,7 @@ impl<I> FrozenLiteralBuffers<I> {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn groups<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         value_missing: Option<ValidityMask>,

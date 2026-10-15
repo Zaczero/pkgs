@@ -32,7 +32,6 @@ pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
-pub(crate) use voronoi_publication::VoronoiDrawingWriter;
 pub(in crate::geometry) use voronoi_receipt::{
     VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiDartReceipt, VoronoiDiagramReceipt,
     VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiFrameSide,

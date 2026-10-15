@@ -1,7 +1,6 @@
 use crate::crs::frame::crs_arc_static;
 use crate::geometry::publication::{
-    GeometryOutput, PublicationRows, finish_geographic_line,
-    finish_geographic_nearest_point_columns, geographic_line_pending_row,
+    GeometryOutput, PublicationRows, finish_geographic_line, geographic_line_pending_row,
 };
 use crate::geometry::{Coordinates as _, LineSeq, Point, Shape};
 use crate::test_support::{allocation_count, allocation_stats};
@@ -77,11 +76,22 @@ fn accepted_endpoint_publication_allocation_profile() {
             eprintln!("PUBLICATION_PROFILE route=line rows={count} phase={phase} {stats:?}");
         }
         let (phases, _) = allocation_count(|| {
-            let left = accepted.iter().map(|pair| Shape::Point(pair[0])).collect();
-            let right = accepted.iter().map(|pair| Shape::Point(pair[1])).collect();
+            let pairs = accepted
+                .iter()
+                .map(|pair| Ok((Some((*pair).into()), pair[0].axes)));
+            let (left, right) = crate::nearest_point_columns_masked(
+                pairs,
+                None,
+                crate::geometry::TopologyDomain::Geographic(
+                    crate::geographic::GeographicFrame::crs84(),
+                ),
+            )
+            .unwrap();
             let append = allocation_stats();
-            let (left, right) =
-                finish_geographic_nearest_point_columns(left, right, &frame, None).unwrap();
+            let (left, right) = (
+                left.finish(frame.clone()).unwrap(),
+                right.finish(frame.clone()).unwrap(),
+            );
             let finish = allocation_stats();
             assert_eq!(left.len(), count);
             assert_eq!(right.len(), count);

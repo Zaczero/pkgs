@@ -1,11 +1,9 @@
 use crate::array::ArrayRow;
-use crate::geometry::publication::{
-    finish_geographic_nearest_point_columns, geographic_line_pending_row,
-};
-use crate::geometry::storage::{ArrayRows, ValidityMask};
+use crate::geometry::publication::{GeometryOutput, PublicationRows, geographic_line_pending_row};
+use crate::geometry::storage::ValidityMask;
 use crate::py::support::{
-    CollectRows as _, CoordinateAxes, Frame, Point, PyErr, PyGeometry, PyGeometryArray, PyResult,
-    Python, Shape, metric_nearest_points_resolved, rows_err,
+    CoordinateAxes, Point, PyGeometry, PyGeometryArray, PyResult, Python, Shape,
+    metric_nearest_points_resolved, rows_err,
 };
 
 /// Build the `(left, right)` witness point columns from per-row nearest
@@ -14,32 +12,45 @@ use crate::py::support::{
 /// present row is dropped to its common axes — both via
 /// [`crate::geometry::nearest_point_pair`].
 pub(crate) fn nearest_point_columns_masked(
-    pairs: Vec<(Option<(Point, Point)>, CoordinateAxes)>,
-    frame: Frame,
-    missing: Option<ValidityMask>,
+    pairs: impl ExactSizeIterator<Item = crate::error::Result<(Option<(Point, Point)>, CoordinateAxes)>>,
+    missing: Option<&ValidityMask>,
     domain: crate::geometry::TopologyDomain,
-) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
+) -> Result<(PublicationRows, PublicationRows), (usize, crate::error::Error)> {
     let pair_count = pairs.len();
-    let mut left = Vec::with_capacity(pair_count);
-    let mut right = Vec::with_capacity(pair_count);
-    for (row, (pair, common)) in pairs.into_iter().enumerate() {
-        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-            left.push(ArrayRows::missing_placeholder());
-            right.push(ArrayRows::missing_placeholder());
+    if missing.is_some_and(|mask| mask.len() != pair_count) {
+        return Err((
+            0,
+            crate::geometry::GeometryErrorKind::Invalid(
+                "nearest-point validity does not match its output rows".into(),
+            )
+            .into(),
+        ));
+    }
+    let mut left = PublicationRows::with_capacity(pair_count);
+    let mut right = PublicationRows::with_capacity(pair_count);
+    for (row, pair) in pairs.enumerate() {
+        let (pair, common) = pair.map_err(|error| (row, error))?;
+        if missing.is_some_and(|mask| mask.is_missing(row)) {
+            left.try_push_missing().map_err(|error| (row, error))?;
+            right.try_push_missing().map_err(|error| (row, error))?;
             continue;
         }
         let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair.as_ref(), common);
-        left.push(left_shape);
-        right.push(right_shape);
+        if domain.is_geographic() {
+            left.try_push_drawing(left_shape, row, "nearest_points")
+                .map_err(|error| (row, error))?;
+            right
+                .try_push_drawing(right_shape, row, "nearest_points")
+                .map_err(|error| (row, error))?;
+        } else {
+            left.try_push(GeometryOutput::Shape(left_shape))
+                .map_err(|error| (row, error))?;
+            right
+                .try_push(GeometryOutput::Shape(right_shape))
+                .map_err(|error| (row, error))?;
+        }
     }
-    if domain.is_geographic() {
-        return finish_geographic_nearest_point_columns(left, right, &frame, missing.as_ref())
-            .map_err(PyErr::from);
-    }
-    Ok((
-        PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
-        PyGeometryArray::from_shapes(right, frame)?.with_missing_mask(missing)?,
-    ))
+    Ok((left, right))
 }
 
 pub(crate) fn fixed_geometry_array_nearest_points_admitted(
@@ -62,7 +73,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                 &state,
                 |crs, metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    Ok(rows
+                    let pairs = rows
                         .rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
                         .map(|logical_row| {
                             let ArrayRow::Present(row) = logical_row else {
@@ -95,18 +106,20 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                 )
                             }
                             .map(|pair| (pair, common))
-                        })
-                        .collect_rows())
+                        });
+                    Ok(nearest_point_columns_masked(
+                        pairs,
+                        array_owned.missing(),
+                        domain,
+                    ))
                 },
             )
         })?;
-        let pairs = rows.map_err(rows_err)?;
-        return nearest_point_columns_masked(
-            pairs,
-            array.frame.clone(),
-            array.missing().cloned(),
-            domain,
-        );
+        let (left, right) = rows.map_err(rows_err)?;
+        return Ok((
+            left.finish(array.frame.clone())?,
+            right.finish(array.frame.clone())?,
+        ));
     }
     let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
     let source_frame = fixed.frame.clone();
@@ -118,7 +131,8 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                 domain,
                 |source_context| {
                     let mut rows = array_owned.row_operation();
-                    rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
+                    let pairs = rows
+                        .rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
                         .map(|logical_row| {
                             let ArrayRow::Present(row) = logical_row else {
                                 return Ok((None, CoordinateAxes::XY));
@@ -148,13 +162,16 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                 )
                             }
                             .map(|pair| (pair, common))
-                        })
-                        .collect_rows()
+                        });
+                    nearest_point_columns_masked(pairs, array_owned.missing(), domain)
                 },
             )
         })
         .map_err(crate::broadcast::rows_err)?;
-    nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned(), domain)
+    Ok((
+        pairs.0.finish(array.frame.clone())?,
+        pairs.1.finish(array.frame.clone())?,
+    ))
 }
 
 /// One fixed geometry against every array element, emitting geodesic shortest
@@ -195,7 +212,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     PyGeometryArray,
                     (usize, crate::error::Error),
                 > {
-                    use crate::geometry::publication::{GeometryOutput, PublicationRows};
 
                     let mut publication = PublicationRows::with_capacity(array_owned.len());
                     for row in array_rows.rows_with_missing(Shape::empty_point) {

@@ -16,19 +16,14 @@ use super::super::overlay::{
 };
 use super::{GeographicCoverageAnalysis, GeographicCoverageFaceAssignment};
 use crate::array::StreamingShapes;
-use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::literals::{
-    LiteralAddress, LiteralPolygon, LiteralRowLayout, LiteralSequence, ShapeLiteralLayout,
-    ShapeStructure,
-};
+use crate::error::Result;
+use crate::geometry::embedding_completion::literals::{FlatLiteralLayout, LiteralAddress};
 use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
 use crate::geometry::embedding_search::account::EvaluationBudget;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, SourceArcMetricAccess, resolve_request_rows,
 };
-use crate::geometry::publication::{
-    ProducerDrawingReceipt, ProducerImageId, ProducerLiteral, StorageTarget,
-};
+use crate::geometry::publication::{ProducerDrawingReceipt, StorageTarget};
 use crate::geometry::segments::ordering::try_sort_by_with_work;
 use crate::geometry::storage::StorageLayout;
 use crate::geometry::{
@@ -348,7 +343,7 @@ impl CoverageRows {
         }
         let mut writer = StreamingShapes::with_capacity(0, row_count);
         let mut scalar = None;
-        let mut row_map = Vec::with_capacity(row_count);
+        let mut row_map = FlatLiteralLayout::with_capacity(row_count);
         let mut literals = Vec::new();
         for (logical_row, parts) in row_parts.into_iter().enumerate() {
             let mut axes = if parts.is_empty() && self.target == StorageTarget::Array {
@@ -375,74 +370,39 @@ impl CoverageRows {
                 }
             }
             let mut polygons = Vec::with_capacity(parts.len());
-            let mut polygon_layouts = Vec::with_capacity(parts.len());
-            for (output, part) in parts.into_iter().enumerate() {
-                let address = LiteralAddress {
-                    operation: 0,
-                    logical_row,
-                    group_row: None,
-                    value_row: None,
-                    output: u32::try_from(output).map_err(|_| ResourceError::SizeOverflow)?,
-                };
-                let (shell, shell_layout) = write_ring(
-                    plan,
-                    sites,
-                    &ordinates,
-                    &part.shell,
-                    axes,
-                    address,
-                    &mut literals,
-                    work,
-                )?;
+            for part in parts {
+                let shell = write_ring(plan, sites, &ordinates, &part.shell, axes, work)?;
                 let mut holes = Vec::with_capacity(part.holes.len());
-                let mut hole_layouts = Vec::with_capacity(part.holes.len());
                 for hole in &part.holes {
-                    let (ring, layout) = write_ring(
-                        plan,
-                        sites,
-                        &ordinates,
-                        hole,
-                        axes,
-                        address,
-                        &mut literals,
-                        work,
-                    )?;
+                    let ring = write_ring(plan, sites, &ordinates, hole, axes, work)?;
                     holes.push(ring);
-                    hole_layouts.push(layout);
                 }
                 polygons.push(Polygon::new(shell, holes));
-                polygon_layouts.push(LiteralPolygon {
-                    output: address.output,
-                    axes,
-                    shell: shell_layout,
-                    holes: hole_layouts,
-                });
             }
             let shape = Shape::narrow_polygons(axes, polygons);
-            let layout = ShapeLiteralLayout {
-                structure: Some(ShapeStructure::capture(&shape)),
-                points: Vec::new(),
-                lines: Vec::new(),
-                polygons: polygon_layouts,
-            };
-            if self.target == StorageTarget::Scalar {
-                scalar = Some((shape, layout));
-            } else {
-                writer.try_push(shape)?;
-                row_map.push(Some(LiteralRowLayout {
+            ProducerDrawingReceipt::capture_shape(
+                &mut row_map,
+                &mut literals,
+                &shape,
+                LiteralAddress {
                     operation: 0,
                     logical_row,
                     group_row: None,
                     value_row: None,
-                    layout,
-                }));
+                    output: 0,
+                },
+            )?;
+            if self.target == StorageTarget::Scalar {
+                scalar = Some(shape);
+            } else {
+                writer.try_push(shape)?;
             }
         }
-        let buffers = if let Some((shape, layout)) = scalar {
-            FrozenLiteralBuffers::shapes(shape, layout)
+        let buffers = if let Some(shape) = scalar {
+            FrozenLiteralBuffers::flat_shape(shape, row_map)
         } else {
             let (storage, ..) = writer.finish_parts()?;
-            FrozenLiteralBuffers::rows(
+            FrozenLiteralBuffers::flat_rows(
                 Arc::new(storage),
                 None,
                 StorageLayout::PresentOnly,
@@ -460,24 +420,11 @@ fn write_ring(
     ordinates: &[NodeOrdinates],
     chords: &[EmissionChordId],
     axes: CoordinateAxes,
-    address: LiteralAddress,
-    literals: &mut Vec<ProducerLiteral>,
     work: &mut impl Work,
-) -> Result<(Ring, LiteralSequence<ProducerImageId>)> {
+) -> Result<Ring> {
     let drawing = native_chord_points(plan, sites, ordinates, chords, axes, true, work)?;
-    let mut images = Vec::with_capacity(drawing.points.len());
-    for &point in &drawing.points {
+    for _ in &drawing.points {
         work.charge_into_error(1)?;
-        let image = ProducerImageId::new(literals.len());
-        literals.push(ProducerLiteral::from_point(address, image, point));
-        images.push(image);
     }
-    Ok((
-        Ring::try_from_closed(CoordSeq::try_from_points_with_work(&drawing.points, work)?)?,
-        LiteralSequence {
-            output: address.output,
-            axes,
-            images,
-        },
-    ))
+    Ring::try_from_closed(CoordSeq::try_from_points_with_work(&drawing.points, work)?)
 }

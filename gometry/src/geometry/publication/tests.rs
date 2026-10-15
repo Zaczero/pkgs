@@ -466,21 +466,105 @@ fn nearest_points_receipt_omission_fails_final_readback() {
 }
 
 #[test]
-fn nearest_point_columns_reject_different_lengths_without_a_missing_mask() {
-    let result = super::routes::finish_geographic_nearest_point_columns(
-        vec![Shape::Point(Point::new_raw_xy(1.0, 2.0))],
-        Vec::new(),
-        &Frame::default(),
-        None,
+fn nearest_point_columns_reject_a_shortened_missing_mask() {
+    let missing = ValidityMask::from_vec(1, vec![true]);
+    let result = crate::nearest_point_columns_masked(
+        [
+            Ok((
+                Some((Point::new_raw_xy(1.0, 2.0), Point::new_raw_xy(3.0, 4.0))),
+                CoordinateAxes::XY,
+            )),
+            Ok((None, CoordinateAxes::XY)),
+        ]
+        .into_iter(),
+        missing.as_ref(),
+        TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
     );
 
     match result {
-        Err(error) => assert!(matches!(
+        Err((_, error)) => assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
         )),
-        Ok(_) => panic!("paired nearest-point columns must have matching lengths"),
+        Ok(_) => panic!("paired nearest-point validity must cover all logical rows"),
     }
+}
+
+#[test]
+fn geographic_nearest_point_columns_preserve_all_broadcasts_missing_empty_m_and_epoch() {
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), Some(2021.25)).unwrap();
+    let point = |x, y, m| {
+        Shape::Point(Point::new_raw_axes(
+            x,
+            y,
+            crate::geometry::ZOrdinate(None),
+            crate::geometry::MOrdinate(Some(m)),
+        ))
+    };
+    let first = point(1.0, 2.0, 11.0);
+    let last = point(7.0, 8.0, 77.0);
+    let fixed = point(-1.0, -2.0, -11.0);
+    let empty = Shape::Empty(GeometryKind::Point, CoordinateAxes::XYM);
+    let left = crate::PyGeometryArray::from_shapes(
+        vec![first.clone(), empty.clone(), empty.clone(), last.clone()],
+        frame.clone(),
+    )
+    .unwrap()
+    .with_missing_mask(ValidityMask::from_vec(4, vec![false, false, true, false]))
+    .unwrap();
+    let right_first = point(3.0, 4.0, 33.0);
+    let right_last = point(11.0, 12.0, 111.0);
+    let right = crate::PyGeometryArray::from_shapes(
+        vec![
+            right_first.clone(),
+            point(5.0, 6.0, 55.0),
+            point(9.0, 10.0, 99.0),
+            right_last.clone(),
+        ],
+        frame.clone(),
+    )
+    .unwrap();
+    Python::attach(|py| {
+        let left = Bound::new(py, left).unwrap().into_any();
+        let right = Bound::new(py, right).unwrap().into_any();
+        let fixed_object = Bound::new(
+            py,
+            crate::PyGeometry::with_frame(fixed.clone(), frame.clone()),
+        )
+        .unwrap()
+        .into_any();
+        for (a, b, expected_first, expected_last) in [
+            (&left, &right, [first.clone(), right_first], [
+                last.clone(),
+                right_last,
+            ]),
+            (&fixed_object, &left, [fixed.clone(), first.clone()], [
+                fixed.clone(),
+                last.clone(),
+            ]),
+            (&left, &fixed_object, [first, fixed.clone()], [last, fixed]),
+        ] {
+            let output = crate::predicates::nearest_points(py, a, b, None).unwrap();
+            let columns = output.bind(py).cast::<PyTuple>().unwrap();
+            for (column, (first, last)) in expected_first.into_iter().zip(expected_last).enumerate()
+            {
+                let value = columns.get_item(column).unwrap();
+                let array = value
+                    .extract::<PyRef<'_, crate::PyGeometryArray>>()
+                    .unwrap();
+                assert_eq!(array.frame, frame);
+                assert_eq!(array.len(), 4);
+                assert!(array.is_row_missing(2));
+                for (row, expected) in [(0, first), (1, empty.clone()), (3, last)] {
+                    assert_eq!(
+                        array.geometry_at(row).unwrap().prepared_plan().shape(),
+                        &expected
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[test]

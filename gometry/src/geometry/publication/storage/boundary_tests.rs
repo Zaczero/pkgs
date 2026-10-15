@@ -4,7 +4,7 @@ use super::*;
 use crate::crs::frame::crs_arc_static;
 use crate::dispatch::{CachelessRowContext, Lane, MetricResolver, MetricScratch, kernels};
 use crate::error::ErrorKind;
-use crate::geometry::{MOrdinate, Point, PreparedPlan, ZOrdinate};
+use crate::geometry::{MOrdinate, PreparedPlan, ZOrdinate};
 
 const SEAM: &str = "POLYGON M ((170 10 10,190 50 110,190 55 210,170 15 310,170 10 10))";
 const ORDINARY: &str = "POLYGON M ((0 0 401,3 0 402,3 2 403,0 2 404,0 0 401))";

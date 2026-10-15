@@ -199,7 +199,7 @@ where
                 )
                 .into());
             }
-            layout.visit_row(ShapeRow::Shape(shape), row, work, &mut check)?;
+            layout.visit_row(ShapeRow::Shape(shape), *index, work, &mut check)?;
         },
         FrozenStorage::Rows {
             rows,
@@ -294,7 +294,7 @@ fn visit_array_literals<I: Copy, W: Work>(
                     )
                     .into());
                 }
-                layout.visit_row(row, locations, work, visit)?;
+                layout.visit_row(row, *index, work, visit)?;
             },
         }
     }
@@ -374,10 +374,7 @@ fn visit_group_literals<I: Copy, W: Work>(
                     let FlatRowBinding::Checked(index) = binding else {
                         continue;
                     };
-                    let locations = layout.checked_rows.get(*index).ok_or_else(|| {
-                        GeometryErrorKind::Invalid("group value has no checked layout".into())
-                    })?;
-                    layout.visit_row(row, locations, work, visit)?;
+                    layout.visit_row(row, *index, work, visit)?;
                 },
             }
         }

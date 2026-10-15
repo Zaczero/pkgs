@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use super::{ShapeMembers, ShapeStructure, matches_multipart_members, matches_shape_header};
@@ -8,6 +9,13 @@ use crate::geometry::{CoordinateAxes, GeometryKind, MultiMember, Shape};
 pub(in crate::geometry) struct StructureHeaders {
     nodes: Vec<StructureHeader>,
     empty_members: Vec<usize>,
+}
+
+pub(super) struct CapturedStructure {
+    kind: GeometryKind,
+    axes: CoordinateAxes,
+    empty: bool,
+    node: Option<NonZeroUsize>,
 }
 
 struct StructureHeader {
@@ -25,7 +33,24 @@ enum Members {
 }
 
 impl StructureHeaders {
-    pub(in crate::geometry) fn capture(&mut self, shape: &Shape) -> usize {
+    pub(super) fn capture(&mut self, shape: &Shape) -> CapturedStructure {
+        let row = ShapeRow::Shape(shape);
+        let node = match shape {
+            Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..) => None,
+            Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_) => Some(node_id(self.capture_node(shape))),
+        };
+        CapturedStructure {
+            kind: row.kind(),
+            axes: row.axes(),
+            empty: row.is_empty(),
+            node,
+        }
+    }
+
+    fn capture_node(&mut self, shape: &Shape) -> usize {
         let row = ShapeRow::Shape(shape);
         let root = self.nodes.len();
         self.nodes.push(StructureHeader {
@@ -38,7 +63,7 @@ impl StructureHeaders {
         let members = match shape {
             Shape::GeometryCollection(parts) => {
                 for part in parts {
-                    self.capture(part);
+                    self.capture_node(part);
                 }
                 Members::Collection { count: parts.len() }
             },
@@ -73,7 +98,20 @@ impl StructureHeaders {
         }
     }
 
-    pub(in crate::geometry) fn adopt(&mut self, structure: ShapeStructure) -> usize {
+    pub(super) fn adopt(&mut self, structure: ShapeStructure) -> CapturedStructure {
+        let mut header = CapturedStructure {
+            kind: structure.kind,
+            axes: structure.axes,
+            empty: structure.empty,
+            node: None,
+        };
+        if !matches!(&structure.members, ShapeMembers::Primitive) {
+            header.node = Some(node_id(self.adopt_node(structure)));
+        }
+        header
+    }
+
+    fn adopt_node(&mut self, structure: ShapeStructure) -> usize {
         let root = self.nodes.len();
         self.nodes.push(StructureHeader {
             kind: structure.kind,
@@ -95,7 +133,7 @@ impl StructureHeaders {
             ShapeMembers::Collection(parts) => {
                 let count = parts.len();
                 for part in parts {
-                    self.adopt(part);
+                    self.adopt_node(part);
                 }
                 Members::Collection { count }
             },
@@ -107,7 +145,25 @@ impl StructureHeaders {
         root
     }
 
-    pub(in crate::geometry) fn matches(&self, root: usize, row: ShapeRow<'_>) -> bool {
+    pub(super) fn matches(&self, header: &CapturedStructure, row: ShapeRow<'_>) -> bool {
+        if !matches_shape_header(header.kind, header.axes, header.empty, row) {
+            return false;
+        }
+        if let Some(node) = header.node {
+            return self.matches_node(node.get().wrapping_sub(1), row);
+        }
+        let shape = match row {
+            ShapeRow::Handle(handle) => handle.shape(),
+            ShapeRow::Shape(shape) => shape,
+            ShapeRow::Point(_) | ShapeRow::Packed(_) => return true,
+        };
+        matches!(
+            shape,
+            Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..)
+        )
+    }
+
+    fn matches_node(&self, root: usize, row: ShapeRow<'_>) -> bool {
         let Some(header) = self.nodes.get(root) else {
             return false;
         };
@@ -133,7 +189,7 @@ impl StructureHeaders {
                     .checked_add(1)
                     .expect("the root indexes a stored header");
                 for part in parts {
-                    if !self.matches(next, ShapeRow::Shape(part)) {
+                    if !self.matches_node(next, ShapeRow::Shape(part)) {
                         return false;
                     }
                     let Some(child) = self.nodes.get(next) else {
@@ -164,4 +220,13 @@ impl StructureHeaders {
             .get(empty.clone())
             .is_some_and(|empty| matches_multipart_members(*count, empty.iter().copied(), members))
     }
+}
+
+const fn node_id(index: usize) -> NonZeroUsize {
+    NonZeroUsize::new(
+        index
+            .checked_add(1)
+            .expect("an allocated node index has a successor"),
+    )
+    .expect("a node index plus one is nonzero")
 }
