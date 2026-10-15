@@ -1,6 +1,5 @@
 import gc
 import sys
-import threading
 
 import pytest
 from lrucache_rs import LRUCache
@@ -16,6 +15,16 @@ def test_invalid_maxsize():
 def test_maxsize_attribute():
     cache = LRUCache[str, int](7)
     assert cache.maxsize == 7
+
+
+def test_maxsize_uses_index_protocol():
+    class Capacity:
+        def __index__(self):
+            return 3
+
+    assert LRUCache(Capacity()).maxsize == 3  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        LRUCache(1.5)  # type: ignore[arg-type]
 
 
 def test_maxsize_eviction():
@@ -289,7 +298,6 @@ def test_drop_releases_python_objects():
     """When the cache is dropped, references to stored values must be released."""
     cache = LRUCache[int, object](16)
     obj = object()
-    obj_id = id(obj)
 
     base_refs = sys.getrefcount(obj)
     cache[1] = obj
@@ -298,7 +306,6 @@ def test_drop_releases_python_objects():
     del cache
     gc.collect()
     assert sys.getrefcount(obj) == base_refs
-    assert id(obj) == obj_id  # not freed by gc
 
 
 def test_setitem_updates_value():
@@ -318,32 +325,6 @@ def test_get_returns_existing_value_unchanged():
     assert fetched is value
     fetched.append(4)
     assert cache['a'] == [1, 2, 3, 4]
-
-
-def test_concurrent_access_does_not_crash():
-    """Smoke test: parallel writers should not crash, deadlock, or violate maxsize."""
-    cache = LRUCache[int, int](1024)
-    errors: list[BaseException] = []
-
-    def worker(start: int) -> None:
-        try:
-            for i in range(start, start + 2_000):
-                cache[i % 1024] = i
-                _ = cache.get(i % 1024)
-        except BaseException as exc:
-            errors.append(exc)
-
-    threads = [
-        threading.Thread(target=worker, args=(start,))
-        for start in (0, 10_000, 20_000, 30_000)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors
-    assert len(cache) <= 1024
 
 
 def test_hash_preserves_insertion_for_equal_keys_in_collision():

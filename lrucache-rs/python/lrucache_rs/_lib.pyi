@@ -1,28 +1,28 @@
-from collections.abc import Hashable, Iterator, MutableMapping
-from typing import TypeVar, final, overload
+from typing import Any
 
-__all__ = ['LRUCache']
+from typing_extensions import Self, disjoint_base
 
-_K = TypeVar('_K', bound=Hashable)
-_V = TypeVar('_V')
-_D = TypeVar('_D')
+from lrucache_rs._entries import Entry, Request
 
-@final
-class LRUCache(MutableMapping[_K, _V]):
-    """A thread-safe LRU cache with a fixed maximum size.
+__all__ = ['Cache']
 
-    A ``MutableMapping``: reads and writes mark the key as most recently
-    used, and inserting past ``maxsize`` evicts the least recently used
-    entry. Construct with ``LRUCache(maxsize)``; ``LRUCache[K, V]`` works
-    for type hints.
-    """
-    def __class_getitem__(cls, _item: object) -> type[LRUCache[_K, _V]]:
-        """Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at
-        runtime.
+@disjoint_base
+class Cache:
+    """Native storage for the public Python-owned LRU mapping."""
+
+    def __new__(cls, maxsize: int) -> Self:
+        """Create native metadata for the given positive cache capacity.
+
+        Parameters
+        ----------
+        maxsize : int
+            Positive maximum entry count within the native index range.
+
+        Returns
+        -------
+        Cache
+            Initialized native metadata for the public Python mapping.
         """
-
-    def __new__(cls, maxsize: int) -> LRUCache[_K, _V]:
-        """Create a cache holding at most ``maxsize`` entries."""
 
     @property
     def maxsize(self) -> int:
@@ -31,78 +31,18 @@ class LRUCache(MutableMapping[_K, _V]):
     def __len__(self) -> int:
         """Return len(self)."""
 
-    def __contains__(self, key: object, /) -> bool:
-        """Return bool(key in self)."""
-
-    def __iter__(self) -> Iterator[_K]:
-        """Implement iter(self)."""
-
-    def __setitem__(self, key: _K, value: _V, /) -> None:
-        """Set self[key] to value."""
-
-    def __getitem__(self, key: _K, /) -> _V:
-        """Return self[key]."""
-
-    def __delitem__(self, key: _K, /) -> None:
-        """Delete self[key]."""
-
-    @overload
-    def get(self, key: _K, /) -> _V | None: ...
-    @overload
-    def get(self, key: _K, /, default: _D) -> _V | _D: ...
-    @overload
-    def get(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
-        """Retrieve the value for ``key``, marking it most recently used.
-
-        Parameters
-        ----------
-        key : Hashable
-            The key to look up.
-        default : object, optional
-            Returned when the key is absent; ``None`` if omitted.
-
-        Returns
-        -------
-        object
-            The stored value, or ``default`` when the key is absent.
-        """
-
-    @overload
-    def peek(self, key: _K, /) -> _V | None: ...
-    @overload
-    def peek(self, key: _K, /, default: _D) -> _V | _D: ...
-    @overload
-    def peek(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
-        """Read without bumping recency. Useful for instrumentation that should not
-        perturb the LRU order; the convention is borrowed from `cachetools`.
-
-        Parameters
-        ----------
-        key : Hashable
-            The key to look up.
-        default : object, optional
-            Returned when the key is absent; ``None`` if omitted.
-
-        Returns
-        -------
-        object
-            The stored value, or ``default`` when the key is absent.
-        """
-
+    def _get(self, request: Request[Any, Any]) -> Entry[Any, Any] | None: ...
+    def _peek(self, request: Request[Any, Any]) -> Entry[Any, Any] | None: ...
+    def _set(self, request: Request[Any, Any]) -> None: ...
+    def _setdefault(self, request: Request[Any, Any]) -> Entry[Any, Any] | None: ...
+    def _remove(self, request: Request[Any, Any]) -> Entry[Any, Any] | None: ...
+    def _popitem(self) -> Entry[Any, Any] | None: ...
+    def _snapshot_entries(self) -> list[Entry[Any, Any]]: ...
     def clear(self) -> None:
-        """Remove all entries from the cache.
+        """Remove all entries before running any retired key or value finalizers.
 
         Returns
         -------
         None
-        """
-
-    def popitem(self) -> tuple[_K, _V]:
-        """Remove and return the least-recently-used `(key, value)` pair, raising
-        `KeyError` if empty.
-
-        Returns
-        -------
-        tuple
-            The evicted ``(key, value)`` pair.
+            Finalizers may insert new entries after the clear commits.
         """

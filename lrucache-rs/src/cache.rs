@@ -1,34 +1,4 @@
-//! `LRUCache` pyclass: a dict-like LRU cache backed by [`crate::store::Store`].
-//!
-//! ## Concurrency model
-//!
-//! The class is `frozen`, so `PyO3` methods take `&self` and synchronisation
-//! lives in a single [`parking_lot::Mutex`] over the inner store. On the
-//! GIL-enabled build the GIL serialises Python code, so contention is rare. On
-//! the free-threaded build, multiple Rust threads can call methods concurrently
-//! and the mutex is the source of truth.
-//!
-//! [`MutexExt::lock_py_attached`] is used so that, when waiting on a contended
-//! mutex, the calling thread temporarily detaches from the Python interpreter;
-//! this avoids the classic GIL/mutex interleaving deadlock when another thread
-//! holds the mutex while waiting on the GC.
-//!
-//! ## Reentrancy contract
-//!
-//! User-supplied `__hash__` runs *before* the lock is acquired, so it is free
-//! to do anything. A user-supplied `__eq__` runs from inside the lookup closure
-//! while the lock is held; it must not recurse into this same cache instance,
-//! which would self-deadlock the thread. This matches the contract of `dict` in
-//! `CPython` and is documented in the public API.
-//!
-//! ## Hash protocol
-//!
-//! `__hash__` is invoked exactly once per call (via `PyObject_Hash`). The
-//! resulting `Py_hash_t` is stored in the entry alongside the key, so
-//! subsequent lookups for the same stored key never re-hash. Collision handling
-//! uses `PyObject_RichCompareBool(_, _, Py_EQ)`: it has `CPython`'s
-//! pointer-equality fast path built in, so equal Python object pointers
-//! short-circuit before the Python-level `__eq__` is ever called.
+//! Native metadata and atomic publication of Python-owned entry references.
 
 use std::num::NonZeroUsize;
 
@@ -36,35 +6,217 @@ use parking_lot::Mutex;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt as _;
-use pyo3::types::{PyTuple, PyType};
+use pyo3::types::{PyInt, PyList};
 
-use crate::errors::{CacheError, missing_key};
+use crate::errors::CacheError;
 use crate::store::Store;
 
-/// A thread-safe LRU cache with a fixed maximum size.
-///
-/// A ``MutableMapping``: reads and writes mark the key as most recently
-/// used, and inserting past ``maxsize`` evicts the least recently used
-/// entry. Construct with ``LRUCache(maxsize)``; ``LRUCache[K, V]`` works
-/// for type hints.
-#[pyclass(frozen, module = "lrucache_rs._lib")]
+/// Native storage for the public Python-owned LRU mapping.
+#[pyclass(frozen, subclass, mapping, module = "lrucache_rs._lib", name = "Cache")]
 pub struct LRUCache {
     inner: Mutex<Store>,
-    /// Stored alongside `inner` so it can be read without taking the lock.
     maxsize: NonZeroUsize,
+}
+
+struct Position<'py> {
+    slot: u32,
+    index: Bound<'py, PyInt>,
+}
+
+impl<'py> Position<'py> {
+    fn new(py: Python<'py>, slot: u32) -> Self {
+        Self {
+            slot,
+            index: slot.into_pyobject(py).expect("integer conversion"),
+        }
+    }
+
+    fn read(self, references: &Bound<'py, PyList>) -> PyResult<Entry<'py>> {
+        // PyList_GetItem would switch PyPy to opaque cpyext raw-reference storage.
+        let owner = references.as_any().get_item(&self.index)?.unbind();
+        Ok(Entry {
+            position: self,
+            owner,
+        })
+    }
+
+    fn write(&self, references: &Bound<'_, PyList>, owner: &Bound<'_, PyAny>) {
+        // The exact list, exact in-range int and Entry/None already have Python
+        // objects and C wrappers. Generic assignment preserves ObjectListStrategy
+        // on PyPy: its built-in shortcut unwraps the int and replaces one pointer,
+        // without allocation, resize or Python dispatch. Do not use PyList_SetItem
+        // or move object/index conversion under the mutex. Every outgoing owner
+        // has a retirement pin, preventing last-reference finalizers on CPython.
+        references
+            .as_any()
+            .set_item(&self.index, owner)
+            .expect("fixed entry slot");
+    }
+}
+
+struct Entry<'py> {
+    position: Position<'py>,
+    owner: Py<PyAny>,
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Read { touch: bool },
+    Set,
+    SetDefault,
+    Remove,
+}
+
+fn failed(request: &Bound<'_, PyAny>) -> PyResult<bool> {
+    // Fetching the exception or payload itself would expose recursive tuples
+    // to cpyext. Only the controlled request's Boolean crosses this boundary.
+    request.getattr("failed")?.is_truthy()
+}
+
+impl LRUCache {
+    fn references<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyList>> {
+        slf.getattr("_references")?.cast_into().map_err(Into::into)
+    }
+
+    fn access<'py>(
+        &self,
+        references: &Bound<'py, PyList>,
+        request: &Bound<'py, PyAny>,
+        action: Action,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let py = request.py();
+        let hash = request.hash()?;
+        if failed(request)? {
+            return Ok(None);
+        }
+        let none = py.None();
+        loop {
+            let inserting = matches!(action, Action::Set | Action::SetDefault);
+            let (revision, candidates, insertion, victim) = {
+                let guard = self.inner.lock_py_attached(py);
+                (
+                    guard.revision(),
+                    guard.candidates(hash),
+                    guard.insertion_slot(),
+                    (inserting && guard.is_full())
+                        .then(|| guard.lru().expect("full store has tail")),
+                )
+            };
+            let insertion = Position::new(py, insertion);
+            let victim = victim
+                .map(|idx| Position::new(py, idx).read(references))
+                .transpose()?;
+            let entries = candidates
+                .into_iter()
+                .map(|slot| Position::new(py, slot).read(references))
+                .collect::<PyResult<Vec<_>>>()?;
+            let guard = self.inner.lock_py_attached(py);
+            let valid = guard.revision() == revision;
+            drop(guard);
+            if !valid {
+                continue;
+            }
+            let mut found = None;
+            for entry in entries {
+                let matched = eq_entries(&entry.owner, request)?;
+                if failed(request)? {
+                    return Ok(None);
+                }
+                if matched {
+                    found = Some(entry);
+                    break;
+                }
+            }
+            let updated = if matches!(action, Action::Set)
+                || (matches!(action, Action::SetDefault) && found.is_none())
+            {
+                let canonical = found
+                    .as_ref()
+                    .map_or_else(|| none.bind(py), |entry| entry.owner.bind(py));
+                let owner = request.call_method1("build_entry", (canonical,))?.unbind();
+                if failed(request)? {
+                    return Ok(None);
+                }
+                Some(owner)
+            } else {
+                None
+            };
+            let mut guard = self.inner.lock_py_attached(py);
+            if guard.revision() != revision {
+                drop(guard);
+                continue;
+            }
+            let result = if let Some(entry) = &found {
+                let slot = entry.position.slot;
+                match action {
+                    Action::Read { touch } => {
+                        if touch {
+                            guard.touch(slot);
+                        }
+                        Some(entry.owner.clone_ref(py))
+                    },
+                    Action::Set => {
+                        let replacement = updated.as_ref().expect("built entry").bind(py);
+                        // Idempotent equality-callback writes must not invalidate
+                        // their own enclosing lookup's content revision forever.
+                        if replacement.is(&entry.owner) {
+                            guard.touch(slot);
+                        } else {
+                            entry.position.write(references, replacement);
+                            guard.changed_value(slot);
+                        }
+                        None
+                    },
+                    Action::SetDefault => {
+                        guard.touch(slot);
+                        Some(entry.owner.clone_ref(py))
+                    },
+                    Action::Remove => {
+                        guard.remove(slot);
+                        entry.position.write(references, none.bind(py));
+                        Some(entry.owner.clone_ref(py))
+                    },
+                }
+            } else {
+                match action {
+                    Action::Read { .. } | Action::Remove => None,
+                    Action::Set | Action::SetDefault => {
+                        // Reads can change the tail without changing membership.
+                        if guard.insertion_slot() != insertion.slot {
+                            drop(guard);
+                            continue;
+                        }
+                        if let Some(entry) = &victim {
+                            guard.remove(entry.position.slot);
+                        }
+                        let slot = guard.insert(hash);
+                        debug_assert_eq!(slot, insertion.slot);
+                        let owner = updated.as_ref().expect("built entry");
+                        insertion.write(references, owner.bind(py));
+                        matches!(action, Action::SetDefault).then(|| owner.clone_ref(py))
+                    },
+                }
+            };
+            drop(guard);
+            return Ok(result);
+        }
+    }
 }
 
 #[pymethods]
 impl LRUCache {
-    /// Subscriptable type hints: `LRUCache[K, V]` is just `LRUCache` at
-    /// runtime.
-    #[classmethod]
-    fn __class_getitem__(cls: &Bound<'_, PyType>, _item: &Bound<'_, PyAny>) -> Py<PyType> {
-        cls.clone().unbind()
-    }
-
-    /// Create a cache holding at most ``maxsize`` entries.
     #[new]
+    /// Create native metadata for the given positive cache capacity.
+    ///
+    /// Parameters
+    /// ----------
+    /// maxsize : int
+    ///     Positive maximum entry count within the native index range.
+    ///
+    /// Returns
+    /// -------
+    /// Cache
+    ///     Initialized native metadata for the public Python mapping.
     fn new(maxsize: usize) -> PyResult<Self> {
         let maxsize = NonZeroUsize::new(maxsize)
             .ok_or_else(|| CacheError::MaxsizeMustBePositive.into_pyerr())?;
@@ -81,151 +233,134 @@ impl LRUCache {
         self.inner.lock_py_attached(py).len()
     }
 
-    fn __contains__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let hash = key.hash()?;
-        let guard = self.inner.lock_py_attached(py);
-        guard.contains(hash, |stored| eq_keys(stored, key))
+    #[pyo3(name = "_get")]
+    fn get_entry(slf: &Bound<'_, Self>, request: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
+        slf.get()
+            .access(&Self::references(slf)?, request, Action::Read {
+                touch: true,
+            })
     }
 
-    fn __getitem__<'py>(
-        &self,
-        py: Python<'py>,
-        key: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let hash = key.hash()?;
-        let mut guard = self.inner.lock_py_attached(py);
-        let value = guard.touch_get(py, hash, |stored| eq_keys(stored, key))?;
-        drop(guard);
-        let Some(value) = value else {
-            return Err(missing_key(key));
-        };
-        Ok(value.into_bound(py))
+    #[pyo3(name = "_peek")]
+    fn peek_entry(
+        slf: &Bound<'_, Self>,
+        request: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        slf.get()
+            .access(&Self::references(slf)?, request, Action::Read {
+                touch: false,
+            })
     }
 
-    fn __setitem__(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        value: Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        let hash = key.hash()?;
-        let mut guard = self.inner.lock_py_attached(py);
-        let displaced = guard.put(hash, key.clone().unbind(), value.unbind(), |stored| {
-            eq_keys(stored, key)
-        })?;
-        // Release the lock before the displaced Py<...> values drop, since their
-        // finalizers can run arbitrary Python code.
-        drop(guard);
-        drop(displaced);
+    #[pyo3(name = "_set")]
+    fn set_entry(slf: &Bound<'_, Self>, request: &Bound<'_, PyAny>) -> PyResult<()> {
+        slf.get()
+            .access(&Self::references(slf)?, request, Action::Set)?;
         Ok(())
     }
 
-    fn __delitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
-        let hash = key.hash()?;
-        let mut guard = self.inner.lock_py_attached(py);
-        let removed = guard.remove(hash, |stored| eq_keys(stored, key))?;
-        drop(guard);
-        if removed.is_some() {
-            Ok(())
-        } else {
-            Err(missing_key(key))
-        }
+    #[pyo3(name = "_setdefault")]
+    fn setdefault_entry(
+        slf: &Bound<'_, Self>,
+        request: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        slf.get()
+            .access(&Self::references(slf)?, request, Action::SetDefault)
     }
 
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        // Snapshot keys under the lock, then build a tuple iterator after releasing it.
-        // The tuple takes independent strong references, so subsequent cache
-        // mutations cannot invalidate the returned iterator.
-        let guard = self.inner.lock_py_attached(py);
-        let keys: Vec<Py<PyAny>> = guard.iter_keys().map(|k| k.clone_ref(py)).collect();
-        drop(guard);
-        let tuple = PyTuple::new(py, keys)?;
-        Ok(tuple.try_iter()?.into_any())
+    #[pyo3(name = "_remove")]
+    fn remove_entry(
+        slf: &Bound<'_, Self>,
+        request: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        slf.get()
+            .access(&Self::references(slf)?, request, Action::Remove)
     }
 
-    #[pyo3(signature = (key, /, default=None))]
-    /// Retrieve the value for ``key``, marking it most recently used.
-    ///
-    /// Parameters
-    /// ----------
-    /// key : Hashable
-    ///     The key to look up.
-    /// default : object, optional
-    ///     Returned when the key is absent; ``None`` if omitted.
-    ///
-    /// Returns
-    /// -------
-    /// object
-    ///     The stored value, or ``default`` when the key is absent.
-    fn get(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        default: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let hash = key.hash()?;
-        let mut guard = self.inner.lock_py_attached(py);
-        Ok(guard
-            .touch_get(py, hash, |stored| eq_keys(stored, key))?
-            .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
-    }
-
-    /// Read without bumping recency. Useful for instrumentation that should not
-    /// perturb the LRU order; the convention is borrowed from `cachetools`.
-    ///
-    /// Parameters
-    /// ----------
-    /// key : Hashable
-    ///     The key to look up.
-    /// default : object, optional
-    ///     Returned when the key is absent; ``None`` if omitted.
-    ///
-    /// Returns
-    /// -------
-    /// object
-    ///     The stored value, or ``default`` when the key is absent.
-    #[pyo3(signature = (key, /, default=None))]
-    fn peek(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        default: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let hash = key.hash()?;
-        let guard = self.inner.lock_py_attached(py);
-        Ok(guard
-            .peek_get(py, hash, |stored| eq_keys(stored, key))?
-            .unwrap_or_else(|| default.unwrap_or_else(|| py.None())))
-    }
-
-    /// Remove all entries from the cache.
+    /// Remove all entries before running any retired key or value finalizers.
     ///
     /// Returns
     /// -------
     /// None
-    fn clear(&self, py: Python<'_>) {
-        self.inner.lock_py_attached(py).clear(py);
+    ///     Finalizers may insert new entries after the clear commits.
+    fn clear(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let references = Self::references(slf)?;
+        let py = slf.py();
+        let none = py.None();
+        loop {
+            let (revision, indices) = {
+                let guard = slf.get().inner.lock_py_attached(py);
+                (guard.revision(), guard.indices())
+            };
+            let retired = indices
+                .into_iter()
+                .map(|slot| Position::new(py, slot).read(&references))
+                .collect::<PyResult<Vec<_>>>()?;
+            let mut guard = slf.get().inner.lock_py_attached(py);
+            if guard.revision() != revision {
+                drop(guard);
+                continue;
+            }
+            guard.clear();
+            for entry in &retired {
+                entry.position.write(&references, none.bind(py));
+            }
+            drop(guard);
+            return Ok(());
+        }
     }
 
-    /// Remove and return the least-recently-used `(key, value)` pair, raising
-    /// `KeyError` if empty.
+    #[pyo3(name = "_popitem")]
+    fn pop_entry(slf: &Bound<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
+        let references = Self::references(slf)?;
+        let py = slf.py();
+        let none = py.None();
+        loop {
+            let (revision, tail) = {
+                let guard = slf.get().inner.lock_py_attached(py);
+                (guard.revision(), guard.lru())
+            };
+            let Some(tail) = tail else { return Ok(None) };
+            let entry = Position::new(py, tail).read(&references)?;
+            let mut guard = slf.get().inner.lock_py_attached(py);
+            if guard.revision() != revision || guard.lru() != Some(tail) {
+                drop(guard);
+                continue;
+            }
+            guard.remove(tail);
+            entry.position.write(&references, none.bind(py));
+            drop(guard);
+            return Ok(Some(entry.owner));
+        }
+    }
+
+    #[pyo3(name = "_snapshot_entries")]
+    fn snapshot_entries(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        loop {
+            let (revision, indices) = {
+                let guard = slf.get().inner.lock_py_attached(py);
+                (guard.revision(), guard.indices())
+            };
+            // Only integer indices enter a native-created container. The
+            // recursive entry graph stays in a Python-created snapshot list.
+            let entries = slf.call_method1("_capture", (indices,))?.unbind();
+            let guard = slf.get().inner.lock_py_attached(py);
+            let valid = guard.revision() == revision;
+            drop(guard);
+            if valid {
+                return Ok(entries);
+            }
+        }
+    }
+
+    #[getter]
+    /// The configured maximum number of entries.
     ///
     /// Returns
     /// -------
-    /// tuple
-    ///     The evicted ``(key, value)`` pair.
-    fn popitem<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        let mut guard = self.inner.lock_py_attached(py);
-        let popped = guard.pop_lru();
-        drop(guard);
-        let Some(pair) = popped else {
-            return Err(CacheError::PopitemEmpty.into_pyerr());
-        };
-        pair.into_pyobject(py)
-    }
-
-    /// The configured maximum number of entries.
-    #[getter]
+    /// int
+    ///     The positive entry capacity.
     const fn maxsize(&self) -> usize {
         self.maxsize.get()
     }
@@ -236,32 +371,14 @@ impl LRUCache {
     }
 }
 
-/// Compare a stored key against the lookup key.
-///
-/// We short-circuit on pointer equality before crossing the FFI boundary; this
-/// is the typical case for interned integers, interned strings, and any caller
-/// that reuses the same Python object as a key. `PyObject_RichCompareBool` does
-/// the same identity check internally, but avoiding the call saves the
-/// function-call overhead and lets the linker keep the cold path
-/// (`__eq__` invocation) out of the icache for the common case.
-///
-/// The remaining FFI is `PyObject_RichCompareBool`, called directly because
-/// pyo3's safe `eq()` would route through `PyObject_RichCompare` plus a
-/// separate `PyObject_IsTrue` (two FFI calls and an intermediate `PyObject`
-/// allocation) instead of one. See pyo3 issue #985 for why `Bound::eq`
-/// deliberately avoids the `RichCompareBool` shape.
-fn eq_keys(stored: &Py<PyAny>, lookup: &Bound<'_, PyAny>) -> PyResult<bool> {
-    if lookup.is(stored) {
-        return Ok(true);
-    }
-    // SAFETY: both pointers refer to live Python objects under a held GIL/attached
-    // state; `lookup` is a `Bound<...>`, and `stored` is owned by the store
-    // which only mutates while attached. PyObject_RichCompareBool returns -1
-    // with the error indicator set on failure.
+fn eq_entries(stored: &Py<PyAny>, request: &Bound<'_, PyAny>) -> PyResult<bool> {
+    // SAFETY: both ordinary Python envelope objects have independent strong
+    // references and this thread is attached. Their comparison transports
+    // provider errors in Python slots and returns only a bool, outside locking.
     let cmp =
-        unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), lookup.as_ptr(), ffi::Py_EQ) };
+        unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), request.as_ptr(), ffi::Py_EQ) };
     if cmp < 0 {
-        Err(PyErr::fetch(lookup.py()))
+        Err(PyErr::fetch(request.py()))
     } else {
         Ok(cmp == 1)
     }
