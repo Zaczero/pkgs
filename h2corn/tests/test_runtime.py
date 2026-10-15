@@ -18,6 +18,7 @@ from typing import TypedDict
 import pytest
 from h2corn import Config, Server
 from h2corn import _server as server_module
+from h2corn import _socket as socket_module
 
 from tests._support import (
     HANG_BOUND,
@@ -390,9 +391,15 @@ async def test_cancelling_serve_waits_for_native_graceful_drain_before_reuse() -
     )
     await asyncio.wait_for(request_started.wait(), timeout=2)
 
+    generation = server._generation
+    assert generation is not None
     first.cancel()
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(asyncio.shield(generation.shutdown), timeout=2)
+    await asyncio.sleep(0)
     assert not first.done(), 'native serving ownership must drain before reuse'
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not first.done(), 'repeated cancellation must not interrupt native drain'
 
     release_request.set()
     status, _headers, body, _trailers = await asyncio.wait_for(request, timeout=2)
@@ -402,6 +409,187 @@ async def test_cancelling_serve_waits_for_native_graceful_drain_before_reuse() -
     assert server.addresses == ()
 
     await assert_serve_reusable(server)
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'target_fd', 'expected_error', 'expected_message'),
+    [
+        ('bool_quiesce', 1, 'TypeError', 'quiesce fd must be an integer'),
+        ('bool_listener', 0, 'TypeError', 'listener fds must be integers'),
+        ('bool_listener_alias', 0, 'TypeError', 'listener fds must be integers'),
+        ('bool_quiesce_alias', 1, 'TypeError', 'listener fds must be integers'),
+        ('prior_listener_bool', 0, 'TypeError', 'listener fds must be integers'),
+        ('duplicate_listener', 0, 'ValueError', 'listener fds must be unique'),
+        ('duplicate_quiesce', 1, 'ValueError', 'listener fds must be unique'),
+    ],
+    ids=[
+        'bool-quiesce-fd-1',
+        'bool-listener-fd-0',
+        'bool-listener-alias-fd-0',
+        'bool-listener-alias-quiesce-fd-1',
+        'bool-listener-closes-prior-owner',
+        'duplicate-listener',
+        'duplicate-quiesce',
+    ],
+)
+async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
+    scenario: str,
+    target_fd: int,
+    expected_error: str,
+    expected_message: str,
+) -> None:
+    peer, endpoint = socket.socketpair()
+    endpoint_fd = endpoint.detach()
+    listener_peer: socket.socket | None = None
+    listener_fd: int | None = None
+    if scenario == 'prior_listener_bool':
+        listener_peer, listener_endpoint = socket.socketpair()
+        listener_fd = listener_endpoint.detach()
+    keep_fd = os.open(os.devnull, os.O_RDONLY)
+    environment = os.environ.copy()
+    python_path = str(Path(__file__).resolve().parents[1] / 'python')
+    environment['PYTHONPATH'] = os.pathsep.join(
+        filter(None, (environment.get('PYTHONPATH'), python_path))
+    )
+    child = textwrap.dedent(
+        """
+        import errno
+        import os
+        import sys
+
+        from h2corn import _socket
+
+        (
+            scenario,
+            target_fd,
+            endpoint_fd,
+            keep_fd,
+            expected_error,
+            expected_message,
+            listener_fd,
+            expected_socket_path,
+        ) = sys.argv[1:]
+        target_fd = int(target_fd)
+        endpoint_fd = int(endpoint_fd)
+        keep_fd = int(keep_fd)
+        listener_fd = int(listener_fd)
+        assert os.path.realpath(_socket.__file__) == expected_socket_path
+        if target_fd == 0:
+            # The child owns these standard descriptors for the case.
+            sys.stdin = sys.__stdin__ = None
+        if target_fd == 1:
+            # Do not let interpreter shutdown close a later owner of fd 1.
+            sys.stdout = sys.__stdout__ = None
+        os.dup2(endpoint_fd, target_fd)
+        os.close(endpoint_fd)
+
+        real_close = os.close
+        replacement_fds = []
+
+        def close_and_reuse(fd):
+            # Prove a stale second close cannot retire a new fd owner.
+            real_close(fd)
+            if fd == target_fd and not replacement_fds:
+                replacement_fds.append(os.open(os.devnull, os.O_RDONLY))
+
+        _socket.os.close = close_and_reuse
+        try:
+            try:
+                if scenario == "bool_quiesce":
+                    _socket.lease_owned_fds([], quiesce_fd=True)
+                elif scenario == "bool_listener":
+                    _socket.lease_owned_fds([False])
+                elif scenario == "bool_listener_alias":
+                    _socket.lease_owned_fds([target_fd, False])
+                elif scenario == "bool_quiesce_alias":
+                    _socket.lease_owned_fds([True], quiesce_fd=target_fd)
+                elif scenario == "prior_listener_bool":
+                    _socket.lease_owned_fds([listener_fd, False])
+                elif scenario == "duplicate_listener":
+                    _socket.lease_owned_fds([target_fd, target_fd])
+                elif scenario == "duplicate_quiesce":
+                    _socket.lease_owned_fds([target_fd], quiesce_fd=target_fd)
+                else:
+                    raise AssertionError(f"unknown scenario: {scenario}")
+            except (TypeError, ValueError) as error:
+                assert type(error).__name__ == expected_error
+                assert str(error) == expected_message
+            else:
+                raise AssertionError("invalid descriptor ownership was accepted")
+        finally:
+            _socket.os.close = real_close
+
+        if scenario == "prior_listener_bool":
+            try:
+                os.fstat(listener_fd)
+            except OSError as error:
+                assert error.errno == errno.EBADF
+            else:
+                raise AssertionError(f"descriptor {listener_fd} remains open")
+        assert replacement_fds == [target_fd]
+        try:
+            os.fstat(replacement_fds[0])
+        except OSError as error:
+            raise AssertionError(
+                "descriptor reuse was closed by duplicate retirement"
+            ) from error
+        os.fstat(keep_fd)
+        real_close(replacement_fds[0])
+        """
+    )
+
+    try:
+        process: asyncio.subprocess.Process | None = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                '-c',
+                child,
+                scenario,
+                str(target_fd),
+                str(endpoint_fd),
+                str(keep_fd),
+                expected_error,
+                expected_message,
+                str(listener_fd if listener_fd is not None else -1),
+                str(Path(socket_module.__file__).resolve()),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=environment,
+                pass_fds=(
+                    (endpoint_fd, keep_fd)
+                    if listener_fd is None
+                    else (endpoint_fd, keep_fd, listener_fd)
+                ),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=5
+                )
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            os.close(endpoint_fd)
+            os.close(keep_fd)
+            if listener_fd is not None:
+                os.close(listener_fd)
+
+        assert process is not None
+        assert process.returncode == 0, (stdout.decode(), stderr.decode())
+        peer.settimeout(1)
+        assert peer.recv(1) == b''
+        if listener_peer is not None:
+            listener_peer.settimeout(1)
+            assert listener_peer.recv(1) == b''
+    finally:
+        peer.close()
+        if listener_peer is not None:
+            listener_peer.close()
 
 
 async def test_shutdown_global_deadline_cancels_never_finishing_http1_app() -> None:
@@ -650,62 +838,10 @@ async def test_generation_holds_through_lifespan_shutdown_so_two_cannot_overlap(
     assert max_active_lifespans == 1
 
 
-async def test_repeated_cancellation_cannot_interrupt_native_drain(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _lib
-
-    native_started = asyncio.Event()
-    shutdown_received = asyncio.Event()
-    release_drain = asyncio.Event()
-
-    def fake_serve_fds(
-        _app,
-        fds,
-        _config,
-        shutdown_trigger,
-        _retire_trigger,
-        _lifespan_handoff,
-        ready_trigger,
-        *_args,
-        **_kwargs,
-    ):
-        async def run() -> None:
-            ready_trigger()
-            native_started.set()
-            assert await shutdown_trigger == 'stop'
-            shutdown_received.set()
-            await release_drain.wait()
-
-        return run()
-
-    monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
-
-    async def app(scope, receive, send):
-        raise AssertionError('the fake native server does not dispatch requests')
-
-    server = Server(
-        app,
-        Config(bind=('127.0.0.1:0',), access_log=False, lifespan='off'),
-    )
-    task = asyncio.create_task(server.serve())
-    await asyncio.wait_for(native_started.wait(), timeout=2)
-
-    task.cancel()
-    await asyncio.wait_for(shutdown_received.wait(), timeout=2)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done(), 'repeated cancellation must remain shielded by native drain'
-
-    release_drain.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=2)
-    assert server.addresses == ()
-
-
 async def test_native_cancelled_error_propagates_without_shutdown_spin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A native task's own cancellation must propagate rather than spin."""
     from h2corn import _lib
 
     calls = 0
@@ -753,6 +889,7 @@ async def test_native_cancelled_error_propagates_without_shutdown_spin(
 async def test_synchronous_native_setup_failure_clears_state_before_reuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A setup error must clear Python-owned generation state before reuse."""
     from h2corn import _lib
 
     calls = 0
@@ -1160,150 +1297,6 @@ async def test_lease_owned_fds_preserves_type_error_and_closes_prior_fd() -> Non
         peer.close()
         with suppress(OSError):
             os.close(fd)
-
-
-async def test_lease_owned_fds_rejects_bool_quiesce_and_closes_normalized_fd(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    closed: list[int] = []
-    monkeypatch.setattr(_socket.os, 'close', closed.append)
-
-    with pytest.raises(TypeError, match=re.escape('quiesce fd must be an integer')):
-        _socket.lease_owned_fds([], quiesce_fd=True)
-
-    assert closed == [1]
-
-
-async def test_lease_owned_fds_rejects_bool_listener_and_closes_normalized_fd(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    closed: list[int] = []
-    monkeypatch.setattr(_socket.os, 'close', closed.append)
-
-    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
-        _socket.lease_owned_fds([False])
-
-    assert closed == [0]
-
-
-async def test_lease_owned_fds_bool_listener_aliases_prior_fd_without_double_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    closed: list[int] = []
-    monkeypatch.setattr(_socket.os, 'close', closed.append)
-
-    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
-        _socket.lease_owned_fds([0, False])
-
-    assert closed == [0]
-
-
-async def test_lease_owned_fds_bool_listener_aliases_quiesce_without_double_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    closed: list[int] = []
-    monkeypatch.setattr(_socket.os, 'close', closed.append)
-
-    with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
-        _socket.lease_owned_fds([True], quiesce_fd=1)
-
-    assert closed == [1]
-
-
-async def test_lease_owned_fds_closes_prior_listener_before_bool_rejection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    peer, endpoint = socket.socketpair()
-    listener_fd = endpoint.detach()
-    real_close = os.close
-    closed: list[int] = []
-
-    def record_close(value: int) -> None:
-        if value == listener_fd:
-            closed.append(value)
-            real_close(value)
-        elif value == 0:
-            closed.append(value)
-        else:
-            real_close(value)
-
-    monkeypatch.setattr(_socket.os, 'close', record_close)
-    try:
-        with pytest.raises(TypeError, match=re.escape('listener fds must be integers')):
-            _socket.lease_owned_fds([listener_fd, False])
-        peer.settimeout(1)
-        assert peer.recv(1) == b''
-        assert closed == [listener_fd, 0]
-    finally:
-        peer.close()
-        with suppress(OSError):
-            real_close(listener_fd)
-
-
-async def test_lease_owned_fds_rejects_duplicate_listener_without_double_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    peer, endpoint = socket.socketpair()
-    fd = endpoint.detach()
-    real_close = os.close
-    closed: list[int] = []
-
-    def record_close(value: int) -> None:
-        if value == fd:
-            closed.append(value)
-        real_close(value)
-
-    monkeypatch.setattr(_socket.os, 'close', record_close)
-    try:
-        with pytest.raises(ValueError, match='unique'):
-            _socket.lease_owned_fds([fd, fd])
-        peer.settimeout(1)
-        assert peer.recv(1) == b''
-        assert closed == [fd]
-    finally:
-        peer.close()
-        with suppress(OSError):
-            real_close(fd)
-
-
-async def test_lease_owned_fds_rejects_listener_quiesce_duplicate_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _socket
-
-    peer, endpoint = socket.socketpair()
-    fd = endpoint.detach()
-    real_close = os.close
-    closed: list[int] = []
-
-    def record_close(value: int) -> None:
-        if value == fd:
-            closed.append(value)
-        real_close(value)
-
-    monkeypatch.setattr(_socket.os, 'close', record_close)
-    try:
-        with pytest.raises(ValueError, match='unique'):
-            _socket.lease_owned_fds([fd], quiesce_fd=fd)
-        peer.settimeout(1)
-        assert peer.recv(1) == b''
-        assert closed == [fd]
-    finally:
-        peer.close()
-        with suppress(OSError):
-            real_close(fd)
 
 
 async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(

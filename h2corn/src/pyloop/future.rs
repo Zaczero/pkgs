@@ -243,17 +243,24 @@ impl RustFuture {
 
             debug_assert!(callbacks.len() >= snapshot.len());
             let before = callbacks.len();
+            let mut retired = Callbacks::new();
             let mut index = 0;
-            callbacks.retain(|_| {
-                let retain = snapshot.get(index).is_none_or(|entry| entry.1);
+            callbacks.retain_mut(|entry| {
+                let keep = snapshot.get(index).is_none_or(|entry| entry.1);
                 index = index.wrapping_add(1);
-                retain
+                if !keep {
+                    // `retain_mut` drops rejected slots in place, so move
+                    // Python-owned references out before it does.
+                    retired.push(mem::replace(entry, (py.None(), py.None())));
+                }
+                keep
             });
             let removed = before.wrapping_sub(callbacks.len());
             if removed != 0 {
                 *callback_removal_revision = callback_removal_revision.wrapping_add(1);
             }
             drop(state);
+            drop(retired);
             return Ok(removed);
         }
     }
@@ -563,6 +570,76 @@ assert registered.observed_done is False
             };
             assert!(callbacks.is_empty());
             drop(state);
+        });
+    }
+
+    #[test]
+    fn removed_context_finalizer_can_reenter_future() {
+        const CHILD_MARKER: &str = "H2CORN_CALLBACK_FINALIZER_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            Python::initialize();
+            Python::attach(|py| {
+                let future = new_rust_future(py, ShardHandle::test_stub(py))
+                    .expect("test future must be created");
+                let locals = PyDict::new(py);
+                locals
+                    .set_item("future", &future)
+                    .expect("future must enter test locals");
+                py.run(
+                    c_str!(
+                        r#"
+finalized = []
+
+class ReenteringContext:
+    def __del__(self):
+        finalized.append(future.done())
+
+callback = lambda _future: None
+context = ReenteringContext()
+future.add_done_callback(callback, context=context)
+del context
+assert finalized == []
+assert future.remove_done_callback(callback) == 1
+assert finalized == [False]
+"#
+                    ),
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("removed callback context must finalize outside the future lock");
+            });
+            return;
+        }
+
+        Python::initialize();
+        Python::attach(|py| {
+            let executable = std::env::current_exe().expect("test executable must be known");
+            let locals = PyDict::new(py);
+            locals
+                .set_item("test_executable", executable.to_string_lossy().as_ref())
+                .expect("test executable must enter child locals");
+            py.run(
+                c_str!(
+                    r#"
+import os
+import subprocess
+
+environment = os.environ.copy()
+environment["H2CORN_CALLBACK_FINALIZER_CHILD"] = "1"
+result = subprocess.run(
+    [test_executable, "removed_context_finalizer_can_reenter_future"],
+    capture_output=True,
+    text=True,
+    timeout=5,
+    env=environment,
+)
+assert result.returncode == 0, (result.stdout, result.stderr)
+"#
+                ),
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("bounded child must prove finalizer reentry completes");
         });
     }
 
