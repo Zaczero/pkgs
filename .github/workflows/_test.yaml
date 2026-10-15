@@ -284,11 +284,16 @@ jobs:
           /usr/bin/time -v timeout 10m cargo miri nextest list \
             --locked -p "$PACKAGE" --lib --profile default-miri -E "$selection" \
             2>&1 | tee "$RUNNER_TEMP/miri-$PACKAGE/discovery.log"
+          nextest_status=0
           /usr/bin/time -v timeout 11m cargo miri nextest run \
             --locked -p "$PACKAGE" --lib --profile default-miri --no-tests fail \
             -E "$selection" \
-            2>&1 | tee "$RUNNER_TEMP/miri-$PACKAGE/run.log"
-          cp target/nextest/default-miri/junit.xml "$RUNNER_TEMP/miri-$PACKAGE/junit.xml"
+            2>&1 | tee "$RUNNER_TEMP/miri-$PACKAGE/run.log" || nextest_status=$?
+          if ! cp target/nextest/default-miri/junit.xml "$RUNNER_TEMP/miri-$PACKAGE/junit.xml" \
+              && [ "$nextest_status" -eq 0 ]; then
+            exit 1
+          fi
+          exit "$nextest_status"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
