@@ -2,7 +2,10 @@ example.com {
 	# This split route sends WebSocket upgrades over HTTP/1.1; keep h2corn
 	# HTTP/1 enabled. Use --no-http1 only with a separately verified pure h2c
 	# route whose proxy translates upgrades to RFC 8441 extended CONNECT.
-	@websockets header Connection *Upgrade*
+	@websockets {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
 	reverse_proxy @websockets 127.0.0.1:8000 {
 		# h2corn strips recognized forwarding headers it does not consume.
 	}

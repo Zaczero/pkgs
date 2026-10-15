@@ -12,8 +12,9 @@ description: Reference for the Config dataclass, construction helpers, and optio
         - from_mapping
         - from_toml
 
-Option defaults, CLI flags, environment variables, TOML keys, and precedence
-are listed in the [Configuration reference](../configuration.md).
+`Config(...)` options are keyword-only. Accepted Python input types, normalized
+stored types, defaults, CLI flags, environment variables, TOML keys, and
+precedence are listed in the [Configuration reference](../configuration.md).
 
 ::: h2corn.ProxyProtocolMode
     options:

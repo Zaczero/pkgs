@@ -2,6 +2,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import h2corn
 import pytest
@@ -9,10 +10,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from bench.report import render_accessible_results  # noqa: E402
 from tools.docs.check import (  # noqa: E402
     _Anchors,
     check_api,
+    check_benchmark_results,
     check_configuration,
+)
+from tools.docs.config_reference import (  # noqa: E402
+    format_type,
+    python_input_type,
+    stored_type,
 )
 
 
@@ -26,7 +34,10 @@ def _rendered_configuration() -> dict[str, _Anchors]:
     parts.extend(
         (
             f'<h3 id="option-{option.name}">{option.name}</h3>'
-            f'{option.env_var} {" ".join(option.cli_flags)} '
+            f'{option.env_var} Python input {format_type(python_input_type(option))} '
+            f'Python form Keyword-only Normalized value '
+            f'{format_type(stored_type(option.name))} '
+            f'{" ".join(option.cli_flags)} '
             'TOML key Precedence'
         )
         for option in options
@@ -84,6 +95,25 @@ def test_rendered_config_gate_rejects_mutated_option_flag() -> None:
         check_configuration(rendered=rendered)
 
 
+def test_rendered_config_gate_requires_python_constructor_types() -> None:
+    from h2corn._config import config_options
+
+    rendered = _rendered_configuration()
+    page = rendered['configuration/index.html']
+    identifier = next(
+        identifier for identifier in page.ids if identifier.startswith('option-')
+    )
+    option = next(
+        option for option in config_options() if f'option-{option.name}' == identifier
+    )
+    python_type = format_type(python_input_type(option))
+    page.sections[identifier][0] = page.sections[identifier][0].replace(
+        python_type, 'unsupported'
+    )
+    with pytest.raises(AssertionError, match='incomplete rendered entry'):
+        check_configuration(rendered=rendered)
+
+
 def test_rendered_config_gate_requires_help_entry() -> None:
     rendered = _rendered_configuration()
     page = rendered['configuration/index.html']
@@ -108,6 +138,88 @@ def test_rendered_api_gate_rejects_removed_literal_typeddict_field() -> None:
     page.ids.remove(identifier)
     with pytest.raises(AssertionError, match='TypedDict fields'):
         check_api(rendered=rendered)
+
+
+def test_rendered_benchmark_table_resolves_relative_figure_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.docs import check as docs_check
+
+    page = tmp_path / 'benchmarks' / 'index.html'
+    page.parent.mkdir(parents=True)
+    asset = tmp_path / 'assets' / 'benchmarks' / 'chart.svg'
+    asset.parent.mkdir(parents=True)
+    asset.write_text('<svg></svg>', encoding='utf-8')
+    page.write_text(
+        '<img alt="HTTP/1 request rate" src="../assets/benchmarks/chart.svg">'
+        '<table><thead><tr><th>Server</th></tr></thead>'
+        '<tbody><tr><td>h2corn</td></tr></tbody></table>',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(docs_check, 'SITE', tmp_path)
+
+    check_benchmark_results()
+
+
+def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
+    return {
+        'aggregate': {
+            'h2corn': {
+                'rps': 100.0,
+                'rps_range': [98.0, 102.0],
+                'rps_samples': [98.0, 100.0, 102.0],
+                'peak_memory_bytes': 1_500_000,
+                'latency_percentiles': {'p50': 0.0008, 'p99': 0.004},
+            },
+            'uvicorn': {
+                'rps': 40.0,
+                'rps_range': [38.0, 42.0],
+                'rps_samples': [38.0, 40.0, 42.0],
+                'peak_memory_bytes': 2_500_000,
+                'latency_percentiles': {'p50': 0.002, 'p99': 0.01},
+            },
+        },
+        'type': kind,
+        'leader_separated': True,
+        'leader_half_width': 0.02,
+        'target_half_width': 0.03,
+        'scenario': 'HTTP/1 GET (1 worker)',
+        'package_versions': {'h2corn': '1.6.0', 'uvicorn': '0.43.0'},
+        'network_profile': 'loopback',
+        'system_summary': 'Python 3.14; Linux; x86_64\nCPU: Example CPU',
+        'duration': '10s',
+        'warmup_duration': '2s',
+        'excluded': {},
+    }
+
+
+def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
+    markdown = render_accessible_results(_benchmark_record())
+
+    assert 'Observed rate range' in markdown
+    assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98-102 |' in markdown
+    assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
+    assert '95% bootstrap intervals separate h2corn' in markdown
+    assert 'target ±3%' in markdown
+    assert 'not a confidence interval' in markdown
+
+
+def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
+    markdown = render_accessible_results(_benchmark_record('ws'))
+
+    assert 'Median rate (sessions/s)' in markdown
+    assert 'Median p99 session duration (ms)' in markdown
+
+
+def test_benchmark_table_does_not_claim_a_winner_without_a_comparator() -> None:
+    record = _benchmark_record()
+    del record['aggregate']['uvicorn']
+
+    markdown = render_accessible_results(record)
+
+    assert 'Only h2corn produced an eligible result' in markdown
+    assert 'cross-server comparison is available' in markdown
 
 
 def test_api_docs_partition_every_top_level_export_once() -> None:

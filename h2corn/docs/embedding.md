@@ -30,17 +30,18 @@ supervisor owns the pidfile and manages worker privilege changes.
 ## Programmatic shutdown
 
 Call [`shutdown()`][h2corn.Server.shutdown] from any thread or
-coroutine to begin a graceful stop. In-flight requests get up to
-[`timeout_graceful_shutdown`](configuration.md#option-timeout_graceful_shutdown) seconds to complete, and their
-cleanup gets the same budget again once they are cancelled.
+coroutine to request a graceful stop. It returns immediately; `serve()` owns
+the wait. Cooperative requests get up to
+[`timeout_graceful_shutdown`](configuration.md#option-timeout_graceful_shutdown)
+seconds to finish, then cancellation and cleanup get the same budget again.
 
-`serve()` stops waiting when that budget is spent, whatever the
-application does — one that catches `CancelledError` and never finishes
-cannot hold it open. An **explicit** `shutdown()` that hits the deadline
-raises `RuntimeError` rather than returning as if the stop had succeeded.
+A synchronous Python call that blocks the event-loop thread cannot be
+preempted by an in-process deadline. If a request still holds the server after
+both drain periods, `serve()` raises `RuntimeError`; supervised workers are the
+option when a process-level hard-kill bound is required.
 
-Requests that outlive the budget still hold the server: lifespan shutdown
-waits for them, [`releasing`][h2corn.Server.releasing] stays true, and a
+Requests that outlive the budget still own the application: lifespan shutdown
+waits for them, [`releasing`][h2corn.Server.releasing] stays true, and another
 `serve()` call made in that window raises
 `RuntimeError: this Server is still releasing a previous serve() call`.
 

@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from html import escape
 from pathlib import Path
 from typing import Any
 
 import mkdocs_gen_files
-from h2corn._cli import build_parser
-from h2corn._config import (
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from h2corn._cli import build_parser  # noqa: E402
+from h2corn._config import (  # noqa: E402
     OPTION_GROUPS,
     Config,
     ConfigOption,
     OptionMetadata,
     config_options,
+)
+
+from bench.report import alt_text, render_accessible_results  # noqa: E402
+from tools.docs.config_reference import (  # noqa: E402
+    format_type,
+    python_constructor_description,
+    python_input_type,
+    stored_type,
 )
 
 
@@ -26,6 +41,14 @@ def _format_default(value: Any) -> str:
     if isinstance(value, str) and not value:
         return '`""`'
     return f'`{value!r}`'
+
+
+def _format_type_cell(annotation: Any) -> str:
+    return (
+        '<code>'
+        + escape(format_type(annotation)).replace('|', '&#124;')
+        + '</code>'
+    )
 
 
 def _format_cli(option: ConfigOption) -> str:
@@ -55,11 +78,20 @@ def _option_section(option: ConfigOption) -> str:
         '| | |',
         '| --- | --- |',
         f'| **Default** | {_format_default(option.default)} |',
+        f'| **Python input** | {_format_type_cell(python_input_type(option))} |',
+        '| **Python form** | Keyword-only `Config` argument |',
+        f'| **Normalized value** | {_format_type_cell(stored_type(option.name))} |',
         f'| **CLI** | {_format_cli(option)} |',
         f'| **Env** | `{option.env_var}` |',
         f'| **TOML key** | `{option.name}` |',
         '| **Precedence** | CLI > environment > TOML > default |',
     ]
+    if meta.normalize.__doc__:
+        rows.append(
+            '| **Python normalization** | '
+            + ' '.join(meta.normalize.__doc__.split()).replace('|', '&#124;')
+            + ' |'
+        )
     choices = _format_choices(meta)
     if choices is not None:
         rows.append(f'| **Choices** | {choices} |')
@@ -76,7 +108,7 @@ def _intro_section() -> str:
         'description: Every h2corn server option with its CLI flag, environment variable, TOML key, default, precedence, and operational conditions.\n'
         '---\n\n'
         '# Configuration\n\n'
-        'Every server option is exposed in three equivalent ways:\n\n'
+        'Every server option has CLI, environment, and TOML inputs:\n\n'
         '- a CLI flag on the `h2corn` command\n'
         '- an `H2CORN_*` environment variable\n'
         '- a key in a TOML config file (passed via `--config` or `H2CORN_CONFIG`)\n\n'
@@ -86,6 +118,9 @@ def _intro_section() -> str:
         'one TCP listener and cannot be combined with `bind`. `--config` and '
         '`H2CORN_CONFIG` select the TOML file; command-only controls are listed '
         'below.\n\n'
+        + python_constructor_description()
+        + ' The direct constructor validates and normalizes its keyword arguments; '
+        'it does not apply the CLI/environment/TOML precedence pipeline.\n\n'
         '## Option index\n\n'
         '<div class="option-index" markdown>\n\n'
     )
@@ -108,8 +143,9 @@ def _factories_section() -> str:
         '`Config` is a frozen dataclass; instantiate it directly or use '
         '[`Config.from_env()`][h2corn.Config.from_env], '
         '[`Config.from_mapping()`][h2corn.Config.from_mapping], or '
-        '[`Config.from_toml()`][h2corn.Config.from_toml]. See the '
-        '[Config API reference](api/config.md) for their signatures.\n\n'
+        '[`Config.from_toml()`][h2corn.Config.from_toml]. Each option entry '
+        'above gives its keyword-only Python input and normalized value types. '
+        'See the [Config API reference](api/config.md) for helper signatures.\n\n'
     )
 
 
@@ -181,16 +217,63 @@ def render() -> str:
     return ''.join(parts)
 
 
+def render_benchmark_results() -> str:
+    raw_directory = ROOT / 'bench' / 'results' / 'raw'
+    plot_directory = ROOT / 'bench' / 'results' / 'plots'
+    records = sorted(raw_directory.glob('*.json'))
+    if not records:
+        return ''
+
+    sections: list[str] = ['## Results\n\n']
+    for raw_path in records:
+        record = json.loads(raw_path.read_text(encoding='utf-8'))
+        scenario = record.get('scenario', raw_path.stem)
+        profile = record.get('network_profile')
+        if record.get('status') == 'skipped':
+            excluded = record.get('excluded', {})
+            reason = record.get('reason') or next(
+                iter(excluded.values()), 'the measurement was skipped'
+            )
+            sections.extend((
+                f'### {scenario} — {profile}\n\n',
+                f'{profile} measurements were skipped: {reason}\n\n',
+            ))
+            continue
+        if record.get('leader_separated') is not True:
+            raise RuntimeError(
+                f'{raw_path.name} is not an accepted benchmark result: '
+                'the leading rate is not separated'
+            )
+
+        plot_path = plot_directory / f'{raw_path.stem}.svg'
+        table_path = plot_directory / f'{raw_path.stem}.md'
+        if not plot_path.is_file() or not table_path.is_file():
+            raise RuntimeError(
+                f'{raw_path.name} has no matching plot and accessible table'
+            )
+        table = render_accessible_results(record)
+        if table_path.read_text(encoding='utf-8') != table:
+            raise RuntimeError(f'{table_path.name} does not match its aggregate record')
+
+        relative_plot = f'assets/benchmarks/{plot_path.name}'
+        with mkdocs_gen_files.open(relative_plot, 'wb') as handle:
+            handle.write(plot_path.read_bytes())
+        results = record['aggregate']
+        unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
+        description = alt_text(scenario, results, unit)
+        sections.extend((
+            f'### {scenario} — {profile}\n\n',
+            f'![{description}]({relative_plot})\n\n',
+            table,
+            '\n',
+        ))
+    return ''.join(sections)
+
+
 with mkdocs_gen_files.open('configuration.md', 'w') as fh:
     fh.write(render())
 
 
-def mirror_benchmark_plots() -> None:
-    """Mirror bench/results/plots/*.svg into the build for docs/benchmarks.md."""
-    plots = Path(__file__).resolve().parents[1] / 'bench' / 'results' / 'plots'
-    for svg in sorted(plots.glob('*.svg')):
-        with mkdocs_gen_files.open(f'assets/benchmarks/{svg.name}', 'wb') as fh:
-            fh.write(svg.read_bytes())
-
-
-mirror_benchmark_plots()
+generated_results = ROOT / 'bench' / 'results' / '_generated' / 'benchmark-results.md'
+generated_results.parent.mkdir(parents=True, exist_ok=True)
+generated_results.write_text(render_benchmark_results(), encoding='utf-8')

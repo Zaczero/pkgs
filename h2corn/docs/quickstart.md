@@ -13,19 +13,24 @@ line needs.
 === "uv"
 
     ```bash
+    uv init h2corn-demo
+    cd h2corn-demo
     uv add h2corn fastapi
     ```
 
 === "pip"
 
-    ```bash
-    pip install h2corn fastapi
-    ```
+    Install `h2corn` and `fastapi` into an activated virtual environment with
+    `python -m pip install h2corn fastapi`.
 
 `h2corn` supports **Python 3.11 or newer**. Wheels are published for Linux,
 macOS, and Windows, including ABI-matched free-threaded CPython 3.14t builds.
 The multi-worker supervisor is Unix-only — see
 [Operations](deployment/operations.md#worker-pool).
+
+The runnable command examples below use the uv project created above. For the
+pip route, run them in the same activated virtual environment and omit the
+`uv run` prefix.
 
 ## Run your first server
 
@@ -39,7 +44,7 @@ Then start `h2corn`, pointing it at the module and the ASGI app
 object inside it:
 
 ```bash
-h2corn hello:app
+uv run h2corn hello:app
 ```
 
 With no address given, h2corn binds [`127.0.0.1:8000`](configuration.md#option-bind) —
@@ -84,7 +89,7 @@ While iterating locally, add [`--reload`](configuration.md#command-reload) so `h
 your source files change:
 
 ```bash
-h2corn hello:app --reload
+uv run h2corn hello:app --reload
 ```
 
 The watcher follows `*.py` by default; tune it with
@@ -103,7 +108,7 @@ makes `h2corn` call the target:
 ```
 
 ```bash
-h2corn factory:create_app --factory
+uv run h2corn factory:create_app --factory
 ```
 
 ## Deploy
@@ -113,12 +118,11 @@ terminates browser-facing TLS. The application server itself runs on a
 local listener with several workers. A production start line can use:
 
 ```bash
-h2corn hello:app \
+uv run h2corn hello:app \
   --bind 127.0.0.1:8000 \
   --workers 4 \
   --proxy-headers \
-  --forwarded-allow-ips 127.0.0.1,::1,unix \
-  --no-http1
+  --forwarded-allow-ips 127.0.0.1,::1,unix
 ```
 
 Production flags:
@@ -132,9 +136,10 @@ Production flags:
   [`--forwarded-allow-ips`](configuration.md#option-forwarded_allow_ips). Use
   [`--forwarded-fields`](configuration.md#option-forwarded_fields) to select additional X-Forwarded fields or the RFC
   7239 `Forwarded` dialect.
-- **[`--no-http1`](configuration.md#option-http1)** rejects HTTP/1.1 connections outright, so once the upstream
-  is configured to speak `h2c`, an accidental fallback fails immediately
-  instead of serving at the lower protocol.
+- **[`http1`](configuration.md#option-http1)** is enabled by default. Keep it
+  enabled for nginx and Caddy's documented HTTP/1.1 WebSocket route. Use
+  `--no-http1` only when every route, including WebSockets, reaches h2corn over
+  HTTP/2 and the client/proxy path supports RFC 8441 extended CONNECT.
 
 Swap the start line for [`--check-config`](configuration.md#command-check_config)
 to validate the resolved configuration and exit without importing the target or

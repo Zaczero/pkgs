@@ -54,7 +54,7 @@ A separate proxy is optional: `h2corn` can terminate TLS itself; see
 | --- | --- | --- |
 | nginx | 1.29.4+ HTTP/2 upstream support and `ngx_http_v2_module` | `nginx -V`, `nginx -t` |
 | Caddy | A supported `reverse_proxy` release with documented h2c transport | `caddy validate` |
-| HAProxy | A supported release with `proto h2` and PROXY protocol v2 | `haproxy -c` |
+| HAProxy | 2.4+ for WebSockets over HTTP/2, `proto h2`, and PROXY protocol v2 | `haproxy -c` |
 
 ## Proxy headers and PROXY protocol
 
@@ -120,10 +120,11 @@ This module has carried
 [security advisories](https://nginx.org/en/security_advisories.html) since it
 shipped, so run a currently supported release and check that list against it.
 
-NGINX describes each upstream connection as handling "*one request at a time
-rather than interleaving multiple requests on a single connection*". Connection
-reuse and concurrency depend on the deployed build; the h2c hop provides HPACK
-and unambiguous framing, while the browser-facing hop multiplexes normally.
+The [NGINX 1.29.4 announcement](https://blog.nginx.org/blog/nginx-open-source-1-29-3-and-1-29-4)
+notes that its initial HTTP/2 upstream implementation does not multiplex
+requests: one upstream connection handles one request at a time. Verify
+connection reuse and concurrency on the deployed build; the `h2c` hop provides
+HTTP/2 framing, while the browser-facing hop multiplexes normally.
 
 !!! warning "WebSockets need their own HTTP/1.1 location"
     nginx performs the HTTP/1.1 `Upgrade` handshake and does not translate it
@@ -156,12 +157,11 @@ its
 directive.
 
 !!! warning "Caddy WebSockets"
-    Route WebSocket upgrades over HTTP/1.1 and ordinary requests over `h2c`.
-    Caddy's h2c transport does not provide a documented RFC 8441 translation for
-    this path and can return `502` for an HTTP/2 `Upgrade` request, often logged
-    as `http2: invalid Upgrade request header`. HTTP/1 must remain enabled for
-    this split route. A pure HTTP/2 route needs a proxy whose deployed version
-    provides the RFC 8441 translation.
+    This example routes HTTP/1.1 requests carrying `Upgrade` to an HTTP/1.1
+    upstream and other requests to `h2c`. Keep h2corn HTTP/1 enabled for that
+    WebSocket route. This configuration does not claim that Caddy translates
+    HTTP/1.1 `Upgrade` into RFC 8441 extended `CONNECT`; an HTTP/2-only
+    WebSocket route requires a client and proxy path that support RFC 8441.
 
 ```caddy title="Caddyfile (configuration template)"
 --8<-- "Caddyfile"
@@ -184,10 +184,14 @@ h2corn hello:app \
 the [HAProxy HTTP guide](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/http/)
 for the full directive set.
 
-HAProxy's documented HTTP/2 support can translate a browser's HTTP/1.1
-`Upgrade` handshake into the RFC 8441 extended `CONNECT` that h2corn accepts
-over h2c. [`--no-http1`](../configuration.md#option-http1) is valid only when the deployed HAProxy version provides
-that translation.
+HAProxy 2.4 and newer supports WebSockets over HTTP/2 using RFC 8441 extended
+`CONNECT` ([release notes](https://www.haproxy.com/blog/announcing-haproxy-2-4)).
+This example requires clients to use that HTTP/2 WebSocket path; it does not
+establish that HAProxy converts an HTTP/1.1 `Upgrade` request into extended
+`CONNECT`. Use a separate HTTP/1.1 upstream route for clients that require the
+HTTP/1.1 handshake, and keep h2corn HTTP/1 enabled for that route.
+[`--no-http1`](../configuration.md#option-http1) applies when every route uses
+HTTP/2 and the WebSocket client/proxy path supports RFC 8441.
 
 ```text title="haproxy.cfg (configuration template)"
 --8<-- "haproxy.cfg"

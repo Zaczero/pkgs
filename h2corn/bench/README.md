@@ -1,15 +1,16 @@
 # Bench Harness
 
 Contributor notes for measuring h2corn. The public
-[benchmark page](../docs/benchmarks.md) contains checked-in charts from one
-local run. The harness measures the current checkout or a focused code change.
+[benchmark page](../docs/benchmarks.md) publishes figures only when each chart
+has a matching raw record and generated accessible table.
 
 | Tool | Purpose |
 | --- | --- |
-| `bench.py` | Cross-server scenarios, raw per-scenario JSON, and SVG charts |
+| `bench.py` | Cross-server scenarios, raw per-scenario JSON, SVG charts, and accessible tables |
 | `compare.py` | Paired A/B comparison of two h2corn builds or configurations |
 | `instr.py` | Paired `perf stat` instructions-per-request measurement |
 | `_core.py` | Shared scenarios, server lifetime, load drivers, and statistics |
+| `report.py` | Accessible figure descriptions and tables from aggregate records |
 | `../tools/type_sizes.py` | Capture and compare Rust type and future layouts |
 
 The HTTP cells need the external `oha` binary and the WebSocket cells need
@@ -35,8 +36,7 @@ uv run python bench/bench.py \
 ```
 
 The smoke run checks startup, worker readiness, the exact response contract,
-and teardown. It is not a performance result and cannot replace checked-in
-charts.
+and teardown. It is not a performance result and cannot be published.
 
 ## Cross-Server Run
 
@@ -46,7 +46,8 @@ command -v k6
 uv run python bench/bench.py
 ```
 
-The run stages full raw per-scenario JSON and SVGs under `results/runs/`.
+The run stages raw per-scenario JSON, SVGs, and adjacent accessible tables under
+`results/runs/`.
 Servers and load generators are not CPU-pinned;
 the default comparison uses the same Starlette app, asyncio loop, access
 logging, and aligned settings for every server.
@@ -57,10 +58,12 @@ logging, and aligned settings for every server.
 uv run python bench/bench.py --publish
 ```
 
-It replaces the checked-in `results/plots/` charts and `results/raw/` records.
-The harness publishes only when every scenario's winner is established; smoke,
-filtered, and exploratory runs remain non-publishing. The docs build copies the
-checked-in charts into the documentation site.
+It replaces the checked-in `results/plots/` figures and tables and the
+`results/raw/` records. Published filenames include the network profile so
+loopback and shaped measurements cannot overwrite one another. The harness
+publishes only when every scenario's winner is established; smoke, filtered,
+and exploratory runs remain non-publishing. The docs build checks each table
+against its raw record and mirrors only figures with matching data.
 
 Selection and budget flags include `--types h1 h2`,
 `--servers h2corn`, `--duration`, `--warmup-duration`, `--max-trials`,

@@ -45,8 +45,7 @@ upgrade route and for [`--no-http1`](configuration.md#option-http1) on the h2cor
 
 **Fix:** Use the split proxy examples in [Behind a reverse proxy](deployment/proxy.md#nginx):
 route upgrades over HTTP/1.1 and keep [`http1`](configuration.md#option-http1) enabled, or use a verified proxy
-configuration that translates upgrades to RFC 8441 before enabling
-`--no-http1`.
+and client path that supports RFC 8441 before enabling `--no-http1`.
 
 ## Forwarded identity is wrong
 

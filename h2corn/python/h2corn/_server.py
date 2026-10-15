@@ -639,11 +639,13 @@ class Server:
         [`shutdown()`][h2corn.Server.shutdown] and re-raises the cancellation
         once that drain finishes or its budget runs out.
 
-        The budget is real: an application that catches `CancelledError` and
-        never finishes cannot hold `serve()` open. `serve()` raises
-        `RuntimeError` instead, naming the problem. Lifespan shutdown still
-        runs after those requests finally release; until then the same
-        `Server` cannot `serve()` again.
+        Cooperative asynchronous requests cannot hold the caller waiting past
+        the drain budget. An application that catches `CancelledError` and
+        never finishes may still retain the server after `serve()` raises
+        `RuntimeError`; lifespan shutdown runs after those requests release,
+        and the same `Server` cannot `serve()` again until then. A synchronous
+        Python call that blocks the event-loop thread cannot be preempted
+        in-process; use supervised workers when a hard kill bound is required.
 
         Raises `NotImplementedError` if `Config.workers` is not 1; multi-worker
         deployments must go through [`serve`][h2corn.serve].
