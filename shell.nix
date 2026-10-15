@@ -63,6 +63,9 @@ let
         exit 1
       fi
       uv sync --quiet --all-groups
+      if [ -f tools/check.py ]; then
+        uv run --no-sync python tools/check.py --prepare
+      fi
       exec uv run --no-sync properdocs serve --no-strict --dev-addr 127.0.0.1:8765 "$@"
     '')
 
@@ -74,6 +77,9 @@ let
         exit 1
       fi
       uv sync --quiet --all-groups
+      if [ -f tools/check.py ]; then
+        uv run --no-sync python tools/check.py --prepare
+      fi
       uv run --no-sync properdocs build --strict --clean "$@"
       if [ -f tools/docs/check.py ]; then
         uv run --no-sync python tools/docs/check.py

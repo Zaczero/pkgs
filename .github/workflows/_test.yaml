@@ -108,6 +108,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE: ${{ inputs.package }}
+      PACKAGE_TYPE: ${{ needs.resolve.outputs.type }}
+      MATRIX_RUNNER: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,11 +150,13 @@ jobs:
             -o "$RUNNER_TEMP/embedded-requirements.txt"
           uv pip install --python "$python" --target "$RUNNER_TEMP/embedded-deps" \
             -r "$RUNNER_TEMP/embedded-requirements.txt"
-          echo "PYTHONPATH=$RUNNER_TEMP/embedded-deps" >> "$GITHUB_ENV"
-          echo "PYO3_PYTHON=$python" >> "$GITHUB_ENV"
-          echo "GOMETRY_EMBEDDED_PYTHON=$python" >> "$GITHUB_ENV"
+          {
+            echo "PYTHONPATH=$RUNNER_TEMP/embedded-deps"
+            echo "PYO3_PYTHON=$python"
+            echo "GOMETRY_EMBEDDED_PYTHON=$python"
+          } >> "$GITHUB_ENV"
 
-      # Rust behavior tests only; source-quality checks run through tools/check.py.
+      # Rust behavior tests only; Gometry's public checks run in the primary Python cell.
       - name: Test Rust debug
         shell: bash
         run: |
@@ -174,9 +178,9 @@ jobs:
                 --tool-config-file "gometry:$evidence/nextest.toml"
             python3 tools/wheel_smoke.py --write-native-test-receipt \
               "$evidence/binary.json" "$evidence/junit.xml" "$evidence/receipt.json" \
-              "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
+              "$GOMETRY_EMBEDDED_PYTHON" --runner "$MATRIX_RUNNER" \
               --profile debug --run-id "$run_id"
-          elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
+          elif [ "$PACKAGE_TYPE" = rust ]; then
             cargo nextest run --locked -p "$PACKAGE"
           else
             cargo nextest run --no-tests pass
@@ -204,11 +208,10 @@ jobs:
                 --tool-config-file "gometry:$evidence/nextest.toml"
             python3 tools/wheel_smoke.py --write-native-test-receipt \
               "$evidence/binary.json" "$evidence/junit.xml" "$evidence/receipt.json" \
-              "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
+              "$GOMETRY_EMBEDDED_PYTHON" --runner "$MATRIX_RUNNER" \
               --profile release --run-id "$run_id"
-          elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
+          elif [ "$PACKAGE_TYPE" = rust ]; then
             cargo nextest run --locked -p "$PACKAGE" --release
-            cargo clippy --locked -p "$PACKAGE" --all-targets -- -D warnings
           else
             cargo nextest run --no-tests pass --release
           fi
@@ -230,6 +233,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PACKAGE: ${{ inputs.package }}
+      IMPORT_NAME: ${{ needs.resolve.outputs.import-name }}
       FREETHREADED: ${{ matrix.freethreaded }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && matrix.primary == 'true' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -342,7 +346,8 @@ jobs:
             uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
             if [ "$FREETHREADED" = "true" ]; then
               uv run --python "${{ matrix.python-version }}" python -c \
-                'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
+                'import importlib, sys; importlib.import_module(sys.argv[1]); assert not sys._is_gil_enabled()' \
+                "$IMPORT_NAME"
             fi
             uv run --python "${{ matrix.python-version }}" python -m pytest tests
           fi
@@ -363,11 +368,30 @@ jobs:
             runtime_root="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/quality-runtime/receipt.json").read_text())["package_root"])')"
             PYTHONPATH="$runtime_root${PYTHONPATH:+:$PYTHONPATH}" \
               uv run --no-sync --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
-              python tools/check.py --no-fix
+              python tools/check.py --no-fix --contracts-only
           else
             uv run --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
               python tools/check.py --no-fix
           fi
+
+      - name: Check h2corn documentation
+        if: inputs.package == 'h2corn' && matrix.primary == 'true'
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+          UV_SYNC_ARGS: ${{ matrix.uv-sync-args }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE"
+          sync_args=()
+          if [ -n "$UV_SYNC_ARGS" ]; then
+            read -r -a sync_args <<< "$UV_SYNC_ARGS"
+          fi
+          uv sync "${sync_args[@]}" --group docs --python "$PYTHON_VERSION"
+          uv run --no-sync --python "$PYTHON_VERSION" \
+            python -m properdocs build --strict
+          uv run --no-sync --python "$PYTHON_VERSION" \
+            python tools/docs/check.py
 
   build:
     needs: [resolve, source]
@@ -383,6 +407,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PACKAGE: ${{ inputs.package }}
+      IMPORT_NAME: ${{ needs.resolve.outputs.import-name }}
       CIBUILDWHEEL_VERSION: "4.1.0"
       # Native arch only — avoids win32 from auto on windows-latest; pairs with
       # windows-11-arm for ARM64 wheels.
@@ -439,8 +464,10 @@ jobs:
 
       - name: Rewrite README for PyPI
         if: inputs.package != 'gometry'
+        env:
+          REF_NAME: ${{ github.ref_name }}
         shell: bash
-        run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
+        run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "$REF_NAME"
 
       - name: Prepare extracted gometry source and test context
         if: inputs.package == 'gometry'
@@ -495,6 +522,8 @@ jobs:
 
       - name: Configure compiler cache
         if: needs.resolve.outputs.is-rusty == 'true'
+        env:
+          BUILD_RUNNER: ${{ matrix.runner }}
         shell: bash
         run: |
           set -euo pipefail
@@ -502,13 +531,12 @@ jobs:
           if [ "$PACKAGE" = gometry ]; then
             evidence_dir="$RUNNER_TEMP/gometry-evidence/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             config_path="$RUNNER_TEMP/gometry-cibw.toml"
-            build_log="$evidence_dir/build.log"
             output_dir="$GITHUB_WORKSPACE/dist"
             package_dir="$GOMETRY_CIBW_PACKAGE_DIR"
             python3 - "$RUNNER_TEMP/gometry-identifiers.txt" \
               source/gometry-source-manifest.json "$evidence_dir" "$config_path" \
               "$GOMETRY_CIBW_PROJECT_ROOT" "$package_dir" "$output_dir" \
-              "$RUNNER_TEMP" "${{ matrix.runner }}" "$GITHUB_ENV" <<'PY'
+              "$RUNNER_TEMP" "$BUILD_RUNNER" "$GITHUB_ENV" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -570,7 +598,16 @@ jobs:
               } >> "$GITHUB_ENV"
             fi
           else
-            test_command='python -c "import ${{ needs.resolve.outputs.import-name }}"'
+            test_command="$(
+              python3 -c '
+          import json
+          import shlex
+          import sys
+
+          source = f"import importlib; importlib.import_module({json.dumps(sys.argv[1])})"
+          print("python -c " + shlex.quote(source))
+          ' "$IMPORT_NAME"
+            )"
             if [ "$RUNNER_OS" = Linux ] && [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
               test_command+=" && /opt/sccache/sccache --show-stats"
             fi
@@ -578,7 +615,7 @@ jobs:
               printf '%s\n' 'CIBW_BUILD_FRONTEND=build[uv]'
               printf '%s\n' 'MATURIN_PEP517_ARGS=--profile release-dist'
               printf '%s\n' \
-                'CIBW_ENVIRONMENT_LINUX=PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH'
+                "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=\$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=\$SOURCE_DATE_EPOCH"
               printf '%s\n' 'CIBW_ENVIRONMENT_MACOS=MACOSX_DEPLOYMENT_TARGET="11.0"'
               printf '%s\n' \
                 'CIBW_ENVIRONMENT_PASS_LINUX=ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH'

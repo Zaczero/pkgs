@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Route changed paths to monorepo packages that need testing.
 
-Reads paths on stdin. Docs-only paths are skipped, then the remaining paths are
-mapped to sorted unique package names on stdout (ci.yaml pipes them to jq).
+Reads paths on stdin. Root-level Markdown files are skipped, then the remaining
+paths are mapped to sorted unique package names on stdout (ci.yaml pipes them
+to jq).
 Diagnostics go to stderr; metadata/TOML failures exit nonzero.
 """
 
@@ -21,17 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_version import ci_package_sort_key, list_packages, load_toml
 
 ROOT_RUST_PATHS = frozenset({'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})
-IGNORED_PATHS = re.compile(
-    r'^(?:'
-    r'[^/]+/(?:docs|overrides|_snippets|assets)/'  # per-package docs and theme
-    r'|[^/]+/properdocs\.yml$'  # per-package docs site config
-    r'|[^/]+\.md$'  # repo-root markdown
-    r')'
-)
+IGNORED_PATHS = re.compile(r'^[^/]+\.md$')
 
 
 def filter_changed_paths(paths: Iterable[str]) -> list[str]:
-    """Normalize stdin paths and skip docs-only changes."""
+    """Normalize stdin paths and skip root-level Markdown files."""
     filtered: list[str] = []
     for raw in paths:
         path = raw.strip()
@@ -92,8 +87,7 @@ def route_paths(
     - Root .python-versions → all test packages
     - <pkg>/… → that package + reverse uv.sources consumers
     - Anything else (shared dirs, unknown root files, .github/**) → all test packages
-    - Per-package docs/overrides/_snippets/assets, properdocs.yml, and root .md
-      files are ignored
+    - Root-level Markdown files are ignored
     """
     if test_packages is None:
         packages = set(list_packages('test'))
