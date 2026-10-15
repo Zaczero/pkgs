@@ -102,9 +102,6 @@ impl ProducerDrawingReceipt {
     ) -> Result<()> {
         layout.capture_shape(shape, address, &mut |address, record| {
             let index = literals.len();
-            index
-                .checked_add(1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             let image = ProducerImageId::new(index);
             literals.push(ProducerLiteral::from_point(address, image, record));
             Ok(image)
@@ -568,9 +565,7 @@ impl PendingPublicationRow {
                 output: literal.address.output,
             };
         }
-        let layout = super::finish::map_shape_layout(layout, &|image| {
-            Ok(PublicationImage::ProducerDrawn(image))
-        })?;
+        let layout = super::finish::map_shape_layout(layout, &PublicationImage::ProducerDrawn);
         let work = EvaluationBudget::new(operation, producer_literals.len())?;
         let records = producer_literals
             .into_iter()

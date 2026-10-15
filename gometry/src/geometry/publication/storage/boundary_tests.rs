@@ -108,6 +108,53 @@ fn mixed_boundary_rows_preserve_q_and_drawing_expectations() {
 }
 
 #[test]
+fn receipt_required_arrays_accept_authentic_q_rows() {
+    let frame = frame();
+    let pending = pending(SEAM, 0, &frame);
+    assert!(matches!(
+        &pending.admission,
+        PendingAdmission::Checked { .. }
+    ));
+    let expected = pending.shape.clone();
+    let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+    rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+    let output = rows.finish(frame.clone()).unwrap();
+    assert_eq!(output.frame, frame);
+    assert_eq!(
+        output.geometry_at(0).unwrap().prepared_plan().shape(),
+        &expected,
+    );
+}
+
+#[test]
+fn drawing_groups_reject_authentic_q_rows_with_group_addresses() {
+    let frame = frame();
+    let mut pending = pending(SEAM, 0, &frame);
+    let PendingAdmission::Checked {
+        layout, records, ..
+    } = &mut pending.admission
+    else {
+        panic!("a seam boundary retains authentic Q admission");
+    };
+    layout.group_row = Some(0);
+    layout.value_row = Some(0);
+    for literal in records {
+        literal.address.group_row = Some(0);
+        literal.address.value_row = Some(0);
+    }
+    let mut rows = PublicationRows::with_groups_capacity(1);
+    rows.try_push(GeometryOutput::Pending(pending)).unwrap();
+    rows.end_group(false).unwrap();
+    let Err(error) = rows.finish_groups_geometry(frame, None) else {
+        panic!("a drawing group accepted a Q row account");
+    };
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+    ));
+}
+
+#[test]
 fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
     for logical in [0, 2] {
         let (mut rows, mut expected, frame) = mixed_rows();

@@ -381,7 +381,10 @@ fn final_groups_reject_changed_empty_group_domains() {
     let mut rows = PublicationRows::with_groups_capacity(2);
     rows.end_group(false).unwrap();
     rows.end_group(false).unwrap();
-    rows.group_offsets.as_mut().unwrap().pop();
+    let Destination::DrawingGroups { offsets, .. } = &mut rows.destination else {
+        panic!("the group builder owns its offsets");
+    };
+    offsets.pop();
     let Err(error) = rows.finish_groups(Frame::default(), None) else {
         panic!("a trailing empty group was deleted");
     };
@@ -466,7 +469,10 @@ fn final_groups_reject_shifted_value_boundaries() {
     }
     rows.try_push(GeometryOutput::Pending(pending)).unwrap();
     rows.end_group(false).unwrap();
-    *rows.group_offsets.as_mut().unwrap().get_mut(1).unwrap() = 1;
+    let Destination::DrawingGroups { offsets, .. } = &mut rows.destination else {
+        panic!("the group builder owns its offsets");
+    };
+    offsets[1] = 1;
     let Err(error) = rows.finish_groups(Frame::default(), None) else {
         panic!("a value moved into another group");
     };

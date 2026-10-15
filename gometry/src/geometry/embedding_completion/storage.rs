@@ -38,7 +38,6 @@ pub(super) enum FrozenStorage<I> {
     Rows {
         rows: ArrayRows,
         layout: Arc<FlatLiteralLayout<I>>,
-        visit_rows: std::ops::Range<usize>,
     },
     Groups {
         groups: FinalGroupRows,
@@ -121,7 +120,6 @@ impl<I> FrozenLiteralBuffers<I> {
         let rows = admit_flat_rows(storage, missing, storage_layout, &mut layout, work)?;
         Ok(Self {
             storage: FrozenStorage::Rows {
-                visit_rows: 0..rows.len(),
                 rows,
                 layout: Arc::new(layout),
             },
@@ -193,29 +191,6 @@ impl<I> FrozenLiteralBuffers<I> {
                 },
                 layout: Box::new(layout),
                 expected_present,
-            },
-        })
-    }
-
-    pub(in crate::geometry) fn admitted_row_view(
-        rows: ArrayRows,
-        layout: Arc<FlatLiteralLayout<I>>,
-        logical_row: usize,
-    ) -> Result<Self> {
-        let end = logical_row
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        if end > rows.len() || layout.rows.len() != rows.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "final array row view is outside its admitted owner".into(),
-            )
-            .into());
-        }
-        Ok(Self {
-            storage: FrozenStorage::Rows {
-                rows,
-                layout,
-                visit_rows: logical_row..end,
             },
         })
     }

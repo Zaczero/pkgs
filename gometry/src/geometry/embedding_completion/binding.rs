@@ -137,6 +137,99 @@ where
     bind_literals_with_record_policy(buffers, receiver, work, false)
 }
 
+struct LiteralBinder<'a, I, R> {
+    receiver: &'a mut R,
+    retain_checked: bool,
+    rejected: Vec<I>,
+    checked: Vec<CheckedLiteralRecord<I>>,
+}
+
+impl<'a, I: Copy + Ord, R: LiteralReceiver<I>> LiteralBinder<'a, I, R> {
+    const fn new(receiver: &'a mut R, retain_checked: bool) -> Self {
+        Self {
+            receiver,
+            retain_checked,
+            rejected: Vec::new(),
+            checked: Vec::new(),
+        }
+    }
+
+    fn point<W: Work>(
+        &mut self,
+        address: LiteralAddress,
+        image: I,
+        record: Point,
+        expected_axes: CoordinateAxes,
+        stored_axes: CoordinateAxes,
+        work: &mut W,
+    ) -> Result<()> {
+        work.charge_into_error(1)?;
+        if expected_axes != stored_axes || CoordinateAxes::from_point(record) != stored_axes {
+            self.rejected.push(image);
+            return Ok(());
+        }
+        if !self
+            .receiver
+            .accepts_point(address, image, record, expected_axes, stored_axes, work)?
+        {
+            self.rejected.push(image);
+            return Ok(());
+        }
+        if self.retain_checked {
+            self.checked.push(CheckedLiteralRecord {
+                address,
+                image,
+                record,
+            });
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> std::result::Result<Vec<CheckedLiteralRecord<I>>, Vec<I>> {
+        if self.rejected.is_empty() {
+            Ok(self.checked)
+        } else {
+            self.rejected.sort_unstable();
+            self.rejected.dedup();
+            Err(self.rejected)
+        }
+    }
+}
+
+pub(in crate::geometry) fn bind_final_row_literals<I, R, W>(
+    rows: &ArrayRows,
+    layout: &FlatLiteralLayout<I>,
+    logical_row: usize,
+    receiver: &mut R,
+    work: &mut W,
+) -> Result<Vec<I>>
+where
+    I: Copy + Ord,
+    R: LiteralReceiver<I>,
+    W: Work,
+{
+    let end = logical_row
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    if end > rows.len() || layout.rows.len() != rows.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "final array row view is outside its admitted owner".into(),
+        )
+        .into());
+    }
+    let mut binder = LiteralBinder::new(receiver, false);
+    visit_array_literals(
+        rows,
+        layout,
+        &(logical_row..end),
+        work,
+        &mut |address, image, record, expected_axes, stored_axes, work| {
+            binder.point(address, image, record, expected_axes, stored_axes, work)
+        },
+    )?;
+    Ok(binder.finish().err().unwrap_or_default())
+}
+
 fn bind_literals_with_record_policy<I, R, W>(
     buffers: FrozenLiteralBuffers<I>,
     receiver: &mut R,
@@ -148,27 +241,10 @@ where
     R: LiteralReceiver<I>,
     W: Work,
 {
-    let mut rejected = Vec::new();
-    let mut checked = Vec::new();
+    let mut binder = LiteralBinder::new(receiver, retain_checked);
     let mut check =
         |address, image, record, expected_axes, stored_axes, work: &mut W| -> Result<()> {
-            work.charge_into_error(1)?;
-            if expected_axes != stored_axes || CoordinateAxes::from_point(record) != stored_axes {
-                rejected.push(image);
-                return Ok(());
-            }
-            if !receiver.accepts_point(address, image, record, expected_axes, stored_axes, work)? {
-                rejected.push(image);
-                return Ok(());
-            }
-            if retain_checked {
-                checked.push(CheckedLiteralRecord {
-                    address,
-                    image,
-                    record,
-                });
-            }
-            Ok(())
+            binder.point(address, image, record, expected_axes, stored_axes, work)
         };
     match &buffers.storage {
         FrozenStorage::Scalar { shape, layout } => {
@@ -201,11 +277,9 @@ where
             }
             layout.visit_row(ShapeRow::Shape(shape), *index, work, &mut check)?;
         },
-        FrozenStorage::Rows {
-            rows,
-            layout,
-            visit_rows,
-        } => visit_array_literals(rows, layout, visit_rows, work, &mut check)?,
+        FrozenStorage::Rows { rows, layout } => {
+            visit_array_literals(rows, layout, &(0..rows.len()), work, &mut check)?;
+        },
         FrozenStorage::Groups {
             groups,
             layout,
@@ -221,13 +295,10 @@ where
             visit_group_literals(groups, layout, work, &mut check)?;
         },
     }
-    if rejected.is_empty() {
-        Ok(LiteralCheck::Pass(SealedOutput { buffers, checked }))
-    } else {
-        rejected.sort_unstable();
-        rejected.dedup();
-        Ok(LiteralCheck::Reject(rejected))
-    }
+    Ok(match binder.finish() {
+        Ok(checked) => LiteralCheck::Pass(SealedOutput { buffers, checked }),
+        Err(rejected) => LiteralCheck::Reject(rejected),
+    })
 }
 
 fn visit_array_literals<I: Copy, W: Work>(

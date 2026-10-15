@@ -29,26 +29,22 @@ impl FinishedGeometry {
     pub(super) fn from_sealed<I: Copy>(
         sealed: SealedOutput<I>,
         frame: Frame,
-        image: impl Fn(I) -> Result<PublicationImage>,
-    ) -> Result<Self> {
+        image: impl Fn(I) -> PublicationImage,
+    ) -> Self {
         let (storage, scalar_layout, checked) = sealed.into_publication_parts();
-        Ok(Self {
+        Self {
             storage,
             frame,
-            scalar_layout: scalar_layout
-                .map(|layout| map_shape_layout(layout, &image))
-                .transpose()?,
+            scalar_layout: scalar_layout.map(|layout| map_shape_layout(layout, &image)),
             checked: checked
                 .into_iter()
-                .map(|literal| {
-                    Ok(CheckedPublicationLiteral {
-                        address: literal.address,
-                        image: image(literal.image)?,
-                        record: literal.record,
-                    })
+                .map(|literal| CheckedPublicationLiteral {
+                    address: literal.address,
+                    image: image(literal.image),
+                    record: literal.record,
                 })
-                .collect::<Result<Vec<_>>>()?,
-        })
+                .collect(),
+        }
     }
 
     pub(super) const fn from_admitted_rows(rows: ArrayRows, frame: Frame) -> Self {
@@ -138,58 +134,50 @@ impl FinishedGeometry {
 
 fn map_sequence<I: Copy, O>(
     sequence: LiteralSequence<I>,
-    image: &impl Fn(I) -> Result<O>,
-) -> Result<LiteralSequence<O>> {
-    Ok(LiteralSequence {
+    image: &impl Fn(I) -> O,
+) -> LiteralSequence<O> {
+    LiteralSequence {
         output: sequence.output,
         axes: sequence.axes,
-        images: sequence
-            .images
-            .into_iter()
-            .map(image)
-            .collect::<Result<Vec<_>>>()?,
-    })
+        images: sequence.images.into_iter().map(image).collect(),
+    }
 }
 
 pub(super) fn map_shape_layout<I: Copy, O>(
     layout: ShapeLiteralLayout<I>,
-    image: &impl Fn(I) -> Result<O>,
-) -> Result<ShapeLiteralLayout<O>> {
-    Ok(ShapeLiteralLayout {
+    image: &impl Fn(I) -> O,
+) -> ShapeLiteralLayout<O> {
+    ShapeLiteralLayout {
         structure: layout.structure,
         points: layout
             .points
             .into_iter()
-            .map(|point| {
-                Ok(LiteralPoint {
-                    output: point.output,
-                    axes: point.axes,
-                    image: image(point.image)?,
-                })
+            .map(|point| LiteralPoint {
+                output: point.output,
+                axes: point.axes,
+                image: image(point.image),
             })
-            .collect::<Result<Vec<_>>>()?,
+            .collect(),
         lines: layout
             .lines
             .into_iter()
             .map(|line| map_sequence(line, image))
-            .collect::<Result<Vec<_>>>()?,
+            .collect(),
         polygons: layout
             .polygons
             .into_iter()
-            .map(|polygon| {
-                Ok(LiteralPolygon {
-                    output: polygon.output,
-                    axes: polygon.axes,
-                    shell: map_sequence(polygon.shell, image)?,
-                    holes: polygon
-                        .holes
-                        .into_iter()
-                        .map(|hole| map_sequence(hole, image))
-                        .collect::<Result<Vec<_>>>()?,
-                })
+            .map(|polygon| LiteralPolygon {
+                output: polygon.output,
+                axes: polygon.axes,
+                shell: map_sequence(polygon.shell, image),
+                holes: polygon
+                    .holes
+                    .into_iter()
+                    .map(|hole| map_sequence(hole, image))
+                    .collect(),
             })
-            .collect::<Result<Vec<_>>>()?,
-    })
+            .collect(),
+    }
 }
 
 pub(in crate::geometry) fn finish_geographic<W: Work>(
@@ -208,8 +196,8 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
                     Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
                         sealed,
                         frame,
-                        |image| Ok(PublicationImage::Native(image)),
-                    )?))
+                        PublicationImage::Native,
+                    )))
                 },
                 q_publication::NativePublicationCheck::Reject => {
                     Ok(PublicationOutcome::Reject(PublicationRejection::Native))
@@ -222,8 +210,8 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
                     Ok(PublicationOutcome::Pass(FinishedGeometry::from_sealed(
                         sealed,
                         frame,
-                        |image| Ok(PublicationImage::SourceOnly(image)),
-                    )?))
+                        PublicationImage::SourceOnly,
+                    )))
                 },
                 q_publication::SourcePublicationCheck::Reject(images) => Ok(
                     PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)),
@@ -244,9 +232,7 @@ pub(in crate::geometry) fn finish_geographic<W: Work>(
             let buffers = buffers.admit_target(target)?;
             match bind_final_literals(buffers, &mut receiver, work)? {
                 LiteralCheck::Pass(sealed) => Ok(PublicationOutcome::Pass(
-                    FinishedGeometry::from_sealed(sealed, frame, |image| {
-                        Ok(PublicationImage::ProducerDrawn(image))
-                    })?,
+                    FinishedGeometry::from_sealed(sealed, frame, PublicationImage::ProducerDrawn),
                 )),
                 LiteralCheck::Reject(images) => Ok(PublicationOutcome::Reject(
                     PublicationRejection::ProducerDrawing(images),
