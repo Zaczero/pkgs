@@ -45,13 +45,17 @@ class CompressMiddleware:
     ) -> None:
         """Compression middleware supporting multiple algorithms.
 
-        The middleware automatically selects the best available compression method
-        based on the client's Accept-Encoding header. Compression methods are tried
-        in order: Zstandard, Brotli, Gzip, and finally no compression (identity).
+        Positive Accept-Encoding qualities make methods eligible, then server
+        priority selects Zstandard, Brotli, Gzip, or no compression (identity).
+        Relative quality values do not reorder that priority. Missing/unsupported
+        encodings fall back to identity, without a 406 response.
 
         :param app: ASGI application to wrap.
-        :param minimum_size: Minimum response size in bytes to apply compression.
-            Streaming content types (e.g. ``text/event-stream``) bypass this threshold.
+        :param minimum_size: Minimum ordinary one-shot body size in bytes.
+            Multi-message responses begin compression without buffering to this
+            threshold. Streaming content types (e.g. ``text/event-stream``) also
+            bypass it for one-shot bodies and flush each non-empty continuing
+            body message.
         :param zstd: Enable Zstandard compression.
         :param zstd_level: Zstandard compression level. Valid values are all negative integers (faster) to 22 (best).
         :param brotli: Enable Brotli compression.

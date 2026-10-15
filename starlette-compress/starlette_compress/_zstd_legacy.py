@@ -41,10 +41,8 @@ class ZstdResponder(CompressionResponder):
     __slots__ = ()
 
     def __init__(self, app: ASGIApp, minimum_size: int, level: int) -> None:
-        compressor = ZstdCompressor(level=level)
-
         def oneshot(body: bytes) -> bytes:
-            return compressor.compress(body)
+            return ZstdCompressor(level=level).compress(body)
 
         def create_encoder(content_length: int) -> _ZstdLegacyStreamEncoder:
             chunker = ZstdCompressor(level=level).chunker(content_length)
