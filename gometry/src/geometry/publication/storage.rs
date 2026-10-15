@@ -10,7 +10,9 @@ use super::receipt::{
 use crate::Frame;
 use crate::array::StreamingShapes;
 use crate::error::{ResourceError, Result};
-use crate::geometry::embedding_completion::binding::bind_final_literals;
+use crate::geometry::embedding_completion::binding::{
+    bind_final_literals, bind_final_row_literals,
+};
 use crate::geometry::embedding_completion::literals::{
     FlatLiteralLayout, FlatRowBinding, LiteralAddress,
 };
@@ -53,14 +55,21 @@ impl ExpectedRows {
     }
 }
 
+enum Destination {
+    Rows,
+    ReceiptedRows,
+    DrawingGroups {
+        offsets: Vec<i64>,
+        expected_present: Vec<bool>,
+    },
+}
+
 pub(crate) struct PublicationRows {
     writer: StreamingShapes,
     expected: ExpectedRows,
     records: Vec<CheckedPublicationLiteral>,
     accounts: Vec<(usize, EvaluationBudget)>,
-    group_offsets: Option<Vec<i64>>,
-    expected_group_present: Vec<bool>,
-    producer_drawing_required: bool,
+    destination: Destination,
     drawing_only: bool,
 }
 
@@ -71,9 +80,7 @@ impl PublicationRows {
             expected: ExpectedRows::Unreceipted(Vec::with_capacity(rows)),
             records: Vec::new(),
             accounts: Vec::new(),
-            group_offsets: None,
-            expected_group_present: Vec::new(),
-            producer_drawing_required: false,
+            destination: Destination::Rows,
             drawing_only: true,
         }
     }
@@ -82,7 +89,7 @@ impl PublicationRows {
         Self {
             writer: StreamingShapes::with_capacity(0, rows),
             expected: ExpectedRows::Checked(FlatLiteralLayout::with_capacity(rows)),
-            producer_drawing_required: true,
+            destination: Destination::ReceiptedRows,
             ..Self::with_capacity(0)
         }
     }
@@ -91,17 +98,20 @@ impl PublicationRows {
         let mut output = Self::with_producer_drawing_capacity(0);
         let mut offsets = Vec::with_capacity(groups.saturating_add(1));
         offsets.push(0);
-        output.group_offsets = Some(offsets);
-        output.expected_group_present = Vec::with_capacity(groups);
+        output.destination = Destination::DrawingGroups {
+            offsets,
+            expected_present: Vec::with_capacity(groups),
+        };
         output
     }
 
     fn next_address(&self, logical_row: usize) -> LiteralAddress {
+        let groups = matches!(self.destination, Destination::DrawingGroups { .. });
         LiteralAddress {
             operation: 0,
             logical_row,
-            group_row: self.group_offsets.as_ref().map(|_| logical_row),
-            value_row: self.group_offsets.as_ref().map(|_| self.expected.len()),
+            group_row: groups.then_some(logical_row),
+            value_row: groups.then(|| self.expected.len()),
             output: 0,
         }
     }
@@ -113,7 +123,7 @@ impl PublicationRows {
             records.reserve_exact(layout.rows.capacity());
         }
         layout.capture_shape(shape, address, &mut |address, record| {
-            capture_record(records, address, record)
+            Ok(capture_record(records, address, record))
         })
     }
 
@@ -154,7 +164,7 @@ impl PublicationRows {
             records.reserve_exact(layout.rows.capacity());
         }
         layout.capture_line(&coordinates, row.axes(), address, &mut |address, record| {
-            capture_record(records, address, record)
+            Ok(capture_record(records, address, record))
         })?;
         self.writer.try_push_row(Some(row))
     }
@@ -215,7 +225,7 @@ impl PublicationRows {
     }
 
     pub(crate) fn try_push_missing(&mut self) -> Result<()> {
-        if self.group_offsets.is_some() {
+        if matches!(self.destination, Destination::DrawingGroups { .. }) {
             return Err(invalid(
                 "a missing group cannot be stored as a missing geometry value",
             ));
@@ -229,12 +239,15 @@ impl PublicationRows {
 
     pub(crate) fn end_group(&mut self, missing: bool) -> Result<()> {
         let count = self.expected.len();
-        let offsets = self
-            .group_offsets
-            .as_mut()
-            .ok_or_else(|| invalid("only a Groups publication has group boundaries"))?;
+        let Destination::DrawingGroups {
+            offsets,
+            expected_present,
+        } = &mut self.destination
+        else {
+            return Err(invalid("only a Groups publication has group boundaries"));
+        };
         offsets.push(i64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?);
-        self.expected_group_present.push(!missing);
+        expected_present.push(!missing);
         Ok(())
     }
 
@@ -243,14 +256,20 @@ impl PublicationRows {
     }
 
     pub(in crate::geometry) const fn next_group_row(&self) -> usize {
-        self.expected_group_present.len()
+        match &self.destination {
+            Destination::DrawingGroups {
+                expected_present, ..
+            } => expected_present.len(),
+            Destination::Rows | Destination::ReceiptedRows => 0,
+        }
     }
 
     pub(in crate::geometry) const fn next_drawing_row(&self) -> usize {
-        if self.group_offsets.is_some() {
-            self.next_group_row()
-        } else {
-            self.next_value_row()
+        match &self.destination {
+            Destination::DrawingGroups {
+                expected_present, ..
+            } => expected_present.len(),
+            Destination::Rows | Destination::ReceiptedRows => self.next_value_row(),
         }
     }
 
@@ -259,7 +278,7 @@ impl PublicationRows {
     }
 
     pub(crate) fn finish_geometry(self, frame: Frame) -> Result<FinishedGeometry> {
-        if self.group_offsets.is_some() {
+        if matches!(self.destination, Destination::DrawingGroups { .. }) {
             return Err(invalid(
                 "a Groups publication must finish through finish_groups",
             ));
@@ -279,7 +298,7 @@ impl PublicationRows {
                 ));
             },
         };
-        if self.producer_drawing_required
+        if matches!(self.destination, Destination::ReceiptedRows)
             && expected
                 .rows
                 .iter()
@@ -329,10 +348,14 @@ impl PublicationRows {
         frame: Frame,
         missing: Option<ValidityMask>,
     ) -> Result<FinishedGeometry> {
-        let offsets = self
-            .group_offsets
-            .ok_or_else(|| invalid("an ArrayRows publication has no group offsets"))?;
-        if !self.producer_drawing_required || !self.drawing_only || !self.accounts.is_empty() {
+        let Destination::DrawingGroups {
+            offsets,
+            expected_present,
+        } = self.destination
+        else {
+            return Err(invalid("an ArrayRows publication has no group offsets"));
+        };
+        if !self.drawing_only || !self.accounts.is_empty() {
             return Err(invalid(
                 "Groups publication requires producer-drawn receipts",
             ));
@@ -356,7 +379,7 @@ impl PublicationRows {
         ArrayRows::validate_publication_domain(
             group_count,
             missing.as_ref(),
-            self.expected_group_present.iter().copied(),
+            expected_present.iter().copied(),
         )?;
         let (storage, value_missing, storage_layout) = self.writer.finish_parts()?;
         let mut work = Unmetered;
@@ -367,12 +390,16 @@ impl PublicationRows {
             expected,
             offsets,
             missing,
-            self.expected_group_present,
+            expected_present,
             &mut work,
         )?;
         let mut receiver = CheckedLiteralSnapshot::new(self.records)?;
         match bind_final_literals(buffers, &mut receiver, &mut work)? {
-            LiteralCheck::Pass(sealed) => FinishedGeometry::from_sealed(sealed, frame, Ok),
+            LiteralCheck::Pass(sealed) => Ok(FinishedGeometry::from_sealed(
+                sealed,
+                frame,
+                std::convert::identity,
+            )),
             LiteralCheck::Reject(images) => Err(changed_records(
                 "Groups",
                 "producer literal images",
@@ -398,12 +425,11 @@ pub(super) fn finish_array_batch<W: Work>(
     } = batch;
     let mut unmetered = Unmetered;
     let rows = admit_flat_rows(storage, missing, layout, &mut expected, &mut unmetered)?;
-    let expected = Arc::new(expected);
     let mut receiver = CheckedLiteralSnapshot::new(records)?;
     let mut accounts = accounts.into_iter().peekable();
     for logical in 0..rows.len() {
         work.charge_into_error(1)?;
-        let check = if accounts.peek().is_some_and(|(row, _)| *row == logical) {
+        let images = if accounts.peek().is_some_and(|(row, _)| *row == logical) {
             let (_, mut row_work) = accounts.next().expect("the account was peeked");
             let Some(LogicalRow::Present { row, .. }) = rows.logical_row(logical) else {
                 return Err(invalid("checked Q account has no present final row"));
@@ -415,21 +441,11 @@ pub(super) fn finish_array_batch<W: Work>(
                     .checked_add(3)
                     .ok_or(ResourceError::SizeOverflow)?,
             )?;
-            let buffers = FrozenLiteralBuffers::admitted_row_view(
-                rows.clone(),
-                Arc::clone(&expected),
-                logical,
-            )?;
-            bind_final_literals(buffers, &mut receiver, &mut row_work)?
+            bind_final_row_literals(&rows, &expected, logical, &mut receiver, &mut row_work)?
         } else {
-            let buffers = FrozenLiteralBuffers::admitted_row_view(
-                rows.clone(),
-                Arc::clone(&expected),
-                logical,
-            )?;
-            bind_final_literals(buffers, &mut receiver, &mut unmetered)?
+            bind_final_row_literals(&rows, &expected, logical, &mut receiver, &mut unmetered)?
         };
-        if let LiteralCheck::Reject(images) = check {
+        if !images.is_empty() {
             let rejection = if drawing_only {
                 PublicationRejection::ProducerDrawing(
                     images
@@ -466,16 +482,15 @@ fn capture_record(
     records: &mut Vec<CheckedPublicationLiteral>,
     address: LiteralAddress,
     record: Point,
-) -> Result<PublicationImage> {
+) -> PublicationImage {
     let index = records.len();
-    index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
     let image = PublicationImage::ProducerDrawn(ProducerImageId::new(index));
     records.push(CheckedPublicationLiteral {
         address,
         image,
         record,
     });
-    Ok(image)
+    image
 }
 
 fn changed_records(target: &'static str, kind: &'static str, count: usize) -> crate::error::Error {
