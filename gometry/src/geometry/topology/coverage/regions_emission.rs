@@ -7,8 +7,8 @@ use super::super::emission::plan::{
 };
 use super::super::emission::sites::QCoordinates;
 use super::super::emission::{
-    AssignedSite, DirectedSpan, EmissionChordId, ExpandedEmissionPlan, FragmentRecipes,
-    RecipeWalkOwner, SealedQDrawing, SelectedUse,
+    AssignedSite, CompletedQDrawing, DirectedSpan, EmissionChordId, ExpandedEmissionPlan,
+    FragmentRecipes, RecipeWalkOwner, SelectedUse,
 };
 use super::super::exact::SourceEdgeKind;
 use super::super::overlay::{
@@ -253,7 +253,6 @@ impl GeographicCoverageAnalysis {
             force_native: true,
             boundary_support: None,
             producer: QProducer::Overlay,
-            retain_literals_for_republication: false,
             coverage_rows: Some(CoverageRows {
                 declared_axes,
                 source_axes: source_axes.to_vec(),
@@ -288,8 +287,8 @@ impl GeographicCoverageAnalysis {
             &mut expansion,
             work,
         )?;
-        match embedding.sealed {
-            SealedQDrawing::Native(drawing) => drawing
+        match embedding.drawing {
+            CompletedQDrawing::Native(drawing) => drawing
                 .coverage_receipt
                 .map(|receipt| *receipt)
                 .ok_or_else(|| {
@@ -298,10 +297,12 @@ impl GeographicCoverageAnalysis {
                     )
                     .into()
                 }),
-            SealedQDrawing::Source(_) => Err(GeometryErrorKind::Invalid(
-                "coverage row selection bypassed native Q admission".into(),
-            )
-            .into()),
+            CompletedQDrawing::Source(_) | CompletedQDrawing::Drawing { .. } => {
+                Err(GeometryErrorKind::Invalid(
+                    "coverage row selection bypassed native Q admission".into(),
+                )
+                .into())
+            },
         }
     }
 }

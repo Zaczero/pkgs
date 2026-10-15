@@ -1,4 +1,6 @@
-use super::receipt::{ProducerImageId, ProducerLiteral, PublicationLiteral};
+#[cfg(test)]
+use super::receipt::ProducerImageId;
+use super::receipt::PublicationLiteral;
 use crate::error::Result;
 use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::embedding_completion::storage::LiteralReceiver;
@@ -28,12 +30,6 @@ impl<I: Copy + Ord> CheckedLiteralSnapshot<I> {
         }
         records.dedup_by(|current, previous| key(current) == key(previous));
         Ok(Self { records })
-    }
-}
-
-impl CheckedLiteralSnapshot<ProducerImageId> {
-    pub(super) fn into_producer_literals(self) -> Vec<ProducerLiteral> {
-        self.records
     }
 }
 

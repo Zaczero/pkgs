@@ -14,7 +14,7 @@ use crate::array::{
     owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
     row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
-use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_groups};
+use crate::geometry::publication::{PublicationRows, publish_split_groups};
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
@@ -1148,25 +1148,19 @@ impl PyGeometryArray {
                                     domain,
                                     Some(&metric_access),
                                 );
-                                let pending = row
+                                row
                                     .row()
                                     .try_with_shape(|shape| {
-                                        Shape::polygonize_producer_rows(
+                                        Shape::append_polygonize_rows(
                                             &[shape],
                                             false,
                                             &context,
                                             &output_frame,
-                                            logical,
                                             Some(logical),
-                                            Some(publication.next_value_row()),
+                                            &mut publication,
                                         )
                                     })
                                     .map_err(|error| (logical, error))?;
-                                for output in pending {
-                                    publication
-                                        .try_push(GeometryOutput::Pending(output))
-                                        .map_err(|error| (logical, error))?;
-                                }
                                 publication
                                     .end_group(false)
                                     .map_err(|error| (logical, error))?;

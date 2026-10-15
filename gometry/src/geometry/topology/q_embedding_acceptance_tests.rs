@@ -5,6 +5,9 @@ use super::{
 };
 use crate::error::Result;
 use crate::geometry::OverlayOp;
+use crate::geometry::publication::{
+    ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
+};
 
 fn topology(shapes: &[crate::geometry::Shape]) -> Result<ExactGeographicTopology> {
     let frame = GeographicFrame::crs84();
@@ -41,9 +44,16 @@ fn line_shape(points: &[(f64, f64)]) -> Result<crate::geometry::Shape> {
 }
 
 fn sealed_shape(output: QEmbeddingOutput) -> Result<crate::geometry::Shape> {
-    let finished = match output.sealed {
-        super::super::emission::SealedQDrawing::Source(source) => source.sealed,
-        super::super::emission::SealedQDrawing::Native(native) => native.sealed,
+    let finished = match output.drawing {
+        super::super::emission::CompletedQDrawing::Source(source) => source.sealed,
+        super::super::emission::CompletedQDrawing::Native(native) => native.sealed,
+        super::super::emission::CompletedQDrawing::Drawing { shape, frame, .. } => {
+            finish_producer_drawing(
+                ProducerDrawingReceipt::drawing(shape)?,
+                frame,
+                StorageTarget::Scalar,
+            )?
+        },
     };
     Ok(finished.into_scalar()?.0)
 }

@@ -93,7 +93,6 @@ impl QEmissionPlan {
                 force_native: false,
                 boundary_support: Some(support),
                 producer: QProducer::Boundary,
-                retain_literals_for_republication: false,
                 coverage_rows: None,
                 polygons,
                 cycles: Vec::new(),

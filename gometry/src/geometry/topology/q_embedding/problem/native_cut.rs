@@ -355,7 +355,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
         let complete = |candidates: &[QCandidate],
                         budget: &mut EvaluationBudget|
          -> Result<
-            GlobalCheck<super::super::super::emission::CompletedNativeDrawing>,
+            GlobalCheck<super::super::super::emission::CompletedQDrawing>,
         > {
             if candidates.len() != variable_count {
                 return Err(GeometryErrorKind::Invalid(

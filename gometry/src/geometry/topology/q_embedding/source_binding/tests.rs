@@ -234,7 +234,6 @@
             super::bind_source_only(
                 SourceFrozenDrawing {
                     buffers,
-                    diagnostic_lines: Vec::new(),
                 },
                 &topology,
                 Some(&source_ports),

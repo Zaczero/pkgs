@@ -45,7 +45,7 @@ pub(in crate::geometry::topology::q_embedding) struct NativeCutProblem<F> {
     reason = "boxing a short-lived successful result would add a heap allocation to Native publication"
 )]
 pub(in crate::geometry::topology::q_embedding) enum NativeCutSearchOutcome {
-    Pass(super::super::super::emission::CompletedNativeDrawing),
+    Pass(super::super::super::emission::CompletedQDrawing),
     Reject(Vec<usize>),
 }
 impl<F> NativeCutProblem<F> {
@@ -83,13 +83,13 @@ where
     F: FnMut(
         &[QCandidate],
         &mut EvaluationBudget,
-    ) -> Result<GlobalCheck<super::super::super::emission::CompletedNativeDrawing>>,
+    ) -> Result<GlobalCheck<super::super::super::emission::CompletedQDrawing>>,
 {
     type Node = usize;
     type Candidate = QCandidate;
     type Key = EmittedNodeKey;
     type ClassState = NativeCutClassState;
-    type Output = super::super::super::emission::CompletedNativeDrawing;
+    type Output = super::super::super::emission::CompletedQDrawing;
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         &self.classes

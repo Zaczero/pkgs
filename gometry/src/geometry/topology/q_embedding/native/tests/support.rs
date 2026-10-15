@@ -54,7 +54,7 @@ use crate::work::Work;
             )
             .into());
         };
-        let super::super::emission::SealedQDrawing::Native(native) = output.sealed else {
+        let super::super::emission::CompletedQDrawing::Native(native) = output.drawing else {
             return Err(GeometryErrorKind::Invalid(
                 "reduced Native union used source-only publication".into(),
             )
@@ -117,7 +117,6 @@ use crate::work::Work;
         };
         Ok(SourceFrozenDrawing {
             buffers,
-            diagnostic_lines: Vec::new(),
         })
     }
 

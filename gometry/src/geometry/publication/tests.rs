@@ -568,6 +568,84 @@ fn geographic_nearest_point_columns_preserve_all_broadcasts_missing_empty_m_and_
 }
 
 #[test]
+fn geographic_polygonize_public_destinations_preserve_group_domains_m_and_epoch() {
+    use crate::py::functions::polygonize_all;
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), Some(2022.5)).unwrap();
+    let source = crate::io::parse_wkt("LINESTRING M (0 0 11,3 0 22,3 2 33,0 2 44,0 0 11)").unwrap();
+    let expected = source.points_vec().unwrap();
+    let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYM);
+    let array = crate::PyGeometryArray::from_shapes(
+        vec![source.clone(), empty.clone(), empty, source.clone()],
+        frame.clone(),
+    )
+    .unwrap()
+    .with_missing_mask(ValidityMask::from_vec(4, vec![false, true, false, false]))
+    .unwrap();
+    Python::attach(|py| {
+        let assert_polygons = |output: &crate::PyGeometryArray, count| {
+            assert_eq!(output.frame, frame);
+            assert_eq!(output.len(), count);
+            for row in 0..count {
+                let geometry = output.geometry_at(row).unwrap();
+                let plan = geometry.prepared_plan();
+                let Shape::Polygon(polygon) = plan.shape() else {
+                    panic!("one closed source line publishes one polygon per output row");
+                };
+                assert!(polygon.holes.is_empty());
+                let actual = polygon.shell.coords().iter_coords().collect::<Vec<_>>();
+                assert_eq!(actual.len(), 5);
+                assert!(expected.iter().all(|point| actual.contains(point)));
+                assert!(actual.iter().all(|point| expected.contains(point)));
+            }
+        };
+        let scalar = Bound::new(py, crate::PyGeometry::with_frame(source, frame.clone())).unwrap();
+        let result = scalar.call_method0("polygonize").unwrap();
+        assert_polygons(
+            &result
+                .extract::<PyRef<'_, crate::PyGeometryArray>>()
+                .unwrap(),
+            1,
+        );
+        let inputs = PyList::new(py, [&scalar]).unwrap().into_any();
+        let pooled = polygonize_all(py, &inputs, false).unwrap();
+        assert_polygons(
+            &pooled
+                .bind(py)
+                .extract::<PyRef<'_, crate::PyGeometryArray>>()
+                .unwrap(),
+            1,
+        );
+
+        let array = Bound::new(py, array).unwrap();
+        let groups = array.call_method0("polygonize").unwrap();
+        assert_eq!(
+            groups
+                .getattr("offsets")
+                .unwrap()
+                .extract::<Vec<i64>>()
+                .unwrap(),
+            [0, 1, 1, 1, 2]
+        );
+        assert_eq!(
+            groups
+                .getattr("is_missing")
+                .unwrap()
+                .extract::<Vec<bool>>()
+                .unwrap(),
+            [false, true, false, false]
+        );
+        let values = groups.getattr("values").unwrap();
+        assert_polygons(
+            &values
+                .extract::<PyRef<'_, crate::PyGeometryArray>>()
+                .unwrap(),
+            2,
+        );
+    });
+}
+
+#[test]
 fn shortest_line_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();

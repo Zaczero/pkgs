@@ -9,7 +9,6 @@ use crate::geometry::publication::ProducerDrawingReceipt;
 use crate::work::Work;
 pub(in crate::geometry::topology) struct CompletedNativeDrawing {
     pub(in crate::geometry::topology) sealed: FinishedGeometry,
-    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
     pub(in crate::geometry::topology) coverage_receipt: Option<Box<ProducerDrawingReceipt>>,
 }
 
@@ -39,7 +38,6 @@ pub(in crate::geometry) enum QSourceImage {
 
 pub(in crate::geometry::topology) struct SourceFrozenDrawing {
     pub(in crate::geometry::topology) buffers: FrozenLiteralBuffers<QSourceImage>,
-    pub(in crate::geometry::topology) diagnostic_lines: Vec<QDiagnosticLine>,
 }
 
 #[cfg(test)]

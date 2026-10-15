@@ -184,8 +184,11 @@ impl PublicationRows {
                         layout,
                         records,
                         mut work,
+                        #[cfg(test)]
                         producer_drawing,
                     } => {
+                        #[cfg(not(test))]
+                        let producer_drawing = false;
                         let ticks = u64::try_from(records.len())
                             .map_err(|_| ResourceError::SizeOverflow)?
                             .checked_add(1)

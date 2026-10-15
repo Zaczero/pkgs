@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::geometry::publication::{GeometryOutput, PublicationRows, publish_split_parts_array};
+use crate::geometry::publication::{PublicationRows, publish_split_parts_array};
 use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
@@ -473,19 +473,15 @@ impl PyGeometry {
                     })
                 };
                 let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-                let pending = crate::geometry::Shape::polygonize_producer_rows(
+                let mut rows = PublicationRows::with_producer_drawing_capacity(0);
+                crate::geometry::Shape::append_polygonize_rows(
                     &[shape.shape()],
                     false,
                     &context,
                     &output_frame,
-                    0,
                     None,
-                    None,
+                    &mut rows,
                 )?;
-                let mut rows = PublicationRows::with_producer_drawing_capacity(pending.len());
-                for row in pending {
-                    rows.try_push(GeometryOutput::Pending(row))?;
-                }
                 rows.finish(output_frame)
             })?;
             drop(metric_scratch);

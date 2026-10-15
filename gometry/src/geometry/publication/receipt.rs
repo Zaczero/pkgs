@@ -61,7 +61,6 @@ impl PublicationLiteral<ProducerImageId> {
 pub(in crate::geometry) struct ProducerDrawingReceipt {
     pub(super) buffers: FrozenLiteralBuffers<ProducerImageId>,
     pub(super) literals: Vec<ProducerLiteral>,
-    pub(super) retain_literals_for_republication: bool,
 }
 
 impl ProducerDrawingReceipt {
@@ -506,22 +505,7 @@ impl ProducerDrawingReceipt {
         buffers: FrozenLiteralBuffers<ProducerImageId>,
         literals: Vec<ProducerLiteral>,
     ) -> Self {
-        Self {
-            buffers,
-            literals,
-            retain_literals_for_republication: false,
-        }
-    }
-
-    pub(in crate::geometry) const fn new_for_republication(
-        buffers: FrozenLiteralBuffers<ProducerImageId>,
-        literals: Vec<ProducerLiteral>,
-    ) -> Self {
-        Self {
-            buffers,
-            literals,
-            retain_literals_for_republication: true,
-        }
+        Self { buffers, literals }
     }
 }
 
@@ -541,6 +525,7 @@ pub(super) enum PendingAdmission {
         layout: LiteralRowLayout<PublicationImage>,
         records: Vec<CheckedPublicationLiteral>,
         work: EvaluationBudget,
+        #[cfg(test)]
         producer_drawing: bool,
     },
 }

@@ -1,17 +1,16 @@
 use super::super::emission::plan::QDiagnosticLine;
 use super::{
-    CoordinateAxes, EmittedVertex, EvaluationBudget, EvaluationOnly, ExactGeographicTopology,
-    ExpansionBudget, GeometryErrorKind, OverlayOp, QCoordinates, QEmbeddingCertification,
-    QEmissionPlan, QProducer, ResourceError, Result, SealedQDrawing, SealedSourceDrawing,
+    CompletedQDrawing, CoordinateAxes, EmittedVertex, EvaluationBudget, EvaluationOnly,
+    ExactGeographicTopology, ExpansionBudget, GeometryErrorKind, OverlayOp, QCoordinates,
+    QEmbeddingCertification, QEmissionPlan, QProducer, ResourceError, Result, SealedSourceDrawing,
     SearchAccount, SearchOutcome, Shape, SourceArcMetricAccess, SourceRowId,
     boundary_source_points_with_work, certify_and_search_q_embedding, certify_nearest_ring_roles,
     finish_geographic, node_injectivity_collisions_with_work, node_ordinates,
     source_point_coordinates_with_work, write_completed_native,
 };
-use crate::geometry::embedding_completion::literals::LiteralAddress;
 use crate::geometry::publication::{
-    FinishedGeometry, PendingPublicationRow, ProducerReceipt, PublicationCall, PublicationOutcome,
-    PublicationRejection, StorageTarget,
+    PendingPublicationRow, ProducerDrawingReceipt, ProducerReceipt, PublicationCall,
+    PublicationOutcome, PublicationRejection, StorageTarget, finish_producer_drawing,
 };
 
 impl QEmissionPlan {
@@ -22,9 +21,8 @@ impl QEmissionPlan {
         strict: bool,
         declared_axes: CoordinateAxes,
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        retain_literals_for_republication: bool,
         work: &mut impl SearchAccount,
-    ) -> Result<(FinishedGeometry, Vec<QDiagnosticLine>)> {
+    ) -> Result<(Shape, Vec<QDiagnosticLine>)> {
         if !producer.is_pooled_linework() {
             return Err(GeometryErrorKind::Invalid(
                 "pooled linework emitter received a non-linework producer".into(),
@@ -32,7 +30,7 @@ impl QEmissionPlan {
             .into());
         }
         let mut expansion_budget = ExpansionBudget::new(producer.operation(), "computed edges");
-        let mut plan = match producer {
+        let plan = match producer {
             QProducer::Node => Self::build_node(topology, work)?,
             QProducer::Polygonize => Self::build_polygonize(topology, diagnostics, work)?,
             QProducer::BuildArea => Self::build_area(topology, work)?,
@@ -43,7 +41,6 @@ impl QEmissionPlan {
                 .into());
             },
         };
-        plan.retain_literals_for_republication = retain_literals_for_republication;
         let nearest = QCoordinates::build_with_work(topology, work)?;
         let source_points = source_point_coordinates_with_work(topology, work)?;
         let embedding = resolve_q_embedding(
@@ -58,7 +55,7 @@ impl QEmissionPlan {
             &mut expansion_budget,
             work,
         )?;
-        Ok(into_finished_q_emission(embedding))
+        into_pooled_q_drawing(embedding, topology.publication_frame())
     }
 }
 
@@ -85,7 +82,7 @@ pub(super) fn exact_geographic_overlay_pending_row<M: crate::geometry::ChartMetr
     let (embedding, budget) =
         certify_geographic_overlay(topology, operation, declared_axes, strict, metric_access)?;
     pending_q_array_row(
-        embedding.sealed,
+        embedding.drawing,
         logical_row,
         budget,
         topology.publication_frame(),
@@ -139,7 +136,7 @@ pub(super) fn exact_geographic_boundary_pending_row<M: crate::geometry::ChartMet
 ) -> Result<PendingPublicationRow> {
     let (embedding, budget) = certify_geographic_boundary(topology, declared_axes, metric_access)?;
     pending_q_array_row(
-        embedding.sealed,
+        embedding.drawing,
         logical_row,
         budget,
         topology.publication_frame(),
@@ -182,22 +179,26 @@ fn certify_geographic_boundary<M: crate::geometry::ChartMetric>(
 }
 
 fn pending_q_array_row(
-    sealed: SealedQDrawing,
+    sealed: CompletedQDrawing,
     logical_row: usize,
     work: EvaluationBudget,
     output_frame: &crate::Frame,
 ) -> Result<PendingPublicationRow> {
     match sealed {
-        SealedQDrawing::Native(native) => {
+        CompletedQDrawing::Native(native) => {
             native
                 .sealed
                 .into_pending_row(logical_row, work, output_frame)
         },
-        SealedQDrawing::Source(source) => {
+        CompletedQDrawing::Source(source) => {
             source
                 .sealed
                 .into_pending_row(logical_row, work, output_frame)
         },
+        CompletedQDrawing::Drawing { .. } => Err(GeometryErrorKind::Invalid(
+            "pooled drawing requires its producer publication destination".into(),
+        )
+        .into()),
     }
 }
 
@@ -209,7 +210,7 @@ pub(in crate::geometry::topology) enum QEmbeddingChoice {
 }
 
 pub(in crate::geometry::topology) struct CertifiedQEmission {
-    pub(in crate::geometry::topology) sealed: SealedQDrawing,
+    pub(in crate::geometry::topology) drawing: CompletedQDrawing,
     #[cfg(test)]
     pub(in crate::geometry::topology) choice: QEmbeddingChoice,
     #[cfg(test)]
@@ -219,18 +220,42 @@ pub(in crate::geometry::topology) struct CertifiedQEmission {
 pub(in crate::geometry::topology) fn write_certified_q_emission(
     embedding: CertifiedQEmission,
 ) -> Result<Shape> {
-    match embedding.sealed {
-        SealedQDrawing::Source(source) => Ok(source.sealed.into_scalar()?.0),
-        SealedQDrawing::Native(native) => write_completed_native(native),
+    match embedding.drawing {
+        CompletedQDrawing::Source(source) => Ok(source.sealed.into_scalar()?.0),
+        CompletedQDrawing::Native(native) => write_completed_native(native),
+        CompletedQDrawing::Drawing { shape, frame, .. } => {
+            let receipt = ProducerDrawingReceipt::drawing(shape)?;
+            finish_producer_drawing(receipt, frame, StorageTarget::Scalar)?
+                .into_scalar()
+                .map(|(shape, _)| shape)
+        },
     }
 }
 
-fn into_finished_q_emission(
+fn into_pooled_q_drawing(
     embedding: CertifiedQEmission,
-) -> (FinishedGeometry, Vec<QDiagnosticLine>) {
-    match embedding.sealed {
-        SealedQDrawing::Source(source) => (source.sealed, source.diagnostic_lines),
-        SealedQDrawing::Native(native) => (native.sealed, native.diagnostic_lines),
+    output_frame: &crate::Frame,
+) -> Result<(Shape, Vec<QDiagnosticLine>)> {
+    match embedding.drawing {
+        CompletedQDrawing::Drawing {
+            shape,
+            diagnostic_lines,
+            frame,
+        } => {
+            if frame != *output_frame {
+                return Err(GeometryErrorKind::Invalid(
+                    "checked Q result frame does not match its admitted output frame".into(),
+                )
+                .into());
+            }
+            Ok((shape, diagnostic_lines))
+        },
+        CompletedQDrawing::Source(_) | CompletedQDrawing::Native(_) => {
+            Err(GeometryErrorKind::Invalid(
+                "pooled completion returned a preliminary sealed output".into(),
+            )
+            .into())
+        },
     }
 }
 
@@ -271,7 +296,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
     let mut choice = QEmbeddingChoice::Nearest;
     #[cfg(test)]
     let mut test_coordinates = nearest.clone();
-    let sealed = if needs_q_certificate {
+    let completed = if needs_q_certificate {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
             topology,
@@ -325,12 +350,12 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
             test_coordinates = pass.coordinates.clone();
         }
         let output = pass.output;
-        output.sealed
+        output.drawing
     } else {
         let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, preparation_work)?;
         if plan.producer.is_pooled_linework() {
-            let (shape, layout, diagnostic_lines) = plan.write_source_drawing_parts(
+            let (shape, _layout, diagnostic_lines) = plan.write_source_drawing_parts(
                 drawing,
                 &ring_roles,
                 &ordinates,
@@ -341,47 +366,10 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 operation,
                 preparation_work,
             )?;
-            let receipt = super::producer_drawing::receipt_from_shape_layout(
+            CompletedQDrawing::Drawing {
                 shape,
-                layout,
-                LiteralAddress {
-                    operation: 0,
-                    logical_row: 0,
-                    group_row: None,
-                    value_row: None,
-                    output: 0,
-                },
-                plan.retain_literals_for_republication,
-                preparation_work,
-            )?;
-            match finish_geographic(
-                PublicationCall::new(
-                    ProducerReceipt::ProducerDrawing(receipt),
-                    topology.publication_frame().clone(),
-                    preparation_work,
-                ),
-                StorageTarget::Scalar,
-            )? {
-                PublicationOutcome::Pass(finished) => SealedQDrawing::Source(SealedSourceDrawing {
-                    sealed: finished,
-                    diagnostic_lines,
-                }),
-                PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        format!(
-                            "pooled Q source drawing readback changed {} literal images",
-                            images.len()
-                        )
-                        .into(),
-                    )
-                    .into());
-                },
-                PublicationOutcome::Reject(_) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "pooled Q source finisher returned a different rejection family".into(),
-                    )
-                    .into());
-                },
+                frame: topology.publication_frame().clone(),
+                diagnostic_lines,
             }
         } else {
             let source = plan.seal_source_drawing(
@@ -395,7 +383,6 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 operation,
                 preparation_work,
             )?;
-            let diagnostic_lines = source.diagnostic_lines.clone();
             let receipt = super::super::q_embedding::publication::SourceOnlyPublication::new(
                 source,
                 topology,
@@ -414,10 +401,9 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
                 ),
                 StorageTarget::Scalar,
             )? {
-                PublicationOutcome::Pass(finished) => SealedQDrawing::Source(SealedSourceDrawing {
-                    sealed: finished,
-                    diagnostic_lines,
-                }),
+                PublicationOutcome::Pass(finished) => {
+                    CompletedQDrawing::Source(SealedSourceDrawing { sealed: finished })
+                },
                 PublicationOutcome::Reject(PublicationRejection::SourceOnly(_)) => {
                     return Err(GeometryErrorKind::Invalid(
                         "unchanged Q source output failed its literal binding".into(),
@@ -434,7 +420,7 @@ pub(in crate::geometry::topology) fn resolve_q_embedding<
         }
     };
     Ok(CertifiedQEmission {
-        sealed,
+        drawing: completed,
         #[cfg(test)]
         choice,
         #[cfg(test)]

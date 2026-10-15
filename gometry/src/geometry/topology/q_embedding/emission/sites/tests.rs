@@ -373,7 +373,7 @@
         assert_eq!(assigned.native.y.to_bits(), right.native.y.to_bits());
         assert_eq!(assigned.periods, right.periods);
 
-        let super::super::emission::SealedQDrawing::Native(native) = pass.output.sealed else {
+        let super::super::emission::CompletedQDrawing::Native(native) = pass.output.drawing else {
             return Err(GeometryErrorKind::Invalid(
                 "the seam witness did not run Native completion".into(),
             )
