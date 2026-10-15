@@ -35,6 +35,7 @@ mod server;
 mod tls;
 mod websocket;
 
+#[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
