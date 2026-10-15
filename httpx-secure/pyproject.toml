@@ -1,6 +1,6 @@
 [project]
 name = "httpx-secure"
-description = "Drop-in SSRF protection for httpx"
+description = "Connection-level SSRF protection for existing HTTPX async clients"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "0BSD"
@@ -40,7 +40,7 @@ classifiers = [
   "Topic :: System :: Networking",
   "Typing :: Typed",
 ]
-dependencies = ["anyio>=3.0.0", "httpx>=0.20.0"]
+dependencies = ["anyio>=4,<5", "httpcore>=1.0.9,<1.1", "httpx>=0.28.1,<0.29"]
 dynamic = ["version"]
 
 [project.urls]
@@ -49,10 +49,12 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/httpx-secure"
 
 [dependency-groups]
 dev = [
+  "httpx[http2]>=0.28.1,<0.29",
   "pytest>=9.1",
-  "pytest-asyncio",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
+  "trio",
+  "trustme",
 ]
 
 [build-system]
@@ -74,5 +76,6 @@ extend = "../ruff.toml"
 [tool.uv]
 cache-keys = [
   { file = "pyproject.toml" },
-  { file = "httpx_secure/__init__.py" },
+  { file = "README.md" },
+  { file = "httpx_secure/**/*.py" },
 ]

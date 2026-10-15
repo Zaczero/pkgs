@@ -7,9 +7,12 @@ from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
 from time import monotonic
 from weakref import WeakValueDictionary
 
-from anyio import Lock, connect_tcp, fail_after
+from anyio import CancelScope, Lock, connect_tcp
 from anyio.abc import SocketAttribute
-from httpx import ConnectError, ConnectTimeout, RequestError
+from httpcore import ConnectError
+from httpx import RequestError
+
+from httpx_secure._network import protect_client as _protect_client
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -20,7 +23,7 @@ if TYPE_CHECKING:
 
     _IPAddress = IPv4Address | IPv6Address
 
-    _CacheKey = tuple[str, int]  # (hostname, port)
+    _CacheKey = tuple[str, int, str | None]  # hostname, port, local address
 
     _AsyncClientT = TypeVar('_AsyncClientT', bound=AsyncClient)
 
@@ -110,10 +113,9 @@ class _DeniedAddress:
             port=error.port,
         )
 
-    def exception(self, request: Request) -> SSRFProtectionError:
+    def exception(self) -> SSRFProtectionError:
         return SSRFProtectionError(
             self.message,
-            request=request,
             hostname=self.hostname,
             ip_addr=self.ip_addr,
             port=self.port,
@@ -166,12 +168,11 @@ class _DNSCache:
             self._cache.popitem(last=False)
 
 
-class _SSRFProtectionHook:
+class _AddressPolicy:
     __slots__ = (
         '_cache',
         '_locks',
         'check_globally_reachable',
-        'connect_timeout',
         'custom_validator',
         'happy_eyeballs_delay',
     )
@@ -181,7 +182,6 @@ class _SSRFProtectionHook:
         *,
         cache: _DNSCache,
         check_globally_reachable: bool,
-        connect_timeout: float | None,
         custom_validator: (
             Callable[
                 [str, _IPAddress, int],
@@ -190,35 +190,41 @@ class _SSRFProtectionHook:
             | None
         ),
         happy_eyeballs_delay: float,
-    ):
+    ) -> None:
         self._cache = cache
         self._locks: WeakValueDictionary[_CacheKey, Lock] = WeakValueDictionary()
         self.check_globally_reachable = check_globally_reachable
-        self.connect_timeout = connect_timeout
         self.custom_validator = custom_validator
         self.happy_eyeballs_delay = happy_eyeballs_delay
 
-    async def _resolve(self, request: Request, hostname: str, port: int) -> str:
+    async def _resolve(
+        self,
+        hostname: str,
+        port: int,
+        local_address: str | None,
+    ) -> str:
         try:
             return str(ip_address(hostname))
         except ValueError:
             pass
 
         try:
-            with fail_after(self.connect_timeout):
-                async with await connect_tcp(
-                    hostname,
-                    port,
-                    happy_eyeballs_delay=self.happy_eyeballs_delay,
-                ) as stream:
-                    remote_address = stream.extra(SocketAttribute.remote_address)
-                    if isinstance(remote_address, str):
-                        return remote_address
-                    return remote_address[0]
-        except TimeoutError as e:
-            raise ConnectTimeout(str(e), request=request) from e
+            stream = await connect_tcp(
+                hostname,
+                port,
+                local_host=local_address,
+                happy_eyeballs_delay=self.happy_eyeballs_delay,
+            )
+            try:
+                remote_address = stream.extra(SocketAttribute.remote_address)
+                if isinstance(remote_address, str):
+                    return remote_address
+                return remote_address[0]
+            finally:
+                with CancelScope(shield=True):
+                    await stream.aclose()
         except OSError as e:
-            raise ConnectError(str(e), request=request) from e
+            raise ConnectError(str(e)) from e
 
     async def _validate(
         self,
@@ -262,17 +268,17 @@ class _SSRFProtectionHook:
                     port=port,
                 )
 
-    async def _process(
+    async def admit(
         self,
-        request: Request,
         hostname: str,
         port: int,
+        local_address: str | None,
     ) -> str:
-        cache_key = (hostname, port)
+        cache_key = (hostname, port, local_address)
         result = self._cache.get(cache_key)
         if result is not None:
             if isinstance(result, _DeniedAddress):
-                raise result.exception(request)
+                raise result.exception()
             return result
 
         lock = self._locks.get(cache_key)
@@ -283,31 +289,20 @@ class _SSRFProtectionHook:
             result = self._cache.get(cache_key)
             if result is not None:
                 if isinstance(result, _DeniedAddress):
-                    raise result.exception(request)
+                    raise result.exception()
                 return result
 
-            ip_str = await self._resolve(request, hostname, port)
+            ip_str = await self._resolve(hostname, port, local_address)
 
             try:
                 await self._validate(ip_str, port, hostname)
             except SSRFProtectionError as e:
                 denial = _DeniedAddress.from_exception(e)
                 self._cache.put(cache_key, denial)
-                raise denial.exception(request) from None
+                raise denial.exception() from None
 
             self._cache.put(cache_key, ip_str)
             return ip_str
-
-    async def __call__(self, request: Request) -> None:
-        url = request.url
-        hostname = url.host
-        port = url.port or (443 if url.scheme in {'https', 'wss'} else 80)
-
-        ip_str = await self._process(request, hostname, port)
-
-        request.url = url.copy_with(host=ip_str)
-        request.headers['Host'] = hostname
-        request.extensions['sni_hostname'] = hostname
 
 
 def httpx_ssrf_protection(
@@ -326,17 +321,44 @@ def httpx_ssrf_protection(
     happy_eyeballs_delay: float = 0.25,
 ) -> _AsyncClientT:
     """
-    Configure SSRF protection on an httpx AsyncClient with DNS caching.
+    Protect new connections of an existing, quiescent HTTPX AsyncClient.
+
+    Standard direct transports and direct mounts are supported. Existing idle
+    connections are retired before reuse. URLs, Host headers, TLS names, cookies
+    and redirects retain HTTPX's normal origin semantics. Configure the client
+    exclusively on its owning async runtime, before sharing it with other tasks.
+
+    Hostname selection may open and close a TCP probe, including to a denied
+    address, without sending HTTP or application data. The data-bearing connection
+    uses only the selected, validated numeric IP and port. Authorization lasts
+    for that connection's lifetime; cache expiry affects new connections only.
+    Close and recreate the client to apply changed custom policy immediately.
 
     Args:
-        client: AsyncClient to configure
-        check_globally_reachable: Whether to block non-global IP addresses
-        custom_validator: Additional validation function(hostname, ip, port) -> bool
-        dns_cache_size: Maximum number of DNS resolutions to cache
-        dns_cache_ttl: Time-to-live for cached DNS resolutions in seconds
-        happy_eyeballs_delay: Delay in seconds before starting the next connection attempt
+        client: Existing client, with no pending requests or open response streams.
+        check_globally_reachable: Block non-global IPs, including non-global IPv4
+            destinations embedded in the well-known NAT64 prefix. Defaults to True.
+        custom_validator: Optional sync or async function(hostname, ip, port)
+            returning bool. It runs after the global check. Required when
+            check_globally_reachable is False.
+        dns_cache_size: Maximum cached address selections or denials; defaults
+            to 1000. Entries distinguish hostname, port and local bind address.
+        dns_cache_ttl: Cache lifetime in seconds; defaults to 600. Expiry does
+            not revoke established connections.
+        happy_eyeballs_delay: Probe connection-attempt delay in seconds;
+            defaults to 0.25.
     Returns:
         The same client instance with SSRF protection configured.
+
+    Raises:
+        ValueError: No policy is enabled, or a proxy, Unix socket, custom routing,
+            custom transport/backend, or unsupported transport layout is present.
+        RuntimeError: The client is closed, already protected, or has active or
+            pending requests. Finish or close outstanding responses before retrying.
+
+    Requests can raise SSRFProtectionError with the current request, hostname,
+    selected IP and port. DNS/connect failures and connect deadlines retain HTTPX's
+    ConnectError/ConnectTimeout behavior. Custom-validator exceptions propagate.
     """
     if not check_globally_reachable and custom_validator is None:
         raise ValueError(
@@ -344,11 +366,11 @@ def httpx_ssrf_protection(
             'to ensure SSRF protection is not completely disabled',
         )
 
-    client.event_hooks['request'].append(
-        _SSRFProtectionHook(
+    _protect_client(
+        client,
+        _AddressPolicy(
             cache=_DNSCache(dns_cache_size, dns_cache_ttl),
             check_globally_reachable=check_globally_reachable,
-            connect_timeout=client.timeout.connect,
             custom_validator=custom_validator,
             happy_eyeballs_delay=happy_eyeballs_delay,
         ),
