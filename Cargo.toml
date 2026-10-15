@@ -35,11 +35,9 @@ doc_link_with_quotes = "allow"
 # Same reason: the `///` first paragraph IS the numpydoc summary, whose length is
 # governed by the docs site, not rustdoc's paragraph heuristic.
 too_long_first_doc_paragraph = "allow"
-# This crate trades binary size for speed deliberately (fat LTO, one codegen
-# unit, generated lookup tables). The lint's real concern is a `const` being
-# copied at each use site, and that does not happen here: the 16 KiB HPACK
-# decode table appears exactly once in the shipped `.so`. What is left is a
-# size argument we do not accept.
+# Large lookup tables are intentional where their retained size buys useful work.
+# For example, h2corn's 16 KiB HPACK decode table appears once in the extension.
+# Review new tables for duplication and artifact cost at their owning package.
 large_const_arrays = "allow"
 future_not_send = "allow"
 imprecise_flops = "allow"
@@ -47,9 +45,9 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 missing_safety_doc = "allow"
 must_use_candidate = "allow"
-# These crates are never published — only their Python wheels are — so explicit
-# `pub(crate)` is the accurate, intentional visibility for cross-module internals,
-# not redundancy. (The inverse, `unreachable_pub` below, narrows stray `pub`.)
+# The Python extension crates and FAST binary keep cross-module internals
+# explicitly `pub(crate)`. The inverse, `unreachable_pub` below, narrows stray
+# `pub` declarations.
 redundant_pub_crate = "allow"
 return_self_not_must_use = "allow"
 struct_field_names = "allow"
