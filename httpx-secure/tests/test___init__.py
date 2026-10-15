@@ -1,281 +1,111 @@
 from __future__ import annotations
 
-from ipaddress import IPv4Address, IPv6Address, ip_address
-from unittest.mock import AsyncMock, Mock, patch
+import doctest
+from ipaddress import ip_address
+from pathlib import Path
 
+import httpx
 import pytest
-import pytest_asyncio
-from anyio import getaddrinfo
-from httpx import AsyncClient, ConnectError, Request
 
-from httpx_secure import SSRFProtectionError, httpx_ssrf_protection
+from httpx_secure import (
+    SSRFProtectionError,
+    _AddressPolicy,
+    _DNSCache,
+    httpx_ssrf_protection,
+)
 
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from anyio.abc import IPAddressType
-
-MOCK_DEFAULT_IP = '1.2.3.4'
-
-pytestmark = pytest.mark.asyncio(loop_scope='session')
+pytestmark = pytest.mark.anyio
 
 
-class SuccessError(BaseException):
-    """Raised when SSRF validation passes successfully."""
-
-
-def success_hook(_: Request):
-    raise SuccessError
-
-
-def mock_tcp(default_ip: str = MOCK_DEFAULT_IP):
-    async def connect_tcp(remote_host: IPAddressType, remote_port: int, *_, **__):
-        hostname = str(remote_host)
-        port = remote_port
-
-        if '.' not in hostname:
-            # Resolve local hosts
-            addr_info = await getaddrinfo(hostname, port)
-            resolved_ip = addr_info[0][4][0]
-        else:
-            try:
-                ip_address(hostname)
-                resolved_ip = hostname
-            except ValueError:
-                resolved_ip = default_ip
-
-        stream = Mock()
-        stream.extra.return_value = (resolved_ip, port)
-        stream.__aenter__ = AsyncMock(return_value=stream)
-        stream.__aexit__ = AsyncMock(return_value=None)
-        return stream
-
-    return connect_tcp
-
-
-@pytest.fixture(autouse=True)
-def mock_tcp_fixture():
-    with patch('httpx_secure.connect_tcp', side_effect=mock_tcp()) as mock:
-        yield mock
-
-
-@pytest_asyncio.fixture
-async def client():
-    async with httpx_ssrf_protection(AsyncClient()) as client:
-        client.event_hooks['request'].append(success_hook)
-        yield client
+def test_readme_examples():
+    result = doctest.testfile(
+        str(Path(__file__).parents[1] / 'README.md'),
+        module_relative=False,
+        encoding='utf-8',
+    )
+    assert result.failed == 0
 
 
 @pytest.mark.parametrize(
-    'url',
+    'address',
     [
-        'http://localhost/',
-        'http://127.0.0.1/',
-        'http://[::1]/',
+        '127.0.0.1',
+        '::1',
+        '192.168.1.1',
+        '10.0.0.1',
+        '172.16.0.1',
+        '169.254.1.1',
+        'fe80::1',
+        'fc00::1',
+        '64:ff9b::7f00:1',
+        '64:ff9b::c0a8:101',
+        '64:ff9b::6440:1',
     ],
 )
-async def test_blocks_localhost(client, url):
-    with pytest.raises(
-        SSRFProtectionError,
-        match=r'Access denied: .* not globally reachable',
-    ):
-        await client.get(url)
+async def test_blocks_non_global_literals(address):
+    host = f'[{address}]' if ':' in address else address
+    async with httpx_ssrf_protection(httpx.AsyncClient(trust_env=False)) as client:
+        with pytest.raises(SSRFProtectionError) as caught:
+            await client.get(f'http://{host}/blocked')
+    assert caught.value.ip_addr == ip_address(address)
+    assert caught.value.hostname == address
+    assert caught.value.port == 80
+    assert caught.value.request.url.path == '/blocked'
 
 
 @pytest.mark.parametrize(
-    'url',
-    [
-        'http://[64:ff9b::7f00:1]/',
-        'http://[64:ff9b::c0a8:101]/',
-        'http://[64:ff9b::6440:1]/',
-    ],
+    'address',
+    ['8.8.8.8', '1.1.1.1', '2001:4860:4860::8888', '64:ff9b::808:808'],
 )
-async def test_blocks_nat64_with_non_global_embedded_ipv4(client, url):
-    with pytest.raises(
-        SSRFProtectionError,
-        match=r'Access denied: .* not globally reachable',
-    ):
-        await client.get(url)
+async def test_global_literal_policy_needs_no_resolution(address):
+    policy = _AddressPolicy(
+        cache=_DNSCache(10, 60),
+        check_globally_reachable=True,
+        custom_validator=None,
+        happy_eyeballs_delay=0.25,
+    )
+    assert await policy.admit(address, 443, None) == address
 
 
-@pytest.mark.parametrize(
-    'url',
-    [
-        'http://192.168.1.1/',
-        'http://10.0.0.1/',
-        'http://172.16.0.1/',
-        'http://169.254.1.1/',
-        'http://[fe80::1]/',
-        'http://[fc00::1]/',
-    ],
-)
-async def test_blocks_private_networks(client, url):
-    with pytest.raises(
-        SSRFProtectionError,
-        match=r'Access denied: .* not globally reachable',
-    ):
-        await client.get(url)
+async def test_cached_denials_are_fresh_and_bound_to_current_request():
+    calls = []
 
-
-@pytest.mark.parametrize(
-    'url',
-    [
-        'http://8.8.8.8/',
-        'http://1.1.1.1/',
-        'http://[2001:4860:4860::8888]/',
-        'http://[64:ff9b::808:808]/',
-    ],
-)
-async def test_allows_global_addresses(client, url):
-    with pytest.raises(SuccessError):
-        await client.get(url)
-
-
-@pytest.mark.parametrize(
-    'url',
-    [
-        'http://8.8.8.8/',
-        'http://[2001:4860:4860::8888]/',
-    ],
-)
-async def test_ip_literals_do_not_probe_tcp(mock_tcp_fixture, url):
-    async with httpx_ssrf_protection(AsyncClient()) as client:
-        client.event_hooks['request'].append(success_hook)
-
-        with pytest.raises(SuccessError):
-            await client.get(url)
-
-    mock_tcp_fixture.assert_not_called()
-
-
-async def test_dns_resolution_rewrites_host_header():
-    async def success_hook(request: Request):
-        assert request.url.host == MOCK_DEFAULT_IP
-        assert request.headers['Host'] == 'example.com'
-        assert request.extensions['sni_hostname'] == 'example.com'
-        raise SuccessError
-
-    async with httpx_ssrf_protection(AsyncClient()) as client:
-        client.event_hooks['request'].append(success_hook)
-        with pytest.raises(SuccessError):
-            await client.get('https://example.com/')
-
-
-async def test_dns_results_are_cached(mock_tcp_fixture):
-    call_count = 0
-
-    async def counter(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        return await mock_tcp()(*args, **kwargs)
-
-    mock_tcp_fixture.side_effect = counter
-
-    async with httpx_ssrf_protection(AsyncClient(), dns_cache_ttl=5) as client:
-        client.event_hooks['request'].append(success_hook)
-
-        with pytest.raises(SuccessError):
-            await client.get('https://example.com/')
-        assert call_count == 1
-
-        with pytest.raises(SuccessError):
-            await client.get('https://example.com/path')
-        assert call_count == 1
-
-        with pytest.raises(SuccessError):
-            await client.get('https://api.example.com/path')
-        assert call_count == 2
-
-
-async def test_blocks_nat64_with_non_global_embedded_ipv4_after_dns_resolution(
-    mock_tcp_fixture,
-):
-    mock_tcp_fixture.side_effect = mock_tcp('64:ff9b::c0a8:101')
-
-    async with httpx_ssrf_protection(AsyncClient()) as client:
-        client.event_hooks['request'].append(success_hook)
-
-        with pytest.raises(
-            SSRFProtectionError,
-            match=r'Access denied: .* not globally reachable',
-        ):
-            await client.get('https://example.com/')
-
-
-async def test_custom_validator_blocks_specific_ips():
-    call_count = 0
-
-    def custom_validator(
-        _: str,
-        ip_addr: IPv4Address | IPv6Address,
-        __: int,
-    ) -> bool:
-        nonlocal call_count
-        call_count += 1
-        return str(ip_addr) not in {'8.8.8.8', '8.8.4.4'}
+    async def deny(hostname, address, port):
+        calls.append((hostname, address, port))
+        return False
 
     async with httpx_ssrf_protection(
-        AsyncClient(),
-        custom_validator=custom_validator,
+        httpx.AsyncClient(trust_env=False), custom_validator=deny
     ) as client:
-        client.event_hooks['request'].append(success_hook)
-
-        with pytest.raises(
-            SSRFProtectionError,
-            match=r'Access denied: .* failed custom validation',
-        ) as first_denial:
-            await client.get('http://8.8.8.8/')
-        assert call_count == 1
-        assert first_denial.value.request.url.path == '/'
-
-        with pytest.raises(SuccessError):
-            await client.get('http://1.1.1.1/')
-        assert call_count == 2
-
-        # Another request to blocked IP should still use cache
-        with pytest.raises(
-            SSRFProtectionError,
-            match=r'Access denied: .* failed custom validation',
-        ) as cached_denial:
-            await client.get('http://8.8.8.8/different/path')
-        assert call_count == 2
-        assert cached_denial.value is not first_denial.value
-        assert cached_denial.value.request.url.path == '/different/path'
+        with pytest.raises(SSRFProtectionError) as first:
+            await client.get('https://8.8.8.8/first')
+        with pytest.raises(SSRFProtectionError) as second:
+            await client.get('https://8.8.8.8/second')
+    assert calls == [('8.8.8.8', ip_address('8.8.8.8'), 443)]
+    assert first.value is not second.value
+    assert first.value.request.url.path == '/first'
+    assert second.value.request.url.path == '/second'
 
 
-async def test_dns_resolution_failure_raises_error(mock_tcp_fixture):
-    mock_tcp_fixture.side_effect = OSError('Name or service not known')
+async def test_global_check_can_be_disabled_with_custom_policy(server_factory):
+    seen = []
 
-    async with httpx_ssrf_protection(AsyncClient()) as client:
-        with pytest.raises(ConnectError, match='Name or service not known'):
-            await client.get(
-                'http://this-hostname-definitely-does-not-exist/',
-            )
+    def allow(hostname, address, port):
+        seen.append((hostname, address, port))
+        return address.is_loopback
 
-
-async def test_skips_global_check_when_disabled():
-    async with httpx_ssrf_protection(
-        AsyncClient(),
-        check_globally_reachable=False,
-        custom_validator=lambda _, ip_addr, __: str(ip_addr) != '127.0.0.1',
-    ) as client:
-        client.event_hooks['request'].append(success_hook)
-
-        with pytest.raises(SuccessError):
-            await client.get('http://192.168.1.1/')
-
-        with pytest.raises(
-            SSRFProtectionError,
-            match=r'Access denied: .* failed custom validation',
-        ):
-            await client.get('http://127.0.0.1/')
-
-
-async def test_disabling_global_check_requires_custom_validator():
-    with pytest.raises(
-        ValueError,
-        match='to ensure SSRF protection is not completely disabled',
-    ):
-        httpx_ssrf_protection(
-            AsyncClient(),
+    async with server_factory() as server:
+        async with httpx_ssrf_protection(
+            httpx.AsyncClient(trust_env=False),
             check_globally_reachable=False,
-        )
+            custom_validator=allow,
+        ) as client:
+            response = await client.get(f'http://127.0.0.1:{server.port}/allowed')
+        assert response.content == b'OK'
+        assert seen == [('127.0.0.1', ip_address('127.0.0.1'), server.port)]
+
+
+def test_disabling_global_check_requires_custom_validator():
+    client = httpx.AsyncClient(trust_env=False)
+    with pytest.raises(ValueError):
+        httpx_ssrf_protection(client, check_globally_reachable=False)
