@@ -50,8 +50,9 @@ def totp_generate(
     ``step_seconds`` and ``t0`` are then unused. ``time`` and ``time_window``
     are mutually exclusive. When neither is supplied, the current system time
     is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be nonzero
-    when deriving a counter; the default is 30 seconds. Time, origin, and
-    explicit counter values use signed 64-bit integers.
+    when deriving a counter; the default is 30 seconds. Floating timestamps
+    are floored and converted to signed 64-bit seconds; origins and explicit
+    counters are signed 64-bit integers.
 
     Raises:
         ValueError: If the secret is not bytes or valid Base32 text, the
@@ -87,8 +88,9 @@ def totp_verify(
     ``step_seconds`` and ``t0`` are then unused. ``time`` and ``time_window``
     are mutually exclusive. When neither is supplied, the current system time
     is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be nonzero
-    when deriving a counter; the default is 30 seconds. Time, origin, and
-    explicit counter values use signed 64-bit integers.
+    when deriving a counter; the default is 30 seconds. Floating timestamps
+    are floored and converted to signed 64-bit seconds; origins and explicit
+    counters are signed 64-bit integers.
 
     ``window`` allows counter drift: with ``window=1``, candidates are checked
     in this order: T, T-1, T+1. It must fit an unsigned byte. String codes use
