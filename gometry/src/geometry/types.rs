@@ -22,8 +22,8 @@ pub(crate) use coordseq::{
     coerce_to_common_axes, coordinate_columns_eq,
 };
 pub(crate) use csr::{
-    CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel, checked_csr_window,
-    ensure_coordseq_vertex_capacity,
+    CsrOffsetBuilder, CsrOffsetColumn, CsrOffsetWindow, GeometryKind, PolygonLevel,
+    RebasedCsrWindow, RingLevel, ensure_coordseq_vertex_capacity,
 };
 pub(crate) use error::GeometryErrorKind;
 pub(in crate::geometry) use primitives::GeographicMetricKey;

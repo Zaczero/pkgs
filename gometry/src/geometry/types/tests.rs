@@ -321,17 +321,34 @@ mod csr_offset_column_tests {
     }
 
     #[test]
-    fn csr_offset_try_from_shared_i32_rejects_negative_as_malformed() {
+    fn csr_offset_try_from_shared_i32_rejects_malformed_offsets() {
+        use crate::error::ErrorKind;
+
+        for offsets in [vec![], vec![1, 2], vec![0, -1, 3], vec![0, 2, 1]] {
+            let error = CsrOffsetColumn::<()>::try_from_shared_i32(
+                crate::geometry::SharedSlice::from_vec(offsets),
+                3,
+            )
+            .expect_err("malformed external offsets");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+            ));
+        }
+    }
+
+    #[test]
+    fn csr_offset_try_from_shared_i32_rejects_terminal_outside_parent() {
         use crate::error::ErrorKind;
 
         let error = CsrOffsetColumn::<()>::try_from_shared_i32(
-            crate::geometry::SharedSlice::from_vec(vec![0, -1, 3]),
-            3,
+            crate::geometry::SharedSlice::from_vec(vec![0, 3]),
+            2,
         )
-        .expect_err("negative offset");
+        .expect_err("terminal exceeds the admitted parent");
         assert!(matches!(
             error.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
         ));
     }
 }

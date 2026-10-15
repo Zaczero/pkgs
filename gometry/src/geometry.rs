@@ -89,12 +89,12 @@ pub(crate) use prepared::{
 };
 pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,
-    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, CsrOffsetWindow, DistanceParts,
     GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, MAX_NESTING, MColumn, MOrdinate,
     MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, PolygonLevel,
-    RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeOwnerKey, SharedSlice,
-    SimplifyMethod, SmoothMethod, VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate,
-    coerce_to_common_axes,
+    RebasedCsrWindow, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
+    ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, VisiblePointRunKey, VisibleXYKey,
+    VoronoiBoundary, XY, ZOrdinate, coerce_to_common_axes,
 };
 mod antimeridian;
 mod boundary;

@@ -104,15 +104,15 @@ struct SegmentBroadPhase {
 }
 
 impl SegmentBroadPhase {
-    fn build(segments: impl IntoIterator<Item = Segment>) -> Result<Self, crate::error::Error> {
+    fn build(segments: impl IntoIterator<Item = Segment>) -> Self {
         let segments = segments.into_iter();
         let mut entries = Vec::with_capacity(segments.size_hint().0);
         entries.extend(
             segments.map(|segment| PackedBvhEntry::new(segment, segment_envelope(segment))),
         );
-        Ok(Self {
-            tree: PackedBvh::build(entries)?,
-        })
+        Self {
+            tree: PackedBvh::build(entries),
+        }
     }
 
     fn intersects(&self, bounds: Bounds) -> Result<bool, crate::error::Error> {
@@ -306,7 +306,7 @@ impl NativeRectClassifier {
                 Ok(AreaRectClassifier {
                     bounds: shape.bounds(),
                     tester,
-                    boundary_index: polygon_segment_index(&shape)?,
+                    boundary_index: polygon_segment_index(&shape),
                 })
             })
             .transpose()?;
@@ -318,7 +318,7 @@ impl NativeRectClassifier {
         } else {
             Some(SegmentBroadPhase::build(
                 line_seqs.into_iter().flat_map(line_segments),
-            )?)
+            ))
         };
 
         let mut points = Vec::new();
@@ -489,7 +489,7 @@ fn collect_line_sequences<'a>(source: &'a Shape, out: &mut Vec<&'a CoordSeq>) {
     }
 }
 
-fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentBroadPhase> {
+fn polygon_segment_index(source: &Shape) -> SegmentBroadPhase {
     match source {
         Shape::Polygon(polygon) => {
             SegmentBroadPhase::build(polygon.rings().flat_map(line_segments))

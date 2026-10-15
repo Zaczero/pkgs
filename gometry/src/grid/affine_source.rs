@@ -2132,7 +2132,7 @@ fn build_authority_edge_index(
             entries.push(PackedBvhEntry::new(edge, envelope));
         }
     }
-    Ok(Some(PackedBvh::build(entries)?))
+    Ok(Some(PackedBvh::build(entries)))
 }
 
 /// Shared periodic source lift and conservative candidate authority.

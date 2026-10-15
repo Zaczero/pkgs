@@ -1,4 +1,4 @@
-//! A fallible packed bounding-volume hierarchy for grid query envelopes.
+//! A packed bounding-volume hierarchy for grid query envelopes.
 
 use std::cmp::Ordering;
 
@@ -29,10 +29,19 @@ impl<T> PackedBvhEntry<T> {
 #[derive(Clone, Copy, Debug)]
 struct PackedBvhNode {
     envelope: AABB<[f64; 2]>,
-    start: usize,
-    end: usize,
-    left: Option<PackedBvhNodeId>,
-    right: Option<PackedBvhNodeId>,
+    kind: PackedBvhNodeKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PackedBvhNodeKind {
+    Leaf {
+        start: usize,
+        end: usize,
+    },
+    Branch {
+        left: PackedBvhNodeId,
+        right: PackedBvhNodeId,
+    },
 }
 
 #[derive(Debug)]
@@ -43,16 +52,17 @@ pub(super) struct PackedBvh<T> {
 }
 
 impl<T> PackedBvh<T> {
-    pub(super) fn build(mut entries: Vec<PackedBvhEntry<T>>) -> crate::error::Result<Self> {
+    pub(super) fn build(mut entries: Vec<PackedBvhEntry<T>>) -> Self {
         let entry_count = entries.len();
         let leaf_count = entry_count.div_ceil(PACKED_BVH_LEAF_SIZE);
         let node_capacity = if entry_count == 0 {
             0
         } else {
-            leaf_count
-                .checked_mul(2)
-                .and_then(|count| count.checked_sub(1))
-                .ok_or(crate::error::ResourceError::SizeOverflow)?
+            // For every usize entry count, ceil(n / 8) is at most 2^61
+            // on 64-bit targets, so this capacity hint is representable.
+            // Recursive halving can create more nodes than the hint; Vec
+            // growth remains ordinary when that occurs.
+            leaf_count.wrapping_mul(2).wrapping_sub(1)
         };
         let mut nodes = Vec::with_capacity(node_capacity);
         for (order, entry) in entries.iter_mut().enumerate() {
@@ -63,11 +73,11 @@ impl<T> PackedBvh<T> {
         } else {
             Some(Self::build_node(&mut entries, &mut nodes, 0, entry_count))
         };
-        Ok(Self {
+        Self {
             entries,
             nodes,
             root,
-        })
+        }
     }
 
     fn build_node(
@@ -84,10 +94,7 @@ impl<T> PackedBvh<T> {
         let node = PackedBvhNodeId(nodes.len());
         nodes.push(PackedBvhNode {
             envelope,
-            start,
-            end,
-            left: None,
-            right: None,
+            kind: PackedBvhNodeKind::Leaf { start, end },
         });
         let range_len = end.checked_sub(start).expect("BVH node ranges are ordered");
         if range_len > PACKED_BVH_LEAF_SIZE {
@@ -109,8 +116,7 @@ impl<T> PackedBvh<T> {
             let node = nodes
                 .get_mut(node.0)
                 .expect("BVH node slot was appended before its children");
-            node.left = Some(left);
-            node.right = Some(right);
+            node.kind = PackedBvhNodeKind::Branch { left, right };
         }
         node
     }
@@ -139,24 +145,21 @@ impl<T> PackedBvh<T> {
         if !aabbs_intersect(current.envelope, query) {
             return Ok(());
         }
-        match (current.left, current.right) {
-            (Some(left), Some(right)) => {
+        match current.kind {
+            PackedBvhNodeKind::Branch { left, right } => {
                 self.visit_node(left, query, visit)?;
                 self.visit_node(right, query, visit)?;
             },
-            (None, None) => {
+            PackedBvhNodeKind::Leaf { start, end } => {
                 let entries = self
                     .entries
-                    .get(current.start..current.end)
+                    .get(start..end)
                     .expect("BVH leaf range belongs to its entry column");
                 for entry in entries {
                     if aabbs_intersect(entry.envelope, query) {
                         visit(&entry.value)?;
                     }
                 }
-            },
-            (Some(_), None) | (None, Some(_)) => {
-                unreachable!("BVH nodes have both child IDs or neither")
             },
         }
         Ok(())
@@ -229,4 +232,29 @@ fn aabbs_intersect(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> bool {
         && right_lower[0] <= left_upper[0]
         && left_lower[1] <= right_upper[1]
         && right_lower[1] <= left_upper[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use rstar::AABB;
+
+    use super::{PackedBvh, PackedBvhEntry};
+
+    #[test]
+    fn packed_bvh_leaf_and_branch_boundaries_preserve_visit_order() {
+        let envelope = AABB::from_corners([0.0, 0.0], [1.0, 1.0]);
+        for count in [0, 1, 9, 41] {
+            let entries = (0..count)
+                .map(|value| PackedBvhEntry::new(value, envelope))
+                .collect();
+            let tree = PackedBvh::build(entries);
+            let mut visited = Vec::new();
+            tree.visit(envelope, &mut |value| {
+                visited.push(*value);
+                Ok(())
+            })
+            .expect("visitor");
+            assert_eq!(visited, (0..count).collect::<Vec<_>>());
+        }
+    }
 }
