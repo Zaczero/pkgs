@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,9 +31,17 @@ from tests.tooling._bench_support import (  # noqa: E402
 )
 
 _CURRENT_COMMIT = 'a' * 40
+_SOURCE_INPUT_DIGESTS = bench_driver.artifact_content.source_input_digests
+_PYTHON_MEMBER_HASHES = bench_driver.artifact_content.python_member_hashes
+_BENCHMARK_HARNESS_MATCHES_COMMIT = bench_driver._benchmark_harness_matches_commit
 
 
-def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, object]:
+def _block_payload(
+    operation,
+    index: int,
+    lock_path: str = 'lock',
+    receipt_path: str = '/checkout/release-manifest.json',
+) -> dict[str, object]:
     lead = 'ab' if index % 2 == 0 else 'ba'
     order = ['A', 'B'] if lead == 'ab' else ['B', 'A']
     scaling = scaling_record(operation)
@@ -66,9 +75,14 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
         lock_path,
         source_commit=_CURRENT_COMMIT,
         harness_commit=_CURRENT_COMMIT,
+        receipt_path=receipt_path,
     )
     provenance_b = producer(
-        operation.competitor, 'B', lock_path, harness_commit=_CURRENT_COMMIT
+        operation.competitor,
+        'B',
+        lock_path,
+        harness_commit=_CURRENT_COMMIT,
+        receipt_path=receipt_path,
     )
     observation_a['producer_identity'] = provenance_a
     observation_b['producer_identity'] = provenance_b
@@ -147,14 +161,17 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
 def _build_result(tmp_path: Path) -> dict[str, object]:
     lock = tmp_path / 'lock'
     lock.write_bytes(b'x')
+    receipt = tmp_path / 'release-manifest.json'
+    receipt.write_bytes(b'x')
     artifacts: list[str] = []
     lock_path = str(tmp_path / 'lock')
+    receipt_path = str(receipt)
     for operation in ALL_PUBLIC_OPERATIONS:
         for index in range(6):
             operation_index = ALL_PUBLIC_OPERATIONS.index(operation)
             artifact = tmp_path / f'block-{operation_index:02d}-{index:02d}.json'
             artifact.write_text(
-                json.dumps(_block_payload(operation, index, lock_path)),
+                json.dumps(_block_payload(operation, index, lock_path, receipt_path)),
                 encoding='utf-8',
             )
             artifacts.append(str(artifact))
@@ -304,8 +321,8 @@ def _result(publication_baseline: str) -> dict[str, object]:
     return json.loads(publication_baseline)
 
 
-def _synthetic_subject() -> dict[str, object]:
-    identity = producer('gometry.op/fixture', 'A')
+def _synthetic_subject(receipt_path: str) -> dict[str, object]:
+    identity = producer('gometry.op/fixture', 'A', receipt_path=receipt_path)
     binding = identity['runtime_binding']
     return {
         'kind': 'release',
@@ -331,12 +348,19 @@ def _synthetic_subject() -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def prevalidated_receipt_boundary(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    publication_baseline: str,
 ) -> dict[str, object]:
-    subject = _synthetic_subject()
-    monkeypatch.setattr(
-        bench_driver, '_current_checkout_commit', lambda: _CURRENT_COMMIT
+    baseline = json.loads(publication_baseline)
+    block_path = next(
+        Path(path)
+        for path in baseline['source_artifacts']
+        if Path(path).name.startswith('block-')
     )
+    block = json.loads(block_path.read_text(encoding='utf-8'))
+    receipt_path = block['arms']['A']['provenance_before']['runtime_binding']['path']
+    subject = _synthetic_subject(receipt_path)
 
     def read_subject(path: Path) -> dict[str, object]:
         if str(path.resolve()) != subject['path']:
@@ -347,6 +371,34 @@ def prevalidated_receipt_boundary(
         bench_driver.artifact_release,
         'validate_benchmark_receipt',
         read_subject,
+    )
+    monkeypatch.setattr(
+        bench_driver,
+        '_benchmark_harness_matches_commit',
+        lambda _commit: True,
+    )
+    monkeypatch.setattr(
+        bench_driver.source_artifact,
+        '_producer_commit_is_bound',
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        bench_driver.artifact_content,
+        'source_input_digests',
+        lambda _root: {
+            'source_inputs_sha256': HASH,
+            'native_source_inputs_sha256': HASH,
+        },
+    )
+    monkeypatch.setattr(
+        bench_driver.artifact_content,
+        'python_member_hashes',
+        lambda _root: subject['source']['python_members'],
+    )
+    monkeypatch.setattr(
+        bench_driver,
+        '_EVIDENCE_ROOT',
+        tmp_path / 'docs' / 'assets' / 'benchmark-runs',
     )
     return subject
 
@@ -398,6 +450,68 @@ def _mutate_first_block(run_manifest: Path, mutate) -> None:
         _replace_artifact(raw, json.dumps(payload))
         return
     raise AssertionError('fixture has no paired block artifact')
+
+
+def _set_harness_commit(run_manifest: Path, commit: str) -> None:
+    result = json.loads(run_manifest.read_text(encoding='utf-8'))
+    result['doctor']['metadata']['harness_commit'] = commit
+    for artifact in sorted((run_manifest.parent / 'raw').glob('block-*.json')):
+        payload = json.loads(artifact.read_text(encoding='utf-8'))
+        for side in ('A', 'B'):
+            arm = payload['arms'][side]
+            identity = arm['provenance_before']
+            identity['harness_commit'] = commit
+            arm['provenance_after'] = identity
+            case_process = arm['case_process']
+            case_process['identity_sha256'] = benchmark_runtime.identity_sha256(
+                identity
+            )
+            arm['observation']['producer_identity'] = identity
+            arm['observation']['case_process'] = case_process
+        _replace_artifact(artifact, json.dumps(payload))
+    run_manifest.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+
+
+def _harness_git_fixture(tmp_path: Path) -> tuple[Path, str]:
+    repository = tmp_path / 'harness-repo'
+    package_root = repository / 'gometry'
+    for relative, contents in {
+        'benches/drivers/bench.py': 'measurement = 1\n',
+        'benches/results/current/summary.md': 'old result\n',
+        'docs/about/benchmarks.md': 'benchmark documentation\n',
+    }.items():
+        path = package_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding='utf-8')
+    subprocess.run(['git', 'init', '-q'], cwd=repository, check=True)
+    subprocess.run(['git', 'add', '--all'], cwd=repository, check=True)
+    subprocess.run(
+        [
+            'git',
+            '-c',
+            'user.name=Publication Fixture',
+            '-c',
+            'user.email=publication@example.invalid',
+            'commit',
+            '-m',
+            'fixture benchmark inputs',
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return package_root, commit
 
 
 def _publish(run_manifest: Path, tmp_path: Path) -> Path:
@@ -563,7 +677,7 @@ def test_publication_rejects_missing_artifact_and_metadata(
     result = _result(publication_baseline)
     run_manifest = _run_manifest(tmp_path, publication_baseline, result)
     next(run_manifest.parent.joinpath('raw').glob('block-*.json')).unlink()
-    with pytest.raises(SystemExit, match='references a missing artifact'):
+    with pytest.raises(SystemExit, match='path is missing'):
         _publish(run_manifest, tmp_path)
     incomplete_root = tmp_path / 'incomplete'
     incomplete_root.mkdir()
@@ -758,14 +872,147 @@ def test_publication_rejects_mismatched_external_oracle_artifact(
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_stale_harness_commit(
-    tmp_path: Path, publication_baseline: str
+def test_publication_rejects_stale_gometry_product_bytes(
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result = _result(publication_baseline)
-    result['doctor']['metadata']['harness_commit'] = 'b' * 40  # type: ignore[index]
+    package_root = tmp_path / 'changed-product'
+    (package_root / 'src').mkdir(parents=True)
+    (package_root / 'native').mkdir()
+    (package_root / 'build.rs').write_text('fn main() {}\n', encoding='utf-8')
+    (package_root / 'src' / 'lib.rs').write_text(
+        'pub fn changed() {}\n', encoding='utf-8'
+    )
+    (package_root / 'native' / 'input.c').write_text(
+        'int changed(void) { return 1; }\n',
+        encoding='utf-8',
+    )
+    changed_inputs = _SOURCE_INPUT_DIGESTS(package_root)
+    monkeypatch.setattr(
+        bench_driver.artifact_content,
+        'source_input_digests',
+        lambda _root: changed_inputs,
+    )
 
-    with pytest.raises(SystemExit, match='harness is not at the current checkout'):
-        _publish(_run_manifest(tmp_path, publication_baseline, result), tmp_path)
+    with pytest.raises(SystemExit, match='source inputs differ'):
+        _publish(_run_manifest(tmp_path, publication_baseline), tmp_path)
+
+    assert not (tmp_path / 'current' / 'summary.md').exists()
+
+
+def test_publication_rejects_stale_gometry_python_members(
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / 'python' / 'gometry'
+    package_root.mkdir(parents=True)
+    (package_root / '__init__.py').write_text('value = 2\n', encoding='utf-8')
+    (package_root / '_lib.pyi').write_text(
+        'def value() -> int: ...\n', encoding='utf-8'
+    )
+    changed_members = _PYTHON_MEMBER_HASHES(package_root)
+    monkeypatch.setattr(
+        bench_driver.artifact_content,
+        'python_member_hashes',
+        lambda _root: changed_members,
+    )
+
+    with pytest.raises(SystemExit, match='Python package members differ'):
+        _publish(_run_manifest(tmp_path, publication_baseline), tmp_path)
+
+    assert not (tmp_path / 'current' / 'summary.md').exists()
+
+
+def test_publication_accepts_docs_and_summary_commit_with_unchanged_harness(
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root, harness_commit = _harness_git_fixture(tmp_path)
+    (package_root / 'docs' / 'about' / 'benchmarks.md').write_text(
+        'updated benchmark explanation\n',
+        encoding='utf-8',
+    )
+    (package_root / 'benches' / 'results' / 'current' / 'summary.md').write_text(
+        'updated benchmark result\n',
+        encoding='utf-8',
+    )
+    subprocess.run(['git', 'add', '--all'], cwd=package_root.parent, check=True)
+    subprocess.run(
+        [
+            'git',
+            '-c',
+            'user.name=Publication Fixture',
+            '-c',
+            'user.email=publication@example.invalid',
+            'commit',
+            '-m',
+            'fixture docs-only update',
+        ],
+        cwd=package_root.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monkeypatch.setattr(
+        bench_driver,
+        '_benchmark_harness_matches_commit',
+        lambda commit: _BENCHMARK_HARNESS_MATCHES_COMMIT(
+            commit, package_root=package_root
+        ),
+    )
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+    _set_harness_commit(run_manifest, harness_commit)
+
+    published = _publish(run_manifest, tmp_path)
+
+    summary = published.read_text(encoding='utf-8')
+    assert f'Benchmark harness commit: `{harness_commit[:8]}`.' in summary
+    assert '../assets/benchmark-runs/' in summary
+    assert 'producer receipt index' in summary
+
+
+def test_publication_rejects_changed_benchmark_harness_bytes(
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root, harness_commit = _harness_git_fixture(tmp_path)
+    (package_root / 'benches' / 'drivers' / 'bench.py').write_text(
+        'measurement = 2\n',
+        encoding='utf-8',
+    )
+    subprocess.run(['git', 'add', '--all'], cwd=package_root.parent, check=True)
+    subprocess.run(
+        [
+            'git',
+            '-c',
+            'user.name=Publication Fixture',
+            '-c',
+            'user.email=publication@example.invalid',
+            'commit',
+            '-m',
+            'fixture harness update',
+        ],
+        cwd=package_root.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monkeypatch.setattr(
+        bench_driver,
+        '_benchmark_harness_matches_commit',
+        lambda commit: _BENCHMARK_HARNESS_MATCHES_COMMIT(
+            commit, package_root=package_root
+        ),
+    )
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+    _set_harness_commit(run_manifest, harness_commit)
+
+    with pytest.raises(SystemExit, match='harness inputs differ'):
+        _publish(run_manifest, tmp_path)
 
     assert not (tmp_path / 'current' / 'summary.md').exists()
 
@@ -777,7 +1024,7 @@ def test_publication_rejects_stale_harness_commit(
         pytest.param(None, True, id='unattributed-source'),
     ],
 )
-def test_publication_rejects_noncurrent_gometry_producer(
+def test_publication_rejects_unattributed_or_receipt_mismatched_producer(
     tmp_path: Path,
     publication_baseline: str,
     producer_commit: str | None,
@@ -807,7 +1054,7 @@ def test_publication_rejects_noncurrent_gometry_producer(
     _mutate_first_block(run_manifest, set_producer_commit)
 
     with pytest.raises(
-        SystemExit, match='producer is not at the current checkout commit'
+        SystemExit, match='producer commit differs from selected subject'
     ):
         _publish(run_manifest, tmp_path)
 
@@ -836,7 +1083,7 @@ def test_publication_ignores_packages_no_block_loaded(
     _publish(_run_manifest(tmp_path, publication_baseline, result), tmp_path)
 
 
-def test_publication_writes_only_the_deterministic_summary(
+def test_publication_retains_portable_evidence_and_reuses_its_summary(
     tmp_path: Path, publication_baseline: str
 ) -> None:
     run_manifest = _run_manifest(tmp_path, publication_baseline)
@@ -859,8 +1106,86 @@ def test_publication_writes_only_the_deterministic_summary(
     assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md
     assert '#### union_all: n-ary overlay input count' in summary_md
+    assert 'raw measurements, oracle, and producer receipts' in summary_md
+    assert 'producer receipt index' in summary_md
+
+    bundle = next(
+        path for path in bench_driver._EVIDENCE_ROOT.iterdir() if path.is_dir()
+    )
+    bundled_manifest = json.loads((bundle / 'run.json').read_text(encoding='utf-8'))
+    assert all(
+        (bundle / artifact).is_file() for artifact in bundled_manifest['artifacts']
+    )
+    assert (bundle / bundled_manifest['oracle_artifact']).is_file()
+    receipt_index = json.loads(
+        (bundle / 'receipts' / 'index.json').read_text(encoding='utf-8')
+    )
+    assert receipt_index['receipts']
+    assert all(
+        (bundle / item['bundle_path']).is_file() for item in receipt_index['receipts']
+    )
 
     assert _publish(run_manifest, tmp_path).read_bytes() == first
+    portable_run = tmp_path / 'portable-run'
+    shutil.copytree(run_manifest.parent, portable_run)
+    assert _publish(portable_run / 'run.json', tmp_path).read_bytes() == first
+
+
+@pytest.mark.parametrize('damage', ['missing', 'mutated'])
+def test_publication_rejects_damaged_existing_portable_evidence(
+    tmp_path: Path,
+    publication_baseline: str,
+    damage: str,
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+    published = _publish(run_manifest, tmp_path)
+    previous_summary = published.read_bytes()
+    bundle = next(
+        path for path in bench_driver._EVIDENCE_ROOT.iterdir() if path.is_dir()
+    )
+    oracle = bundle / 'raw' / 'oracle.json'
+    if damage == 'missing':
+        oracle.unlink()
+    else:
+        oracle.write_bytes(oracle.read_bytes() + b'\n')
+    portable_run = tmp_path / 'portable-run'
+    shutil.copytree(run_manifest.parent, portable_run)
+
+    with pytest.raises(SystemExit, match='does not match its content address'):
+        _publish(portable_run / 'run.json', tmp_path)
+
+    assert published.read_bytes() == previous_summary
+
+
+@pytest.mark.parametrize(
+    ('target', 'path'),
+    [
+        pytest.param('artifact', '../outside.json', id='artifact-traversal'),
+        pytest.param('oracle', '../outside.json', id='oracle-traversal'),
+        pytest.param('symlink', 'raw/outside.json', id='artifact-symlink'),
+    ],
+)
+def test_publication_rejects_run_artifacts_outside_the_run_directory(
+    tmp_path: Path,
+    publication_baseline: str,
+    target: str,
+    path: str,
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+    outside = tmp_path / 'outside.json'
+    outside.write_text('{}\n', encoding='utf-8')
+    result = json.loads(run_manifest.read_text(encoding='utf-8'))
+    if target == 'artifact':
+        result['artifacts'][0] = path
+    elif target == 'oracle':
+        result['oracle_artifact'] = path
+    else:
+        (run_manifest.parent / path).symlink_to(outside)
+        result['artifacts'][0] = path
+    run_manifest.write_text(json.dumps(result), encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='escapes the run directory'):
+        _publish(run_manifest, tmp_path)
 
 
 def test_cli_publishes_one_run_manifest(

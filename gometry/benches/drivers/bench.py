@@ -8,11 +8,13 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _BENCHES = Path(__file__).resolve().parents[1]
@@ -51,7 +53,9 @@ from bench_doctor import (
 )
 import benchmark_runtime
 from benchmark_identity import validate_producer_identity
+import artifact_content
 import release_artifact as artifact_release
+import source_artifact
 
 
 def _serialize_public_operations(
@@ -88,6 +92,7 @@ _REQUIRED_ENGINE_LIBRARY_TOKENS = {
     'shapely': ('geos',),
     'pyproj': ('proj',),
 }
+_EVIDENCE_ROOT = GOMETRY_ROOT / 'docs' / 'assets' / 'benchmark-runs'
 
 
 def _stamp() -> str:
@@ -572,6 +577,263 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
+def _generated_harness_output(relative: str, package_name: str) -> bool:
+    path = PurePosixPath(relative)
+    return (
+        '__pycache__' in path.parts
+        or path.suffix in {'.pyc', '.pyo'}
+        or path.parts[:3] == (package_name, 'benches', 'results')
+    )
+
+
+def _benchmark_harness_matches_commit(
+    commit: str,
+    *,
+    package_root: Path = GOMETRY_ROOT,
+) -> bool:
+    """Compare benchmark inputs with their recorded tree, not its later commits."""
+    repository = package_root.parent
+    package_name = package_root.name
+    try:
+        diff = subprocess.run(
+            [
+                'git',
+                'diff',
+                '--quiet',
+                '--no-ext-diff',
+                '--no-renames',
+                '--ignore-submodules=none',
+                commit,
+                '--',
+                f'{package_name}/benches',
+                f':(exclude){package_name}/benches/results',
+            ],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+        )
+        if diff.returncode not in (0, 1):
+            raise SystemExit(
+                'publication rejected: cannot compare benchmark harness content '
+                f'with recorded commit {commit}: '
+                f'{diff.stderr.decode("utf-8", errors="replace").strip()}'
+            )
+        if diff.returncode:
+            return False
+        untracked = subprocess.run(
+            [
+                'git',
+                'ls-files',
+                '--others',
+                '--full-name',
+                '-z',
+                '--',
+                f'{package_name}/benches',
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        untracked_paths = [
+            item.decode('utf-8') for item in untracked.stdout.split(b'\0') if item
+        ]
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as error:
+        raise SystemExit(
+            f'publication rejected: cannot inspect benchmark harness content: {error}'
+        ) from error
+    return not any(
+        not _generated_harness_output(relative, package_name)
+        for relative in untracked_paths
+    )
+
+
+def _confined_run_artifact(
+    run_directory: Path,
+    relative: str,
+    *,
+    label: str,
+) -> tuple[str, Path]:
+    """Resolve one manifest path without allowing it to escape the run."""
+    if not isinstance(relative, str) or not relative:
+        raise SystemExit(
+            f'publication rejected: {label} path must be a non-empty relative path'
+        )
+    candidate = PurePosixPath(relative)
+    if candidate.is_absolute() or '..' in candidate.parts:
+        raise SystemExit(
+            f'publication rejected: {label} path escapes the run directory: {relative}'
+        )
+    normalized = candidate.as_posix()
+    path = run_directory / Path(*candidate.parts)
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(run_directory.resolve())
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit(
+            f'publication rejected: {label} path is missing or escapes the run '
+            f'directory: {relative}'
+        ) from error
+    if not resolved.is_file():
+        raise SystemExit(f'publication rejected: {label} is not a file: {relative}')
+    return normalized, resolved
+
+
+def _stage_run_evidence(
+    run_manifest: Path,
+    manifest_bytes: bytes,
+    result: dict[str, Any],
+    evidence_root: Path,
+) -> Path:
+    """Copy a run and its listed artifacts into a private publication stage."""
+    artifacts = result.get('artifacts')
+    if not isinstance(artifacts, list):
+        raise SystemExit('publication rejected: run artifact list is missing')
+    run_directory = run_manifest.resolve().parent
+    sources: dict[str, Path] = {}
+    for artifact in artifacts:
+        relative, source = _confined_run_artifact(
+            run_directory, artifact, label='run artifact'
+        )
+        if relative == 'run.json' or relative.startswith('receipts/'):
+            raise SystemExit(
+                f'publication rejected: reserved evidence path: {relative}'
+            )
+        sources[relative] = source
+    oracle = result.get('oracle_artifact')
+    if not isinstance(oracle, str) or not oracle:
+        raise SystemExit('publication rejected: external oracle artifact is missing')
+    relative_oracle, oracle_path = _confined_run_artifact(
+        run_directory, oracle, label='external oracle artifact'
+    )
+    if relative_oracle == 'run.json' or relative_oracle.startswith('receipts/'):
+        raise SystemExit(
+            f'publication rejected: reserved evidence path: {relative_oracle}'
+        )
+    sources[relative_oracle] = oracle_path
+
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    stage: Path | None = None
+    try:
+        stage = Path(tempfile.mkdtemp(prefix='.pending-', dir=evidence_root))
+        (stage / 'run.json').write_bytes(manifest_bytes)
+        for relative, source in sorted(sources.items()):
+            destination = stage / Path(*PurePosixPath(relative).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+    except OSError as error:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+        raise SystemExit(
+            f'publication rejected: cannot stage benchmark run evidence: {error}'
+        ) from error
+    except BaseException:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
+    if stage is None:
+        raise AssertionError('benchmark evidence stage was not created')
+    return stage
+
+
+def _retain_producer_receipts(
+    stage: Path,
+    receipt_cache: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Copy validated producer receipts and index their recorded source paths."""
+    receipt_directory = stage / 'receipts'
+    receipt_directory.mkdir()
+    records = []
+    for (receipt_path, expected_digest), _receipt in sorted(receipt_cache.items()):
+        try:
+            payload = Path(receipt_path).read_bytes()
+        except OSError as error:
+            raise SystemExit(
+                f'publication rejected: selected producer receipt is unavailable: '
+                f'{receipt_path}: {error}'
+            ) from error
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != expected_digest:
+            raise SystemExit(
+                f'publication rejected: selected producer receipt changed: '
+                f'{receipt_path}'
+            )
+        relative = f'receipts/{digest}.json'
+        destination = stage / relative
+        if not destination.exists():
+            destination.write_bytes(payload)
+        records.append({
+            'path': receipt_path,
+            'sha256': digest,
+            'bundle_path': relative,
+        })
+    index = {
+        'schema_version': 1,
+        'receipts': sorted(records, key=lambda item: (item['path'], item['sha256'])),
+    }
+    (receipt_directory / 'index.json').write_text(
+        json.dumps(index, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+
+
+def _evidence_digest(directory: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in directory.rglob('*') if item.is_file()):
+        digest.update(path.relative_to(directory).as_posix().encode('utf-8'))
+        digest.update(b'\0')
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _evidence_bundle_matches(stage: Path, existing: Path) -> bool:
+    if existing.is_symlink() or not existing.is_dir():
+        return False
+    staged_paths = list(stage.rglob('*'))
+    existing_paths = list(existing.rglob('*'))
+    if any(path.is_symlink() for path in existing_paths):
+        return False
+    staged_files = {
+        path.relative_to(stage).as_posix(): path
+        for path in staged_paths
+        if path.is_file()
+    }
+    existing_files = {
+        path.relative_to(existing).as_posix(): path
+        for path in existing_paths
+        if path.is_file()
+    }
+    return staged_files.keys() == existing_files.keys() and all(
+        _file_sha256(staged_files[relative]) == _file_sha256(existing_files[relative])
+        for relative in staged_files
+    )
+
+
+def _publish_evidence_bundle(stage: Path) -> str:
+    digest = _evidence_digest(stage)
+    target = stage.parent / digest
+    if target.exists() or target.is_symlink():
+        if not _evidence_bundle_matches(stage, target):
+            raise SystemExit(
+                'publication rejected: existing benchmark evidence bundle '
+                f'{digest} does not match its content address'
+            )
+        shutil.rmtree(stage)
+    else:
+        try:
+            stage.rename(target)
+        except OSError as error:
+            if not _evidence_bundle_matches(stage, target):
+                raise SystemExit(
+                    f'publication rejected: cannot publish benchmark evidence '
+                    f'bundle {digest}: {error}'
+                ) from error
+            shutil.rmtree(stage)
+    return digest
+
+
 def _write_json_once(path: Path, payload: dict[str, Any], *, label: str) -> None:
     """Write a manifest once; an existing path is never replaced."""
     try:
@@ -807,7 +1069,8 @@ def _validate_block_identity(
     metadata: dict[str, Any],
     *,
     receipt_cache: dict[tuple[str, str], dict[str, Any]],
-    current_commit: str,
+    source_commit_cache: dict[str | None, bool],
+    current_python_members: dict[str, str],
 ) -> None:
     """Check one measured arm against the run's recorded build and dependencies."""
     try:
@@ -924,10 +1187,6 @@ def _validate_block_identity(
     source_commit = implementation.get('source_commit')
     source_receipt = implementation.get('source_receipt')
     source_wheel = implementation.get('source_wheel')
-    if implementation.get('runtime') == 'gometry' and source_commit != current_commit:
-        raise SystemExit(
-            'publication rejected: measured Gometry producer is not at the current checkout commit'
-        )
     runtime_binding = identity.get('runtime_binding')
     if not isinstance(runtime_binding, dict):
         raise SystemExit('publication rejected: measured runtime binding is missing')
@@ -985,6 +1244,23 @@ def _validate_block_identity(
         ):
             raise SystemExit(
                 'publication rejected: source attribution is not bound to selected wheel'
+            )
+        if source_commit not in source_commit_cache:
+            source_commit_cache[source_commit] = (
+                source_artifact._producer_commit_is_bound(
+                    source_commit,
+                    GOMETRY_ROOT,
+                )
+            )
+        if not source_commit_cache[source_commit]:
+            raise SystemExit(
+                'publication rejected: measured Gometry producer inputs differ '
+                'from the recorded source commit'
+            )
+        if runtime_binding.get('python_members') != current_python_members:
+            raise SystemExit(
+                'publication rejected: measured Gometry Python package members '
+                'differ from the current source tree'
             )
     elif (
         source_commit is not None
@@ -1117,8 +1393,8 @@ def _render_publication(
     metadata: dict[str, Any],
     run_directory: Path,
     *,
-    current_commit: str,
-) -> str:
+    current_python_members: dict[str, str],
+) -> tuple[str, dict[tuple[str, str], dict[str, Any]]]:
     """Validate every measured block of one release run and render its table."""
     support = _SUPPORT
     if str(support) not in sys.path:
@@ -1139,6 +1415,7 @@ def _render_publication(
     _validate_oracle_artifact(result, run_directory)
     stats = _load_all_blocks(artifacts)
     receipt_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    source_commit_cache: dict[str | None, bool] = {}
     for operation_stats in stats.values():
         for block in operation_stats.blocks:
             for identity in block.arm_identities.values():
@@ -1146,7 +1423,8 @@ def _render_publication(
                     identity,
                     metadata,
                     receipt_cache=receipt_cache,
-                    current_commit=current_commit,
+                    source_commit_cache=source_commit_cache,
+                    current_python_members=current_python_members,
                 )
     sampling = result['sampling']
     rows = _build_rows(
@@ -1157,62 +1435,102 @@ def _render_publication(
         expected_leads=tuple(sampling['lead_orders']),
     )
     lines = render(rows, publishable=True, environment=_run_environment(result))
-    return '\n'.join(lines) + '\n'
-
-
-def _current_checkout_commit() -> str:
-    """Return the full commit ID of the checkout that will publish the run."""
-    try:
-        completed = subprocess.run(
-            ['git', 'rev-parse', '--verify', 'HEAD'],
-            cwd=GOMETRY_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(
-            f'publication rejected: cannot identify the current checkout commit: {error}'
-        ) from error
-    commit = completed.stdout.strip()
-    if not commit:
-        raise SystemExit(
-            'publication rejected: cannot identify the current checkout commit'
-        )
-    return commit
+    return '\n'.join(lines) + '\n', receipt_cache
 
 
 def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
-    """Validate one complete current-checkout release run and write its table.
-
-    The table is the only published artifact: it names the measured commit and
-    host, and git versions it. Run directories stay local evidence.
-    """
-    result = _read_json_object(run_manifest, label='run manifest')
+    """Validate one complete release run and publish its table and evidence."""
+    try:
+        manifest_bytes = run_manifest.read_bytes()
+        result = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f'run manifest {run_manifest} is not valid JSON: {error}'
+        ) from error
+    if not isinstance(result, dict):
+        raise SystemExit(f'run manifest {run_manifest} must contain a JSON object')
     if (
         result.get('manifest_type') != _RUN_MANIFEST_TYPE
         or result.get('schema_version') != _MANIFEST_SCHEMA_VERSION
     ):
         raise SystemExit(f'{run_manifest} is not a gometry benchmark run manifest')
-    current_commit = _current_checkout_commit()
     metadata = _validate_publication_result(result)
-    if metadata['harness_commit'] != current_commit:
-        raise SystemExit(
-            'publication rejected: benchmark harness is not at the current checkout commit'
+    try:
+        current_inputs = artifact_content.source_input_digests(GOMETRY_ROOT)
+        current_python_members = artifact_content.python_member_hashes(
+            GOMETRY_ROOT / 'python' / 'gometry'
         )
-    summary = _render_publication(
+    except (AssertionError, OSError, ValueError) as error:
+        raise SystemExit(
+            f'publication rejected: cannot identify current Gometry source inputs: '
+            f'{error}'
+        ) from error
+    if (
+        metadata['source_inputs_sha256'] != current_inputs['source_inputs_sha256']
+        or metadata['native_source_inputs_sha256']
+        != current_inputs['native_source_inputs_sha256']
+    ):
+        raise SystemExit(
+            'publication rejected: measured Gometry source inputs differ from '
+            'the current source tree'
+        )
+    harness_commit = metadata['harness_commit']
+    if (
+        not isinstance(harness_commit, str)
+        or len(harness_commit) not in (40, 64)
+        or any(character not in '0123456789abcdef' for character in harness_commit)
+    ):
+        raise SystemExit(
+            'publication rejected: benchmark harness commit identity is malformed'
+        )
+    if not _benchmark_harness_matches_commit(harness_commit):
+        raise SystemExit(
+            'publication rejected: benchmark harness inputs differ from the '
+            'recorded harness commit'
+        )
+    stage = _stage_run_evidence(
+        run_manifest,
+        manifest_bytes,
         result,
-        metadata,
-        run_manifest.resolve().parent,
-        current_commit=current_commit,
+        _EVIDENCE_ROOT,
     )
+    summary_stage: Path | None = None
+    try:
+        summary, receipt_cache = _render_publication(
+            result,
+            metadata,
+            stage,
+            current_python_members=current_python_members,
+        )
+        _retain_producer_receipts(stage, receipt_cache)
+        bundle_digest = _publish_evidence_bundle(stage)
+        stage = None  # The complete bundle now owns this directory.
+        summary += (
+            '\n'
+            f'[Run manifest, raw measurements, oracle, and producer receipts]'
+            f'(../assets/benchmark-runs/{bundle_digest}/run.json) are retained '
+            'in the content-addressed evidence bundle; see its '
+            '[producer receipt index]'
+            f'(../assets/benchmark-runs/{bundle_digest}/receipts/index.json).\n'
+        )
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
     if current_dir is None:
         current_dir = GOMETRY_ROOT / 'benches' / 'results' / 'current'
     current_dir.mkdir(parents=True, exist_ok=True)
     target = current_dir / 'summary.md'
-    staged = current_dir / f'.{target.name}.tmp'
-    staged.write_text(summary, encoding='utf-8')
-    staged.replace(target)
+    summary_stage = current_dir / f'.{target.name}.{uuid.uuid4().hex}.tmp'
+    try:
+        summary_stage.write_text(summary, encoding='utf-8')
+        summary_stage.replace(target)
+    except OSError as error:
+        raise SystemExit(
+            f'publication rejected: cannot write summary: {error}'
+        ) from error
+    finally:
+        if summary_stage.exists():
+            summary_stage.unlink()
     return target
 
 
@@ -1265,7 +1583,7 @@ def main() -> None:
         '--publish',
         type=Path,
         metavar='RUN_MANIFEST',
-        help='validate one complete release run and write '
+        help='validate one complete release run, retain its evidence, and write '
         'benches/results/current/summary.md',
     )
     parser.add_argument(

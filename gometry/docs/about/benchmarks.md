@@ -6,11 +6,19 @@ description: Current release benchmark results for gometry and how to interpret 
 
 --8<-- "benches/results/current/summary.md"
 
-A published table represents one complete release comparison. The existing
-publisher requires the benchmark harness and measured Gometry source to match
-the current checkout commit, then verifies each measured extension against its
-release receipt and wheel. Smoke, filtered, incomplete, unattributed, and
-older-source runs do not appear as current results.
+A published table represents one complete release comparison. Publication
+checks that the benchmark harness, native and Rust build inputs, and packaged
+Python members still match the bytes recorded for the run and its selected
+release receipts. Later documentation and summary commits do not invalidate
+unchanged measurement inputs. Smoke, filtered, incomplete, stale, or
+unattributed runs do not appear as current results.
+
+Each table links to a content-addressed evidence bundle containing its
+`run.json`, every listed raw measurement and oracle artifact, and the selected
+producer receipt files. The bundle includes an index connecting receipts to
+the paths and SHA-256 digests recorded by the run. It retains the measured
+source, native, extension, wheel, and receipt identities; wheel and native
+binaries are not copied into the documentation site.
 
 ## What the run measures
 
