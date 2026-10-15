@@ -33,6 +33,16 @@ pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError
     if unlikely(zoom > MAX_ZOOM) {
         return Err(EncodeError::ZoomOutOfRange { zoom });
     }
+    if unlikely(!lon.is_finite()) {
+        return Err(EncodeError::NonFiniteCoordinate {
+            coordinate: "longitude",
+        });
+    }
+    if unlikely(!lat.is_finite()) {
+        return Err(EncodeError::NonFiniteCoordinate {
+            coordinate: "latitude",
+        });
+    }
 
     let normalized_lat = lat + 90.0;
 

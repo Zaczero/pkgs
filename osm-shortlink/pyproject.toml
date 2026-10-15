@@ -1,6 +1,6 @@
 [project]
 name = "osm-shortlink"
-description = "OpenStreetMap shortlink encoder and decoder"
+description = "OpenStreetMap shortlink code encoder and decoder"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "0BSD"

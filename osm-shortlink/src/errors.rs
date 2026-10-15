@@ -16,6 +16,8 @@ pub(crate) enum DecodeError {
 pub(crate) enum EncodeError {
     #[error("Invalid zoom: must be between 0 and {MAX_ZOOM}, got {zoom}")]
     ZoomOutOfRange { zoom: u8 },
+    #[error("Invalid coordinate: {coordinate} must be finite")]
+    NonFiniteCoordinate { coordinate: &'static str },
 }
 
 impl DecodeError {

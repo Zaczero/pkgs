@@ -12,14 +12,14 @@ fn dynamic_truncate(digest: &[u8]) -> u32 {
     // RFC 4226 section 5.3: the offset is the low nibble of the final byte, so
     // it selects four bytes that lie inside any digest of at least 20 -- which
     // every HMAC this crate constructs is.
-    let Some(&last) = digest.last() else {
-        return 0;
-    };
+    let &last = digest
+        .last()
+        .expect("the selected HMAC algorithms produce nonempty digests");
     let offset = usize::from(last & 0x0F);
-    let Some(&[high, second, third, low]) = digest.get(offset..).and_then(<[u8]>::first_chunk::<4>)
-    else {
-        return 0;
-    };
+    let &[high, second, third, low] = digest
+        .get(offset..)
+        .and_then(<[u8]>::first_chunk::<4>)
+        .expect("the selected HMAC digests contain every dynamic-truncation window");
     (u32::from(high & 0x7F) << 24)
         | (u32::from(second) << 16)
         | (u32::from(third) << 8)
@@ -126,5 +126,21 @@ pub(crate) fn verify(
             modulus,
             code,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dynamic_truncate;
+
+    #[test]
+    fn dynamic_truncation_selects_offset_zero_and_fifteen() {
+        let mut digest = [0_u8; 20];
+        digest[..4].copy_from_slice(&[0x81, 0x23, 0x45, 0x67]);
+        assert_eq!(dynamic_truncate(&digest), 0x0123_4567);
+
+        digest[15..19].copy_from_slice(&[0xFE, 0xDC, 0xBA, 0x98]);
+        digest[19] = 15;
+        assert_eq!(dynamic_truncate(&digest), 0x7EDC_BA98);
     }
 }

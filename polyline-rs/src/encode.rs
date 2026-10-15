@@ -1,8 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::constants::{
-    ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, scale_for_precision,
-};
+use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, precision_scale};
 use crate::errors::PolylineError;
 use crate::zigzag::zigzag_encode;
 
@@ -29,11 +27,36 @@ fn encode_value(out: &mut Vec<u8>, delta: i32) {
     out.push((value as u8).wrapping_add(ASCII_OFFSET));
 }
 
+fn encode_coordinate(
+    out: &mut Vec<u8>,
+    coordinate_value: f64,
+    scale: f64,
+    previous: i32,
+    index: usize,
+    coordinate: &'static str,
+) -> PyResult<i32> {
+    let scaled = coordinate_value * scale;
+    let rounded = scaled.round();
+    if !rounded.is_finite() || rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+        return Err(PolylineError::CoordinateOutOfRange { index, coordinate }.into_pyerr());
+    }
+
+    let current = rounded as i32;
+    // The difference of two i32 coordinates fits in i64; admission below
+    // rejects it if the wire's signed 32-bit delta cannot represent it.
+    let delta = i64::from(current).wrapping_sub(i64::from(previous));
+    let delta = i32::try_from(delta)
+        .map_err(|_| PolylineError::CoordinateDeltaOutOfRange { index, coordinate }.into_pyerr())?;
+    encode_value(out, delta);
+    Ok(current)
+}
+
 pub(crate) fn encode<const LATLON: bool>(
     coordinates: &Bound<'_, PyAny>,
     precision: i32,
 ) -> PyResult<String> {
-    let scale = scale_for_precision(precision);
+    let scale = precision_scale(precision)
+        .ok_or_else(|| PolylineError::PrecisionOutOfRange { precision }.into_pyerr())?;
 
     let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
     let mut out = Vec::with_capacity(capacity);
@@ -49,19 +72,9 @@ pub(crate) fn encode<const LATLON: bool>(
             (second, first)
         };
 
-        // The Encoded Polyline spec ROUNDS the scaled value (Google's
-        // reference uses Math.round); truncation would bias every
-        // non-exact coordinate toward zero by up to one full grid unit.
-        // `f64::round` (half away from zero) matches the C/C++ references.
-        let lat = (lat_f * scale).round() as i64;
-        let delta_lat = lat.wrapping_sub(last_lat) as i32;
-        encode_value(&mut out, delta_lat);
-        last_lat = lat;
-
-        let lon = (lon_f * scale).round() as i64;
-        let delta_lon = lon.wrapping_sub(last_lon) as i32;
-        encode_value(&mut out, delta_lon);
-        last_lon = lon;
+        // `f64::round` preserves this codec's half-away-from-zero rule.
+        last_lat = encode_coordinate(&mut out, lat_f, scale.scale, last_lat, index, "latitude")?;
+        last_lon = encode_coordinate(&mut out, lon_f, scale.scale, last_lon, index, "longitude")?;
     }
 
     // Safety: all bytes are ASCII.

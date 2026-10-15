@@ -30,8 +30,8 @@ def test_encode_wrapping():
 
 def test_encode_supports_max_zoom_without_panicking():
     encoded = shortlink_encode(0, 0, 22)
-    decoded = shortlink_decode(encoded)
-    assert decoded[2] == 22
+    assert encoded == 'wAAAAAAAAA'
+    assert shortlink_decode(encoded) == (0.0, 0.0, 22)
 
 
 def test_encode_rejects_unsupported_zoom():
@@ -42,12 +42,10 @@ def test_encode_rejects_unsupported_zoom():
         shortlink_encode(0, 0, 23)
 
 
-@pytest.mark.parametrize(
-    'lat',
-    [-91, -90, 90, 91],
-)
-def test_encode_lat(lat):
-    shortlink_encode(0, lat, 5)
+@pytest.mark.parametrize('zoom', [-1, 256])
+def test_encode_rejects_zoom_outside_unsigned_byte(zoom):
+    with pytest.raises(OverflowError):
+        shortlink_encode(0.0, 0.0, zoom)
 
 
 @pytest.mark.parametrize(
@@ -77,6 +75,56 @@ def test_decode(input, expected):
     decoded = shortlink_decode(input)
     for a, b in zip(expected, decoded, strict=True):
         assert isclose(a, b, abs_tol=0.01)
+
+
+@pytest.mark.parametrize(
+    ('code', 'expected'),
+    [
+        ('0EEQjE--', (0.054931640625, 51.510772705078125, 9)),
+        ('0OP4tXGMB', (19.579224586486816, 51.87694922089577, 19)),
+        ('ecetE--', (-31.11328125, 64.127197265625, 6)),
+    ],
+)
+def test_decode_returns_independently_specified_cell_coordinates(code, expected):
+    assert shortlink_decode(code) == expected
+
+
+# Literal tokens pin boundary cells instead of relying on an encoder/decoder
+# round trip, including the north pole's saturated final latitude row.
+@pytest.mark.parametrize(
+    ('latitude', 'expected_code'),
+    [
+        (-91, 'AAEUU-'),
+        (-90, 'gAAAA-'),
+        (90, 'VVVVV-'),
+        (91, 'VVRBB-'),
+    ],
+)
+def test_encode_latitude_boundaries_to_known_cells(latitude, expected_code):
+    assert shortlink_encode(0.0, latitude, 5) == expected_code
+
+
+def test_encode_known_openstreetmap_shortlink_vector():
+    assert shortlink_encode(0.055, 51.511, 9) == '0EEQjE--'
+
+
+@pytest.mark.parametrize(
+    ('lon', 'lat', 'coordinate'),
+    [
+        (float('nan'), 0.0, 'longitude'),
+        (float('inf'), 0.0, 'longitude'),
+        (0.0, float('nan'), 'latitude'),
+        (0.0, float('-inf'), 'latitude'),
+    ],
+)
+def test_encode_rejects_nonfinite_coordinates(lon, lat, coordinate):
+    with pytest.raises(ValueError, match=f'{coordinate} must be finite'):
+        shortlink_encode(lon, lat, 5)
+
+
+def test_zoom_error_precedes_nonfinite_coordinate_error():
+    with pytest.raises(ValueError, match='Invalid zoom'):
+        shortlink_encode(float('nan'), 0.0, 23)
 
 
 @pytest.mark.parametrize(

@@ -99,6 +99,16 @@ def test_time_window_and_time_window_override() -> None:
         totp_generate(SECRET_SHA1, digits=8, algorithm='sha1', time_window=w)
         == '94287082'
     )
+    assert (
+        totp_generate(
+            SECRET_SHA1,
+            digits=8,
+            algorithm='sha1',
+            time_window=w,
+            step_seconds=0,
+        )
+        == '94287082'
+    )
 
 
 def test_negative_t0_hybrid() -> None:
@@ -244,9 +254,31 @@ def test_invalid_inputs() -> None:
     ):
         totp_generate(SECRET_SHA1, time=0, time_window=0)
 
+    with pytest.raises(
+        ValueError,
+        match='Invalid arguments: time and time_window cannot both be set',
+    ):
+        totp_verify(
+            SECRET_SHA1,
+            '94287082',
+            digits=8,
+            time=59,
+            time_window=1,
+        )
+
     for code in ('not-a-code', '12345', '1234567'):
         assert not totp_verify(SECRET_SHA1, code, digits=6)
 
     assert not totp_verify(SECRET_SHA1, '123456', digits=1)
     assert not totp_verify(SECRET_SHA1, 10_000_000_000, digits=9)
     assert not totp_verify(SECRET_SHA1, -1, digits=6)
+
+
+def test_invalid_code_returns_false_before_invalid_secret_is_parsed() -> None:
+    assert not totp_verify('0', 'not-a-code')
+
+    with pytest.raises(
+        ValueError,
+        match='Invalid secret: invalid Base32 character at index 0',
+    ):
+        totp_verify('0', '123456')
