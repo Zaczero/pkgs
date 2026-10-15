@@ -1,5 +1,6 @@
 import asyncio
 import ctypes
+import errno
 import gc
 import os
 import re
@@ -1434,7 +1435,9 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
         bind=tuple(f'fd://{index}' for index in range(len(listener_fds))),
         lifespan='off',
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r'nonnegative|outside|globally unique|only supported on Unix'
+    ):
         serve_fds(
             app,
             listener_fds,
@@ -1456,7 +1459,7 @@ async def test_serve_fds_negative_handle_is_value_error() -> None:
         pass
 
     config = Config(bind=('fd://0',), lifespan='off')
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='socket handles must be nonnegative'):
         serve_fds(
             app,
             [-1],
@@ -1500,7 +1503,7 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
         quiesce_fd = None
     config = Config(bind=('fd://0',), lifespan='off')
     try:
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match=rf'os error {errno.EBADF}\b'):
             serve_fds(
                 app,
                 [invalid_fd] if closed_source == 'listener' else [listener_fd],
