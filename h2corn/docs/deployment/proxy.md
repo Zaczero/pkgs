@@ -120,10 +120,11 @@ This module has carried
 [security advisories](https://nginx.org/en/security_advisories.html) since it
 shipped, so run a currently supported release and check that list against it.
 
-NGINX describes each upstream connection as handling "*one request at a time
-rather than interleaving multiple requests on a single connection*". Connection
-reuse and concurrency depend on the deployed build; the h2c hop provides HPACK
-and unambiguous framing, while the browser-facing hop multiplexes normally.
+The [NGINX 1.29.4 announcement](https://blog.nginx.org/blog/nginx-open-source-1-29-3-and-1-29-4)
+notes that its initial HTTP/2 upstream implementation does not multiplex
+requests: one upstream connection handles one request at a time. Verify
+connection reuse and concurrency on the deployed build; the `h2c` hop provides
+HTTP/2 framing, while the browser-facing hop multiplexes normally.
 
 !!! warning "WebSockets need their own HTTP/1.1 location"
     nginx performs the HTTP/1.1 `Upgrade` handshake and does not translate it
