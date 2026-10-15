@@ -9,6 +9,7 @@ use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 use self::resources::resources;
 use crate::cli::{Cli, Color};
 use crate::experiment::{Candidate, Invocation, Planning, Result, Role, Text, id};
+use crate::format::{duration, plural, seconds};
 use crate::runner::Outcome;
 use crate::statistics::{Comparison, Decision, partition};
 
@@ -62,6 +63,13 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
     )?;
     for candidate in &result.candidates {
         legend(&mut out, candidate, width)?;
+    }
+    if result.retention.task_detail_omitted {
+        wrapped(
+            &mut out,
+            "Some sampled task detail was omitted to keep retained observations within 128 MiB; timing and invocation outcomes are preserved.",
+            width,
+        )?;
     }
     if result.analysis.summaries.is_empty() {
         partial_timing(&mut out, result, width)?;
@@ -164,7 +172,7 @@ fn timing(
         if cells > 0 {
             let values: Vec<_> = runs
                 .iter()
-                .filter_map(|run| run.get(index)?.observation.as_ref())
+                .filter_map(|run| run.get(index)?.observation())
                 .map(|observation| observation.elapsed_ns)
                 .collect();
             write!(out, "   {}", timeline(&values, cells))?;
@@ -406,7 +414,7 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
         .iter()
         .filter(|i| i.role == Role::Command)
     {
-        if let Some(reading) = &invocation.observation {
+        if let Some(reading) = invocation.observation() {
             writeln!(
                 out,
                 "{}  run {}: {} ({})",
@@ -601,38 +609,6 @@ fn escaped(bytes: &[u8]) -> String {
     word
 }
 
-pub(crate) const fn plural(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
-}
-
-/// A wall-clock span: minutes and seconds from one minute, otherwise as `duration`.
-pub(crate) fn seconds(ns: f64) -> String {
-    let value = ns / 1e9;
-    if value >= 60.0 {
-        let total = value.round() as u64;
-        format!("{}m {:02}s", total / 60, total % 60)
-    } else {
-        duration(ns)
-    }
-}
-
-fn duration(ns: f64) -> String {
-    let (value, unit) = if ns >= 1e9 {
-        (ns / 1e9, "s")
-    } else if ns >= 1e6 {
-        (ns / 1e6, "ms")
-    } else if ns >= 1e3 {
-        (ns / 1e3, "µs")
-    } else {
-        (ns, "ns")
-    };
-    if value >= 10.0 {
-        format!("{value:.1} {unit}")
-    } else {
-        format!("{value:.2} {unit}")
-    }
-}
-
 fn overall_conclusion(out: &mut impl io::Write, result: &Result) -> io::Result<()> {
     let improvements: Vec<_> = result
         .analysis
@@ -682,7 +658,7 @@ fn diagnostics(result: &Result) -> io::Result<()> {
     let mut out = io::stderr().lock();
     for invocation in &result.invocations {
         // An interrupted run is reported once, in the report's status line.
-        if let Some(observation) = &invocation.observation
+        if let Some(observation) = invocation.observation()
             && !observation.outcome.success()
             && !matches!(observation.outcome, Outcome::Interrupted { .. })
         {
@@ -709,7 +685,7 @@ fn diagnostics(result: &Result) -> io::Result<()> {
                 writeln!(out, "{}", safe(&String::from_utf8_lossy(&tail)))?;
             }
         }
-        if let Some(error) = &invocation.error {
+        if let Some(error) = invocation.error() {
             writeln!(out, "fast: {}", safe(error))?;
         }
     }

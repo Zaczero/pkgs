@@ -1,5 +1,6 @@
 mod cli;
 mod experiment;
+mod format;
 mod report;
 use std::ffi::OsString;
 use std::io;

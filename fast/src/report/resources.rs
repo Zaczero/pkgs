@@ -18,7 +18,7 @@ struct ResourceRow {
 /// Observations of one command from the runs the analysis uses.
 fn measured<'a>(runs: &[Vec<&'a Invocation>], candidate: usize) -> Vec<&'a Observation> {
     runs.iter()
-        .filter_map(|run| run.get(candidate)?.observation.as_ref())
+        .filter_map(|run| run.get(candidate)?.observation())
         .collect()
 }
 

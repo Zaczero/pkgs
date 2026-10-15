@@ -1,3 +1,5 @@
+mod retention;
+
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal as _};
 use std::os::unix::ffi::OsStrExt as _;
@@ -6,8 +8,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::cli::Cli;
+use crate::format::{plural, seconds};
 use crate::random::Random;
-use crate::report::{plural, seconds};
 use crate::runner::{self, Command, InvocationKind, Observation, Outcome, Runner};
 use crate::statistics::{self, Analysis, MINIMUM_RUNS, Planner};
 
@@ -75,8 +77,65 @@ pub(crate) struct Invocation {
     pub role: Role,
     #[serde(serialize_with = "runner::decimal")]
     pub started_ns: u64,
-    pub observation: Option<Observation>,
-    pub error: Option<String>,
+    #[serde(flatten)]
+    pub outcome: Collected,
+}
+
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Every invocation owns an inline observation except the single terminal collector error"
+)]
+pub(crate) enum Collected {
+    Observation(Observation),
+    CollectorError(String),
+}
+
+impl Serialize for Collected {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Fields<'a> {
+            observation: Option<&'a Observation>,
+            error: Option<&'a str>,
+        }
+        let fields = match self {
+            Self::Observation(observation) => Fields {
+                observation: Some(observation),
+                error: None,
+            },
+            Self::CollectorError(error) => Fields {
+                observation: None,
+                error: Some(error),
+            },
+        };
+        fields.serialize(serializer)
+    }
+}
+
+impl Invocation {
+    pub(crate) const fn observation(&self) -> Option<&Observation> {
+        match &self.outcome {
+            Collected::Observation(observation) => Some(observation),
+            Collected::CollectorError(_) => None,
+        }
+    }
+
+    const fn observation_mut(&mut self) -> Option<&mut Observation> {
+        match &mut self.outcome {
+            Collected::Observation(observation) => Some(observation),
+            Collected::CollectorError(_) => None,
+        }
+    }
+
+    pub(crate) fn error(&self) -> Option<&str> {
+        match &self.outcome {
+            Collected::Observation(_) => None,
+            Collected::CollectorError(error) => Some(error),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +154,7 @@ pub(crate) struct Result {
     #[serde(serialize_with = "runner::decimal")]
     pub wall_ns: u64,
     pub invocations: Vec<Invocation>,
+    pub retention: retention::Summary,
     pub analysis: Analysis,
 }
 
@@ -131,8 +191,7 @@ impl Result {
                 let mut slots: Vec<Option<&Invocation>> = vec![None; self.candidates.len()];
                 for invocation in run.iter().filter(|i| i.role == Role::Command) {
                     if invocation
-                        .observation
-                        .as_ref()
+                        .observation()
                         .is_some_and(|o| o.outcome.success())
                     {
                         *slots
@@ -179,7 +238,7 @@ impl Result {
         };
         for invocation in &mut self.invocations {
             if Some(invocation.run) != first
-                && let Some(observation) = &mut invocation.observation
+                && let Some(observation) = invocation.observation_mut()
             {
                 observation.activity.tasks.clear();
                 observation.activity.tasks.shrink_to_fit();
@@ -225,7 +284,7 @@ impl Result {
         runs.iter()
             .map(|run| {
                 run.iter()
-                    .map(|i| i.observation.as_ref().expect("successful run").elapsed_ns)
+                    .map(|i| i.observation().expect("successful run").elapsed_ns)
                     .collect()
             })
             .collect()
@@ -311,6 +370,7 @@ struct Experiment<'a> {
     total_runs: Option<usize>,
     start: Instant,
     progress: Instant,
+    storage: retention::Storage,
 }
 
 impl Experiment<'_> {
@@ -324,7 +384,7 @@ impl Experiment<'_> {
     ) -> bool {
         if let Err(error) = self.runner.collect_signals() {
             self.result.exit_code = 3;
-            self.result.stop_reason = error.to_string();
+            self.result.stop_reason = retention::bounded_text(error.to_string());
             return false;
         }
         if let Some(signal) = self.runner.interrupted {
@@ -381,7 +441,7 @@ impl Experiment<'_> {
                 InvocationKind::Hook
             },
         );
-        let (observation, error, success) = match reading {
+        let (outcome, success) = match reading {
             Ok(mut observation) => {
                 let success = observation.outcome.success();
                 if success {
@@ -401,16 +461,23 @@ impl Experiment<'_> {
                 }
                 // The first measured run is one of the first two after any requested
                 // warmup; the automatic warmup decision settles which.
-                if role != Role::Command || run >= self.result.plan.warmup_runs.wrapping_add(2) {
+                if role != Role::Command
+                    || phase == Phase::Warmup
+                    || run >= self.result.plan.warmup_runs.wrapping_add(2)
+                {
                     observation.activity.tasks.clear();
                     observation.activity.tasks.shrink_to_fit();
                 }
-                (Some(observation), None, success)
+                self.storage.retain(&mut observation);
+                (Collected::Observation(observation), success)
             },
             Err(error) => {
                 self.result.exit_code = 3;
-                self.result.stop_reason = error.to_string();
-                (None, Some(error.to_string()), false)
+                self.result.stop_reason = retention::bounded_text(error.to_string());
+                (
+                    Collected::CollectorError(retention::bounded_text(error.to_string())),
+                    false,
+                )
             },
         };
         self.result.invocations.push(Invocation {
@@ -420,8 +487,7 @@ impl Experiment<'_> {
             position,
             role,
             started_ns,
-            observation,
-            error,
+            outcome,
         });
         success
     }
@@ -571,6 +637,10 @@ impl Experiment<'_> {
             },
         };
         self.total_runs = Some(self.next_run.wrapping_add(production));
+        self.storage.reserve(
+            &mut self.result.invocations,
+            self.total_runs.expect("settled run count"),
+        );
         if let Some(target) = automatic {
             self.announce(target);
         }
@@ -641,33 +711,6 @@ fn commands(options: &Cli) -> io::Result<(Vec<Command>, Option<OsString>)> {
     Ok((commands, shell))
 }
 
-/// Total runs that fit the 128 MiB allowance for retained observations and their
-/// bounded diagnostics.
-fn capacity(options: &Cli, commands: usize) -> io::Result<usize> {
-    let hooks = 1_usize
-        .wrapping_add(usize::from(options.prepare.is_some()))
-        .wrapping_add(usize::from(options.verify.is_some()));
-    let bytes_per_run = commands
-        .checked_mul(hooks.wrapping_mul(1024))
-        .ok_or_else(|| io::Error::other("too many commands"))?;
-    let capacity = (128_usize * 1024 * 1024)
-        .checked_div(bytes_per_run)
-        .expect("at least one command");
-    let explicit = options
-        .runs
-        .map_or_else(|| usize::from(options.once), std::num::NonZeroUsize::get);
-    if explicit
-        .saturating_add(options.warmup.unwrap_or(0))
-        .saturating_add(8)
-        > capacity
-    {
-        return Err(io::Error::other(format!(
-            "requested runs exceed the 128 MiB observation allowance; at most {capacity} runs fit"
-        )));
-    }
-    Ok(capacity)
-}
-
 fn protocol(options: &Cli, runner: &Runner) -> io::Result<Protocol> {
     Ok(Protocol {
         elapsed: "CLOCK_MONOTONIC; immediately before fork through parent observation of root exit, before diagnostic tail draining",
@@ -694,13 +737,19 @@ fn protocol(options: &Cli, runner: &Runner) -> io::Result<Protocol> {
 
 pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
     let (commands, shell) = commands(&options).map_err(Failure::Usage)?;
-    let capacity = capacity(&options, commands.len()).map_err(Failure::Usage)?;
     runner::check_jobserver().map_err(Failure::Usage)?;
     let seed = match options.seed {
         Some(seed) => seed,
         None => Random::entropy().map_err(Failure::Collector)?,
     };
     let runner = Runner::new(true).map_err(Failure::Collector)?;
+    let storage = retention::Storage::new(
+        &options,
+        commands.len(),
+        runner.counter_policy().events.len(),
+    )
+    .map_err(Failure::Usage)?;
+    let capacity = storage.runs();
     let fixed = options
         .runs
         .map(std::num::NonZeroUsize::get)
@@ -742,6 +791,7 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         exit_code: 0,
         wall_ns: 0,
         invocations: Vec::new(),
+        retention: retention::Summary::default(),
         analysis: statistics::analyze(&[], options.margin),
     };
     let mut experiment = Experiment {
@@ -756,7 +806,12 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         total_runs: None,
         start: Instant::now(),
         progress: Instant::now(),
+        storage,
     };
+    experiment.storage.reserve(
+        &mut experiment.result.invocations,
+        options.warmup.unwrap_or(0).wrapping_add(fixed.unwrap_or(8)),
+    );
     experiment.execute(capacity);
     experiment.result.wall_ns = experiment.start.elapsed().as_nanos() as u64;
     experiment
@@ -769,5 +824,11 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         experiment.result.stop_reason = format!("interrupted by signal {signal}");
     }
     experiment.result.conclude(options.margin, options.check);
+    experiment.result.stop_reason =
+        retention::bounded_text(std::mem::take(&mut experiment.result.stop_reason));
+    experiment.result.retention = experiment.storage.summary(
+        &experiment.result.invocations,
+        &experiment.result.stop_reason,
+    );
     Ok((experiment.result, options))
 }

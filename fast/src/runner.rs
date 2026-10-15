@@ -11,7 +11,8 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub use activity::{Activity, Task};
+pub use activity::{Activity, Sample, Task};
+pub use perf::Counter;
 use serde::Serialize;
 pub use sys::check_jobserver;
 
@@ -79,13 +80,15 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
+    pub const CAPTURE_BYTES: usize = 32 * 1024;
+
     pub fn discard(&mut self) {
         self.first = Vec::new();
         self.last = VecDeque::new();
     }
 
     fn push(&mut self, bytes: &[u8]) {
-        const CAPACITY: usize = 32 * 1024;
+        const CAPACITY: usize = Diagnostics::CAPTURE_BYTES;
         let front = CAPACITY.wrapping_sub(self.first.len()).min(bytes.len());
         let (first, tail) = bytes.split_at(front);
         self.first.extend_from_slice(first);
@@ -209,8 +212,8 @@ impl Runner {
         sys::nonblocking(&exec_read)?;
         sys::nonblocking(&release_write)?;
         let mut diagnostics = Diagnostics {
-            first: Vec::with_capacity(32 * 1024),
-            last: VecDeque::with_capacity(32 * 1024),
+            first: Vec::with_capacity(Diagnostics::CAPTURE_BYTES),
+            last: VecDeque::with_capacity(Diagnostics::CAPTURE_BYTES),
             ..Diagnostics::default()
         };
         let mut sampler = activity::Sampler::new(observe);
