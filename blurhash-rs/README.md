@@ -1,6 +1,6 @@
 # blurhash-rs
 
-Use this Python package to encode Pillow images as [BlurHash](https://blurha.sh) strings and decode them as RGB preview images.
+Use this Python package to encode Pillow images as [BlurHash](https://blurha.sh) strings and decode them as RGB preview images. Requires Python 3.10 or newer. [Install](#install), try the [first result](#encode-and-decode-an-image), and see the [API reference](#api-reference). For help, [report an issue](https://github.com/Zaczero/pkgs/issues) and name `blurhash-rs`.
 
 ## Install
 

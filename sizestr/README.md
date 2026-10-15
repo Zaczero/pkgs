@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/sizestr)](https://pypi.org/p/sizestr)
 
-Use the `sizestr` Python package to format byte counts as short strings using binary units.
+Use the `sizestr` Python package to format byte counts as short strings using binary units. Requires Python 3.10 or newer. [Install](#installation), try the [first result](#format-byte-counts), and see the [`sizestr` reference](#sizestr). For help, [report an issue](https://github.com/Zaczero/pkgs/issues) and name `sizestr`.
 
 ## Installation
 

@@ -8,7 +8,7 @@ This repository contains 15 projects: Python distributions and the `fast` Linux 
 | [fast README](fast/README.md) | Workspace-only Cargo package/binary `fast`; no Python import. Publication and licensing are undecided. | Compare Linux commands with timing and resource measurements. | From the workspace root: `cargo install --locked --path fast` |
 | [githead README](githead/README.md) | `githead` / `githead` | Read `HEAD` and loose refs from a Git metadata directory. | `pip install githead` |
 | [gometry README](gometry/README.md) · [documentation](https://gometry.monicz.dev) | `gometry` / `gometry` | Python geospatial operations on geometry and coordinate reference systems. | `pip install gometry` |
-| [h2corn README](h2corn/README.md) · [documentation](https://h2corn.monicz.dev/) | `h2corn` / `h2corn` | HTTP/2 ASGI server for Python applications. | `pip install h2corn fastapi` |
+| [h2corn README](h2corn/README.md) · [documentation](https://h2corn.monicz.dev/) | `h2corn` / `h2corn` | HTTP/2 ASGI server for Python applications. | `pip install h2corn` |
 | [httpx-secure README](httpx-secure/README.md) | `httpx-secure` / `httpx_secure` | Add destination-address checks to HTTPX requests. | `pip install httpx-secure` |
 | [jinja2-htmlmin README](jinja2-htmlmin/README.md) | `jinja2-htmlmin` / `jinja2_htmlmin` | Minify HTML in Jinja2 template source. | `pip install jinja2-htmlmin` |
 | [lrucache-rs README](lrucache-rs/README.md) | `lrucache-rs` / `lrucache_rs` | Bounded least-recently-used cache for Python. | `pip install lrucache-rs` |
