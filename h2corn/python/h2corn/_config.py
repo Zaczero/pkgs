@@ -1344,7 +1344,6 @@ class Config:
         proxy_headers = true
         forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
         forwarded_fields = ["for", "proto"]
-        http1 = false
         ```
 
         Examples:
