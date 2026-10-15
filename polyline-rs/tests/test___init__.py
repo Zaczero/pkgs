@@ -1,3 +1,5 @@
+from math import ulp
+
 import pytest
 from polyline_rs import decode_latlon, decode_lonlat, encode_latlon, encode_lonlat
 
@@ -48,17 +50,21 @@ def test_encode_decode(coords, precision, expected):
     assert encode_latlon(coords, precision) == expected
     assert encode_latlon(coords_iter, precision) == expected
     assert encode_lonlat(coords_lonlat, precision) == expected
+    # These golden coordinates lie on the encoded grid; decoding may differ
+    # from the Python literal by one binary64 ulp, never by a whole grid unit.
     assert all(
-        decoded == pytest.approx(coord, abs=0.1**precision)
-        for decoded, coord in zip(
+        actual == pytest.approx(expected_value, abs=ulp(expected_value))
+        for decoded, expected_coord in zip(
             decode_latlon(expected, precision), coords, strict=True
         )
+        for actual, expected_value in zip(decoded, expected_coord, strict=True)
     )
     assert all(
-        decoded == pytest.approx(coord, abs=0.1**precision)
-        for decoded, coord in zip(
+        actual == pytest.approx(expected_value, abs=ulp(expected_value))
+        for decoded, expected_coord in zip(
             decode_lonlat(expected, precision), coords_lonlat, strict=True
         )
+        for actual, expected_value in zip(decoded, expected_coord, strict=True)
     )
 
 
@@ -84,3 +90,90 @@ def test_encode_rounds_scaled_values_per_spec():
     # round; truncation would encode 0 and bias toward zero).
     assert encode_latlon([(0.000006, 0.000002)], 5) == 'A?'
     assert encode_latlon([(-0.000006, -0.000002)], 5) == '@?'
+
+
+@pytest.mark.parametrize(
+    ('encoder', 'coordinates', 'precision', 'message'),
+    [
+        pytest.param(
+            encode_latlon,
+            [(30.0, 0.0)],
+            8,
+            'coordinate at index 0: latitude',
+            id='precision-8-latitude-30',
+        ),
+        pytest.param(
+            encode_lonlat,
+            [(0.0, 30.0)],
+            8,
+            'coordinate at index 0: latitude',
+            id='precision-8-lonlat-order',
+        ),
+        pytest.param(
+            encode_latlon,
+            [(0.0, 180.0), (0.0, -180.0)],
+            7,
+            'coordinate at index 1: longitude delta',
+            id='longitude-delta-exceeds-i32',
+        ),
+        pytest.param(
+            encode_lonlat,
+            [(180.0, 0.0), (-180.0, 0.0)],
+            7,
+            'coordinate at index 1: longitude delta',
+            id='lonlat-large-delta',
+        ),
+    ],
+)
+def test_encode_rejects_unrepresentable_coordinates_and_deltas(
+    encoder, coordinates, precision, message
+):
+    with pytest.raises(ValueError, match=message):
+        encoder(coordinates, precision)
+
+
+@pytest.mark.parametrize(
+    ('coordinates', 'precision', 'expected'),
+    [
+        ([(21.47483647, 0.0)], 7, (21.47483647, 0.0)),
+        ([(-21.47483648, 0.0)], 7, (-21.47483648, 0.0)),
+    ],
+)
+def test_encode_accepts_signed_i32_coordinate_endpoints(
+    coordinates, precision, expected
+):
+    encoded = encode_latlon(coordinates, precision)
+    decoded = decode_latlon(encoded, precision)[0]
+    assert decoded == pytest.approx(expected, abs=1e-7)
+
+
+@pytest.mark.parametrize(
+    ('coordinates', 'axis'),
+    [
+        ([(float('nan'), 0.0)], 'latitude'),
+        ([(float('inf'), 0.0)], 'latitude'),
+        ([(0.0, float('nan'))], 'longitude'),
+        ([(0.0, float('-inf'))], 'longitude'),
+    ],
+)
+def test_encode_rejects_nonfinite_coordinates(coordinates, axis):
+    with pytest.raises(ValueError, match=f'coordinate at index 0: {axis}'):
+        encode_latlon(coordinates, 5)
+
+
+@pytest.mark.parametrize('precision', [-(2**31), -299, 309, 2**31 - 1])
+def test_encode_and_decode_reject_unusable_precision_scales(precision):
+    for encoder in (encode_latlon, encode_lonlat):
+        with pytest.raises(ValueError, match=f'Invalid precision {precision}'):
+            encoder([], precision)
+    for decoder in (decode_latlon, decode_lonlat):
+        with pytest.raises(ValueError, match=f'Invalid precision {precision}'):
+            decoder('', precision)
+
+
+@pytest.mark.parametrize('precision', [-298, 308])
+def test_encode_and_decode_accept_finite_precision_scale_boundaries(precision):
+    assert encode_latlon([], precision) == ''
+    assert encode_lonlat([], precision) == ''
+    assert decode_latlon('', precision) == []
+    assert decode_lonlat('', precision) == []

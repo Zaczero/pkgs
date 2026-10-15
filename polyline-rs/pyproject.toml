@@ -1,6 +1,6 @@
 [project]
 name = "polyline-rs"
-description = "Fast Google Encoded Polyline encoding & decoding"
+description = "Google Encoded Polyline encoding and decoding"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "0BSD"
