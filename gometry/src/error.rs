@@ -1,12 +1,11 @@
-//! The crate-wide error type with allocation-free resource failure reporting.
+//! The crate-wide error type with boxed domain details.
 //!
 //! Core modules return [`Result`]; the Python boundary converts exactly once
 //! (`impl From<Error> for PyErr` in `crate::py::errors`, which also owns the
 //! exception classes). Domain vocabulary stays in the owning module —
 //! `GeometryErrorKind` in `geometry`, `CrsError` in `crs`, `IoError` in `io`,
 //! `FrameError` in `crs::frame` — and composes
-//! here. Domain payloads are boxed; entropy failure and size overflow use
-//! static kinds.
+//! here. One owned box carries every error kind.
 
 use thiserror::Error as ThisError;
 
@@ -31,7 +30,7 @@ pub(crate) enum ResourceError {
 /// still work under the same import.
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// The crate error, with boxed domain details and allocation-free resource errors.
+/// The crate error, with boxed domain details.
 // The `std::io::Error` naming precedent: the crate error IS named `Error`.
 #[expect(
     clippy::error_impl_error,
@@ -40,20 +39,7 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, ThisError)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct Error(ErrorStorage);
-
-#[derive(Debug, ThisError)]
-enum ErrorStorage {
-    #[error(transparent)]
-    Owned(Box<ErrorKind>),
-    #[error(transparent)]
-    Static(&'static ErrorKind),
-}
-
-static ENTROPY_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Entropy);
-static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
-static GEODESIC_EXPONENT_OVERFLOW_ERROR: ErrorKind =
-    ErrorKind::Crs(CrsError::GeodesicExponentOverflow);
+pub struct Error(Box<ErrorKind>);
 
 /// The domain error kinds. Adding a kind forces a deliberate Python exception
 /// classification in `py::errors` (the conversion match has no wildcard arm).
@@ -73,34 +59,25 @@ pub(crate) enum ErrorKind {
 
 impl Error {
     pub(crate) fn kind(&self) -> &ErrorKind {
-        match &self.0 {
-            ErrorStorage::Owned(kind) => kind,
-            ErrorStorage::Static(kind) => kind,
-        }
+        &self.0
     }
 
     pub(crate) fn with_parse_position(mut self, position: usize) -> Self {
-        if let ErrorStorage::Owned(kind) = &mut self.0
-            && let ErrorKind::Io(error) = kind.as_mut()
-        {
+        if let ErrorKind::Io(error) = self.0.as_mut() {
             error.set_position_if_missing(position);
         }
         self
     }
 
     pub(crate) fn with_parse_position_offset(mut self, offset: usize) -> Self {
-        if let ErrorStorage::Owned(kind) = &mut self.0
-            && let ErrorKind::Io(error) = kind.as_mut()
-        {
+        if let ErrorKind::Io(error) = self.0.as_mut() {
             error.offset_position(offset);
         }
         self
     }
 
     pub(crate) fn with_parse_path(mut self, path: &str) -> Self {
-        if let ErrorStorage::Owned(kind) = &mut self.0
-            && let ErrorKind::Io(error) = kind.as_mut()
-        {
+        if let ErrorKind::Io(error) = self.0.as_mut() {
             error.set_path_if_missing(path);
         }
         self
@@ -114,9 +91,7 @@ impl Error {
         let Some(display_name) = display_name else {
             return;
         };
-        if let ErrorStorage::Owned(kind) = &mut self.0
-            && let ErrorKind::Crs(error) = kind.as_mut()
-        {
+        if let ErrorKind::Crs(error) = self.0.as_mut() {
             error.annotate_display(definition, display_name);
         }
     }
@@ -124,22 +99,7 @@ impl Error {
 
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
-        Self(match kind {
-            ErrorKind::Resource(ResourceError::Entropy) => ErrorStorage::Static(&ENTROPY_ERROR),
-            ErrorKind::Resource(ResourceError::SizeOverflow) => {
-                ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
-            },
-            ErrorKind::Crs(CrsError::GeodesicExponentOverflow) => {
-                ErrorStorage::Static(&GEODESIC_EXPONENT_OVERFLOW_ERROR)
-            },
-            kind @ (ErrorKind::Geometry(_)
-            | ErrorKind::Crs(_)
-            | ErrorKind::Io(_)
-            | ErrorKind::Frame(_)
-            | ErrorKind::Resource(ResourceError::SizeOverflowContext(_))) => {
-                ErrorStorage::Owned(Box::new(kind))
-            },
-        })
+        Self(Box::new(kind))
     }
 }
 

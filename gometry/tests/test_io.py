@@ -1598,7 +1598,7 @@ def test_wkb_parser_is_strict_and_accepts_big_endian_input() -> None:
         + struct.pack('<BII', 1, 536870913, 3857)
         + struct.pack('<dd', 3.0, 4.0)
     )
-    with pytest.raises(ValueError) as srid_conflict:
+    with pytest.raises(gm.ParseError) as srid_conflict:
         gm.from_wkb(conflicting_members)
     assert str(srid_conflict.value) == (
         'invalid WKB: nested WKB SRID 3857 conflicts with enclosing SRID 4326 '
@@ -1617,7 +1617,7 @@ def test_wkb_parser_is_strict_and_accepts_big_endian_input() -> None:
         match='unsupported WKB geometry type Triangle \\(17; raw 2147483665\\)',
     ):
         gm.from_wkb(struct.pack('<BI', 1, 2147483665))
-    with pytest.raises(ValueError) as unknown_type:
+    with pytest.raises(gm.ParseError) as unknown_type:
         gm.from_wkb(struct.pack('<BI', 1, 99))
     assert str(unknown_type.value) == ('invalid WKB: unsupported WKB geometry type 99')
 

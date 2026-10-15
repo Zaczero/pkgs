@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import io
 import os
 import queue
@@ -342,7 +343,14 @@ def test_build_sockets_rolls_back_listeners_on_partial_failure() -> None:
     # address (TEST-NET-1, RFC 5737) that no host can bind, so the build fails
     # partway and must roll back — leaving the first port bindable again.
     config = Config(bind=(f'127.0.0.1:{free_port}', f'192.0.2.1:{free_port}'))
-    with pytest.raises(OSError):
+    with pytest.raises(
+        OSError,
+        check=lambda error: (
+            isinstance(error.__cause__, OSError)
+            and error.__cause__.errno
+            == (10049 if sys.platform == 'win32' else errno.EADDRNOTAVAIL)
+        ),
+    ):
         _socket._build_sockets(config)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebind:
         rebind.bind(('127.0.0.1', free_port))
@@ -977,7 +985,7 @@ def test_worker_quiesce_message_transfers_kind_and_closes_writer(
     try:
         assert _supervisor._send_worker_quiesce(write_fd, restart=restart) is None
         assert os.read(read_fd, 1) == message
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
             os.fstat(write_fd)
     finally:
         os.close(read_fd)
@@ -992,7 +1000,7 @@ def test_worker_quiesce_reports_nothing_when_the_worker_already_left() -> None:
     os.close(read_fd)
 
     assert _supervisor._send_worker_quiesce(write_fd, restart=True) is None
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
         os.fstat(write_fd)
 
 
@@ -1007,7 +1015,7 @@ def test_worker_quiesce_reports_an_unexpected_failure_and_closes_the_channel() -
         failure = _supervisor._send_worker_quiesce(read_fd, restart=True)
         assert isinstance(failure, OSError)
         assert not isinstance(failure, BrokenPipeError)
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
             os.fstat(read_fd)
     finally:
         os.close(write_fd)
@@ -1409,7 +1417,7 @@ def test_pidfile_rejects_preexisting_symlink(tmp_path: Path) -> None:
     victim.write_text('SECRET\n')
     pid_path.symlink_to(victim)
 
-    with pytest.raises(OSError), _server._pidfile(Config(pid=pid_path)):
+    with pytest.raises(FileExistsError), _server._pidfile(Config(pid=pid_path)):
         pass
 
     assert victim.read_text() == 'SECRET\n'
@@ -1754,9 +1762,9 @@ def test_signal_wakeup_pipe_yields_nonblocking_fd() -> None:
         assert os.get_blocking(pipe.write_fd) is False
         read_fd = pipe.read_fd
         write_fd = pipe.write_fd
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
         os.fstat(read_fd)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
         os.fstat(write_fd)
 
 
@@ -2142,9 +2150,23 @@ async def test_wait_started_raises_what_stopped_a_server_that_never_started() ->
     # TEST-NET-1 (RFC 5737): never assignable, so the bind always fails.
     server = Server(app, Config(bind=('192.0.2.1:9',)))
     serving = asyncio.create_task(server.serve())
-    with pytest.raises(OSError):
+    with pytest.raises(
+        OSError,
+        check=lambda error: (
+            isinstance(error.__cause__, OSError)
+            and error.__cause__.errno
+            == (10049 if sys.platform == 'win32' else errno.EADDRNOTAVAIL)
+        ),
+    ):
         await asyncio.wait_for(server.wait_started(), timeout=10)
-    with pytest.raises(OSError):
+    with pytest.raises(
+        OSError,
+        check=lambda error: (
+            isinstance(error.__cause__, OSError)
+            and error.__cause__.errno
+            == (10049 if sys.platform == 'win32' else errno.EADDRNOTAVAIL)
+        ),
+    ):
         await serving
 
 
@@ -2899,7 +2921,10 @@ def test_failed_wakeup_fd_installation_closes_its_pipe() -> None:
     def probe() -> None:
         before = open_fd_count()
         for _ in range(5):
-            with pytest.raises(ValueError), _socket.signal_wakeup_pipe():
+            with (
+                pytest.raises(ValueError, match='main thread'),
+                _socket.signal_wakeup_pipe(),
+            ):
                 pass
         leaked.append(open_fd_count() - before)
 
@@ -3287,7 +3312,7 @@ def test_raw_handle_borrows_socket_repeatably() -> None:
         fd = lease.raw_handle()
         assert fd == lease.raw_handle()
         lease.release()
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, check=lambda error: error.errno == errno.EBADF):
             os.fstat(fd)
     finally:
         for remaining in leases:

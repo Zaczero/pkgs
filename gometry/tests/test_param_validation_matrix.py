@@ -423,7 +423,7 @@ def test_defaulted_params_reject_explicit_none_and_honor_omission() -> None:
         poly.scale(2.0, origin=None)
     with pytest.raises(TypeError):
         poly.skew(origin=None)
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.GeometryError):
         gm.MultiPoint([(0, 0), (1, 0), (0, 1)]).voronoi(output='triangles')
     with pytest.raises(TypeError):
         gm.MultiPoint([(0, 0), (1, 0), (0, 1)]).voronoi(output='polygons', clip=None)

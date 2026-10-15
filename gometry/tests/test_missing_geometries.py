@@ -1059,7 +1059,7 @@ def test_missing_integer_group_counts_no_empty_rows() -> None:
 def test_missing_integer_group_index_rejects_empty_row() -> None:
     missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='not in'):
         missing.index([])
 
 

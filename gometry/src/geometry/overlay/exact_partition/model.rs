@@ -177,10 +177,6 @@ pub(super) struct SourceArcRecord {
 }
 
 impl SourceArcRecord {
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "this constructor transfers the newly staged source endpoint pair into its owning record"
-    )]
     pub(super) fn new(points: [Point; 2]) -> Self {
         Self {
             points,

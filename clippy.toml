@@ -17,9 +17,5 @@ disallowed-methods = [
   { path = "slice::sort_by_key", reason = "Prefer sort_unstable_by_key; stable sorting may allocate and requires a local exception explaining the tie-order requirement." },
   { path = "slice::sort_by_cached_key", reason = "Cached-key sorting allocates; require a local exception explaining stability and the measured benefit of caching keys." },
 ]
-future-size-threshold = 4096
-large-error-threshold = 56
-pass-by-value-size-limit = 64
-too-large-for-stack = 128
 too-many-arguments-threshold = 10
 trivial-copy-size-limit = 16

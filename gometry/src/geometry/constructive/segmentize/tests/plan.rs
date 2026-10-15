@@ -33,9 +33,10 @@ fn subdivision_admits_exact_generated_limit_without_charging_input_vertices() {
             crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
                 operation: "segmentize",
                 parameter: "max_length",
-                ..
+                produced,
+                limit,
             }
-        )
+        ) if *produced == GENERATED_ITEM_LIMIT + 1 && *limit == GENERATED_ITEM_LIMIT
     ));
 }
 #[test]

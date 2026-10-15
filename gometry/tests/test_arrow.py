@@ -1375,7 +1375,7 @@ def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
     bad_prefix = pa.Array.from_buffers(
         pa.binary_view(), 2, [bufs[0], pa.py_buffer(bytes(views)), bufs[2]]
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         bad_prefix.validate(full=True)
 
     # Inline row with nonzero padding (length=5 "hello").
@@ -1388,7 +1388,7 @@ def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
         1,
         [ibufs[0], pa.py_buffer(bytes(inline_views)), *ibufs[2:]],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         bad_pad.validate(full=True)
 
     class CapsuleOnly:
@@ -1448,7 +1448,7 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
     bad_bin = pa.Array.from_buffers(
         pa.binary(), 3, [validity, off_bin, data], null_count=1
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         bad_bin.validate(full=True)
 
     coords = pa.StructArray.from_arrays(
@@ -1468,7 +1468,7 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
     bad_list = pa.ListArray.from_buffers(
         mp_type.storage_type, 3, [validity, off_list], children=[coords]
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         bad_list.validate(full=True)
     bad_mp = pa.ExtensionArray.from_storage(mp_type, bad_list)
 
@@ -1557,7 +1557,7 @@ def test_from_arrow_empty_malformed_start_offset_rejected_all_frontends() -> Non
         0,
         [None, pa.array([-1], type=pa.int32()).buffers()[1], pa.py_buffer(b'')],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         bad.validate(full=True)
 
     for source in (bad, CapsuleOnly(bad), StreamZeroRow(bad)):
@@ -1641,11 +1641,11 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
         children=[rings],
         null_count=1,
     )
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         poly_storage.validate(full=True)
     bad = pa.ExtensionArray.from_storage(poly_type, poly_storage)
     selected_bad = bad.slice(0, 2)
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         selected_bad.validate(full=True)
     for source in (
         selected_bad,
@@ -1659,7 +1659,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
         assert 'offset' in msg or 'ordered' in msg
 
     sliced = bad.slice(1, 2)
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         sliced.validate(full=True)
     for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
         out = cast('gm.GeometryArray', gm.from_arrow(source))
@@ -1768,10 +1768,10 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
     arrx = pa.ExtensionArray.from_storage(typ, outer)
     # Forge terminal past coords length 4 while leaving first line valid.
     inner[8:12] = struct.pack('<i', 100)
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         arrx.storage.validate(full=True)
     selected_bad = arrx.slice(1, 1)
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         selected_bad.storage.validate(full=True)
     for source in (
         arrx,
@@ -1794,7 +1794,7 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
         )
 
     sliced = arrx.slice(0, 1)
-    with pytest.raises(Exception):
+    with pytest.raises(pa.ArrowInvalid):
         sliced.storage.validate(full=True)
     for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
         out = cast('gm.GeometryArray', gm.from_arrow(source))

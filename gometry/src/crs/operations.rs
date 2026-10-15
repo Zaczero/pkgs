@@ -242,10 +242,6 @@ pub(crate) fn roundtrip_error_distances(
 }
 
 #[expect(
-    clippy::large_types_passed_by_value,
-    reason = "a Zt lane view is a bundle of borrowed slices, passed by value like the slices it holds"
-)]
-#[expect(
     clippy::indexing_slicing,
     reason = "roundtrip_errors admits equal lane lengths and the cloned transform outputs preserve that width through the SIMD and tail paths"
 )]
@@ -349,10 +345,6 @@ pub(crate) fn roundtrip_error_distances_zt(
 
 /// Scalar zip fill for roundtrip error (length-exact column zips — no free
 /// index bounds checks).
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "a Zt lane view is a bundle of borrowed slices, passed by value like the slices it holds"
-)]
 fn roundtrip_error_zt_scalar(
     out: &mut [f64],
     roundtrip_x: &[f64],

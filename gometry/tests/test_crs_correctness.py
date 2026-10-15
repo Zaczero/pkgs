@@ -663,17 +663,17 @@ def test_distance_3d_and_length_3d_valid_values() -> None:
 
 def test_geographic_out_of_domain_raises() -> None:
     """Out-of-domain latitude raises for geographic metrics and point methods."""
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         _ = gm.LineString([(0, 95), (1, 95)], crs=4326).length
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         _ = gm.box(0, 95, 1, 96, crs=4326).area
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         _ = gm.GeometryCollection([gm.Point(0, 95, crs=4326)]).area
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.distance(gm.Point(0, 95, crs=4326), gm.Point(1, 95, crs=4326))
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.bearing(gm.Point(0, 95, crs=4326), gm.Point(1, 95, crs=4326))
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.Point(0, 95, crs=4326).destination(45, 1000)
 
 
@@ -1192,9 +1192,9 @@ def test_transform_batches_with_empty_members_and_extreme_longitudes() -> None:
     )
     out = mixed.to_crs(3857)
     assert out.crs == gm.CRS('EPSG:3857')
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.Point(1e308, 0.0, crs=4326).to_crs(3857)
-    with pytest.raises(ValueError):
+    with pytest.raises(gm.InvalidGeometryError):
         gm.crs_transform(4326, 3857, [1e308], [0.0])
 
 
