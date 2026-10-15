@@ -7,7 +7,8 @@ your shell.
 
 ## Install
 
-Install from this workspace with its nightly Rust toolchain:
+From the `pkgs` workspace root (the directory containing `Cargo.toml` and
+`fast/`), install with the workspace's nightly Rust toolchain:
 
 ```sh
 cargo install --locked --path fast
@@ -21,7 +22,19 @@ Cargo accepts `--offline` for builds.
 
 Publication and licensing are intentionally undecided.
 
+Check that an existing command runs and produces a report:
+
+```sh
+fast --once -- true
+```
+
+This shows one invocation's timing and resources. It does not compare performance
+or produce a confidence interval. Use your actual workload for a comparison.
+
 ## Compare commands
+
+The following commands are workload templates; replace their programs and input
+files with your own:
 
 ```sh
 fast gzip -c input.dat ::: zstd -c input.dat
@@ -85,6 +98,8 @@ every run.
 the plan expects it to fit. `--timeout` terminates a single run that exceeds its
 deadline. Ctrl-C stops early and still reports the completed runs and their
 comparisons. None of these decisions looks at which command is winning.
+The effort target and invocation deadline do not bound process cleanup:
+an uninterruptible kernel wait cannot be made immediately reapable.
 
 ## Input and correctness
 
@@ -172,7 +187,7 @@ encounter can also make the result misleading.
   The label names L2 explicitly; this is not a generic cache-hit score or a
   measurement of time lost to memory.
 - `--details` shows the same measurements with more explanation, including
-  sampled task activity from the first measured invocation of each command.
+  available sampled task activity from the first measured invocation of each command.
   Large scans are paced in small chunks; unfinished scans are marked incomplete.
   Sampling can miss short-lived processes and threads. Thread CPU percentages
   use 100% for one logical CPU; threads do not have independent RSS.
@@ -180,6 +195,15 @@ encounter can also make the result misleading.
 No additional command runs when `--details` is requested. Newly surviving
 background descendants stop further repetitions. Put persistent services outside
 the measured command, or wait for the work in a synchronous wrapper.
+
+Retained invocation records and their owned observation buffers have a 128 MiB
+allowance, not a whole-process RSS limit. Plans reserve mandatory records and
+terminal failure diagnostics before running. Optional task detail uses the
+remaining space; omitted detail is identified in the report and JSON.
+Counter-unavailability text, namespace text, collector errors and stop reasons retain at most
+256 UTF-8 bytes, with an explicit truncation marker when needed. Timing, phase,
+order, and failure outcomes are preserved. See
+[retained observation storage](docs/measurement.md#retained-observation-storage).
 
 ## Output and automation
 
@@ -211,6 +235,9 @@ Readers should ignore unfamiliar fields. Raw invocations preserve phase,
 chronological run index, order, failures, and partial completion. `plan` records
 the planning mode, warmup, pilot and discarded runs, and the planned run count;
 the analysis uses the kept pilot runs and the production runs.
+`retention` reports `allowance_bytes`, `retained_bytes` (including unused buffer
+capacity), and `task_detail_omitted`. These bytes cover invocation storage and the stop reason, not
+command arguments, report analysis, transient collection, or allocator overhead.
 For a single command, the interval describes its mean elapsed nanoseconds;
 the comparison denominator is `null` and its decision is `not_applicable`.
 There is no import or reopen interface.

@@ -64,11 +64,42 @@ times the preceding sweep's collector CPU cost. Large sweeps yield between
 initial sweep cannot run as an uninterrupted burst. A sweep still in progress
 when the command exits marks task detail incomplete. At most 1,024 task identities and
 bounded activity samples are retained per invocation. Task detail survives only
-for the first complete measured invocation of each command.
+for the first complete measured invocation of each command, subject to the
+retention allowance below.
 
 These are sampled accounting changes, not scheduler events or function profiles.
 The [`proc` documentation](https://docs.kernel.org/filesystems/proc.html) describes
 the underlying process/thread records and their limitations.
+
+## Retained observation storage
+
+Invocation records and their owned buffers share a 128 MiB allowance. Admission
+reserves the inline record, counter entries and bounded counter/namespace text
+for every planned command and hook. Automatic planning uses the same storage
+ceiling independently of measured winners. The reservation also leaves room
+for the single terminal failure's first and last 32 KiB of diagnostics and
+collector error. No completed invocation or failure outcome is removed to fit.
+
+At least 8 MiB remains available for optional task detail after admitting mandatory
+records. Fixed plans can leave more. Task admission charges the actual retained
+task vector capacity, name capacities, and sample capacities across candidates
+and the first two potentially measured runs. If detail will not fit, a prefix of
+tasks survives and `activity.limited` is true; `retention.task_detail_omitted`
+discloses this storage limit in JSON and human reports. Once the first measured
+run is known, detail from other runs is released.
+
+Counter-unavailability text, PID-namespace text, terminal collector errors and stop reasons
+are compacted to at most 256 UTF-8 bytes each. Longer text ends with
+` [truncated]`. Counter availability, numerical readings, timing, phases, order,
+and workload failure outcomes remain intact. The full bounded diagnostic capture
+is reserved even if failure occurs at the end of the plan.
+
+`retention.retained_bytes` counts the invocation vector, including unused capacity,
+its owned counter, text, activity and diagnostic capacities, and the stop reason. The allowance
+does not cover candidate arguments, statistical analysis, report rendering,
+temporary collection buffers, allocator metadata, or total process RSS. Collection
+has its own per-invocation limits; retained-byte accounting is not a containment
+or system-memory guarantee. `--details` changes presentation only.
 
 ## Planning
 
@@ -126,7 +157,9 @@ means: the values `R` with `(Y - R X)^2 <= t^2 Var(Y - R X)`. When the
 denominator's mean is not distinguishable from zero at this confidence, the set is
 unbounded, and the comparison is unresolved without an interval. The t quantile
 has `b - 1` degrees of freedom at level `1 - 0.05 / (2m)` for the `m` command pairs
-(Bonferroni), so all intervals hold together with at least 95% confidence.
+(Bonferroni). With independent normally distributed batch means, this targets at
+least 95% simultaneous coverage. The simulations below assess specific departures
+from that model; they do not establish distribution-free coverage.
 Elapsed times are positive, so a set reaching below zero is cut at zero, which
 cannot exclude the true ratio. A single command uses the t interval for its mean,
 likewise cut at zero.
@@ -210,11 +243,6 @@ The limitations matter just as much:
   interval (97.43% coverage) rather than biasing it past its width; the automatic
   warmup discards that run when it is cheap.
 
-A stationary bootstrap with conservative corrections, the previous method, needed
-100 runs before any conclusion and covered 98.6–99.9% where Fieller batch means
-cover close to 95%. At 100 runs of four independent commands its intervals were
-about 45% wider (mean log width 0.136 versus 0.093).
-
 Low variation does not establish independence. Additional automatic-plan cases
 use two quiet commands (log SD 0.02), a target worth 200 runs, and 50,000
 experiments on the separate seed `b7809f3a41c26de5`:
@@ -256,34 +284,10 @@ observer-on/off invocations. The off arm retains command launch, wait accounting
 and diagnostic draining, but omits PMU attachment and task sampling. This
 distinguishes observation cost from ordinary process-launch cost.
 
-The four-event Vermeer policy and paced task sampler were measured on an AMD
-Ryzen 9 5950X, Linux 7.2.8, nightly Rust `0abfedbc7`, release profile,
-with inherited scheduling and background load:
-
-| Workload | Runs | On/off time ratio | 95% interval (v3 bootstrap) |
-| --- | ---: | ---: | --- |
-| Native launch fixture | 1,000 | 1.1265 | 1.0334–1.2279 |
-| 1 ms sleep | 100 | 1.0289 | 0.7866–1.3458 |
-| 10 ms sleep | 100 | 1.0713 | 0.9544–1.2024 |
-| 100 ms sleep | 100 | 1.0153 | 0.9912–1.0400 |
-| Ten million integer recurrence steps | 100 | 0.9583 | 0.7440–1.2344 |
-| Eight threads, ten million steps each | 100 | 1.0408 | 0.7292–1.4856 |
-| 1 MiB stderr | 100 | 0.9480 | 0.6336–1.4185 |
-| Eight threads sleeping 500 ms | 100 | 1.0066 | 0.9986–1.0147 |
-| 1,100 threads sleeping 200 ms | 100 | 1.0374 | 1.0290–1.0459 |
-
-The launch fixture averaged 13.324 ms without observation and 15.009 ms with
-observation on this loaded host. The 1,100-thread fixture paid about 9.0 ms more
-with observation enabled. These are observed costs in this environment, not
-fixed overhead constants. The remaining intervals include parity; several are
-wide, and none establishes zero overhead. Short-command results include launch
-and measurement cost, which is not subtracted.
-
-All instruction and cycle readings in this matrix were nonzero and available.
-The 1,100-thread runs each retained 16 task identities before command completion,
-with the unfinished sweep marked incomplete. The median adaptive full-sweep
-interval was 596 ms. This deliberately exercises bounded collection rather than
-claiming complete visibility into all workers.
+Observation cost depends on command duration, process and thread topology,
+counter availability, and host load. Short-command results include launch and
+measurement cost, which is not subtracted. The task limit and paced sweeps can
+leave activity detail incomplete even when command timing is complete.
 
 Reproduce the launch comparison:
 
@@ -295,30 +299,3 @@ target/release/examples/observer --runs 1000 -- target/release/examples/workload
 For other rows, pass `--sleep-ms 1`, `--iterations 10000000`, `--threads 8`,
 or `--stderr-bytes 1048576` to the workload as appropriate. The observer emits
 all chronological observations and its analysis as JSON on stdout.
-
-## Optimization checks
-
-A public `fast` comparison measured paced and unpaced collectors in 100
-randomized runs, each running the 1,100-thread, 200 ms fixture once and emitting
-JSON. Builds used the same compiler, source path, and target directory. The
-paced/unpaced elapsed ratio was 0.9955, with interval 0.9898–1.0012: an elapsed
-improvement was not established. Mean wait-accounted CPU time fell from
-166.407 ms to 144.449 ms, an observed 13.2% reduction. Pacing is retained for
-that reduction in work and its smaller initial scanning burst, at the cost of
-less task detail for short-lived commands with many workers. Nested collectors
-multiplexed the PMU events, so their instruction and cycle counts were
-ineligible for comparison.
-
-A matched release-build comparison used `fast` itself to measure 100 randomized
-runs of nested ten-run JSON experiments. Adding a 64 KiB JSON output buffer
-gave a buffered/unbuffered elapsed ratio of 1.0031, with interval
-0.9717–1.0355. The standard stdout writer remains: the extra buffer did not
-establish a useful improvement.
-
-Persistent disabled collector-side PMU events were also evaluated as an
-alternative to per-child attachment. On Linux 7.2.8, a 2,000-invocation
-repeated-fork check stopped receiving instruction and cycle counts after
-invocation 235 and produced 3,528 zero readings. Fresh per-child attachment
-produced no zero readings for the same commands. The collector therefore gives
-each invocation fresh events rather than retaining cross-invocation counter
-state.

@@ -240,6 +240,13 @@ fn failures_abort_without_replacement_and_retain_diagnostics() {
         23
     );
     assert_eq!(result["completed"], false);
+    assert!(result["invocations"][0]["error"].is_null());
+    assert!(
+        result["retention"]["retained_bytes"]
+            .as_u64()
+            .expect("retained bytes")
+            <= 128 * 1024 * 1024
+    );
 }
 
 #[test]
@@ -263,6 +270,57 @@ fn stderr_is_drained_after_capture_fills() {
         32 * 1024
     );
     assert_eq!(diagnostics["omitted_bytes"], 196_608);
+    assert_eq!(result["retention"]["allowance_bytes"], 128 * 1024 * 1024);
+    assert!(
+        result["retention"]["retained_bytes"]
+            .as_u64()
+            .expect("retained bytes")
+            >= 64 * 1024
+    );
+    assert!(
+        result["retention"]["retained_bytes"]
+            .as_u64()
+            .expect("retained bytes")
+            <= 128 * 1024 * 1024
+    );
+}
+
+#[test]
+fn quiet_success_preserves_records_within_the_observation_allowance() {
+    let output = fast(&[
+        "--runs",
+        "2",
+        "--warmup",
+        "1",
+        "--json",
+        "--prepare",
+        "true",
+        "--verify",
+        "true",
+        "true",
+        ":::",
+        "true",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let result = json(&output);
+    let records = result["invocations"].as_array().expect("observations");
+    assert_eq!(records.len(), 18);
+    for (run, records) in records.as_chunks::<6>().0.iter().enumerate() {
+        for record in records {
+            assert_eq!(record["run"], run);
+            assert!(record["observation"].is_object());
+            assert!(record["error"].is_null());
+        }
+    }
+    assert_eq!(result["analysis"]["runs"], 2);
+    assert_eq!(result["retention"]["allowance_bytes"], 128 * 1024 * 1024);
+    assert!(
+        result["retention"]["retained_bytes"]
+            .as_u64()
+            .expect("retained bytes")
+            <= 128 * 1024 * 1024
+    );
+    assert_eq!(result["retention"]["task_detail_omitted"], false);
 }
 
 #[test]
