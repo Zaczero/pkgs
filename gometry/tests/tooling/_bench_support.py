@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 HASH = hashlib.sha256(b'x').hexdigest()
 
@@ -37,7 +38,15 @@ def package_identity(name: str) -> dict[str, object]:
     }
 
 
-def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
+def producer(
+    row: str,
+    side: str,
+    lock_path: str = 'lock',
+    *,
+    source_commit: str | None = None,
+    harness_commit: str = 'deadbeef',
+    receipt_path: str = '/checkout/release-manifest.json',
+) -> dict[str, object]:
     packages = {
         name: package_identity(name)
         for name in (
@@ -97,18 +106,20 @@ def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
     }
     facade = packages['gometry']['module']
     distribution = packages['gometry']['distribution']
+    wheel_filename = 'gometry-1-py3-none-any.whl'
+    wheel_path = Path(receipt_path).parent / wheel_filename
     runtime_binding = {
         'kind': 'release',
-        'path': '/checkout/release-manifest.json',
+        'path': receipt_path,
         'sha256': HASH,
         'profile': 'release-dist',
         'package_root': '/checkout/site-packages',
         'facade': facade,
         'extension': extension,
         'wheel': {
-            'path': '/checkout/gometry-1-py3-none-any.whl',
-            'filename': 'gometry-1-py3-none-any.whl',
-            'archive': file_identity('/checkout/gometry-1-py3-none-any.whl'),
+            'path': str(wheel_path),
+            'filename': wheel_filename,
+            'archive': file_identity(str(wheel_path)),
             'extension_member': 'gometry/_lib.cpython-314.so',
             'extension_sha256': HASH,
         },
@@ -118,9 +129,24 @@ def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
             'gometry/_lib.pyi': HASH,
         },
     }
+    if runtime == 'gometry' and source_commit is not None:
+        wheel = runtime_binding['wheel']
+        implementation.update({
+            'source_commit': source_commit,
+            'source_receipt': {
+                'path': runtime_binding['path'],
+                'sha256': runtime_binding['sha256'],
+            },
+            'source_wheel': {
+                'filename': wheel['filename'],
+                'sha256': wheel['archive']['sha256'],
+                'extension_member': wheel['extension_member'],
+                'extension_sha256': wheel['extension_sha256'],
+            },
+        })
     return {
         'identity_schema_version': 3,
-        'harness_commit': 'deadbeef',
+        'harness_commit': harness_commit,
         'source_inputs_sha256': HASH,
         'extension': extension,
         'uv_lock': {'path': lock_path, 'sha256': HASH, 'size_bytes': 1},
