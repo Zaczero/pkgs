@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/sizestr)](https://pypi.org/p/sizestr)
 
-Use the `sizestr` Python package to format byte counts as short strings using binary units. Requires Python 3.10 or newer. [Install](#installation), try the [first result](#format-byte-counts), and see the [`sizestr` reference](#sizestr). For help, [report an issue](https://github.com/Zaczero/pkgs/issues) and name `sizestr`.
+Use the `sizestr` Python package to format byte counts as short strings using binary units. Requires Python 3.10 or newer. [Install](#installation), try the [first result](#format-byte-counts), and see the [`sizestr` reference](#sizestr-reference). For help, [report an issue](https://github.com/Zaczero/pkgs/issues) and name `sizestr`.
 
 ## Installation
 
@@ -36,6 +36,6 @@ The output is display text, not a machine-readable numeric format. Sub-KiB magni
 
 `ZiB` is the largest suffix. Values whose computed binary exponent is larger return `(too large to display)`. Extremely large integers can raise `OverflowError` while the function converts them for finite-value and exponent checks, before it can return that marker; nonnumeric inputs raise `TypeError`.
 
-## `sizestr`
+## sizestr reference
 
 `sizestr(size)` returns a string for a byte count. Integers and floating-point values are accepted. Non-finite floating-point values are enclosed in parentheses.
