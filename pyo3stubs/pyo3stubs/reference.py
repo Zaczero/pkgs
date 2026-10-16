@@ -109,14 +109,15 @@ def _fields(cls: type[object]) -> tuple[tuple[str, str, str, str], ...]:
 def _field_reference(cls: type[object]) -> list[str]:
     lines = [f'### `{cls.__name__}`', '', _class_summary(cls), '']
     for name, annotation, default, description in _fields(cls):
+        requirement = 'Required' if default == 'required' else f'Default: `{default}`'
         lines.extend((
             f'#### `{cls.__name__}.{name}`',
             '',
-            f'- Type: `{annotation}`',
-            f'- Default: `{default}`',
+            f'`{annotation}` · {requirement}',
+            '',
         ))
         if description:
-            lines.append(f'- Purpose: {_markdown_text(description)}')
+            lines.append(_markdown_text(description))
         lines.append('')
     return lines
 
@@ -159,7 +160,7 @@ def _other_exports() -> list[str]:
             lines.extend((
                 f'### `{name}`',
                 '',
-                f'`{inspect.signature(render_stub_with_docs)}`',
+                f'`render_stub_with_docs{inspect.signature(render_stub_with_docs)}`',
                 '',
                 _markdown_text(summary),
                 '',
@@ -170,38 +171,28 @@ def _other_exports() -> list[str]:
 
 
 def _gate_reference() -> list[str]:
-    lines = ['## Gates', '']
+    lines = [
+        '## Gates',
+        '',
+        'Gates run by default unless they require an optional configuration below. '
+        'CPython-only gates report a skip on other interpreters.',
+        '',
+    ]
     for entry in GATES:
-        activation = (
-            'Always active.'
-            if not entry.activated_by
-            else f'Activated by a truthy `StubConfig.{entry.activated_by}` value.'
-        )
-        runtime = (
-            f'CPython only: {entry.cpython_reason}.'
-            if entry.requires_cpython
-            else 'No CPython-only restriction is declared for this gate.'
-        )
-        subject = (
-            f' Counts `{entry.subject}` subjects when applicable.'
-            if entry.subject
-            else ''
-        )
         requirements = ', '.join(f'`{item}`' for item in entry.requirements)
-        if not requirements:
-            requirements = 'No additional tool or runtime module.'
         lines.extend((
             f'### `{entry.name}`',
             '',
             entry.summary[0].upper() + entry.summary[1:] + '.',
             '',
-            f'- Activation: {activation}',
-            f'- Additional inputs and tools: {requirements}.',
-            f'- Runtime: {runtime}{subject}',
-            f'- Clean result: {entry.success}.',
-            f'- Violation remedy: {entry.remedy}.',
-            '',
         ))
+        if entry.activated_by:
+            lines.append(f'- Enable with `StubConfig.{entry.activated_by}`.')
+        if requirements:
+            lines.append(f'- Requires: {requirements}.')
+        if entry.requires_cpython:
+            lines.append(f'- CPython only: {entry.cpython_reason}.')
+        lines.extend((f'- On failure: {entry.remedy}.', ''))
     return lines
 
 
@@ -213,22 +204,14 @@ def render_reference() -> str:
         'This reference describes the `pyo3stubs` configuration fields, CLI '
         'gates, and result statuses.',
         '',
-        'A configuration shim is imported as ordinary Python code and must be '
-        'trusted. It can expose `config() -> StubConfig` or a `CONFIG` value. '
-        'Dataclass annotations describe expected values but do not validate or '
-        'coerce them at runtime. `StubConfig` checks that `stub_path` names a '
-        'file, `src_root` names a directory, and every disabled gate is known.',
+        'Your configuration file exposes `config() -> StubConfig` or a `CONFIG` '
+        'value. It runs as ordinary Python code, so load only trusted files. '
+        '`stub_path` must name an existing file and `src_root` an existing directory.',
         '',
-        '`StubConfig` validates its required paths for every gate. Each gate '
-        'lists the additional tools and runtime/source inputs it reads. Package '
-        'metadata supplies the installed dependency versions.',
+        'The `reference` command requires LibCST.',
         '',
-        'Generating this reference also imports the doc renderer to record its '
-        'public signature, so the `reference` command requires LibCST.',
-        '',
-        'Install and build the consumer extension in the interpreter used for '
-        'the checks. Gates marked CPython-only report themselves as skipped on '
-        'other implementations; the gate-specific reason appears below.',
+        'Build and install your extension in the environment running the checks. '
+        'See the [quickstart](README.md#first-check) for setup.',
         '',
         '## Configuration records',
         '',
