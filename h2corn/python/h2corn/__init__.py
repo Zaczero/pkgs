@@ -1,9 +1,8 @@
 """
-HTTP/2 ASGI server for Python, written in Rust.
+Blazing-fast HTTP/2 ASGI server for Python, written in Rust.
 
 `h2corn` accepts HTTP/1.1 and cleartext HTTP/2 (`h2c`) and can terminate TLS
-directly. Behind a proxy, each upstream protocol depends on the configured
-route. The `h2c` hop is cleartext and requires a private network boundary.
+directly. Keep cleartext `h2c` connections within a private network.
 
 The two entrypoints are:
 

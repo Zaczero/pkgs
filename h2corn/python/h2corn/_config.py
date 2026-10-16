@@ -725,7 +725,7 @@ class Config:
     3. TOML file (via `--config` or `H2CORN_CONFIG`)
     4. Built-in defaults
 
-    Validation runs in `__post_init__`. Invalid combinations (for example,
+    Invalid combinations (for example,
     `certfile` without `keyfile`, or a Unix listener with TLS) raise
     `ValueError` at construction time.
 
@@ -1299,8 +1299,8 @@ class Config:
         Keys must match either a field name on `Config` or the convenience
         keys `host`/`port`. Unknown keys raise `ValueError`. String values
         are coerced through the same parsing rules as the matching
-        environment variable; non-string values are passed through and
-        validated by `__post_init__`.
+        environment variable; other values are checked against the option's
+        accepted types.
 
         Examples:
             String values use the same parsing rules as environment values:
@@ -1336,7 +1336,7 @@ class Config:
         Build a [`Config`][h2corn.Config] from a TOML file.
 
         The file must be a flat table whose keys correspond to `Config`
-        field names. Example:
+        field names. For example, save this as `h2corn.toml`:
 
         ```toml
         bind = ["127.0.0.1:8000"]
@@ -1346,17 +1346,13 @@ class Config:
         forwarded_fields = ["for", "proto"]
         ```
 
-        Examples:
-            Load a flat TOML file without using process-wide configuration:
+        Load it with:
 
-            >>> from pathlib import Path
-            >>> from tempfile import TemporaryDirectory
-            >>> with TemporaryDirectory() as directory:
-            ...     path = Path(directory) / 'config.toml'
-            ...     _ = path.write_text('workers = 2\\n', encoding='utf-8')
-            ...     config = Config.from_toml(path)
-            >>> config.workers
-            2
+        ```python
+        from h2corn import Config
+
+        config = Config.from_toml('h2corn.toml')
+        ```
         """
         import tomllib
 

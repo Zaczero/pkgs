@@ -327,12 +327,9 @@ class Server:
     the server processes requests until [`shutdown()`][h2corn.Server.shutdown]
     is called or the surrounding task is cancelled.
 
-    `Config` describes a whole deployment, so some of its settings belong to
-    the supervisor that runs several workers rather than to one server.
-    `workers` is refused outright — asking for eight and getting one is not
-    a detail — while `max_requests`, `max_requests_jitter` and
-    `timeout_worker_healthcheck` only say when a supervisor would replace a
-    worker, so [`serve()`][h2corn.Server.serve] warns and carries on.
+    `workers` must be 1. Supervisor-only options (`max_requests`,
+    `max_requests_jitter`, and `timeout_worker_healthcheck`) are ignored with
+    a warning.
 
     Examples:
         `examples/embedded.py` runs one worker on an ephemeral port, sends a
@@ -391,17 +388,14 @@ class Server:
         `serve()` as a task can await this instead of watching
         [`addresses`][h2corn.Server.addresses] for one to appear.
 
-        Raises rather than waiting when waiting cannot end well: whatever
-        stopped the server if it stops without ever serving, and
-        `RuntimeError` if it is already shutting down — a server on its way
-        down is not one that is about to come up.
+        If startup fails, raises the startup error. Raises `RuntimeError`
+        if the server is already shutting down.
 
-        Illustrative (not executable):
+        Partial example:
 
         ```python
         serving = asyncio.create_task(server.serve())
         await server.wait_started()
-        # the port is open here
         ```
         """
         loop = asyncio.get_running_loop()
@@ -426,7 +420,7 @@ class Server:
         Whether a previous `serve()` is still releasing its requests.
 
         `serve()` stops waiting once the graceful budget is spent, but requests
-        that ignored cancellation keep the application and its loop shards
+        that ignored cancellation keep the application and its event loops
         alive. While this is true the same `Server` cannot `serve()` again.
         Lifespan shutdown runs only after those requests finally release.
         """
@@ -445,13 +439,13 @@ class Server:
         Unlike `Config.bind`, these carry the port the kernel actually
         assigned — bind to port `0` and read the address back from here:
 
-        Illustrative (not executable):
+        Partial example:
 
         ```python
         server = Server(app, Config(bind=('127.0.0.1:0',)))
         serving = asyncio.create_task(server.serve())
         await server.wait_started()
-        host, _, port = server.addresses[0].rpartition(':')
+        print(server.addresses)
         ```
         """
         with self._state_lock:
