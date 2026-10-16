@@ -98,11 +98,30 @@
   color: var(--md-code-fg-color);
 }
 
-.python-example iframe {
+.python-example img {
+  display: block;
   width: 100%;
   height: 20rem;
-  border: 0;
-  background: white;
+  object-fit: contain;
+  padding: 0.8rem;
+}
+
+.python-example img[hidden] {
+  display: none;
+}
+
+.python-example-results > * {
+  transition: opacity 160ms ease;
+}
+
+.python-example-stale {
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .python-example-results > * {
+    transition: none;
+  }
 }
 
 @media (max-width: 30rem) {

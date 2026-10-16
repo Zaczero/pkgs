@@ -4,10 +4,10 @@ import type { PyProxy } from "pyodide/ffi";
 declare const PYTHON_RUNTIME_URL: string;
 declare const PYTHON_PACKAGE_URLS: string[];
 declare const PYTHON_IMPORT_HINTS: Record<string, string>;
-type Request = { code: string; context: string[] };
+type Request = { code: string };
 let runtime: PyodideInterface | undefined;
 
-self.onmessage = async ({ data: { code, context } }: MessageEvent<Request>) => {
+self.onmessage = async ({ data: { code } }: MessageEvent<Request>) => {
     let globals: PyProxy | undefined;
     let evaluation: PyProxy | undefined;
     let result: unknown;
@@ -26,28 +26,13 @@ self.onmessage = async ({ data: { code, context } }: MessageEvent<Request>) => {
         }
         runtime.setStdout({ batched: () => {} });
         runtime.setStderr({ batched: () => {} });
-        const allCode = [...context, code].join("\n\n");
         const packages = Object.entries(PYTHON_IMPORT_HINTS)
-            .filter(([, pattern]) => new RegExp(pattern).test(allCode))
+            .filter(([, pattern]) => new RegExp(pattern).test(code))
             .map(([name]) => name);
         if (packages.length)
             await runtime.loadPackage(packages, { messageCallback: () => {} });
-        await runtime.loadPackagesFromImports(allCode, { messageCallback: () => {} });
+        await runtime.loadPackagesFromImports(code, { messageCallback: () => {} });
         globals = runtime.toPy({ __name__: "__main__" });
-        for (const [index, setup] of context.entries()) {
-            self.postMessage({
-                type: "status",
-                text: `Preparing earlier example ${index + 1}…`,
-            });
-            try {
-                const value = await runtime.runPythonAsync(setup, { globals });
-                if (value instanceof runtime.ffi.PyProxy) value.destroy();
-            } catch (error) {
-                throw new Error(
-                    `Earlier example ${index + 1} failed: ${String(error)}`,
-                );
-            }
-        }
         runtime.setStdout({
             batched: (text) => self.postMessage({ type: "output", text }),
         });

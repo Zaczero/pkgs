@@ -128,7 +128,7 @@ their results are not guaranteed to be bit-identical.
 A cell ID is shorthand for an area on the ground. Scalar cells expose `.polygon`,
 and [`CellArray.polygon`][gometry.CellArray.polygon] returns a whole batch:
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 cell = gm.H3Cell(gm.Point(21.0, 52.0, crs=4326), resolution=6)
 poly = cell.polygon
@@ -159,7 +159,7 @@ print(figure(
 
 ```
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 cell = gm.H3Cell(gm.Point(21.0, 52.0, crs=4326), resolution=6)
@@ -372,7 +372,7 @@ The H3 key join admits row 1 because its cell overlaps the source cover; the
 source-geometry predicate removes that candidate. The cell key is a candidate,
 not an exact point-in-polygon result.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 cells = gm.h3_cover(area, resolution=5)
@@ -710,7 +710,7 @@ array reordered by the selected key, so sorted blocks tend to hold nearby
 geometries — useful packing for row-group min/max filters and block reads. It is
 not a spatial predicate or a distance order.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 grid = gm.GeometryArray([gm.Point(x, y) for y in range(4) for x in range(4)])

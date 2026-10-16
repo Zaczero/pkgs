@@ -42,7 +42,7 @@ for the edge and explicit-closure conventions.
 | [`overlaps`][gometry.overlaps] | same-dimension overlap, neither contains the other | yes |
 | [`equals`][gometry.equals] | topologically identical point sets | yes |
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 region = gm.box(0, 0, 10, 10)

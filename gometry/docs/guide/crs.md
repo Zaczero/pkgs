@@ -831,7 +831,7 @@ print('planar area m²:', round(projected.area))
 
 ```
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)

@@ -28,7 +28,7 @@ complete areal support and then erodes that union. Touching or overlapping
 members therefore share one erosion boundary rather than being eroded as
 independent polygons.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 line = gm.LineString([(0, 0), (5, 0), (5, 5)])
@@ -73,7 +73,7 @@ each open-line endpoint, while a flat cap stops at the endpoint. For
 `side='left'` or `'right'`, the ends are always flat and the join parameters
 still control the offset edge.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 line = gm.LineString([(0, 0), (5, 0)])
@@ -144,7 +144,7 @@ Python operator:
 | [`difference`][gometry.difference] | `a - b` | `left` with `right` cut out (`left − right`) |
 | [`symmetric_difference`][gometry.symmetric_difference] | `a ^ b` | in exactly one of the two |
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 a = gm.box(0, 0, 2, 2)
@@ -280,7 +280,7 @@ requires `by`; whole-collection aggregation is `gm.union_all(array)`.
 [`simplify`][gometry.Geometry.simplify] drops vertices within a `tolerance`, keeping the
 shape recognizable while shrinking it.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 wiggly = gm.LineString([(0, 0), (1, 0.01), (2, -0.01), (3, 0.01), (4, 0)])
@@ -326,7 +326,7 @@ relationships between separate children can change.
 travel), with the same corner vocabulary as [`buffer`][gometry.Geometry.buffer] — round fillet arcs
 by default, `join_style='miter'`/`'bevel'` and `quadrant_segments` on demand:
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 print((gm.LineString([(0, 0), (5, 0)])).offset_curve(1.0))
@@ -484,7 +484,7 @@ opposite vertex must lie within `edge_length / concavity` of its boundary edge
 greedy peel does not guarantee area monotonicity in `concavity`. For fixed
 input and `concavity`, increasing `length_threshold` never shrinks the hull.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 cloud = gm.MultiPoint([(0, 0), (4, 0), (4, 4), (0, 4), (2, 1.2), (2, 0.8)])

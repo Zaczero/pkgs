@@ -7,7 +7,6 @@ import json
 import re
 import shlex
 import subprocess
-from html import escape
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -33,11 +32,20 @@ def on_page_markdown(markdown, *, page, config, **_kwargs):
             for option in shlex.split(match['options'])
             if '=' in option
         )
-        if options.get('exec') != 'on' or options.get('html') == 'true':
+        if options.get('interactive') == 'off':
+            return re.sub(
+                r"""[ \t]+interactive=(?:"off"|'off'|off)(?=[ \t\n])""",
+                '',
+                match[0],
+                count=1,
+            )
+        if (
+            options.get('exec') != 'on'
+            or options.get('html') == 'true'
+            or 'session' in options
+        ):
             return match[0]
         attributes = 'data-python-example'
-        if session := options.get('session'):
-            attributes += f' data-python-session="{escape(session, quote=True)}"'
         if not page.url and first:
             attributes += ' data-python-intro'
         first = False

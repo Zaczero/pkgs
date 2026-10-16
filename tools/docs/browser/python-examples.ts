@@ -11,7 +11,7 @@ declare const PYTHON_WORKER_URL: string;
         PYTHON_WORKER_URL,
         (document.currentScript as HTMLScriptElement).src,
     );
-    const active = new Map<Element, { code: () => string; dispose: () => void }>();
+    const active = new Map<Element, () => void>();
     let worker: Worker | undefined;
     let running:
         | {
@@ -43,9 +43,9 @@ declare const PYTHON_WORKER_URL: string;
     ]);
 
     function enhance() {
-        for (const [example, state] of active) {
+        for (const [example, dispose] of active) {
             if (!example.isConnected) {
-                state.dispose();
+                dispose();
                 active.delete(example);
             }
         }
@@ -121,11 +121,13 @@ declare const PYTHON_WORKER_URL: string;
             ).trimEnd();
             output.textContent = initialOutput;
             output.hidden = !initialOutput;
-            const picture = document.createElement("iframe");
-            picture.title = "Visual output from the Python example";
-            picture.setAttribute("sandbox", "");
+            let picture = document.createElement("img");
+            picture.alt = "Visual output from the Python example";
             picture.hidden = true;
-            form.append(toolbar, output, picture);
+            const results = document.createElement("div");
+            results.className = "python-example-results";
+            results.append(output, picture);
+            form.append(toolbar, results);
             example.replaceChildren(form);
 
             const finish = (message: string) => {
@@ -133,13 +135,23 @@ declare const PYTHON_WORKER_URL: string;
                 status.hidden = !message;
                 running = undefined;
                 run.textContent = "Run";
+                if (
+                    !output.classList.contains("python-example-stale") ||
+                    !picture.classList.contains("python-example-stale")
+                ) {
+                    if (output.classList.contains("python-example-stale"))
+                        output.hidden = true;
+                    if (picture.classList.contains("python-example-stale"))
+                        picture.hidden = true;
+                }
+                results.removeAttribute("aria-busy");
+                results.style.minHeight = "";
+                output.classList.remove("python-example-stale");
+                picture.classList.remove("python-example-stale");
             };
-            active.set(example, {
-                code: () => editor.state.doc.toString(),
-                dispose: () => {
-                    if (running?.element === example) stopExecution();
-                    editor.destroy();
-                },
+            active.set(example, () => {
+                if (running?.element === example) stopExecution();
+                editor.destroy();
             });
             const appendOutput = (text: string) => {
                 output.textContent += `${output.hidden ? "" : "\n"}${text}`;
@@ -158,7 +170,7 @@ declare const PYTHON_WORKER_URL: string;
                 output.textContent = initialOutput;
                 output.hidden = !initialOutput;
                 picture.hidden = true;
-                picture.removeAttribute("srcdoc");
+                picture.removeAttribute("src");
                 status.textContent = "Example reset.";
                 status.hidden = false;
             };
@@ -170,34 +182,66 @@ declare const PYTHON_WORKER_URL: string;
                 }
                 if (running) stopExecution("Stopped to run another example.");
                 const code = editor.state.doc.toString();
-                const context: string[] = [];
-                const session = example.getAttribute("data-python-session");
-                if (session) {
-                    for (const [previous, state] of active) {
-                        if (previous === example) break;
-                        if (previous.getAttribute("data-python-session") === session)
-                            context.push(state.code());
-                    }
-                }
-                running = {
+                let hasOutput = false;
+                let rendering: Promise<boolean> | undefined;
+                const execution = {
                     element: example,
                     finish,
-                    receive: (data) => {
+                    receive: (data: { type: string; text: string }) => {
                         switch (data.type) {
                             case "status":
                                 status.textContent = data.text;
                                 break;
                             case "output":
+                                if (!hasOutput) {
+                                    output.textContent = "";
+                                    output.hidden = true;
+                                    output.classList.remove("python-example-stale");
+                                    hasOutput = true;
+                                }
                                 appendOutput(data.text);
                                 break;
                             case "svg":
-                                picture.hidden = false;
-                                picture.srcdoc = data.text;
+                                {
+                                    const next = new Image();
+                                    next.alt = picture.alt;
+                                    next.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(data.text)}`;
+                                    rendering = next.decode().then(
+                                        () => {
+                                            if (running === execution) {
+                                                picture.replaceWith(next);
+                                                picture = next;
+                                            }
+                                            return true;
+                                        },
+                                        () => false,
+                                    );
+                                }
                                 break;
                             case "done":
-                                finish("Finished.");
+                                void Promise.resolve(rendering).then((decoded) => {
+                                    if (running !== execution) return;
+                                    if (decoded === false) {
+                                        picture.hidden = true;
+                                        finish(
+                                            "The visual output could not be displayed. Run to retry.",
+                                        );
+                                        return;
+                                    }
+                                    if (!hasOutput) {
+                                        output.textContent = "";
+                                        output.hidden = true;
+                                    }
+                                    if (!rendering) picture.hidden = true;
+                                    finish("Finished.");
+                                });
                                 break;
                             case "error":
+                                if (!hasOutput) {
+                                    output.textContent = "";
+                                    output.hidden = true;
+                                }
+                                picture.hidden = true;
                                 appendOutput(data.text.trimEnd());
                                 stopExecution(
                                     "Python reported an error. Edit the example and run again.",
@@ -206,10 +250,12 @@ declare const PYTHON_WORKER_URL: string;
                         }
                     },
                 };
+                running = execution;
                 run.textContent = "Stop";
-                output.textContent = "";
-                output.hidden = true;
-                picture.hidden = true;
+                results.style.minHeight = `${results.getBoundingClientRect().height}px`;
+                results.setAttribute("aria-busy", "true");
+                output.classList.add("python-example-stale");
+                picture.classList.add("python-example-stale");
                 status.textContent = "Loading Python…";
                 status.hidden = false;
                 try {
@@ -224,7 +270,7 @@ declare const PYTHON_WORKER_URL: string;
                                 stopExecution("Python could not start. Run to retry.");
                         };
                     }
-                    worker.postMessage({ code, context });
+                    worker.postMessage({ code });
                 } catch (error) {
                     stopExecution(
                         `${error instanceof Error ? error.message : String(error)}. Run to retry.`,

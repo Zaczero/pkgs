@@ -58,7 +58,7 @@ A [`LineString`][gometry.LineString] is an ordered sequence of vertices. Pass an
 once into its Rust geometry representation, so large inputs avoid per-point
 Python object construction.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import numpy as np
 import gometry as gm
 
@@ -86,7 +86,7 @@ A [`Polygon`][gometry.Polygon] is a **shell** (exterior ring) plus zero or more 
 (interior rings). Rings are closed automatically — you do not need to repeat
 the first vertex at the end, though it is harmless if you do.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 square_with_hole = gm.Polygon(
@@ -633,7 +633,7 @@ derivable and drop only the axis that cannot be sourced:
   [`buffer`][gometry.Geometry.buffer], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
   [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 track = gm.LineString(

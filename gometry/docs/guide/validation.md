@@ -142,7 +142,7 @@ cannot reconstruct. It offers two strategies via `method`:
 
 The bowtie repairs into a valid geometry:
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 
 bowtie = gm.Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
@@ -274,7 +274,7 @@ without a full repair.
 places. It gives coordinates from different sources a common precision for
 overlay, equality, deduplication, and interchange.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 noisy = gm.LineString([(1.11119, 2.22229), (3.33339, 4.44449)])
 print((noisy.quantize(2)).to_wkt())
@@ -299,7 +299,7 @@ print(before_after(
 duplicate vertices. The optional `tolerance` also collapses vertices closer than
 that distance, allowing oversampled tracks to be thinned.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm
 dup = gm.LineString([(0, 0), (0, 0), (1, 1), (1, 1), (2, 2)])
 print(dup.remove_repeated_points().to_wkt())
