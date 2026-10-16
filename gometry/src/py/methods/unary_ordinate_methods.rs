@@ -5,9 +5,8 @@ use crate::{DefaultedF64Input, PyGeometry, PyGeometryArray};
 
 method_doc! {
     doc_force_2d;
-    body: r"Make each geometry planar, dropping any Z and M ordinates. Returns pure XY
-of the same geometry type and CRS. Already-2D input is returned unchanged.
-The one obvious way to flatten.";
+    body: r"Drop Z and M ordinates, preserving geometry type and CRS.
+Already-2D input is returned unchanged.";
     scalar: r"
 
 Returns
@@ -38,8 +37,7 @@ Examples
 method_doc! {
     doc_force_3d;
     body: r"Make each geometry 3D, filling vertices that lack Z with ``z``. Vertices
-that already carry Z keep it; M passes through. The one obvious way to lift
-to 3D.
+that already carry Z keep it; M passes through.
 
 Parameters
 ----------

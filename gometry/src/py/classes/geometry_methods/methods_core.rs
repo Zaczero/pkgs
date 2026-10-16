@@ -137,8 +137,7 @@ impl PyGeometry {
         }
         raw.map(Bounds::into_tuple)
     }
-    /// Coordinate view over this geometry's vertices (storage-shaped index /
-    /// cursor iteration — not an eagerly materialized vertex list).
+    /// Indexable, iterable view over this geometry's vertices.
     ///
     /// Returns
     /// -------

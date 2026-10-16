@@ -412,8 +412,7 @@ impl PyGeometryArray {
     /// Coordinates
     ///     Flattened coordinates from present rows; missing rows contribute
     ///     no coordinates. This is a vertex stream, not a row-aligned view;
-    ///     use `.row_index` to recover source-row alignment, or call
-    ///     `drop_missing()` first for an explicit dense path.
+    ///     use `.row_index` to recover source-row alignment.
     #[getter]
     pub fn coords(slf: &Bound<'_, Self>) -> PyCoordinates {
         PyCoordinates::new(
@@ -642,8 +641,7 @@ impl PyGeometryArray {
     /// Which rows are missing, as a boolean `numpy.ndarray`.
     ///
     /// True marks a missing row (None on access); a dense array
-    /// returns all-False. The pandas/pyarrow validity convention, with
-    /// gometry's full-word spelling.
+    /// returns all-False.
     ///
     /// Returns
     /// -------

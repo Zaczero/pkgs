@@ -550,14 +550,11 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     """Flat, indexable coordinate sequence behind `geom.coords`:
     coordinates flattened depth-first across parts/rings, with per-axis columns.
 
-    Random access (`coords[i]`) is storage-shaped O(1)/O(log runs) on packed
-    columns and single-run shapes; iteration is a view-owning cursor (O(1)
-    construct, O(1) next) rather than an eager materialization of every vertex.
+    Index or iterate without first copying all vertices into a list.
 
     For `GeometryArray.coords`, missing rows contribute no vertices. The view is
     a flattened vertex stream, not a row-aligned container; use `.row_index`
-    when you need source-row indexes,
-    or call `drop_missing()` first for an explicit dense-only path.
+    when you need source-row indexes.
     """
 
     def __new__(cls, _nonconstructible: Never, /) -> Self:
@@ -1459,8 +1456,7 @@ class Geometry:
         """
     @property
     def coords(self) -> Coordinates:
-        """Coordinate view over this geometry's vertices (storage-shaped index /
-        cursor iteration — not an eagerly materialized vertex list).
+        """Indexable, iterable view over this geometry's vertices.
 
         Returns
         -------
@@ -1758,7 +1754,7 @@ class Geometry:
     def to_polyline(self, *, precision: int = 5, drop_epoch: bool = False) -> str:
         """Encode the ``LineString`` or ``Point`` as Google polyline text (see
         `from_polyline`).
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -1986,7 +1982,7 @@ class Geometry:
         If CRS-free coordinates have projected or other planar semantics, transform
         them or choose another format.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         GeoJSON cannot represent M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 
@@ -2782,9 +2778,8 @@ class Geometry:
         """
 
     def force_2d(self) -> Self:
-        """Make each geometry planar, dropping any Z and M ordinates. Returns pure XY
-        of the same geometry type and CRS. Already-2D input is returned unchanged.
-        The one obvious way to flatten.
+        """Drop Z and M ordinates, preserving geometry type and CRS.
+        Already-2D input is returned unchanged.
 
         Returns
         -------
@@ -3931,8 +3926,7 @@ class Geometry:
 
     def force_3d(self, z: _FloatScalarInput = 0.0) -> Self:
         """Make each geometry 3D, filling vertices that lack Z with ``z``. Vertices
-        that already carry Z keep it; M passes through. The one obvious way to lift
-        to 3D.
+        that already carry Z keep it; M passes through.
 
         Parameters
         ----------
@@ -4211,7 +4205,7 @@ class Geometry:
     ) -> str:
         """Serialize to Well-Known Text.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -4262,7 +4256,7 @@ class Geometry:
     ) -> bytes:
         """Serialize to Well-Known Binary.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -7261,9 +7255,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def bounds(self) -> npt.NDArray[np.float64]:
         """Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
         `Geometry.bounds`), as a read-only ``(rows, 4)`` float64 ndarray.
-        Empty rows are all-``nan`` (intentional: a fixed-width ndarray cannot
-        hold ``None`` like a scalar geometry); missing rows are also all-``nan``
-        and are identified by `.is_missing`.
+        Empty and missing rows are all-``nan``; use `.is_missing` to distinguish
+        missing rows.
         Geographic longitude intervals may cross the seam, with ``minx > maxx``.
 
         Returns
@@ -7576,8 +7569,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Coordinates
             Flattened coordinates from present rows; missing rows contribute
             no coordinates. This is a vertex stream, not a row-aligned view;
-            use `.row_index` to recover source-row alignment, or call
-            `drop_missing()` first for an explicit dense path.
+            use `.row_index` to recover source-row alignment.
         """
     def __iter__(self) -> Iterator[_GeometryT_co]:
         """Iterate geometries in row order (including missing rows as ``None``).
@@ -7808,7 +7800,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Encode every ``LineString`` or ``Point`` row as Google polyline text (see
         `Geometry.to_polyline`).
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -8144,8 +8136,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Which rows are missing, as a boolean `numpy.ndarray`.
 
         True marks a missing row (None on access); a dense array
-        returns all-False. The pandas/pyarrow validity convention, with
-        gometry's full-word spelling.
+        returns all-False.
 
         Returns
         -------
@@ -8463,7 +8454,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         If CRS-free coordinates have projected or other planar semantics, transform
         them or choose another format.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         GeoJSON cannot represent M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 
@@ -9544,9 +9535,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     def force_2d(self) -> Self:
-        """Make each geometry planar, dropping any Z and M ordinates. Returns pure XY
-        of the same geometry type and CRS. Already-2D input is returned unchanged.
-        The one obvious way to flatten.
+        """Drop Z and M ordinates, preserving geometry type and CRS.
+        Already-2D input is returned unchanged.
 
         Returns
         -------
@@ -10978,8 +10968,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     def force_3d(self, z: float = 0.0) -> Self:
         """Make each geometry 3D, filling vertices that lack Z with ``z``. Vertices
-        that already carry Z keep it; M passes through. The one obvious way to lift
-        to 3D.
+        that already carry Z keep it; M passes through.
 
         Parameters
         ----------
@@ -11425,7 +11414,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Serialize to Well-Known Text.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -11485,7 +11474,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
         Parameters
         ----------
@@ -11629,7 +11618,9 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
         """
     @property
     def counts(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
-        """Per-group element counts (`offsets[i + 1] - offsets[i]`).
+        """Per-group element counts (`offsets[i + 1] - offsets[i]`). Missing
+        groups have count zero; `.is_missing` distinguishes them from present
+        groups with no values.
 
         Returns
         -------
@@ -21182,11 +21173,13 @@ class _GeoParquetColumnFrame:
 
     @property
     def crs(self) -> str | None:
-        """Normalized CRS declared by GeoParquet column metadata.
+        """CRS label declared by GeoParquet column metadata.
 
         Returns
         -------
         str or None
+            The exact gometry CRS definition when its namespaced metadata is
+            present and agrees with standard metadata; otherwise
             ``'OGC:CRS84'`` when the ``crs`` key is absent, ``None`` for an
             explicit JSON null, or the normalized CRS from a PROJJSON object.
         """
@@ -21261,14 +21254,15 @@ class _GeoParquetPhysicalLayout:
 
     @property
     def embedded_crs(self) -> str | None:
-        """Normalized CRS from the field's own GeoArrow extension metadata.
+        """Stored CRS label from the field's own GeoArrow extension metadata.
 
         Returns
         -------
         str or None
-            The embedded CRS label when the extension declares one; ``None``
-            when the extension metadata omits a CRS. This is not the caller's
-            GeoParquet column declaration.
+            The exact gometry CRS definition when its namespaced metadata is
+            present and agrees with standard CRS metadata; otherwise the
+            normalized standard label. ``None`` means the extension omits CRS.
+            This is not the caller's GeoParquet column declaration.
         """
 
     @property
@@ -21450,7 +21444,7 @@ def to_feature(
     drop_epoch: bool = False,
 ) -> GeoJsonFeature:
     """Build a GeoJSON Feature mapping from a geometry and side data.
-    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+    Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
     Parameters
     ----------
@@ -21520,7 +21514,7 @@ def to_feature_collection(
     drop_epoch: bool = False,
 ) -> GeoJsonFeatureCollection:
     """Build a GeoJSON FeatureCollection from geometries and aligned side data.
-    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+    Unsupported Z/M axes raise an error rather than being silently discarded. Remove them explicitly with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)`.
 
     Parameters
     ----------

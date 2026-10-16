@@ -143,7 +143,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/constructive-validation',
         'Constructive & validation',
-        'Noding, splitting, snapping, polygonization, and validation boundaries.',
+        'Split, snap, polygonize, and validate geometry.',
         (
             section(
                 'polygonize_all',
@@ -210,7 +210,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'geometry/geometry',
         'Geometry',
-        'The shared scalar geometry API. Every typed geometry class inherits these real methods and properties.',
+        'Methods and properties shared by all geometry types.',
         (section('Geometry'),),
         (('Geometry & dimensions', '../../guide/geometry.md'),),
     ),
@@ -238,7 +238,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'crs',
         'CRS',
-        'The first-class CRS value and globally discoverable crs_ functions for transforms, catalogs, resources, and runtime configuration.',
+        'Coordinate reference systems, transformations, catalogs, and grid resources.',
         (
             section('CRS', title='CRS object'),
             section(title='CRS functions', prefixes=('crs_',)),
@@ -255,7 +255,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'h3',
         'H3',
-        'H3 factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
+        'H3 hexagonal cells, area covers, neighbors, directed edges, and vertices.',
         (
             section(
                 'H3Cell',
@@ -272,7 +272,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         's2',
         'S2',
-        'S2 factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
+        'S2 spherical cells, fixed-level and adaptive covers, and hierarchical cell sets.',
         (
             section('S2Cell', title='Types'),
             section(title='Functions', prefixes=('s2_',)),
@@ -282,7 +282,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'geohash',
         'Geohash',
-        'Geohash factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
+        'Geohash tokens, rectangular cells, neighbors, and area covers.',
         (
             section('GeohashCell', title='Types'),
             section(title='Functions', prefixes=('geohash_',)),
@@ -292,7 +292,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'tiles',
         'XYZ tiles',
-        'Web-mercator tile factories return CellArray/Groups; source geometry remains caller-owned, and exact membership uses free predicates.',
+        'Web Mercator XYZ tiles, quadkeys, tile hierarchies, and area covers.',
         (
             section('Tile', title='Types'),
             section(title='Functions', prefixes=('tile_',)),
@@ -332,7 +332,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'interop',
         'Optional interoperability',
-        'Typed conversion boundaries for optional dataframe, GeoParquet, and visualization ecosystems.',
+        'Convert dataframe columns, read and write GeoParquet, and display maps.',
         (
             section(
                 'explore',

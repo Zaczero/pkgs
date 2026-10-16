@@ -16,14 +16,11 @@ use crate::{
 /// Flat, indexable coordinate sequence behind `geom.coords`:
 /// coordinates flattened depth-first across parts/rings, with per-axis columns.
 ///
-/// Random access (`coords[i]`) is storage-shaped O(1)/O(log runs) on packed
-/// columns and single-run shapes; iteration is a view-owning cursor (O(1)
-/// construct, O(1) next) rather than an eager materialization of every vertex.
+/// Index or iterate without first copying all vertices into a list.
 ///
 /// For `GeometryArray.coords`, missing rows contribute no vertices. The view is
 /// a flattened vertex stream, not a row-aligned container; use `.row_index`
-/// when you need source-row indexes,
-/// or call `drop_missing()` first for an explicit dense-only path.
+/// when you need source-row indexes.
 #[pyclass(
     name = "Coordinates",
     module = "gometry",

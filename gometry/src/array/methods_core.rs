@@ -578,9 +578,8 @@ impl PyGeometryArray {
     }
     /// Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
     /// `Geometry.bounds`), as a read-only ``(rows, 4)`` float64 ndarray.
-    /// Empty rows are all-``nan`` (intentional: a fixed-width ndarray cannot
-    /// hold ``None`` like a scalar geometry); missing rows are also all-``nan``
-    /// and are identified by `.is_missing`.
+    /// Empty and missing rows are all-``nan``; use `.is_missing` to distinguish
+    /// missing rows.
     /// Geographic longitude intervals may cross the seam, with ``minx > maxx``.
     ///
     /// Returns
