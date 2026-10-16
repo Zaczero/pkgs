@@ -11,7 +11,20 @@ declare const PYTHON_WORKER_URL: string;
         PYTHON_WORKER_URL,
         (document.currentScript as HTMLScriptElement).src,
     );
-    const active = new Map<Element, () => void>();
+    const active = new Map<Element, { code: () => string; dispose: () => void }>();
+    let worker: Worker | undefined;
+    let running:
+        | {
+              element: Element;
+              finish: (message: string) => void;
+              receive: (data: { type: string; text: string }) => void;
+          }
+        | undefined;
+    const stopExecution = (message = "Stopped.") => {
+        worker?.terminate();
+        worker = undefined;
+        running?.finish(message);
+    };
     const highlighting = HighlightStyle.define([
         { tag: tags.keyword, color: "var(--md-code-hl-keyword-color)" },
         { tag: tags.comment, color: "var(--md-code-hl-comment-color)" },
@@ -30,19 +43,31 @@ declare const PYTHON_WORKER_URL: string;
     ]);
 
     function enhance() {
-        for (const [example, dispose] of active) {
+        for (const [example, state] of active) {
             if (!example.isConnected) {
-                dispose();
+                state.dispose();
                 active.delete(example);
             }
         }
+        const headings = [
+            ...document.querySelectorAll("article :is(h1, h2, h3, h4, h5, h6)[id]"),
+        ];
         for (const example of document.querySelectorAll("[data-python-example]")) {
             const source = example.querySelector("pre code");
             if (!source || example.querySelector("form")) continue;
 
             const form = document.createElement("form");
             form.className = "python-example";
-            const originalCode = source.textContent.trimEnd();
+            const heading = headings.findLast(
+                (candidate) =>
+                    candidate.compareDocumentPosition(example) &
+                    Node.DOCUMENT_POSITION_FOLLOWING,
+            );
+            if (heading) form.setAttribute("aria-labelledby", heading.id);
+            else form.setAttribute("aria-label", "Python example");
+            const originalCode = (
+                example.getAttribute("data-python-code") ?? source.textContent
+            ).trimEnd();
             const controls = document.createElement("div");
             controls.className = "python-example-controls";
             const run = document.createElement("button");
@@ -78,45 +103,50 @@ declare const PYTHON_WORKER_URL: string;
             controls.append(run, reset);
             const status = document.createElement("p");
             status.setAttribute("role", "status");
-            status.textContent =
-                "Runs locally in your browser. Python downloads on first run.";
+            status.textContent = example.hasAttribute("data-python-intro")
+                ? "Runs locally in your browser. Python downloads on first run."
+                : "";
+            status.hidden = !status.textContent;
+            const toolbar = document.createElement("div");
+            toolbar.className = "python-example-toolbar";
+            toolbar.append(controls, status);
             const output = document.createElement("pre");
             output.setAttribute("aria-label", "Python output");
-            const initialOutput = [...example.querySelectorAll("pre")]
-                .filter((block) => !block.contains(source))
-                .map((block) => block.textContent)
-                .join("\n")
-                .trimEnd();
+            const initialOutput = (
+                example.getAttribute("data-python-output") ??
+                [...example.querySelectorAll("pre")]
+                    .filter((block) => !block.contains(source))
+                    .map((block) => block.textContent)
+                    .join("\n")
+            ).trimEnd();
             output.textContent = initialOutput;
             output.hidden = !initialOutput;
             const picture = document.createElement("iframe");
             picture.title = "Visual output from the Python example";
             picture.setAttribute("sandbox", "");
             picture.hidden = true;
-            form.append(controls, status, output, picture);
+            form.append(toolbar, output, picture);
             example.replaceChildren(form);
 
-            let worker: Worker | undefined;
-            let running = false;
             const finish = (message: string) => {
                 status.textContent = message;
-                running = false;
+                status.hidden = !message;
+                running = undefined;
                 run.textContent = "Run";
             };
-            const stopWorker = () => {
-                worker?.terminate();
-                worker = undefined;
-            };
-            active.set(example, () => {
-                stopWorker();
-                editor.destroy();
+            active.set(example, {
+                code: () => editor.state.doc.toString(),
+                dispose: () => {
+                    if (running?.element === example) stopExecution();
+                    editor.destroy();
+                },
             });
             const appendOutput = (text: string) => {
                 output.textContent += `${output.hidden ? "" : "\n"}${text}`;
                 output.hidden = false;
             };
             reset.onclick = () => {
-                stopWorker();
+                if (running?.element === example) stopExecution();
                 editor.dispatch({
                     changes: {
                         from: 0,
@@ -129,58 +159,74 @@ declare const PYTHON_WORKER_URL: string;
                 output.hidden = !initialOutput;
                 picture.hidden = true;
                 picture.removeAttribute("srcdoc");
-                finish("Example reset.");
+                status.textContent = "Example reset.";
+                status.hidden = false;
             };
             form.onsubmit = (event) => {
                 event.preventDefault();
-                if (running) {
-                    stopWorker();
-                    finish("Stopped.");
+                if (running?.element === example) {
+                    stopExecution();
                     return;
                 }
+                if (running) stopExecution("Stopped to run another example.");
                 const code = editor.state.doc.toString();
-                running = true;
+                const context: string[] = [];
+                const session = example.getAttribute("data-python-session");
+                if (session) {
+                    for (const [previous, state] of active) {
+                        if (previous === example) break;
+                        if (previous.getAttribute("data-python-session") === session)
+                            context.push(state.code());
+                    }
+                }
+                running = {
+                    element: example,
+                    finish,
+                    receive: (data) => {
+                        switch (data.type) {
+                            case "status":
+                                status.textContent = data.text;
+                                break;
+                            case "output":
+                                appendOutput(data.text);
+                                break;
+                            case "svg":
+                                picture.hidden = false;
+                                picture.srcdoc = data.text;
+                                break;
+                            case "done":
+                                finish("Finished.");
+                                break;
+                            case "error":
+                                appendOutput(data.text.trimEnd());
+                                stopExecution(
+                                    "Python reported an error. Edit the example and run again.",
+                                );
+                                break;
+                        }
+                    },
+                };
                 run.textContent = "Stop";
                 output.textContent = "";
                 output.hidden = true;
                 picture.hidden = true;
                 status.textContent = "Loading Python…";
+                status.hidden = false;
                 try {
                     if (!worker) {
-                        worker = new Worker(workerURL, { type: "module" });
-                        worker.onmessage = ({ data }) => {
-                            switch (data.type) {
-                                case "status":
-                                    status.textContent = data.text;
-                                    break;
-                                case "output":
-                                    appendOutput(data.text);
-                                    break;
-                                case "svg":
-                                    picture.hidden = false;
-                                    picture.srcdoc = data.text;
-                                    break;
-                                case "done":
-                                    finish("Finished.");
-                                    break;
-                                case "error":
-                                    appendOutput(data.text.trimEnd());
-                                    stopWorker();
-                                    finish(
-                                        "Python reported an error. Edit the example and run again.",
-                                    );
-                                    break;
-                            }
+                        const created = new Worker(workerURL, { type: "module" });
+                        worker = created;
+                        created.onmessage = ({ data }) => {
+                            if (worker === created) running?.receive(data);
                         };
-                        worker.onerror = () => {
-                            stopWorker();
-                            finish("Python could not start. Run to retry.");
+                        created.onerror = () => {
+                            if (worker === created)
+                                stopExecution("Python could not start. Run to retry.");
                         };
                     }
-                    worker.postMessage({ code });
+                    worker.postMessage({ code, context });
                 } catch (error) {
-                    stopWorker();
-                    finish(
+                    stopExecution(
                         `${error instanceof Error ? error.message : String(error)}. Run to retry.`,
                     );
                 }

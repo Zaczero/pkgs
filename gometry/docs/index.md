@@ -24,8 +24,6 @@ package — no GEOS, no GDAL, no system PROJ.
 uv add gometry
 ```
 
-<div data-python-example markdown="1">
-
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -33,13 +31,11 @@ import gometry as gm
 tile = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 
 print(f"ellipsoidal area: {tile.area / 1e6:>8,.0f} km²")
-print(f"planar area:    {gm.area(tile, unit='planar'):>8.4f} degree²")
-print(f"Web Mercator:   {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
+print(f"planar area:      {gm.area(tile, unit='planar'):>8.4f} degree²")
+print(f"Web Mercator:     {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
 
 tile
 ```
-
-</div>
 
 One square degree is three different answers, and the CRS carried by the
 geometry decides which one you asked for. On a geographic CRS,

@@ -1,17 +1,29 @@
 .python-example {
   margin-block: 1.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.4rem;
+  background: var(--md-code-bg-color);
+  overflow: hidden;
   text-align: start;
 }
 
 .python-example .cm-editor {
-  margin-bottom: 0.5rem;
-  border: 1px solid var(--md-default-fg-color--lightest);
-  border-radius: 0.2rem;
   background: var(--md-code-bg-color);
   color: var(--md-code-fg-color);
 }
 
-.python-example .cm-scroller {
+.python-example-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0.8rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.python-example .cm-scroller,
+.python-example pre {
   max-height: 28rem;
   font:
     0.7rem/1.6 var(--md-code-font),
@@ -59,19 +71,29 @@
   cursor: default;
 }
 
-.python-example button:focus-visible,
-.python-example .cm-editor.cm-focused {
+.python-example button:focus-visible {
   outline: 2px solid var(--md-typeset-a-color);
   outline-offset: 3px;
 }
 
+.python-example .cm-editor.cm-focused {
+  outline: 2px solid var(--md-typeset-a-color);
+  outline-offset: -2px;
+}
+
 .python-example [role="status"] {
+  flex-basis: 16rem;
+  flex-grow: 1;
+  margin: 0;
   font-size: 0.7rem;
+  text-align: end;
 }
 
 .python-example pre {
+  margin: 0;
   overflow: auto;
   padding: 0.8rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
   background: var(--md-code-bg-color);
   color: var(--md-code-fg-color);
 }
@@ -81,4 +103,10 @@
   height: 20rem;
   border: 0;
   background: white;
+}
+
+@media (max-width: 30rem) {
+  .python-example [role="status"] {
+    text-align: start;
+  }
 }

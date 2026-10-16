@@ -10,6 +10,8 @@ type Configuration = {
     python?: {
         wheels: string[];
         packages: string[];
+        optionalPackages?: string[];
+        importHints?: Record<string, string>;
     };
 };
 type Package = {
@@ -95,29 +97,6 @@ async function stagePython(config: NonNullable<Configuration["python"]>) {
         join(pyodideRoot, "pyodide-lock.json"),
     ).json();
 
-    const runtimeFiles = [
-        "pyodide.mjs",
-        "pyodide.asm.mjs",
-        "pyodide.asm.wasm",
-        "python_stdlib.zip",
-        "pyodide-lock.json",
-    ];
-    const runtimeHash = new Bun.CryptoHasher("sha256");
-    for (const file of runtimeFiles) {
-        runtimeHash
-            .update(file)
-            .update(await Bun.file(join(pyodideRoot, file)).arrayBuffer());
-    }
-    const runtimePath = `assets/python/${runtimeHash.digest("hex")}`;
-    const runtimeDirectory = join(destination, runtimePath);
-    await mkdir(runtimeDirectory, { recursive: true });
-    for (const file of runtimeFiles) {
-        await Bun.write(
-            join(runtimeDirectory, file),
-            Bun.file(join(pyodideRoot, file)),
-        );
-    }
-
     const selected = new Set<string>();
     function include(name: string) {
         if (selected.has(name)) return;
@@ -126,7 +105,8 @@ async function stagePython(config: NonNullable<Configuration["python"]>) {
         selected.add(name);
         for (const dependency of entry.depends) include(dependency);
     }
-    for (const name of config.packages) include(name);
+    for (const name of [...config.packages, ...(config.optionalPackages ?? [])])
+        include(name);
 
     const cache = resolve(
         import.meta.dir,
@@ -134,7 +114,7 @@ async function stagePython(config: NonNullable<Configuration["python"]>) {
         version,
     );
     await mkdir(cache, { recursive: true });
-    const packages = await Promise.all(
+    const entries = await Promise.all(
         [...selected].map(async (name) => {
             const entry = lock.packages[name];
             const cached = Bun.file(join(cache, entry.file_name));
@@ -155,9 +135,36 @@ async function stagePython(config: NonNullable<Configuration["python"]>) {
             await Bun.write(cached, bytes);
             const path = `assets/python/${digest}/${entry.file_name}`;
             await Bun.write(join(destination, path), bytes);
-            return `../python/${digest}/${entry.file_name}`;
+            return [
+                name,
+                { ...entry, file_name: `../${digest}/${entry.file_name}` },
+            ] as const;
         }),
     );
+    lock.packages = Object.fromEntries(entries);
+    const manifest = JSON.stringify(lock);
+    const runtimeFiles = [
+        "pyodide.mjs",
+        "pyodide.asm.mjs",
+        "pyodide.asm.wasm",
+        "python_stdlib.zip",
+    ];
+    const runtimeHash = new Bun.CryptoHasher("sha256");
+    for (const file of runtimeFiles) {
+        runtimeHash
+            .update(file)
+            .update(await Bun.file(join(pyodideRoot, file)).arrayBuffer());
+    }
+    runtimeHash.update("pyodide-lock.json").update(manifest);
+    const runtimePath = `assets/python/${runtimeHash.digest("hex")}`;
+    for (const file of runtimeFiles) {
+        await Bun.write(
+            join(destination, runtimePath, file),
+            Bun.file(join(pyodideRoot, file)),
+        );
+    }
+    await Bun.write(join(destination, runtimePath, "pyodide-lock.json"), manifest);
+    const packages = [...config.packages];
 
     for (const wheel of config.wheels) {
         const bytes = await Bun.file(wheel).arrayBuffer();
@@ -185,6 +192,7 @@ if (config.python) {
         define: {
             PYTHON_RUNTIME_URL: JSON.stringify(python.runtime),
             PYTHON_PACKAGE_URLS: JSON.stringify(python.packages),
+            PYTHON_IMPORT_HINTS: JSON.stringify(config.python.importHints ?? {}),
         },
         plugins: [
             {

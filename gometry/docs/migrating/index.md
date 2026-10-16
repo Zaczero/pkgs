@@ -275,7 +275,7 @@ also carry `compact()` / `uncompact(...)` for multi-resolution
 rollups. Family algebra preserves hierarchy-aware behavior that plain Python
 `set`s do not.
 
-```python title="partial: source ecosystem example"
+```python exec="on" source="block" result="text"
 import gometry as gm
 
 a = gm.s2_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), level=8)
@@ -284,13 +284,14 @@ a_present = [cell for cell in a if cell is not None]
 b_present = [cell for cell in b if cell is not None]
 shared = gm.s2_intersection(a_present, b_present)
 rollup = shared.compact()
+print("shared S2 cells:", len(shared), "compacted:", len(rollup))
 
 h3_a = gm.h3_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), resolution=5)
 h3_b = gm.h3_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), resolution=5)
 h3_a_present = [cell for cell in h3_a if cell is not None]
 h3_b_present = [cell for cell in h3_b if cell is not None]
-_ = gm.h3_union(h3_a_present, h3_b_present)
-
+combined = gm.h3_union(h3_a_present, h3_b_present)
+print("combined H3 cells:", len(combined))
 ```
 
 [`H3Cell`][gometry.H3Cell] exposes adjacency and local indexing (`neighbors`, `is_neighbor`,

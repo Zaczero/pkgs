@@ -94,11 +94,12 @@ prefer GeoArrow via [`to_arrow`][gometry.GeometryArray.to_arrow] — including
 `encoding='wkb'` when a WKB Arrow column is the peer contract rather than a
 packed GeoArrow layout.
 
-```python title="partial: requires gometry[arrow]"
+```python exec="on" source="block" result="text"
 import gometry as gm
 
 geoms = gm.points([21.0, 22.0], [52.0, 53.0], crs=4326)
 wkb_arrow = geoms.to_arrow(encoding="wkb")
+print(wkb_arrow.type)
 ```
 
 

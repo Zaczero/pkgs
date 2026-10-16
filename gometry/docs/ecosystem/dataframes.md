@@ -102,13 +102,16 @@ protocol directly.
 To calculate a new column, convert once, compute in gometry, then attach the
 result:
 
-```python title="partial: continues the preceding pandas example"
+```python exec="on" source="block" result="text"
+import gometry as gm
+
 points = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
 series = points.to_pandas(name="geometry")
 frame = series.to_frame()
 geometry = gm.from_pandas(series)
 frame["area"] = geometry.area
 frame["buffered"] = geometry.buffer(500).to_pandas(index=frame.index)
+print(frame.columns.tolist())
 ```
 
 ## Polars binary storage

@@ -71,6 +71,12 @@ extra:
   browser_python:
     build: [bun, run, 'docs:wasm']
     packages: [numpy]
+    optional_packages: [pandas, pyarrow, polars, geopandas, scikit-learn]
+    import_hints:
+      pandas: '\b(?:to|from)_pandas\b'
+      pyarrow: '\b(?:to|from)_arrow\b'
+      polars: '\b(?:to|from)_polars\b'
+      geopandas: '\b(?:to|from)_geopandas\b'
     wheels: [dist/wasm/*.whl]
   social:
     - icon: fontawesome/brands/github
