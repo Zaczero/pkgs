@@ -46,6 +46,32 @@ Verification compares code bytes in constant time, but validation and the drift
 search can return early. The library does not store replay state or rate-limit
 attempts; enforce those in your application.
 
+## Benchmarks
+
+**30–75× faster than PyOTP** across these generation and verification cases,
+with median calls below one microsecond.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/results-dark.svg">
+  <img src="benchmarks/results.svg" alt="TOTP generation and verification: totp-rs medians range from 0.42 to 0.61 microseconds, compared with 15.6 to 44.3 microseconds for PyOTP.">
+</picture>
+
+| Operation | totp-rs | PyOTP |
+| --- | ---: | ---: |
+| Generate | 0.42 µs | 15.6 µs |
+| Verify current code | 0.43 µs | 32.4 µs |
+| Verify previous code | 0.52 µs | 15.7 µs |
+| Reject incorrect code | 0.61 µs | 44.3 µs |
+
+Measured with totp-rs 1.0.0 and PyOTP 2.10.0 on CPython 3.14.8, Linux 7.2.9,
+and a Ryzen 9 5950X shared workstation. Both use the same Base32 secret,
+timestamp, SHA-1, six digits, 30-second period, and ±1 verification window.
+Values are medians of twelve worker-process means, with three readings after
+warmup in each process; six-process batches run in A–B–B–A order.
+[Intervals and full table](benchmarks/results.md), raw results
+([totp-rs](benchmarks/totp-rs.json), [PyOTP](benchmarks/pyotp.json)), and the
+[benchmark](benchmark.py) retain the measurement details.
+
 ## API reference and support
 
 See the [`totp_time_window`, `totp_generate`, and `totp_verify` reference](https://github.com/Zaczero/pkgs/blob/main/totp-rs/python/totp_rs/_lib.pyi)

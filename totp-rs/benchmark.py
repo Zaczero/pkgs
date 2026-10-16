@@ -21,6 +21,9 @@ def main():
 
     runner = pyperf.Runner(program_args=(sys.argv[0], '--impl', args.impl))
     runner.metadata['implementation'] = f'{args.impl} {version(args.impl)}'
+    runner.metadata['workload'] = (
+        'SHA-1, 6 digits, 30-second period, verification window ±1'
+    )
     runner.parse_args(pyperf_args)
 
     expected_code = totp_generate(secret_b32, time=now)
@@ -31,6 +34,11 @@ def main():
         import pyotp
 
         pyotp_totp = pyotp.TOTP(secret_b32, digits=6, interval=30)
+        assert pyotp_totp.at(now) == expected_code
+        assert pyotp_totp.at(prev) == expected_prev_code
+        assert pyotp_totp.verify(expected_code, for_time=now, valid_window=1)
+        assert pyotp_totp.verify(expected_prev_code, for_time=now, valid_window=1)
+        assert not pyotp_totp.verify(wrong_code, for_time=now, valid_window=1)
 
         runner.bench_func(
             'generate',
@@ -68,6 +76,9 @@ def main():
         )
 
     elif args.impl == 'totp-rs':
+        assert totp_verify(secret_b32, expected_code, time=now)
+        assert totp_verify(secret_b32, expected_prev_code, time=now)
+        assert not totp_verify(secret_b32, wrong_code, time=now)
         runner.bench_func(
             'generate',
             partial(
