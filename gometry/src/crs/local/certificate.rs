@@ -876,7 +876,7 @@ mod certificate_math {
         }
         let ratio = divide_up(bound, budget);
         let maximum_pieces = crate::geometry::GENERATED_ITEM_LIMIT + 1;
-        if !ratio.is_finite() || ratio > (maximum_pieces * maximum_pieces) as f64 {
+        if !ratio.is_finite() || ratio > (maximum_pieces as u64).pow(2) as f64 {
             return NonZeroUsize::new(maximum_pieces + 1)
                 .expect("the generated-item limit is positive");
         }
@@ -884,7 +884,7 @@ mod certificate_math {
         let mut upper = maximum_pieces;
         while lower < upper {
             let middle = lower.wrapping_add(upper.wrapping_sub(lower) / 2);
-            let square = (middle * middle) as f64;
+            let square = (middle as u64).pow(2) as f64;
             if square >= ratio {
                 upper = middle;
             } else {

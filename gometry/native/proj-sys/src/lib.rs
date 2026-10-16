@@ -45,8 +45,11 @@ mod bindings {
     #[cfg(all(not(feature = "nobuild"), feature = "buildtime_bindgen"))]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    #[cfg(not(feature = "buildtime_bindgen"))]
+    #[cfg(all(not(feature = "buildtime_bindgen"), not(target_arch = "wasm32")))]
     include!("bundled_bindings.rs");
+
+    #[cfg(all(not(feature = "buildtime_bindgen"), target_arch = "wasm32"))]
+    include!("bundled_bindings_wasm32.rs");
 }
 
 pub use bindings::*;
