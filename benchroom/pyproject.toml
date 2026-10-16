@@ -3,13 +3,10 @@ name = "benchroom"
 version = "0.1.0"
 description = "Benchmark comparisons and clear, publication-ready charts"
 requires-python = ">=3.10"
-dependencies = ["matplotlib>=3.10"]
-
-[project.optional-dependencies]
-pyperf = ["pyperf>=2.9"]
+dependencies = ["matplotlib>=3.10", "pyperf>=2.9"]
 
 [dependency-groups]
-dev = ["pytest>=9.1", "pyperf>=2.9"]
+dev = ["pytest>=9.1"]
 
 [build-system]
 requires = ["hatchling"]

@@ -19,7 +19,12 @@ def percentile(values: Sequence[float], fraction: float) -> float:
         raise ValueError('percentile requires at least one value')
     if not 0 <= fraction <= 1:
         raise ValueError('fraction must lie between zero and one')
-    return _weighted_percentile([(value, 1) for value in values], fraction)
+    ordered = sorted(values)
+    position = fraction * (len(ordered) - 1)
+    lower = math.floor(position)
+    remainder = position - lower
+    low = ordered[lower]
+    return low if remainder == 0 else low + (ordered[lower + 1] - low) * remainder
 
 
 def bootstrap_interval(
@@ -60,7 +65,12 @@ def bootstrap_interval(
             (statistic([rng.randrange(size) for _ in range(size)]), 1)
             for _ in range(samples)
         ]
-    return _weighted_percentile(weighted, 0.025), _weighted_percentile(weighted, 0.975)
+    weighted.sort()
+    total = sum(weight for _, weight in weighted)
+    return (
+        _weighted_percentile(weighted, total, 0.025),
+        _weighted_percentile(weighted, total, 0.975),
+    )
 
 
 def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, float]:
@@ -72,9 +82,10 @@ def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, f
     )
 
 
-def _weighted_percentile(weighted: list[tuple[float, int]], fraction: float) -> float:
-    ordered = sorted(weighted)
-    position = fraction * (sum(weight for _, weight in ordered) - 1)
+def _weighted_percentile(
+    ordered: list[tuple[float, int]], total: int, fraction: float
+) -> float:
+    position = fraction * (total - 1)
     lower = math.floor(position)
     remainder = position - lower
 

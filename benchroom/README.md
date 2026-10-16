@@ -39,6 +39,8 @@ report.save("comparison.svg")
 This writes a chart and `comparison.md`, a table of the same values. Use
 `dark=True` for dark backgrounds, or a `.png` filename for raster output.
 `report.figure()` returns a Matplotlib figure for further customization.
+Statistics are calculated once when the report is created and exposed through
+`report.results`; rendering another format or theme reuses them.
 
 Dots show medians. Lines show 95% bootstrap intervals across runs, not the
 range of individual operation times. A single run has no interval. The report
@@ -46,7 +48,7 @@ does not declare winners from overlapping or separated lines.
 
 ## Import pyperf
 
-Install `benchroom[pyperf]` to read pyperf JSON:
+Read pyperf JSON and draw charts with the same installation:
 
 ```python
 from benchroom import Report
@@ -63,17 +65,48 @@ runs. It accepts timing benchmarks in seconds.
 
 ## API
 
+### Choose a chart
+
+Use a comparison report for “which implementation is faster?”. Use
+`benchroom.plot.curves` for how latency changes across percentiles, or how cost
+grows with input size. Use `benchroom.plot.distribution` to show the fraction of
+observations below a threshold, without smoothing the data.
+
+```python
+from benchroom.plot import curves
+
+# Illustrative measurements: input size to elapsed milliseconds.
+figure = curves(
+    {"Implementation A": {100: 2.1, 1_000: 18.3, 10_000: 175.0}},
+    title="Encoding larger inputs",
+    xlabel="Input items",
+    ylabel="Milliseconds",
+)
+figure.savefig("scaling.svg")
+```
+
+Distribution plots need observations, not a handful of reported percentiles.
+Run summaries describe variation between runs; request times describe variation
+between requests. Label the population the plot actually shows.
+
+### Reference
+
 - `Series(case, name, values, x=None)` holds finite run measurements; `x` can
   label an input size. Its `median` and `interval` properties expose the analysis.
 - `Report(title, series, unit, better="lower", caption="")` groups comparable
   measurements. Use `better="higher"` for throughput. `figure()`, `markdown()`
   and `save()` share the same estimates.
+- `Summary` holds each result's case, implementation name, median, interval,
+  run count and optional size. Reports retain summaries rather than raw samples.
 - `benchroom.stats.percentile(values, fraction)` interpolates a percentile.
 - `benchroom.stats.median_interval(values, seed=0)` estimates the median's
   95% bootstrap interval.
 - `benchroom.stats.bootstrap_interval(size, statistic, seed=0, samples=10000)`
   passes resampled indexes to a statistic. Use the same indexes for both arms
   of a paired comparison.
+
+Matplotlib loads only when drawing a figure; statistics and Markdown tables
+do not import the plotting stack.
 
 Git tracks the benchmark code and its history. Keep measured results with your
 project when publishing charts; a brief caption should explain the machine,

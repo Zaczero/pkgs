@@ -32,7 +32,7 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/totp-rs"
 
 [dependency-groups]
 dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
-bench = ["benchroom[pyperf]", "pyotp", "pyperf"]
+bench = ["benchroom", "pyotp"]
 
 [tool.uv.sources]
 benchroom = { path = "../benchroom", editable = true }

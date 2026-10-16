@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.figure import Figure
-from matplotlib.ticker import EngFormatter
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
 
 from benchroom.stats import median_interval
 
@@ -45,6 +44,18 @@ class Series:
 
 
 @dataclass(frozen=True)
+class Summary:
+    """One series' calculated values, shared by every presentation."""
+
+    case: str
+    name: str
+    median: float
+    interval: tuple[float, float] | None
+    runs: int
+    x: float | None = None
+
+
+@dataclass(frozen=True)
 class Report:
     """Display comparable measurements with shared units and readable labels.
 
@@ -53,72 +64,73 @@ class Report:
     """
 
     title: str
-    series: tuple[Series, ...]
+    series: InitVar[tuple[Series, ...]]
     unit: str
     better: Literal['lower', 'higher'] = 'lower'
     caption: str = ''
+    results: tuple[Summary, ...] = field(init=False)
 
-    def __post_init__(self) -> None:
-        if not self.series:
+    def __post_init__(self, series: tuple[Series, ...]) -> None:
+        if not series:
             raise ValueError('report requires at least one series')
         if self.better not in {'lower', 'higher'}:
             raise ValueError('better must be lower or higher')
-        keys = [(series.case, series.name, series.x) for series in self.series]
+        keys = [(item.case, item.name, item.x) for item in series]
         if len(set(keys)) != len(keys):
             raise ValueError('duplicate case, implementation and size')
+        object.__setattr__(
+            self,
+            'results',
+            tuple(
+                Summary(
+                    item.case,
+                    item.name,
+                    item.median,
+                    item.interval,
+                    len(item.values),
+                    item.x,
+                )
+                for item in series
+            ),
+        )
 
     def figure(self, *, dark: bool = False) -> Figure:
         """Build an editable Matplotlib comparison figure with 95% intervals."""
-        background, foreground = (
-            ('#101820', '#ecf2f7') if dark else ('#ffffff', '#18232e')
-        )
-        muted = '#a8bac9' if dark else '#526475'
-        colors = (
-            ('#4aa8ec', '#e5a343', '#64c4ac', '#c797df')
-            if dark
-            else ('#1769aa', '#9a5700', '#007d66', '#8852a0')
-        )
-        names = list(dict.fromkeys(series.name for series in self.series))
-        cases = list(dict.fromkeys(series.case for series in self.series))
-        ordered = sorted(self.series, key=lambda series: cases.index(series.case))
-        figure = Figure(
-            figsize=(9, max(3.2, 1.8 + len(self.series) * 0.48)), layout='constrained'
-        )
-        FigureCanvasAgg(figure)
-        figure.set_facecolor(background)
-        axes = figure.subplots()
-        axes.set_facecolor(background)
+        from matplotlib.ticker import EngFormatter
+
+        from benchroom.plot import _COLORS, _figure
+
+        colors = _COLORS[dark]
+        names = dict.fromkeys(item.name for item in self.results)
+        styles = {name: colors[index % len(colors)] for index, name in enumerate(names)}
+        cases = {
+            case: index
+            for index, case in enumerate(
+                dict.fromkeys(item.case for item in self.results)
+            )
+        }
+        ordered = sorted(self.results, key=lambda item: cases[item.case])
+        figure = _figure(self.title, f'{self.unit} · {self.better} is better', '', dark)
+        figure.set_size_inches(9, max(3.2, 1.8 + len(self.results) * 0.48))
+        axes = figure.axes[0]
+        axes.grid(False, axis='y')
         for index, series in enumerate(ordered):
-            color = colors[names.index(series.name) % len(colors)]
+            color = styles[series.name]
             middle = series.median
             interval = series.interval
             if interval is not None:
                 axes.plot(interval, [index, index], color=color, linewidth=2.5)
             axes.plot(middle, index, marker='o', color=color, markersize=7)
         axes.set_yticks(
-            range(len(self.series)),
+            range(len(self.results)),
             [
                 f'{s.case} · {s.name}' + (f' · {s.x:g}' if s.x is not None else '')
                 for s in ordered
             ],
         )
         axes.invert_yaxis()
-        axes.set_xlabel(f'{self.unit} · {self.better} is better', color=muted)
         if self.unit == 'seconds':
             axes.xaxis.set_major_formatter(EngFormatter(unit='s'))
-        axes.set_title(
-            self.title,
-            loc='left',
-            fontsize=17,
-            fontweight='bold',
-            color=foreground,
-            pad=20,
-        )
-        axes.tick_params(colors=foreground, length=0, pad=9)
-        axes.grid(axis='x', alpha=0.18, color=muted)
-        axes.set_axisbelow(True)
-        for spine in axes.spines.values():
-            spine.set_visible(False)
         figure.supxlabel(
             '\n'.join(
                 filter(
@@ -130,7 +142,7 @@ class Report:
                 )
             ),
             fontsize=9,
-            color=muted,
+            color=axes.title.get_color(),
         )
         return figure
 
@@ -150,7 +162,7 @@ class Report:
             '| Case | Implementation | Size | Median | 95% interval | Runs |',
             '| --- | --- | ---: | ---: | --- | ---: |',
         ]
-        for series in self.series:
+        for series in self.results:
             interval = series.interval
             bounds = (
                 '—' if interval is None else f'{interval[0]:.4g} to {interval[1]:.4g}'
@@ -158,7 +170,7 @@ class Report:
             size = '—' if series.x is None else f'{series.x:g}'
             rows.append(
                 f'| {escape(series.case)} | {escape(series.name)} | {size} | '
-                f'{series.median:.4g} | {bounds} | {len(series.values)} |'
+                f'{series.median:.4g} | {bounds} | {series.runs} |'
             )
         rows.extend([
             '',

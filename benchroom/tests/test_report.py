@@ -23,6 +23,14 @@ def test_single_run_has_no_uncertainty_interval():
     assert Series('encode', 'A', (3,)).interval is None
 
 
+def test_report_exposes_run_summary():
+    report = Report('Encode', (Series('short', 'A', (2, 4, 6)),), 'milliseconds')
+    (result,) = report.results
+    assert result.median == 4
+    assert result.interval == (2, 6)
+    assert result.runs == 3
+
+
 @pytest.mark.parametrize('values', [(), (float('nan'),), (float('inf'),)])
 def test_invalid_samples_rejected(values):
     with pytest.raises(ValueError, match='finite measurements'):
