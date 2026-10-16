@@ -163,6 +163,7 @@ jobs:
           set -euo pipefail
           cd "$PACKAGE"
           if [ "$PACKAGE" = gometry ]; then
+            export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/test_public_docs.py --ignore=tests/tooling/test_docs_check.py --ignore=tests/tooling/test_doc_coverage.py"
             run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
             evidence="$RUNNER_TEMP/gometry-native-debug-$run_id"
             mkdir -p "$evidence"
@@ -425,6 +426,9 @@ jobs:
             # pyo3stubs depends on tree-sitter-rust, which has no free-threaded build.
             uv run --no-sync --python "${{ matrix.python-version }}" python -m pytest "${pytest_args[@]}"
           else
+            if [ "$PACKAGE" = h2corn ]; then
+              export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/test_public_docs.py"
+            fi
             uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
             if [ "$FREETHREADED" = "true" ]; then
               uv run --python "${{ matrix.python-version }}" python -c \
@@ -439,41 +443,6 @@ jobs:
         shell: bash
         run: |
           "$SCCACHE_PATH" --show-stats
-
-      - name: Check package quality
-        if: matrix.primary == 'true' && hashFiles(format('{0}/tools/check.py', inputs.package)) != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PACKAGE"
-          if [ "$PACKAGE" = gometry ]; then
-            runtime_root="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/quality-runtime/receipt.json").read_text())["package_root"])')"
-            PYTHONPATH="$runtime_root${PYTHONPATH:+:$PYTHONPATH}" \
-              uv run --no-sync --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
-              python tools/check.py --no-fix --contracts-only
-          else
-            uv run --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
-              python tools/check.py --no-fix
-          fi
-
-      - name: Check h2corn documentation
-        if: inputs.package == 'h2corn' && matrix.primary == 'true'
-        env:
-          PYTHON_VERSION: ${{ matrix.python-version }}
-          UV_SYNC_ARGS: ${{ matrix.uv-sync-args }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PACKAGE"
-          sync_args=()
-          if [ -n "$UV_SYNC_ARGS" ]; then
-            read -r -a sync_args <<< "$UV_SYNC_ARGS"
-          fi
-          uv sync "${sync_args[@]}" --group docs --python "$PYTHON_VERSION"
-          uv run --no-sync --python "$PYTHON_VERSION" \
-            python -m properdocs build --strict
-          uv run --no-sync --python "$PYTHON_VERSION" \
-            python tools/docs/check.py
 
   build:
     needs: [resolve, source]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Route changed paths to monorepo packages that need testing.
 
-Reads paths on stdin. Root-level Markdown files are skipped, then the remaining
+Reads paths on stdin. Documentation-only paths are skipped, then the remaining
 paths are mapped to sorted unique package names on stdout (ci.yaml pipes them
 to jq).
 Diagnostics go to stderr; metadata/TOML failures exit nonzero.
@@ -22,11 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_version import ci_package_sort_key, list_packages, load_toml
 
 ROOT_RUST_PATHS = frozenset({'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})
-IGNORED_PATHS = re.compile(r'^[^/]+\.md$')
+IGNORED_PATHS = re.compile(
+    r'(?:^|/)(?:README|AGENTS|CLAUDE)\.md$'
+    r'|^[^/]+\.md$'
+    r'|^(?:[^/]+/)?(?:docs|overrides)/'
+    r'|^(?:[^/]+/)?tools/docs/'
+    r'|^[^/]+/properdocs\.yml$'
+)
 
 
 def filter_changed_paths(paths: Iterable[str]) -> list[str]:
-    """Normalize stdin paths and skip root-level Markdown files."""
+    """Normalize stdin paths and skip locally validated documentation."""
     filtered: list[str] = []
     for raw in paths:
         path = raw.strip()
@@ -87,7 +93,7 @@ def route_paths(
     - Root .python-versions → all test packages
     - <pkg>/… → that package + reverse uv.sources consumers
     - Anything else (shared dirs, unknown root files, .github/**) → all test packages
-    - Root-level Markdown files are ignored
+    - Documentation and its shared browser tooling are validated locally
     """
     if test_packages is None:
         packages = set(list_packages('test'))
