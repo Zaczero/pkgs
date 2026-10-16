@@ -88,3 +88,137 @@
   );
   line-height: 0;
 }
+
+.md-typeset .benchmark-results {
+  border-color: var(--md-default-fg-color--lightest);
+  box-shadow: none;
+}
+
+.md-typeset .benchmark-results > summary {
+  background: var(--md-code-bg-color);
+}
+
+.md-typeset table.benchmark-table {
+  --benchmark-win: #166534;
+  --benchmark-loss: #9a3412;
+  --benchmark-muted: #53636b;
+  width: 100%;
+  margin-block: 1rem 1.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table.benchmark-table {
+  --benchmark-win: #86efac;
+  --benchmark-loss: #fdba74;
+  --benchmark-muted: #bcc4cd;
+}
+
+.benchmark-table :is(th, td) {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.benchmark-table thead th {
+  background: var(--md-code-bg-color);
+  font-weight: 600;
+}
+
+.benchmark-table th:first-child {
+  width: 50%;
+  text-align: start;
+}
+
+.benchmark-table tbody th {
+  font-weight: 400;
+}
+
+.benchmark-table :is(td, thead th:not(:first-child)) {
+  text-align: end;
+}
+
+.benchmark-table .benchmark-api {
+  font-weight: 600;
+}
+
+.benchmark-table
+  :is(
+    .benchmark-api,
+    .benchmark-time,
+    .benchmark-status,
+    .benchmark-runner,
+    .benchmark-detail
+  ) {
+  display: block;
+}
+
+.benchmark-table .benchmark-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.benchmark-table :is(.benchmark-detail, .benchmark-runner) {
+  margin-top: 0.2rem;
+  color: var(--benchmark-muted);
+  font-size: 0.67rem;
+}
+
+.benchmark-table .benchmark-status {
+  margin-top: 0.2rem;
+  font-weight: 600;
+}
+
+.benchmark-table .benchmark-faster td:nth-child(2),
+.benchmark-table .benchmark-slower td:nth-child(3) {
+  background: color-mix(in srgb, var(--benchmark-win) 10%, var(--md-default-bg-color));
+}
+
+.benchmark-table .benchmark-faster .benchmark-status {
+  color: var(--benchmark-win);
+}
+
+.benchmark-table .benchmark-slower .benchmark-status {
+  color: var(--benchmark-loss);
+}
+
+.benchmark-table .benchmark-mobile-label {
+  display: none;
+}
+
+@media (max-width: 40em) {
+  .md-typeset table.benchmark-table,
+  .benchmark-table tbody {
+    display: block;
+  }
+
+  .benchmark-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .benchmark-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .benchmark-table th:first-child {
+    grid-column: 1 / -1;
+    width: auto;
+  }
+
+  .benchmark-table .benchmark-mobile-label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.67rem;
+    color: var(--benchmark-muted);
+  }
+}

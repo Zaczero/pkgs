@@ -8,6 +8,7 @@ import statistics
 import sys
 from dataclasses import dataclass
 from glob import glob
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -748,37 +749,51 @@ def format_speedup(row: OpRow) -> str:
         label = f'{row.ratio:.2f}× faster'  # noqa: RUF001
     else:
         label = f'{1.0 / row.ratio:.2f}× slower'  # noqa: RUF001
-    return f'<span class="benchmark-status benchmark-{row.status}">{label}</span>'
+    return f'<span class="benchmark-status">{label}</span>'
 
 
-def row_label(row: OpRow) -> str:
-    markers = []
-    if 'geodesic' in row.meta.footnotes:
-        markers.append('†')
-    if 'in_core' in row.meta.footnotes:
-        markers.append('‡')
-    text = f'{row.meta.label} — {row.meta.workload}'
-    if row.meta.scaling is not None:
-        text += (
-            f' ({row.meta.scaling["dimension"]}='
-            f'{row.meta.scaling["point_label"]} {row.meta.scaling["unit"]})'
-        )
-    return f'{text} {"".join(markers)}'.rstrip()
-
-
-def _section_table(rows: list[OpRow]) -> list[str]:
+def _section_table(
+    rows: list[OpRow],
+    normalized: list[tuple[float, float]] | None = None,
+) -> list[str]:
     lines = [
-        '| API / input | gometry | Comparator | Relative |',
-        '|---|---:|---:|---:|',
+        '<table class="benchmark-table">',
+        '<thead><tr><th scope="col">API / input</th>'
+        '<th scope="col">gometry</th><th scope="col">Comparator</th></tr></thead>',
+        '<tbody>',
     ]
-    lines.extend(
-        (
-            f'| {row_label(row)} | {_humanize_seconds(row.gometry.median)} | '
-            f'{row.meta.competitor_label} · {_humanize_seconds(row.competitor.median)} | '
-            f'{format_speedup(row)} |'
+    for index, row in enumerate(rows):
+        label = escape(row.meta.label)
+        workload = escape(row.meta.workload)
+        gometry_work = competitor_work = ''
+        if normalized is not None:
+            scaling = row.meta.scaling
+            assert scaling is not None
+            useful = row.blocks[0].useful_work
+            label = escape(f'{scaling["point_label"]} {scaling["unit"]}')
+            workload = escape(f'{useful["count"]} {useful["unit"]}')
+            gometry_work, competitor_work = (
+                f'<small class="benchmark-detail">{_humanize_seconds(value)} / work</small> '
+                for value in normalized[index]
+            )
+        markers = ''.join(
+            marker
+            for name, marker in (('geodesic', '†'), ('in_core', '‡'))
+            if name in row.meta.footnotes
         )
-        for row in rows
-    )
+        lines.append(
+            f'<tr class="benchmark-{row.status}">'
+            f'<th scope="row"><span class="benchmark-api">{label}</span> '
+            f'<small class="benchmark-detail">{workload} {markers}</small></th>'
+            '<td><span class="benchmark-mobile-label">gometry</span> '
+            f'<span class="benchmark-time">{_humanize_seconds(row.gometry.median)}</span> '
+            f'{gometry_work}{format_speedup(row)}</td>'
+            '<td><span class="benchmark-mobile-label">Comparator</span> '
+            f'<span class="benchmark-time">{_humanize_seconds(row.competitor.median)}</span> '
+            f'<span class="benchmark-runner">{escape(row.meta.competitor_label)}</span> '
+            f'{competitor_work}</td></tr>'
+        )
+    lines.extend(('</tbody>', '</table>'))
     return lines
 
 
@@ -813,21 +828,12 @@ def _scaling_sections(rows: list[OpRow]) -> list[str]:
             f'Dimension `{scaling["dimension"]}` in `{scaling["unit"]}`; '
             'each point is an independent paired workload.',
             '',
-            '| Point | Useful work | gometry | Comparator | Ratio C/G | gometry/work | Comparator/work | Status |',
-            '|---:|---:|---:|---:|---:|---:|---:|---:|',
         ))
         lines.extend(
-            (
-                f'| `{row.meta.scaling["point_label"]}` | '
-                f'`{value["count"]} {value["unit"]}` | '
-                f'{_humanize_seconds(row.gometry.median)} | '
-                f'{row.meta.competitor_label} · {_humanize_seconds(row.competitor.median)} | '
-                f'{row.ratio:.3f} | '
-                f'{_humanize_seconds(gometry_normalized[index])} | '
-                f'{_humanize_seconds(competitor_normalized[index])} | '
-                f'{format_speedup(row)} |'
+            _section_table(
+                ordered,
+                list(zip(gometry_normalized, competitor_normalized, strict=True)),
             )
-            for index, (row, value) in enumerate(zip(ordered, work, strict=True))
         )
         lines.extend((
             '',
@@ -949,9 +955,7 @@ def render(
         lines.extend((
             f'### {domain}',
             '',
-            f'<div markdown="1" class="benchmark-table-scroll" role="region" tabindex="0" aria-label="{domain} benchmark results">',
             *_section_table(domain_rows),
-            '</div>',
             '',
         ))
     if any('geodesic' in row.meta.footnotes for row in rows):

@@ -1113,7 +1113,6 @@ def test_publication_retains_portable_evidence_and_reuses_its_summary(
     )
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
-    assert '<table>' not in summary_md
     assert '#### union_all: n-ary overlay input count' in summary_md
     assert 'raw measurements, oracle, and producer receipts' in summary_md
     assert 'producer receipt index' in summary_md
