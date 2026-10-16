@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from benchroom.plot import curves, save
-from matplotlib.ticker import EngFormatter
+from matplotlib.ticker import EngFormatter, PercentFormatter, StrMethodFormatter
 
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / 'benches' / 'support'))
@@ -17,6 +17,7 @@ from summarize_bench import (
     _build_rows,
     _load_all_blocks,
     _parse_public_operations,
+    _scaling_sections,
     load_run_artifacts,
     validate_exact_paired_matrix,
 )
@@ -38,38 +39,41 @@ def on_pre_build(**_kwargs):
         expected_blocks=payload['sampling']['measured_blocks'],
         expected_leads=tuple(payload['sampling']['lead_orders']),
     )
-    for curve, title, xlabel in (
-        (
-            'spatial-index-cardinality',
-            'Spatial index queries',
-            'Indexed polygons · 1,000 queries per call',
-        ),
-        (
-            'overlay-disjoint-input-count',
-            'Union of disjoint polygons',
-            'Input polygons',
-        ),
-    ):
-        selected = [
-            row
-            for row in rows
-            if row.meta.scaling and row.meta.scaling['curve_id'] == curve
-        ]
+    by_curve = {}
+    for row in rows:
+        if row.meta.scaling is not None:
+            by_curve.setdefault(row.meta.scaling['curve_id'], []).append(row)
+    for curve, selected in by_curve.items():
+        scaling = selected[0].meta.scaling
         values = {
             'gometry': {
                 row.meta.scaling['point']: row.gometry.median for row in selected
             },
-            'Shapely': {
+            selected[0].meta.competitor_label: {
                 row.meta.scaling['point']: row.competitor.median for row in selected
             },
         }
         for dark in (False, True):
             figure = curves(
                 values,
-                title=title,
-                xlabel=xlabel,
-                ylabel='Median seconds per call',
+                title='',
+                xlabel=scaling['dimension'].replace('-', ' ').capitalize(),
+                ylabel='Call time',
                 dark=dark,
+            )
+            figure.set_size_inches(4, 3)
+            axes = figure.axes[0]
+            axes.xaxis.label.set_fontsize(12)
+            axes.yaxis.label.set_fontsize(12)
+            axes.tick_params(labelsize=12, pad=6)
+            axes.set_xticks(sorted(values['gometry']))
+            axes.xaxis.set_major_formatter(
+                PercentFormatter(xmax=1)
+                if scaling['unit'] == 'fraction'
+                else StrMethodFormatter('{x:,.0f}')
+            )
+            axes.legend(
+                labelcolor=axes.xaxis.label.get_color(), frameon=False, fontsize=12
             )
             for index, name in enumerate(('gometry', 'competitor')):
                 for row in selected:
@@ -87,6 +91,9 @@ def on_pre_build(**_kwargs):
             figure.axes[0].set_ylim(bottom=0)
             theme = 'dark' if dark else 'light'
             save(figure, _ROOT / f'docs/assets/benchmark-{curve}-{theme}.svg')
+    section = _ROOT / 'target/docs/benchmark-scaling.md'
+    section.parent.mkdir(parents=True, exist_ok=True)
+    section.write_text('\n'.join(_scaling_sections(rows, charts=True)) + '\n')
 
 
 if __name__ == '__main__':

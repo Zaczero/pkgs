@@ -14,19 +14,11 @@ Median call times.
 
 ## Scaling
 
+<span id="scaling-curves"></span>
+
 Whiskers span the six paired-block medians.
 
-![Spatial index query times for gometry and Shapely as indexed polygon count increases.](../assets/benchmark-spatial-index-cardinality-light.svg#only-light)
-![Spatial index query times for gometry and Shapely as indexed polygon count increases.](../assets/benchmark-spatial-index-cardinality-dark.svg#only-dark)
-
-1,000 bounding-box candidate queries per call, without exact predicate refinement.
-
-![Union call times for gometry and Shapely on increasing counts of disjoint polygons.](../assets/benchmark-overlay-disjoint-input-count-light.svg#only-light)
-![Union call times for gometry and Shapely on increasing counts of disjoint polygons.](../assets/benchmark-overlay-disjoint-input-count-dark.svg#only-dark)
-
-Union of disjoint unit squares.
-
---8<-- "benches/results/current/summary.md:scaling"
+--8<-- "target/docs/benchmark-scaling.md"
 
 ## What the run measures
 
