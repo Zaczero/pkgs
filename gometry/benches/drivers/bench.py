@@ -1766,7 +1766,11 @@ def main() -> None:
                     package_root=(
                         package_root if plan.get('kind') == 'resource' else None
                     ),
-                    case_path=plan.get('case_path'),
+                    case_path=(
+                        Path(plan['case_path'])
+                        if plan.get('kind') == 'resource'
+                        else None
+                    ),
                     result_path=(
                         Path(plan['output']) if plan.get('kind') == 'resource' else None
                     ),
