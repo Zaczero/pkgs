@@ -1,9 +1,8 @@
 # pyo3stubs
 
-`pyo3stubs` helps maintainers of Python packages built with PyO3 keep
-hand-authored `.pyi` stubs aligned with an importable extension and its Rust
-source. It requires Python 3.11 or newer; gates that inspect the compiled
-extension need that extension built in the interpreter running the checks.
+Keep your PyO3 extension's typing stubs, runtime API, and Rust docstrings in
+sync. `pyo3stubs` checks hand-authored `.pyi` files and fills in their
+documentation without replacing precise overloads or return types. Python 3.11+.
 
 [Install](#install) · [First check](#first-check) ·
 [Configuration and gate reference](REFERENCE.md) ·
@@ -11,27 +10,16 @@ extension need that extension built in the interpreter running the checks.
 
 ## Install
 
-Add `pyo3stubs`, Maturin, and pytest to the consumer project's development
-dependencies:
+Add to your PyO3 project's development dependencies:
 
 ```bash
 uv add --dev pyo3stubs maturin pytest
 ```
 
-Build and install the extension into that project's environment before running
-gates that compare against the runtime:
-
-```bash
-uv run maturin develop --release
-```
-
 ## Why
 
-PyO3 packages in this monorepo ship **hand-authored** stubs so the public
-surface can express overloads, `Literal` unions, and precise return types that
-the compiled module cannot declare. That is the right call for typing quality.
-
-The cost is drift across three truths:
+Hand-authored stubs can express overloads, `Literal` unions, and return types
+that runtime introspection cannot recover. But they can drift from the code:
 
 | Source | Owns |
 |--------|------|
@@ -39,32 +27,13 @@ The cost is drift across three truths:
 | **Compiled runtime** (`_lib.so`) | members, inspectable signatures, subclassability, `__doc__` |
 | **Hand-authored `.pyi`** | types, overloads, IDE/docs typing surface |
 
-`pyo3stubs` keeps those three from lying about each other. It does **not**
-invent signatures; it validates them and can synchronize runtime docstrings
-into the stub, reading Rust `#[new]` comments where PyO3 does not expose
-constructor prose at runtime.
-
-The [configuration and gate reference](REFERENCE.md) is the canonical list of
-public configuration fields, defaults, gate activation, runtime requirements,
-result statuses, and remedies. The CLI also summarizes each gate with
-`uv run pyo3stubs --help`.
+`pyo3stubs` checks all three. It also copies runtime docstrings and Rust
+constructor documentation into the stub.
 
 `validity` and `stubtest` use mypy. Several source-scanning and prose-generation
 gates also require CPython because their parser or generator dependencies do
 not support PyPy. The reference identifies each CPython-only gate and its
 reason; other gates can still depend on the consumer extension and configuration.
-
-**Both checkers, because neither sees everything.** pyright reports an
-`__all__` entry that names nothing and other diagnostics mypy has no code for.
-mypy catches a dead overload — one an earlier variant fully covers — that
-pyright files under `reportOverlappingOverload`, the rule a stub turns off when
-its scalar and batch overloads overlap on purpose; `validity` therefore enables
-mypy's separate `overload-cannot-match` whatever the project's config says.
-
-An active gate that finds no subjects reports `nothing to check`; an optional
-gate with no non-empty configuration reports `inactive`. Neither means that
-the gate found parity. A CLI exit status of 0 means no violation was reported,
-not that every gate examined a subject.
 
 ## First check
 
@@ -105,15 +74,12 @@ uv run maturin develop --release
 uv run pyo3stubs structural --config tools/stubconfig.py
 ```
 
-For a positive check, use the stub that matches the compiled module. To see the
-failure path, temporarily add `@final` to a stub class whose PyO3 class is
-subclassable, then run the same command: `structural` reports the mismatch and
-returns status 1. Remove the annotation and rerun the command to restore the
-clean result.
+For example, `structural` reports a mismatch if a stub declares a class
+`@final` but the extension allows subclassing.
 
 ## pytest integration: `pyo3stubs.testing.gate_test`
 
-Call `gate_test` once in the consumer test module to collect one named pytest
+Call `gate_test` once in your test module to collect one named pytest
 case per registered gate.
 
 ```python
@@ -151,24 +117,19 @@ uv run pyo3stubs reference
 uv run pyo3stubs --help
 ```
 
-`check-all` reports every gate outcome in registry order. A skipped, disabled,
+`check-all` runs gates concurrently and reports every outcome in registry order.
+A skipped, disabled,
 inactive, or `nothing to check` result is visible but does not change its exit
 status; a collector crash is reported as a violation, and the remaining gates
 still run. The pytest adapter skips non-violation outcomes that did not examine
 subjects, with the reason. `reference` prints the configuration and gate
 reference to standard output.
 
-`check-all` runs gates concurrently and reports their outcomes in registry
-order, followed by the total elapsed time. A single gate reports its own
-elapsed time. The `validity` gate keeps mypy's analysis cache under
-`$XDG_CACHE_HOME/pyo3stubs` (or `~/.cache/pyo3stubs` when `XDG_CACHE_HOME` is
-unset).
+<a id="operator-loop"></a>
 
-## Operator loop
+## Update stub documentation
 
-Run these commands from the consumer project root after installing its
-development dependencies and building the extension into the selected Python
-environment:
+After changing the extension, rebuild it and synchronize its docstrings:
 
 ```bash
 uv run maturin develop --release
@@ -179,7 +140,7 @@ uv run pyo3stubs check-all --config tools/stubconfig.py
 
 `gen-docs` writes the rendered stub even when `doc-contract` reports a
 violation, then returns status 1. Review and repair the generated stub before
-using the gate result as certification.
+rerunning the checks.
 
 ## How the Rust source is read
 
