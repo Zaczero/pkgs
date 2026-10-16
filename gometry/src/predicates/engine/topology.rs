@@ -25,10 +25,15 @@ pub(crate) fn topology_scalar_pair(
                 GateOperand::cartesian(ShapeRow::Shape(right_shape), right.bounds()),
             )
         },
-        PreparedTopologyPair::Geographic { left, right } => (
-            GateOperand::from_prepared(&left),
-            GateOperand::from_prepared(&right),
-        ),
+        PreparedTopologyPair::Geographic { left, right } => {
+            if let Some(answer) = super::points::geographic_point_predicate(spec, left, right)? {
+                return Ok(answer);
+            }
+            (
+                GateOperand::from_prepared(&left),
+                GateOperand::from_prepared(&right),
+            )
+        },
     };
     // The array, index and coverer paths all run the pre-topology gates before
     // admitting a pair to the relation; the scalar pair was the one lane that
@@ -66,6 +71,11 @@ pub(crate) fn topology_pair_after_gates(
             return Ok(left.intersects(right)? == (spec.predicate == Predicate::Intersects));
         }
         return crate::geometry::evaluate_cartesian_predicate(left, right, spec.predicate);
+    }
+    if let PreparedTopologyPair::Geographic { left, right } = *operands
+        && let Some(answer) = super::points::geographic_point_predicate(spec, left, right)?
+    {
+        return Ok(answer);
     }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }

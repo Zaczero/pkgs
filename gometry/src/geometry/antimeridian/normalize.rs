@@ -696,7 +696,7 @@ pub(crate) fn self_intersections_data_in_frame(
             data.shape().self_intersections()
         },
         crate::geometry::GeographicTopologyRoute::Quotient => data
-            .geographic_diagnostic_topology(view)?
+            .geographic_occurrence_topology(view)?
             .self_intersection_points(data.shape()),
     }
 }

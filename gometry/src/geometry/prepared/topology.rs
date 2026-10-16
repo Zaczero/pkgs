@@ -85,7 +85,7 @@ impl PreparedPlan {
             .cloned())
     }
 
-    pub(crate) fn geographic_diagnostic_topology(
+    pub(crate) fn geographic_occurrence_topology(
         &self,
         view: ScalarGeographicView<'_>,
     ) -> Result<Arc<ExactGeographicTopology>> {
@@ -94,10 +94,10 @@ impl PreparedPlan {
         }
         let products = self.topology().geographic_products(view.frame());
         products
-            .diagnostic_exact
+            .occurrence_exact
             .get_or_try_init(|| {
-                // Set membership can fold shared owners; diagnostics observe
-                // the contacts between their distinct source occurrences.
+                // Set membership can fold shared owners; boundary parity and
+                // diagnostics observe their distinct source occurrences.
                 if self.shape().has_repeated_shared_owner() {
                     ExactGeographicTopology::from_views(view.frame(), std::iter::once(view))
                         .map(Arc::new)

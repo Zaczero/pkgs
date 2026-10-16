@@ -59,7 +59,7 @@ impl GeographicTopologyKey {
 pub(super) struct GeographicTopologyProducts {
     pub(super) route: OnceLock<GeographicTopologyRoute>,
     pub(super) exact: OnceLock<Arc<ExactGeographicTopology>>,
-    pub(super) diagnostic_exact: OnceLock<Arc<ExactGeographicTopology>>,
+    pub(super) occurrence_exact: OnceLock<Arc<ExactGeographicTopology>>,
     pub(super) validity: OnceLock<Option<Box<ValidationIssue>>>,
 }
 
@@ -171,19 +171,19 @@ impl HeapSize for FrameDependentEntry {
 impl HeapSize for GeographicTopologyProducts {
     fn heap_bytes(&self) -> usize {
         let exact = self.exact.heap_bytes();
-        let diagnostic = self.diagnostic_exact.get().map_or(0, |diagnostic| {
+        let occurrences = self.occurrence_exact.get().map_or(0, |occurrences| {
             if self
                 .exact
                 .get()
-                .is_some_and(|exact| Arc::ptr_eq(exact, diagnostic))
+                .is_some_and(|exact| Arc::ptr_eq(exact, occurrences))
             {
                 0
             } else {
-                diagnostic.heap_bytes()
+                occurrences.heap_bytes()
             }
         });
         exact
-            .saturating_add(diagnostic)
+            .saturating_add(occurrences)
             .saturating_add(self.validity.heap_bytes())
     }
 }

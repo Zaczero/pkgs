@@ -3,12 +3,13 @@ use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::relate::De9im;
+use crate::geometry::source_support::PointMembership;
 use crate::geometry::{
-    Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, Loc, Point,
+    Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, Point,
     PreparedPlan, Ring, Shape, storage,
 };
 #[cfg(test)]
-use crate::geometry::{CoordSeq, Polygon, XY, predicates};
+use crate::geometry::{CoordSeq, Loc, Polygon, XY, predicates};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GeographicPrepared<'a> {
@@ -84,9 +85,14 @@ impl GeographicPrepared<'_> {
 
     /// Exact set membership of an admitted point in this prepared frame.
     pub(crate) fn point_covers(self, point: Point) -> Result<bool> {
-        let Some(bounds) = self.plan.bounds() else {
-            return Ok(false);
-        };
+        self.point_membership(point, PointMembership::BoundaryInclusive)
+    }
+
+    pub(crate) fn point_membership(
+        self,
+        point: Point,
+        membership: PointMembership,
+    ) -> Result<bool> {
         let longitude = self
             .frame()
             .longitude()
@@ -94,15 +100,11 @@ impl GeographicPrepared<'_> {
             .expect("the query point was admitted in the prepared geographic frame");
         let point = Point::new_raw_xy(longitude.get(), point.y);
         if self.chart_route == GeographicTopologyRoute::ExactPartition {
-            if point.x < bounds.minx()
-                || point.x > bounds.maxx()
-                || point.y < bounds.miny()
-                || point.y > bounds.maxy()
-            {
-                return Ok(false);
-            }
-            return self.plan.cartesian_point_covers(point);
+            return self.plan.cartesian_point_membership(point, membership);
         }
+        let Some(bounds) = self.plan.bounds() else {
+            return Ok(false);
+        };
         // Chart linework cannot leave its source latitude interval. Polygon
         // interiors may enclose a pole beyond their boundary vertices.
         if !self.plan.shape().has_area_parts()
@@ -110,7 +112,11 @@ impl GeographicPrepared<'_> {
         {
             return Ok(false);
         }
-        Ok(self.exact_topology()?.locate_point(point)?.geometry != Loc::Exterior)
+        let topology = match membership {
+            PointMembership::BoundaryInclusive => self.exact_topology()?,
+            PointMembership::Strict => self.plan.geographic_occurrence_topology(self.view)?,
+        };
+        Ok(membership.accepts(topology.locate_point(point)?.geometry))
     }
 }
 

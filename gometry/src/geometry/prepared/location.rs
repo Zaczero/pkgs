@@ -159,12 +159,6 @@ impl PreparedPlan {
         self.prepare_point_queries(0).map(Some)
     }
 
-    /// Boolean set membership does not observe a line point's boundary versus
-    /// interior label, so shared collection owners can be visited once.
-    pub(crate) fn cartesian_point_covers(&self, point: Point) -> Result<bool> {
-        self.point_membership_without_bounds(point, PointMembership::BoundaryInclusive)
-    }
-
     fn point_membership_without_bounds(
         &self,
         point: Point,

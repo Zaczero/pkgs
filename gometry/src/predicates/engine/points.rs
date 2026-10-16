@@ -35,6 +35,27 @@ pub(super) fn cartesian_point_predicate(
     Ok(None)
 }
 
+pub(super) fn geographic_point_predicate(
+    spec: &PredicateSpec,
+    left: super::GeographicPrepared<'_>,
+    right: super::GeographicPrepared<'_>,
+) -> crate::error::Result<Option<bool>> {
+    for (target, point_operand, point_is_left) in [(left, right, false), (right, left, true)] {
+        let Some(point) = ShapeRow::Shape(point_operand.plan().shape()).point() else {
+            continue;
+        };
+        if matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {
+            return target
+                .point_covers(point)
+                .map(|intersects| Some(intersects == (spec.predicate == Predicate::Intersects)));
+        }
+        if let Some(membership) = spec.predicate.point_membership(point_is_left) {
+            return target.point_membership(point, membership).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn row_point_intersection(
     spec: &PredicateSpec,
     left: ShapeRow<'_>,
