@@ -13,17 +13,18 @@ from matplotlib.ticker import EngFormatter, PercentFormatter, StrMethodFormatter
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / 'benches' / 'support'))
 from summarize_bench import (
+    DOMAIN_ORDER,
     PRACTICAL_EQUIVALENCE_MARGIN,
     _build_rows,
+    _humanize_seconds,
     _load_all_blocks,
     _parse_public_operations,
-    _scaling_sections,
     load_run_artifacts,
     validate_exact_paired_matrix,
 )
 
 
-def on_pre_build(**_kwargs):
+def on_pre_build(config, **_kwargs):
     summary = (_ROOT / 'benches/results/current/summary.md').read_text()
     match = re.search(r'assets/benchmark-runs/([0-9a-f]+)/run\.json', summary)
     if match is None:
@@ -43,8 +44,32 @@ def on_pre_build(**_kwargs):
     for row in rows:
         if row.meta.scaling is not None:
             by_curve.setdefault(row.meta.scaling['curve_id'], []).append(row)
-    for curve, selected in by_curve.items():
+    cards = ['<div class="benchmark-scaling-grid" markdown="1">', '']
+    for curve, selected in sorted(
+        by_curve.items(), key=lambda item: DOMAIN_ORDER.index(item[1][0].meta.domain)
+    ):
+        selected.sort(key=lambda row: row.meta.scaling['point'])
         scaling = selected[0].meta.scaling
+        label = selected[0].meta.label
+        cards.extend((
+            '<div class="benchmark-scaling-card" markdown="1">',
+            '',
+            f'### {label}',
+            '',
+            selected[0].meta.workload + '.',
+            '',
+        ))
+        if selected[0].meta.domain == 'Spatial index':
+            cards.extend((
+                'Bounding-box candidates, without exact predicate refinement.',
+                '',
+            ))
+        measurements = '; '.join(
+            f'{row.meta.scaling["point"]:g} {scaling["unit"]}: '
+            f'gometry {_humanize_seconds(row.gometry.median)}, '
+            f'{row.meta.competitor_label} {_humanize_seconds(row.competitor.median)}'
+            for row in selected
+        )
         values = {
             'gometry': {
                 row.meta.scaling['point']: row.gometry.median for row in selected
@@ -91,10 +116,25 @@ def on_pre_build(**_kwargs):
             figure.axes[0].set_ylim(bottom=0)
             theme = 'dark' if dark else 'light'
             save(figure, _ROOT / f'docs/assets/benchmark-{curve}-{theme}.svg')
-    section = _ROOT / 'target/docs/benchmark-scaling.md'
-    section.parent.mkdir(parents=True, exist_ok=True)
-    section.write_text('\n'.join(_scaling_sections(rows, charts=True)) + '\n')
+            cards.extend((
+                f'![{label}. Median call times — {measurements}.]'
+                f'(../assets/benchmark-{curve}-{theme}.svg#only-{theme})',
+                '',
+            ))
+        cards.extend(('</div>', ''))
+    cards.append('</div>')
+    config.extra['_benchmark_scaling'] = '\n'.join(cards)
+
+
+def on_page_markdown(markdown, page, config, **_kwargs):
+    if page.file.src_uri == 'about/benchmarks.md':
+        return markdown.replace(
+            '<!-- benchmark-scaling -->', config.extra['_benchmark_scaling']
+        )
+    return markdown
 
 
 if __name__ == '__main__':
-    on_pre_build()
+    from types import SimpleNamespace
+
+    on_pre_build(SimpleNamespace(extra={}))

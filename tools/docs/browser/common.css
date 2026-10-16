@@ -118,31 +118,6 @@
   background: none;
 }
 
-.md-typeset .benchmark-scaling-card details {
-  margin-bottom: 0;
-  border-color: var(--md-default-fg-color--lightest);
-  box-shadow: none;
-}
-
-.md-typeset .benchmark-scaling-card summary {
-  padding-inline-start: 0.6rem;
-  background: var(--md-code-bg-color);
-}
-
-.md-typeset .benchmark-scaling-card summary::before {
-  display: none;
-}
-
-.benchmark-scaling-card .benchmark-table :is(th, td) {
-  padding: 0.5rem;
-}
-
-@media (width > 40em) {
-  .benchmark-scaling-card .benchmark-table th:first-child {
-    width: 34%;
-  }
-}
-
 .md-typeset table.benchmark-table {
   --benchmark-win: #166534;
   --benchmark-loss: #9a3412;

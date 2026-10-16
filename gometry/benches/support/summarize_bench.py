@@ -798,18 +798,13 @@ def _section_table(
     return lines
 
 
-def _scaling_sections(rows: list[OpRow], *, charts: bool = False) -> list[str]:
+def _scaling_sections(rows: list[OpRow]) -> list[str]:
     by_curve: dict[str, list[OpRow]] = {}
     for row in rows:
         if row.meta.scaling is not None:
             by_curve.setdefault(str(row.meta.scaling['curve_id']), []).append(row)
-    lines: list[str] = (
-        ['<div class="benchmark-scaling-grid" markdown="1">', ''] if charts else []
-    )
-    groups = list(by_curve.values())
-    if charts:
-        groups.sort(key=lambda group: DOMAIN_ORDER.index(group[0].meta.domain))
-    for curve_rows in groups:
+    lines: list[str] = []
+    for curve_rows in by_curve.values():
         ordered = sorted(curve_rows, key=lambda row: row.meta.scaling['point'])
         scaling = ordered[0].meta.scaling
         if scaling is None:
@@ -828,41 +823,13 @@ def _scaling_sections(rows: list[OpRow], *, charts: bool = False) -> list[str]:
             [row.competitor.median for row in ordered],
             [int(value['count']) for value in work],
         )
-        if charts:
-            label = ordered[0].meta.label
-            curve_id = scaling['curve_id']
-            lines.extend((
-                '<div class="benchmark-scaling-card" markdown="1">',
-                '',
-                f'### {label}',
-                '',
-                ordered[0].meta.workload + '.',
-                '',
-            ))
-            if ordered[0].meta.domain == 'Spatial index':
-                lines.extend((
-                    'Bounding-box candidates, without exact predicate refinement.',
-                    '',
-                ))
-            for theme in ('light', 'dark'):
-                lines.extend((
-                    f'![{label}: gometry and {ordered[0].meta.competitor_label} median call times.]'
-                    f'(../assets/benchmark-{curve_id}-{theme}.svg#only-{theme})',
-                    '',
-                ))
-            lines.extend((
-                '<details markdown="1">',
-                '<summary>Timings</summary>',
-                '',
-            ))
-        else:
-            lines.extend((
-                f'#### {ordered[0].meta.label}',
-                '',
-                f'Dimension `{scaling["dimension"]}` in `{scaling["unit"]}`; '
-                'each point is an independent paired workload.',
-                '',
-            ))
+        lines.extend((
+            f'#### {ordered[0].meta.label}',
+            '',
+            f'Dimension `{scaling["dimension"]}` in `{scaling["unit"]}`; '
+            'each point is an independent paired workload.',
+            '',
+        ))
         lines.extend(
             _section_table(
                 ordered,
@@ -879,10 +846,6 @@ def _scaling_sections(rows: list[OpRow], *, charts: bool = False) -> list[str]:
             f'comparator/work {competitor_normalized[-1] / competitor_normalized[0]:.3f}x.',
         ))
         lines.append('')
-        if charts:
-            lines.extend(('</details>', '', '</div>', ''))
-    if charts:
-        lines.append('</div>')
     return lines
 
 

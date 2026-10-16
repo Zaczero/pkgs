@@ -18,7 +18,7 @@ Median call times.
 
 Whiskers span the six paired-block medians.
 
---8<-- "target/docs/benchmark-scaling.md"
+<!-- benchmark-scaling -->
 
 ## What the run measures
 
