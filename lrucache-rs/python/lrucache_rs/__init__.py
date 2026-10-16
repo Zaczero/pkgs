@@ -44,7 +44,7 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
     __hash__ = None  # type: ignore[assignment]
 
     def __new__(cls, maxsize: int) -> 'LRUCache[_K, _V]':
-        instance = cast('LRUCache[_K, _V]', super().__new__(cls, index(maxsize)))
+        instance: LRUCache[_K, _V] = super().__new__(cls, index(maxsize))
         # A Python slot keeps this edge visible to PyPy, whose collector does
         # not traverse Python references stored in a native pyclass.
         instance._references = [None] * instance.maxsize
@@ -59,11 +59,11 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
 
     def __getitem__(self, key: _K, /) -> _V:
         request = _Request(key, None)
-        entry = self._get(request)
+        entry: _Entry[_K, _V] | None = self._get(request)
         request.finish()
         if entry is None:
             raise KeyError(key)
-        return cast('_V', entry.value)
+        return entry.value
 
     def __setitem__(self, key: _K, value: _V, /) -> None:
         request = _Request(key, value)
@@ -86,15 +86,15 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
     def get(self, key: _K, /, default: _D | None = None) -> _V | _D | None:
         """Retrieve a value and mark a present key most recently used."""
         request = _Request(key, None)
-        entry = self._get(request)
+        entry: _Entry[_K, _V] | None = self._get(request)
         request.finish()
-        return default if entry is None else cast('_V', entry.value)
+        return default if entry is None else entry.value
 
     def _find(self, key: object) -> _Entry[_K, _V] | None:
         request = _Request(key, None)
-        entry = self._peek(request)
+        entry: _Entry[_K, _V] | None = self._peek(request)
         request.finish()
-        return cast('_Entry[_K, _V] | None', entry)
+        return entry
 
     @overload
     def peek(self, key: _K, /) -> _V | None: ...
@@ -116,10 +116,10 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
         if len(default) > 1:
             raise TypeError('pop accepts at most one default')
         request = _Request(key, None)
-        entry = self._remove(request)
+        entry: _Entry[_K, _V] | None = self._remove(request)
         request.finish()
         if entry is not None:
-            return cast('_V', entry.value)
+            return entry.value
         if default:
             return default[0]
         raise KeyError(key)
