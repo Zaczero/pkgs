@@ -26,9 +26,9 @@ pub(crate) use evaluator::{
     predicate_prepared_row as evaluate_cartesian_prepared_row, predicate_rows,
 };
 pub(crate) use graph_matrix::{
-    GeographicPrepared, graph_intersects_data_geographic, graph_relate_data,
-    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
-    is_axis_aligned_rectangle_row,
+    GeographicPointQueries, GeographicPrepared, graph_intersects_data_geographic,
+    graph_relate_data, graph_relate_data_geographic, graph_relate_shapes,
+    is_axis_aligned_rectangle, is_axis_aligned_rectangle_row,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
 

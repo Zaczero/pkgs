@@ -364,8 +364,8 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
 }
 
 pub(crate) use relate::{
-    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, evaluate_cartesian_pattern,
-    evaluate_cartesian_predicate, evaluate_cartesian_prepared_row,
+    De9im, De9imInterval, GeographicPointQueries, GeographicPrepared, Loc, OperandShape,
+    evaluate_cartesian_pattern, evaluate_cartesian_predicate, evaluate_cartesian_prepared_row,
     graph_intersects_data_geographic, graph_relate_data, graph_relate_data_geographic,
     graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row, predicate_rows,
 };

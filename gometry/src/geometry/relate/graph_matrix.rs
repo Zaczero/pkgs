@@ -6,7 +6,7 @@ use crate::geometry::relate::De9im;
 use crate::geometry::source_support::PointMembership;
 use crate::geometry::{
     Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, Point,
-    PreparedPlan, Ring, Shape, storage,
+    PreparedPlan, PreparedPointQueries, Ring, Shape, storage,
 };
 #[cfg(test)]
 use crate::geometry::{CoordSeq, Loc, Polygon, XY, predicates};
@@ -78,7 +78,55 @@ impl<'a> GeographicPrepared<'a> {
     }
 }
 
-impl GeographicPrepared<'_> {
+enum GeographicPointQueryRoute<'a> {
+    Cartesian(PreparedPointQueries<'a>),
+    Quotient(std::sync::Arc<ExactGeographicTopology>),
+}
+
+/// A fixed source's closed point membership, with its geographic route retained.
+pub(crate) struct GeographicPointQueries<'a> {
+    frame: GeographicFrame,
+    route: GeographicPointQueryRoute<'a>,
+}
+
+impl GeographicPointQueries<'_> {
+    /// The query point must already be admitted in this geographic frame.
+    pub(crate) fn covers(&self, point: Point) -> Result<bool> {
+        let longitude = self
+            .frame
+            .longitude()
+            .canonicalize(point.x)
+            .expect("the query point was admitted in the prepared geographic frame");
+        let point = Point::new_raw_xy(longitude.get(), point.y);
+        match &self.route {
+            GeographicPointQueryRoute::Cartesian(queries) => queries.covers(point),
+            GeographicPointQueryRoute::Quotient(topology) => {
+                Ok(PointMembership::BoundaryInclusive
+                    .accepts(topology.locate_point(point)?.geometry))
+            },
+        }
+    }
+}
+
+impl<'a> GeographicPrepared<'a> {
+    pub(crate) fn prepare_point_covers(
+        self,
+        expected_queries: usize,
+    ) -> Result<GeographicPointQueries<'a>> {
+        let route = match self.chart_route {
+            GeographicTopologyRoute::ExactPartition => GeographicPointQueryRoute::Cartesian(
+                self.plan.prepare_point_queries(expected_queries)?,
+            ),
+            GeographicTopologyRoute::Quotient => {
+                GeographicPointQueryRoute::Quotient(self.exact_topology()?)
+            },
+        };
+        Ok(GeographicPointQueries {
+            frame: self.frame(),
+            route,
+        })
+    }
+
     pub(crate) fn exact_topology(self) -> Result<std::sync::Arc<ExactGeographicTopology>> {
         self.plan.geographic_exact_topology(self.view)
     }

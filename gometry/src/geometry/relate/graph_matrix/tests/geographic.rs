@@ -19,7 +19,10 @@ fn prepared_geographic_point_membership_reuses_seam_topology() {
             .unwrap()
     );
     assert_eq!(plan.geographic_exact_topology_builds(), 0);
+    let queries = prepared.prepare_point_covers(7).unwrap();
     for longitude in [180.0, -180.0, 540.0] {
+        assert!(queries.covers(Point::new_raw_xy(longitude, 61.0)).unwrap());
+        assert!(!queries.covers(Point::new_raw_xy(longitude, 61.25)).unwrap());
         assert!(
             prepared
                 .point_covers(Point::new_raw_xy(longitude, 61.0))
@@ -38,6 +41,7 @@ fn prepared_geographic_point_membership_uses_the_open_chart() {
     let plan = PreparedPlan::new(Shape::Polygon(donut()));
     let cache = crate::geometry::FrameDependentCaches::default();
     let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+    let queries = prepared.prepare_point_covers(7).unwrap();
     for (point, covered) in [
         (Point::new_raw_xy(1.0, 1.0), true),
         (Point::new_raw_xy(361.0, 1.0), true),
@@ -46,8 +50,34 @@ fn prepared_geographic_point_membership_uses_the_open_chart() {
         (Point::new_raw_xy(20.0, 20.0), false),
     ] {
         assert_eq!(prepared.point_covers(point).unwrap(), covered);
+        assert_eq!(queries.covers(point).unwrap(), covered);
     }
     assert_eq!(plan.geographic_exact_topology_builds(), 0);
+}
+
+#[test]
+fn retained_geographic_queries_match_closed_point_and_line_support() {
+    for (wkt, point, covered) in [
+        ("POINT (1 2)", Point::new_raw_xy(361.0, 2.0), true),
+        ("POINT (1 2)", Point::new_raw_xy(1.0, 2.5), false),
+        ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.0), true),
+        ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.5), false),
+        ("POLYGON ((0 0,2 2,4 4,0 0))", Point::new_raw_xy(1.0, 1.0), true),
+        ("POLYGON ((0 0,2 2,4 4,0 0))", Point::new_raw_xy(1.0, 1.5), false),
+        ("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 90.0), true),
+        ("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 89.0), false),
+    ] {
+        let plan = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+        let queries = prepared.prepare_point_covers(7).unwrap();
+        assert_eq!(queries.covers(point).unwrap(), covered, "{wkt}");
+        assert_eq!(
+            prepared.exact_topology().unwrap().locate_point(point).unwrap().geometry != Loc::Exterior,
+            covered,
+            "{wkt}: quotient authority"
+        );
+    }
 }
 #[test]
 fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
