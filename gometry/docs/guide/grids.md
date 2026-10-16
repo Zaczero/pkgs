@@ -203,10 +203,7 @@ print("covered / requested area:", round(covering.to_polygon().area / seam.area,
 
 ```
 
-The covering spans both sides of the meridian and stays a single cell set. It is
-not drawn here: every cell of this covering meets ±180 exactly rather than
-straddling it, so a longitude/latitude plot of it is indistinguishable from a
-seam-aware planar grid and would illustrate nothing about the spherical model.
+The covering spans both sides of the meridian and stays a single cell set.
 
 For WGS 84 planar *geometry* crossing ±180 (as opposed to cells), see
 [Across the antimeridian](crs.md#across-the-antimeridian).
@@ -224,16 +221,6 @@ covering = gm.s2_cover(poly, level=10, max_cells=None)
 print("covering cells:", len(covering))
 
 ```
-
-!!! note "S2 covers cells and coverings, not boolean topology"
-    gometry's S2 surface provides cells, cell hierarchies, and deterministic
-    coverings, and authalic-sphere cell areas — not spherical boolean topology.
-    Geometry topology evaluates stored chart edges after geographic frames
-    resolve seam aliases and pole equivalence in their periodic quotient; it is
-    not raw-longitude plane topology. It does not run spherical S2 boolean
-    operations. See [spatial predicates](predicates.md) for the
-    chart/quotient model. CRS-aware measures use ellipsoidal chart edges for
-    shapes and geodesics for point-to-point distance.
 
 ## Covering an area
 
@@ -269,7 +256,7 @@ print("missing row:", groups[1])
 
 ### `cell_rule` is explicit semantics
 
-The `cell_rule` argument selects which cells `cells` materializes. The same four
+The `cell_rule` argument selects which cells are included. The same four
 modes apply to H3, S2, geohash, and tiles. It defaults to `"overlap"`, the
 complete-coverage superset used for candidate keys.
 
@@ -487,17 +474,13 @@ Floor-bounded compaction keeps detail where you ask it to stop:
 `cells.compact(5)` for geohash precision 5, and `cells.compact(8)` for tile
 zoom 8.
 
-!!! warning "`cov.to_polygon()` is not `coverage_*`"
+!!! note "`cov.to_polygon()` is not `coverage_*`"
     `to_polygon()` dissolves *grid cells* — an approximate outline of the
     source under the grid. Polygonal-coverage operations work on source
     polygons: [`coverage_union_all`][gometry.coverage_union_all] and
     [`coverage_simplify`][gometry.coverage_simplify] require a valid coverage;
     [`coverage_clean`][gometry.coverage_clean] rebuilds a near-coverage. See
     [choosing a coverage operation](choosing.md).
-    DGGS cell arrays are a different domain: same-resolution H3/S2
-    tessellations do share boundaries, but hierarchy, compact/uncompact, and
-    cell-set algebra already own that problem — use those, not `coverage_*`,
-    to merge cells.
 
 ## Cell-set algebra (all four grids)
 
@@ -517,8 +500,7 @@ range-nesting exact; geohash/tile algebra is prefix-based.
 
 Every set-algebra, `compact()`, and `uncompact()` result uses the grid family's
 public identity order: H3 and S2 numeric id order, tile packed Morton-id order,
-and geohash token order. This presentation order is separate from the internal
-descendant-range order used to prove containment and merge sibling groups.
+and geohash token order.
 Set-algebra operands skip `None` entries inside an iterable; use an empty
 iterable to represent an empty set.
 

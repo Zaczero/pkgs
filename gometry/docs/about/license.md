@@ -7,10 +7,6 @@ description: gometry licensing, bundled CRS resources, and third-party notices.
 gometry is distributed under the **Apache-2.0 OR MIT** dual license. You
 may use it under the terms of either license, at your option.
 
-```toml title="configuration: package license metadata"
-license = "Apache-2.0 OR MIT"
-```
-
 The release package includes the complete `LICENSE-APACHE.md` and
 `LICENSE-MIT.md` texts. Keep the applicable license text and notices when you
 redistribute gometry or an artifact that bundles it.

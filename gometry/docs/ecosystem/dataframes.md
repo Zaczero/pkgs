@@ -4,10 +4,8 @@ description: Typed conversion between GeometryArray and pandas, Polars, or GeoPa
 
 # DataFrames
 
-DataFrame integrations are explicit storage boundaries. Geometry computation
-stays on [`GeometryArray`][gometry.GeometryArray]. Importing gometry does not
-import pandas; activating the pandas adapter registers gometry's existing
-extension dtype so pandas can resolve its `gometry.geometry` name.
+Convert dataframe columns to [`GeometryArray`][gometry.GeometryArray] for
+geometry computation, then attach the results to your dataframe.
 
 | Extra | Storage | Into gometry | Out of gometry |
 | --- | --- | --- | --- |
@@ -15,7 +13,7 @@ extension dtype so pandas can resolve its `gometry.geometry` name.
 | `polars` | WKB/EWKB `Binary` Series | [`gm.from_polars(series)`][gometry.from_polars] | [`array.to_polars()`][gometry.GeometryArray.to_polars] |
 | `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`array.to_geopandas()`][gometry.GeometryArray.to_geopandas] |
 
-Install only the boundary you use:
+Install the adapters you use:
 
 ```bash
 uv add "gometry[pandas]"
@@ -171,8 +169,7 @@ is the goal.
 
 `import gometry` imports none of pandas, Polars, GeoPandas, PyArrow, or
 lonboard. Accessing a converter imports only its requested optional framework.
-Import order has no behavioral meaning because there is no import hook or
-registration step.
+No manual setup is needed for the converters.
 
 ## See also
 

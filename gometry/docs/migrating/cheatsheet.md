@@ -4,12 +4,12 @@ description: Searchable old-symbol → gometry-spelling reference tables, groupe
 
 # Migration cheatsheet
 
-Use this page only to look up an old source-library symbol and its gometry name.
+Look up a familiar source-library symbol and its gometry equivalent.
 For a migration workflow, read [Migrating to gometry](index.md). For behavior,
-defaults, units, errors, and output shapes, use the canonical owners:
+defaults, units, errors, and output shapes, see:
 [CRS, units & measurement](../guide/crs.md),
 [Spatial indexing & joins](../guide/indexing.md), [Grids & geocodes](../guide/grids.md),
-[Arrays & performance](../guide/arrays.md), and the linked generated API reference.
+[Arrays & performance](../guide/arrays.md), and the linked API reference.
 
 Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 `idx = gm.SpatialIndex(...)`.

@@ -4,8 +4,7 @@ description: "A task-oriented map of gometry's user guide: construct, measure, q
 
 # User guide
 
-Start with the job in front of you. Each guide owns its behavior contract; the
-[API reference](../api/index.md) is the signature-level lookup surface.
+Choose a task below, or look up a function in the [API reference](../api/index.md).
 
 ## Construct and inspect
 

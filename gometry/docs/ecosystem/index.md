@@ -4,16 +4,8 @@ description: How gometry fits the Python geospatial stack — NumPy, Arrow/GeoAr
 
 # Ecosystem & interoperability
 
-gometry is a geometry **engine**. It speaks the formats and protocols used by the
-Python geospatial stack through direct, typed adapters. Native Arrow capsules
-and NumPy views can avoid copying where the boundary permits; encoded and
-foreign-object boundaries copy.
-One Python-facing package (plus mandatory NumPy) covers
-workflows commonly split across Shapely, pyproj, h3-py, s2sphere, and rtree;
-everything else
-interoperates through standards: NumPy arrays, the Arrow C Data Interface,
-GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/library/pickle.html). See the
-[license inventory](../about/license.md) for the supply-chain detail.
+Use gometry with NumPy, dataframes, Arrow, and common geometry formats.
+The adapters make copying and metadata loss explicit.
 
 ## Choose your boundary
 
@@ -48,20 +40,14 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 
 ## Optional extras
 
-| Extra | Install | Unlocks |
-| --- | --- | --- |
-| `arrow` | `uv add "gometry[arrow]"` | [`to_arrow`][gometry.Geometry.to_arrow] / [`from_arrow`][gometry.from_arrow] materialize pyarrow objects |
-| `pandas` | `uv add "gometry[pandas]"` | concrete pandas extension storage + converters |
-| `polars` | `uv add "gometry[polars]"` | WKB/EWKB Binary Series converters |
-| `geopandas` | `uv add "gometry[geopandas]"` | vectorized GeoSeries/GeoDataFrame conversion |
-| `viz` | `uv add "gometry[viz]"` | [`gm.explore`][gometry.explore] + notebook `_repr_html_` maps |
+Install an extra for the adapter you use, such as `pip install "gometry[pandas]"`.
+See [Installation](../get-started/installation.md#optional-extras) for all extras.
 
 ### Zero import cost when unused
 
 `import gometry` never pulls pandas, Polars, PyArrow, arro3, GeoPandas, or lonboard. A
 script that only calls [`gm.Point`][gometry.Point], [`gm.distance`][gometry.distance], and [`gm.h3_cover`][gometry.h3_cover] imports none
-of them. Converter calls import only the requested framework and never mutate
-framework classes or registries.
+of them. Converter calls import the requested framework as needed.
 
 ## Python Array API compatibility
 

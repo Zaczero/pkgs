@@ -6,19 +6,9 @@ description: Current release benchmark results for gometry and how to interpret 
 
 --8<-- "benches/results/current/summary.md"
 
-A published table represents one complete release comparison. Publication
-checks that the benchmark harness, native and Rust build inputs, and packaged
-Python members still match the bytes recorded for the run and its selected
-release receipts. Later documentation and summary commits do not invalidate
-unchanged measurement inputs. Smoke, filtered, incomplete, stale, or
-unattributed runs do not appear as current results.
-
-Each table links to a content-addressed evidence bundle containing its
-`run.json`, every listed raw measurement and oracle artifact, and the selected
-producer receipt files. The bundle includes an index connecting receipts to
-the paths and SHA-256 digests recorded by the run. It retains the measured
-source, native, extension, wheel, and receipt identities; wheel and native
-binaries are not copied into the documentation site.
+Published tables link to raw measurements, correctness checks, and build
+identities. Results apply to the recorded workload, versions, and host;
+they are not a universal speed comparison.
 
 ## What the run measures
 
@@ -39,24 +29,10 @@ the margin, `similar` requires it to sit inside, and anything else is
 counts, missingness, types, axes, coordinates, and topology, so a wrong answer
 cannot be published as a fast one.
 
-Each measured process admits its selected receipt before importing Gometry.
-The driver checks the process's ready record before allowing its first timed
-operation; an import-path fallback, a different worktree facade, or an extension
-whose bytes do not match the receipt's wheel member is rejected. The process
-identity binds its interpreter and ABI, build profile, Python package members
-and distribution owner, native extension, wheel archive, source commit, and
-receipt digest. Per-invocation process IDs identify the observation; they are
-not treated as stable producer identity.
-
-The operation timers begin after admission and setup. `bench_ab.py --perf`
-attaches user-mode counters to the case's main thread for one interval per
-invocation, from permission until the case reports measurement-done. Existing
-case repetitions stay within that interval; split event groups use separate
-invocations. Counter records are diagnostic, never release latency. An
-unavailable event remains explicitly marked unavailable with a null value.
-Runs also record the host's CPU, governor, cache topology, and memory policy. A
-host fact the kernel does not expose stays recorded as unavailable rather than
-becoming a claim about some other machine.
+Setup and artifact verification are outside the operation timer. Optional
+hardware counters measure the calling thread's CPU work, not latency.
+Unavailable measurements remain marked as unavailable. Host records include
+CPU, governor, cache topology, and memory policy where the kernel exposes them.
 
 ## See Also
 

@@ -1,5 +1,5 @@
 ---
-description: gometry's exception hierarchy — catching errors, error attributes, per-row context in array operations, message grammar, and pickling.
+description: Catch geometry errors, diagnose common failures, and identify failing array rows.
 ---
 
 # Errors & exceptions
@@ -122,7 +122,7 @@ for catch in (TypeError, gm.GeometryTypeError):
 
 Operation-raised errors carry operation values as attributes, so
 handlers act on data instead of parsing messages. Class-level defaults are
-`None` on instances from a different lane (hand-constructed instances too):
+`None` when an attribute does not apply:
 
 | Attribute | Classes | Meaning |
 |---|---|---|
@@ -174,18 +174,10 @@ except gm.ParseError as e:
 
 ```
 
-## Message grammar
+<a id="message-grammar"></a>
 
-Every message follows one voice — lowercase start, present tense, the exact
-public keyword names, `repr` for user-supplied strings, no trailing period:
-
-- `<subject> must <constraint>, got <value>` — `tolerance must be a non-negative finite number, got -1`
-- `<operation> requires <condition>` — `split requires a Point or MultiPoint splitter`
-- `invalid <FORMAT>: <detail>` — `invalid WKT: unbalanced parentheses`
-- `unknown <concept> <value>; expected …` — `unknown buffer cap_style "fancy"; expected 'round', 'flat', or 'square'` — with a `did you mean '<closest>'?` clause when the value looks like a typo
-
-Callers can branch on exception classes, structured attributes, and stable
-`.code` values where available.
+Branch on exception classes, attributes, and `.code` values rather than
+parsing error messages.
 
 ## Pickling
 

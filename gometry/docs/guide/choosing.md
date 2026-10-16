@@ -4,8 +4,7 @@ description: Decision tables for the operations that look alike — which predic
 
 # Choosing the right tool
 
-Each operation has one public name, while some families hold several genuinely
-different tools.
+Choose between similar predicates, cleanup operations, and spatial queries.
 
 ## Repeated predicates: index or graph components?
 
@@ -30,9 +29,7 @@ large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared p
 | "is the candidate inside without touching my boundary at all?" | [`contains_properly`][gometry.contains_properly] |
 | the same questions, asked from the candidate's side | [`covered_by`][gometry.covered_by] / [`within`][gometry.within] |
 
-The containment family includes [`contains`][gometry.contains],
-[`contains_properly`][gometry.contains_properly], [`covers`][gometry.covers],
-and [`within`][gometry.within]. The boundary rule: a point **on** a polygon's
+The boundary rule: a point **on** a polygon's
 edge is *not* contained — use `covers` for boundary-inclusive membership. See
 [the predicate boundary rules](predicates.md#boundary-points-are-not-contained).
 
@@ -42,9 +39,6 @@ edge is *not* contained — use `covers` for boundary-inclusive membership. See
 | --- | --- |
 | crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, use endpoints within the frame's native longitude half-period and latitude poles (`west > east` crosses the longitude seam), while seam-crossing, polar, or non-canonical subjects use frame-aware topology |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
-
-There is no separate `clip(mask)`: use [`clip_by_rect`][gometry.Geometry.clip_by_rect] for a
-rectangle and [`intersection`][gometry.intersection] for an arbitrary mask.
 
 ## Vertex cleaning: seven different jobs
 

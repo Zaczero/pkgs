@@ -4,7 +4,7 @@ description: CRS declaration and transformation in gometry — units for area, l
 
 # CRS, units & measurement
 
-A coordinate reference system (CRS) is the contract that says what your numbers
+A coordinate reference system (CRS) says what your numbers
 *mean*: whether `(21.0, 52.0)` is "21 degrees east, 52 degrees north on the
 [WGS 84](https://epsg.org/crs_4326/WGS-84.html) ellipsoid" or "21 meters east of
 some local origin." The CRS is also gometry's metric selector: by default,
@@ -21,14 +21,12 @@ CRS assignment and transformation have different effects:
 - **[`with_crs`][gometry.Geometry.with_crs] *declares*** what existing coordinates
   already mean. It never moves a coordinate.
 - **[`to_crs`][gometry.Geometry.to_crs] *transforms*** coordinates from one CRS
-  into another through the selected operation (unlike `with_crs`, which never
-  moves a number). Identity pipelines, fixed points, carried M, and sometimes
-  unchanged Z mean not every ordinate always changes.
+  into another through the selected operation. See [Z and M](#z-and-m-under-transformation)
+  for how extra ordinates are handled.
 
 ## Operation families
 
-A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
-into a few families rather than one exception-free slogan. Geographic
+A geometry's *frame* is its CRS plus an optional coordinate epoch. Geographic
 measurements use ellipsoidal arclength of retained chart-straight source edges
 and ellipsoidal area bounded by those edges, while point-to-point distances use
 geodesics. Topology remains a coordinate-plane X/Y operation: in a geographic
@@ -393,7 +391,7 @@ filled interiors: an interior point or overlapping pair has zero distance,
 while disjoint shapes are measured boundary-to-boundary. `shortest_line`
 connects the nearest witnesses as a chart-edge line. With the geographic
 ellipsoidal metric, its chart-edge length is no shorter than their geodesic
-separation, subject to binary64 rounding; computed publication may add vertices
+separation, subject to binary64 rounding; the result may include extra vertices
 to preserve the chart edge. Use the same `unit=` when comparing its length with
 `distance`. Continuous geographic
 `hausdorff_distance` ranges over point and linework supports only; filled
@@ -531,10 +529,6 @@ geodesic; on a projected or CRS-free point they are planar.
   the arrival point.
 - [`gm.point_between(a, b, distance, *, normalized=False)`][gometry.point_between] — a point partway
   between two points.
-
-`bearing` and `point_between` relate two point operands and therefore remain
-free functions. `destination` transforms one point (or point column), so it is
-available only on the receiver.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -901,9 +895,7 @@ predicates, relate, overlay,
 spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — interpret
-coordinates in the CRS-native longitude quotient. Validity uses a faithful
-planar partition when the stored chart preserves source coordinates; otherwise
-it reads exact Q incidence without shifting stored longitudes. Operations that
+coordinates using the CRS's periodic longitude and pole identities. Operations that
 construct split output insert affine X/Y crossings into straight edges in the
 unwrapped longitude/latitude chart; see
 [Z/M under operations](geometry.md#zm-under-operations) for how inserted
@@ -1215,26 +1207,15 @@ unavailable resource. Configure local grid directories with
 those effective per-context search paths.
 
 For performance diagnostics, [`gm.crs_cache_info`][gometry.crs_cache_info]
-reports ``last_transform_engine`` as ``'in_core'`` or ``'proj'`` for the most
-recent transform on the current thread, plus ``transform_invocations`` since
-the last cache clear/reset. The count records actual in-core batches and PROJ
-calls, so empty or validation-rejected input does not claim an execution. This
-observes the engine selected by the transform itself; it does not infer
-execution from whether a PROJ cache entry remains.
+reports the most recent transform engine and invocation count on the current
+thread.
 
 [`gm.crs_configure`][gometry.crs_configure] applies only the options supplied
 and returns the effective configuration, so calling it without arguments reads
 the configuration. Omit a keyword to preserve that setting, or pass ``None`` to
-restore just that setting to its default. A saved configuration can be restored
-by passing both of its fields explicitly. If the supplied options already match the effective
-configuration, the update is a no-op: the generation and warm products remain
-available. An effective
-configuration change advances the generation and invalidates each thread's
-products when that thread next uses them. [`gm.crs_clear_cache`][gometry.crs_clear_cache]
-and [`gm.crs_reset`][gometry.crs_reset] always advance the generation. A
-transform already using a cached operation can finish while another thread
-performs any of these invalidations; invalidation releases the owned cached
-objects without shutting down PROJ's process-wide resources.
+restore just that setting to its default. Save and restore the returned mapping
+when temporarily changing configuration. Changes invalidate cached operations
+for subsequent calls; transforms already in progress can finish.
 
 [PROJ](https://proj.org/) is the bundled authority backend. [EPSG](https://epsg.org/)
 codes, datum pipelines, grid-aware transforms, [WKT](https://www.ogc.org/standard/sfa/),

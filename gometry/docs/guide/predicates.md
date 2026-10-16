@@ -148,16 +148,6 @@ print('intersects:', gm.intersects(square, on_edge))
 
 ```
 
-!!! note "Predictable behavior under degeneracy"
-    gometry guarantees *predictable* results on degenerate input rather than
-    undefined ones. Empty geometries are representable — typed `POINT EMPTY` /
-    `POLYGON EMPTY`, empty lines and multi-geometries, an empty
-    [`GeometryCollection`][gometry.GeometryCollection] — and flow through predicates, metrics, overlay, and
-    I/O rather than crashing. Boundary-touching cases resolve consistently
-    through the robust predicates. Constructive operations that cannot produce a
-    result raise a clear error instead of returning corrupt
-    geometry.
-
 ## Boundary points are not contained
 
 The [OGC Simple Features](https://www.ogc.org/standard/sfa/) `contains` relation
@@ -199,7 +189,7 @@ print("properly inside:", gm.contains_properly(region, inner))
 
 ```
 
-!!! warning "`contains` vs `covers`"
+!!! tip "`contains` vs `covers`"
     `covers` includes the whole boundary case: a boundary point can be covered
     without being contained. Use `covers` when points on tile edges, snapped
     grids, or shared borders belong to the result.
@@ -319,8 +309,7 @@ EI EB EE`) are defined in §6.1.14.2 of the
 
 For the chain represented in the table below, `(0, 0)` and `(4, 4)` have odd
 incidence and are boundary points. The shared node `(4, 0)` has even incidence,
-so it is in the `MultiLineString` interior. The matrices are known answers from
-those partitions, not values obtained from another geometry engine.
+so it is in the `MultiLineString` interior.
 
 | Named case | `relate(point, lines)` | `relate(lines, point)` |
 |---|---|---|
@@ -328,7 +317,7 @@ those partitions, not values obtained from another geometry engine.
 | Even-incidence shared node `(4, 0)` | `0FFFFF102` | `0F1FF0FF2` |
 | Off-line point `(7, 9)` | `FF0FFF102` | `FF1FF00F2` |
 
-The predicate consequences are equally deliberate: `contains(lines, point)`
+Consequently, `contains(lines, point)`
 and `contains_properly(lines, point)` are true only for the shared interior
 node; `covers(lines, point)` is true for both on-line points. The inverse
 `within` and `covered_by` results follow the same distinction. `touches` is

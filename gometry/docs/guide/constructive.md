@@ -52,8 +52,8 @@ print(before_after(
 
 ### Controlling the shape of the buffer
 
-The canonical [`buffer` API reference][gometry.Geometry.buffer] owns the
-current defaults and accepted values. The options control:
+Use these options to control the shape; see the
+[`buffer` reference][gometry.Geometry.buffer] for defaults:
 
 | Parameter | Effect |
 |-----------|---------|
@@ -134,8 +134,8 @@ input vertices; refinement samples represent edge support, not new sites.
 
 ## Overlay (set operations)
 
-The four boolean overlays combine two geometries. Python operator spellings are
-available for the named methods:
+The four boolean overlays combine two geometries. Each function also has a
+Python operator:
 
 | Operation | Operator | Result |
 |-----------|----------|--------|
@@ -226,7 +226,7 @@ position whenever that assignment preserves the exact structure.
 
 Occasionally two constructed overlay vertices would round to the same
 coordinate, or rounding would make an edge touch a vertex it must miss. The
-overlay publisher searches the nearest coordinate and its adjacent binary64
+operation searches the nearest coordinate and its adjacent binary64
 values for the constructed vertices in conflict. It publishes only an
 assignment that preserves incidence, cyclic order, and faces, and verifies
 that assignment before returning it. Each moved coordinate stays within 1.5
@@ -270,11 +270,6 @@ print(merged.to_wkt())
 whole. Grouped aggregation is a separate operation: [`array.dissolve(by=groups)`][gometry.GeometryArray.dissolve] returns
 one geometry per first-seen group with the corresponding group keys. `dissolve`
 requires `by`; whole-collection aggregation is `gm.union_all(array)`.
-
-[`intersection_all`][gometry.intersection_all] returns its typed empty directly
-when sound coordinate bounds prove inputs disjoint. In a geographic CRS, that
-shortcut applies only when every input is seam-free, pole-free, and has canonical
-longitude bounds; otherwise the geographic topology path is used.
 
 !!! note "`union_all([])` raises"
     `union_all([])` raises because an empty sequence has no geometry metadata.
@@ -528,7 +523,7 @@ which exclude the clip polygon's exterior boundary. Geographic Voronoi charts
 both its sites and supplied clip polygon in the CRS-native longitude frame;
 Delaunay charts its input sites. Seam-crossing inputs do not require a
 preliminary [`split_antimeridian`][gometry.Geometry.split_antimeridian].
-Voronoi publication preserves chart cuts and polar-cap edge roles. Delaunay is
+Voronoi results preserve chart cuts and polar-cap boundaries. Delaunay is
 a planar point-site triangulation, not a spherical mesh; use constrained
 triangulation when a polygon boundary or selected polar cap must remain part of
 the result. Geographic constrained triangulation carries seam constraints and
@@ -679,6 +674,6 @@ Constructive operation Z/M behavior follows the [geometry guide's rules](geometr
 
 - [CRS](crs.md) — same CRS metric rule for `buffer` / `offset_curve`.
 - [Predicates](predicates.md) — relationships without constructing geometry.
-- [Geometry & dimensions](geometry.md) — types, inspection, and the Z/M ordinate carry doctrine.
+- [Geometry & dimensions](geometry.md) — types, inspection, and Z/M behavior.
 - [API: Geometry.buffer][gometry.Geometry.buffer] · [intersection][gometry.intersection] ·
   [union_all][gometry.union_all]

@@ -32,9 +32,6 @@
   point-to-point geodesics on a geographic CRS, native linear units on a
   projected one, raw coordinate units without one. See the
   [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
-- **Geographic coordinates keep native angular units** — degrees, radians, grads,
-  and their CRS-defined periodic seam, pole, and prime meridian are respected;
-  geodesic kernels normalize them only at the metric boundary
 - **Vectorized in Rust** — predicates, overlays, buffering, geodesics, and
   coverage run as batched kernels over packed buffers and return NumPy arrays.
   The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
@@ -44,8 +41,6 @@
 - **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
   share a typed `CellArray`; spatial indexes keep bounding-box `candidates`
   separate from exact `query`
-- **Ellipsoidal measurements and geodesics** with coordinate-epoch support and
-  `unit='planar'` / `unit='meters'` overrides
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
 - **Apache-2.0 OR MIT** · **CPython 3.11–3.14; free-threaded CPython 3.14t**
@@ -55,9 +50,6 @@
 One `area` call, two answers: the geometry carries `crs=4326`, so it measures
 ellipsoidal **square metres** along its straight chart edges, and
 `unit='planar'` drops to raw coordinate units.
-Likewise, `buffer(500)` on a geographic CRS treats `500` as metres through a
-bounded local-projection approximation; see the
-[buffer and CRS guide](https://gometry.monicz.dev/guide/crs/).
 
 ```python
 import gometry as gm
@@ -70,38 +62,16 @@ planar_area = f'{gm.area(city, unit="planar"):.4f} degree²'
 print(contains_station)  # True
 print(area_km2)  # 8217.7 km²
 print(planar_area)  # 1.0000 degree²
-assert contains_station is True
-assert area_km2 == '8217.7 km²'
-assert planar_area == '1.0000 degree²'
 ```
 
 Arrays return NumPy ndarrays instead of Python-object lists:
 
 ```python
 import gometry as gm
-import numpy as np
-
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 mask = gm.contains(area, points)
 print(type(mask).__name__, mask.tolist())  # ndarray [True, False]
-assert isinstance(mask, np.ndarray)
-assert mask.dtype == np.dtype(np.bool_)
-assert mask.shape == (2,)
-np.testing.assert_array_equal(mask, [True, False])
-bounds = points.bounds
-print(type(bounds).__name__, bounds.shape, bounds.dtype)  # ndarray (2, 4) float64
-assert isinstance(bounds, np.ndarray)
-assert bounds.dtype == np.dtype(np.float64)
-assert bounds.shape == (2, 4)
-np.testing.assert_array_equal(
-    bounds, [[21.0, 52.0, 21.0, 52.0], [30.0, 52.0, 30.0, 52.0]]
-)
-cover = gm.s2_cover(area, level=10, max_cells=None)
-covered = gm.covers(area, points)
-print(cover.grid, covered.tolist())  # s2 [True, False]
-assert cover.grid == 's2'
-np.testing.assert_array_equal(covered, [True, False])
 ```
 
 ## Install
@@ -146,23 +116,9 @@ mappings.
 
 ## Is gometry right for you?
 
-gometry is a good choice when:
-
-- you work with CRS-aware geometry and want the metric to follow the data
-- you want one dependency instead of several specialist packages, with no GEOS,
-  GDAL, or system PROJ to install
-- you process geometry in bulk and want packed arrays instead of Python-object
-  loops
-- you need H3, S2, geohash, or tile covers alongside ordinary geometry, and
-  CRS-aware distance queries from one spatial index
-
-gometry is not the right choice when:
-
-- you need a dataframe or a data-loading layer. GeoParquet and dataframe
-  engines are integration boundaries rather than bundled dependencies
-- you need spherical boolean operations. S2 support is oriented to cells and
-  covers
-- you need mixed-CRS collections. A `GeometryArray` requires a shared CRS
+Use gometry for geometry computation; keep your dataframe or database for
+storage and queries. A `GeometryArray` shares one CRS. S2 provides cells and
+covers, not spherical boolean operations.
 
 ## Support
 
@@ -177,7 +133,3 @@ work, commercial support is available through
 
 Security disclosures use GitHub's
 [private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new).
-
-The [installation guide](https://gometry.monicz.dev/get-started/installation/)
-covers PyPI and source installation, and the
-[API reference](https://gometry.monicz.dev/api/) is the canonical lookup surface.

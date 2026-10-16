@@ -9,7 +9,7 @@ against every feature, you test it against the few whose bounding boxes could
 possibly match. [`gm.SpatialIndex`][gometry.SpatialIndex] builds a bulk-loaded in-memory [R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry
 envelopes. The index exposes
 [`crs`][gometry.SpatialIndex.crs] and [`epoch`][gometry.SpatialIndex.epoch] for
-the shared frame of its rows (the same metadata gate that binary ops enforce).
+the shared frame of its rows.
 
 The index exposes the distinction between *candidates* (bounding-box matches) and
 *exact* matches.
@@ -30,16 +30,13 @@ geometry contents, including after removals. Since it is mutable, it is
 unhashable and cannot be used as a dictionary key.
 
 `query`, `candidates`, `nearest`, and `join` accept a `GeometryArray` or an
-iterable of `Geometry | None` rows. Missing query rows produce empty result
-groups and keep their original row positions.
+iterable of `Geometry | None` rows. Missing query rows remain `None` groups
+and keep their original row positions.
 
-!!! warning "Candidates are not matches"
+!!! note "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
     actually intersect — especially for sparse multipolygons and diagonal lines.
-    A cover or index candidate narrows the search; it is not an exact geometry
-    answer. Retain the source geometry and use an exact predicate to refine those
-    candidates into exact matches.
     [`idx.query(q, predicate=...)`][gometry.SpatialIndex.query] performs that
     exact predicate refinement and returns only true matches. Both methods
     return source-row handles in ascending order; removing rows does not
@@ -139,7 +136,7 @@ assert index.query(alias, predicate="intersects").tolist() == [0]
 
 ```
 
-The bounds gate reaches the pole's alternate longitude spelling, and the exact
+The bounding-box search reaches the pole's alternate longitude spelling, and the exact
 predicate confirms that both spellings identify the same geographic point.
 
 ## Predicates
@@ -315,9 +312,8 @@ the threshold result.
 Bulk construction is the common path, but the index is **mutable** for dynamic
 sets: [`insert`][gometry.SpatialIndex.insert] appends a geometry (same frame as
 the index), and [`remove`][gometry.SpatialIndex.remove] tombstones a row by
-handle. Inserted rows live in a small overflow tree chained after the bulk
-structure; query/nearest lanes see both. Removed rows stay sparse handles so row
-identity is preserved for joins — they are not renumbered.
+handle. Queries include inserted rows and exclude removed ones without
+renumbering the remaining handles.
 
 Batch insertion rejects empty geometries and GeometryArrays containing missing
 rows. It validates the complete input and frame before changing the index, so

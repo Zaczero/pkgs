@@ -42,10 +42,7 @@ geometry decides which one you asked for. On a geographic CRS,
 [`area`][gometry.Geometry.area] measures the ellipsoidal area bounded by
 straight longitude/latitude edges; `unit="planar"` measures the raw coordinates
 as they stand; and reprojecting first returns that frame's own answer, which at
-this latitude Web Mercator inflates 2.3 times. Geographic [`length`][gometry.Geometry.length]
-uses the same chart-edge model. Point-to-point geographic distance follows an
-ellipsoidal geodesic; shape distance minimizes geodesic separation over closed
-chart-edge supports, including filled polygon interiors.
+this latitude Web Mercator inflates 2.3 times.
 
 <div class="grid cards" markdown>
 
@@ -85,43 +82,29 @@ chart-edge supports, including filled polygon interiors.
 
 ### The CRS is the single knob
 
-The usual stack makes you remember whether a metric means degrees or meters. gometry has one
-[`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
-they are computed and the result is **native** for that CRS: by default,
-geographic shape area, length, and linear referencing measure straight
-longitude/latitude chart edges on the ellipsoid, while point-to-point distances
-follow geodesics. A projected CRS uses its native linear units (feet stay feet;
-meters stay meters), and a CRS-free geometry stays in raw coordinate units.
-`unit='planar'` selects Cartesian measurement in stored coordinates. Geographic
-longitude and latitude values remain in the CRS's native angular units; the
-periodic seam, pole, and prime meridian come from that same frame. Pass
-`unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
+A geographic CRS measures on its ellipsoid; a projected CRS uses native linear
+units, and a CRS-free geometry uses raw coordinate units. Override with
+`unit='planar'` or `unit='meters'` when you need another interpretation.
+The [measurement guide](guide/crs.md) explains edge models and units.
 
 ### Batched without hidden loops
 
-Geometry kernels are implemented in Rust. Predicates, overlay, buffering, geodesics,
-and coverage run as
-batched kernels over packed, GeoArrow-compatible buffers, so bulk
-[`contains`][gometry.contains] work is one call rather than a Python loop. Grid
-`cover` factories materialize typed cell arrays;
-use free geometry predicates for exact source checks.
+Pass an array to [`contains`][gometry.contains], buffer a whole column, or
+transform thousands of coordinates in one call. Packed arrays keep per-row work
+in Rust.
 
 ### Declare, transform, refine
 
-[`with_crs`][gometry.Geometry.with_crs] declares metadata without moving numeric
-coordinates; [`to_crs`][gometry.Geometry.to_crs] transforms X/Y into another frame.
-See [when to declare or transform](guide/crs.md#set-crs-vs-to-crs). Spatial indexes
-expose [`candidates`][gometry.SpatialIndex.candidates] as a bbox prefilter and
-[`query`][gometry.SpatialIndex.query] as exact refinement. Grid cover factories
-materialize cells with an explicit `cell_rule`. A cover or index candidate narrows
-the search; it is not an exact geometry answer. Retain the source geometry and use
-an exact predicate to refine those candidates into exact matches. See [index candidates and queries](guide/indexing.md#candidates-vs-query)
-and [grid source membership](guide/grids.md#exact-membership-with-the-source-geometry).
+[`with_crs`][gometry.Geometry.with_crs] labels coordinates;
+[`to_crs`][gometry.Geometry.to_crs] transforms them.
+[Index candidates](guide/indexing.md#candidates-vs-query) and grid cells narrow
+a search; exact predicates on the source geometry decide membership.
 
 ### One spelling per operation
 
-Every important pattern from the tools it replaces maps to one obvious gometry
-spelling, documented and searchable in the migration guide.
+Facts are properties, unary operations are methods, and binary relationships
+are free functions. Find familiar operations in the
+[migration cheatsheet](migrating/cheatsheet.md).
 
 </div>
 

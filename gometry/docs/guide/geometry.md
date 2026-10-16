@@ -4,7 +4,7 @@ description: Constructing, inspecting, and comparing gometry's seven geometry ty
 
 # Geometry & dimensions
 
-Every value in gometry is a [`Geometry`][gometry.Geometry]: one of exactly **seven** immutable,
+Geometry values are instances of [`Geometry`][gometry.Geometry]: one of **seven** immutable,
 hashable [OGC Simple Features](https://www.ogc.org/standard/sfa/) types, each
 optionally carrying a CRS and per-vertex Z (elevation) and M (measure)
 ordinates.
@@ -698,10 +698,8 @@ in [Arrow & storage](../ecosystem/arrow.md).
 
 ## Enforcing a dimension contract
 
-Validity and storage-dimension are separate contracts. Use `axes=` with
-[gm.require][gometry.require] on an existing geometry or while parsing untrusted
-input to assert the layout at a boundary, including a strict XY contract for data
-that must not carry Z or M:
+Use `axes=` with [gm.require][gometry.require] to require a coordinate layout.
+For example, require XY when your storage must not carry Z or M:
 
 ```python title="partial: requires an input object from the surrounding application"
 area = gm.require(obj, crs=4326, axes="XY")
@@ -710,8 +708,7 @@ trace = gm.require(obj, crs=4326, axes="XYZM")
 
 ```
 
-See [Validation](validation.md) for the validity side of the contract and end-to-end
-ingestion patterns.
+See [Validation](validation.md) for topology checks and ingestion examples.
 
 ## See also
 

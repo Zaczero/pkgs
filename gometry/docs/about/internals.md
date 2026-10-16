@@ -1,13 +1,12 @@
 ---
-description: Durable gometry architecture — Rust-owned geometry, a typed Python facade, bundled CRS authority, GeoArrow interchange, and concurrency boundaries.
+description: How gometry's native engine, bundled PROJ, and concurrency model affect Python applications.
 ---
 
 # Internals
 
-gometry has a Rust-owned geometry core and a typed Python facade. That ownership
-split is the durable architecture behind the public API: geometry semantics,
-storage, and resource transitions belong to the native core, while Python owns
-presentation and optional ecosystem adapters.
+gometry runs geometry operations in Rust and uses Python for ecosystem
+integration. This keeps array operations out of Python loops and lets the
+package bundle its geometry and CRS engines together.
 
 ## Ownership layers
 
@@ -17,10 +16,6 @@ presentation and optional ecosystem adapters.
 | Python facade | Curated public exports, Python protocols, type-facing declarations, and optional adapters. It does not reimplement geometry kernels or per-coordinate loops. |
 | CRS authority | The bundled PROJ backend supplies CRS definitions, datum pipelines, grid-aware transforms, and standards parsing. Gometry owns frame checks, X/Y ordering, Z/M policy, and Python errors around that boundary. |
 | Interchange adapters | Arrow/GeoArrow, WKB, dataframe, GeoParquet, and map adapters translate at explicit boundaries and state when they copy or lose metadata. |
-
-The public API therefore has one operation spelling and one semantic owner. A
-scalar method and its array form may return different shapes, but both remain
-typed entry points to the same operation family.
 
 ## CRS authority boundary
 
@@ -43,21 +38,8 @@ relationships. Z and M behavior remains specific to each operation; see
 
 ## Hard boundaries
 
-Gometry owns geometry semantics and kernels, not application storage or query
-engines. Dataframes, SQL databases, and lakehouse orchestration remain outside
-the core. The public boundary is standards-based:
-
-```text
-application or data-system producer
-            |
-     Arrow / GeoArrow / WKB
-            |
-     gometry geometry core
-            |
-     Arrow / GeoArrow / WKB
-            |
-application or data-system consumer
-```
+Exchange geometry with dataframes and databases through Arrow, GeoArrow, or
+WKB. gometry does not provide a storage or SQL engine.
 
 The Arrow C Data Interface is an ABI boundary. Providers must conform to the
 interface; gometry copies and validates admitted data before decoding it. See
@@ -85,7 +67,7 @@ reconstructed when loaded.
 
 ## See also
 
-- [Design principles](design.md) — public naming and ownership decisions.
+- [Design principles](design.md) — naming and result conventions.
 - [Compatibility](compatibility.md) — runtime and optional-integration matrix.
 - [Arrow & storage](../ecosystem/arrow.md) — columnar interchange behavior.
 - [Security & untrusted input](security.md) — ingress trust boundaries and limits.

@@ -1,15 +1,12 @@
 ---
-description: A hands-on tutorial that builds a spatial query with gometry by finding authored tutorial blocks within a 500-meter straight-line radius of a station.
+description: Find blocks within 500 meters of a station, then cover the area with H3 cells.
 ---
 
 # Quickstart
 
-This tutorial builds one spatial query: given a station, find three fictional
-tutorial blocks within a 500-meter straight-line service area, then bucket that
-area into H3 cells. The fixture is illustrative. It sits near the
-Eiffel Tower only to make the coordinates recognizable; its rectangles are not
-administrative boundaries or a real boundary dataset. It needs **CPython 3.11–3.14**
-(or free-threaded CPython 3.14t).
+Find which blocks intersect a station's 500-meter radius, then cover the area
+with H3 cells. We'll use three fictional blocks near the Eiffel Tower.
+Requires **CPython 3.11–3.14** or free-threaded CPython 3.14t.
 
 ## Install
 
@@ -104,9 +101,6 @@ reachable = idx.query(service_area, predicate='intersects')
 print('rows intersecting the radius:', reachable.tolist())
 matched_names = [names[i] for i in reachable]
 print('matched names:', matched_names)
-print('matched count:', len(reachable))
-assert reachable.tolist() == [0, 1]
-assert matched_names == ['Champ-de-Mars edge', 'Trocadero side']
 
 ```
 
@@ -131,15 +125,9 @@ print(figure(
 scale; exact membership uses the source geometry with [`gm.covers`][gometry.covers]:
 
 ```python exec="on" source="block" result="text" session="catchment"
-import gometry as gm
 cells = gm.h3_cover(service_area, resolution=10)
-has_cells = len(cells) > 0
-station_is_covered = gm.covers(service_area, station)
-print('H3 cover created:', has_cells)
-print('source covers the station:', station_is_covered)
-assert has_cells
-assert cells.grid == 'h3'
-assert station_is_covered is True
+print('H3 cells:', len(cells))
+print('source covers the station:', gm.covers(service_area, station))
 
 ```
 

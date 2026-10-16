@@ -9,8 +9,8 @@ commonly split across **Shapely + pyproj + h3-py + s2sphere + rtree**.
 
 [:octicons-arrow-right-24: Migration cheatsheet](cheatsheet.md){ .md-button .md-button--primary }
 
-The cheatsheet is the canonical old-symbol → gometry-name lookup. This guide owns
-workflow migration and links the behavior contracts for [CRS, units & measurement](../guide/crs.md),
+Use the cheatsheet to look up equivalent names, and this guide to adapt your
+workflow. See [CRS, units & measurement](../guide/crs.md),
 [Spatial indexing & joins](../guide/indexing.md), and [Grids & geocodes](../guide/grids.md).
 
 ## Coming from Shapely
@@ -29,8 +29,8 @@ cases and when to call `normalize()`.
 
 ### `make_valid` → `repair`
 
-[`repair`][gometry.Geometry.repair] is the canonical spelling for the ecosystem
-concept called `make_valid` / `ST_MakeValid` / `GEOSMakeValid`. `validate()`
+Use [`repair`][gometry.Geometry.repair] in place of `make_valid`.
+`validate()`
 returns a structured report with the reason and location, where Shapely splits the
 job across `is_valid`, `explain_validity`, and `make_valid`.
 
@@ -68,7 +68,7 @@ edges on the ellipsoid, point distances follow ellipsoidal geodesics, a projecte
 CRS uses its **native linear units**, and CRS-free geometry uses raw coordinate
 units.
 
-=== "Shapely (silently wrong on lon/lat)"
+=== "Shapely (coordinate units)"
 
     ```python title="partial: source ecosystem example"
     poly.area
@@ -94,7 +94,7 @@ units.
 Shapely already refines when you pass `predicate=` to `STRtree.query`.
 [`SpatialIndex`][gometry.SpatialIndex] covers many geometries, with query, join,
 and nearest, explicit `candidates` vs `query(..., predicate=...)`, frame checks,
-missing-row semantics, and nearest queries. There is no `prepare`: a geometry
+and missing-row semantics. There is no `prepare`: a geometry
 probed repeatedly indexes itself after its first few probes, so a plain loop of
 predicate calls gets the prepared speed.
 
@@ -317,14 +317,13 @@ frame and row-identity checks:
   instead of dropping identity in the result.
 - **Prepared caches** on every geometry, built once it is probed repeatedly;
   there is no separate `prepare` step.
-- **CRS-aware nearest / dwithin lanes** when the index frame is geographic:
+- **CRS-aware nearest / dwithin queries** when the index frame is geographic:
   point pairs use ellipsoidal geodesics, while shape queries use straight
   chart-edge support with ellipsoidal separation (`unit=` selects the CRS
   metric or planar coordinates).
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
-unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
-candidate/refine contract.
+entry points; see [Spatial indexing & joins](../guide/indexing.md) for examples.
 
 ### Nearest
 

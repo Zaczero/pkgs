@@ -1,5 +1,5 @@
 ---
-description: GeometryArray, CellArray, Groups, missing rows, and the batch-result contract.
+description: Work with GeometryArray, CellArray, broadcasting, ragged results, and missing rows.
 ---
 
 # Arrays & performance
@@ -199,7 +199,7 @@ print(type(mask).__name__, repr(mask))
 
 ```
 
-Vectorized bulk lanes follow a fixed return contract:
+Result types follow the operation:
 
 | Kind | Return shape | Examples |
 | --- | --- | --- |
@@ -212,7 +212,7 @@ Vectorized bulk lanes follow a fixed return contract:
 | Coordinates | [`Coordinates`][gometry.Coordinates] view | [`geom.coords`][gometry.Geometry.coords], packed point columns |
 | Witness pairs | `(left, right)` pair of point `GeometryArray` columns | [`nearest_points`][gometry.nearest_points] |
 
-Text/bytes and ragged diagnostic lanes stay ordinary Python lists because they have no
+Text/bytes and ragged diagnostics stay ordinary Python lists because they have no
 single dense ndarray representation.
 
 gometry adopts NumPy's length-preserving
@@ -447,8 +447,8 @@ slice, fancy indexing (`arr[[0, 2]]`), pickle, and Arrow round-trip.
 
 `drop_missing()` and [`fill_missing(value)`][gometry.GeometryArray.fill_missing] convert back to dense. `fill_missing` accepts
 one scalar geometry or a row-aligned `GeometryArray` fill source; indexes and
-[`GeometryCollection`][gometry.GeometryCollection] construction require dense input (their error says so). Drop or fill
-Missingness must be dropped or filled when the next boundary cannot represent it.
+[`GeometryCollection`][gometry.GeometryCollection] construction require dense input.
+Drop or fill missing rows before passing them to a boundary that cannot represent them.
 
 ## Batching choices
 
@@ -622,5 +622,5 @@ portable GeoArrow interchange or GeoParquet storage, see [Arrow & storage](../ec
 - [DataFrames](../ecosystem/dataframes.md) — dataframe geometry columns.
 - [Arrow & storage](../ecosystem/arrow.md) — portable GeoArrow interchange and GeoParquet storage.
 - [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
-- [Benchmarks](../about/benchmarks.md) — the published release run, and how one is produced.
+- [Benchmarks](../about/benchmarks.md) — measurements and methodology.
 - [API: GeometryArray][gometry.GeometryArray] · [points][gometry.points] · [Groups][gometry.Groups] · [CellArray][gometry.CellArray] · [from_wkb][gometry.from_wkb]

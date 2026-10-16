@@ -4,13 +4,10 @@ description: NumPy interchange in gometry — read-only typed ndarrays for every
 
 # NumPy arrays & coordinates
 
-NumPy is the one **required** runtime dependency.
-Geometry containers in Shapely and GeoPandas represent geometry objects rather
-than pretending they are numeric dtypes. For gometry's *numeric bulk results*,
-gometry returns fixed-width **typed `numpy.ndarray`s** straight from Rust — `float64` for
+gometry returns numeric bulk results as **typed NumPy arrays** — `float64` for
 metrics and coordinates, `bool_` for predicate masks, `int64` for ids and labels,
-`uint64` for grid-cell ids and space-filling-curve keys. No per-element Python
-objects, no hidden conversions.
+`uint64` for grid-cell ids and space-filling-curve keys. NumPy is installed with
+the core package.
 
 ## Every dense numeric bulk result is a typed ndarray
 
@@ -220,7 +217,7 @@ print("labels:", labels.tolist())
 ```
 
 The same pattern feeds SciPy's `cKDTree`, `cdist`, and interpolators — the ndarray
-is the contract, so anything in the scientific stack consumes it directly.
+is the shared input format.
 
 ## Python Array API compatibility
 

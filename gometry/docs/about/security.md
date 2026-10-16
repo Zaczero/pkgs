@@ -20,7 +20,7 @@ Use these formats for untrusted data contents:
   contents.
 
 The readers fail fast with structured [`ParseError`][gometry.ParseError], [`CRSError`][gometry.CRSError],
-[`InvalidGeometryError`][gometry.InvalidGeometryError], or [`GeometryError`][gometry.GeometryError] lanes. Parse untrusted bytes with these
+[`InvalidGeometryError`][gometry.InvalidGeometryError], or [`GeometryError`][gometry.GeometryError]. Parse untrusted bytes with these
 readers, catch the structured exception, then validate or repair only the rows
 your workflow accepts:
 
@@ -96,11 +96,7 @@ Treat [`repair`][gometry.Geometry.repair], overlay, validation, and exact spatia
 expensive work after a successful parse.
 Python thread timeouts are not hard isolation.
 
-## No-panic invariant
-
-Malformed content, huge-but-finite coordinates, missing rows, CRS mismatch, and
-invalid dimensionality must raise Python exceptions or return documented null
-lanes; they must not panic across the FFI boundary.
+<a id="no-panic-invariant"></a>
 
 ## Never unpickle untrusted data
 
@@ -112,8 +108,7 @@ GeoArrow, or GeoParquet.
 
 A suspected vulnerability goes to GitHub's
 [private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new)
-on the monorepo that hosts gometry, not to the public issue tracker — a public
-issue publishes the exploit detail alongside the report.
+instead of the public issue tracker.
 
 If private reporting is unavailable, contact the maintainers listed in package
 metadata. Security fixes ship in a normal release;

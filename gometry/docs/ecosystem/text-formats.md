@@ -55,10 +55,9 @@ print('from EWKB crs:', gm.from_wkb(ewkb).crs)
 ### The database boundary
 
 The **portable** binary boundary is ISO WKB with CRS/epoch in side metadata, or
-GeoArrow with CRS plus gometry's epoch extension when the peer is gometry or
-extension-aware. **EWKB** is the PostGIS-compatible option when the peer is PostGIS or
-another system that documents EWKB SRID support — not a universal "what every
-database expects." gometry core ships **no database adapters**. Keep the boundary
+GeoArrow with CRS plus gometry's epoch extension when the peer understands it.
+Use **EWKB** with PostGIS or another system that documents EWKB SRID support.
+gometry ships no database adapters. Keep the boundary
 binary and columnar — write bytes out, read bytes back, and decode the whole
  column in one `gm.from_wkb` call rather than a per-row geometry
 loop:
@@ -325,14 +324,8 @@ zero-copy or create shared memory.
 
 ### Stored-format compatibility
 
-Gometry's custom pickle payloads identify their format in a versioned restoration
-function such as `_unpickle_geometry_v1`. The format version is independent of
-the package version and Python's pickle protocol. Readers retain released
-restoration functions and their payload meaning when internal storage changes;
-a new incompatible payload uses a new restoration function. An older reader
-rejects an unknown function instead of interpreting its payload as an older
-format. This is backward-read compatibility, not a promise that an older release
-can read every newer pickle.
+New releases retain support for reading released pickle formats.
+Older releases need not read pickles written by newer ones.
 
 The durable state includes coordinate dimensions, CRS definitions, coordinate
 epochs, missing rows, group offsets, and spatial-index handles, including removed

@@ -206,11 +206,8 @@ rebuild. A valid input therefore keeps its original coordinates exactly; an
 invalid crossing is repaired from the seam-split topology. The same
 rule powers `snap_to_grid(..., repair=True)`.
 
-!!! note "Repair output and revalidation"
-    `repair` can split, merge, or drop parts to reach validity. Re-run
-    `validate()` on the output when downstream correctness depends on it. The
-    two methods can yield different results on the same input; choose the one
-    whose invariant (boundary versus area) matches the domain.
+`repair` can split, merge, or drop parts to reach validity. Choose the method
+whose boundary or area interpretation matches your data.
 
 ## Enforcing contracts at the boundary
 
@@ -265,16 +262,7 @@ print("meets contract:", area.crs == gm.CRS(4326), area.coordinate_axes)
 
 ```
 
-The `axes=` argument prevents a validator from accepting Z/M into a nominally 2D
-storage path. Validate untrusted input at the boundary, then consume that
-invariant internally without repeating the boundary check.
-
-!!! note "Ingress and programmer-error behavior"
-    `gm.require` parses or validates external geometry-like input at the
-    boundary. Invalid geometry data follows the validation or explicit repair
-    path. Wrong types and impossible argument values raise immediately. After
-    the boundary, native operations rely on the established type and validity
-    invariants.
+Use `axes='xy'` when your storage accepts only 2D geometry.
 
 ## Cleaning: `quantize` and `remove_repeated_points`
 
@@ -370,8 +358,8 @@ Parse failures ([`ParseError`][gometry.ParseError]) stay separate from geometric
 (`InvalidGeometryError` / repair). The detect → repair → assert flow keeps invalid
 geometry from ever reaching your [predicates](predicates.md),
 [overlays](constructive.md), or [measurements](crs.md), where it would otherwise
-produce subtly wrong answers. See [Security](../about/security.md) for the
-no-panic posture on malformed bytes.
+produce unexpected answers. See [Security](../about/security.md) for parsing
+and resource limits.
 
 Geometry that crosses a geographic frame's periodic seam (±180° for EPSG:4326)
 is a separate kind of "broken":
@@ -385,6 +373,6 @@ you must call [`split_antimeridian`][gometry.Geometry.split_antimeridian] yourse
 - [Predicates](predicates.md) — robust boundary semantics on validated input.
 - [Geometry](geometry.md) — the Z/M ordinate model and storage contracts.
 - [CRS, units & measurement](crs.md#across-the-antimeridian) — reprojection and the antimeridian.
-- [Security](../about/security.md) — untrusted formats and no-panic posture.
+- [Security](../about/security.md) — untrusted formats and resource limits.
 - [API: Geometry.validate][gometry.Geometry.validate] ·
   [Geometry.repair][gometry.Geometry.repair] · [require][gometry.require]

@@ -109,23 +109,14 @@ multipart members use the native GeoArrow coordinate layout with separated
 `x`/`y`/`z`/`m` children. Gometry exports may
 share immutable gometry-owned buffers with a consumer. Import does not retain
 shared views of foreign memory. PyArrow arrays, chunked arrays, tables, record
-batches, and record batch readers are imported through PyArrow’s buffer-copy
-APIs. Other `__arrow_c_array__` and `__arrow_c_stream__` providers use the native Arrow-C
-path: gometry moves the one-shot base structure, snapshots the selected schema
-plus visible validity, offset, view, referenced variadic-size, coordinate, and WKB spans,
-invokes the producer release callback, and validates and decodes only the owned
-snapshot. Unrelated table columns, BinaryView size entries, and payload ranges
-are not retained. Mixed geometry types, mixed coordinate axes, and geometry
+batches, and record batch readers are copied through PyArrow.
+Other capsule providers use the dependency-free Arrow C interface; their
+selected geometry buffers are copied before validation and decoding.
+Mixed geometry types, mixed coordinate axes, and geometry
 collections fall back to GeoArrow **WKB** encoding so nothing is lost. The
 PyArrow export path also uses WKB when explicit multipart member slots cannot
 be represented by its selected native layout; the Arrow-C nested layout
 retains explicit empty line and polygon slots.
-
-`from_arrow` handles PyArrow arrays, chunked arrays, tables, record batches, and
-record batch readers through the PyArrow path. Other objects implementing
-`__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
-capsule path; the provider's data contents are still validated after gometry
-copies the admitted spans into owned storage.
 
 ### Arrow C capsule trust model
 
@@ -186,9 +177,7 @@ or `__arrow_c_stream__` and imports the GeoArrow buffers according to its own
 ownership contract. When gometry is the consumer, pass the provider object itself
 to `from_arrow`. The `(schema_capsule, array_capsule)` pair returned by calling
 `__arrow_c_array__()` is the protocol's transfer value, not a supported
-`from_arrow` input. Gometry copies the selected schema plus visible validity,
-offset, view, variadic-size, coordinate, and WKB spans into owned storage before
-validation and decode.
+`from_arrow` input.
 
 Consumers with Arrow-C support can consume these capsules directly, subject to
 their own GeoArrow and extension-type support. Gometry's supported
@@ -196,8 +185,7 @@ their own GeoArrow and extension-type support. Gometry's supported
 Series so it remains independent of PyArrow; that boundary is covered in
 [DataFrames](dataframes.md). The lonboard adapter passes the geometry array, or
 an Arrow-compatible table when attributes are supplied, through the direct
-capsule route. Reprojection, attribute assembly, and widget construction may
-allocate; it does not promise a GeoJSON fallback.
+capsule route.
 
 ## GeoParquet — durable columnar storage
 
@@ -269,9 +257,7 @@ print("explore available:", callable(gm.explore))
 ```
 
 [`gm.explore`][gometry.explore] hands lonboard the geometry through its
-Arrow-compatible capsule route. Reprojection, attribute assembly, and widget
-construction may allocate, and lonboard errors propagate from that one route;
-there is no GeoJSON fallback. Inputs need a CRS and finite bounds. By default it presents
+Arrow-compatible capsule route. Inputs need a CRS and finite bounds. By default it presents
 a map where points, lines, and polygons remain distinct and features are inspectable
 on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
 `polygon_kwargs`, or `map_kwargs` to tailor individual settings.
