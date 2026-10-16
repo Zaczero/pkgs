@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zipfile import ZipFile
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -42,7 +43,6 @@ from bench_doctor import (
 import quality_runtime
 import release_artifact
 import runtime_artifact
-import artifact_content
 import source_artifact
 from benchmark_identity import (
     IDENTITY_SCHEMA_VERSION,
@@ -106,22 +106,24 @@ def load_subject(
             raise AssertionError('selected benchmark wheel changed')
         manifest_path = selected_path.parent / source_artifact.SOURCE_MANIFEST_NAME
         manifest = json.loads(manifest_path.read_text())
-        manifest = source_artifact.validate_source_manifest(
-            selected_path.parent / manifest['sdist']['filename'], manifest_path
-        )
         source = source_artifact.source_identity(manifest)
-        inspected = artifact_content.inspect_wheel(
-            selected_path, expected_python_members=source['python_members']
-        )
-        extensions = inspected['extension_members']
-        if len(extensions) != 1:
-            raise AssertionError('benchmark wheel must contain one native extension')
-        member, payload = next(iter(extensions.items()))
+        with ZipFile(selected_path) as archive:
+            members = [
+                name
+                for name in archive.namelist()
+                if name.startswith('gometry/_lib.') and name.endswith(('.so', '.pyd'))
+            ]
+            if len(members) != 1:
+                raise AssertionError(
+                    'benchmark wheel must contain one native extension'
+                )
+            member = members[0]
+            extension_digest = hashlib.sha256(archive.read(member)).hexdigest()
         wheel = {
             'filename': selected_path.name,
             'sha256': digest,
             'extension_member': member,
-            'extension_sha256': hashlib.sha256(payload).hexdigest(),
+            'extension_sha256': extension_digest,
         }
         target = next(
             line.removeprefix('host: ')

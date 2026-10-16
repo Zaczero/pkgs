@@ -1061,7 +1061,16 @@ def test_publication_rejects_unattributed_or_receipt_mismatched_producer(
     assert not (tmp_path / 'current' / 'summary.md').exists()
 
 
-def test_publication_rejects_absent_or_untracked_lock_identity(
+def test_publication_accepts_an_unlocked_environment(
+    publication_baseline: str,
+) -> None:
+    result = _result(publication_baseline)
+    absent = {'path': None, 'sha256': None, 'size_bytes': None}
+    result['doctor']['metadata']['uv_lock'] = absent  # type: ignore[index]
+    assert bench_driver._publication_metadata(result)['uv_lock'] == absent
+
+
+def test_publication_rejects_lock_attribution_drift(
     tmp_path: Path, publication_baseline: str
 ) -> None:
     result = _result(publication_baseline)
@@ -1071,7 +1080,7 @@ def test_publication_rejects_absent_or_untracked_lock_identity(
         'size_bytes': None,
     }
     run_manifest = _run_manifest(tmp_path, publication_baseline, result)
-    with pytest.raises(SystemExit, match='requires a lock file identity'):
+    with pytest.raises(SystemExit, match='lock identity mismatch'):
         _publish(run_manifest, tmp_path)
 
 

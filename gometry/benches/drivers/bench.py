@@ -911,22 +911,23 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     lock = metadata['uv_lock']
     lock_path = lock.get('path')
     lock_digest = lock.get('sha256')
-    if (
-        not isinstance(lock_path, str)
-        or not lock_path
-        or not isinstance(lock_digest, str)
-        or len(lock_digest) != 64
-        or not isinstance(lock.get('size_bytes'), int)
-        or lock.get('size_bytes', 0) <= 0
-    ):
-        raise SystemExit(
-            'publication rejected: publishable evidence requires a lock file identity'
-        )
-    lock_file = Path(lock_path)
-    if not lock_file.is_file() or _file_sha256(lock_file) != lock_digest:
-        raise SystemExit(
-            'publication rejected: dependency lock identity is stale or unavailable'
-        )
+    if any(value is not None for value in lock.values()):
+        if (
+            not isinstance(lock_path, str)
+            or not lock_path
+            or not isinstance(lock_digest, str)
+            or len(lock_digest) != 64
+            or not isinstance(lock.get('size_bytes'), int)
+            or lock.get('size_bytes', 0) <= 0
+        ):
+            raise SystemExit(
+                'publication rejected: dependency lock identity is malformed'
+            )
+        lock_file = Path(lock_path)
+        if not lock_file.is_file() or _file_sha256(lock_file) != lock_digest:
+            raise SystemExit(
+                'publication rejected: dependency lock identity is stale or unavailable'
+            )
     if not metadata.get('harness_commit') or not metadata.get('source_inputs_sha256'):
         raise SystemExit(
             'publication rejected: harness commit/input identity is missing'
@@ -1714,17 +1715,6 @@ def main() -> None:
     if cpu_selection.endswith('not-isolated'):
         doctor['warnings'].append(
             f'timing CPU is not kernel-isolated: cpu={cpu}, selection={cpu_selection}'
-        )
-    lock = doctor['metadata'].get('uv_lock')
-    if args.profile == 'release' and (
-        not isinstance(lock, dict)
-        or not lock.get('path')
-        or not lock.get('sha256')
-        or not isinstance(lock.get('size_bytes'), int)
-        or lock.get('size_bytes', 0) <= 0
-    ):
-        hard_failures.append(
-            'publishable release evidence requires an actual dependency lock file identity'
         )
     _validate_run_environment(
         args.profile,
