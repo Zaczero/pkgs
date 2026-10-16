@@ -18,6 +18,7 @@ from pyo3stubs.doc_structure import (
     SignatureParameter,
     _stub_parameters,
     check_doc_subject,
+    doc_style_errors,
     duplicate_section_errors,
     parameter_entries,
     parse_doc,
@@ -52,6 +53,42 @@ Args:
 Returns:
     int: The output.
 """
+
+
+@pytest.mark.parametrize(
+    ('prose', 'style', 'invalid'),
+    [
+        pytest.param(NUMPYDOC, 'numpy', False, id='numpy'),
+        pytest.param(GOOGLE, 'google', False, id='google'),
+        pytest.param(GOOGLE, 'numpy', True, id='google-in-numpy'),
+        pytest.param(
+            'Consume a value.\n\nargs:\n    value: Input.',
+            'numpy',
+            True,
+            id='lowercase-google',
+        ),
+        pytest.param(NUMPYDOC, 'google', True, id='numpy-in-google'),
+        pytest.param(
+            'Consume a value.\n\nArgs:\n    value: Input.',
+            'numpy',
+            True,
+            id='args-only',
+        ),
+        pytest.param(
+            NUMPYDOC + '\nRaises:\n    ValueError: Invalid.', 'numpy', True, id='mixed'
+        ),
+        pytest.param('Return a coordinate.', 'numpy', False, id='short'),
+        pytest.param('Return a coordinate.', 'google', False, id='short-google'),
+        pytest.param(
+            'Example:\n\n```text\nArgs:\n    value: Input.\n```',
+            'numpy',
+            False,
+            id='fenced-example',
+        ),
+    ],
+)
+def test_docstring_section_convention(prose, style, invalid):
+    assert bool(doc_style_errors(prose, style)) is invalid
 
 
 def sample(value: int, scale: float = 2.0) -> int:

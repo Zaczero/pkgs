@@ -118,6 +118,12 @@ Public runtime callables or constructible class bindings where `inspect.signatur
 
 Public callables exempt from the `doc-structure` prose rules (reason per qualified name). Unused entries fail the run.
 
+#### `StubConfig.docstring_style`
+
+`Literal[numpy, google] | None` · Default: `None`
+
+Required NumPy or Google section style, or `None` to accept either. Checked on runtime documentation and Python source and stub docstrings beneath `stub_path.parent`, including short docstrings with sections.
+
 #### `StubConfig.extra_ignored_type_names`
 
 `frozenset[str]` · Default: `frozenset()`

@@ -9,7 +9,7 @@ for each gate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -220,6 +220,10 @@ class StubConfig:
     doc_structure_allowlist:
         Public callables exempt from the ``doc-structure`` prose rules
         (reason per qualified name). Unused entries fail the run.
+    docstring_style:
+        Required NumPy or Google section style, or ``None`` to accept either.
+        Checked on runtime documentation and Python source and stub docstrings
+        beneath ``stub_path.parent``, including short docstrings with sections.
     extra_ignored_type_names:
         Annotation names skipped by the leaked-types scan, *in addition to*
         :data:`~pyo3stubs.config.DEFAULT_IGNORED_TYPE_NAMES`.
@@ -252,6 +256,7 @@ class StubConfig:
     typecheck_targets: tuple[Path, ...] = ()
     uninspectable_allowlist: Reasons = field(default_factory=dict)
     doc_structure_allowlist: Reasons = field(default_factory=dict)
+    docstring_style: Literal['numpy', 'google'] | None = None
     extra_ignored_type_names: frozenset[str] = field(default_factory=frozenset)
     macro_exports: tuple[MacroExport, ...] = ()
     constructor_doc_macros: frozenset[str] = field(default_factory=frozenset)

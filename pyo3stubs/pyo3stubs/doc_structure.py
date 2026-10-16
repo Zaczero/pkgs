@@ -10,7 +10,7 @@ that prose has to contain, which is the half that rots silently:
 
 Sections are parsed format-agnostically — numpydoc (``Parameters`` over a
 ``----------`` underline) and Google (``Args:``) are both understood — so the
-gate does not pin one house style.
+gate accepts either unless ``docstring_style`` selects a package convention.
 
 Domain rules stay with their package: a ``Raises`` taxonomy names a project's
 own exception classes and operation families, and does not travel.
@@ -60,6 +60,48 @@ _PARAMETER_SECTIONS = frozenset({
 _NAMED_TYPE_SECTIONS = _PARAMETER_SECTIONS | {'Attributes'}
 _TYPED_VALUE_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
 _OUTPUT_SECTIONS = frozenset({'Returns', 'Yields'})
+_STYLE_SECTIONS = (
+    _NAMED_TYPE_SECTIONS
+    | _TYPED_VALUE_SECTIONS
+    | {
+        'Args',
+        'Arguments',
+        'Keyword Args',
+        'Raises',
+        'Warns',
+        'Warnings',
+        'See Also',
+        'Notes',
+        'References',
+        'Examples',
+        'Methods',
+    }
+)
+
+
+def doc_style_errors(prose: str, style: Literal['numpy', 'google']) -> list[str]:
+    """Reject foreign section syntax without requiring sections in short prose."""
+    lines = inspect.cleandoc(prose).splitlines()
+    visible: list[str] = []
+    fence: str | None = None
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(('```', '~~~')):
+            marker = stripped[0]
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            visible.append('')
+        else:
+            visible.append(line if fence is None else '')
+    text = '\n'.join(visible) + '\n'
+    foreign = _GOOGLE_SECTION if style == 'numpy' else _NUMPYDOC_SECTION
+    return [
+        f'{match.group(1)}: expected {style}-style section syntax'
+        for match in foreign.finditer(text)
+        if match.group(1).title() in _STYLE_SECTIONS
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1492,7 +1534,27 @@ def collect_errors(cfg: StubConfig) -> Findings:
     examined = 0
     exempt: set[str] = set()
 
+    if cfg.docstring_style is not None:
+        for path in sorted(cfg.stub_path.parent.rglob('*')):
+            if path.suffix not in {'.py', '.pyi'}:
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+                if not isinstance(
+                    node,
+                    (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    continue
+                if prose := ast.get_docstring(node):
+                    errors.extend(
+                        f'{path}:{node.body[0].lineno}: {error}'
+                        for error in doc_style_errors(prose, cfg.docstring_style)
+                    )
     for subject in iter_doc_subjects(ctx):
+        if cfg.docstring_style is not None and subject.prose:
+            errors.extend(
+                f'{subject.source.path}:{subject.source.line}: {subject.qualname}: {error}'
+                for error in doc_style_errors(subject.prose, cfg.docstring_style)
+            )
         if subject.qualname in cfg.doc_structure_allowlist:
             if subject.prose and subject.prose.strip():
                 exempt.add(subject.qualname)

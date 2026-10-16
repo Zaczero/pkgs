@@ -724,6 +724,48 @@ def test_doc_contract_flags_missing_annotated_descriptor_doc(
     assert any('Sealed.maybe: runtime docstring missing or empty' in e for e in errors)
 
 
+@pytest.mark.parametrize('suffix', ['.py', '.pyi'])
+def test_doc_structure_checks_package_source_style(tmp_path, pristine_stub, suffix):
+    cfg = make_config(tmp_path, stub_text=pristine_stub, docstring_style='numpy')
+    source = cfg.stub_path.parent / f'facade{suffix}'
+    source.write_text('''\
+def helper(value):
+    """Consume a value.
+
+    Args:
+        value: Input value.
+    """
+''')
+    assert any(
+        str(source) in error and 'expected numpy-style' in error
+        for error in doc_structure(cfg)
+    )
+    assert not any(
+        'expected numpy-style' in error
+        for error in doc_structure(replace(cfg, docstring_style=None))
+    )
+
+
+def test_doc_structure_checks_runtime_style_before_exemptions(
+    tmp_path, monkeypatch, pristine_stub
+):
+    import fakepkg._lib as lib
+
+    cfg = make_config(
+        tmp_path,
+        stub_text=pristine_stub,
+        docstring_style='numpy',
+        doc_structure_allowlist={'Sealed.method': 'Signature prose is exempt.'},
+    )
+    monkeypatch.setattr(
+        lib.Sealed.method, '__doc__', 'Return a value.\n\nReturns:\n    int: Value.'
+    )
+    assert any(
+        'Sealed.method: Returns: expected numpy-style' in error
+        for error in doc_structure(cfg)
+    )
+
+
 def test_doc_structure_requires_returns_for_annotated_descriptor(
     tmp_path, monkeypatch, pristine_stub
 ):
