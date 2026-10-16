@@ -96,7 +96,10 @@ check rendered output.
 
 ## Support and Reference
 
-See the [public function reference](jinja2_htmlmin/__init__.py),
-[Jinja loader documentation](https://jinja.palletsprojects.com/en/stable/api/#loaders),
-and [issue tracker](https://github.com/Zaczero/pkgs/issues).
+See the [public function reference](jinja2_htmlmin/__init__.py) and
+[Jinja loader documentation](https://jinja.palletsprojects.com/en/stable/api/#loaders).
 The package uses the [Zero-Clause BSD license](https://choosealicense.com/licenses/0bsd/).
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

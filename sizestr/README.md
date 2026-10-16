@@ -29,4 +29,6 @@ Non-finite values display as `(inf)`, `(-inf)`, or `(nan)`. Values beyond ZiB
 display as `(too large to display)`.
 
 [Full reference](sizestr/__init__.py) ·
-[Issues](https://github.com/Zaczero/pkgs/issues)
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

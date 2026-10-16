@@ -9,15 +9,10 @@ description: Where to file gometry bugs and security reports, and what commercia
 Bug reports, questions, feature requests, and design discussions go to the
 [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 
-Issue reports include the gometry version, the Python version and platform, the
-CRS of the geometry involved, and a minimal reproduction.
-
 ## Security disclosures
 
-A suspected vulnerability goes through private reporting rather than the public
-tracker. [Security & untrusted input](security.md#reporting-vulnerabilities)
-carries the channel, along with the threat model for parsing and the resource
-boundaries that apply to caller-supplied geometry.
+Report security issues through
+[GitHub's private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new).
 
 ## Premium support
 

@@ -168,3 +168,9 @@ The public exports are `StubConfig`, `MacroExport`, `SurfaceConfig`,
 `DualityConfig`, `TokenConfig`, `TextSignatureDefault`, `Reasons`,
 `DEFAULT_IGNORED_TYPE_NAMES`, and `render_stub_with_docs`. Gate registry,
 scanner, context, and collector objects are implementation details.
+
+## Support
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

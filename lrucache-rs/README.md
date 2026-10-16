@@ -74,7 +74,6 @@ The cache reserves storage for `maxsize`, so choose it for your working set.
 
 ## Support
 
-Report reproducible problems through the
-[issue tracker](https://github.com/Zaczero/pkgs/issues), including the
-Python implementation and version, free-threaded build mode if applicable,
-and a small example of the unexpected behavior.
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

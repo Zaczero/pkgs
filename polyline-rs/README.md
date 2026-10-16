@@ -38,4 +38,7 @@ Rows accept at least two numbers and ignore additional values.
 
 The four function signatures and error contracts are documented in the
 [package typing stubs](https://github.com/Zaczero/pkgs/blob/main/polyline-rs/python/polyline_rs/_lib.pyi).
-Report issues in the [repository issue tracker](https://github.com/Zaczero/pkgs/issues).
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

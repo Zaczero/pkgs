@@ -76,4 +76,7 @@ warmup in each process; six-process batches run in A–B–B–A order.
 
 See the [`totp_time_window`, `totp_generate`, and `totp_verify` reference](https://github.com/Zaczero/pkgs/blob/main/totp-rs/python/totp_rs/_lib.pyi)
 for parameters, defaults, and errors.
-[Report issues on GitHub](https://github.com/Zaczero/pkgs/issues).
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

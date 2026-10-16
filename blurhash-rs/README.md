@@ -89,4 +89,6 @@ Use `punch` above 1 to increase contrast.
 This exception reports a hash or image-dimension error from `blurhash_decode`. Its `blurhash` attribute contains the hash passed to the decoder.
 
 [Full reference](python/blurhash_rs/__init__.py) ·
-[Issues](https://github.com/Zaczero/pkgs/issues)
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

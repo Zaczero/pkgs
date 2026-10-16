@@ -34,4 +34,6 @@ Missing files raise `FileNotFoundError`; references outside `git_dir` raise
 `ValueError`. Other file-reading errors propagate.
 
 [Full reference](githead/__init__.py) ·
-[Issues](https://github.com/Zaczero/pkgs/issues)
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

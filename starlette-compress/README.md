@@ -170,5 +170,7 @@ The [middleware reference](starlette_compress/__init__.py) lists
 defaults and compression-level ranges. The
 [`add_compress_type` and `remove_compress_type` reference](starlette_compress/_utils.py)
 describes registry operations and default media types.
-Report problems in the [issue tracker](https://github.com/Zaczero/pkgs/issues),
-including interpreter, backend, response type, and a minimal application.
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

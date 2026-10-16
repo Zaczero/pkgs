@@ -114,5 +114,6 @@ workload and measurement boundary.
 
 ## Support
 
-[Report issues](https://github.com/Zaczero/pkgs/issues) with the input
-measurements and the call that produced the unexpected result.
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

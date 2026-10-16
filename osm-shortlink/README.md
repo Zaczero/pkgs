@@ -47,4 +47,7 @@ defines the token and its coordinate quantization.
 
 The two function signatures and behavior are documented in the
 [package typing stubs](https://github.com/Zaczero/pkgs/blob/main/osm-shortlink/python/osm_shortlink/_lib.pyi).
-Report issues in the [repository issue tracker](https://github.com/Zaczero/pkgs/issues).
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

@@ -243,7 +243,5 @@ files is a separate, optional step.
 
 ## Support
 
-When [reporting a problem](https://github.com/Zaczero/pkgs/issues), include `fast --version`,
-the command and flags, kernel/architecture, the observed result, and a small
-reproducer. Reports and captured diagnostics may contain command arguments or
-workload secrets; inspect them before sharing.
+[Report a problem or ask a question](https://github.com/Zaczero/pkgs/issues).
+If you share captured diagnostics, remove any workload secrets first.

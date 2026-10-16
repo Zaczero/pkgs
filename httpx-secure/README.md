@@ -165,7 +165,6 @@ use `ConnectTimeout`. Catch those separately when deciding whether to retry.
 
 ## Support
 
-Report unsupported-client cases and reproducible failures through the
-[issue tracker](https://github.com/Zaczero/pkgs/issues), including Python, HTTPX,
-HTTPcore and AnyIO versions and the relevant transport configuration. Redact
-credentials and request secrets.
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)

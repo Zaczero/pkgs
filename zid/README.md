@@ -147,4 +147,8 @@ CSPRNG-initialized sequence.
   sequence numbers within a timestamp increase predictably, and the randomized
   origin has at most 16 bits of entropy.
 
-[Report issues on GitHub](https://github.com/Zaczero/pkgs/issues).
+## Support
+
+[Issues and questions](https://github.com/Zaczero/pkgs/issues) ·
+[Private security reports](https://github.com/Zaczero/pkgs/security/advisories/new) ·
+[Premium support](https://monicz.dev/#get-in-touch)
