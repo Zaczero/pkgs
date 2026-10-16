@@ -4,49 +4,35 @@ description: "The multi-worker supervisor: signals, rolling reload, live scaling
 
 # Operations
 
-`h2corn` runs in one of two shapes:
+The CLI and [`serve()`][h2corn.serve] run a supervised worker pool on POSIX.
+On Windows, they run one worker in the current process. To run a server inside
+an existing event loop, use [`Server`][h2corn.Server]; see
+[Embedding](../embedding.md).
 
-- The **CLI supervisor** (`h2corn module:app` or [`serve()`][h2corn.serve])
-  spawns and supervises one or more worker processes. It is the production
-  deployment mode.
-- The **embedded server** ([`Server`][h2corn.Server]) runs a single
-  worker inside your own event loop — see [Embedding](../embedding.md#inside-an-asyncio-app).
+<span id="full-option-reference"></span>
 
-The supervisor is **POSIX-only**. On Windows, `serve()` automatically
-falls back to single-worker, in-process mode.
+Examples use `hello:app` from the [quickstart](../quickstart.md#run-your-first-server).
+The [configuration reference](../configuration.md#option-index) lists all settings.
 
-`hello:app` is the import target from the [Quickstart](../quickstart.md#run-your-first-server).
-Substitute the import target for your application.
+## Configure the server
 
-<figure markdown>
+### TOML config files
 
-```mermaid
-sequenceDiagram
-  accTitle: h2corn rolling SIGHUP reload
-  accDescr: SIGHUP queues every worker. The supervisor spawns a replacement, which runs lifespan startup and adopts the inherited listeners before reporting ready. Both workers then serve at once. Only after that does the supervisor retire the predecessor, which drains in-flight requests and runs lifespan shutdown, leaving the replacement serving. Serving capacity never drops to zero.
-  participant S as supervisor
-  participant A as worker (old)
-  participant B as worker (replacement)
+For anything more than a handful of flags, use a TOML file:
 
-  activate A
-  S->>S: SIGHUP queues every worker
-  S->>B: spawn replacement
-  B->>B: lifespan startup,<br>adopt inherited listeners
-  B-->>S: READY
-  activate B
-  Note over A,B: both serving<br>capacity never drops
-  S->>A: retire
-  A->>A: drain in-flight,<br>lifespan shutdown
-  A--)S: exited
-  deactivate A
-  Note over S,B: repeat for the next queued worker
-  deactivate B
+```toml title="h2corn.toml"
+--8<-- "h2corn.toml"
 ```
 
-  <figcaption>The replacement is serving before its predecessor begins draining. Overlapping bars show that both workers can accept traffic during the handover.</figcaption>
-</figure>
+```bash
+h2corn hello:app --config h2corn.toml
+# or
+H2CORN_CONFIG=h2corn.toml h2corn hello:app
+```
 
-## Worker pool
+CLI flags override TOML values.
+
+### Worker pool
 
 ```bash
 h2corn hello:app --workers 4
@@ -57,20 +43,7 @@ the file descriptors into each worker. Workers accept connections
 directly on a [Tokio](https://tokio.rs/) runtime — no shared
 user-space accept queue.
 
-## Shared ports across processes
-
-```bash
-h2corn hello:app --reuse-port
-```
-
-[`--reuse-port`](../configuration.md#option-reuse_port) sets `SO_REUSEPORT` on the TCP listeners so another server
-process can bind the same port: start a new generation during a
-zero-downtime deploy and stop the old one, or run several independently
-managed processes behind one port. Workers of a single server always share
-its listener, so the kernel's shared accept queue lets any idle worker pick
-up a connection. TCP listeners only.
-
-## Event loop
+### Event loop
 
 [`--loop`](../configuration.md#option-loop) selects the Python event-loop implementation:
 
@@ -94,7 +67,7 @@ Unlike a pure-Python server, h2corn runs its accept loop, framing, and
 socket I/O in Rust; the Python loop schedules the application's callbacks.
 Choose between asyncio and uvloop from measurements of the real application.
 
-## Free-threaded Python
+### Free-threaded Python
 
 On a free-threaded (no-GIL) CPython build, one worker can run the
 application on several event loops in parallel:
@@ -130,7 +103,9 @@ from application behavior and measured throughput, latency, and memory; keep
 machine's core count unless a workload-specific measurement supports
 oversubscription.
 
-## Signals
+## Reload and scale
+
+### Signals
 
 The supervisor responds to these signals:
 
@@ -155,11 +130,39 @@ kill -SIGTTOU $(cat /var/run/h2corn.pid)
 Use [`--pid`](../configuration.md#option-pid) `/var/run/h2corn.pid` so deployment tooling can find the
 supervisor reliably.
 
-### What `SIGHUP` reloads
+#### What `SIGHUP` reloads
 
 `SIGHUP` re-imports the CLI target in each replacement worker. The supervisor
 keeps the listener file descriptors and resolved configuration while it rolls
 workers.
+
+<figure markdown>
+
+```mermaid
+sequenceDiagram
+  accTitle: h2corn rolling SIGHUP reload
+  accDescr: SIGHUP queues every worker. The supervisor spawns a replacement, which runs lifespan startup and adopts the inherited listeners before reporting ready. Both workers then serve at once. Only after that does the supervisor retire the predecessor, which drains in-flight requests and runs lifespan shutdown, leaving the replacement serving. Serving capacity never drops to zero.
+  participant S as supervisor
+  participant A as worker (old)
+  participant B as worker (replacement)
+
+  activate A
+  S->>S: SIGHUP queues every worker
+  S->>B: spawn replacement
+  B->>B: lifespan startup,<br>adopt inherited listeners
+  B-->>S: READY
+  activate B
+  Note over A,B: both serving<br>capacity never drops
+  S->>A: retire
+  A->>A: drain in-flight,<br>lifespan shutdown
+  A--)S: exited
+  deactivate A
+  Note over S,B: repeat for the next queued worker
+  deactivate B
+```
+
+  <figcaption>The replacement starts serving before its predecessor drains, keeping capacity available during the handover.</figcaption>
+</figure>
 
 | State or input | SIGHUP behavior | Apply a change with |
 | --- | --- | --- |
@@ -176,7 +179,20 @@ restart h2corn. A failed rolling worker replacement preserves the old worker;
 a full restart follows the service manager's stop/start behavior and may have
 downtime.
 
-## Worker recycling
+### Shared ports across processes
+
+```bash
+h2corn hello:app --reuse-port
+```
+
+[`--reuse-port`](../configuration.md#option-reuse_port) sets `SO_REUSEPORT` on the TCP listeners so another server
+process can bind the same port: start a new generation during a
+zero-downtime deploy and stop the old one, or run several independently
+managed processes behind one port. Workers of a single server always share
+its listener, so the kernel's shared accept queue lets any idle worker pick
+up a connection. TCP listeners only.
+
+### Worker recycling
 
 Retire workers after a request budget to stagger memory growth and
 other long-tail process state:
@@ -192,7 +208,19 @@ The supervisor adds up to [`--max-requests-jitter`](../configuration.md#option-m
 worker's budget, so retirements are spread out over time rather than
 firing at the same instant on every worker.
 
-## Health checks
+## Health and shutdown
+
+### Resource limits and slow clients
+
+The server separately limits connection count, concurrent ASGI tasks, HTTP/2
+streams, request bodies and headers, request-body idle time, handshakes,
+keep-alive, response stalls, and WebSocket messages. Defaults, units, zero
+semantics, and failure behavior are in the [HTTP and resource limit options](../configuration.md#http-and-resource-limits).
+Slow clients consume connection and stream capacity until the relevant timeout;
+[`limit_connections`](../configuration.md#option-limit_connections) and [`limit_concurrency`](../configuration.md#option-limit_concurrency) bound a worker's admission, and a
+proxy request/body timeout must cover the application path it protects.
+
+### Health checks
 
 Each worker emits a periodic heartbeat to the supervisor. If the
 supervisor does not see a heartbeat within
@@ -203,7 +231,13 @@ event loop.
 
 Set `--timeout-worker-healthcheck 0` to disable.
 
-## Shutdown budget
+### Crash backoff
+
+Crashed workers are restarted with exponential backoff. A sustained crash
+loop stops the supervisor and reports the deployment failure, including when
+a previously healthy deployment loses all serving workers.
+
+### Shutdown budget
 
 Shutdown has two request phases and one lifespan phase. Native request draining
 uses [`timeout_graceful_shutdown`](../configuration.md#option-timeout_graceful_shutdown); cancellation-resistant request cleanup can
@@ -247,7 +281,9 @@ retiring worker at its phase deadline and logs the action. A shorter
 service-manager timeout can send `SIGKILL` before request or lifespan cleanup
 completes.
 
-## Containers and Kubernetes
+## Deployment environments
+
+### Containers and Kubernetes
 
 The container entrypoint must exec h2corn so it receives termination and owns
 its worker children:
@@ -277,17 +313,7 @@ cover the combined shutdown formula and any `preStop` hook time. The default
 stop budget. h2corn's signal handler stops acceptance; a fixed `sleep` in
 `preStop` consumes the period before request and lifespan cleanup.
 
-## Resource limits and slow clients
-
-The server separately limits connection count, concurrent ASGI tasks, HTTP/2
-streams, request bodies and headers, request-body idle time, handshakes,
-keep-alive, response stalls, and WebSocket messages. Defaults, units, zero
-semantics, and failure behavior are in the [HTTP and resource limit options](../configuration.md#http-and-resource-limits).
-Slow clients consume connection and stream capacity until the relevant timeout;
-[`limit_connections`](../configuration.md#option-limit_connections) and [`limit_concurrency`](../configuration.md#option-limit_concurrency) bound a worker's admission, and a
-proxy request/body timeout must cover the application path it protects.
-
-## systemd readiness
+### systemd readiness
 
 Under a `Type=notify` unit, `h2corn` sends `READY=1` when it is actually
 accepting connections — with [`--workers`](../configuration.md#option-workers), once *every* worker is serving, not
@@ -310,7 +336,7 @@ h2corn sends no notification. Workers never send one either, since the
 supervisor is the main PID and the only process that knows when the whole fleet
 is up.
 
-### Full systemd unit
+#### Full systemd unit
 
 Run the supervisor as the service user. `ExecStartPre` checks the TOML and TLS
 inputs before startup, `ExecReload` forwards `systemctl reload` as the app-only
@@ -362,31 +388,7 @@ TOML, environment file, or certificate still needs a checked replacement and
 `systemctl restart myapp.service` (plus `systemctl daemon-reload` when the unit
 file itself changed).
 
-## Crash backoff
-
-Crashed workers are restarted with exponential backoff. A sustained crash
-loop stops the supervisor and reports the deployment failure.
-
-This also applies when a previously healthy deployment loses all serving workers.
-
-## TOML config files
-
-For anything more than a handful of flags, prefer a TOML file:
-
-```toml title="h2corn.toml"
---8<-- "h2corn.toml"
-```
-
-```bash
-h2corn hello:app --config h2corn.toml
-# or
-H2CORN_CONFIG=h2corn.toml h2corn hello:app
-```
-
-CLI flags still win over TOML values, so a deploy can override one
-setting without rewriting the file.
-
-## Process identity
+### Process identity
 
 Drop privileges after binding to a low port:
 
@@ -409,7 +411,7 @@ stay `root:root` mode `0600`; the supervisor reads it once at startup and every
 worker inherits the material. A key the starting user cannot read fails startup
 immediately, naming the setting and the path, before any handshake.
 
-## Observability
+## Logs and metrics {#observability}
 
 `h2corn` emits logs. Metrics and tracing are application integrations.
 
@@ -460,9 +462,3 @@ Instrumentator().instrument(app).expose(app)
 h2corn app:app --workers 4
 # Prometheus can scrape /metrics on this listener
 ```
-
-## Full option reference
-
-Every option is documented with its CLI flag, environment variable, TOML key,
-and default in the
-[Configuration reference](../configuration.md#option-index).

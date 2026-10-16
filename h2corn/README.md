@@ -40,7 +40,9 @@ h2corn supports Python 3.11 and newer.
 pip install h2corn
 ```
 
-## A 60-second start
+<a id="a-60-second-start"></a>
+
+## Quickstart
 
 Run an existing ASGI application with `h2corn module:app`, or try this
 [FastAPI](https://fastapi.tiangolo.com/) application (`pip install fastapi`):
@@ -74,6 +76,9 @@ WebSocket upgrades; HTTP/2 WebSockets require RFC 8441 support along the route.
 h2corn serves ASGI applications on Python 3.11+, including free-threaded
 CPython. Linux and macOS support the multi-worker supervisor; Windows runs a
 single worker. It is not a gRPC server.
+
+Moving an existing deployment? See the
+[migration guide](https://h2corn.monicz.dev/migrating/) for commands and changed defaults.
 
 ## Benchmarks
 

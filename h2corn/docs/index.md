@@ -20,7 +20,7 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 [benchmarks](benchmarks.md).
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
-[Why h2corn](#why-h2corn){ .md-button }
+[User guide](guide.md){ .md-button }
 
 </div>
 
@@ -39,6 +39,8 @@ Measured on a Ryzen 9 5950X with CPython 3.14.8.
 [See the data, configuration, and all 27 workloads](benchmarks.md).
 
 </div>
+
+<span id="why-h2corn"></span>
 
 <div class="grid cards" markdown>
 
@@ -71,16 +73,6 @@ Measured on a Ryzen 9 5950X with CPython 3.14.8.
 
 </div>
 
-## Why h2corn
-
-<div class="rationale" markdown>
-
-h2corn puts HTTP/2 at the application boundary, with native protocol handling
-and ordinary Python ASGI callables. Use HTTP/1.1 for local browser development
-and WebSocket upgrade routes, or RFC 8441 for WebSockets over HTTP/2.
-
-Start with the [quickstart](quickstart.md), look up
-[configuration](configuration.md) or the [Python API](api/index.md), and see
-[support](support.md) for questions or deployment help.
-
-</div>
+For settings and Python integration, see [Configuration](configuration.md)
+and the [API reference](api/index.md). [Support](support.md) covers questions
+and deployment help.

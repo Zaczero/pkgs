@@ -48,7 +48,7 @@ your browser. The response is `{"message": "hello from h2corn"}`.
 
 Browsers use HTTP/1.1 here: they require TLS for HTTP/2.
 
-## Prove h2c with prior knowledge
+## Try HTTP/2 {#prove-h2c-with-prior-knowledge}
 
 An HTTP/2 client must opt into cleartext prior knowledge. Use a curl build that
 lists HTTP/2 in `curl --version`:
@@ -89,91 +89,22 @@ makes `h2corn` call the target:
 h2corn factory:create_app --factory
 ```
 
-## Deploy
-
-In production, `h2corn` typically sits behind a reverse proxy that
-terminates browser-facing TLS. The application server itself runs on a
-local listener with several workers. A production start line can use:
-
-```bash
-h2corn hello:app \
-  --bind 127.0.0.1:8000 \
-  --workers 4 \
-  --proxy-headers \
-  --forwarded-allow-ips 127.0.0.1,::1,unix
-```
-
-This trusts forwarded client addresses and schemes only from the local proxy.
-Keep HTTP/1.1 enabled for HTTP/1.1 WebSocket routes; `--no-http1` requires an
-HTTP/2-capable route throughout, including RFC 8441 for WebSockets.
-See [proxy recipes](deployment/proxy.md) for nginx, Caddy, and HAProxy, or
-[Direct TLS](deployment/tls.md) to serve HTTPS without a proxy.
-
-## Migrate from another ASGI server
-
-ASGI entrypoint mapping does not include options, protocol limits, lifespan,
-WebSockets, forwarded identity, or shutdown behavior; those differ between
-servers. `myapp:app` is the application import target.
-
-These are the defaults most likely to change behavior after the swap, read from
-uvicorn 0.52.4, gunicorn 26.1.0 and hypercorn 0.18.0:
-
-| What differs | Elsewhere | h2corn |
-|---|---|---|
-| Forwarded-header trust | uvicorn interprets `X-Forwarded-For` and `X-Forwarded-Proto` with no opt-in | off until [`--proxy-headers`](configuration.md#option-proxy_headers), then only from peers in [`--forwarded-allow-ips`](configuration.md#option-forwarded_allow_ips) |
-| HTTPS marker spelling | gunicorn also reads `X-Forwarded-Ssl` and `X-Forwarded-Protocol` | neither is recognized; the proxy must send `X-Forwarded-Proto` |
-| Idle keep-alive | uvicorn 5 s, gunicorn 2 s, hypercorn 5 s | [`--timeout-keep-alive`](configuration.md#option-timeout_keep_alive) 120 s |
-| Graceful stop budget | gunicorn 30 s, hypercorn 3 s, uvicorn unbounded | [`--timeout-graceful-shutdown`](configuration.md#option-timeout_graceful_shutdown) 30 s |
-
-### From Uvicorn
-
-```bash
-uvicorn myapp:app --host 127.0.0.1 --port 8000 --workers 4
-
-h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
-```
-
-Use [`--loop`](configuration.md#option-loop) [`asyncio`](https://docs.python.org/3/library/asyncio.html) or `uvloop` to choose the callback loop.
-[`--reload`](configuration.md#command-reload) is a development-only watcher and is limited to one worker.
-
-### From Hypercorn
-
-```bash
-hypercorn myapp:app --bind 127.0.0.1:8000 --workers 4
-
-h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
-```
-
-Both serve HTTP/2. Port the remaining settings through the
-[Configuration reference](configuration.md#option-index), then test the protocol path you
-deploy.
-
-### From Gunicorn
-
-```bash
-gunicorn myapp:app -k uvicorn.workers.UvicornWorker --workers 4 \
-  --bind 127.0.0.1:8000
-
-h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
-```
-
-h2corn does not load Gunicorn worker classes or Gunicorn configuration. Its
-worker lifecycle, signals, and resource limits are documented in
-[Operations](deployment/operations.md).
-
-## Framework boundary
-
-h2corn accepts ASGI 3 callables. Django (`asgi:application`), Litestar, Quart,
-and similar frameworks work when their exported callable meets the ASGI
-contract; validate lifespan, WebSockets, and middleware behavior.
+<span id="deploy"></span>
+<span id="migrate-from-another-asgi-server"></span>
+<span id="from-uvicorn"></span>
+<span id="from-hypercorn"></span>
+<span id="from-gunicorn"></span>
+<span id="framework-boundary"></span>
 
 ## Next steps
 
-- [Behind a proxy](deployment/proxy.md#behind-a-reverse-proxy) — full Caddy and HAProxy
-  recipes with `h2c` upstream.
+- [Behind a proxy](deployment/proxy.md#behind-a-reverse-proxy) — nginx, Caddy,
+  and HAProxy recipes with TLS at the edge and a private `h2c` upstream.
 - [Direct TLS](deployment/tls.md#direct-tls) — terminate TLS in `h2corn` itself
   for single-server deployments.
-- [Operations](deployment/operations.md#signals) — multi-worker supervisor,
+- [Operations](deployment/operations.md) — multi-worker supervisor,
   signals, rolling reload, live scaling, and recycling.
+- [Migrating](migrating.md) — Uvicorn, Hypercorn, and Gunicorn commands and
+  behavior differences.
 - [Configuration](configuration.md#option-index) — every option, in CLI, environment,
   and TOML form.

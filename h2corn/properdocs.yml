@@ -165,10 +165,12 @@ nav:
   - Home: index.md
   - Get started:
     - Quickstart: quickstart.md
+    - Migrating: migrating.md
   - Guide:
-    - Operations: deployment/operations.md
+    - Guide overview: guide.md
     - Behind a reverse proxy: deployment/proxy.md
     - Direct TLS: deployment/tls.md
+    - Operations: deployment/operations.md
     - WebSockets: websockets.md
     - Embedding: embedding.md
   - Reference:
