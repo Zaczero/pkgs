@@ -89,15 +89,6 @@
   line-height: 0;
 }
 
-.md-typeset .benchmark-results {
-  border-color: var(--md-default-fg-color--lightest);
-  box-shadow: none;
-}
-
-.md-typeset .benchmark-results > summary {
-  background: var(--md-code-bg-color);
-}
-
 .md-typeset table.benchmark-table {
   --benchmark-win: #166534;
   --benchmark-loss: #9a3412;

@@ -971,7 +971,7 @@ def test_publication_accepts_docs_and_summary_commit_with_unchanged_harness(
     summary = published.read_text(encoding='utf-8')
     assert f'Benchmark harness commit: `{harness_commit[:8]}`.' in summary
     assert '../assets/benchmark-runs/' in summary
-    assert 'producer receipt index' in summary
+    assert '/receipts/index.json' in summary
 
 
 def test_publication_rejects_changed_benchmark_harness_bytes(
@@ -1114,8 +1114,8 @@ def test_publication_retains_portable_evidence_and_reuses_its_summary(
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
     assert '#### union_all: n-ary overlay input count' in summary_md
-    assert 'raw measurements, oracle, and producer receipts' in summary_md
-    assert 'producer receipt index' in summary_md
+    assert '/run.json)' in summary_md
+    assert '/receipts/index.json)' in summary_md
 
     bundle = next(
         path for path in bench_driver._EVIDENCE_ROOT.iterdir() if path.is_dir()

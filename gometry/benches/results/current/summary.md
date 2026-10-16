@@ -1,9 +1,15 @@
+<!-- --8<-- [start:environment] -->
+
 ## Run environment
 
 Measured on AMD Ryzen 9 5950X 16-Core Processor with Linux 7.2.9 and CPython 3.14.8. Benchmark harness commit: `e589bb57`.
 Gometry producer source commit: `46e953cb` (bound to the loaded wheel by its receipt).
 
 Versions: GeoPandas 1.1.4, h3-py 4.5.0, Mercantile 1.2.1, NumPy 2.5.2, pyarrow 25.0.1, pygeohash 3.3.1, pyproj 3.7.2, Shapely 2.1.2, GEOS 3.13.1, PROJ 9.5.1.
+
+<!-- --8<-- [end:environment] -->
+
+<!-- --8<-- [start:comparisons] -->
 
 ### Array construction & I/O
 
@@ -83,6 +89,10 @@ Versions: GeoPandas 1.1.4, h3-py 4.5.0, Mercantile 1.2.1, NumPy 2.5.2, pyarrow 2
 
 † geodesic/ellipsoidal metric.
 ‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.
+
+<!-- --8<-- [end:comparisons] -->
+
+<!-- --8<-- [start:scaling] -->
 
 ### Scaling Curves
 
@@ -206,4 +216,10 @@ Dimension `probe-count` in `probes`; each point is an independent paired workloa
 
 Endpoint growth (below-gate → above-gate): gometry median 1.005x, comparator median 1.046x, gometry/work 1.004x, comparator/work 1.046x.
 
-[Run manifest, raw measurements, oracle, and producer receipts](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/run.json) are retained in the content-addressed evidence bundle; see its [producer receipt index](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/receipts/index.json).
+<!-- --8<-- [end:scaling] -->
+
+<!-- --8<-- [start:evidence] -->
+
+[Raw measurements](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/run.json) · [Build provenance](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/receipts/index.json).
+
+<!-- --8<-- [end:evidence] -->

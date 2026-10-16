@@ -17,6 +17,7 @@ package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
 [User guide](guide/index.md){ .md-button }
+[Benchmarks](about/benchmarks.md){ .md-button }
 
 </div>
 

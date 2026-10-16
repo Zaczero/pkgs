@@ -2,7 +2,7 @@
 description: gometry licensing, bundled CRS resources, and third-party notices.
 ---
 
-# License
+# License & notices {#license}
 
 gometry is distributed under the **Apache-2.0 OR MIT** dual license. You
 may use it under the terms of either license, at your option.

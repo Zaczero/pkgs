@@ -1507,12 +1507,11 @@ def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
         bundle_digest = _publish_evidence_bundle(stage)
         stage = None  # The complete bundle now owns this directory.
         summary += (
-            '\n'
-            f'[Run manifest, raw measurements, oracle, and producer receipts]'
-            f'(../assets/benchmark-runs/{bundle_digest}/run.json) are retained '
-            'in the content-addressed evidence bundle; see its '
-            '[producer receipt index]'
-            f'(../assets/benchmark-runs/{bundle_digest}/receipts/index.json).\n'
+            '\n<!-- --8<-- [start:evidence] -->\n\n'
+            f'[Raw measurements](../assets/benchmark-runs/{bundle_digest}/run.json)'
+            ' · [Build provenance]'
+            f'(../assets/benchmark-runs/{bundle_digest}/receipts/index.json).\n\n'
+            '<!-- --8<-- [end:evidence] -->\n'
         )
     finally:
         if stage is not None:

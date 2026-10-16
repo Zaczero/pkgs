@@ -165,6 +165,9 @@ nav:
     - Quickstart: get-started/quickstart.md
     - Installation: get-started/installation.md
     - The mental model: get-started/mental-model.md
+    - Migrating:
+      - migrating/index.md
+      - Migration cheatsheet: migrating/cheatsheet.md
   - Guide:
     - Guide overview: guide/index.md
     - Geometry & dimensions: guide/geometry.md
@@ -183,7 +186,7 @@ nav:
     - Arrow & storage: ecosystem/arrow.md
     - DataFrames: ecosystem/dataframes.md
     - Text & binary formats: ecosystem/text-formats.md
-  - API reference:
+  - Reference:
     - api/index.md
     - Type definitions: api/types.md
     - Functions:
@@ -213,12 +216,9 @@ nav:
     - Results: api/results.md
     - Errors: api/errors.md
     - Optional interop: api/interop.md
-  - Migrating:
-    - migrating/index.md
-    - Migration cheatsheet: migrating/cheatsheet.md
+  - Benchmarks: about/benchmarks.md
   - About:
     - Support: about/support.md
-    - Benchmarks: about/benchmarks.md
     - Design principles: about/design.md
     - Internals: about/internals.md
     - Security & untrusted input: about/security.md

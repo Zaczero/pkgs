@@ -881,6 +881,7 @@ def render(
     if not publishable:
         lines.extend((f'> **{SMOKE_BANNER}**', ''))
     if environment is not None and any(environment.values()):
+        lines.extend(('<!-- --8<-- [start:environment] -->', ''))
         commit = environment.get('harness_commit') or 'unknown'
         lines.extend((
             '## Run environment',
@@ -943,6 +944,8 @@ def render(
         if versions:
             lines.append(f'Versions: {", ".join(versions)}.')
         lines.append('')
+        lines.extend(('<!-- --8<-- [end:environment] -->', ''))
+    lines.extend(('<!-- --8<-- [start:comparisons] -->', ''))
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
         by_domain.setdefault(row.meta.domain, []).append(row)
@@ -964,9 +967,18 @@ def render(
         lines.append(
             '‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.'
         )
+    lines.extend(('', '<!-- --8<-- [end:comparisons] -->'))
     scaling_rows = [row for row in rows if row.meta.scaling is not None]
     if scaling_rows:
-        lines.extend(('', '### Scaling Curves', '', *_scaling_sections(scaling_rows)))
+        lines.extend((
+            '',
+            '<!-- --8<-- [start:scaling] -->',
+            '',
+            '### Scaling Curves',
+            '',
+            *_scaling_sections(scaling_rows),
+            '<!-- --8<-- [end:scaling] -->',
+        ))
     while lines and not lines[-1]:
         lines.pop()
     return lines
