@@ -63,9 +63,9 @@ Report("Operation time", series, unit="seconds").save("comparison.svg")
 The importer averages readings within each worker run and omits warmup-only
 runs. It accepts timing benchmarks in seconds.
 
-## API
+<a id="choose-a-chart"></a>
 
-### Choose a chart
+## Scaling and distributions
 
 Use a comparison report for “which implementation is faster?”. Use
 `benchroom.plot.curves` for how latency changes across percentiles, or how cost
@@ -89,7 +89,9 @@ Distribution plots need observations, not a handful of reported percentiles.
 Run summaries describe variation between runs; request times describe variation
 between requests. Label the population the plot actually shows.
 
-### Reference
+<a id="reference"></a>
+
+## API
 
 - `Series(case, name, values, x=None)` holds finite run measurements; `x` can
   label an input size. Its `median` and `interval` properties expose the analysis.
@@ -107,10 +109,6 @@ between requests. Label the population the plot actually shows.
 
 Matplotlib loads only when drawing a figure; statistics and Markdown tables
 do not import the plotting stack.
-
-Git tracks the benchmark code and its history. Keep measured results with your
-project when publishing charts; a brief caption should explain the machine,
-workload and measurement boundary.
 
 ## Support
 
