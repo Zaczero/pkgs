@@ -145,6 +145,7 @@ def build_wheel_from_sdist(sdist: Path, out_dir: Path, *, env: dict[str, str]) -
             str(sdist),
         ],
         env=env,
+        capture_output=False,
     )
     wheels = sorted(out_dir.glob('gometry-*.whl'))
     if len(wheels) != 1:
