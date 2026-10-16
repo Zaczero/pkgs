@@ -11,6 +11,17 @@ def test_constant_runs_have_constant_interval():
     assert median_interval([7, 7, 7]) == (7, 7)
 
 
+def test_sampled_median_preserves_constant_observations():
+    assert median_interval([7] * 20) == (7, 7)
+
+
+def test_sampled_median_interval_contains_the_center():
+    values = [1, 3, 7, 9, 10, 12, 20, 21, 25]
+    low, high = median_interval(values, seed=42)
+    assert 1 <= low < 10
+    assert 10 < high <= 25
+
+
 def test_sampled_bootstrap_preserves_constant_statistic():
     assert bootstrap_interval(20, lambda _indexes: 12.5, samples=100) == (12.5, 12.5)
 

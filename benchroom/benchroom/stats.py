@@ -12,6 +12,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+_BOOTSTRAP_SAMPLES = 10_000
+
+
+def _exact_distribution_fits(size: int, samples: int) -> bool:
+    # C(2n-1, n) >= 2**(n-1); avoid constructing a huge integer just to reject it.
+    return size <= samples.bit_length() and math.comb(2 * size - 1, size) <= samples
+
 
 def percentile(values: Sequence[float], fraction: float) -> float:
     """Return a linearly interpolated percentile; fraction lies in [0, 1]."""
@@ -32,7 +39,7 @@ def bootstrap_interval(
     statistic: Callable[[Sequence[int]], float],
     *,
     seed: int = 0,
-    samples: int = 10_000,
+    samples: int = _BOOTSTRAP_SAMPLES,
 ) -> tuple[float, float]:
     """Return a 95% percentile bootstrap interval over independent units.
 
@@ -47,7 +54,7 @@ def bootstrap_interval(
     """
     if size < 1 or samples < 1:
         raise ValueError('bootstrap requires positive size and samples')
-    if math.comb(2 * size - 1, size) <= samples:
+    if _exact_distribution_fits(size, samples):
         orderings = math.factorial(size)
         weighted = [
             (
@@ -75,11 +82,26 @@ def bootstrap_interval(
 
 def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, float]:
     """Return a 95% percentile bootstrap interval for independent-run medians."""
-    return bootstrap_interval(
-        len(values),
-        lambda indexes: statistics.median(values[index] for index in indexes),
-        seed=seed,
-    )
+    size = len(values)
+    if not size or _exact_distribution_fits(size, _BOOTSTRAP_SAMPLES):
+        return bootstrap_interval(
+            size,
+            lambda indexes: statistics.median(values[index] for index in indexes),
+            seed=seed,
+        )
+
+    import numpy as np
+
+    data = np.asarray(values, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    medians = np.empty(_BOOTSTRAP_SAMPLES)
+    batch = max(1, (1024 * 1024) // (data.itemsize * size))
+    for start in range(0, _BOOTSTRAP_SAMPLES, batch):
+        end = min(start + batch, _BOOTSTRAP_SAMPLES)
+        draws = rng.choice(data, size=(end - start, size))
+        medians[start:end] = np.median(draws, axis=1, overwrite_input=True)
+    low, high = np.quantile(medians, (0.025, 0.975))
+    return float(low), float(high)
 
 
 def _weighted_percentile(
