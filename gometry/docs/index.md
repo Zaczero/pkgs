@@ -17,7 +17,6 @@ package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
 [User guide](guide/index.md){ .md-button }
-[Benchmarks](about/benchmarks.md){ .md-button }
 
 </div>
 
@@ -62,9 +61,9 @@ this latitude Web Mercator inflates 2.3 times.
     ---
 
     Batched Rust kernels, [GeoArrow](https://geoarrow.org/)-compatible interchange, and
-    vectorized array methods. Scalar calls stay a single, ordinary method call.
+    [vectorized array methods](guide/arrays.md). Scalar calls stay a single, ordinary method call.
 
-    [:octicons-arrow-right-24: Arrays & performance](guide/arrays.md)
+    [:octicons-arrow-right-24: Benchmarks](about/benchmarks.md)
 
 -   :material-vector-polygon:{ .lg .middle } **Grids, indexes, geodesy**
 
