@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import builtins
-import copy
 import sys
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -920,7 +919,9 @@ def _expanded_expression(
             stack | {target},
         )
 
-    return Expand().visit(copy.deepcopy(expression))
+    # AST consumers can attach parent links, including to shared context nodes.
+    # Reparse only the annotation syntax rather than copying their object graph.
+    return Expand().visit(ast.parse(ast.unparse(expression), mode='eval').body)
 
 
 def _expression_source(
