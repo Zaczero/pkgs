@@ -42,6 +42,36 @@ You can also pass a filename directly to `blurhash_encode`. Images you supply
 remain open and unchanged. Alpha is discarded, so composite transparent images
 onto your chosen background first.
 
+## Benchmarks
+
+**About 120–330× faster encoding and 16–23× faster decoding** than
+`blurhash-python` by median runtime in these Pillow-image benchmarks.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/encode-dark.svg">
+  <img src="benchmarks/encode.svg" alt="Encoding 32, 64, and 128 pixel square images takes blurhash-rs 4.2, 7.8, and 23.4 microseconds, compared with 494, 1,938, and 7,762 microseconds for blurhash-python.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/decode-dark.svg">
+  <img src="benchmarks/decode.svg" alt="Decoding to 32, 64, and 128 pixel square images takes blurhash-rs 10.4, 31.5, and 111.6 microseconds, compared with 162, 635, and 2,552 microseconds for blurhash-python.">
+</picture>
+
+The workload preserves caller-owned RGB Pillow images, uses 4 × 3 components,
+and returns RGB images on decode. Required copies and Pillow/list conversions
+are included. All three libraries produced identical hashes; decoded channels
+differed by at most one 8-bit level.
+
+Measured on a Ryzen 9 5950X shared workstation with CPython 3.14.8,
+Pillow 12.3.0, and Linux 7.2.9. Each case uses twelve worker processes and
+three readings after warmup per process. Six-process batches run in
+A–B–C–C–B–A order.
+[Full table and intervals](benchmarks/results.md), raw results
+([blurhash-rs](benchmarks/blurhash-rs.json),
+[blurhash-python](benchmarks/blurhash-python.json),
+[blurhash](benchmarks/blurhash.json)), and the [benchmark](benchmark.py)
+retain the measurement details.
+
 ## API reference
 
 ### `blurhash_encode`
