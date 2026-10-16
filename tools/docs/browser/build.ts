@@ -39,6 +39,29 @@ for (const name of config.fonts ? ["inter", "jetbrains-mono"] : []) {
         ),
     );
 }
+if (config.python) {
+    const root = resolve(import.meta.dir, "../../..");
+    const manifest = await Bun.file(join(root, "package.json")).json();
+    const packages = new Set(
+        Object.keys(manifest.devDependencies).filter(
+            (name) => name.startsWith("@codemirror/") || name.startsWith("@lezer/"),
+        ),
+    );
+    const notices: string[] = [];
+    for (const name of packages) {
+        const directory = join(root, "node_modules", name);
+        const metadata = await Bun.file(join(directory, "package.json")).json();
+        notices.push(
+            `${name} ${metadata.version}\n\n${await Bun.file(join(directory, "LICENSE")).text()}`,
+        );
+        for (const dependency of Object.keys(metadata.dependencies ?? {}))
+            packages.add(dependency);
+    }
+    await Bun.write(
+        join(destination, "assets/licenses/python-editor.txt"),
+        notices.join("\n\n"),
+    );
+}
 
 async function publish(outputs: Bun.BuildArtifact[]) {
     const renamed = new Map<string, string>();
