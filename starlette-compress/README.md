@@ -14,7 +14,9 @@ Works with asyncio and Trio, including streaming responses and server-sent event
 pip install starlette-compress
 ```
 
-## Basic Usage
+<a id="basic-usage"></a>
+
+## Add the middleware
 
 ### Starlette
 
@@ -51,9 +53,11 @@ async def homepage():
     return {"message": "Hello!" * 200}
 ```
 
-## Advanced Usage
+<a id="advanced-usage"></a>
 
-### Changing Minimum Response Size
+## Configure compression
+
+### Changing minimum response size
 
 `minimum_size` applies to an ordinary one-shot body: a terminal first body
 message below the threshold is forwarded unchanged. Once an ordinary response
@@ -73,7 +77,7 @@ middleware = [
 app = Starlette(middleware=middleware)
 ```
 
-### Tuning Compression Levels
+### Tuning compression levels
 
 Adjust compression levels to trade compression work for output size. Supported
 levels and defaults are in the [constructor reference](starlette_compress/__init__.py).
@@ -89,7 +93,7 @@ middleware = [
 app = Starlette(middleware=middleware)
 ```
 
-### Supporting Custom Content-Types
+### Supporting custom content types
 
 Unknown content types are not compressed. Add or remove types before serving
 requests; see the [default media types](starlette_compress/_utils.py).
@@ -101,7 +105,7 @@ add_compress_type("application/my-custom-type")
 remove_compress_type("application/json")
 ```
 
-### Server-Sent Events (SSE)
+### Server-sent events (SSE)
 
 `text/event-stream` responses are compressed by default. The middleware flushes the compressor after each non-empty ASGI body message (it does not parse SSE frames — two events in one message share one flush; empty continuation messages are skipped). Streaming types bypass `minimum_size`. The middleware forwards `http.response.start` immediately so clients such as `EventSource` can open before the first event — though ASGI servers may still buffer that start until the first body. On pathsend-capable scopes, start is deferred to the first content message (body or pathsend) so a file send is never advertised as compressed.
 
@@ -124,12 +128,14 @@ add_compress_type("application/jsonl", streaming=True)
 
 Flush guarantees that compressed bytes are available from the codec after each non-empty message; it does not control proxy or CDN buffering (this package does not set `X-Accel-Buffering` or similar).
 
-### Dropping Accept-Encoding Header
+### Dropping Accept-Encoding header
 
 By default, starlette-compress leaves the request `Accept-Encoding` header intact. Set
 `remove_accept_encoding=True` to remove it before calling downstream middleware/application.
 
-## Negotiation and Response Policy
+<a id="negotiation-and-response-policy"></a>
+
+## Response behavior
 
 Enabled algorithms are selected in server priority order: Zstandard, Brotli,
 then Gzip. A positive `q` makes a coding eligible; relative quality values do
