@@ -14,16 +14,8 @@ From the `pkgs` workspace root (the directory containing `Cargo.toml` and
 cargo install --locked --path fast
 ```
 
-Linux is required; hardware
-counters are optional and permission failures do not prevent command timing.
-Check that an existing command runs and produces a report:
-
-```sh
-fast --once -- true
-```
-
-This shows one invocation's timing and resources. It does not compare performance
-or produce a confidence interval. Use your actual workload for a comparison.
+Linux is required. Hardware counters are optional; permission failures do not
+prevent command timing.
 
 ## Compare commands
 
@@ -154,28 +146,19 @@ encounter can also make the result misleading.
 
 ### Resources and sampled activity
 
-- CPU time is Linux `wait4` user/system accounting. It can include descendants
-  waited by the command.
-- Maximum RSS is the Linux wait-accounted high-water quantity. It is **not**
-  simultaneous whole-process-tree memory, nor a sum of per-process peaks.
-  The report pairs it with the child's launch-time high-water mark: inherited
-  benchmark memory can set a floor before the command executes. A peak near
-  that floor does not identify the command's own memory requirement.
-- Instructions, cycles, and branch misses count user-space events for the root
-  and inherited descendants, starting on root exec. Missing or poorly scheduled counters are
-  unavailable, not zero.
-- Instructions describe executed CPU work, not elapsed performance. The report
-  shows their change versus A and run-to-run variation separately from timing.
-  Instructions per cycle and branch misses per 1,000 instructions describe
-  execution behavior; neither is a universal efficiency score.
-- On supported Zen 3 Vermeer CPUs, core-to-L2 request misses add a cache signal.
-  The label names L2 explicitly; this is not a generic cache-hit score or a
-  measurement of time lost to memory.
-- `--details` shows the same measurements with more explanation, including
-  available sampled task activity from the first measured invocation of each command.
-  Large scans are paced in small chunks; unfinished scans are marked incomplete.
-  Sampling can miss short-lived processes and threads. Thread CPU percentages
-  use 100% for one logical CPU; threads do not have independent RSS.
+- **CPU time** uses Linux wait accounting and can include descendants waited
+  by the command.
+- **Peak RSS** is a wait-accounted high-water mark, not simultaneous
+  whole-process-tree memory. The launch-time high-water mark shows when
+  inherited memory may set its floor.
+- **Hardware counters** describe CPU work in the root and inherited
+  descendants, not elapsed performance. Unavailable counters are marked,
+  never reported as zero.
+- **`--details`** adds sampled task activity from the first measured invocation.
+  Sampling can miss short-lived tasks; incomplete observations are marked.
+
+[Resource scopes](docs/measurement.md#resource-scopes) defines counter
+coverage, cache measurements, memory accounting, and sampling limits.
 
 No additional command runs when `--details` is requested. Newly surviving
 background descendants stop further repetitions. Put persistent services outside
@@ -207,6 +190,8 @@ Verdicts state a factor beyond 1.5× and a percentage of time below that, with t
 95% interval. `--details` adds every command pair, medians and ranges, the plan,
 and the assumptions behind the intervals.
 
+### JSON output
+
 JSON schema 2 records each candidate as its exact argument vector and uses tagged
 UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include
 the shell executable and `-c` in that vector. Elapsed
@@ -222,6 +207,8 @@ command arguments, report analysis, transient collection, or allocator overhead.
 For a single command, the interval describes its mean elapsed nanoseconds;
 the comparison denominator is `null` and its decision is `not_applicable`.
 There is no import or reopen interface.
+
+### Exit status
 
 | Status | Meaning |
 | --- | --- |
