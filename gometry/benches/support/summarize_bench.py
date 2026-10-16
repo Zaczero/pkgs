@@ -788,7 +788,7 @@ def _section_table(
             '<td><span class="benchmark-mobile-label">gometry</span> '
             f'<span class="benchmark-time">{_humanize_seconds(row.gometry.median)}</span> '
             f'{gometry_work}{format_speedup(row)}</td>'
-            '<td><span class="benchmark-mobile-label">Comparator</span> '
+            '<td>'
             f'<span class="benchmark-time">{_humanize_seconds(row.competitor.median)}</span> '
             f'<span class="benchmark-runner">{escape(row.meta.competitor_label)}</span> '
             f'{competitor_work}</td></tr>'
