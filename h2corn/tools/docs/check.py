@@ -74,7 +74,10 @@ class _BenchmarkContent(HTMLParser):
             source = attributes['src'] or ''
             alternative = attributes.get('alt') or ''
             self.images.append((source, alternative))
-            self.events.append(('figure', alternative))
+            kind = (
+                'figure-dark' if urlparse(source).fragment == 'only-dark' else 'figure'
+            )
+            self.events.append((kind, alternative))
         elif tag == 'table':
             self.events.append(('table-start', ''))
         elif tag == 'th':
@@ -282,7 +285,7 @@ def check_benchmark_results() -> None:
             )
         if not asset.is_file():
             raise AssertionError(f'benchmark figure asset is missing: {source}')
-    pending_figure = False
+    pending_figure: str | None = None
     in_table = False
     table_has_header = False
     table_has_data = False
@@ -292,7 +295,10 @@ def check_benchmark_results() -> None:
                 raise AssertionError('a benchmark figure has no adjacent data table')
             if not description:
                 raise AssertionError('a benchmark figure has no text alternative')
-            pending_figure = True
+            pending_figure = description
+        elif kind == 'figure-dark':
+            if not pending_figure or description != pending_figure:
+                raise AssertionError('a dark figure has no matching light alternative')
         elif kind == 'table-start':
             if not pending_figure:
                 raise AssertionError('a benchmark data table has no preceding figure')
@@ -311,7 +317,7 @@ def check_benchmark_results() -> None:
             if not table_has_header or not table_has_data:
                 raise AssertionError('a benchmark table needs header and data cells')
             in_table = False
-            pending_figure = False
+            pending_figure = None
     if pending_figure or in_table:
         raise AssertionError('a benchmark figure has no adjacent data table')
 

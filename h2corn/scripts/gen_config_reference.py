@@ -255,14 +255,19 @@ def render_benchmark_results() -> str:
             raise RuntimeError(f'{table_path.name} does not match its aggregate record')
 
         relative_plot = f'assets/benchmarks/{plot_path.name}'
+        dark_plot = plot_path.with_stem(plot_path.stem + '-dark')
+        if not dark_plot.is_file():
+            raise RuntimeError(f'{raw_path.name} has no dark plot')
         results = record['aggregate']
         unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
         description = alt_text(scenario, results, unit)
         sections.extend((
             f'### {scenario} — {profile}\n\n',
-            f'![{description}]({relative_plot})\n\n',
+            f'![{description}]({relative_plot}#only-light)\n'
+            f'![{description}](assets/benchmarks/{dark_plot.name}#only-dark)\n\n',
+            '<details markdown="1">\n<summary>Detailed results</summary>\n\n',
             table,
-            '\n',
+            '\n</details>\n\n',
         ))
     return ''.join(sections)
 

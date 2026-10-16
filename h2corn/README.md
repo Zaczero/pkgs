@@ -77,12 +77,12 @@ single worker. It is not a gRPC server.
 
 ## Benchmarks
 
-**86–97% lower request latency** than the compared servers in the one-worker
+**9.3–29.2× faster. 86–97% lower request latency.** In the one-worker
 HTTP/1.1 GET benchmark, using the same Starlette application and standard asyncio.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/latency-dark-loopback.svg">
-  <img src="bench/results/plots/latency-loopback.svg" alt="HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99; the compared servers measured 9.458–30.003 ms and 12.253–38.665 ms respectively.">
+  <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-dark.svg">
+  <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.">
 </picture>
 
 Four fresh starts per server over loopback, on a Ryzen 9 5950X with CPython 3.14.8.

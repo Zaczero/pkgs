@@ -7,10 +7,16 @@ description: How h2corn cross-server benchmarks are measured and what workloads 
 The benchmarks compare the same Starlette application across ASGI servers,
 with correctness checks before and after load.
 
-In the one-worker HTTP/1.1 GET case, **h2corn delivered 95,389 requests/s
+In the one-worker HTTP/1.1 GET case, **h2corn was 9.3–29.2× faster,
 with 86–97% lower p50–p99 latency** than the compared servers.
+The speed ratio compares median throughput: 95,389 requests/s for h2corn
+against 3,267–10,280 requests/s for Hypercorn, Uvicorn, and Gunicorn.
 
-![HTTP/1.1 GET latency: h2corn stays below 2 ms from p50 through p99; the other servers range from about 9 to 39 ms.](assets/benchmarks/latency-loopback.svg)
+![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
+![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)
+
+<details markdown="1">
+<summary>Detailed results</summary>
 
 | Server | Requests/s | p50 | p99 |
 | --- | ---: | ---: | ---: |
@@ -18,6 +24,8 @@ with 86–97% lower p50–p99 latency** than the compared servers.
 | Gunicorn | 10,280 | 9.458 ms | 12.253 ms |
 | Uvicorn | 7,312 | 13.367 ms | 20.721 ms |
 | Hypercorn | 3,267 | 30.003 ms | 38.665 ms |
+
+</details>
 
 These are medians across four fresh starts on a Ryzen 9 5950X with
 CPython 3.14.8 and Linux 7.2.9. The complete results below include the

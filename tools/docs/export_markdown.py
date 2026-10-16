@@ -67,6 +67,10 @@ def on_post_page(output: str, *, page: Page, config: ProperDocsConfig) -> str:
     article = soup.select_one('article.md-content__inner')
     if article is None:
         raise ValueError(f'Missing documentation article: {page.url}')
+    for image in article.select('img[src$="#only-dark"]'):
+        image.decompose()
+    for image in article.select('img[src$="#only-light"]'):
+        image['src'] = image['src'].removesuffix('#only-light')
     for tabs in article.select('.tabbed-set'):
         labels = tabs.select(':scope > .tabbed-labels > label')
         blocks = tabs.select(':scope > .tabbed-content > .tabbed-block')
@@ -83,6 +87,8 @@ def on_post_page(output: str, *, page: Page, config: ProperDocsConfig) -> str:
     ):
         element.decompose()
     for element in article.select('[href], [src]'):
+        if element.has_attr('title'):
+            element['title'] = ' '.join(element['title'].split())
         for attribute in ('href', 'src'):
             if element.has_attr(attribute):
                 element[attribute] = urljoin(page.canonical_url, element[attribute])

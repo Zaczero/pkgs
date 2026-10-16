@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import matplotlib as mpl
+from benchroom.plot import save, theme
 from matplotlib import colors
 
 mpl.use('Agg')
@@ -56,7 +57,13 @@ try:
         running_server,
         write_json,
     )
-    from bench.report import alt_text, render_accessible_results, render_latency_curve
+    from bench.report import (
+        SERVER_COLORS,
+        SERVER_LINESTYLES,
+        SERVER_MARKERS,
+        alt_text,
+        render_accessible_results,
+    )
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
     from _core import (  # type: ignore[import-not-found, no-redef]
         RESULTS_DIRECTORY,
@@ -75,7 +82,13 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         running_server,
         write_json,
     )
-    from report import alt_text, render_accessible_results, render_latency_curve
+    from report import (
+        SERVER_COLORS,
+        SERVER_LINESTYLES,
+        SERVER_MARKERS,
+        alt_text,
+        render_accessible_results,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -184,17 +197,8 @@ SERVERS: dict[str, list[str]] = {
     ],
 }
 
-SERVER_COLORS = {
-    'h2corn': '#4477AA',
-    'gunicorn': '#228833',
-    'hypercorn': '#CC3311',
-    'uvicorn': '#B39B00',
-}
-SERVER_MARKERS = {'h2corn': 'o', 'gunicorn': 's', 'hypercorn': 'D', 'uvicorn': '^'}
-SERVER_LINESTYLES = {'h2corn': '-', 'gunicorn': ':', 'hypercorn': '-.', 'uvicorn': '--'}
-FALLBACK_COLOR = '#4C4C4C'
 MEMORY_LABEL_LIGHT = '#FFFFFF'
-MEMORY_LABEL_DARK = '#111111'
+MEMORY_LABEL_DARK = '#000000'
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,6 +791,24 @@ def plot_results(
     record: dict[str, Any],
     path: Path,
 ) -> None:
+    for dark in (False, True):
+        destination = path.with_stem(path.stem + '-dark') if dark else path
+        with theme(dark=dark):
+            _plot_results(record, destination, dark=dark)
+    path.with_suffix('.md').write_text(
+        render_accessible_results(record), encoding='utf-8'
+    )
+    print(f'Saved plot to {path}')
+    print(
+        alt_text(
+            record['scenario'],
+            record['aggregate'],
+            'sessions/s' if record['type'] == 'ws' else 'requests/s',
+        )
+    )
+
+
+def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     results = record['aggregate']
     title = record['scenario']
     summary = record['system_summary']
@@ -795,16 +817,15 @@ def plot_results(
     figure, axes = plt.subplots(1, 2, figsize=(12, 6), layout='constrained')
     figure.suptitle(title, fontsize=17, fontweight='bold')
 
-    names = list(results)
+    names = sorted(results, key=lambda name: list(SERVER_COLORS).index(name))
     versions = record['package_versions']
     labels = [f'{name}\n{versions.get(name)}' for name in names]
     rates = [results[name]['rps'] for name in names]
-    colors = [SERVER_COLORS.get(name, FALLBACK_COLOR) for name in names]
+    colors = [SERVER_COLORS[name][dark] for name in names]
+    foreground = mpl.rcParams['text.color']
 
     throughput = axes[0]
-    bars = throughput.bar(
-        labels, rates, color=colors, edgecolor='#222222', linewidth=1.0
-    )
+    bars = throughput.bar(labels, rates, color=colors)
     for bar, name in zip(bars, names, strict=True):
         low, high = results[name]['rps_range']
         median = results[name]['rps']
@@ -814,10 +835,10 @@ def plot_results(
                 median,
                 yerr=[[median - low], [high - median]],
                 fmt='none',
-                color='#222222',
+                color=foreground,
                 capsize=4,
             )
-    unit = 'sessions/s' if websocket else 'RPS'
+    unit = 'sessions/s' if websocket else 'requests/s'
     throughput.set_title('Throughput · higher is better')
     throughput.set_ylabel(unit)
     # Leave physical headroom for the two labels even when a short bar cannot
@@ -881,14 +902,13 @@ def plot_results(
         latency.plot(
             [float(key.removeprefix('p')) for key, _ in points],
             [value * 1000 for _, value in points],
-            color=SERVER_COLORS.get(name, FALLBACK_COLOR),
+            color=SERVER_COLORS[name][dark],
             linestyle=SERVER_LINESTYLES.get(name, '-'),
             marker=SERVER_MARKERS.get(name, 'o'),
             label=label,
             linewidth=2,
             markersize=6,
-            markeredgecolor='#222222',
-            markeredgewidth=1.0,
+            markeredgewidth=0,
         )
         plotted = True
     if plotted:
@@ -899,7 +919,7 @@ def plot_results(
         latency.set_xlabel('Percentile')
         latency.set_ylabel('Latency (ms)')
         latency.legend()
-        latency.grid(True, linestyle='--', alpha=0.7)
+        latency.grid(True)
     else:
         latency.set_title('Latency data unavailable')
 
@@ -919,25 +939,8 @@ def plot_results(
             width=135,
         )
     figure.supxlabel(footer, fontsize=9)
-    from benchroom.plot import save
-
     save(figure, path)
     plt.close(figure)
-    path.write_text(
-        '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
-    )
-    path.with_suffix('.md').write_text(
-        render_accessible_results(record),
-        encoding='utf-8',
-    )
-    if (
-        record['type'] == 'h1'
-        and record['workers'] == 1
-        and record['network_profile'] == 'loopback'
-    ):
-        render_latency_curve(record, path.with_name('latency.svg'))
-    print(f'Saved plot to {path}')
-    print(alt_text(title, results, unit))
 
 
 def profile_record(
@@ -1059,7 +1062,13 @@ def publish(run_directories: Sequence[Path]) -> None:
                 (run_directory / 'profile.json').read_text(encoding='utf-8')
             )['profile']
             for artifact in sorted((run_directory / kind).glob(f'*{suffix}')):
-                published_name = f'{artifact.stem}-{profile}{suffix}'
+                variant = (
+                    '-dark'
+                    if kind == 'plots' and artifact.stem.endswith('-dark')
+                    else ''
+                )
+                stem = artifact.stem.removesuffix(variant)
+                published_name = f'{stem}-{profile}{variant}{suffix}'
                 shutil.copy2(artifact, destination / published_name)
     print(
         f'Published {len(run_directories)} profile(s) with matched raw records, '

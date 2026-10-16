@@ -10,7 +10,64 @@
   text-wrap: pretty;
 }
 
+.md-typeset .nowrap {
+  white-space: nowrap;
+}
+
 .md-header__button.md-logo img {
   height: 1.8rem;
   width: auto;
+}
+
+.md-typeset .hero {
+  position: relative;
+  padding: clamp(1.25rem, 3vw, 2.5rem) 0.5rem 1.5rem;
+  margin-bottom: clamp(0.75rem, 2vw, 1.5rem);
+  text-align: center;
+}
+
+.md-typeset .hero-logo {
+  display: block;
+  width: clamp(5rem, 12vw, 8.4rem);
+  height: auto;
+  margin: 0 auto clamp(0.75rem, 2vw, 1.5rem);
+}
+
+.md-typeset .hero p {
+  max-width: 38rem;
+  margin: 0.75rem auto 1.5rem;
+  font-size: clamp(0.9rem, 0.85rem + 0.4vw, 1.05rem);
+  line-height: 1.6;
+  color: var(--md-default-fg-color--light);
+  text-wrap: balance;
+}
+
+.md-typeset .hero strong {
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .hero p:has(> .md-button) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0;
+}
+
+.md-typeset .hero .md-button {
+  margin: 0;
+  padding-inline: 1rem;
+  white-space: nowrap;
+}
+
+.md-typeset p:has(> img[src*="benchmark"]) {
+  padding: clamp(0.5rem, 1.5vw, 1rem);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  background: color-mix(
+    in srgb,
+    var(--md-default-fg-color) 2.5%,
+    var(--md-default-bg-color)
+  );
+  line-height: 0;
 }

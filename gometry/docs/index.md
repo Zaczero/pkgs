@@ -12,7 +12,7 @@ hide:
 # One engine, one mental model
 
 A geospatial engine for Python, written in Rust. gometry replaces the
-day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
+day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
 package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }

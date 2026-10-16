@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from matplotlib import rc_context
+from matplotlib import cycler, rc_context
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import EngFormatter, PercentFormatter
@@ -16,10 +16,38 @@ if TYPE_CHECKING:
     from benchroom.report import Series
 
 
-_COLORS = {
-    False: ('#1769aa', '#9a5700', '#007d66', '#8852a0'),
-    True: ('#4aa8ec', '#e5a343', '#64c4ac', '#c797df'),
+PALETTE = {
+    'blue': ('#4477aa', '#79addc'),
+    'green': ('#228833', '#70bf80'),
+    'red': ('#cc3311', '#ee8877'),
+    'gold': ('#917600', '#d6bd58'),
 }
+_COLORS = {
+    dark: tuple(pair[dark] for pair in PALETTE.values()) for dark in (False, True)
+}
+
+
+def theme(*, dark: bool = False) -> rc_context:
+    """Use transparent surfaces and legible foregrounds on light or dark pages."""
+    foreground = '#dce1ea' if dark else '#253044'
+    return rc_context({
+        'figure.facecolor': 'none',
+        'axes.facecolor': 'none',
+        'text.color': foreground,
+        'axes.labelcolor': foreground,
+        'axes.edgecolor': foreground,
+        'xtick.color': foreground,
+        'ytick.color': foreground,
+        'grid.color': foreground,
+        'grid.alpha': 0.16,
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'axes.spines.bottom': False,
+        'axes.spines.left': False,
+        'axes.axisbelow': True,
+        'legend.frameon': False,
+        'axes.prop_cycle': cycler(color=_COLORS[dark]),
+    })
 
 
 def save(figure: Figure, path: str | Path) -> None:
@@ -30,25 +58,22 @@ def save(figure: Figure, path: str | Path) -> None:
         figure.savefig(
             path, dpi=180, facecolor=figure.get_facecolor(), metadata=metadata
         )
+    if path.suffix.lower() == '.svg':
+        path.write_text(
+            '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
+        )
 
 
 def _figure(title: str, xlabel: str, ylabel: str, dark: bool) -> Figure:
-    background, foreground = ('#101820', '#ecf2f7') if dark else ('#ffffff', '#18232e')
-    figure = Figure(figsize=(9, 5), layout='constrained', facecolor=background)
-    FigureCanvasAgg(figure)
-    axes = figure.subplots()
-    axes.set_facecolor(background)
-    axes.set_title(
-        title, loc='left', fontsize=17, fontweight='bold', color=foreground, pad=20
-    )
-    axes.set_xlabel(xlabel, color=foreground)
-    axes.set_ylabel(ylabel, color=foreground)
-    axes.tick_params(colors=foreground, length=0, pad=9)
-    axes.grid(alpha=0.18, color=foreground)
-    axes.set_axisbelow(True)
-    for spine in axes.spines.values():
-        spine.set_visible(False)
-    axes.set_prop_cycle(color=_COLORS[dark])
+    with theme(dark=dark):
+        figure = Figure(figsize=(9, 5), layout='constrained')
+        axes = figure.subplots()
+        FigureCanvasAgg(figure)
+        axes.set_title(title, loc='left', fontsize=17, fontweight='bold', pad=20)
+        axes.set_xlabel(xlabel)
+        axes.set_ylabel(ylabel)
+        axes.tick_params(length=0, pad=9)
+        axes.grid(True)
     return figure
 
 
@@ -81,7 +106,7 @@ def distribution(
     axes.set_ylim(0, 1.02)
     if unit == 'seconds':
         axes.xaxis.set_major_formatter(EngFormatter(unit='s'))
-    axes.legend(labelcolor='linecolor', frameon=False)
+    axes.legend(labelcolor=axes.xaxis.label.get_color(), frameon=False)
     return figure
 
 
@@ -114,5 +139,5 @@ def curves(
             marker=('o', 's', '^', 'D')[index % 4],
             linestyle=('-', '--', '-.', ':')[index % 4],
         )
-    axes.legend(labelcolor='linecolor', frameon=False)
+    axes.legend(labelcolor=axes.xaxis.label.get_color(), frameon=False)
     return figure

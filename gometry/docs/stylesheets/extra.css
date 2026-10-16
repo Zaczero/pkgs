@@ -49,7 +49,6 @@
   color: var(--md-default-bg-color);
 }
 
-
 .md-header {
   box-shadow: 0 1px 0 rgba(245, 158, 11, 0.25);
 }
@@ -68,21 +67,6 @@
 .md-tabs__link {
   color: #ffffff;
   opacity: 1;
-}
-
-/* Landing-page hero. */
-.hero {
-  position: relative;
-  text-align: center;
-  padding: 3rem 1rem 2.5rem;
-  margin-bottom: 1.5rem;
-}
-
-.hero-logo {
-  display: block;
-  width: 160px;
-  height: auto;
-  margin: 0 auto 1.5rem;
 }
 
 .md-typeset .hero h1 {
@@ -112,34 +96,6 @@
 [data-md-color-scheme="slate"] .md-typeset .hero h1,
 [data-md-color-scheme="slate"] .md-typeset .hero h1 .headerlink {
   color: #f8fafc;
-}
-
-@media screen and (max-width: 44.984375em) {
-  .hero {
-    padding: 1.25rem 0.5rem 1rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .hero-logo {
-    width: 96px;
-    margin-bottom: 0.75rem;
-  }
-
-  .hero p {
-    font-size: 0.95rem;
-    margin: 0.5rem auto 0.75rem;
-  }
-}
-
-.hero p {
-  font-size: 1.05rem;
-  max-width: 640px;
-  margin: 0.75rem auto 1.5rem;
-  color: var(--md-default-fg-color--light);
-}
-
-.hero .md-button {
-  margin: 0.25rem;
 }
 
 /* Figure surface. The drawing carries its own intrinsic size, so it scales down
@@ -345,18 +301,33 @@
 }
 
 @media (forced-colors: active) {
-  .md-main { background-image: none; }
-  .md-typeset .docs-map a:hover { background: transparent; }
+  .md-main {
+    background-image: none;
+  }
+  .md-typeset .docs-map a:hover {
+    background: transparent;
+  }
   /* Outlines only: a system-color fill would paint each role as one opaque
      block and hide every overlap the figure exists to show. Dash pattern and
      the legend text carry the roles here. */
   .md-typeset .gometry-canvas,
-  .md-typeset svg.gometry-geom { background: Canvas; }
-  .gometry-role { fill: none; stroke: CanvasText; }
-  .gometry-mark { fill: CanvasText; }
+  .md-typeset svg.gometry-geom {
+    background: Canvas;
+  }
+  .gometry-role {
+    fill: none;
+    stroke: CanvasText;
+  }
+  .gometry-mark {
+    fill: CanvasText;
+  }
   /* Without its fill, a result separates from its input by weight alone. */
-  .gometry-role--source { stroke-width: 1px; }
-  .gometry-role--result { stroke-width: 3px; }
+  .gometry-role--source {
+    stroke-width: 1px;
+  }
+  .gometry-role--result {
+    stroke-width: 3px;
+  }
 }
 
 /* A visible keyboard-focus ring everywhere interactive (WCAG 2.2 AA). */
@@ -394,19 +365,24 @@
 }
 
 @media screen and (min-width: 60em) {
-  [data-md-color-primary="teal"] [data-md-toggle="search"]:not(:checked) ~ .md-header
+  [data-md-color-primary="teal"]
+    [data-md-toggle="search"]:not(:checked)
+    ~ .md-header
     .md-search__input:focus-visible {
     outline-color: #ffffff;
   }
 }
 
-[data-md-color-primary="teal"] [data-md-toggle="search"]:checked ~ .md-header
+[data-md-color-primary="teal"]
+  [data-md-toggle="search"]:checked
+  ~ .md-header
   .md-search__input:focus-visible {
   outline-color: var(--gometry-teal);
 }
 
 [data-md-color-scheme="slate"][data-md-color-primary="teal"]
-  [data-md-toggle="search"]:checked ~ .md-header
+  [data-md-toggle="search"]:checked
+  ~ .md-header
   .md-search__input:focus-visible {
   outline-color: #ffffff;
 }
@@ -460,11 +436,12 @@
   .md-typeset .docs-map a:last-child {
     border-bottom: 0;
   }
-
 }
 
 @media print {
-  .md-main { background-image: none; }
+  .md-main {
+    background-image: none;
+  }
   .md-typeset .highlight {
     break-inside: avoid-page;
   }
@@ -492,10 +469,19 @@
   }
 
   /* Ink on paper: the dash patterns and the legend keep the roles apart. */
-  .gometry-role { stroke: #000; fill: rgba(0, 0, 0, 0.12); }
-  .gometry-line { fill: none; }
-  .gometry-mark { fill: #000; }
-  .md-typeset .gometry-canvas { background: transparent; }
+  .gometry-role {
+    stroke: #000;
+    fill: rgba(0, 0, 0, 0.12);
+  }
+  .gometry-line {
+    fill: none;
+  }
+  .gometry-mark {
+    fill: #000;
+  }
+  .md-typeset .gometry-canvas {
+    background: transparent;
+  }
 }
 
 /* Benchmark evidence stays readable at narrow widths without hiding columns.

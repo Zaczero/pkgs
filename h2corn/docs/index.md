@@ -16,8 +16,8 @@ hide:
 Rust handles the wire. Python handles your application.
 HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
-**86–97% lower request latency** in our
-[HTTP/1.1 benchmark](benchmarks.md).
+**<span class="nowrap">9.3–29.2× faster.</span> <span class="nowrap">86–97%</span> lower request latency.** In our
+[benchmarks](benchmarks.md).
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Why h2corn](#why-h2corn){ .md-button }
@@ -32,12 +32,11 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette application.
 
-![HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99, compared with 9.458–30.003 ms and 12.253–38.665 ms for the other servers.](assets/benchmarks/latency-loopback.svg#only-light)
-![HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99, compared with 9.458–30.003 ms and 12.253–38.665 ms for the other servers.](assets/benchmarks/latency-dark-loopback.svg#only-dark)
+![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
+![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)
 
 Measured on a Ryzen 9 5950X with CPython 3.14.8.
-[Open the chart at full size](assets/benchmarks/latency-loopback.svg) or
-[see the data, configuration, and all 27 workloads](benchmarks.md).
+[See the data, configuration, and all 27 workloads](benchmarks.md).
 
 </div>
 

@@ -56,12 +56,17 @@ with median calls below one microsecond.
   <img src="benchmarks/results.svg" alt="TOTP generation and verification: totp-rs medians range from 0.42 to 0.61 microseconds, compared with 15.6 to 44.3 microseconds for PyOTP.">
 </picture>
 
+<details>
+<summary>Detailed results</summary>
+
 | Operation | totp-rs | PyOTP |
 | --- | ---: | ---: |
 | Generate | 0.42 µs | 15.6 µs |
 | Verify current code | 0.43 µs | 32.4 µs |
 | Verify previous code | 0.52 µs | 15.7 µs |
 | Reject incorrect code | 0.61 µs | 44.3 µs |
+
+</details>
 
 Measured with totp-rs 1.0.0 and PyOTP 2.10.0 on CPython 3.14.8, Linux 7.2.9,
 and a Ryzen 9 5950X shared workstation. Both use the same Base32 secret,

@@ -24,7 +24,12 @@ it does not include exact predicate refinement.
 The union workload combines disjoint unit squares. It describes that input
 family, not overlapping polygons or every overlay operation.
 
+<details markdown="1">
+<summary>Detailed results</summary>
+
 --8<-- "benches/results/current/summary.md"
+
+</details>
 
 Published tables link to raw measurements, correctness checks, and build
 identities. Results apply to the recorded workload, versions, and host;

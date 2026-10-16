@@ -1,54 +1,19 @@
-"""Text alternatives for the cross-server benchmark figures."""
+"""Series identity and text alternatives for the cross-server benchmark figures."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from benchroom.plot import curves, save
-from matplotlib.ticker import ScalarFormatter
+from benchroom.plot import PALETTE
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-
-def render_latency_curve(record: dict[str, Any], path: Path) -> None:
-    """Render the headline GET comparison from recorded trial percentiles."""
-    percentiles = ('p50', 'p75', 'p90', 'p95', 'p99', 'p99.9')
-    names = sorted(record['aggregate'], key=lambda name: name != 'h2corn')
-    values = {
-        f'{name} {record["package_versions"][name]}': {
-            index: record['aggregate'][name]['latency_percentiles'][percentile] * 1000
-            for index, percentile in enumerate(percentiles)
-        }
-        for name in names
-    }
-    for dark in (False, True):
-        figure = curves(
-            values,
-            title='HTTP/1.1 GET latency · one worker',
-            xlabel='Latency percentile',
-            ylabel='Milliseconds · logarithmic scale · lower is better',
-            dark=dark,
-        )
-        axes = figure.axes[0]
-        axes.set_xticks(range(len(percentiles)), percentiles)
-        axes.set_yscale('log')
-        axes.yaxis.set_major_formatter(ScalarFormatter())
-        axes.legend(
-            loc='upper left',
-            bbox_to_anchor=(1, 1),
-            frameon=False,
-            labelcolor='linecolor',
-        )
-        figure.supxlabel(
-            record['system_summary'].replace('\n', ' · ')
-            + '\nLoopback · standard asyncio'
-            + f'\nMedian percentiles across {record["trials"]} fresh starts',
-            fontsize=9,
-            color=axes.xaxis.label.get_color(),
-        )
-        destination = path.with_stem(path.stem + '-dark') if dark else path
-        save(figure, destination)
+SERVER_COLORS = {
+    'h2corn': PALETTE['blue'],
+    'gunicorn': PALETTE['green'],
+    'hypercorn': PALETTE['red'],
+    'uvicorn': PALETTE['gold'],
+}
+SERVER_MARKERS = {'h2corn': 'o', 'gunicorn': 's', 'hypercorn': 'D', 'uvicorn': '^'}
+SERVER_LINESTYLES = {'h2corn': '-', 'gunicorn': ':', 'hypercorn': '-.', 'uvicorn': '--'}
 
 
 def alt_text(title: str, results: dict[str, Any], unit: str) -> str:
