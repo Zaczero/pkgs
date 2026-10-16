@@ -58,6 +58,7 @@ viz = ["arro3-core", "lonboard>=0.16.0"]
 [dependency-groups]
 dev = [
   "arro3-core",
+  "benchroom",
   "geopandas",
   "griffe",
   "markdown",
@@ -206,7 +207,7 @@ convention = "numpy"
 "python/gometry/_types.py" = ["E402"]
 
 [tool.uv]
-sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true }, benchroom = { path = "../benchroom", editable = true } }
 # Build inputs only: test changes must not invalidate the built wheel.
 # Key shipped Python/stub sources + explicit native sources — never the
 # generated ``_lib*.so`` (matched by a bare ``python/gometry/**`` glob and would

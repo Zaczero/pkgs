@@ -37,9 +37,9 @@ for _path in (_SUPPORT, _TOOLS):
         sys.path.insert(0, str(_path))
 
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
-from benchmark_statistics import (
+from benchroom.stats import (
     bootstrap_interval,
-    bootstrap_median_interval,
+    median_interval,
     percentile,
 )
 import benchmark_runtime
@@ -1510,7 +1510,7 @@ def summarize_counter_values(values: Sequence[float], seed: int) -> dict[str, An
     numeric = [float(value) for value in values]
     q1 = percentile(numeric, 0.25)
     q3 = percentile(numeric, 0.75)
-    ci_low, ci_high = bootstrap_median_interval(numeric, seed=seed)
+    ci_low, ci_high = median_interval(numeric, seed=seed)
     return {
         'samples': list(values),
         'median': statistics.median(values),
@@ -1680,7 +1680,7 @@ def compare_paired_ratios(
         raise ValueError('paired block ratios must be finite and positive')
     log_ratios = [math.log(value) for value in numeric]
     ratio = math.exp(statistics.median(log_ratios))
-    log_ci = bootstrap_median_interval(log_ratios, seed=seed)
+    log_ci = median_interval(log_ratios, seed=seed)
     ratio_ci = (math.exp(log_ci[0]), math.exp(log_ci[1]))
     differences = [value - 1.0 for value in numeric]
     difference = statistics.median(differences)
@@ -1713,7 +1713,7 @@ def summarize(
     median = statistics.median(values)
     q1 = percentile(values, 0.25)
     q3 = percentile(values, 0.75)
-    ci_low, ci_high = bootstrap_median_interval(values, seed=seed)
+    ci_low, ci_high = median_interval(values, seed=seed)
     return {
         'metric': metric,
         'unit': unit,

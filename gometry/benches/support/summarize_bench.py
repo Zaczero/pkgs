@@ -22,7 +22,7 @@ if str(_TOOLS) not in sys.path:
 
 from _bench_registry import public_api_symbols
 from benchmark_observation import measurement_summary, validate_observation
-from benchmark_statistics import bootstrap_median_interval
+from benchroom.stats import median_interval
 from benchmark_identity import common_identity
 from benchmark_runtime import identity_sha256
 from public_inventory import unknown_public_symbols
@@ -704,7 +704,7 @@ def _build_rows(
                 f'{meta.gometry} has inconsistent producer identities across blocks'
             )
         ratios = paired_block_ratios(blocks)
-        ratio_ci95 = bootstrap_median_interval(ratios, seed=seed)
+        ratio_ci95 = median_interval(ratios, seed=seed)
         rows.append(
             OpRow(
                 meta=meta,
