@@ -7,6 +7,7 @@ import builtins
 import copy
 import sys
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Literal
 
@@ -254,25 +255,20 @@ def _leading_comments(path: Path, node: ast.AST) -> str | None:
     return '\n'.join(reversed(comments)).strip() or None
 
 
-def _following_docstring(module: _Module, node: ast.AST) -> str | None:
+def _following_docstrings(module: _Module) -> dict[ast.AST, str]:
+    result = {}
     for parent in ast.walk(module.tree):
         body = getattr(parent, 'body', None)
         if not isinstance(body, list):
             continue
-        try:
-            index = body.index(node)
-        except ValueError:
-            continue
-        if index + 1 >= len(body):
-            continue
-        following = body[index + 1]
-        if (
-            isinstance(following, ast.Expr)
-            and isinstance(following.value, ast.Constant)
-            and isinstance(following.value.value, str)
-        ):
-            return following.value.value
-    return None
+        for node, following in pairwise(body):
+            if (
+                isinstance(following, ast.Expr)
+                and isinstance(following.value, ast.Constant)
+                and isinstance(following.value.value, str)
+            ):
+                result[node] = following.value.value
+    return result
 
 
 def _class_kind(node: ast.ClassDef, module: _Module) -> str:
@@ -322,6 +318,7 @@ def _add_declaration(
     kind: str,
     node: ast.AST,
     expression: ast.expr | None,
+    following_docstrings: dict[ast.AST, str],
 ) -> None:
     if isinstance(node, ast.ClassDef):
         prose = ast.get_docstring(node)
@@ -331,7 +328,7 @@ def _add_declaration(
                 item
                 for item in (
                     _leading_comments(module.path, node),
-                    _following_docstring(module, node),
+                    following_docstrings.get(node),
                 )
                 if item
             )
@@ -351,6 +348,7 @@ def _add_declaration(
 
 
 def _index_declarations(module: _Module) -> None:
+    following_docstrings = _following_docstrings(module)
     for statement in _module_statements(module.tree.body):
         if isinstance(statement, ast.ClassDef):
             _add_declaration(
@@ -359,6 +357,7 @@ def _index_declarations(module: _Module) -> None:
                 _class_kind(statement, module),  # type: ignore[arg-type]
                 statement,
                 None,
+                following_docstrings,
             )
         elif isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target, ast.Name
@@ -370,6 +369,7 @@ def _index_declarations(module: _Module) -> None:
                     'alias',
                     statement,
                     statement.value,
+                    following_docstrings,
                 )
         elif isinstance(statement, ast.Assign):
             names = [
@@ -380,12 +380,24 @@ def _index_declarations(module: _Module) -> None:
             if _is_typevar_call(statement.value, module):
                 for name in names:
                     _add_declaration(
-                        module, name, 'typevar', statement, statement.value
+                        module,
+                        name,
+                        'typevar',
+                        statement,
+                        statement.value,
+                        following_docstrings,
                     )
         elif isinstance(statement, ast.TypeAlias):
             name = _dotted_name(statement.name)
             if name is not None:
-                _add_declaration(module, name, 'alias', statement, statement.value)
+                _add_declaration(
+                    module,
+                    name,
+                    'alias',
+                    statement,
+                    statement.value,
+                    following_docstrings,
+                )
     for name, declaration in tuple(module.declarations.items()):
         if isinstance(declaration.node, ast.ClassDef):
             module.declarations[name] = replace(
