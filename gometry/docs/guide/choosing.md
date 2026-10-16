@@ -37,7 +37,7 @@ edge is *not* contained — use `covers` for boundary-inclusive membership. See
 
 | Situation | Use |
 | --- | --- |
-| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, use endpoints within the frame's native longitude half-period and latitude poles (`west > east` crosses the longitude seam), while seam-crossing, polar, or non-canonical subjects use frame-aware topology |
+| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — in a geographic CRS, endpoints use the frame's native longitude and latitude range; `west > east` crosses the longitude seam |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
 ## Vertex cleaning: seven different jobs

@@ -6,25 +6,9 @@ description: gometry spatial predicates — contains, intersects, touches, cross
 
 Predicates answer **yes/no** questions about how two geometries relate:
 *does this polygon contain that point? do these roads cross?* gometry's
-predicates are **planar and topological**: they evaluate [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM) relations on
-the stored coordinate plane without transforming coordinates or measuring
-distance. They are model-sensitive: the
-planar edge model must match the intended geometry (projection, densification,
-seams, and domains can change realized topology). That planar computation does
-not mean geographic longitude is limited to degrees: the CRS-native periodic longitude
-axis, pole, and prime meridian define the quotient topology before planar tests.
-This is the same exact topology used by scalar, array, prepared, and index paths.
-It does **not** relax metadata rules — operand CRS and coordinate-epoch tags must still
-match, or you get [`CRSMismatchError`][gometry.CRSMismatchError] like every other binary op. It is also
-**robust**: the orientation and intersection tests underneath are
-adaptive-precision, so boundary-touching and near-degenerate input answer
-consistently rather than flickering with floating-point noise.
-
-Geographic admission rejects an unmarked once-winding ring when its latitude
-range spans both hemispheres or lies entirely on the equator: neither case
-identifies which pole bounds the ring. Equator-touching rings contained in one
-hemisphere remain admissible. See [native geographic units and polar rings](crs.md#polar-rings-and-full-turn-edges)
-for the edge and explicit-closure conventions.
+predicates evaluate topology in X/Y without transforming coordinates or
+measuring distance. Both geometries must carry matching CRS and coordinate-epoch
+metadata; otherwise the operation raises [`CRSMismatchError`][gometry.CRSMismatchError].
 
 ## The predicate vocabulary
 
@@ -127,26 +111,21 @@ and poles (±180°/±90° for EPSG:4326).
 
 ## Robust predicates
 
-The foundational tests underneath every predicate — point orientation and
-segment intersection — are evaluated with **adaptive-precision arithmetic**,
-not raw `f64` cross products. A naive orientation test can report that three
-nearly-collinear points turn left, turn right, or not at all depending on
-evaluation order; a naive intersection can place a crossing on the wrong side
-of an endpoint. Degenerate and near-degenerate input is the *normal* case in
-real data, so the topological building blocks gometry relies on
-(point-in-polygon, segment crossing, [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM) [`relate`][gometry.relate]) give the geometrically
-correct answer even when points are collinear, coincident, or vanishingly
-close.
+Orientation and intersection tests use **adaptive-precision arithmetic** to
+resolve collinear, coincident, and nearly degenerate input. Scalar, array,
+prepared, and index queries use the same exact topology.
 
-```python exec="on" source="block" result="text"
-import gometry as gm
-square = gm.box(0.0, 0.0, 1.0, 1.0)
-on_edge = gm.Point(0.5, 0.0)
-print('contains (open):', gm.contains(square, on_edge))
-print('covers (closed):', gm.covers(square, on_edge))
-print('intersects:', gm.intersects(square, on_edge))
+### Geographic coordinates
 
-```
+In a geographic CRS, topology resolves the CRS-native longitude period, seams,
+poles, and prime meridian before planar tests. Edges are straight in the source
+coordinate chart, not geodesics; projection and densification can therefore
+change the represented shape.
+
+An unmarked once-winding ring is rejected when its latitude range spans both
+hemispheres or lies entirely on the equator, because neither identifies the
+enclosed pole. Equator-touching rings in one hemisphere remain admissible.
+See [polar rings and full-turn edges](crs.md#polar-rings-and-full-turn-edges).
 
 ## Boundary points are not contained
 

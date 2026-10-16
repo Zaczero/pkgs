@@ -4,7 +4,7 @@ description: Install gometry from PyPI — NumPy is required, with no system GEO
 
 # Installation
 
-gometry installs from PyPI:
+Install gometry from PyPI on CPython 3.11–3.14 or free-threaded CPython 3.14t.
 
 === "uv"
 
@@ -20,8 +20,6 @@ gometry installs from PyPI:
 
 ## Requirements
 
-These prerequisites apply to installing a prebuilt wheel.
-
 | Requirement | Detail |
 |---|---|
 | Python | **CPython 3.11–3.14; free-threaded CPython 3.14t.** |
@@ -34,20 +32,13 @@ the native extension. If required features are missing, `ImportError` names
 them and recommends an x86-64-v2-capable CPU. When the operating system cannot
 report CPU features, the check does not block import.
 
-The wheel carries the geometry engine and the CRS authority together: the
-bundled PROJ database, its datum pipelines, and the grid files shipped with the
-package, with no system PROJ shared library and no `PROJ_LIB` data directory.
-[`gm.crs_configure(search_paths=...)`][gometry.crs_configure] makes additional grids of your own visible;
-gometry does not download grids at runtime. Configured directories are search
-locations, not an exclusive whitelist: when a named grid is absent there,
-PROJ may also try that grid's bare filename in the current working directory.
-Consequently, a matching cwd grid can change availability, the selected
-transformation, and whether a missing-grid `AccuracyWarning` is emitted.
+Wheels bundle PROJ and its CRS resources. To add regional transformation grids,
+see [Transformation resources](../guide/crs.md#transformation-resources).
 
 ## Optional extras
 
-Core install is NumPy plus the Rust extension. Optional integrations are opt-in
-and imported lazily; see [DataFrames](../ecosystem/dataframes.md).
+Install the extras for the integrations you use. They are imported only when
+needed.
 
 | Extra | Purpose |
 |---|---|
@@ -57,11 +48,9 @@ and imported lazily; see [DataFrames](../ecosystem/dataframes.md).
 | `geopandas` | vectorized `GeoSeries` / `GeoDataFrame` conversion |
 | `viz` | [`gm.explore`][gometry.explore] + lonboard notebook previews |
 
-### The `arrow` extra
+<span id="the-arrow-extra"></span>
 
-[PyArrow](https://arrow.apache.org/docs/python/) is enabled through the `arrow`
-extra. The extra lets gometry materialize or consume `pyarrow` arrays, chunked
-arrays, tables, record batches, and record batch readers:
+For example, add PyArrow support with:
 
 === "uv"
 
@@ -75,39 +64,12 @@ arrays, tables, record batches, and record batch readers:
     pip install "gometry[arrow]"
     ```
 
-With the extra installed, `geom.to_arrow` and `gm.from_arrow` exchange pyarrow
-objects carrying [GeoArrow](https://geoarrow.org/)-compatible buffers:
+Geometry objects also expose Arrow PyCapsules without PyArrow installed.
+[Arrow & storage](../ecosystem/arrow.md) covers both interfaces.
 
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-ga = points.to_arrow()
-roundtrip = gm.from_arrow(ga)
-print("type:", type(roundtrip).__name__)
-print("crs:", roundtrip.crs.to_authority())
-print("equal:", roundtrip == points)
-```
-
-PyArrow is imported lazily, so `import gometry` never requires it. Geometry
-objects still expose dependency-free Arrow PyCapsules without the extra; see the
-[Arrow & storage](../ecosystem/arrow.md) for the columnar boundary.
-
-## Verify your install
-
-```python exec="on" source="block" result="text"
-import importlib.metadata as md
-import gometry as gm
-
-print("gometry", md.version("gometry"))
-print("PROJ", gm.crs_engine()["version"])
-poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(f"ellipsoidal area: {poly.area:,.0f} m²")
-```
-
+<span id="verify-your-install"></span>
 ## Next steps
 
-- The [mental model](mental-model.md) defines CRS and frame rules.
-- The [quickstart](quickstart.md) constructs a spatial query.
-- The [migration guides](../migrating/index.md) map Shapely, pyproj, H3, S2, and rtree
-  patterns onto gometry spellings.
+- [Quickstart](quickstart.md) — find features within a station's service area.
+- [Migrating to gometry](../migrating/index.md) — adapt Shapely, pyproj, H3, S2,
+  and rtree workflows.

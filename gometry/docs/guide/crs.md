@@ -24,6 +24,39 @@ CRS assignment and transformation have different effects:
   into another through the selected operation. See [Z and M](#z-and-m-under-transformation)
   for how extra ordinates are handled.
 
+<a id="set-crs-vs-to-crs"></a>
+
+## `with_crs` vs `to_crs`
+
+For a point supplied as longitude and latitude without CRS metadata,
+`with_crs(4326)` assigns WGS 84 without changing the numbers.
+`to_crs(3857)` then transforms those coordinates to Web Mercator:
+
+```python exec="on" source="block" result="text" session="declare-transform"
+from math import isclose
+
+import gometry as gm
+
+raw = gm.Point(21.0, 52.0)
+print('crs before:', raw.crs)
+
+declared = raw.with_crs(4326)
+print('crs after with_crs:', declared.crs)
+print('coords after with_crs:', list(declared.coords))
+assert declared.coords.to_nested() == raw.coords.to_nested() == [21.0, 52.0]
+
+projected = declared.to_crs(3857)
+print('crs after to_crs:', projected.crs)
+print('coords after to_crs:', list(projected.coords))
+assert isclose(projected.x, 2_337_709.307, rel_tol=0.0, abs_tol=0.001)
+assert isclose(projected.y, 6_800_125.454, rel_tol=0.0, abs_tol=0.001)
+
+```
+
+Both geometries describe the same location. The first stores degrees; the
+second stores metres. Assign a CRS only when it describes the coordinates
+already present.
+
 ## Operation families
 
 A geometry's *frame* is its CRS plus an optional coordinate epoch. Geographic
@@ -195,42 +228,7 @@ print("explicit pole closure:", explicit_closure.validate().valid)
 
 ```
 
-<a id="set-crs-vs-to-crs"></a>
-
-## `with_crs` vs `to_crs`
-
-!!! warning "Relabeling is not reprojection"
-    [`with_crs`][gometry.Geometry.with_crs] relabels; [`to_crs`][gometry.Geometry.to_crs] reprojects. `with_crs` leaves numeric coordinates
-    unchanged, so using it for a transformation changes the coordinates' claimed
-    meaning without moving them. Use `to_crs` when the coordinates must move.
-
-Consider a point digitized as lon/lat but handed to you with no CRS attached.
-
-```python exec="on" source="block" result="text" session="declare-transform"
-from math import isclose
-
-import gometry as gm
-
-raw = gm.Point(21.0, 52.0)
-print('crs before:', raw.crs)
-
-declared = raw.with_crs(4326)
-print('crs after with_crs:', declared.crs)
-print('coords after with_crs:', list(declared.coords))
-assert declared.coords.to_nested() == raw.coords.to_nested() == [21.0, 52.0]
-
-projected = declared.to_crs(3857)
-print('crs after to_crs:', projected.crs)
-print('coords after to_crs:', list(projected.coords))
-assert isclose(projected.x, 2_337_709.307, rel_tol=0.0, abs_tol=0.001)
-assert isclose(projected.y, 6_800_125.454, rel_tol=0.0, abs_tol=0.001)
-
-```
-
-`with_crs(4326)` left `(21, 52)` untouched and only stamped metadata.
-`to_crs(3857)` ran a [PROJ](https://proj.org/) pipeline and produced meters. The
-numbers are completely different even though both geometries describe the same
-place on Earth.
+### Changing a CRS label
 
 !!! danger "A wrong CRS label changes the data's meaning"
     Calling `with_crs(3857)` on lon/lat data would *claim* `(21, 52)` is "21 meters
@@ -323,7 +321,7 @@ a [`GeometryArray`][gometry.GeometryArray]. The free functions
 paths** that take `unit=`; they are not a second vectorized API. Binary
 [`gm.distance`][gometry.distance] is free because it relates two operands.
 
-## Geographic CRS → ellipsoidal measures, automatically
+### Geographic CRS → ellipsoidal measures, automatically
 
 Attach a geographic CRS and shape [`area`][gometry.Geometry.area] and
 [`length`][gometry.Geometry.length] measure straight longitude/latitude edges
@@ -415,7 +413,7 @@ that bound cannot be certified within representable output or available
 generated work and memory, the call raises instead of returning an unchecked
 value.
 
-### Geographic box boundary fidelity
+#### Geographic box boundary fidelity
 
 For nondegenerate geographic bounds with `wrap=None` whose longitude and
 latitude values all lie within the CRS frame's native ranges, `box` constructs
@@ -430,7 +428,7 @@ unwrapped construction; the native-range directed-span guarantee does not
 apply on that path. Antimeridian-crossing bounds use the separate EPSG:4326
 `wrap='split'` construction.
 
-### Geographic geodesic numerical domain
+#### Geographic geodesic numerical domain
 
 With CRS-aware units, geographic point-to-point inverse/direct calculations and
 operations that explicitly follow geodesic routes use the pinned order-six
@@ -454,7 +452,7 @@ approximate maximum distance error of `30 nm` at `|f| = 0.02`. gometry's
 admission is an ordinary backend domain, not a per-call certificate for
 composite algorithms.
 
-### Geographic point-to-segment accuracy
+#### Geographic point-to-segment accuracy
 
 With CRS-aware units, geographic linework distance, nearest-point witnesses,
 and `line_locate` use a minimum over each straight chart edge's parameter `t`.
@@ -512,7 +510,7 @@ geographic path; its algorithmic gap does not promise a caller-requested bound.
     measures on its ellipsoid without first projecting; a projected CRS measures
     the coordinates in that chosen frame.
 
-### Bearing and destination — point navigation
+#### Bearing and destination — point navigation
 
 gometry exposes binary point navigation as free functions under `gm.`. Unary
 destination is a receiver method on [`Point`][gometry.Point] and [`GeometryArray[Point]`][gometry.GeometryArray]. On a
@@ -549,7 +547,7 @@ print(round(gm.distance(
     and the **distance in meters second**. Swapping them produces a
     plausible-but-wrong point with no error.
 
-### Geographic polygon boundary
+#### Geographic polygon boundary
 
 [`Polygon.boundary`][gometry.Geometry.boundary] and
 [`MultiPolygon.boundary`][gometry.Geometry.boundary] return the
@@ -581,14 +579,14 @@ print(crossing.boundary().to_wkt())
 LINESTRING (170 50, 170 40, -180 40, -170 40, -170 50, -180 50, 170 50)
 ```
 
-## Projected CRS → native linear units
+### Projected CRS → native linear units
 
 The same operations on a *projected* geometry are planar arithmetic in the CRS's
 **native linear units** — feet stay feet, meters stay meters. Reproject to an
 **appropriate projected CRS first**, then measure. Pass `unit='meters'` when you
 need SI meters or square meters from a non-meter projected CRS.
 
-### Projection comparison
+#### Projection comparison
 
 The same Earth coordinates can produce different planar maps because each
 projection chooses a different distortion trade-off. Use this comparison to
@@ -670,7 +668,7 @@ the geographic ellipsoidal chart-edge area.
     geographic CRS, where `geom.area` / `geom.length` measure ellipsoidal chart
     edges.
 
-## CRS-free measurement
+### CRS-free measurement
 
 With no CRS attached, a geometry is a set of numbers on a flat plane, and measurement
 is in whatever unit those coordinates are in.
@@ -1187,6 +1185,16 @@ source bounds sample the closed segment from `min(west, east)` to
 `max(west, east)`, and geographic target bounds return numeric extrema rather
 than a periodic cover. Identity bounds retain out-of-period longitudes in
 literal mode.
+
+## Transformation resources
+
+Wheels include the PROJ database, datum pipelines, and bundled grid files.
+gometry does not download grids at runtime. Add local grid directories with
+[`gm.crs_configure(search_paths=...)`][gometry.crs_configure].
+These are search locations, not an exclusive whitelist: if a named grid is
+absent there, PROJ may also try its bare filename in the current working
+directory. A matching file there can change transformation availability,
+operation selection, and whether a missing-grid warning is emitted.
 
 Transforms sometimes need regional grid files. If the highest-ranked operation's grid is
 unavailable, every Python-visible transform surface — `geom.to_crs(...)`,

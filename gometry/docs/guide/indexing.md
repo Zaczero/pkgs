@@ -11,38 +11,16 @@ envelopes. The index exposes
 [`crs`][gometry.SpatialIndex.crs] and [`epoch`][gometry.SpatialIndex.epoch] for
 the shared frame of its rows.
 
-The index exposes the distinction between *candidates* (bounding-box matches) and
-*exact* matches.
-
-An index is mutable, and its integer handles are the live row identities returned
-by queries and consumed by `remove` and `__getitem__`. Pickling stores the logical
-sparse row table, including tombstones for removed rows, and rebuilds the search
-structure on load. A round trip therefore preserves live handles and prior
-mutations rather than replaying the original source rows.
-
-Lookup and removal accept non-negative integer-index handles and reject
-`bool`. `idx.get(handle, default)` returns `default` for a valid handle that is
-unknown or removed, but negative and non-index inputs raise. Membership checks
-remain tolerant and return `False` for non-index probes.
-
-`SpatialIndex` compares like a mapping: equality uses its live handle-to-
-geometry contents, including after removals. Since it is mutable, it is
-unhashable and cannot be used as a dictionary key.
-
 `query`, `candidates`, `nearest`, and `join` accept a `GeometryArray` or an
 iterable of `Geometry | None` rows. Missing query rows remain `None` groups
 and keep their original row positions.
 
-!!! note "Candidates are not matches"
-    [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
-    query's bounding box. Bounding boxes overlap far more often than geometries
-    actually intersect — especially for sparse multipolygons and diagonal lines.
-    [`idx.query(q, predicate=...)`][gometry.SpatialIndex.query] performs that
-    exact predicate refinement and returns only true matches. Both methods
-    return source-row handles in ascending order; removing rows does not
-    renumber the remaining handles.
-
 ## Candidates vs query
+
+[`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns bounding-box
+matches. [`idx.query(q, predicate=...)`][gometry.SpatialIndex.query] refines
+them with an exact geometry predicate. Both return source-row handles in
+ascending order; removing rows does not renumber the remaining handles.
 
 ```python exec="on" source="block" result="text" session="index-candidates"
 import gometry as gm
@@ -309,6 +287,12 @@ the threshold result.
 
 ## Insert and remove
 
+An index is mutable, and its integer handles identify live rows. Lookup and
+removal accept non-negative integer-index handles and reject `bool`.
+`idx.get(handle, default)` returns `default` for an unknown or removed handle;
+negative and non-index inputs raise. Membership checks return `False` for
+non-index probes.
+
 Bulk construction is the common path, but the index is **mutable** for dynamic
 sets: [`insert`][gometry.SpatialIndex.insert] appends a geometry (same frame as
 the index), and [`remove`][gometry.SpatialIndex.remove] tombstones a row by
@@ -335,12 +319,14 @@ print("after remove handle", handle, "→ nearest still works:",
 
 ```
 
-!!! note "The index is in-memory"
-    gometry persists nothing to disk. To carry an index across processes,
-    rebuild it from the source geometries (or their stored WKB/EWKB bytes — see
-    [Text & binary formats](../ecosystem/text-formats.md)). Coming from
-    rtree / Shapely `STRtree` / `geopandas.sjoin`? See
-    [Migrating](../migrating/index.md#coming-from-rtree-strtree).
+### Equality and serialization
+
+`SpatialIndex` compares like a mapping: equality uses its live handle-to-geometry
+contents, including after removals. It is mutable and unhashable.
+
+Pickling preserves live handles and prior insertions and removals, rebuilding
+the search structure on load. For portable storage, keep the source geometries
+as [WKB or EWKB](../ecosystem/text-formats.md) and construct a new index.
 
 ## See also
 

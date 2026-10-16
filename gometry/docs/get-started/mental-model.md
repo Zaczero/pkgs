@@ -96,7 +96,8 @@ protocol and interchange detail, see [Geometry & dimensions](../guide/geometry.m
 
 Facts are properties, unary operations are methods, and binary relationships are
 free functions. Measurement overrides use the free [`area`][gometry.area] and [`length`][gometry.length] functions
-with `unit=`. Naming and placement rules are in [Design principles](../about/design.md).
+with `unit=`. [API conventions](../about/design.md) covers names, return types,
+and Python protocols.
 
 ## Where to go next
 

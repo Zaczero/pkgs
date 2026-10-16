@@ -4,18 +4,10 @@ description: gometry runtime, platform, optional-integration, and semantic-versi
 
 # Compatibility & deprecation policy
 
-The current release workflow tests CPython 3.11–3.14 and free-threaded CPython
-3.14t, requires NumPy, and needs no system GEOS, GDAL, or PROJ. The package
-metadata's `requires-python >=3.11` is a lower bound, not evidence that later
-Python minors have been tested. Incompatible public removals wait for a major
-release.
+gometry supports CPython 3.11–3.14 and free-threaded CPython 3.14t.
+NumPy is required; system GEOS, GDAL, and PROJ installations are not.
 
 ## Runtime and platform matrix
-
-The matrix below follows the current CI and release-wheel configuration. Linux
-tests every supported stable CPython minor; macOS and Windows test the newest
-stable minor, and Linux tests the free-threaded build. The release workflow
-builds wheels for the listed native platform architectures.
 
 | Surface | Supported |
 | --- | --- |
@@ -30,16 +22,13 @@ builds wheels for the listed native platform architectures.
 
 The package contains the geometry engine and its CRS authority resources. A core
 installation requires NumPy; it does not require system GEOS, GDAL, or PROJ.
-See [Installation](../get-started/installation.md) for the install command and
-source-build prerequisites.
+See [Installation](../get-started/installation.md) for CPU requirements and
+optional extras.
 
 ## Optional integration matrix
 
-Optional dependencies are not imported by `import gometry`. Minimum package
-requirements come from the published package metadata. The table names the
-supported entry points and known boundary differences; it is not a drop-in
-compatibility claim for the listed ecosystems. Each adapter defines its copy,
-CRS, epoch, missing-row, and loss behavior.
+Optional dependencies are imported when their adapters are used. Each adapter
+defines how it handles copying, CRS, epochs, and missing rows.
 
 | Boundary | Extra and minimum dependency | Supported entry points | Important boundary behavior |
 | --- | --- | --- | --- |
@@ -84,8 +73,8 @@ these canonical entry points.
 
 ## See also
 
-- [Installation](../get-started/installation.md) — install command, required
-  dependency, and source-build requirements.
+- [Installation](../get-started/installation.md) — Python and CPU requirements,
+  dependencies, and optional extras.
 - [License](license.md) — package and bundled-component licensing.
 - [Support](support.md) — issue tracker, security disclosure, and commercial
   support.

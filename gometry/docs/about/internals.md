@@ -2,13 +2,13 @@
 description: How gometry's native engine, bundled PROJ, and concurrency model affect Python applications.
 ---
 
-# Internals
+# Engine and concurrency {#internals}
 
 gometry runs geometry operations in Rust and uses Python for ecosystem
 integration. This keeps array operations out of Python loops and lets the
 package bundle its geometry and CRS engines together.
 
-## Ownership layers
+## Native and Python responsibilities {#ownership-layers}
 
 | Layer | Responsibility |
 | --- | --- |
@@ -17,7 +17,7 @@ package bundle its geometry and CRS engines together.
 | CRS authority | The bundled PROJ backend supplies CRS definitions, datum pipelines, grid-aware transforms, and standards parsing. Gometry owns frame checks, X/Y ordering, Z/M policy, and Python errors around that boundary. |
 | Interchange adapters | Arrow/GeoArrow, WKB, dataframe, GeoParquet, and map adapters translate at explicit boundaries and state when they copy or lose metadata. |
 
-## CRS authority boundary
+## Bundled CRS transformations {#crs-authority-boundary}
 
 CRS transformation is a standards-heavy domain. Gometry bundles libPROJ rather
 than asking the host to provide a shared library, and delegates CRS database,
@@ -26,7 +26,7 @@ always X/Y even when an authority definition declares a different native axis
 order. See [CRS, units & measurement](../guide/crs.md) for the user-facing
 frame and operation-family rules.
 
-## Geographic quotient embedding
+## Geographic topology {#geographic-quotient-embedding}
 
 Geographic topology treats seam-equivalent longitudes and longitude aliases at
 the poles as the same locations. Geometry edges remain straight in their source
@@ -36,7 +36,7 @@ changing topology when coordinate publication cannot preserve the required
 relationships. Z and M behavior remains specific to each operation; see
 [geometry and coordinates](../guide/geometry.md#zm-under-operations).
 
-## Hard boundaries
+## Data interchange {#hard-boundaries}
 
 Exchange geometry with dataframes and databases through Arrow, GeoArrow, or
 WKB. gometry does not provide a storage or SQL engine.
@@ -67,7 +67,7 @@ reconstructed when loaded.
 
 ## See also
 
-- [Design principles](design.md) — naming and result conventions.
+- [API conventions](design.md) — naming and result conventions.
 - [Compatibility](compatibility.md) — runtime and optional-integration matrix.
 - [Arrow & storage](../ecosystem/arrow.md) — columnar interchange behavior.
 - [Security & untrusted input](security.md) — ingress trust boundaries and limits.

@@ -35,7 +35,7 @@
 - **Vectorized in Rust** — predicates, overlays, buffering, geodesics, and
   coverage run as batched kernels over packed buffers and return NumPy arrays.
   The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
-- **Interchange across typed boundaries** — [GeoArrow](https://geoarrow.org/)
+- **Exchange data** — [GeoArrow](https://geoarrow.org/)
   packed arrays for homogeneous XY/XYZ/XYM/XYZM geometries, WKB fallback for
   mixed types, and WKT/WKB/EWKB/GeoJSON codecs
 - **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
@@ -44,6 +44,16 @@
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
 - **Apache-2.0 OR MIT** · **CPython 3.11–3.14; free-threaded CPython 3.14t**
+
+## Install
+
+```bash
+uv add gometry # or: pip install gometry
+```
+
+On x86_64, wheels require an x86-64-v2 CPU (roughly 2009 or newer); arm64
+wheels target native arm64. The [installation guide](https://gometry.monicz.dev/get-started/installation/)
+covers requirements and extras for Arrow, pandas, Polars, GeoPandas, and notebook maps.
 
 ## gometry in action
 
@@ -73,31 +83,6 @@ points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 mask = gm.contains(area, points)
 print(type(mask).__name__, mask.tolist())  # ndarray [True, False]
 ```
-
-## Install
-
-Install the core package from PyPI:
-
-```bash
-uv add gometry # or: pip install gometry
-```
-
-On x86_64, wheels require an x86-64-v2 CPU (roughly 2009 or newer); arm64
-wheels target native arm64. See the [installation guide](https://gometry.monicz.dev/get-started/installation/)
-for CPU-check behavior.
-
-Optional integrations are available as extras:
-
-```bash
-uv add "gometry[arrow]"         # PyArrow / GeoArrow objects
-uv add "gometry[pandas]"        # pandas extension storage
-uv add "gometry[polars]"        # Polars binary columns
-uv add "gometry[geopandas]"     # GeoPandas conversion
-uv add "gometry[viz]"           # lonboard exploration
-```
-
-With the `arrow` extra installed, `to_arrow` materializes pyarrow objects; without
-it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 
 ## Benchmarks
 

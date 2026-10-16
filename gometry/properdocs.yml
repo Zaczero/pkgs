@@ -171,12 +171,12 @@ nav:
   - Guide:
     - Guide overview: guide/index.md
     - Geometry & dimensions: guide/geometry.md
+    - CRS, units & measurement: guide/crs.md
+    - Arrays & performance: guide/arrays.md
     - Spatial predicates: guide/predicates.md
     - Constructive operations: guide/constructive.md
-    - CRS, units & measurement: guide/crs.md
-    - Grids & geocodes: guide/grids.md
     - Spatial indexing & joins: guide/indexing.md
-    - Arrays & performance: guide/arrays.md
+    - Grids & geocodes: guide/grids.md
     - Validation & repair: guide/validation.md
     - Errors & exceptions: guide/errors.md
     - Choosing the right tool: guide/choosing.md
@@ -188,6 +188,7 @@ nav:
     - Text & binary formats: ecosystem/text-formats.md
   - Reference:
     - api/index.md
+    - API conventions: about/design.md
     - Type definitions: api/types.md
     - Functions:
       - Constructors & bulk factories: api/toplevel/constructors-bulk-factories.md
@@ -219,8 +220,7 @@ nav:
   - Benchmarks: about/benchmarks.md
   - About:
     - Support: about/support.md
-    - Design principles: about/design.md
-    - Internals: about/internals.md
+    - Engine and concurrency: about/internals.md
     - Security & untrusted input: about/security.md
     - Compatibility & deprecation policy: about/compatibility.md
     - License & notices: about/license.md
