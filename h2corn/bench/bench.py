@@ -24,6 +24,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from dataclasses import dataclass
@@ -44,7 +45,6 @@ try:
         MeasuredMetrics,
         Scenario,
         check_response,
-        comparison_is_settled,
         duration_seconds,
         ensure_large_upload_payload,
         ensure_static_file_payload,
@@ -56,7 +56,7 @@ try:
         running_server,
         write_json,
     )
-    from bench.report import alt_text, render_accessible_results
+    from bench.report import alt_text, render_accessible_results, render_latency_curve
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
     from _core import (  # type: ignore[import-not-found, no-redef]
         RESULTS_DIRECTORY,
@@ -64,7 +64,6 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         MeasuredMetrics,
         Scenario,
         check_response,
-        comparison_is_settled,
         duration_seconds,
         ensure_large_upload_payload,
         ensure_static_file_payload,
@@ -76,7 +75,7 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         running_server,
         write_json,
     )
-    from report import alt_text, render_accessible_results
+    from report import alt_text, render_accessible_results, render_latency_curve
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -85,11 +84,9 @@ DURATION = '10s'
 WARMUP_DURATION = '2s'
 CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
-#: Rotation-balanced cold starts per server. Sampling stops when the leader is
-#: separated and its interval is within TARGET_HALF_WIDTH, so a quiet host
-#: finishes in MIN_TRIALS and a noisy one spends its budget where it is needed.
+#: Fixed cold-start trials avoid stopping on a favourable confidence interval.
 MIN_TRIALS = 3
-MAX_TRIALS = 9
+MAX_TRIALS = 4
 TARGET_HALF_WIDTH = 0.03
 #: Hard wall-clock ceiling per scenario and for the whole suite. Trial duration
 #: is never shortened to fit — the suite reports what it measured and says which
@@ -733,11 +730,6 @@ def run_scenario(
             f'  after trial {trial}: median {medians} (leader CI ±{leader:.1%})',
             flush=True,
         )
-        if trial >= MIN_TRIALS and comparison_is_settled(
-            rates, SEED, TARGET_HALF_WIDTH
-        ):
-            stopped = 'resolved'
-            break
         if time.monotonic() > deadline:
             stopped = 'time-budget'
             break
@@ -800,9 +792,8 @@ def plot_results(
     summary = record['system_summary']
     websocket = record['type'] == 'ws'
     excluded = record['excluded']
-    leader_half_width = record['leader_half_width']
-    figure, axes = plt.subplots(1, 2, figsize=(15, 6))
-    figure.suptitle(title, fontsize=16)
+    figure, axes = plt.subplots(1, 2, figsize=(12, 6), layout='constrained')
+    figure.suptitle(title, fontsize=17, fontweight='bold')
 
     names = list(results)
     versions = record['package_versions']
@@ -827,10 +818,7 @@ def plot_results(
                 capsize=4,
             )
     unit = 'sessions/s' if websocket else 'RPS'
-    throughput.set_title(
-        ('WebSocket Sessions Per Second' if websocket else 'Requests Per Second')
-        + ' (Higher is better; peak memory (PSS) labels)'
-    )
+    throughput.set_title('Throughput · higher is better')
     throughput.set_ylabel(unit)
     # Leave physical headroom for the two labels even when a short bar cannot
     # contain its memory annotation.
@@ -868,8 +856,7 @@ def plot_results(
                 ha='center',
                 va='bottom',
                 color=bar_label_color(color),
-                fontsize=8.5,
-                fontweight='light',
+                fontsize=10,
             )
         else:
             throughput.annotate(
@@ -879,8 +866,7 @@ def plot_results(
                 textcoords='offset points',
                 ha='center',
                 va='bottom',
-                fontsize=8.5,
-                fontweight='light',
+                fontsize=10,
             )
 
     latency = axes[1]
@@ -907,8 +893,8 @@ def plot_results(
         plotted = True
     if plotted:
         latency.set_title(
-            ('Session duration' if websocket else 'Saturation latency')
-            + ' Distribution (Lower is better)'
+            ('Session duration' if websocket else 'Latency')
+            + ' percentiles · lower is better'
         )
         latency.set_xlabel('Percentile')
         latency.set_ylabel('Latency (ms)')
@@ -917,31 +903,24 @@ def plot_results(
     else:
         latency.set_title('Latency data unavailable')
 
-    footer = summary
-    if leader_half_width is not None and leader_half_width > TARGET_HALF_WIDTH:
-        # The ordering is resolved, the bar height is not: say so rather than
-        # let a crisply drawn bar imply a precision the run did not reach.
-        footer += (
-            f'\nLeading bar height resolved only to ±{leader_half_width:.0%} '
-            f'(target ±{TARGET_HALF_WIDTH:.0%}); whiskers show the observed range'
-        )
+    footer = (
+        summary.replace('\n', ' · ')
+        + '\nBars: median rate · Whiskers: trial range · Memory: peak PSS'
+        + f'\n{record["trials"]} fresh starts · Latency: median trial percentiles'
+    )
     if excluded:
         # A missing bar has to explain itself, or the plot silently implies the
         # server was never in the comparison.
-        footer += '\nExcluded: ' + '; '.join(
-            f'{name} ({reason})' for name, reason in sorted(excluded.items())
+        footer += '\n' + textwrap.fill(
+            'Excluded: '
+            + '; '.join(
+                f'{name} ({reason})' for name, reason in sorted(excluded.items())
+            ),
+            width=135,
         )
-    plt.figtext(
-        0.02,
-        0.02,
-        footer,
-        fontsize=9,
-        verticalalignment='bottom',
-        bbox={'boxstyle': 'round', 'facecolor': 'whitesmoke', 'alpha': 0.75},
-    )
-    plt.tight_layout(rect=(0.0, 0.05, 1.0, 0.95))
-    plt.savefig(path, format='svg')
-    plt.close()
+    figure.supxlabel(footer, fontsize=9)
+    figure.savefig(path, format='svg')
+    plt.close(figure)
     path.write_text(
         '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
     )
@@ -949,6 +928,12 @@ def plot_results(
         render_accessible_results(record),
         encoding='utf-8',
     )
+    if (
+        record['type'] == 'h1'
+        and record['workers'] == 1
+        and record['network_profile'] == 'loopback'
+    ):
+        render_latency_curve(record, path.with_name('latency.svg'))
     print(f'Saved plot to {path}')
     print(alt_text(title, results, unit))
 
@@ -1081,19 +1066,21 @@ def publish(run_directories: Sequence[Path]) -> None:
 
 
 def assert_publishable(run_directories: Sequence[Path]) -> None:
-    undecided = []
+    incomplete = []
     for run_directory in run_directories:
-        for record_path in sorted((run_directory / 'raw').glob('*.json')):
+        records = sorted((run_directory / 'raw').glob('*.json'))
+        if not records:
+            raise BenchmarkError(f'no benchmark results in {run_directory}')
+        for record_path in records:
             record = json.loads(record_path.read_text())
             if record.get('status') == 'skipped':
                 continue
-            if not record.get('leader_separated'):
-                undecided.append(record['scenario'])
-    if undecided:
+            if record.get('stopped') == 'time-budget' or not record.get('aggregate'):
+                incomplete.append(record['scenario'])
+    if incomplete:
         raise BenchmarkError(
-            f'refusing to publish {len(undecided)} scenario(s) whose winner '
-            f'is not established: {", ".join(undecided)}; '
-            'raise --scenario-budget or --max-trials and re-run'
+            f'incomplete benchmark scenarios: {", ".join(incomplete)}; '
+            'increase the time budget and re-run'
         )
 
 

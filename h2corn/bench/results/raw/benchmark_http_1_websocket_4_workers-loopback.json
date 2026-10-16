@@ -1,0 +1,341 @@
+{
+  "aggregate": {
+    "gunicorn": {
+      "completed": 96866.0,
+      "latency_percentiles": {
+        "p50": 0.0056859075,
+        "p90": 0.010238844850000001,
+        "p95": 0.012745661200000003,
+        "p99": 0.03257302914000041
+      },
+      "peak_memory_bytes": 1202526208,
+      "relative_half_width": 0.16129181296558412,
+      "rps": 9645.972276723991,
+      "rps_range": [
+        6594.396997579709,
+        9706.02971023686
+      ],
+      "rps_samples": [
+        9653.541179162396,
+        9706.02971023686,
+        9638.403374285586,
+        6594.396997579709
+      ]
+    },
+    "h2corn": {
+      "completed": 375035.5,
+      "latency_percentiles": {
+        "p50": 0.0022874757500000002,
+        "p90": 0.004152866550000001,
+        "p95": 0.0048555735,
+        "p99": 0.006662026594999995
+      },
+      "peak_memory_bytes": 134799360,
+      "relative_half_width": 0.17387294485785845,
+      "rps": 37495.06459245023,
+      "rps_range": [
+        27097.413684404382,
+        40136.16828105426
+      ],
+      "rps_samples": [
+        37329.927256086834,
+        37660.20192881363,
+        40136.16828105426,
+        27097.413684404382
+      ]
+    },
+    "hypercorn": {
+      "completed": 62996.5,
+      "latency_percentiles": {
+        "p50": 0.0143716125,
+        "p90": 0.024341312349999998,
+        "p95": 0.030260436774999993,
+        "p99": 0.04215970030000002
+      },
+      "peak_memory_bytes": 141886464,
+      "relative_half_width": 0.1265384458593106,
+      "rps": 6289.695776768807,
+      "rps_range": [
+        5422.759099760059,
+        7014.535756800447
+      ],
+      "rps_samples": [
+        7014.535756800447,
+        6770.813873388184,
+        5808.577680149429,
+        5422.759099760059
+      ]
+    },
+    "uvicorn": {
+      "completed": 66146.0,
+      "latency_percentiles": {
+        "p50": 0.0140330095,
+        "p90": 0.023210628500000004,
+        "p95": 0.02683179899999999,
+        "p99": 0.04255890169999996
+      },
+      "peak_memory_bytes": 170939392,
+      "relative_half_width": 0.14026429846836663,
+      "rps": 6606.243577035617,
+      "rps_range": [
+        5289.539418962094,
+        7142.779660650202
+      ],
+      "rps_samples": [
+        6182.846984200704,
+        7029.640169870529,
+        7142.779660650202,
+        5289.539418962094
+      ]
+    }
+  },
+  "duration": "10s",
+  "excluded": {},
+  "leader_half_width": 0.17387294485785845,
+  "leader_separated": true,
+  "measured_rtt_ms": null,
+  "network_profile": "loopback",
+  "package_versions": {
+    "gunicorn": "26.0.0",
+    "h2corn": "1.6.0",
+    "hypercorn": "0.18.0",
+    "uvicorn": "0.52.1"
+  },
+  "scenario": "HTTP/1 WebSocket (4 Workers)",
+  "server_profiles": {
+    "gunicorn": {
+      "aligned": [
+        {
+          "default": 1,
+          "setting": "workers",
+          "value": 4
+        },
+        {
+          "default": 2048,
+          "setting": "backlog",
+          "value": 2048
+        },
+        {
+          "default": 2,
+          "setting": "keep_alive",
+          "value": 120
+        }
+      ],
+      "no_equivalent": [
+        {
+          "h2corn_setting": "server_header",
+          "h2corn_value": "off",
+          "reason": "Gunicorn exposes no response Server-header setting."
+        },
+        {
+          "h2corn_setting": "date_header",
+          "h2corn_value": true,
+          "reason": "Gunicorn exposes no response Date-header setting."
+        },
+        {
+          "h2corn_setting": "proxy_headers",
+          "h2corn_value": false,
+          "reason": "Gunicorn has no ASGI proxy-header parsing counterpart."
+        },
+        {
+          "h2corn_setting": "http2",
+          "h2corn_value": "h2corn direct HTTP/2",
+          "reason": "Gunicorn ASGI has no direct HTTP/2 server mode."
+        }
+      ],
+      "profile_choice": [
+        {
+          "default": "auto",
+          "setting": "asgi_loop",
+          "value": "asyncio"
+        }
+      ]
+    },
+    "h2corn": {
+      "aligned": [
+        {
+          "default": 1,
+          "setting": "workers",
+          "value": 4
+        },
+        {
+          "default": 1024,
+          "setting": "backlog",
+          "value": 2048
+        },
+        {
+          "default": 120,
+          "setting": "timeout_keep_alive",
+          "value": 120
+        },
+        {
+          "default": "off",
+          "setting": "server_header",
+          "value": "off"
+        },
+        {
+          "default": true,
+          "setting": "date_header",
+          "value": true
+        },
+        {
+          "default": true,
+          "setting": "proxy_headers",
+          "value": false
+        },
+        {
+          "default": 256,
+          "setting": "max_concurrent_streams",
+          "value": 256
+        },
+        {
+          "default": 1048576,
+          "setting": "h2_max_header_list_size",
+          "value": 1048576
+        },
+        {
+          "default": 65536,
+          "setting": "h2_max_inbound_frame_size",
+          "value": 65536
+        }
+      ],
+      "no_equivalent": [],
+      "profile_choice": [
+        {
+          "default": "auto",
+          "setting": "loop",
+          "value": "asyncio"
+        }
+      ]
+    },
+    "hypercorn": {
+      "aligned": [
+        {
+          "default": 1,
+          "setting": "workers",
+          "value": 4
+        },
+        {
+          "default": 100,
+          "setting": "backlog",
+          "value": 2048
+        },
+        {
+          "default": 5,
+          "setting": "keep_alive_timeout",
+          "value": 120
+        },
+        {
+          "default": true,
+          "setting": "include_server_header",
+          "value": false
+        },
+        {
+          "default": true,
+          "setting": "include_date_header",
+          "value": true
+        },
+        {
+          "default": 100,
+          "setting": "h2_max_concurrent_streams",
+          "value": 256
+        },
+        {
+          "default": 65536,
+          "setting": "h2_max_header_list_size",
+          "value": 1048576
+        },
+        {
+          "default": 16384,
+          "setting": "h2_max_inbound_frame_size",
+          "value": 65536
+        }
+      ],
+      "no_equivalent": [
+        {
+          "h2corn_setting": "proxy_headers",
+          "h2corn_value": false,
+          "reason": "Hypercorn exposes no server-level proxy-header parsing setting."
+        },
+        {
+          "h2corn_setting": "h2_initial_stream_window_size",
+          "h2corn_value": 8388608,
+          "reason": "Hypercorn exposes no HTTP/2 flow-control window; it uses h2's 65,535-byte default."
+        },
+        {
+          "h2corn_setting": "h2_initial_connection_window_size",
+          "h2corn_value": 8388608,
+          "reason": "Hypercorn exposes no HTTP/2 connection receive-window setting."
+        },
+        {
+          "h2corn_setting": "h2_max_header_block_size",
+          "h2corn_value": 1048576,
+          "reason": "Hypercorn exposes no compressed HTTP/2 header-block limit."
+        }
+      ],
+      "profile_choice": [
+        {
+          "default": "asyncio",
+          "setting": "worker_class",
+          "value": "asyncio"
+        }
+      ]
+    },
+    "uvicorn": {
+      "aligned": [
+        {
+          "default": 1,
+          "setting": "workers",
+          "value": 4
+        },
+        {
+          "default": 2048,
+          "setting": "backlog",
+          "value": 2048
+        },
+        {
+          "default": 5,
+          "setting": "timeout_keep_alive",
+          "value": 120
+        },
+        {
+          "default": true,
+          "setting": "server_header",
+          "value": false
+        },
+        {
+          "default": true,
+          "setting": "date_header",
+          "value": true
+        },
+        {
+          "default": true,
+          "setting": "proxy_headers",
+          "value": false
+        }
+      ],
+      "no_equivalent": [
+        {
+          "h2corn_setting": "http2",
+          "h2corn_value": "h2corn direct HTTP/2",
+          "reason": "Uvicorn has no direct HTTP/2 server mode."
+        }
+      ],
+      "profile_choice": [
+        {
+          "default": "auto",
+          "setting": "loop",
+          "value": "asyncio"
+        }
+      ]
+    }
+  },
+  "stopped": "max-trials",
+  "system_summary": "Python 3.14.8 | Linux 7.2.9 | x86_64\nCPU: AMD Ryzen 9 5950X 16-Core Processor",
+  "target_half_width": 0.03,
+  "target_rtt_ms": null,
+  "trials": 4,
+  "type": "ws",
+  "warmup_duration": "2s",
+  "workers": 4
+}

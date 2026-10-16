@@ -162,6 +162,19 @@ def test_rendered_benchmark_table_resolves_relative_figure_assets(
     check_benchmark_results()
 
 
+def test_benchmark_page_requires_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.docs import check as docs_check
+
+    page = tmp_path / 'benchmarks' / 'index.html'
+    page.parent.mkdir()
+    page.write_text('<h1>Benchmarks</h1><p>Measurement method only.</p>')
+    monkeypatch.setattr(docs_check, 'SITE', tmp_path)
+    with pytest.raises(AssertionError, match='contains no results'):
+        check_benchmark_results()
+
+
 def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
     return {
         'aggregate': {
@@ -194,14 +207,34 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
     }
 
 
+def test_benchmark_publication_accepts_a_measured_tie(tmp_path: Path) -> None:
+    import json
+
+    from bench.bench import assert_publishable
+
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    record = _benchmark_record()
+    record['leader_separated'] = False
+    record['stopped'] = 'max-trials'
+    (raw / 'comparison.json').write_text(json.dumps(record))
+    assert_publishable([tmp_path])
+
+
+def test_benchmark_publication_rejects_missing_results(tmp_path: Path) -> None:
+    from bench.bench import BenchmarkError, assert_publishable
+
+    with pytest.raises(BenchmarkError, match='no benchmark results'):
+        assert_publishable([tmp_path])
+
+
 def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
     markdown = render_accessible_results(_benchmark_record())
 
     assert 'Observed rate range' in markdown
     assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98-102 |' in markdown
     assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
-    assert '95% bootstrap intervals separate h2corn' in markdown
-    assert 'target ±3%' in markdown
+    assert '95% bootstrap interval' in markdown
     assert 'not a confidence interval' in markdown
 
 

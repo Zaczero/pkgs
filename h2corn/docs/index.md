@@ -1,5 +1,5 @@
 ---
-description: Blazing-fast HTTP/2 ASGI server for Python, written in Rust.
+description: The fastest Python ASGI server. Built in Rust, with HTTP/2 end to end.
 hide:
   - navigation
   - toc
@@ -11,15 +11,29 @@ hide:
 
 <a id="http2-asgi-server-for-python"></a>
 
-# Blazing-fast HTTP/2 ASGI server for Python
+# The fastest Python ASGI server
 
 Rust handles the wire. Python handles your application.
 HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
+
+**86–97% lower p50–p99 latency** in our
+[HTTP/1.1 benchmark](benchmarks.md).
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Why h2corn](#why-h2corn){ .md-button }
 
 </div>
+
+## Fast from p50 to p99
+
+One Starlette application, four servers, and four fresh starts per server.
+
+![HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99, compared with 9.458–30.003 ms and 12.253–38.665 ms for the other servers.](assets/benchmarks/latency-loopback.svg#only-light)
+![HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99, compared with 9.458–30.003 ms and 12.253–38.665 ms for the other servers.](assets/benchmarks/latency-dark-loopback.svg#only-dark)
+
+Measured on a Ryzen 9 5950X with CPython 3.14.8.
+[Open the chart at full size](assets/benchmarks/latency-loopback.svg) or
+[see the data, configuration, and all 27 workloads](benchmarks.md).
 
 <div class="grid cards" markdown>
 

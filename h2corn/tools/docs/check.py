@@ -266,6 +266,8 @@ def check_benchmark_results() -> None:
 
     parser = _BenchmarkContent()
     parser.feed(page.read_text(encoding='utf-8'))
+    if not parser.images:
+        raise AssertionError('rendered Benchmarks page contains no results')
     for source, _alternative in parser.images:
         asset_path = Path(unquote(urlparse(source).path))
         asset = (

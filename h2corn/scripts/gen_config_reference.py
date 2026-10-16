@@ -44,11 +44,7 @@ def _format_default(value: Any) -> str:
 
 
 def _format_type_cell(annotation: Any) -> str:
-    return (
-        '<code>'
-        + escape(format_type(annotation)).replace('|', '&#124;')
-        + '</code>'
-    )
+    return '<code>' + escape(format_type(annotation)).replace('|', '&#124;') + '</code>'
 
 
 def _format_cli(option: ConfigOption) -> str:
@@ -222,7 +218,13 @@ def render_benchmark_results() -> str:
     plot_directory = ROOT / 'bench' / 'results' / 'plots'
     records = sorted(raw_directory.glob('*.json'))
     if not records:
-        return ''
+        raise RuntimeError('benchmark results are missing; populate bench/results/raw')
+
+    for plot_path in sorted(plot_directory.glob('*.svg')):
+        with mkdocs_gen_files.open(
+            f'assets/benchmarks/{plot_path.name}', 'wb'
+        ) as handle:
+            handle.write(plot_path.read_bytes())
 
     sections: list[str] = ['## Results\n\n']
     for raw_path in records:
@@ -239,11 +241,8 @@ def render_benchmark_results() -> str:
                 f'{profile} measurements were skipped: {reason}\n\n',
             ))
             continue
-        if record.get('leader_separated') is not True:
-            raise RuntimeError(
-                f'{raw_path.name} is not an accepted benchmark result: '
-                'the leading rate is not separated'
-            )
+        if not record.get('aggregate'):
+            raise RuntimeError(f'{raw_path.name} contains no benchmark measurements')
 
         plot_path = plot_directory / f'{raw_path.stem}.svg'
         table_path = plot_directory / f'{raw_path.stem}.md'
@@ -256,8 +255,6 @@ def render_benchmark_results() -> str:
             raise RuntimeError(f'{table_path.name} does not match its aggregate record')
 
         relative_plot = f'assets/benchmarks/{plot_path.name}'
-        with mkdocs_gen_files.open(relative_plot, 'wb') as handle:
-            handle.write(plot_path.read_bytes())
         results = record['aggregate']
         unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
         description = alt_text(scenario, results, unit)

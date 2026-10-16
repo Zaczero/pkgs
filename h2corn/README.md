@@ -5,7 +5,11 @@
 <h1 align="center">h2corn</h1>
 
 <p align="center">
-  <strong>Blazing-fast HTTP/2 ASGI server for Python</strong>, written in Rust.
+  <strong>The fastest Python ASGI server</strong>
+</p>
+
+<p align="center">
+  Built in Rust, with HTTP/2 end to end.
 </p>
 
 <p align="center">
@@ -73,8 +77,17 @@ single worker. It is not a gRPC server.
 
 ## Benchmarks
 
-See [benchmarks](https://h2corn.monicz.dev/benchmarks/) for the workloads and
-measurement method.
+**86–97% lower p50–p99 latency** than the compared servers in the one-worker
+HTTP/1.1 GET benchmark, using the same Starlette application and standard asyncio.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/latency-dark-loopback.svg">
+  <img src="bench/results/plots/latency-loopback.svg" alt="HTTP/1.1 GET latency: h2corn measured 0.995 ms at p50 and 1.671 ms at p99; the compared servers measured 9.458–30.003 ms and 12.253–38.665 ms respectively.">
+</picture>
+
+Four fresh starts per server over loopback, on a Ryzen 9 5950X with CPython 3.14.8.
+See [the data, server configuration, and all 27 workloads](https://h2corn.monicz.dev/benchmarks/),
+including HTTP/2, streaming, WebSockets, and 50 ms round-trip latency.
 
 ## Support
 

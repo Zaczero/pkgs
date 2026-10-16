@@ -2,7 +2,53 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from benchroom.plot import curves
+from matplotlib.ticker import ScalarFormatter
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def render_latency_curve(record: dict[str, Any], path: Path) -> None:
+    """Render the headline GET comparison from recorded trial percentiles."""
+    percentiles = ('p50', 'p75', 'p90', 'p95', 'p99', 'p99.9')
+    names = sorted(record['aggregate'], key=lambda name: name != 'h2corn')
+    values = {
+        f'{name} {record["package_versions"][name]}': {
+            index: record['aggregate'][name]['latency_percentiles'][percentile] * 1000
+            for index, percentile in enumerate(percentiles)
+        }
+        for name in names
+    }
+    for dark in (False, True):
+        figure = curves(
+            values,
+            title='HTTP/1.1 GET latency · one worker',
+            xlabel='Latency percentile',
+            ylabel='Milliseconds · logarithmic scale · lower is better',
+            dark=dark,
+        )
+        axes = figure.axes[0]
+        axes.set_xticks(range(len(percentiles)), percentiles)
+        axes.set_yscale('log')
+        axes.yaxis.set_major_formatter(ScalarFormatter())
+        axes.legend(
+            loc='upper left',
+            bbox_to_anchor=(1, 1),
+            frameon=False,
+            labelcolor='linecolor',
+        )
+        figure.supxlabel(
+            record['system_summary'].replace('\n', ' · ')
+            + '\nLoopback · standard asyncio'
+            + f'\nMedian percentiles across {record["trials"]} fresh starts',
+            fontsize=9,
+            color=axes.xaxis.label.get_color(),
+        )
+        destination = path.with_stem(path.stem + '-dark') if dark else path
+        figure.savefig(destination, facecolor=figure.get_facecolor())
 
 
 def alt_text(title: str, results: dict[str, Any], unit: str) -> str:
@@ -31,8 +77,6 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     unit = 'sessions/s' if websocket else 'requests/s'
     ordered = sorted(results.items(), key=lambda item: item[1]['rps'], reverse=True)
     winner, _ = ordered[0]
-    half_width = record['leader_half_width']
-    target = record['target_half_width']
     if len(ordered) == 1:
         conclusion = (
             f'Only {winner} produced an eligible result, so no cross-server '
@@ -40,14 +84,12 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         )
     elif record['leader_separated']:
         conclusion = (
-            f'The 95% bootstrap intervals separate {winner} from the runner-up. '
-            f'The leader interval half-width is ±{half_width:.1%} of its median '
-            f'(target ±{target:.0%}).'
+            f'{winner} leads this throughput comparison; its 95% bootstrap '
+            'interval is separated from the runner-up.'
         )
     else:
         conclusion = (
-            'The 95% bootstrap intervals do not separate a leader from the '
-            'runner-up; the largest median is descriptive, not a winner.'
+            'Throughput is close: the 95% bootstrap intervals do not separate a leader.'
         )
 
     headers = ['Server (version)', 'Measure', 'Value', 'Observed rate range']
