@@ -32,24 +32,11 @@ containing longitude `0.055` and latitude `51.511`.
 Longitude and latitude must be finite. Longitude wraps around the world;
 latitude reflects across either pole and shifts longitude by 180 degrees. The
 north pole maps to the highest latitude cell.
-Zoom values from 0 through 22 are supported. A Python integer outside the
-unsigned-byte range can fail during argument conversion; an extracted zoom
-above 22 raises `ValueError` before coordinate finiteness is checked.
+Zoom values from 0 through 22 are supported.
 
 The decoder ignores characters outside its alphabet and accepts the legacy
 `@` and `=` spellings. It is a shortlink-code decoder, not a complete URL
 parser. Too-short and too-long encoded values raise `ValueError`.
-
-```py
-from osm_shortlink import shortlink_encode
-
-try:
-    shortlink_encode(0.0, 0.0, 23)
-except ValueError:
-    pass
-else:
-    raise AssertionError('zoom 23 must be rejected')
-```
 
 ## Format specification
 

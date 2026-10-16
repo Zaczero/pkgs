@@ -3,8 +3,7 @@
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/p/lrucache-rs)
 
 `LRUCache` is a bounded mutable mapping for Python applications that need
-least-recently-used eviction without wrapping a function. Rust manages the
-lookup index and recency order; Python owns keys and values. It supports CPython 3.10
+least-recently-used eviction without wrapping a function. It supports CPython 3.10
 and newer, including free-threaded builds, and PyPy 3.11.
 
 ## Installation
@@ -36,11 +35,7 @@ content equality with other mappings. It is mutable and unhashable.
 See the [public class reference](python/lrucache_rs/__init__.py) for types and
 method documentation.
 
-Construction requires a positive maximum number of entries within the native
-index range; an invalid capacity raises `ValueError` or `OverflowError`.
-Keys must be hashable. Values and returned objects retain their identity.
-Missing item lookup, deletion, or `pop` without a default raises `KeyError`.
-Hash, equality, and input-provider exceptions propagate to the caller.
+`maxsize` must be positive, and keys must be hashable.
 
 ### Recency and views
 
@@ -59,7 +54,7 @@ the most recently inserted pair. It raises `KeyError` on an empty cache.
 
 ### Threads, callbacks, and collection
 
-Individual native operations are thread-safe, including atomic `pop` and
+Individual operations are thread-safe, including atomic `pop` and
 `setdefault`. `update` consumes a mapping or iterable of pairs in encounter
 order, then keyword entries. Each insertion can evict an entry. A later
 provider error leaves preceding insertions in place; the whole update is
@@ -71,16 +66,11 @@ continually changes those entries may prevent the lookup from stabilizing.
 Mapping equality uses independent snapshots rather than a transaction
 across both mappings.
 
-Removed keys and values are released after the cache state is coherent and
-the lock is released. Their finalizers may reenter the cache. In particular,
+Finalizers may reenter the cache. In particular,
 entries inserted by a finalizer during `clear` remain in the cache.
-Cache-owned reference edges, including tuple payloads, are visible to Python's
-cyclic collector.
+Reference cycles through the cache can be garbage-collected.
 
-The cache reserves storage for its configured maximum. Collection visits
-the reference slots for that capacity, including currently unused slots.
-Choose capacity for the intended working set rather than an arbitrary
-upper bound.
+The cache reserves storage for `maxsize`, so choose it for your working set.
 
 ## Support
 

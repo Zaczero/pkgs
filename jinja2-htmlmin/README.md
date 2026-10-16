@@ -3,7 +3,7 @@
 Minify HTML template **source** before Jinja compiles it. For Python 3.10+
 applications using source-backed Jinja loaders.
 
-## Why Use This?
+<a id="why-use-this"></a>
 
 Source minification removes selected HTML comments, spacing, and attribute
 syntax before compilation. Repeated renders of Jinja's cached templates reuse
@@ -16,8 +16,6 @@ pip install jinja2-htmlmin
 ```
 
 ## Quick Start
-
-Run this script after installation; it creates its own template:
 
 ```python
 from jinja2 import DictLoader, Environment
@@ -39,9 +37,9 @@ Next, replace `DictLoader` with `FileSystemLoader` pointing at your template
 directory. Keep Jinja autoescaping configured for your application;
 minification does not escape or sanitize HTML.
 
-## How It Works
+<a id="how-it-works"></a>
 
-### Loader and Cache Behavior
+## Loader and Cache Behavior
 
 `minify_loader` mutates the supplied loader's `get_source` method and returns
 that same object. Configure it before loading templates. `DictLoader`,
@@ -67,11 +65,8 @@ assert env.get_template("pages/index.html").render(name="Ada") == "<p>Ada</p>"
 Precompiled `ModuleLoader` templates bypass `get_source` and are not minified
 by this wrapper. `Environment.from_string` also bypasses loaders.
 
-Each source load creates an independent HTML parser, so shared loaders do not
-share per-document parser state. Jinja owns template and bytecode caching.
-A cached template can render repeatedly without another source minification;
-cache misses, disabled caches, eviction, or auto-reload after a source change
-can repeat it. The original source filename and freshness callback are preserved.
+Cached templates render without repeating minification. Reloading a changed
+template minifies its new source.
 
 ## Minification Options and Limits
 
@@ -81,9 +76,9 @@ Raw-block content is preserved. Values inserted during rendering are not
 subsequently minified.
 
 Pass htmlmin2 options as keyword arguments to `minify_loader`. The
-[public function and typed option names](jinja2_htmlmin/__init__.py) are the
-package reference; [htmlmin2's Minifier reference](https://htmlmin.readthedocs.io/en/latest/reference.html)
-describes their defaults and HTML behavior:
+[function reference](jinja2_htmlmin/__init__.py) lists the options;
+[htmlmin2's Minifier reference](https://htmlmin.readthedocs.io/en/latest/reference.html)
+describes their defaults and behavior:
 
 - `remove_comments`, `remove_empty_space`, and `remove_all_empty_space`
   control comment and whitespace removal.
@@ -97,9 +92,7 @@ describes their defaults and HTML behavior:
 
 Whitespace removal can change inline text spacing, and comment removal can
 remove application-specific markers. Choose options for your templates and
-check rendered output. HTML minification is not a promise of arbitrary DOM
-equivalence. Source-loader, Jinja lexer/compiler, and htmlmin2 errors propagate;
-minifier construction and parsing happen when source is loaded.
+check rendered output.
 
 ## Support and Reference
 

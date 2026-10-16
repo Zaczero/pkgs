@@ -1,6 +1,7 @@
 # blurhash-rs
 
-Use this Python package to encode Pillow images as [BlurHash](https://blurha.sh) strings and decode them as RGB preview images. Requires Python 3.10 or newer. [Install](#install), try the [first result](#encode-and-decode-an-image), and see the [API reference](#api-reference). For help, [report an issue](https://github.com/Zaczero/pkgs/issues) and name `blurhash-rs`.
+Encode images as compact [BlurHash](https://blurha.sh) placeholders and decode
+them into Pillow previews. Written in Rust, for Python 3.10+.
 
 ## Install
 
@@ -18,45 +19,44 @@ image = Image.new("RGB", (24, 16), (40, 100, 180))
 blurhash = blurhash_encode(image)
 preview = blurhash_decode(blurhash, 32, 24)
 
-assert isinstance(blurhash, str)
-assert preview.mode == "RGB"
-assert preview.size == (32, 24)
 print(blurhash)
 ```
 
-The decoded preview is a lossy reconstruction; its pixels are not expected to match the input image.
+`preview` is a 32 × 24 RGB image.
 
 ## Encode an image file
 
 ```py
-# Template: replace "photo.jpg" with the path to your image.
 from PIL import Image
 from blurhash_rs import blurhash_encode
 
+# Use your image's path.
 with Image.open("photo.jpg") as opened:
     image = opened.copy()
 
-# thumbnail() changes the caller-owned copy in place.
 image.thumbnail((100, 100))
 blurhash = blurhash_encode(image, x_components=4, y_components=3)
 ```
 
-`blurhash_encode("photo.jpg")` also accepts a source supported by `PIL.Image.open`; the facade closes images it opens from a filename or path. A file-like object supplied by the caller remains open. A caller-supplied Pillow `Image` remains open and unchanged. The encoder converts non-RGB modes to RGB. For images with alpha, this discards the alpha channel rather than compositing against a background. Choose and apply any desired background before encoding. See Pillow's [file-handling rules](https://pillow.readthedocs.io/en/stable/reference/open_files.html) for its image and file lifecycle.
+You can also pass a filename directly to `blurhash_encode`. Images you supply
+remain open and unchanged. Alpha is discarded, so composite transparent images
+onto your chosen background first.
 
 ## API reference
 
 ### `blurhash_encode`
 
-Pass a Pillow `Image` or an image source accepted by `Image.open`. The optional x- and y-component counts must each be from 1 through 9 and control the hash's detail. The result is a hash string. Invalid component counts or image dimensions raise `ValueError`; argument extraction can raise `TypeError` or `OverflowError`, and Pillow's image-reading errors propagate.
+Pass a Pillow `Image` or a source accepted by `Image.open`. The x- and
+y-component counts, each from 1 through 9, control the hash's detail.
 
 ### `blurhash_decode`
 
-Pass a hash and positive output dimensions; the result is an RGB Pillow `Image`. Invalid hashes, nonpositive dimensions, and dimensions outside the supported storage range raise `BlurhashDecodeError`, which retains the input in its `blurhash` attribute. Python argument-type errors and output-allocation failures are not converted to this exception.
-
-The decoder allocates `width × height × 3` bytes for RGB pixel data. Its representability checks do not impose a memory budget; choose output dimensions with that allocation in mind.
-
-`punch` scales the decoded AC components. Finite values below 1 do not reduce contrast; finite values at least 1 are used as the scale. NaN and negative infinity also behave as 1, while positive infinity is accepted as an infinite scale and can produce degenerate or clipped RGB output.
+Pass a hash and positive output dimensions to get an RGB Pillow `Image`.
+Use `punch` above 1 to increase contrast.
 
 ### `BlurhashDecodeError`
 
 This exception reports a hash or image-dimension error from `blurhash_decode`. Its `blurhash` attribute contains the hash passed to the decoder.
+
+[Full reference](python/blurhash_rs/__init__.py) ·
+[Issues](https://github.com/Zaczero/pkgs/issues)

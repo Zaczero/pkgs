@@ -15,41 +15,24 @@ pip install polyline-rs
 ## Basic usage
 
 ```py
-from polyline_rs import decode_latlon, decode_lonlat, encode_latlon, encode_lonlat
+from polyline_rs import decode_latlon, decode_lonlat, encode_latlon
 
 line = encode_latlon([(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)], 5)
 assert line == "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
 
 coords = decode_latlon(line, 5)
-assert [tuple(round(value, 5) for value in row) for row in coords] == [
-    (38.5, -120.2),
-    (40.7, -120.95),
-    (43.252, -126.453),
-]
-
-coords2 = decode_lonlat(line, 5)
-assert [tuple(round(value, 5) for value in row) for row in coords2] == [
-    (-120.2, 38.5),
-    (-120.95, 40.7),
-    (-126.453, 43.252),
-]
+lonlat = decode_lonlat(line, 5)  # Same points, with longitude first.
 ```
 
 ## Coordinate and precision limits
 
-Each coordinate is multiplied by `10**precision` and rounded half away from
-zero. The rounded integer coordinate and each difference from the preceding
-coordinate must fit signed 32-bit integers; an unrepresentable coordinate or
-delta raises `ValueError` instead of producing a changed location. A precision
-is accepted when its decimal scale and inverse are finite and positive and the
-decoded signed 32-bit coordinate range remains finite. No separate arbitrary
-precision cap is imposed.
+Use the same precision when encoding and decoding; `5` means five decimal
+places. Coordinates are rounded half away from zero. Scaled coordinates and
+their successive differences must fit signed 32-bit integers; overflow and
+malformed encodings raise `ValueError`.
 
-Rows need at least two float-convertible values. Additional values are ignored.
-The decoder strips surrounding whitespace and raises `ValueError` for invalid
-characters, unterminated values, incomplete coordinate pairs, or coordinate
-overflow. Wrong input types raise `TypeError`; Python iterator exceptions
-propagate. Integers outside the native argument range raise `OverflowError`.
+The `latlon` functions use latitude first; `lonlat` uses longitude first.
+Rows accept at least two numbers and ignore additional values.
 
 ## API reference and support
 

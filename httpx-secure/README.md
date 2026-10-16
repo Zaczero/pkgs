@@ -2,16 +2,9 @@
 
 <a id="why-use-this"></a>
 
-Apply destination-IP policy to an existing HTTPX `AsyncClient` without changing
-its identity, request URLs, Host headers, TLS names, cookies or redirect handling.
-Python 3.10+ with asyncio or Trio is supported. The helper protects standard
-direct HTTPX transports, including direct mounts.
-
-- [Install](#installation)
-- [First request](#quick-start)
-- [API reference](#httpx_ssrf_protection)
-- [Supported clients](#supported-clients)
-- [Report an issue](https://github.com/Zaczero/pkgs/issues)
+Block requests to private and non-global IP addresses in an existing HTTPX
+`AsyncClient`. Add your own destination rules without changing HTTPX's request
+API. Python 3.10+, with asyncio or Trio.
 
 ## Installation
 
@@ -19,29 +12,26 @@ direct HTTPX transports, including direct mounts.
 pip install httpx-secure
 ```
 
-Dependency compatibility bounds are declared in the
-[package metadata](https://github.com/Zaczero/pkgs/blob/main/httpx-secure/pyproject.toml).
-The integration uses private HTTPX/HTTPcore transport state within those bounds.
 HTTP/2 remains optional: install `httpx[http2]` when configuring an HTTP/2 client.
 
 ## Quick Start
 
-This complete Python-console example rejects a loopback destination without
-making an HTTP request:
+Configure a direct client before making requests:
 
-```pycon
->>> import asyncio
->>> import httpx
->>> from httpx_secure import SSRFProtectionError, httpx_ssrf_protection
->>> async def reject_loopback():
-...     async with httpx_ssrf_protection(httpx.AsyncClient(trust_env=False)) as client:
-...         try:
-...             await client.get("http://127.0.0.1/private")
-...         except SSRFProtectionError as error:
-...             return f"Blocked: {error.hostname}"
->>> asyncio.run(reject_loopback())
-'Blocked: 127.0.0.1'
+```python
+import asyncio
+import httpx
+from httpx_secure import SSRFProtectionError, httpx_ssrf_protection
 
+async def main():
+    async with httpx.AsyncClient(trust_env=False) as client:
+        httpx_ssrf_protection(client)
+        try:
+            await client.get("http://127.0.0.1/private")
+        except SSRFProtectionError as error:
+            print(f"Blocked: {error.hostname}")
+
+asyncio.run(main())  # Blocked: 127.0.0.1
 ```
 
 The returned object is the same client. Keep using its ordinary `get`, `post`,
@@ -56,27 +46,22 @@ A validator receives the logical hostname, selected `IPv4Address` or
 asynchronously. The global-address check runs first and cannot be overridden by
 an accepting custom validator.
 
-For example, this complete Python-console example additionally requires port
-443. The rejected literal-IP request opens no connection:
+For example, restrict connections to port 443:
 
-```pycon
->>> import asyncio
->>> import httpx
->>> from httpx_secure import SSRFProtectionError, httpx_ssrf_protection
->>> def https_port_only(hostname, address, port):
-...     return port == 443
->>> async def reject_cleartext():
-...     async with httpx_ssrf_protection(
-...         httpx.AsyncClient(trust_env=False),
-...         custom_validator=https_port_only,
-...     ) as client:
-...         try:
-...             await client.get("http://8.8.8.8/")
-...         except SSRFProtectionError as error:
-...             return error.port
->>> asyncio.run(reject_cleartext())
-80
+```python
+import asyncio
+import httpx
+from httpx_secure import httpx_ssrf_protection
 
+def https_port_only(hostname, address, port):
+    return port == 443
+
+async def main():
+    async with httpx.AsyncClient(trust_env=False) as client:
+        httpx_ssrf_protection(client, custom_validator=https_port_only)
+        # Make requests with client here.
+
+asyncio.run(main())
 ```
 
 Set `check_globally_reachable=False` only when your custom validator owns the
@@ -144,8 +129,8 @@ trusted routing configuration remain the caller's responsibility.
 ### httpx_ssrf_protection
 
 Accepts an existing `httpx.AsyncClient` and returns that **same instance**.
-The [inline API documentation](https://github.com/Zaczero/pkgs/blob/main/httpx-secure/httpx_secure/__init__.py)
-owns its signature and defaults; `help(httpx_ssrf_protection)` displays them locally.
+See [the function reference](https://github.com/Zaczero/pkgs/blob/main/httpx-secure/httpx_secure/__init__.py)
+or `help(httpx_ssrf_protection)` for its signature and defaults.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -171,7 +156,7 @@ during active use. Finish or close outstanding responses before retrying setup.
 An HTTPX `RequestError` raised when the selected destination is denied. Each
 failure is a fresh exception with the current `request`, logical `hostname`,
 selected `ip_addr` (`IPv4Address`, `IPv6Address`, or None for an invalid address)
-and effective `port`. It has no separate reason-code field.
+and effective `port`.
 
 Its `invalid_ip`, `non_global` and `custom_validation_failed` classmethods construct
 the corresponding unbound errors; requests through HTTPX bind them to the current

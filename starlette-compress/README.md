@@ -6,12 +6,7 @@
 Gzip. Use it with [Starlette](https://www.starlette.io), FastAPI, or another
 ASGI application on Python 3.10+.
 
-- Python 3.10+ support
-- Python 3.14 `compression.zstd` support
-- Compatible with `asyncio` and `trio` backends
-- ZStd, Brotli, and GZip compression
-- [Zero-Clause BSD license](https://choosealicense.com/licenses/0bsd/)
-- [Semantic Versioning](https://semver.org) compliance
+Works with asyncio and Trio, including streaming responses and server-sent events.
 
 ## Installation
 
@@ -23,50 +18,26 @@ pip install starlette-compress
 
 ### Starlette
 
-Install the HTTP test client for this self-contained example:
-
-```sh
-pip install httpx2
-```
-
-The script makes an in-process request and inspects compressed bytes before
-client-side automatic decoding:
-
 ```py
-import gzip
-
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
-from starlette.testclient import TestClient
 from starlette_compress import CompressMiddleware
 
-payload = "Hello from a compressed response!\n" * 100
-
 async def homepage(request):
-    return PlainTextResponse(payload)
+    return PlainTextResponse("Hello!" * 200)
 
 app = Starlette(
     routes=[Route("/", homepage)],
     middleware=[Middleware(CompressMiddleware)],
 )
-with TestClient(app) as client:
-    with client.stream("GET", "/", headers={"Accept-Encoding": "gzip"}) as response:
-        wire = b"".join(response.iter_raw())
-        assert response.headers["content-encoding"] == "gzip"
-        assert int(response.headers["content-length"]) == len(wire)
-        assert gzip.decompress(wire).decode() == payload
-        print(response.status_code, response.headers["content-encoding"])
 ```
 
-This prints `200 gzip`. To serve the application, use your ASGI server's
-application-loading instructions. TLS termination and proxy buffering belong
-to that deployment.
+Serve `app` with your ASGI server. Responses are compressed according to the
+client's `Accept-Encoding` header.
 
 ### FastAPI
-
-Install `fastapi` to use this complete application definition:
 
 ```py
 from fastapi import FastAPI
@@ -96,7 +67,6 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette_compress import CompressMiddleware
 
-# Starlette
 middleware = [
     Middleware(CompressMiddleware, minimum_size=1000)
 ]
@@ -121,7 +91,8 @@ app = Starlette(middleware=middleware)
 
 ### Supporting Custom Content-Types
 
-Manage the supported content-types. Unknown response types are not compressed. [Check here](https://github.com/Zaczero/pkgs/blob/main/starlette-compress/starlette_compress/_utils.py) for the default configuration.
+Unknown content types are not compressed. Add or remove types before serving
+requests; see the [default media types](starlette_compress/_utils.py).
 
 ```py
 from starlette_compress import add_compress_type, remove_compress_type
@@ -190,18 +161,14 @@ content message. The identity path preserves zero-copy capability; an encoded
 path removes `http.response.zerocopysend` from the downstream scope so raw
 file bytes cannot be appended to an encoded response.
 
-Middleware instances can be shared across event-loop threads. Legacy
-Zstandard operations own their compressor; Python 3.14+ uses
-`compression.zstd`. CPython uses `brotli`, and other Python implementations
-use `brotlicffi`. Codec configuration and encoding errors propagate to the
-application/server; a failed one-shot compression does not commit compressed
-headers.
+Middleware instances can be shared across event-loop threads. Codec errors
+propagate to the application/server.
 
 ## Reference and Support
 
-The [public middleware constructor](starlette_compress/__init__.py) owns
-call forms, defaults, and level ranges. The public
+The [middleware reference](starlette_compress/__init__.py) lists
+defaults and compression-level ranges. The
 [`add_compress_type` and `remove_compress_type` reference](starlette_compress/_utils.py)
-owns registry operations and lists default media types.
+describes registry operations and default media types.
 Report problems in the [issue tracker](https://github.com/Zaczero/pkgs/issues),
 including interpreter, backend, response type, and a minimal application.

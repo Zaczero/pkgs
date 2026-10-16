@@ -1,6 +1,6 @@
 [project]
 name = "zid"
-description = "ZID is a unique identifier with nice properties"
+description = "Sortable 64-bit integer identifiers for Python"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "0BSD"
