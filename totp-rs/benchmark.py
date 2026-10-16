@@ -1,6 +1,7 @@
 import argparse
 import sys
 from functools import partial
+from importlib.metadata import version
 
 import pyperf
 from totp_rs import totp_generate, totp_verify
@@ -19,6 +20,7 @@ def main():
     prev = now - 30
 
     runner = pyperf.Runner(program_args=(sys.argv[0], '--impl', args.impl))
+    runner.metadata['implementation'] = f'{args.impl} {version(args.impl)}'
     runner.parse_args(pyperf_args)
 
     expected_code = totp_generate(secret_b32, time=now)
