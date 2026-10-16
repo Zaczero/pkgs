@@ -1,5 +1,5 @@
 ---
-description: Install gometry from PyPI or a source checkout — NumPy is required, with no system GEOS, GDAL, or PROJ installation.
+description: Install gometry from PyPI — NumPy is required, with no system GEOS, GDAL, or PROJ installation.
 ---
 
 # Installation
@@ -103,21 +103,6 @@ print("gometry", md.version("gometry"))
 print("PROJ", gm.crs_engine()["version"])
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 print(f"ellipsoidal area: {poly.area:,.0f} m²")
-
-```
-
-## Build from a checkout
-
-Building from source requires the repository checkout with its `libtiff`
-submodule, the nightly Rust toolchain selected by the root
-`rust-toolchain.toml`, C and C++ compilers, and CMake. The default build
-compiles bundled PROJ source and the submodule's libtiff source; it does not
-use system GEOS, GDAL, or PROJ.
-
-```bash
-git clone --recurse-submodules https://github.com/Zaczero/pkgs.git
-cd pkgs/gometry
-python -m pip install .
 ```
 
 ## Next steps
