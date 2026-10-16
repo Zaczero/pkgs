@@ -9,14 +9,13 @@ site_dir: site
 hooks:
   - ../tools/docs/check_frontmatter.py
   - ../tools/docs/export_markdown.py
+  - ../tools/docs/build_browser.py
 
 theme:
   name: material
   custom_dir: overrides
   language: en
-  font:
-    text: Inter
-    code: JetBrains Mono
+  font: false
   icon:
     repo: fontawesome/brands/github
   logo: assets/logo-light.svg
@@ -58,6 +57,8 @@ theme:
     - toc.follow
 
 extra_css:
+  - assets/shared/common.css
+  - assets/shared/fonts.css
   - stylesheets/extra.css
 
 # Material renders ```mermaid fences itself, but its bundle lazy-loads the
@@ -68,6 +69,7 @@ extra_css:
 # would never be committed and every published build would fall back to the CDN.
 extra_javascript: &javascript_assets
   - assets/javascripts/mermaid-11.17.0.min.js
+  - assets/shared/accessibility.js
 
 extra:
   social:
@@ -87,14 +89,11 @@ plugins:
         - scripts/gen_config_reference.py
   - minify:
       minify_html: true
-      minify_css: true
-      minify_js: true
+      minify_css: false
+      minify_js: false
       htmlmin_opts:
         remove_comments: true
         remove_empty_space: true
-      css_files:
-        - stylesheets/extra.css
-      js_files: *javascript_assets
       cache_safe: true
   - mkdocstrings:
       default_handler: python

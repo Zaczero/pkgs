@@ -7,8 +7,10 @@ repo_name: Zaczero/pkgs
 docs_dir: docs
 site_dir: site
 hooks:
+  - tools/docs/benchmark_charts.py
   - ../tools/docs/check_frontmatter.py
   - ../tools/docs/export_markdown.py
+  - ../tools/docs/build_browser.py
 
 theme:
   name: material
@@ -57,12 +59,19 @@ theme:
     - toc.follow
 
 extra_css:
+  - assets/shared/common.css
+  - assets/shared/python-examples.css
   - stylesheets/extra.css
 
 extra_javascript:
-  - javascripts/accessibility.js
+  - assets/shared/accessibility.js
+  - assets/shared/python-examples.js
 
 extra:
+  browser_python:
+    build: [bun, run, 'docs:wasm']
+    packages: [numpy]
+    wheels: [dist/wasm/*.whl]
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Zaczero/pkgs/tree/main/gometry

@@ -1,0 +1,17 @@
+{
+  "name": "pkgs-tooling",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:browser": "bun run tools/docs/browser/build.ts",
+    "docs:wasm": "bun run gometry/tools/wasm.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@types/bun": "latest",
+    "pyodide": "314.0.7",
+    "typescript": "latest"
+  }
+}

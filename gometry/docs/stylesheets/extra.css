@@ -24,18 +24,6 @@
   background-size: 64px 64px;
 }
 
-.md-typeset h1,
-.md-typeset h2,
-.md-typeset h3,
-.md-typeset h4 {
-  text-wrap: balance;
-}
-
-.md-typeset p,
-.md-typeset li {
-  text-wrap: pretty;
-}
-
 [data-md-color-primary="teal"] {
   --md-primary-fg-color: var(--gometry-teal);
   --md-primary-fg-color--light: #0d9488;
@@ -61,10 +49,6 @@
   color: var(--md-default-bg-color);
 }
 
-.md-header__button.md-logo img {
-  height: 1.8rem;
-  width: auto;
-}
 
 .md-header {
   box-shadow: 0 1px 0 rgba(245, 158, 11, 0.25);

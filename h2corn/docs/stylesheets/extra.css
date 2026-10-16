@@ -7,22 +7,6 @@
   --h2corn-amber-dark: #a86c00;
 }
 
-/* Higher-quality text wrapping for headings and body. `balance` keeps
-   headline lines roughly equal in length (no awkward single-word last
-   line); `pretty` avoids orphans and chooses cleaner break points in
-   paragraphs. Modern Chromium/Firefox/Safari all support both. */
-.md-typeset h1,
-.md-typeset h2,
-.md-typeset h3,
-.md-typeset h4 {
-  text-wrap: balance;
-}
-
-.md-typeset p,
-.md-typeset li {
-  text-wrap: pretty;
-}
-
 [data-md-color-primary="deep-purple"] {
   --md-primary-fg-color: var(--h2corn-purple);
   --md-primary-fg-color--light: #8a4dfd;
@@ -51,10 +35,6 @@
 }
 
 /* Header logo: Material's default is small for our wider mark. */
-.md-header__button.md-logo img {
-  height: 1.8rem;
-  width: auto;
-}
 
 /* Subtle amber wash under the header — echoes the logo's secondary color
    without an obvious hard line. */

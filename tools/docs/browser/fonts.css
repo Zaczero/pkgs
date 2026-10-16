@@ -1,0 +1,7 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+:root {
+  --md-text-font: "Inter Variable", system-ui, sans-serif;
+  --md-code-font: "JetBrains Mono Variable", ui-monospace, monospace;
+}
