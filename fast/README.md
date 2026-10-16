@@ -14,14 +14,8 @@ From the `pkgs` workspace root (the directory containing `Cargo.toml` and
 cargo install --locked --path fast
 ```
 
-Linux is required. The initial development target is x86-64 Linux; hardware
+Linux is required; hardware
 counters are optional and permission failures do not prevent command timing.
-No Python interpreter, daemon, configuration, writable home directory, or network
-connection is needed to run the binary. After dependencies have been fetched,
-Cargo accepts `--offline` for builds.
-
-Publication and licensing are intentionally undecided.
-
 Check that an existing command runs and produces a report:
 
 ```sh
@@ -46,8 +40,7 @@ fast --time 2m ./old input.dat ::: ./new input.dat
 fast --json ./old input.dat ::: ./new input.dat > result.json
 ```
 
-Replace the example programs and input files with your workload. Programs run
-directly, with their arguments passed unchanged. A standalone `:::` separates
+Programs run directly, with their arguments passed unchanged. A standalone `:::` separates
 commands. Quote individual arguments when your shell needs it, such as a filename
 containing spaces; do not quote the entire command.
 
@@ -85,14 +78,10 @@ executes every command once in randomized order. The first command is the
 displayed baseline. `--runs` measures an exact number of runs; `--once` runs each
 command exactly once and cannot include warmup.
 
-By default `fast` plans about 30 seconds. Pilot runs measure cost and run-to-run
-variation, then the run count is frozen; the pilot runs count toward the result.
-Cheap commands get 100 runs, or more when the time allows and ±1% precision needs
-them. Slow commands get at least 3 runs, even when that exceeds 30 seconds.
-When one run costs at most 5% of the target, the first run is discarded as a
-warmup, because cold caches and lazy loading make it unrepresentative.
-`--warmup N` replaces that with N explicit warmup runs, and `--warmup 0` keeps
-every run.
+By default `fast` plans about 30 seconds, using pilot runs to choose a fixed
+sample count. Slow commands get at least 3 runs, even if that takes longer.
+An inexpensive first run is discarded as warmup. Set `--warmup N` to choose
+explicitly, or `--warmup 0` to keep every run.
 
 `--time` sets a strict budget instead: after the first run, no run starts unless
 the plan expects it to fit. `--timeout` terminates a single run that exceeds its
@@ -144,18 +133,14 @@ Very short commands can mostly measure process launch.
 
 Timing changes compare **arithmetic means**, not fastest runs, medians, or means
 of per-run ratios. Comparisons use paired runs to estimate ratios of mean times.
-Their intervals target 95% simultaneous coverage under the method's assumptions,
-including every command pair even when the compact report shows only comparisons
-with A.
+Their intervals target 95% simultaneous coverage across all command pairs
+under the method's assumptions.
 A smaller point estimate alone does not establish a win, and unresolved does not
 mean equivalent.
 
-Two runs can already bound an interval; three is the default minimum. More runs
-usually improve precision. Grouping consecutive runs into batches reduces the
-effect of short-lived correlation, but does not eliminate it. A diagnostic can
-flag drift or correlation once there are at least 20 runs; an absent flag does
-not establish independence. A single run shows its time and resources without
-an interval.
+More runs usually improve precision. Drift and correlated noise can still make
+intervals misleading; heed the report's diagnostics. A single run shows time
+and resources without an interval.
 
 `--margin 1%` asks about practical differences outside a symmetric one-percent
 margin. `--check 1%` asks whether every alternative can be established as no
@@ -196,13 +181,9 @@ No additional command runs when `--details` is requested. Newly surviving
 background descendants stop further repetitions. Put persistent services outside
 the measured command, or wait for the work in a synchronous wrapper.
 
-Retained invocation records and their owned observation buffers have a 128 MiB
-allowance, not a whole-process RSS limit. Plans reserve mandatory records and
-terminal failure diagnostics before running. Optional task detail uses the
-remaining space; omitted detail is identified in the report and JSON.
-Counter-unavailability text, namespace text, collector errors and stop reasons retain at most
-256 UTF-8 bytes, with an explicit truncation marker when needed. Timing, phase,
-order, and failure outcomes are preserved. See
+Retained observations have a 128 MiB allowance, not a whole-process RSS limit.
+Optional task detail may be omitted and long diagnostics truncated; both are
+marked in the report. Timing and failure outcomes are preserved. See
 [retained observation storage](docs/measurement.md#retained-observation-storage).
 
 ## Output and automation
@@ -258,14 +239,11 @@ and `fast.1` are generated from the same parser into Cargo's build output.
 `cargo install` installs the binary; installing those generated shell and manual
 files is a separate, optional step.
 
-## Development and support
+<a id="development-and-support"></a>
 
-Use `cargo nextest run -p fast`, `cargo check -p fast --all-targets`, and
-`cargo clippy -p fast --all-targets` in this workspace. Tests exercise the built
-binary and real processes. Statistical calibration and perturbation measurements
-are separate experiments, described with their evidence in the measurement page.
+## Support
 
-When reporting a problem to the repository maintainer, include `fast --version`,
+When [reporting a problem](https://github.com/Zaczero/pkgs/issues), include `fast --version`,
 the command and flags, kernel/architecture, the observed result, and a small
 reproducer. Reports and captured diagnostics may contain command arguments or
 workload secrets; inspect them before sharing.
