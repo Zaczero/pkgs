@@ -77,7 +77,7 @@ single worker. It is not a gRPC server.
 
 ## Benchmarks
 
-**86–97% lower p50–p99 latency** than the compared servers in the one-worker
+**86–97% lower request latency** than the compared servers in the one-worker
 HTTP/1.1 GET benchmark, using the same Starlette application and standard asyncio.
 
 <picture>
