@@ -8,6 +8,7 @@ docs_dir: docs
 site_dir: site
 hooks:
   - ../tools/docs/check_frontmatter.py
+  - ../tools/docs/export_markdown.py
 
 theme:
   name: material

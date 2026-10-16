@@ -79,6 +79,7 @@ dev = [
   "websockets>=16.0",
 ]
 docs = [
+  "markdownify>=1",
   "matplotlib>=3.10.8",
   "mkdocs-gen-files>=0.5",
   "mkdocs-material>=9.5",

@@ -16,7 +16,6 @@ day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coh
 package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
-[Installation](get-started/installation.md){ .md-button }
 [User guide](guide/index.md){ .md-button }
 
 </div>

@@ -8,6 +8,7 @@ docs_dir: docs
 site_dir: site
 hooks:
   - ../tools/docs/check_frontmatter.py
+  - ../tools/docs/export_markdown.py
 
 theme:
   name: material
@@ -146,8 +147,8 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Get started:
-    - Installation: get-started/installation.md
     - Quickstart: get-started/quickstart.md
+    - Installation: get-started/installation.md
     - The mental model: get-started/mental-model.md
   - Guide:
     - Guide overview: guide/index.md
