@@ -17,8 +17,6 @@ def sizestr(size: float) -> str:
 
     Non-finite floating-point values are returned in parentheses. Values whose
     computed binary exponent exceeds ZiB return ``(too large to display)``.
-    Extremely large integers may raise ``OverflowError`` during float-oriented
-    finite-value or exponent conversion before that marker can be returned.
 
     Parameters
     ----------
@@ -34,11 +32,9 @@ def sizestr(size: float) -> str:
     ------
     TypeError
         If ``size`` is not a supported numeric value.
-    OverflowError
-        If an integer is too large for the float-oriented checks.
     """
     # Handle non-finite values
-    if not isfinite(size):
+    if not isinstance(size, int) and not isfinite(size):
         return f'({size})'
 
     # Handle sign

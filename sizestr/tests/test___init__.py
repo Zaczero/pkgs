@@ -20,6 +20,8 @@ from sizestr import sizestr
         (float('NaN'), '(nan)'),
         (1e24, '847.0 ZiB'),
         (1e25, '(too large to display)'),
+        pytest.param(10**400, '(too large to display)', id='huge-positive-integer'),
+        pytest.param(-(10**400), '(too large to display)', id='huge-negative-integer'),
     ],
 )
 def test_sizestr(size, expected):
