@@ -163,8 +163,9 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Guide:
+  - Get started:
     - Quickstart: quickstart.md
+  - Guide:
     - Operations: deployment/operations.md
     - Behind a reverse proxy: deployment/proxy.md
     - Direct TLS: deployment/tls.md
@@ -183,11 +184,12 @@ nav:
         - HTTP scope and messages: api/http.md
         - WebSocket scope and messages: api/websockets.md
         - Lifespan scope and messages: api/lifespan.md
-    - Benchmarks: benchmarks.md
-  - Help:
+  - Benchmarks: benchmarks.md
+  - About:
     - Support: support.md
     - FAQ: faq.md
     - Troubleshooting: troubleshooting.md
+    - License & notices: license.md
 
 watch:
   - python/h2corn

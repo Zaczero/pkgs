@@ -1,11 +1,12 @@
 ---
 description: How h2corn cross-server benchmarks are measured and what workloads they cover.
+hide:
+  - navigation
 ---
 
 # Benchmarks
 
-The benchmarks compare the same Starlette application across ASGI servers,
-with correctness checks before and after load.
+The benchmarks compare the same Starlette application across ASGI servers.
 
 In the one-worker HTTP/1.1 GET case, **h2corn was 9.3–29.2× faster,
 with 86–97% lower p50–p99 latency** than the compared servers.
@@ -37,7 +38,7 @@ The harness runs the same Starlette application through `h2corn`, Uvicorn,
 Hypercorn, and Gunicorn, directly over loopback without a reverse proxy or TLS
 terminator. Each trial checks status, content type, response body, and worker
 readiness before and after load. A competitor that cannot serve a scenario is
-excluded with its reason; an h2corn failure stops the run.
+excluded with its reason.
 All servers use standard asyncio; Uvicorn uses h11 and Gunicorn its Python HTTP parser.
 
 Trials use two seconds of warmup followed by ten seconds of load, with four
@@ -57,9 +58,5 @@ sampled across the supervisor and workers.
 - Streaming downloads that yield eight 16 KiB chunks.
 - Streaming POSTs that upload a 1 KiB body and receive a chunked response.
 - HTTP/1.1 WebSocket echo sessions.
-
-These workloads do not measure reverse proxies, TLS, HTTP/3, browser behavior,
-cold-start latency, failure recovery, or applications other than the tested
-Starlette app. They do not establish framework-wide drop-in compatibility.
 
 --8<-- "bench/results/_generated/benchmark-results.md"
