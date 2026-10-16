@@ -1,5 +1,7 @@
 # pyo3stubs
 
+<a id="why"></a>
+
 Keep your PyO3 extension's typing stubs, runtime API, and Rust docstrings in
 sync. `pyo3stubs` checks hand-authored `.pyi` files and fills in their
 documentation without replacing precise overloads or return types. Python 3.11+.
@@ -15,25 +17,6 @@ Add to your PyO3 project's development dependencies:
 ```bash
 uv add --dev pyo3stubs maturin pytest
 ```
-
-## Why
-
-Hand-authored stubs can express overloads, `Literal` unions, and return types
-that runtime introspection cannot recover. But they can drift from the code:
-
-| Source | Owns |
-|--------|------|
-| **Rust** (`///`, `#[pyclass]`, `Option`, signatures) | prose, registration, real nullability, call shapes |
-| **Compiled runtime** (`_lib.so`) | members, inspectable signatures, subclassability, `__doc__` |
-| **Hand-authored `.pyi`** | types, overloads, IDE/docs typing surface |
-
-`pyo3stubs` checks all three. It also copies runtime docstrings and Rust
-constructor documentation into the stub.
-
-`validity` and `stubtest` use mypy. Several source-scanning and prose-generation
-gates also require CPython because their parser or generator dependencies do
-not support PyPy. The reference identifies each CPython-only gate and its
-reason; other gates can still depend on the consumer extension and configuration.
 
 ## First check
 
@@ -107,6 +90,10 @@ Configure `surface`, `duality`, and `tokens` with the corresponding record
 classes. Their accepted values and defaults are listed under their field
 headings in the [configuration reference](REFERENCE.md).
 
+`validity` and `stubtest` use mypy. Several source-scanning and documentation
+gates require CPython; the reference identifies them. Other gates can also
+depend on the extension and configuration being checked.
+
 ## CLI
 
 ```bash
@@ -142,7 +129,9 @@ uv run pyo3stubs check-all --config tools/stubconfig.py
 violation, then returns status 1. Review and repair the generated stub before
 rerunning the checks.
 
-## How the Rust source is read
+<a id="how-the-rust-source-is-read"></a>
+
+## Classes declared by Rust macros
 
 Rust-source gates parse Rust syntax rather than searching comments and strings.
 Class declarations hidden inside `macro_rules!` definitions and test-only
@@ -163,11 +152,6 @@ positions. An `impl` wrapped in a project macro is scanned as well.
 constructor prose through `__new__.__doc__`; CPython supplies boilerplate
 there. The generator places the Rust prose in the stub's constructor
 declaration.
-
-The public exports are `StubConfig`, `MacroExport`, `SurfaceConfig`,
-`DualityConfig`, `TokenConfig`, `TextSignatureDefault`, `Reasons`,
-`DEFAULT_IGNORED_TYPE_NAMES`, and `render_stub_with_docs`. Gate registry,
-scanner, context, and collector objects are implementation details.
 
 ## Support
 
