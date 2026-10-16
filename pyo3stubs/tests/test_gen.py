@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import types
+from array import array
 from typing import Self
 
 import libcst as cst
@@ -134,6 +135,29 @@ def test_a_property_setter_is_not_an_overload_variant():
     # The setter is left alone entirely -- it is not a stale overload variant
     # whose prose should be stripped, and the runtime has nothing to put there.
     assert 'Setter prose, hand-written.' in out
+
+
+@pytest.mark.parametrize(
+    ('owner', 'name'),
+    [
+        pytest.param(array, 'itemsize', id='native-getset'),
+        pytest.param(complex, 'real', id='native-member'),
+    ],
+)
+def test_native_property_prose_is_refreshed(owner, name):
+    stub = f'''\
+class C:
+    @property
+    def {name}(self) -> int:
+        """Stale property prose."""
+'''
+    runtime = types.ModuleType('m')
+    runtime.C = owner  # type: ignore[attr-defined]
+
+    generated = _inject(stub, runtime)
+    member = ast.parse(generated).body[0].body[-1]
+    assert ast.get_docstring(member) == vars(owner)[name].__doc__
+    assert _inject(generated, runtime) == generated
 
 
 def test_annotated_data_descriptor_prose_is_replaced_idempotently() -> None:

@@ -60,7 +60,7 @@ def passive_class_member(cls: type, name: str) -> object | None:
 
     Plain functions are already unbound declarations. Standard staticmethod
     and classmethod wrappers are unwrapped to their functions; known native
-    callable descriptors and properties remain raw. User-defined descriptors
+    callable and data descriptors and properties remain raw. User-defined descriptors
     are not bound or inspected as callables.
     """
     member = inspect.getattr_static(cls, name, None)
@@ -74,6 +74,8 @@ def passive_class_member(cls: type, name: str) -> object | None:
             types.MethodDescriptorType,
             types.WrapperDescriptorType,
             types.ClassMethodDescriptorType,
+            types.GetSetDescriptorType,
+            types.MemberDescriptorType,
             property,
         ),
     ):
