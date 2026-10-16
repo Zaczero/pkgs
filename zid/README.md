@@ -34,7 +34,10 @@ generator advances its logical clock rather than waiting. Backward clock
 movement also preserves increasing IDs, so decoded timestamps can lead wall
 time. All generated IDs fit a signed 64-bit integer.
 
-## Installation (copy & paste)
+<a id="installation-copy--paste"></a>
+<a id="installation-copy-paste"></a>
+
+## Standalone implementation
 
 Prefer no dependency? This standalone implementation uses the same format
 and reservation policy. Keep one copy of its state for all callers.
