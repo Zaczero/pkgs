@@ -1,0 +1,10 @@
+{
+  "receipts": [
+    {
+      "bundle_path": "receipts/87abb883146ab658cea6b3c7517cbff163af4005013a95ed983a0bd3e6791396.json",
+      "path": "/tmp/opencode/gometry-presentation-candidate-release/repaired/gometry-1.0.0-cp314-cp314-manylinux_2_39_x86_64.whl",
+      "sha256": "87abb883146ab658cea6b3c7517cbff163af4005013a95ed983a0bd3e6791396"
+    }
+  ],
+  "schema_version": 1
+}

@@ -99,6 +99,19 @@ uv add "gometry[viz]"           # lonboard exploration
 With the `arrow` extra installed, `to_arrow` materializes pyarrow objects; without
 it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 
+## Benchmarks
+
+1,000 bounding-box queries against indexes of 1,000–10,000 polygons, measured
+on a Ryzen 9 5950X with CPython 3.14.8.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-spatial-index-cardinality-dark.svg">
+  <img src="docs/assets/benchmark-spatial-index-cardinality-light.svg" alt="Spatial index queries: gometry is slower than Shapely at 1,000 indexed polygons and faster at 5,000 and 10,000.">
+</picture>
+
+These are candidate queries, before exact predicate refinement.
+[See all workloads, measurements, and methodology](https://gometry.monicz.dev/about/benchmarks/).
+
 ## What it replaces
 
 | Instead of | use |
@@ -123,8 +136,7 @@ covers, not spherical boolean operations.
 ## Support
 
 Bug reports, feature requests, and questions go in the
-[GitHub issue tracker](https://github.com/Zaczero/pkgs/issues). Include the
-gometry version, Python version, platform, and a minimal reproduction.
+[GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 
 For correctness review, migration help, performance audits, or prioritized
 work, commercial support is available through

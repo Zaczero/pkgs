@@ -4,6 +4,26 @@ description: Current release benchmark results for gometry and how to interpret 
 
 # Benchmarks
 
+## Scaling
+
+These curves show median call times across six paired process blocks on the
+Ryzen 9 5950X; whiskers span the observed block medians, not confidence intervals.
+Both implementations receive the same inputs and produce equivalent
+results. The tables below include all measured workloads, including slower and
+inconclusive comparisons.
+
+![Spatial index query times for gometry and Shapely as indexed polygon count increases.](../assets/benchmark-spatial-index-cardinality-light.svg#only-light)
+![Spatial index query times for gometry and Shapely as indexed polygon count increases.](../assets/benchmark-spatial-index-cardinality-dark.svg#only-dark)
+
+The spatial-index workload runs 1,000 bounding-box candidate queries per call;
+it does not include exact predicate refinement.
+
+![Union call times for gometry and Shapely on increasing counts of disjoint polygons.](../assets/benchmark-overlay-disjoint-input-count-light.svg#only-light)
+![Union call times for gometry and Shapely on increasing counts of disjoint polygons.](../assets/benchmark-overlay-disjoint-input-count-dark.svg#only-dark)
+
+The union workload combines disjoint unit squares. It describes that input
+family, not overlapping polygons or every overlay operation.
+
 --8<-- "benches/results/current/summary.md"
 
 Published tables link to raw measurements, correctness checks, and build
@@ -13,10 +33,11 @@ they are not a universal speed comparison.
 ## What the run measures
 
 The matrix pairs each gometry operation against its ecosystem counterpart:
-53 paired logical operations across array construction and I/O, geometry, CRS
-and geodesy, discrete global grids, and spatial indexes, plus six three-point
+38 paired logical operations across array construction and I/O, geometry, CRS
+and geodesy, discrete global grids, and spatial indexes, plus eight three-point
 scaling curves over index cardinality, query selectivity, candidate
-amplification, n-ary overlay input count, grid output count, and the
+amplification, n-ary and disjoint overlay input counts, polygon hole count,
+grid output count, and the
 prepared-predicate batch boundary.
 
 Each pair runs in six independent blocks — three leading with gometry, three
