@@ -1,5 +1,5 @@
 ---
-description: An HTTP/2 ASGI server for Python applications, with proxy, TLS, WebSocket, and worker configuration.
+description: Blazing-fast HTTP/2 ASGI server for Python, written in Rust.
 hide:
   - navigation
   - toc
@@ -9,11 +9,12 @@ hide:
 
 <img src="assets/logo.svg" alt="h2corn" class="hero-logo">
 
-# HTTP/2 ASGI server for Python
+<a id="http2-asgi-server-for-python"></a>
 
-Run an ASGI application with HTTP/1.1, HTTP/2, or direct TLS. For a reverse
-proxy deployment, h2corn can accept ordinary requests over `h2c`; the proxy and
-WebSocket route determine which protocols each hop uses.
+# Blazing-fast HTTP/2 ASGI server for Python
+
+Rust handles the wire. Python handles your application.
+HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Why h2corn](#why-h2corn){ .md-button }
@@ -29,15 +30,14 @@ WebSocket route determine which protocols each hop uses.
     HTTP framing, TLS, and stream multiplexing run in Rust. ASGI request
     handling remains in Python.
 
-    [:octicons-arrow-right-24: Benchmarks](benchmarks.md)
+    [:octicons-arrow-right-24: ASGI support](asgi.md)
 
--   :material-shield-lock:{ .lg .middle } **Choose each protocol hop**
+-   :material-shield-lock:{ .lg .middle } **HTTP/2 end to end**
 
     ---
 
-    A proxy configured for `h2c` can use HTTP/2 between the proxy and h2corn.
-    That cleartext hop still requires network isolation; HTTP/2 alone does not
-    secure an application.
+    Keep HTTP/2 between your reverse proxy and application over a private
+    `h2c` connection, or terminate TLS directly in h2corn.
 
     [:octicons-arrow-right-24: Behind a proxy](deployment/proxy.md)
 
@@ -56,13 +56,12 @@ WebSocket route determine which protocols each hop uses.
 
 <div class="rationale" markdown>
 
-Configure a reverse proxy to use `h2c` when you want HTTP/2 between the proxy
-and h2corn. The hop is cleartext, so keep it within a private network boundary.
-For WebSockets, the nginx and Caddy examples use a separate HTTP/1.1 upgrade
-route; HTTP/2-only WebSockets require the client and proxy path to support RFC
-8441 extended CONNECT.
+h2corn puts HTTP/2 at the application boundary, with native protocol handling
+and ordinary Python ASGI callables. Use HTTP/1.1 for local browser development
+and WebSocket upgrade routes, or RFC 8441 for WebSockets over HTTP/2.
 
-The benchmark page describes its workloads and limits.
-[Read the benchmark method](benchmarks.md).
+Start with the [quickstart](quickstart.md), look up
+[configuration](configuration.md) or the [Python API](api/index.md), and see
+[support](support.md) for questions or deployment help.
 
 </div>

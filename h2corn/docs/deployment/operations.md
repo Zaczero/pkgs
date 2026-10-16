@@ -43,7 +43,7 @@ sequenceDiagram
   deactivate B
 ```
 
-  <figcaption>A bar marks a worker serving traffic. Readiness is the gate: the replacement adopts the listeners and completes lifespan startup before its predecessor is retired, so the bars overlap and a reload never leaves the fleet without a serving worker.</figcaption>
+  <figcaption>The replacement is serving before its predecessor begins draining. Overlapping bars show that both workers can accept traffic during the handover.</figcaption>
 </figure>
 
 ## Worker pool
@@ -170,8 +170,7 @@ workers.
 | bind addresses, worker count, resource limits | **Not re-read** | Restart, or use the documented scale signals for worker count only |
 | TLS certificate, key, CA bundle, and ALPN choice | **Not re-read**; the acceptor is prepared once | Replace files atomically, then restart |
 
-`SIGHUP` does not re-read TOML, environment, listener, resource-limit, or TLS
-settings. Rotate a reverse-proxy certificate at the TLS-owning proxy. For
+Rotate a reverse-proxy certificate at the proxy. For
 direct TLS, atomically replace complete PEM files, run [`--check-config`](../configuration.md#command-check_config), and
 restart h2corn. A failed rolling worker replacement preserves the old worker;
 a full restart follows the service manager's stop/start behavior and may have
@@ -358,9 +357,7 @@ configuration paths, and import target used by your deployment.
 `ProtectSystem=strict` makes the filesystem read-only except for explicitly
 allowed paths; add each application write path to `ReadWritePaths`.
 
-`READY=1` and `STOPPING=1` report state; neither starts nor extends
-systemd's timers.
-`ExecReload` therefore reloads Python application workers only. A changed
+`ExecReload` reloads Python application workers only. A changed
 TOML, environment file, or certificate still needs a checked replacement and
 `systemctl restart myapp.service` (plus `systemctl daemon-reload` when the unit
 file itself changed).
@@ -370,9 +367,7 @@ file itself changed).
 Crashed workers are restarted with exponential backoff. A sustained crash
 loop stops the supervisor and reports the deployment failure.
 
-The gate is whether anything is serving *now*, not whether the fleet ever
-started: a deployment that came up cleanly and then broke stops just the same
-as one that never served a request.
+This also applies when a previously healthy deployment loses all serving workers.
 
 ## TOML config files
 
@@ -430,10 +425,8 @@ line for log shipping.
 {"level":"info","event":"request","client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.420,"rx_bytes":0,"tx_bytes":218}
 ```
 
-Numbers stay numbers, so a collector does not have to strip `ms` off
-`0.42ms` or `b` off `218b` to get at them. There is no timestamp field: journald,
-Docker and Kubernetes stamp arrival time, and one timestamp source keeps
-pipeline debugging unambiguous.
+Numeric fields remain numbers. Timestamps come from the log collector
+(journald, Docker, or Kubernetes), rather than from the record.
 
 [`--access-log`](../configuration.md#option-access_log) and `--log-format` are independent — [`--no-access-log`](../configuration.md#option-access_log)
 `--log-format json` keeps the diagnostics machine-readable while dropping the

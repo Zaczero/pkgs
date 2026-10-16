@@ -29,11 +29,9 @@ and TLS 1.3 only**. ALPN advertises `h2,http/1.1` by default, or only `h2` when
 private-key files are unsupported. Decrypt key files with operator tooling
 before starting the server.
 
-With direct exposure, h2corn is the TLS edge. The deployment must provide
-certificate issuance and renewal, private-key permissions, DNS and firewall
-policy, ALPN/client compatibility, request limits, abuse controls, and edge
-observability. A reverse proxy keeps those responsibilities at the proxy; see
-[Behind a reverse proxy](proxy.md#behind-a-reverse-proxy).
+This exposes an HTTPS listener publicly. Restrict access with your firewall as
+needed, protect the private key, and arrange certificate renewal.
+For edge routing and abuse controls, use a [reverse proxy](proxy.md).
 
 ## Mutual TLS (client certificates)
 
@@ -69,7 +67,7 @@ exposes the verified identity and negotiated parameters under the
 async def app(scope, receive, send):
     tls = scope['extensions'].get('tls')
     if tls is None:
-        ...  # not a TLS connection h2corn terminated
+        return  # not a TLS connection h2corn terminated
     chain = tls['client_cert_chain']       # PEM strings, leaf first
     name = tls['client_cert_name']         # RFC 4514 leaf DN, or None
     version = tls['tls_version']           # 0x0304 for TLS 1.3
@@ -91,13 +89,10 @@ chain leaves both the tuple empty and the name `None`.
 `client_cert_error` is always `None`: a certificate that fails
 verification fails the handshake and never reaches an application.
 
-The dictionary is built once per connection, so every request on a keep-alive
-or multiplexed HTTP/2 connection is handed the same object.
-
 The [known extension mappings](../api/scopes.md#extension-mapping-fields), including `scope["extensions"]["tls"]`, are
-shared and read-only. The outer `scope["extensions"]` mapping is per-scope and
+shared per connection and read-only. The outer `scope["extensions"]` mapping is per-scope and
 may receive application namespaced keys. Copy a known mapping before mutating
-it. The `tls` extension is absent when h2corn did not terminate the connection.
+it.
 
 Certificate and key files are read once, while the process is still
 privileged, and every worker reuses what the supervisor read. No worker

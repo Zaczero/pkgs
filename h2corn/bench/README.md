@@ -1,147 +1,53 @@
-# Bench Harness
+# Reproduce the benchmarks
 
-Contributor notes for measuring h2corn. The public
-[benchmark page](../docs/benchmarks.md) publishes figures only when each chart
-has a matching raw record and generated accessible table.
+Compare h2corn, Uvicorn, Hypercorn, and Gunicorn with the same Starlette
+application. The [benchmark page](../docs/benchmarks.md) explains the workloads
+and how to read the results.
 
-| Tool | Purpose |
-| --- | --- |
-| `bench.py` | Cross-server scenarios, raw per-scenario JSON, SVG charts, and accessible tables |
-| `compare.py` | Paired A/B comparison of two h2corn builds or configurations |
-| `instr.py` | Paired `perf stat` instructions-per-request measurement |
-| `_core.py` | Shared scenarios, server lifetime, load drivers, and statistics |
-| `report.py` | Accessible figure descriptions and tables from aggregate records |
-| `../tools/type_sizes.py` | Capture and compare Rust type and future layouts |
-
-The HTTP cells need the external `oha` binary and the WebSocket cells need
-`k6`; neither is installed by `uv sync`. The full suite needs Python 3.11 or
-newer and Linux or macOS. Loopback needs no root privilege. The optional 50 ms
-RTT profile additionally needs `unshare`, `ip`, and `tc` with an unprivileged
-network namespace.
-
-## Bounded Smoke
-
-The bounded smoke run is short and non-publishing:
+Run from the `h2corn` checkout on Linux or macOS with Python 3.11+.
+Install `oha` for HTTP scenarios and `k6` for WebSockets, then:
 
 ```bash
-set -eu
 uv sync --all-groups
-command -v oha
-output_dir="$(mktemp -d)"
-uv run python bench/bench.py \
-  --servers h2corn --types h1 --network-profile loopback \
-  --duration 1s --warmup-duration 1s --max-trials 3 \
-  --scenario-budget 15 --suite-budget 30 \
-  --output-directory "$output_dir"
-```
-
-The smoke run checks startup, worker readiness, the exact response contract,
-and teardown. It is not a performance result and cannot be published.
-
-## Cross-Server Run
-
-```bash
-command -v oha
-command -v k6
 uv run python bench/bench.py
 ```
 
-The run stages raw per-scenario JSON, SVGs, and adjacent accessible tables under
-`results/runs/`.
-Servers and load generators are not CPU-pinned;
-the default comparison uses the same Starlette app, asyncio loop, access
-logging, and aligned settings for every server.
+Results are saved under `bench/results/runs/` as raw JSON, SVG charts, and
+matching data tables. Each trial verifies the response and worker readiness
+before and after load.
 
-`--publish` accepts a complete run only:
+## Select a workload
 
 ```bash
-uv run python bench/bench.py --publish
+uv run python bench/bench.py --servers h2corn uvicorn --types h1
 ```
 
-It replaces the checked-in `results/plots/` figures and tables and the
-`results/raw/` records. Published filenames include the network profile so
-loopback and shaped measurements cannot overwrite one another. The harness
-publishes only when every scenario's winner is established; smoke, filtered,
-and exploratory runs remain non-publishing. The docs build checks each table
-against its raw record and mirrors only figures with matching data.
+Use `--duration`, `--warmup-duration`, `--max-trials`, `--scenario-budget`,
+and `--suite-budget` to control measurement effort. A short smoke run checks
+that the setup works; it is not a performance comparison:
 
-Selection and budget flags include `--types h1 h2`,
-`--servers h2corn`, `--duration`, `--warmup-duration`, `--max-trials`,
-`--scenario-budget`, and `--suite-budget`.
+```bash
+uv run python bench/bench.py \
+  --servers h2corn --types h1 --network-profile loopback \
+  --duration 1s --warmup-duration 1s --max-trials 3 \
+  --scenario-budget 15 --suite-budget 30
+```
 
-The default suite runs loopback scenarios and then tries selected streaming and
-multiplexing scenarios through an isolated 50 ms RTT network namespace. If the
-namespace, `tc`, or RTT check fails, that profile is skipped with its reason and
-produces no shaped result; loopback numbers are not substituted.
+The default suite measures loopback, then tries selected streaming and
+multiplexing scenarios with 50 ms round-trip latency in a network namespace.
+That profile needs `unshare`, `ip`, and `tc`. If unavailable, it is skipped
+with a reason; loopback results are not substituted.
 
-## Measurement Rules
+## Comparison conditions
 
-- Each trial verifies status, content type, body, and worker readiness before and after load.
-- Reported values are medians of 3-9 cold starts; the observed range is retained.
-- Sampling stops when the leader is separated from the runner-up and its interval reaches the 3% target, or when the time budget is reached.
-- A competitor that cannot serve a scenario is excluded with its reason. An h2corn failure stops the run.
+- Servers use the same application, asyncio loop, aligned settings, and access
+  logging to `/dev/null`.
+- Server order is rotated; neither servers nor load generators are CPU-pinned.
+- Results report medians and observed ranges from 3–9 cold starts.
+- Sampling stops when the leading server separates from the runner-up and its
+  interval reaches the 3% target, or when the time budget expires.
+- Unsupported competitor scenarios are excluded with their reason.
+  An h2corn failure stops the run.
 - Peak proportional set size (PSS) is sampled across the supervisor and workers.
-- Access logging is enabled for every server, with server output sent to `/dev/null`.
 
-Cross-server measurements use the same Starlette application for every server.
-Server-only changes use the raw application so framework work does not hide a
-small server-side difference.
-
-## Paired A/B
-
-Compare two builds or configurations with paired, rotation-balanced samples:
-
-```bash
-uv run python bench/compare.py \
-  --control 'main=/path/to/main/.venv/bin/h2corn' \
-  --candidate 'head=.venv/bin/h2corn' \
-  --scenario h1 --workers 4
-
-uv run python bench/compare.py \
-  --control 'log=' --candidate 'nolog=--no-access-log' \
-  --scenario h1
-```
-
-Use `--app bench.raw_app:app` for a minimal server-path measurement, or
-`bench/ws_echo_app:app` for a minimal WebSocket path. Intervals that still span
-zero are reported as inconclusive.
-
-For changes where request rate is too noisy, measure worker instructions with
-`perf stat`:
-
-```bash
-uv run --no-sync python bench/instr.py \
-  --control 'main=/path/to/main/.venv/bin/h2corn' \
-  --candidate 'head=.venv/bin/h2corn' \
-  --workers 4 --requests 200000
-```
-
-This uses `bench/raw_app.py`, counts successful requests exactly, and reports
-instructions, cycles, branch misses, cache misses, and IPC per request. It
-requires Linux `perf` and `oha`.
-
-`instr.py` also provides paired checks for small streamed responses
-(`h1_response_stream`, `h2_response_stream`), responses with a declared
-`Content-Length` (`h1_response_content_length`, `h2_response_content_length`),
-and small request bodies (`h1_upload_fast`, `h2_upload_fast`). The declared
-length probes stream eight 128-byte chunks and verify the response header before
-measurement. These focused probes are available to `instr.py` and `compare.py`
-but are not included in the cross-server benchmark matrix.
-
-## Other Focused Tools
-
-Capture and compare Rust layout changes without mixing the capture with the
-normal build cache:
-
-```bash
-.venv/bin/python tools/type_sizes.py capture /tmp/main.type-sizes
-.venv/bin/python tools/type_sizes.py capture /tmp/head.type-sizes
-.venv/bin/python tools/type_sizes.py diff /tmp/main.type-sizes /tmp/head.type-sizes
-```
-
-Use an ignored in-place Rust test for a single hot kernel when a change needs
-instruction-level confirmation:
-
-```bash
-cargo test -p h2corn --release --lib bench_encode_field_bytes -- --ignored --nocapture
-```
+See `uv run python bench/bench.py --help` for the full option list.

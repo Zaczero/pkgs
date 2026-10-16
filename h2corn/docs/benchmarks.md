@@ -4,9 +4,8 @@ description: How h2corn cross-server benchmarks are measured and what workloads 
 
 # Benchmarks
 
-This page describes h2corn's cross-server benchmark method and workload limits.
-When results are shown, each chart has a matching data table generated from the
-same aggregate record.
+The benchmarks compare the same Starlette application across ASGI servers,
+with correctness checks before and after load.
 
 ## Measurement method
 
@@ -19,10 +18,8 @@ excluded with its reason; an h2corn failure stops the run.
 Trials use two seconds of warmup followed by ten seconds of load, with three to
 nine cold starts, rotated server order, and no CPU pinning. Published rate
 ranges are the observed minimum and maximum across trials; they are not
-confidence intervals. When a comparator is present, the generated conclusion
-states whether the 95% bootstrap intervals separate the highest median from the
-runner-up; for a separated leader it also reports the interval's relative
-half-width, not its endpoints. Peak proportional set size (PSS) is the maximum
+confidence intervals. Comparisons use 95% bootstrap intervals to distinguish
+the highest median from the runner-up. Peak proportional set size (PSS) is the maximum
 sampled across the supervisor and workers.
 
 ## Workloads and limits

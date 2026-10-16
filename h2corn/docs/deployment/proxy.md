@@ -7,10 +7,6 @@ description: Run h2corn behind nginx, Caddy or HAProxy with an h2c upstream, and
 A production topology runs `h2corn` behind a reverse proxy
 that handles browser-facing TLS:
 
-```text
-browser/client  →  reverse proxy (TLS edge)  →  h2corn (h2c)
-```
-
 The proxy takes care of ALPN negotiation, TLS termination, and
 public-edge hardening. `h2corn` runs the application side of the
 connection on `h2c` — cleartext HTTP/2 over TCP or a Unix socket inside the
@@ -58,8 +54,8 @@ A separate proxy is optional: `h2corn` can terminate TLS itself; see
 
 ## Proxy headers and PROXY protocol
 
-`h2corn` accepts two kinds of trust hop metadata, both opt-in and
-gated by [`--forwarded-allow-ips`](../configuration.md#option-forwarded_allow_ips):
+`h2corn` accepts two kinds of proxy metadata, both opt-in and
+restricted by [`--forwarded-allow-ips`](../configuration.md#option-forwarded_allow_ips):
 
 - **[`--proxy-headers`](../configuration.md#option-proxy_headers)** enables standard `Forwarded` and `X-Forwarded-*`
   processing for peers in `--forwarded-allow-ips`. By default it interprets
@@ -99,8 +95,7 @@ in the stack. Naming the field in
 [`--proxy-headers`](../configuration.md#option-proxy_headers) with an empty
 `--forwarded-fields`, or an empty
 [`--forwarded-allow-ips`](../configuration.md#option-forwarded_allow_ips), is
-rejected at startup. Each describes a trust boundary that can never act, which
-is what leaving `--proxy-headers` off already spells.
+rejected at startup.
 
 With `--proxy-headers` disabled, forwarded headers are not trusted.
 
@@ -110,15 +105,10 @@ With `--proxy-headers` disabled, forwarded headers are not trusted.
 are placeholders. Set them to the deployment's domain, certificate files,
 application import target, and proxy peer address.
 
-[nginx](https://nginx.org/) documents HTTP/2 upstream support from **1.29.4**
-onwards, where the changelog records
-"*the ngx_http_proxy_module supports HTTP/2*". Set
+[nginx](https://nginx.org/) supports HTTP/2 upstream from **1.29.4**. Set
 [`proxy_http_version 2`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_http_version)
 and keep the upstream URL on `http://`, which makes that hop cleartext `h2c`.
 The deployed build must include `ngx_http_v2_module`.
-This module has carried
-[security advisories](https://nginx.org/en/security_advisories.html) since it
-shipped, so run a currently supported release and check that list against it.
 
 The [NGINX 1.29.4 announcement](https://blog.nginx.org/blog/nginx-open-source-1-29-3-and-1-29-4)
 notes that its initial HTTP/2 upstream implementation does not multiplex
@@ -159,9 +149,7 @@ directive.
 !!! warning "Caddy WebSockets"
     This example routes HTTP/1.1 requests carrying `Upgrade` to an HTTP/1.1
     upstream and other requests to `h2c`. Keep h2corn HTTP/1 enabled for that
-    WebSocket route. This configuration does not claim that Caddy translates
-    HTTP/1.1 `Upgrade` into RFC 8441 extended `CONNECT`; an HTTP/2-only
-    WebSocket route requires a client and proxy path that support RFC 8441.
+    WebSocket route.
 
 ```caddy title="Caddyfile (configuration template)"
 --8<-- "Caddyfile"
@@ -186,10 +174,8 @@ for the full directive set.
 
 HAProxy 2.4 and newer supports WebSockets over HTTP/2 using RFC 8441 extended
 `CONNECT` ([release notes](https://www.haproxy.com/blog/announcing-haproxy-2-4)).
-This example requires clients to use that HTTP/2 WebSocket path; it does not
-establish that HAProxy converts an HTTP/1.1 `Upgrade` request into extended
-`CONNECT`. Use a separate HTTP/1.1 upstream route for clients that require the
-HTTP/1.1 handshake, and keep h2corn HTTP/1 enabled for that route.
+This example requires RFC 8441 clients. For HTTP/1.1 WebSocket clients, use a
+separate HTTP/1.1 upstream route and keep h2corn HTTP/1 enabled.
 [`--no-http1`](../configuration.md#option-http1) applies when every route uses
 HTTP/2 and the WebSocket client/proxy path supports RFC 8441.
 

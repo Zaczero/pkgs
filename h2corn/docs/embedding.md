@@ -12,6 +12,8 @@ the [API reference](api/index.md#api-reference).
 
 ## Inside an asyncio app
 
+This uses the `hello.py` application from the [quickstart](quickstart.md).
+
 ```python title="embedded.py"
 --8<-- "embedded.py"
 ```
@@ -85,11 +87,6 @@ let go of everything it held.
   `shutdown()`. The difference is what surfaces: cancellation always re-raises
   `CancelledError` once the drain finishes or its budget runs out, never the
   over-budget `RuntimeError`.
-- **The public surface is five names:** [`serve()`][h2corn.Server.serve],
-  [`shutdown()`][h2corn.Server.shutdown],
-  [`wait_started()`][h2corn.Server.wait_started],
-  [`addresses`][h2corn.Server.addresses], and
-  [`releasing`][h2corn.Server.releasing].
 
 ## Knowing when the server is up
 
@@ -119,14 +116,9 @@ Bind port `0` and read the kernel-assigned address back from
 `Server.addresses` — ideal for test harnesses
 and service discovery:
 
-The printed port is assigned by the operating system and is different on each
-run.
-
 ```python title="partial embedding fragment"
 server = Server(app, Config(bind=('127.0.0.1:0',)))
 serving = asyncio.create_task(server.serve())
-# Resolves when the server is ready, and raises whatever stopped the
-# server if it never gets that far.
 await server.wait_started()
 print(server.addresses)  # runtime-assigned address
 ```

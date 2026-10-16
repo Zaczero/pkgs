@@ -60,10 +60,7 @@ scaling.
 
 ## Can I use it with Django?
 
-Pass the Django ASGI application as h2corn's import target. This uses the ASGI
-interface; it does not promise that every Django deployment can replace its
-existing server without configuration changes. Replace
-`myproject.asgi:application` with your project's import target:
+Pass your Django ASGI import target:
 
 ```bash
 uv run h2corn myproject.asgi:application --workers 4
@@ -89,12 +86,7 @@ each — it differs from Uvicorn, which reports several malformed values as
 
 ## Does `h2corn` support gRPC?
 
-`h2corn` is an ASGI server, not a gRPC server. It has no built-in gRPC
-dispatcher, and no gRPC-to-ASGI bridge is verified by this project. A
-bridge may be usable if it exposes a conforming ASGI application, but treat
-that combination as unverified: test HTTP/2 trailers, streaming, deadlines,
-metadata, and cancellation with the specific bridge and framework before
-deploying it.
+No. h2corn has no gRPC dispatcher, and gRPC-to-ASGI bridges are not tested.
 
 ## Where do I report bugs or request features?
 

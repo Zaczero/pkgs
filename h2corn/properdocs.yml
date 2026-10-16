@@ -1,5 +1,5 @@
 site_name: h2corn
-site_description: Documentation for h2corn, an HTTP/2 ASGI server for Python written in Rust. Configure HTTP/1.1, HTTP/2, TLS, and proxy deployments.
+site_description: Blazing-fast HTTP/2 ASGI server for Python, written in Rust.
 site_url: https://h2corn.monicz.dev/
 repo_url: https://github.com/Zaczero/pkgs/tree/main/h2corn
 repo_name: Zaczero/pkgs
