@@ -474,7 +474,7 @@ def _resource_plans(
             'label': f'resource-{mode}',
             'rows': (),
             'environment': environment,
-            'case_path': case_path,
+            'case_path': str(case_path),
             'command': [
                 'taskset',
                 '--cpu-list',

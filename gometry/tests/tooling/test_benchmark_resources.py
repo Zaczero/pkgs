@@ -28,6 +28,20 @@ _case = importlib.util.module_from_spec(_case_spec)
 _case_spec.loader.exec_module(_case)
 
 
+def test_release_resource_plan_writes_to_run_manifest(tmp_path: Path) -> None:
+    plans = _bench._resource_plans(
+        output_dir=tmp_path,
+        timestamp='measurement',
+        cpu=0,
+        receipt_binding={'path': str(tmp_path / 'wheel.whl'), 'receipt_sha256': HASH},
+        package_root=tmp_path,
+    )
+    output = tmp_path / 'run.json'
+    _bench._write_json_once(output, {'planned_commands': plans}, label='run manifest')
+    recorded = json.loads(output.read_text())
+    assert recorded['planned_commands'][0]['case_path'] == str(_CASE_PATH)
+
+
 def test_resource_summary_consumes_signed_endpoint_deltas(tmp_path: Path) -> None:
     row = str(_CASE_PATH.resolve())
     identity = producer(row, 'A')
