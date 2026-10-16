@@ -61,6 +61,7 @@ uvloop = [
 
 [dependency-groups]
 dev = [
+  "benchroom",
   "fastapi>=0.118.0",
   "griffe-inherited-docstrings>=1.0",
   "gunicorn>=25.3.0",
@@ -118,4 +119,4 @@ extend-select = ["D405", "D406", "D407", "D408", "D409", "D410", "D411", "D412",
 convention = "google"
 
 [tool.uv]
-sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true }, benchroom = { path = "../benchroom", editable = true } }

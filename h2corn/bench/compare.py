@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchroom import Report, Series
+
 try:
     from bench._core import (
         RESPONSE_CONTRACTS,
@@ -267,6 +269,16 @@ def main() -> int:
         RESULTS_DIRECTORY / 'compare' / f'{stamp}-{control.name}-{candidate.name}.json'
     )
     write_json(output, record)
+    Report(
+        scenario.name,
+        tuple(
+            Series(scenario.name, name, tuple(values))
+            for name, values in record['rps'].items()
+        ),
+        unit='requests / second',
+        better='higher',
+        caption=f'{args.workers} workers; {args.duration} per run.',
+    ).save(output.with_suffix('.svg'))
 
     comparison = record['comparison']
     low, high = comparison['ci_percent']
