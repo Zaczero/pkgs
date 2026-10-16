@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tomllib
 from pathlib import Path
 
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
@@ -211,6 +212,9 @@ SURFACES = (
 def config() -> StubConfig:
     """Build the gometry gate configuration."""
     return StubConfig(
+        docstring_style=tomllib.loads((ROOT / 'pyproject.toml').read_text())['tool'][
+            'ruff'
+        ]['lint']['pydocstyle']['convention'],
         module='gometry._lib',
         stub_path=STUB,
         src_root=SRC,

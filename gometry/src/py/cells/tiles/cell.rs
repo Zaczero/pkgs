@@ -285,8 +285,7 @@ grid_cell_common_pymethods! {
         candidate_doc: "other : Tile, int, or str",
         descendant_count_doc: "The exact descendant count.",
         parse_error_doc: "If an id or token is not a valid cell.",
-        example_parent: r"
->>> import gometry as gm
+        example_parent: r">>> import gometry as gm
 >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
 >>> assert cell is not None
 >>> parent = cell.parent()
@@ -294,22 +293,19 @@ grid_cell_common_pymethods! {
 >>> str(parent)
 '023010203'
 ",
-        example_children: r"
->>> import gometry as gm
+        example_children: r">>> import gometry as gm
 >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
 >>> assert cell is not None
 >>> len(cell.children())
 4
 ",
-        example_children_count: r"
->>> import gometry as gm
+        example_children_count: r">>> import gometry as gm
 >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
 >>> assert cell is not None
 >>> cell.children_count()
 4
 ",
-        example_contains: r"
->>> import gometry as gm
+        example_contains: r">>> import gometry as gm
 >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
 >>> assert cell is not None
 >>> child = cell.children()[0]
@@ -317,8 +313,7 @@ grid_cell_common_pymethods! {
 >>> cell.contains(child)
 True
 ",
-        example_intersects: r"
->>> import gometry as gm
+        example_intersects: r">>> import gometry as gm
 >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
 >>> assert cell is not None
 >>> parent = cell.parent()

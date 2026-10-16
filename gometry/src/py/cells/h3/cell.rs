@@ -664,29 +664,25 @@ grid_cell_common_pymethods! {
         candidate_doc: "other : H3Cell, int, or str",
         descendant_count_doc: "The exact descendant count (H3 pentagons have slightly fewer than hexagons).",
         parse_error_doc: "If an id or token is not a valid cell.",
-        example_parent: r"
->>> import gometry as gm
+        example_parent: r">>> import gometry as gm
 >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
 >>> assert cell is not None
 >>> cell.parent(resolution=6).token
 '86283082fffffff'
 ",
-        example_children: r"
->>> import gometry as gm
+        example_children: r">>> import gometry as gm
 >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
 >>> assert cell is not None
 >>> len(cell.children(resolution=8))
 7
 ",
-        example_children_count: r"
->>> import gometry as gm
+        example_children_count: r">>> import gometry as gm
 >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
 >>> assert cell is not None
 >>> cell.children_count(resolution=8)
 7
 ",
-        example_contains: r"
->>> import gometry as gm
+        example_contains: r">>> import gometry as gm
 >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
 >>> assert cell is not None
 >>> child = cell.children(resolution=8)[0]
@@ -694,8 +690,7 @@ grid_cell_common_pymethods! {
 >>> cell.contains(child)
 True
 ",
-        example_intersects: r"
->>> import gometry as gm
+        example_intersects: r">>> import gometry as gm
 >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
 >>> assert cell is not None
 >>> parent = cell.parent(resolution=6)

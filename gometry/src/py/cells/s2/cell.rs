@@ -109,29 +109,25 @@ grid_cell_common_pymethods! {
         candidate_doc: "other : S2Cell, int, or str",
         descendant_count_doc: "The exact descendant count.",
         parse_error_doc: "If an id or token is not a valid cell.",
-        example_parent: r"
->>> import gometry as gm
+        example_parent: r">>> import gometry as gm
 >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
 >>> assert cell is not None
 >>> cell.parent(10).token
 '808581'
 ",
-        example_children: r"
->>> import gometry as gm
+        example_children: r">>> import gometry as gm
 >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
 >>> assert cell is not None
 >>> len(cell.children(13))
 4
 ",
-        example_children_count: r"
->>> import gometry as gm
+        example_children_count: r">>> import gometry as gm
 >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
 >>> assert cell is not None
 >>> cell.children_count(13)
 4
 ",
-        example_contains: r"
->>> import gometry as gm
+        example_contains: r">>> import gometry as gm
 >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
 >>> assert cell is not None
 >>> child = cell.children(13)[0]
@@ -139,8 +135,7 @@ grid_cell_common_pymethods! {
 >>> cell.contains(child)
 True
 ",
-        example_intersects: r"
->>> import gometry as gm
+        example_intersects: r">>> import gometry as gm
 >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
 >>> assert cell is not None
 >>> cell.intersects(cell.parent(10))

@@ -179,9 +179,13 @@ extend = "../ruff.toml"
 exclude = [".venv", ".ruff_cache", "site", "target*"]
 
 [tool.ruff.lint]
+extend-select = ["D405", "D406", "D407", "D408", "D409", "D410", "D411", "D412", "D414", "D416"]
 # Throwaway names are `_` and single-word `_name`s; multi-word `_`-prefixed
 # helpers are not, so redefining one still reports F811.
 dummy-variable-rgx = "^_[a-z0-9]*$"
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
 # The docstring lives on the final (canonical) @overload variant by design —

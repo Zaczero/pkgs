@@ -178,22 +178,19 @@ grid_free_functions! {
         union: tile_union,
         intersection: tile_intersection,
         difference: tile_difference,
-        example_union: r"
->>> import gometry as gm
+        example_union: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_union(cells, cells))
 1
 ",
-        example_intersection: r"
->>> import gometry as gm
+        example_intersection: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_intersection(cells, cells))
 1
 ",
-        example_difference: r"
->>> import gometry as gm
+        example_difference: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
 >>> len(gm.tile_difference(cells, []))

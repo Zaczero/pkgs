@@ -151,22 +151,19 @@ grid_free_functions! {
         union: geohash_union,
         intersection: geohash_intersection,
         difference: geohash_difference,
-        example_union: r"
->>> import gometry as gm
+        example_union: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_union(cells, cells))
 1
 ",
-        example_intersection: r"
->>> import gometry as gm
+        example_intersection: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_intersection(cells, cells))
 1
 ",
-        example_difference: r"
->>> import gometry as gm
+        example_difference: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
 >>> len(gm.geohash_difference(cells, []))

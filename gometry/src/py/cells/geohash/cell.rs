@@ -166,36 +166,31 @@ grid_cell_common_pymethods! {
         candidate_doc: "other : GeohashCell or str",
         descendant_count_doc: "The exact descendant count.",
         parse_error_doc: "If a cell or token is not a valid cell.",
-        example_parent: r"
->>> import gometry as gm
+        example_parent: r">>> import gometry as gm
 >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
 >>> assert cell is not None
 >>> cell.parent().token
 '9q8yy'
 ",
-        example_children: r"
->>> import gometry as gm
+        example_children: r">>> import gometry as gm
 >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
 >>> assert cell is not None
 >>> len(cell.children())
 32
 ",
-        example_children_count: r"
->>> import gometry as gm
+        example_children_count: r">>> import gometry as gm
 >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
 >>> assert cell is not None
 >>> cell.children_count()
 32
 ",
-        example_contains: r"
->>> import gometry as gm
+        example_contains: r">>> import gometry as gm
 >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
 >>> assert cell is not None
 >>> cell.contains(cell)
 True
 ",
-        example_intersects: r"
->>> import gometry as gm
+        example_intersects: r">>> import gometry as gm
 >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
 >>> assert cell is not None
 >>> cell.intersects(cell.parent())

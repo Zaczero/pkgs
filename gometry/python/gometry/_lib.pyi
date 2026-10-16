@@ -15525,7 +15525,6 @@ class GeohashCell(_Cell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
         >>> assert cell is not None
@@ -15555,7 +15554,6 @@ class GeohashCell(_Cell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
         >>> assert cell is not None
@@ -15584,7 +15582,6 @@ class GeohashCell(_Cell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
         >>> assert cell is not None
@@ -15613,7 +15610,6 @@ class GeohashCell(_Cell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
         >>> assert cell is not None
@@ -15642,7 +15638,6 @@ class GeohashCell(_Cell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.geohash_cover(gm.Point(-122.4194, 37.7749, crs=4326), precision=6)[0]
         >>> assert cell is not None
@@ -15739,7 +15734,6 @@ class H3Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
         >>> assert cell is not None
@@ -15769,7 +15763,6 @@ class H3Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
         >>> assert cell is not None
@@ -15918,7 +15911,6 @@ class H3Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.h3_cover(gm.Point(-122.4194, 37.7749, crs=4326), resolution=7)[0]
         >>> assert cell is not None
@@ -16237,7 +16229,6 @@ class S2Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
         >>> assert cell is not None
@@ -16267,7 +16258,6 @@ class S2Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
         >>> assert cell is not None
@@ -16296,7 +16286,6 @@ class S2Cell(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.s2_cover(gm.Point(-122.4194, 37.7749, crs=4326), level=12)[0]
         >>> assert cell is not None
@@ -16410,7 +16399,6 @@ class Tile(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
         >>> assert cell is not None
@@ -16442,7 +16430,6 @@ class Tile(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
         >>> assert cell is not None
@@ -16471,7 +16458,6 @@ class Tile(_NumericCell):
 
         Examples
         --------
-
         >>> import gometry as gm
         >>> cell = gm.tile_cover(gm.Point(-122.4194, 37.7749, crs=4326), zoom=10)[0]
         >>> assert cell is not None
@@ -23268,7 +23254,6 @@ def geohash_union(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
@@ -23302,7 +23287,6 @@ def geohash_intersection(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
@@ -23337,7 +23321,6 @@ def geohash_difference(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.geohash_cover(p, precision=6) if cell is not None]
@@ -23554,7 +23537,6 @@ def tile_union(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
@@ -23588,7 +23570,6 @@ def tile_intersection(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
@@ -23623,7 +23604,6 @@ def tile_difference(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.tile_cover(p, zoom=10) if cell is not None]
@@ -24271,7 +24251,6 @@ def h3_union(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cover = gm.h3_cover(p, resolution=7)
@@ -24311,7 +24290,6 @@ def h3_intersection(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cover = gm.h3_cover(p, resolution=7)
@@ -24352,7 +24330,6 @@ def h3_difference(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cover = gm.h3_cover(p, resolution=7)
@@ -24645,7 +24622,6 @@ def s2_union(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
@@ -24679,7 +24655,6 @@ def s2_intersection(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
@@ -24714,7 +24689,6 @@ def s2_difference(
 
     Examples
     --------
-
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
     >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]

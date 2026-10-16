@@ -17,8 +17,7 @@ grid_free_functions! {
         union: h3_union,
         intersection: h3_intersection,
         difference: h3_difference,
-        example_union: r"
->>> import gometry as gm
+        example_union: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cover = gm.h3_cover(p, resolution=7)
 >>> cell = cover[0]
@@ -30,8 +29,7 @@ grid_free_functions! {
 >>> len(gm.h3_union(cells, [item for item in neighbors if item is not None][:1]))
 2
 ",
-        example_intersection: r"
->>> import gometry as gm
+        example_intersection: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cover = gm.h3_cover(p, resolution=7)
 >>> cell = cover[0]
@@ -43,8 +41,7 @@ grid_free_functions! {
 >>> len(gm.h3_intersection(cells + [nbr], [item for item in neighbors if item is not None][:1]))
 1
 ",
-        example_difference: r"
->>> import gometry as gm
+        example_difference: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cover = gm.h3_cover(p, resolution=7)
 >>> cell = cover[0]

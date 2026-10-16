@@ -194,22 +194,19 @@ grid_free_functions! {
         union: s2_union,
         intersection: s2_intersection,
         difference: s2_difference,
-        example_union: r"
->>> import gometry as gm
+        example_union: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
 >>> len(gm.s2_union(cells, cells))
 1
 ",
-        example_intersection: r"
->>> import gometry as gm
+        example_intersection: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
 >>> len(gm.s2_intersection(cells, cells))
 1
 ",
-        example_difference: r"
->>> import gometry as gm
+        example_difference: r">>> import gometry as gm
 >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
 >>> cells = [cell for cell in gm.s2_cover(p, level=12) if cell is not None]
 >>> len(gm.s2_difference(cells, []))
