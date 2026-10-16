@@ -60,6 +60,23 @@
   white-space: nowrap;
 }
 
+.md-typeset .md-button:not(.md-button--primary) {
+  background-color: transparent;
+  border-color: var(--md-typeset-a-color);
+  color: var(--md-typeset-a-color);
+  transition: background-color 160ms ease-out;
+}
+
+.md-typeset .md-button:not(.md-button--primary):is(:hover, :focus-visible) {
+  background-color: color-mix(in srgb, var(--md-typeset-a-color) 9%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .md-button {
+    transition: none;
+  }
+}
+
 .md-typeset p:has(> img[src*="benchmark"]) {
   padding: clamp(0.5rem, 1.5vw, 1rem);
   border: 1px solid var(--md-default-fg-color--lightest);

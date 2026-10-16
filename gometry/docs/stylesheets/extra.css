@@ -37,18 +37,6 @@
   --md-accent-fg-color: var(--gometry-amber);
 }
 
-/* Outline buttons: tie hover to the link color so both schemes stay on-brand. */
-[data-md-color-primary="teal"] .md-button:not(.md-button--primary) {
-  color: var(--md-typeset-a-color);
-  border-color: var(--md-typeset-a-color);
-}
-[data-md-color-primary="teal"] .md-button:not(.md-button--primary):hover,
-[data-md-color-primary="teal"] .md-button:not(.md-button--primary):focus {
-  background-color: var(--md-typeset-a-color);
-  border-color: var(--md-typeset-a-color);
-  color: var(--md-default-bg-color);
-}
-
 .md-header {
   box-shadow: 0 1px 0 rgba(245, 158, 11, 0.25);
 }

@@ -20,20 +20,6 @@
   --md-accent-fg-color: var(--h2corn-amber);
 }
 
-/* Outline button: Material's default hover fills with --md-accent-fg-color
-   (amber), losing contrast with the dark text. Tie it to the link color so
-   both schemes stay on-brand and legible. */
-[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary) {
-  color: var(--md-typeset-a-color);
-  border-color: var(--md-typeset-a-color);
-}
-[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary):hover,
-[data-md-color-primary="deep-purple"] .md-button:not(.md-button--primary):focus {
-  background-color: var(--md-typeset-a-color);
-  border-color: var(--md-typeset-a-color);
-  color: var(--md-default-bg-color);
-}
-
 /* Header logo: Material's default is small for our wider mark. */
 
 /* Subtle amber wash under the header — echoes the logo's secondary color
