@@ -24,6 +24,8 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 </div>
 
+<div class="benchmark-highlight" markdown>
+
 ## Fast from p50 to p99
 
 One Starlette application, four servers, and four fresh starts per server.
@@ -34,6 +36,8 @@ One Starlette application, four servers, and four fresh starts per server.
 Measured on a Ryzen 9 5950X with CPython 3.14.8.
 [Open the chart at full size](assets/benchmarks/latency-loopback.svg) or
 [see the data, configuration, and all 27 workloads](benchmarks.md).
+
+</div>
 
 <div class="grid cards" markdown>
 

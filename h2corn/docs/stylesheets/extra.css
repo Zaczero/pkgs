@@ -152,6 +152,26 @@
   white-space: nowrap;
 }
 
+.hero p:last-child {
+  margin-bottom: 0;
+}
+
+.benchmark-highlight {
+  max-width: 54rem;
+  margin: 0 auto 2rem;
+  text-align: center;
+}
+
+.benchmark-highlight img {
+  width: 100%;
+  height: auto;
+}
+
+.benchmark-highlight > p:last-child {
+  max-width: 40rem;
+  margin-inline: auto;
+}
+
 /* Matplotlib bench plots ship a white canvas; lift them out of slate. */
 [data-md-color-scheme="slate"] img[src*="benchmarks/"]:not([src*="-dark"]) {
   background: #ffffff;
