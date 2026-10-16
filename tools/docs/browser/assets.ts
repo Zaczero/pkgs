@@ -7,6 +7,27 @@ export async function finalizeAssets(
     mapping: Record<string, string>,
     stylesheets: string[],
 ) {
+    // Material treats every alternate representation as a language site.
+    // Markdown alternates have no sitemap; only hreflang links belong here.
+    for await (const path of new Bun.Glob("assets/javascripts/bundle*.js").scan({
+        cwd: site,
+    })) {
+        const file = Bun.file(join(site, path));
+        const source = await file.text();
+        const patched = source.replaceAll(
+            "link[rel=alternate]",
+            "link[rel=alternate][hreflang]",
+        );
+        if (patched === source) continue;
+        const digest = new Bun.CryptoHasher("sha256")
+            .update(patched)
+            .digest("hex")
+            .slice(0, 16);
+        const target = join(dirname(path), `bundle.${digest}.min.js`);
+        await Bun.write(join(site, target), patched);
+        mapping[path] = target;
+        await unlink(join(site, path));
+    }
     for await (const path of new Bun.Glob("assets/**/*").scan({ cwd: site })) {
         if (
             path.startsWith("assets/shared/") ||
