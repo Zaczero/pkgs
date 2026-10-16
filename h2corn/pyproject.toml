@@ -111,5 +111,11 @@ venvPath = "."
 [tool.ruff]
 extend = "../ruff.toml"
 
+[tool.ruff.lint]
+extend-select = ["D405", "D406", "D407", "D408", "D409", "D410", "D411", "D412", "D414", "D416"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }

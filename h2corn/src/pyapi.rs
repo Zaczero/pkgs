@@ -451,17 +451,13 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
 /// Runs the same `server_config` extraction serving uses so `--check-config`
 /// rejects bad cert/key/CA bytes before any worker starts.
 ///
-/// Parameters
-/// ----------
-/// config : Config
-///     The server configuration to extract from.
-/// tls_material : _TlsMaterial, optional
-///     PEM certificate, key and CA bytes; ``None`` serves plaintext.
+/// Args:
+///     config (Config): The server configuration to extract from.
+///     tls_material (TlsMaterial | None): PEM certificate, key and CA bytes;
+///         ``None`` serves plaintext.
 ///
-/// Returns
-/// -------
-/// _PreparedTls
-///     The prepared acceptor, to be handed to every worker.
+/// Returns:
+///     _PreparedTls: The prepared acceptor, to be handed to every worker.
 pub(crate) fn prepare_tls(
     config: &Bound<'_, PyAny>,
     tls_material: Option<TlsMaterial>,
@@ -480,16 +476,12 @@ pub(crate) fn prepare_tls(
 #[pyfunction]
 /// Print the startup banner for a validated server configuration.
 ///
-/// Parameters
-/// ----------
-/// config : Config
-///     The validated server configuration.
-/// tls : _PreparedTls
-///     The prepared acceptor, which decides whether the banner says HTTPS.
+/// Args:
+///     config (Config): The validated server configuration.
+///     tls (_PreparedTls): The prepared acceptor, which decides whether the banner says HTTPS.
 ///
-/// Returns
-/// -------
-/// None
+/// Returns:
+///     None: The banner has been emitted.
 pub(crate) fn emit_banner(config: &Bound<'_, PyAny>, tls: &PreparedTls) -> PyResult<()> {
     let config = PyConfig(config).server_config(None)?;
     emit_access_banner(&config, tls.0.is_some());
@@ -911,31 +903,20 @@ async fn run_serve_task(task: ServeTask) {
 /// `prepared_tls` is required: PEM is converted once in `prepare_tls` and
 /// reused here. There is no path that reopens certificate files in a worker.
 ///
-/// Parameters
-/// ----------
-/// app : object
-///     The ASGI application to serve.
-/// fds : list of int
-///     Listener descriptors to borrow and duplicate.
-/// config : Config
-///     The validated server configuration.
-/// shutdown_trigger : object
-///     Awaited to begin a graceful shutdown.
-/// retire_trigger : object, optional
-///     Awaited to stop accepting while draining in-flight requests.
-/// lifespan_handoff : _LifespanHandoff, optional
-///     Carries lifespan state from the parent process.
-/// ready_trigger : object, optional
-///     Resolved once the worker is accepting connections.
-/// quiesce_fd : int, optional
-///     Descriptor signalling quiesce; borrowed and duplicated on Unix.
-/// prepared_tls : _PreparedTls
-///     The acceptor built once by ``prepare_tls``.
+/// Args:
+///     app (Application): The ASGI application to serve.
+///     fds (list[int]): Listener descriptors to borrow and duplicate.
+///     config (Config): The validated server configuration.
+///     shutdown_trigger (Awaitable[str]): Awaited to begin a graceful shutdown.
+///     retire_trigger (Callable[[], None] | None): Called when accepting stops
+///         while in-flight requests drain.
+///     lifespan_handoff (_LifespanHandoff | None): Carries lifespan state from the parent process.
+///     ready_trigger (Callable[[], None] | None): Called once the worker accepts connections.
+///     quiesce_fd (int | None): Descriptor signalling quiesce; borrowed and duplicated on Unix.
+///     prepared_tls (_PreparedTls): The acceptor built once by ``prepare_tls``.
 ///
-/// Returns
-/// -------
-/// Awaitable[None]
-///     Completes when the worker has stopped serving.
+/// Returns:
+///     Awaitable[None]: Completes when the worker has stopped serving.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "PyO3 requires PyRef by value for class arguments"
