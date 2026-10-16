@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pyperf
 from benchroom import Report
-from benchroom.plot import curves
+from benchroom.plot import curves, save
 from benchroom.pyperf import load
 from matplotlib.ticker import EngFormatter
 
@@ -68,4 +68,4 @@ def report(paths: list[str], output_directory: str) -> None:
                 color=axes.xaxis.label.get_color(),
             )
             name = f'{operation}-dark.svg' if dark else f'{operation}.svg'
-            figure.savefig(root / name, facecolor=figure.get_facecolor())
+            save(figure, root / name)

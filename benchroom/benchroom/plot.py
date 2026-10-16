@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from matplotlib import rc_context
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import EngFormatter, PercentFormatter
@@ -18,6 +20,16 @@ _COLORS = {
     False: ('#1769aa', '#9a5700', '#007d66', '#8852a0'),
     True: ('#4aa8ec', '#e5a343', '#64c4ac', '#c797df'),
 }
+
+
+def save(figure: Figure, path: str | Path) -> None:
+    """Save a figure with stable SVG identifiers and no generation timestamp."""
+    path = Path(path)
+    metadata = {'Date': None} if path.suffix.lower() == '.svg' else None
+    with rc_context({'svg.hashsalt': 'benchroom'}):
+        figure.savefig(
+            path, dpi=180, facecolor=figure.get_facecolor(), metadata=metadata
+        )
 
 
 def _figure(title: str, xlabel: str, ylabel: str, dark: bool) -> Figure:

@@ -185,5 +185,7 @@ class Report:
         if path.suffix.lower() not in {'.svg', '.png'}:
             raise ValueError('chart path must end in .svg or .png')
         figure = self.figure(dark=dark)
-        figure.savefig(path, dpi=180, facecolor=figure.get_facecolor())
+        from benchroom.plot import save
+
+        save(figure, path)
         path.with_suffix('.md').write_text(self.markdown(), encoding='utf-8')

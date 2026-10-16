@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from benchroom.plot import curves
+from benchroom.plot import curves, save
 from matplotlib.ticker import ScalarFormatter
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def render_latency_curve(record: dict[str, Any], path: Path) -> None:
             color=axes.xaxis.label.get_color(),
         )
         destination = path.with_stem(path.stem + '-dark') if dark else path
-        figure.savefig(destination, facecolor=figure.get_facecolor())
+        save(figure, destination)
 
 
 def alt_text(title: str, results: dict[str, Any], unit: str) -> str:

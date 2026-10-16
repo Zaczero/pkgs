@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pyperf
 from benchroom import Report
+from benchroom.plot import save
 from benchroom.pyperf import load
 from matplotlib.ticker import EngFormatter
 
@@ -55,5 +56,5 @@ def report(baseline: str, candidate: str, output: str = 'benchmark.svg') -> None
                 color=axes.xaxis.label.get_color(),
             )
         destination = path.with_stem(path.stem + '-dark') if dark else path
-        figure.savefig(destination, dpi=180, facecolor=figure.get_facecolor())
+        save(figure, destination)
     path.with_suffix('.md').write_text(comparison.markdown(), encoding='utf-8')

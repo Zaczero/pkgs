@@ -919,7 +919,9 @@ def plot_results(
             width=135,
         )
     figure.supxlabel(footer, fontsize=9)
-    figure.savefig(path, format='svg')
+    from benchroom.plot import save
+
+    save(figure, path)
     plt.close(figure)
     path.write_text(
         '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
