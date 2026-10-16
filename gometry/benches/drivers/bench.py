@@ -1200,7 +1200,7 @@ def _validate_block_identity(
     receipt = receipt_cache.get(key)
     if receipt is None:
         try:
-            receipt = artifact_release.validate_benchmark_receipt(Path(receipt_path))
+            receipt = benchmark_runtime.load_subject(Path(receipt_path))
         except (AssertionError, OSError, TypeError, ValueError) as error:
             raise SystemExit(
                 f'publication rejected: runtime subject receipt is invalid: {error}'
@@ -1595,7 +1595,7 @@ def main() -> None:
     parser.add_argument(
         '--gometry-receipt',
         type=Path,
-        help='quality receipt, release manifest, or runner-wheel receipt '
+        help='release wheel, quality receipt, release manifest, or runner-wheel receipt '
         '(default: this worktree quality receipt)',
     )
     parser.add_argument(

@@ -82,7 +82,7 @@ def _runtime_binding_identity(value: Any) -> None:
     for field in ('kind', 'path', 'profile', 'package_root'):
         if not isinstance(value.get(field), str) or not value[field]:
             raise _fail(f'runtime_binding.{field} must be a non-empty string')
-    if value['kind'] not in {'quality', 'release', 'runner'}:
+    if value['kind'] not in {'quality', 'release', 'runner', 'wheel'}:
         raise _fail('runtime_binding.kind is unsupported')
     if value['profile'] not in {'dev', 'release-dist'}:
         raise _fail('runtime_binding.profile is unsupported')

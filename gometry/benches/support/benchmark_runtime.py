@@ -42,6 +42,8 @@ from bench_doctor import (
 import quality_runtime
 import release_artifact
 import runtime_artifact
+import artifact_content
+import source_artifact
 from benchmark_identity import (
     IDENTITY_SCHEMA_VERSION,
     identity_for_arm,
@@ -94,21 +96,65 @@ def load_subject(
     *,
     expected_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Read one pinned quality, runner, or release subject."""
+    """Read a selected wheel or a quality, runner, or release subject."""
     selected_path = (
         default_subject_path() if receipt_path is None else receipt_path.resolve()
     )
+    if selected_path.suffix == '.whl':
+        digest = sha256_file(selected_path)
+        if expected_receipt_sha256 is not None and digest != expected_receipt_sha256:
+            raise AssertionError('selected benchmark wheel changed')
+        manifest_path = selected_path.parent / source_artifact.SOURCE_MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest = source_artifact.validate_source_manifest(
+            selected_path.parent / manifest['sdist']['filename'], manifest_path
+        )
+        source = source_artifact.source_identity(manifest)
+        inspected = artifact_content.inspect_wheel(
+            selected_path, expected_python_members=source['python_members']
+        )
+        extensions = inspected['extension_members']
+        if len(extensions) != 1:
+            raise AssertionError('benchmark wheel must contain one native extension')
+        member, payload = next(iter(extensions.items()))
+        wheel = {
+            'filename': selected_path.name,
+            'sha256': digest,
+            'extension_member': member,
+            'extension_sha256': hashlib.sha256(payload).hexdigest(),
+        }
+        target = next(
+            line.removeprefix('host: ')
+            for line in source['toolchain']['rustc'].splitlines()
+            if line.startswith('host: ')
+        )
+        runtime_receipt = {
+            'kind': 'gometry-benchmark-wheel',
+            'source': source,
+            'wheel': wheel,
+            'python_members': source['python_members'],
+            'prepared_inputs': manifest['prepared_inputs']['files'],
+            'build': {
+                'profile': release_artifact.RELEASE_PROFILE,
+                'target': target,
+                'interpreter': release_artifact._runtime_interpreter(),
+            },
+        }
+        return {
+            'kind': 'wheel',
+            'path': str(selected_path),
+            'receipt_sha256': digest,
+            'profile': release_artifact.RELEASE_PROFILE,
+            'source': source,
+            'wheels': [wheel],
+            'runtime_receipt': runtime_receipt,
+        }
     if expected_receipt_sha256 is None:
-        subject = release_artifact.validate_benchmark_receipt(selected_path)
-        actual_digest = subject['receipt_sha256']
-        selected_path = Path(subject['path'])
-    else:
-        actual_digest = expected_receipt_sha256
-    subject = release_artifact.read_benchmark_receipt(
+        return release_artifact.validate_benchmark_receipt(selected_path)
+    return release_artifact.read_benchmark_receipt(
         selected_path,
-        actual_digest,
+        expected_receipt_sha256,
     )
-    return subject
 
 
 def package_root_for_subject(
@@ -400,7 +446,19 @@ def admit_runtime(
     runtime_artifact.check_import_resolution(
         selected_package_root / 'gometry' / '__init__.py'
     )
-    if subject['kind'] == 'quality':
+    if subject['kind'] == 'wheel':
+        runtime_receipt = {
+            **subject['runtime_receipt'],
+            'package_root': str(selected_package_root),
+        }
+        wheel_path = Path(subject['path'])
+        wheel_item = runtime_receipt['wheel']
+        admission = runtime_artifact.inspect_runtime_inputs(
+            _GOMETRY_ROOT,
+            expected_wheel=wheel_path,
+            build_receipt=runtime_receipt,
+        )
+    elif subject['kind'] == 'quality':
         runtime_receipt = subject['runtime_receipt']
         root = Path(subject['path']).parents[2]
         wheel = runtime_receipt['wheel']
