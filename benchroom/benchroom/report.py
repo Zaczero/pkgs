@@ -142,7 +142,7 @@ class Report:
                 )
             ),
             fontsize=9,
-            color=axes.title.get_color(),
+            color=axes.xaxis.label.get_color(),
         )
         return figure
 
