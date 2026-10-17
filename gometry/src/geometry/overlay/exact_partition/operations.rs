@@ -16,7 +16,8 @@ pub(in crate::geometry) fn clip_non_areal_rectangle(
     let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
     let partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
     let (topology, edges) = partition.local_topology()?;
-    let plan = emission::BoundaryPlan::from_non_areal_partition(&partition, &topology);
+    let plan =
+        emission::BoundaryPlan::from_non_areal_partition(&partition, &topology, &edges, bounds)?;
     let result = inventory.emit_overlay_plan::<crate::crs::GeodesicMetric>(
         &partition,
         &topology,

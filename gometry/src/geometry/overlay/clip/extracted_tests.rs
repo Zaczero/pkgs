@@ -202,6 +202,78 @@ fn rectangle_linework_preserves_exact_contacts_and_ordinates() {
 }
 
 #[test]
+fn rectangle_line_emission_matches_ring_vertex_dissolution() {
+    let rect = bounds(0.0, 0.0, 4.0, 4.0);
+    let rectangle = Shape::Polygon(rect_polygon(rect).unwrap());
+    let cases = [
+        (
+            "crossing bottom edge",
+            "LINESTRING (-1 0, 2 0, 5 0)",
+            "LINESTRING (0 0, 4 0)",
+        ),
+        (
+            "contained bottom edge",
+            "LINESTRING (0 0, 2 0, 4 0)",
+            "LINESTRING (0 0, 4 0)",
+        ),
+        (
+            "crossing top edge",
+            "LINESTRING (-1 4, 2 4, 5 4)",
+            "LINESTRING (0 4, 4 4)",
+        ),
+        (
+            "contained left edge",
+            "LINESTRING (0 0, 0 2, 0 4)",
+            "LINESTRING (0 0, 0 4)",
+        ),
+        (
+            "crossing right edge",
+            "LINESTRING (4 -1, 4 2, 4 5)",
+            "LINESTRING (4 0, 4 4)",
+        ),
+        (
+            "interior vertices remain",
+            "LINESTRING (1 1, 2 1, 3 1)",
+            "LINESTRING (1 1, 2 1, 3 1)",
+        ),
+        (
+            "boundary corner remains",
+            "LINESTRING (0 1, 0 2, 1 2)",
+            "LINESTRING (0 1, 0 2, 1 2)",
+        ),
+        (
+            "branch node remains",
+            "MULTILINESTRING ((-1 0, 2 0, 5 0), (2 0, 2 2))",
+            "MULTILINESTRING ((0 0, 2 0), (2 0, 2 2), (2 0, 4 0))",
+        ),
+        (
+            "explicit point node remains",
+            "GEOMETRYCOLLECTION (LINESTRING (-1 0, 2 0, 5 0), POINT (2 0))",
+            "LINESTRING (0 0, 2 0, 4 0)",
+        ),
+    ];
+    for (name, source, expected) in cases {
+        let subject = crate::io::parse_wkt(source).unwrap();
+        let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
+        let full = super::nary::full_partition_cartesian_overlay(
+            &[&subject, &rectangle],
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(shape_wkb(&full), shape_wkb(&expected), "{name}");
+        for actual in [
+            subject.clip_by_rect(rect, false).unwrap(),
+            subject
+                .intersection(&rectangle, Strictness::Lenient)
+                .unwrap(),
+        ] {
+            assert_eq!(shape_wkb(&actual), shape_wkb(&expected), "{name}");
+        }
+    }
+}
+
+#[test]
 fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
     let rect = bounds(1.0, 1.0, 4.0, 4.0);
     let cases = [

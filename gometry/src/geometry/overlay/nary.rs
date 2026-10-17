@@ -336,7 +336,13 @@ fn rectangle_intersection_result(
     rectangle: Bounds,
 ) -> Option<Shape> {
     let bounds = subject_bounds?;
-    if bounds_contain(rectangle, bounds) {
+    if bounds_contain(rectangle, bounds)
+        && (subject.topological_dimension() != Dimension::Curve
+            || (bounds.minx() > rectangle.minx()
+                && bounds.maxx() < rectangle.maxx()
+                && bounds.miny() > rectangle.miny()
+                && bounds.maxy() < rectangle.maxy()))
+    {
         Some(subject.clone())
     } else if bounds_disjoint(bounds, rectangle) {
         Some(empty_rectangle_result(subject))

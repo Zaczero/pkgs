@@ -18,7 +18,9 @@ use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::contact::point_on_segment;
 use crate::geometry::segments::{stored_cross_sign, stored_orientation_sign};
 use crate::geometry::tessellation::exact::{ExactPoint, ExactRational};
-use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, XY, same_point};
+use crate::geometry::{
+    Bounds, CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, XY, same_point,
+};
 use crate::work::{Unmetered, Work};
 
 pub(super) struct CellFacts {
@@ -159,29 +161,126 @@ impl CoverageFaceState {
 }
 
 impl BoundaryPlan {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node and dart IDs come from the checked partition and local topology"
+    )]
     pub(super) fn from_non_areal_partition(
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
-    ) -> Self {
-        let mut source_darts = Vec::with_capacity(partition.spans.len());
-        let mut lines = Vec::with_capacity(partition.spans.len());
-        for (slot, (owner, target)) in topology.owners.iter().zip(&topology.targets).enumerate() {
-            if owner < target {
-                let start = source_darts.len();
-                source_darts.push(slot as u32);
-                lines.push(PlannedChord {
-                    sources: start..source_darts.len(),
-                    sides: [0, 0],
-                });
+        edges: &[u32],
+        bounds: Bounds,
+    ) -> Result<Self> {
+        // The clipping window is an implicit ring: its straight-run vertices dissolve.
+        let mut joins = vec![false; partition.node_count()];
+        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
+            if end.wrapping_sub(start) != 2 {
+                continue;
             }
+            let id = NodeId(node as u32);
+            joins[node] = (partition
+                .compare_axis_to(id, Axis::X, bounds.minx())?
+                .is_eq()
+                || partition
+                    .compare_axis_to(id, Axis::X, bounds.maxx())?
+                    .is_eq()
+                || partition
+                    .compare_axis_to(id, Axis::Y, bounds.miny())?
+                    .is_eq()
+                || partition
+                    .compare_axis_to(id, Axis::Y, bounds.maxy())?
+                    .is_eq())
+                && source_darts_are_collinear(partition, edges, start, start.wrapping_add(1));
         }
-        Self {
+        for &node in &partition.point_nodes {
+            joins[node.0 as usize] = false;
+        }
+        for &(node, _) in &partition.point_sources {
+            joins[node.0 as usize] = false;
+        }
+        let mut source_darts = Vec::with_capacity(partition.spans.len());
+        let lines = Self::line_chords(
+            partition,
+            topology,
+            edges,
+            (0..partition.spans.len()).map(|span| span as u32),
+            &mut source_darts,
+            |left, _right| joins[topology.targets[left as usize] as usize],
+            |_slot| [0, 0],
+        );
+        Ok(Self {
             source_darts,
             walks: Vec::new(),
             lines,
             points: partition.isolated.iter().map(|&node| (node, 0)).collect(),
             face_quotient: Vec::new(),
+        })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span and dart IDs are admitted by the same partition and local topology"
+    )]
+    fn line_chords<I, J, S>(
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        lines: I,
+        source_darts: &mut Vec<u32>,
+        can_join: J,
+        sides: S,
+    ) -> Vec<PlannedChord>
+    where
+        I: Clone + ExactSizeIterator<Item = u32>,
+        J: Fn(u32, u32) -> bool,
+        S: Fn(u32) -> [u32; 2],
+    {
+        let mut planned = Vec::with_capacity(lines.len());
+        if lines.len() == 0 {
+            return planned;
         }
+        let mut span_slots = vec![0; partition.spans.len()];
+        for (slot, &span) in edges.iter().enumerate() {
+            if topology.owners[slot] == partition.spans[span as usize].start.0 {
+                span_slots[span as usize] = slot;
+            }
+        }
+        let mut remaining = vec![false; partition.spans.len()];
+        for span in lines.clone() {
+            remaining[span as usize] = true;
+        }
+        let continuation = |slot: u32, remaining: &[bool]| {
+            let node = topology.targets[slot as usize] as usize;
+            let twin = topology.twins[slot as usize];
+            (topology.starts[node]..topology.starts[node.wrapping_add(1)]).find(|&next| {
+                next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)
+            })
+        };
+        for span in lines {
+            if !remaining[span as usize] {
+                continue;
+            }
+            let mut backwards = topology.twins[span_slots[span as usize]];
+            while let Some(next) = continuation(backwards, &remaining) {
+                backwards = next;
+            }
+            let mut slot = topology.twins[backwards as usize];
+            let start = source_darts.len();
+            let labels = sides(slot);
+            loop {
+                source_darts.push(slot);
+                remaining[edges[slot as usize] as usize] = false;
+                let Some(next) = continuation(slot, &remaining) else {
+                    break;
+                };
+                slot = next;
+            }
+            planned.push(PlannedChord {
+                sources: start..source_darts.len(),
+                sides: labels,
+            });
+        }
+        planned
     }
 
     fn chord_count(&self) -> usize {
@@ -1319,12 +1418,7 @@ impl GlobalFaces {
             if row.len() != 2 && row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
                 return false;
             }
-            let source = |slot: u32| {
-                partition.unique[partition.spans[edges[slot as usize] as usize].unique as usize]
-            };
-            let a = source(left);
-            let b = source(right);
-            stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
+            source_darts_are_collinear(partition, edges, left, right)
         };
         let can_join = |left: u32, right: u32| -> bool {
             let node = topology.owners[right as usize] as usize;
@@ -1340,14 +1434,6 @@ impl GlobalFaces {
             .iter()
             .fold(lines.len(), |count, walk| count.wrapping_add(walk.len()));
         let mut source_darts = Vec::with_capacity(source_dart_capacity);
-        let mut make_chord = |slot: u32| -> Result<PlannedChord> {
-            let start = source_darts.len();
-            source_darts.push(slot);
-            Ok(PlannedChord {
-                sources: start..start.wrapping_add(1),
-                sides: sides(slot),
-            })
-        };
         let mut planned_walks = Vec::with_capacity(walks.len());
         for walk in &mut walks {
             // Start at a retained corner so a joined source range never wraps.
@@ -1364,7 +1450,12 @@ impl GlobalFaces {
             }
             let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
-                let chord = make_chord(slot)?;
+                let start = source_darts.len();
+                source_darts.push(slot);
+                let chord = PlannedChord {
+                    sources: start..source_darts.len(),
+                    sides: sides(slot),
+                };
                 if index == 0 {
                     chords.push(chord);
                     continue;
@@ -1388,53 +1479,15 @@ impl GlobalFaces {
             planned_walks.push(chords);
         }
         drop(walks);
-        let mut planned_lines = Vec::with_capacity(lines.len());
-        if !lines.is_empty() {
-            let mut span_slots = vec![0; partition.spans.len()];
-            for (slot, &span) in edges.iter().enumerate() {
-                if topology.owners[slot] == partition.spans[span as usize].start.0 {
-                    span_slots[span as usize] = slot;
-                }
-            }
-            let mut line_remaining = Vec::with_capacity(partition.spans.len());
-            line_remaining.resize(partition.spans.len(), false);
-            for &span in lines {
-                line_remaining[span as usize] = true;
-            }
-            let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
-                let node = topology.targets[slot as usize] as usize;
-                let twin = topology.twins[slot as usize];
-                for next in topology.starts[node]..topology.starts[node.wrapping_add(1)] {
-                    if next != twin
-                        && remaining[edges[next as usize] as usize]
-                        && can_join(slot, next)
-                    {
-                        return Ok(Some(next));
-                    }
-                }
-                Ok(None)
-            };
-            for &span in lines {
-                if !line_remaining[span as usize] {
-                    continue;
-                }
-                let mut backwards = topology.twins[span_slots[span as usize]];
-                while let Some(next) = continuation(backwards, &line_remaining)? {
-                    backwards = next;
-                }
-                let mut slot = topology.twins[backwards as usize];
-                let mut chord = make_chord(slot)?;
-                loop {
-                    line_remaining[edges[slot as usize] as usize] = false;
-                    let Some(next) = continuation(slot, &line_remaining)? else {
-                        break;
-                    };
-                    chord.sources.end = make_chord(next)?.sources.end;
-                    slot = next;
-                }
-                planned_lines.push(chord);
-            }
-        }
+        let planned_lines = BoundaryPlan::line_chords(
+            partition,
+            topology,
+            edges,
+            lines.iter().copied(),
+            &mut source_darts,
+            can_join,
+            sides,
+        );
         Ok(BoundaryPlan {
             source_darts,
             walks: planned_walks,
@@ -1628,4 +1681,23 @@ impl GlobalFaces {
         }
         parents
     }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "dart, span, and source IDs are admitted by the same exact partition"
+)]
+fn source_darts_are_collinear(
+    partition: &ExactPartition<'_>,
+    edges: &[u32],
+    left: u32,
+    right: u32,
+) -> bool {
+    // Compare source carriers, not independently rounded intersection coordinates.
+    let source = |slot: u32| {
+        partition.unique[partition.spans[edges[slot as usize] as usize].unique as usize]
+    };
+    let a = source(left);
+    let b = source(right);
+    stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
 }
