@@ -162,6 +162,9 @@ impl<T, const N: usize> Drop for InlineFifo<T, N> {
     }
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -230,68 +233,67 @@ mod tests {
         assert_eq!(queue.iter().copied().collect::<Vec<_>>(), [30, 4]);
     }
 
-    fn assert_exhaustive_state_model<const N: usize>() {
+    fn assert_boundary_state_model<const N: usize>() {
         const OPERATIONS: usize = 4;
-        const DEPTH: u32 = 8;
+        const DEPTH: u32 = 4;
 
-        // Reused across programs rather than rebuilt: the enumeration runs
-        // 4^DEPTH programs per instantiation, so a fresh pair per program is
-        // hundreds of thousands of spilled allocations that the state model
-        // does not need. `clear()` is itself under test, so each program
-        // additionally asserts the cleared state before it starts.
-        let mut queue = InlineFifo::<u32, N>::new();
-        let mut model = VecDeque::new();
-
-        for mut program in 0..OPERATIONS.pow(DEPTH) {
-            queue.clear();
-            model.clear();
-            assert_eq!(queue.len(), 0);
-            assert_eq!(queue.front, 0);
-            assert_eq!(queue.items.len(), 0);
-            let mut next = 0_u32;
-
-            for _ in 0..DEPTH {
-                match program % OPERATIONS {
-                    0 => {
-                        queue.push_back(next);
-                        model.push_back(next);
-                        next = next.wrapping_add(1);
-                    },
-                    1 => assert_eq!(queue.pop_front(), model.pop_front()),
-                    2 => {
-                        queue.clear();
-                        model.clear();
-                    },
-                    3 => {
-                        if let Some(value) = queue.front_mut() {
-                            *value = value.wrapping_add(17);
-                        }
-                        if let Some(value) = model.front_mut() {
-                            *value = value.wrapping_add(17);
-                        }
-                    },
-                    _ => unreachable!(),
+        for (initial, consumed) in [(0, 0), (N, 0), (N + 1, 0), (2 * N + 1, N)] {
+            for mut program in 0..OPERATIONS.pow(DEPTH) {
+                let mut queue = InlineFifo::<u32, N>::new();
+                let mut model = VecDeque::new();
+                let mut next = 41_u32;
+                for _ in 0..initial {
+                    queue.push_back(next);
+                    model.push_back(next);
+                    next = next.wrapping_add(1);
                 }
-                program /= OPERATIONS;
+                for _ in 0..consumed {
+                    assert_eq!(queue.pop_front(), model.pop_front());
+                }
 
-                assert_eq!(queue.len(), model.len());
-                assert_eq!(queue.is_empty(), model.is_empty());
-                assert_eq!(queue.front(), model.front());
-                assert!(queue.iter().copied().eq(model.iter().copied()));
-                if model.is_empty() {
-                    assert_eq!(queue.front, 0);
-                    assert_eq!(queue.items.len(), 0);
+                for _ in 0..DEPTH {
+                    match program % OPERATIONS {
+                        0 => {
+                            queue.push_back(next);
+                            model.push_back(next);
+                            next = next.wrapping_add(1);
+                        },
+                        1 => assert_eq!(queue.pop_front(), model.pop_front()),
+                        2 => {
+                            queue.clear();
+                            model.clear();
+                        },
+                        3 => {
+                            if let Some(value) = queue.front_mut() {
+                                *value = value.wrapping_add(17);
+                            }
+                            if let Some(value) = model.front_mut() {
+                                *value = value.wrapping_add(17);
+                            }
+                        },
+                        _ => unreachable!(),
+                    }
+                    program /= OPERATIONS;
+
+                    assert_eq!(queue.len(), model.len());
+                    assert_eq!(queue.is_empty(), model.is_empty());
+                    assert_eq!(queue.front(), model.front());
+                    assert!(queue.iter().copied().eq(model.iter().copied()));
+                    if model.is_empty() {
+                        assert_eq!(queue.front, 0);
+                        assert_eq!(queue.items.len(), 0);
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn exhaustive_small_state_machine_matches_vecdeque_and_normalizes_empty() {
-        assert_exhaustive_state_model::<0>();
-        assert_exhaustive_state_model::<1>();
-        assert_exhaustive_state_model::<2>();
-        assert_exhaustive_state_model::<4>();
+    fn boundary_state_histories_match_vecdeque_and_normalize_empty() {
+        assert_boundary_state_model::<0>();
+        assert_boundary_state_model::<1>();
+        assert_boundary_state_model::<2>();
+        assert_boundary_state_model::<4>();
     }
 
     #[test]
