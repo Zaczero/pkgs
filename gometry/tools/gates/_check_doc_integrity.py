@@ -12,9 +12,9 @@ _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 
-from _gatelib import prepend_rust_source_import_paths, rust_source_config
+from _gatelib import prepend_tools_import_paths, rust_source_config
 
-prepend_rust_source_import_paths()
+prepend_tools_import_paths()
 
 from public_inventory import load_public_symbols
 from pyo3stubs.context import CheckContext
@@ -76,7 +76,7 @@ def collect_errors(
 
 
 def main() -> int:
-    from runtime_artifact import require_runtime
+    from _gatelib import require_runtime
 
     runtime, _, _ = require_runtime(ROOT)
     errors = collect_errors(runtime_module=runtime)

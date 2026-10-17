@@ -45,9 +45,7 @@ REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 MATURIN_VERSION = '1.15.0'
 RELEASE_PROFILE = 'release-dist'
 RELEASE_MATURIN_ARGS = f'--locked --profile {RELEASE_PROFILE}'
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
-RUNNER_RECEIPT_NAME = 'gometry-wheel-receipt.json'
-RELEASE_MANIFEST_NAME = 'gometry-release-manifest.json'
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v1'
 RELEASE_BUILD_INPUTS = (
     'Cargo.toml',
     'Cargo.lock',
@@ -56,7 +54,7 @@ RELEASE_BUILD_INPUTS = (
     'gometry/Cargo.toml',
     'gometry/pyproject.toml',
     'gometry/rust-toolchain.toml',
-    'gometry/native/proj-sys/PROJSRC/proj-9.6.2.tar.gz',
+    'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz',
 )
 ABSOLUTE_BUILD_PATH = re.compile(
     r'(?i)(?:/home/[^/\s]+/|/Users/[^/\s]+/|/nix/store/|/tmp/|'
@@ -80,14 +78,6 @@ PREPARED_OUTPUT_FILES = (
 )
 IDENTIFIER = re.compile(r'^(?P<python>[A-Za-z0-9]+)-(?P<platform>.+)$')
 HEX_DIGEST = re.compile(r'^[0-9a-f]{64}$')
-RUNNER_TARGETS = {
-    'ubuntu-latest': 'x86_64-unknown-linux-gnu',
-    'ubuntu-24.04-arm': 'aarch64-unknown-linux-gnu',
-    'windows-latest': 'x86_64-pc-windows-msvc',
-    'windows-11-arm': 'aarch64-pc-windows-msvc',
-    'macos-15-intel': 'x86_64-apple-darwin',
-    'macos-15': 'aarch64-apple-darwin',
-}
 RELEASE_ENV_VARS = (
     'GOMETRY_RELEASE_TARGET',
     'GOMETRY_RELEASE_TARGET_POLICY',

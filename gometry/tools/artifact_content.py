@@ -6,9 +6,9 @@ import base64
 import binascii
 import csv
 import hashlib
-import importlib.metadata
 import importlib.util
 import io
+import operator
 import re
 import struct
 import tarfile
@@ -68,7 +68,7 @@ TEXT_SUFFIXES = frozenset({
     '.yml',
 })
 PRINTABLE_STRING = re.compile(rb'[\x20-\x7e]{4,}')
-NON_BUILD_PATH_PREFIXES = ('/tmp/gometry-crs-',)  # noqa: S108
+NON_BUILD_PATH_PREFIXES = ('/tmp/gometry-crs-',)  # ruff: ignore[hardcoded-temp-file]
 
 
 def build_identifier_policy(identifier: str) -> dict[str, Any]:
@@ -81,9 +81,9 @@ def build_identifier_policy(identifier: str) -> dict[str, Any]:
     if python_match is None:
         raise AssertionError(f'unsupported gometry wheel Python tag: {python_tag!r}')
     python_version = python_match.group('version')
-    if python_version not in {'311', '312', '313', '314'}:
+    if int(python_version) < 311:
         raise AssertionError(f'unsupported gometry wheel Python tag: {python_tag!r}')
-    if python_match.group('gil') and python_version != '314':
+    if python_match.group('gil') and int(python_version) < 314:
         raise AssertionError(f'free-threaded Python tag is unsupported: {python_tag!r}')
 
     platform_tag = match.group('platform').lower()
@@ -200,7 +200,7 @@ def _collect_source_files(
 
 def _digest_source_files(files: Sequence[tuple[str, Path]]) -> str:
     digest = hashlib.sha256()
-    for logical, path in sorted(files, key=lambda item: item[0]):
+    for logical, path in sorted(files, key=operator.itemgetter(0)):
         try:
             payload = path.read_bytes()
         except OSError as error:
@@ -271,8 +271,6 @@ def inspect_libtiff_sdist_members(
     names: list[str],
     path: Path,
     expected: set[str] | None = None,
-    *,
-    allow_hidden_native: bool = False,
 ) -> None:
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
     prefix = f'{root}/gometry/native/libtiff-sys/libtiff/'
@@ -287,9 +285,7 @@ def inspect_libtiff_sdist_members(
         member_path = Path(member)
         if not member or member_path.is_absolute() or '..' in member_path.parts:
             raise AssertionError(f'sdist contains invalid libtiff path: {member!r}')
-    actual = set(members)
-    if allow_hidden_native:
-        actual = {member for member in actual if not has_hidden_component(member)}
+    actual = {member for member in members if not has_hidden_component(member)}
     expected = libtiff_source_members() if expected is None else expected
     if actual != expected:
         raise AssertionError(
@@ -1440,7 +1436,7 @@ def _verify_x86_64_v2_markers(binary_members: Mapping[str, bytes], path: Path) -
 def _has_x86_64_v2_target_features(payload: bytes) -> bool:
     if b'target_features' not in payload:
         return False
-    for field in re.finditer(b'target_features', payload):
+    for field in re.finditer(rb'target_features', payload):
         start = field.end()
         while start < len(payload) and payload[start] in b'\x00:= ':
             start += 1

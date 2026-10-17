@@ -17,7 +17,7 @@ for path in (_SUPPORT, _PYTHON):
         sys.path.insert(0, str(path))
 
 # Resolve benchmark support only after selecting the repository import paths.
-from benchmark_identity import (  # noqa: E402
+from benchmark_identity import (  # ruff: ignore[module-import-not-at-top-of-file]
     identity_for_arm,
     validate_producer_identity,
 )
@@ -135,7 +135,7 @@ def _complete_identity() -> dict[str, object]:
         },
     }
     return {
-        'identity_schema_version': 3,
+        'identity_schema_version': 1,
         'harness_commit': 'test-commit',
         'source_inputs_sha256': source,
         'extension': extension,
@@ -414,7 +414,7 @@ def test_source_commit_binding_and_null_attribution_require_consistent_receipts(
     extension = common['extension']
     native = [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
     receipt = {
-        'path': '/bench-evidence/gometry-release-manifest.json',
+        'path': '/bench-evidence/target/quality-runtime/receipt.json',
         'sha256': '1' * 64,
     }
     wheel = {

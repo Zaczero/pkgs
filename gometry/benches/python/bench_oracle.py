@@ -38,8 +38,8 @@ from _bench_oracles import (
 from _bench_registry import ALL_PUBLIC_OPERATIONS, RELEASE_OPERATIONS, ScalingOperation
 
 # Register the public PairCase builders (side-effect import).
-import _bench_public_cases as _public_cases  # noqa: F401
-import _bench_scaling_cases as _scaling_cases  # noqa: F401
+import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
+import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
 
 
 def _selected_operations(names: set[str] | None) -> list[object]:

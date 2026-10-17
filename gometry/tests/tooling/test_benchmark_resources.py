@@ -16,9 +16,9 @@ for _path in (_SUPPORT, _DRIVERS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-import benchmark_runtime  # noqa: E402
+import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
 
-from tests.tooling._bench_support import HASH, producer  # noqa: E402
+from tests.tooling._bench_support import HASH, producer  # ruff: ignore[module-import-not-at-top-of-file]
 
 _bench = importlib.import_module('bench')
 _CASE_PATH = _BENCHES / 'cases' / 'case_resource_tail.py'

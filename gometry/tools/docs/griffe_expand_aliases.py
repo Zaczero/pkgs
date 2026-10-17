@@ -1233,8 +1233,10 @@ def _link_see_also(
     docstrings = [getattr(obj, 'docstring', None)]
     binding = constructor_binding(obj) if isinstance(obj, griffe.Class) else None
     if binding is not None:
-        docstrings.append(binding.docstring)
-        docstrings.append(binding.extra[_CONSTRUCTOR_NAMESPACE].get('prose_docstring'))
+        docstrings.extend((
+            binding.docstring,
+            binding.extra[_CONSTRUCTOR_NAMESPACE].get('prose_docstring'),
+        ))
 
     for docstring in docstrings:
         if docstring is None:

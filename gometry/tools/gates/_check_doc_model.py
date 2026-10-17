@@ -19,9 +19,9 @@ _TOOLS_ROOT = ROOT / 'tools'
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 
-from _gatelib import prepend_rust_source_import_paths
+from _gatelib import prepend_tools_import_paths
 
-prepend_rust_source_import_paths()
+prepend_tools_import_paths()
 
 from griffe_expand_aliases import (
     ExpandTokenAliases,
@@ -1908,8 +1908,7 @@ def main() -> int:
     _TOOLS = ROOT / 'tools'
     if str(_TOOLS) not in sys.path:
         sys.path.insert(0, str(_TOOLS))
-    from _gatelib import prepend_tools_import_paths
-    from runtime_artifact import require_runtime
+    from _gatelib import prepend_tools_import_paths, require_runtime
 
     prepend_tools_import_paths()
     require_runtime(ROOT)

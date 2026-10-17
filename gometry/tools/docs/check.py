@@ -481,11 +481,10 @@ def main() -> int:
     tools = ROOT / 'tools'
     if str(tools) not in sys.path:
         sys.path.insert(0, str(tools))
-    from _gatelib import prepend_tools_import_paths
-    from runtime_artifact import require_runtime
+    from _gatelib import prepend_tools_import_paths, require_runtime
 
     prepend_tools_import_paths()
-    require_runtime(ROOT, prepare_if_stale=False)
+    require_runtime(ROOT)
     errors = collect_errors()
     lychee = shutil.which('lychee')
     if lychee is None:

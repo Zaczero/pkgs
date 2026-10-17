@@ -19,11 +19,9 @@ _TOOLS = GOMETRY_ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
-import _artifact_common as artifact_common  # noqa: E402
-import artifact_content  # noqa: E402
-import bench_doctor as doctor  # noqa: E402
-import release_artifact  # noqa: E402
-import source_artifact  # noqa: E402
+import _artifact_common as artifact_common  # ruff: ignore[module-import-not-at-top-of-file]
+import artifact_content  # ruff: ignore[module-import-not-at-top-of-file]
+import bench_doctor as doctor  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _release_build_info(source_inputs_sha256: str) -> dict[str, object]:
@@ -338,21 +336,6 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
         changed['native_source_inputs_sha256'] != before['native_source_inputs_sha256']
     )
 
-    bootstrap = tmp_path / 'bootstrap'
-    final = tmp_path / 'final'
-    bootstrap_native = bootstrap / 'gometry' / 'native'
-    final_native = final / 'gometry' / 'native'
-    bootstrap_native.mkdir(parents=True)
-    final_native.mkdir(parents=True)
-    (bootstrap_native / '.git').write_text('metadata\n')
-    (bootstrap_native / 'input.c').write_text('input\n')
-    (final_native / 'input.c').write_text('input\n')
-    source_artifact._compare_restage_trees(bootstrap, final)
-
-    (final_native / '.git').write_text('admitted metadata\n')
-    with pytest.raises(AssertionError, match='hidden native files'):
-        source_artifact._compare_restage_trees(bootstrap, final)
-
 
 @pytest.mark.parametrize(
     ('target', 'policy', 'rustflags', 'cflags'),
@@ -471,16 +454,4 @@ def test_x86_64_v2_marker_check_requires_evidence(tmp_path: Path) -> None:
         artifact_content._verify_x86_64_v2_markers(
             {extension: b'target_featuresfxsr,sse,sse2,x87'},
             tmp_path / 'generic.whl',
-        )
-
-
-def test_identifier_mapping_rejects_ambiguous_wheels(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    wheels = [Path('one.whl'), Path('two.whl')]
-    monkeypatch.setattr(release_artifact, 'wheel_matches_identifier', lambda *_: True)
-    with pytest.raises(AssertionError, match='one-to-one'):
-        release_artifact._match_wheels_to_identifiers(
-            wheels,
-            ['cp314-manylinux_x86_64', 'cp314-manylinux_2_17_x86_64'],
         )

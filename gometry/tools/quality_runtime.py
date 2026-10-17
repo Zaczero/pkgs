@@ -43,11 +43,11 @@ if TYPE_CHECKING:
 
 
 # This is the narrow recoverable-admission signal, not a terminal error.
-class QualityPreparationRequired(Exception):  # noqa: N818
+class QualityPreparationRequired(Exception):  # ruff: ignore[error-suffix-on-exception-name]
     """A known missing or stale local DEV artifact can be rebuilt once."""
 
 
-QUALITY_RECEIPT_SCHEMA = 2
+QUALITY_RECEIPT_SCHEMA = 1
 QUALITY_RECEIPT_NAME = 'receipt.json'
 
 
@@ -81,8 +81,8 @@ def _quality_fixed_input_paths(root: Path) -> tuple[tuple[str, Path], ...]:
         ('gometry/pyproject.toml', root / 'pyproject.toml'),
         ('gometry/rust-toolchain.toml', root / 'rust-toolchain.toml'),
         (
-            'gometry/native/proj-sys/PROJSRC/proj-9.6.2.tar.gz',
-            root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz',
+            'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz',
+            root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz',
         ),
         ('gometry/README.md', root / 'README.md'),
         ('gometry/LICENSE-APACHE.md', root / 'LICENSE-APACHE.md'),

@@ -19,8 +19,8 @@ import pytest
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(GOMETRY_ROOT / 'benches' / 'support'))
 sys.path.insert(0, str(GOMETRY_ROOT / 'tools'))
-import benchmark_runtime  # noqa: E402
-from benchmark_observation import make_observation, validate_observation  # noqa: E402
+import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+from benchmark_observation import make_observation, validate_observation  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _module():

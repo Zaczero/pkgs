@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-IDENTITY_SCHEMA_VERSION = 3
+IDENTITY_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 

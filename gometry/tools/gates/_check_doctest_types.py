@@ -42,8 +42,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 _TOOLS = _ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
-from _gatelib import prepend_tools_import_paths
-from runtime_artifact import require_runtime
+from _gatelib import prepend_tools_import_paths, require_runtime
 
 prepend_tools_import_paths()
 

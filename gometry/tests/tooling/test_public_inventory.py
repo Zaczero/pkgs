@@ -233,14 +233,14 @@ class DataRecord:
     )
     by_name = {(subject.qualname, subject.kind): subject for subject in subjects}
 
-    constructor = by_name[('Public.__new__', 'constructor')]
-    value = by_name[('Public.value', 'attribute')]
-    inherited = by_name[('Public.inherited', 'property')]
-    mutable = by_name[('Public.mutable', 'property')]
-    label = by_name[('Public.label', 'property')]
-    record_field = by_name[('Record.item', 'attribute')]
-    schema_field = by_name[('Schema.key', 'schema')]
-    dataclass_field = by_name[('DataRecord.count', 'attribute')]
+    constructor = by_name['Public.__new__', 'constructor']
+    value = by_name['Public.value', 'attribute']
+    inherited = by_name['Public.inherited', 'property']
+    mutable = by_name['Public.mutable', 'property']
+    label = by_name['Public.label', 'property']
+    record_field = by_name['Record.item', 'attribute']
+    schema_field = by_name['Schema.key', 'schema']
+    dataclass_field = by_name['DataRecord.count', 'attribute']
 
     assert constructor.source.path == str(models_path)
     assert constructor.prose is not None

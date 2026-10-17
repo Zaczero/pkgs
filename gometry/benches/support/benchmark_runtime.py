@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import importlib.util
 import json
 import os
@@ -96,7 +95,7 @@ def load_subject(
     *,
     expected_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Read a selected wheel or a quality, runner, or release subject."""
+    """Read a selected source-attributed wheel or prepared quality runtime."""
     selected_path = (
         default_subject_path() if receipt_path is None else receipt_path.resolve()
     )
@@ -175,7 +174,7 @@ def package_root_for_subject(
     origin = spec.origin if spec is not None else None
     if not isinstance(origin, str):
         raise TypeError(
-            'release benchmark subjects require an explicit installed package root'
+            'wheel benchmark subjects require an explicit installed package root'
         )
     return Path(origin).resolve().parent.parent
 
@@ -208,70 +207,6 @@ def environment_for_subject(
     else:
         environment['GOMETRY_BENCH_CONTROL'] = '0'
     return environment
-
-
-def _release_wheel(
-    subject: dict[str, Any],
-    package_root: Path,
-) -> tuple[dict[str, Any], Path, dict[str, Any]]:
-    try:
-        distribution = importlib.metadata.distribution('gometry')
-    except importlib.metadata.PackageNotFoundError as error:
-        raise AssertionError(
-            f'admitted gometry distribution is unavailable: {error}'
-        ) from error
-    installed_root = Path(distribution.locate_file('')).resolve()
-    if installed_root != package_root:
-        raise AssertionError(
-            'installed gometry distribution is outside the selected package root: '
-            f'{installed_root} != {package_root}'
-        )
-    suffix = sysconfig.get_config_var('EXT_SUFFIX')
-    source = subject.get('source')
-    wheels = subject.get('wheels')
-    if not isinstance(suffix, str) or not isinstance(source, dict):
-        raise TypeError('benchmark subject has malformed runtime selection facts')
-    if not isinstance(wheels, list):
-        raise TypeError('benchmark subject has no wheel records')
-    receipt_path = Path(subject['path'])
-    candidates: list[tuple[dict[str, Any], Path]] = []
-    for item in wheels:
-        if not isinstance(item, dict):
-            continue
-        member = item.get('extension_member')
-        filename = item.get('filename')
-        if (
-            not isinstance(member, str)
-            or not Path(member).name.endswith(suffix)
-            or not isinstance(filename, str)
-        ):
-            continue
-        extension_path = Path(distribution.locate_file(member)).resolve()
-        wheel_path = receipt_path.parent / filename
-        try:
-            if (
-                extension_path.is_file()
-                and sha256_file(extension_path) == item.get('extension_sha256')
-                and wheel_path.is_file()
-                and sha256_file(wheel_path) == item.get('sha256')
-            ):
-                candidates.append((item, wheel_path.resolve()))
-        except OSError:
-            continue
-    if len(candidates) != 1:
-        raise AssertionError(
-            'benchmark subject does not uniquely identify the installed wheel/member'
-        )
-    item, wheel_path = candidates[0]
-    runtime_receipt = release_artifact.installed_wheel_runtime_receipt(
-        identifier=item.get('identifier'),
-        profile=str(subject.get('profile') or item.get('build', {}).get('profile')),
-        source=source,
-        build=item['build'],
-        wheel=item,
-        prepared_inputs=subject.get('prepared_inputs'),
-    )
-    return runtime_receipt, wheel_path, item
 
 
 @dataclass(slots=True)
@@ -460,7 +395,7 @@ def admit_runtime(
             expected_wheel=wheel_path,
             build_receipt=runtime_receipt,
         )
-    elif subject['kind'] == 'quality':
+    else:
         runtime_receipt = subject['runtime_receipt']
         root = Path(subject['path']).parents[2]
         wheel = runtime_receipt['wheel']
@@ -473,16 +408,6 @@ def admit_runtime(
         }
         admission = runtime_artifact.inspect_runtime_inputs(
             root,
-            expected_wheel=wheel_path,
-            build_receipt=runtime_receipt,
-        )
-    else:
-        runtime_receipt, wheel_path, wheel_item = _release_wheel(
-            subject,
-            selected_package_root,
-        )
-        admission = runtime_artifact.inspect_runtime_inputs(
-            _GOMETRY_ROOT,
             expected_wheel=wheel_path,
             build_receipt=runtime_receipt,
         )

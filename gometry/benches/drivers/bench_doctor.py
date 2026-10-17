@@ -34,7 +34,7 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-BUILD_INFO_SCHEMA_VERSION = 3
+BUILD_INFO_SCHEMA_VERSION = 1
 BUILD_INFO_KEYS = {
     'schema_version',
     'source_inputs_format',

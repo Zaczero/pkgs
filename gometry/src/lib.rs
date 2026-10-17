@@ -53,11 +53,12 @@ mod collections;
 mod compile_fail_gate;
 mod crs;
 mod curves;
+#[cfg(test)]
+#[path = "../native/digest_encoding.rs"]
+mod digest_encoding;
 mod error;
 mod geographic;
 mod geometry;
-#[cfg(test)]
-mod native_test_identity;
 #[cfg(test)]
 mod test_support;
 mod work;
@@ -186,7 +187,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // value keeps Python import off the importlib.metadata filesystem path.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     let build_info = PyDict::new(m.py());
-    build_info.set_item("schema_version", 3)?;
+    build_info.set_item("schema_version", 1)?;
     build_info.set_item(
         "source_inputs_format",
         env!("GOMETRY_BUILD_SOURCE_INPUTS_FORMAT"),

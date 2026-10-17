@@ -746,9 +746,9 @@ def format_speedup(row: OpRow) -> str:
     elif row.status == 'inconclusive':
         label = 'Inconclusive'
     elif row.ratio >= 1.0:
-        label = f'{row.ratio:.2f}× faster'  # noqa: RUF001
+        label = f'{row.ratio:.2f}× faster'  # ruff: ignore[ambiguous-unicode-character-string]
     else:
-        label = f'{1.0 / row.ratio:.2f}× slower'  # noqa: RUF001
+        label = f'{1.0 / row.ratio:.2f}× slower'  # ruff: ignore[ambiguous-unicode-character-string]
     return f'<span class="benchmark-status">{label}</span>'
 
 

@@ -13,7 +13,7 @@ from tests._support import load_tool
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 
 quality_check = load_tool('quality_check', GOMETRY_ROOT / 'tools/check.py')
-runtime_artifact = sys.modules['runtime_artifact']
+gatelib = sys.modules['_gatelib']
 
 
 def test_run_missing_executable_returns_a_failed_check(
@@ -88,7 +88,6 @@ def test_typing_runtime_pyright_uses_the_selected_interpreter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runtime_artifact, 'require_runtime', lambda _root: None)
     gate = load_tool(
         '_check_typing_runtime',
         GOMETRY_ROOT / 'tools/gates/_check_typing_runtime.py',
@@ -127,7 +126,7 @@ def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
 
     def stale(_root: Path) -> None:
         admissions.append(_root)
-        raise runtime_artifact.QualityPreparationRequired('runtime is stale')
+        raise SystemExit('runtime is stale')
 
     monkeypatch.setattr(
         quality_check,
@@ -135,8 +134,8 @@ def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
         lambda: pytest.fail('--no-fix must not load the quality-preparation owner'),
     )
     monkeypatch.setattr(
-        runtime_artifact,
-        'inspect_runtime_inputs',
+        gatelib,
+        'require_runtime',
         stale,
     )
     calls: list[tuple[tuple[str, ...], bool]] = []
@@ -169,7 +168,6 @@ def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
     assert calls == expected_source_checks
     assert output.count('quality runtime prerequisite failed:') == 1
     assert 'quality runtime prerequisite failed: runtime is stale' in output
-    assert f'run `{sys.executable} tools/check.py --prepare` to prepare it' in output
     assert 'Skipped dependent quality checks:' in output
     assert all(f'  {label}' in output for label in expected_skips)
     assert 'TOTAL QUALITY FAILURES: 1' in output
@@ -190,14 +188,7 @@ def test_contracts_only_selects_readonly_public_checks(
         '_quality_runtime_module',
         lambda: pytest.fail('contract checks must not prepare a runtime'),
     )
-    admission = type(
-        'Admission',
-        (),
-        {'receipt': {'package_root': '/identified/gometry'}},
-    )()
-    monkeypatch.setattr(
-        runtime_artifact, 'inspect_runtime_inputs', lambda _root: admission
-    )
+    monkeypatch.setattr(gatelib, 'require_runtime', lambda _root: None)
     calls: list[tuple[tuple[str, ...], bool]] = []
 
     def run(
@@ -261,9 +252,9 @@ def test_contracts_only_stale_runtime_fails_without_preparation(
     monkeypatch.setattr(sys, 'argv', ['tools/check.py', '--contracts-only'])
 
     def stale(_root: Path) -> None:
-        raise runtime_artifact.QualityPreparationRequired('runtime is stale')
+        raise SystemExit('runtime is stale')
 
-    monkeypatch.setattr(runtime_artifact, 'inspect_runtime_inputs', stale)
+    monkeypatch.setattr(gatelib, 'require_runtime', stale)
     monkeypatch.setattr(
         quality_check,
         '_quality_runtime_module',
@@ -285,7 +276,6 @@ def test_contracts_only_stale_runtime_fails_without_preparation(
     assert quality_check.main() == 1
     output = capsys.readouterr().err
     assert 'quality runtime prerequisite failed: runtime is stale' in output
-    assert f'run `{sys.executable} tools/check.py --prepare` to prepare it' in output
     assert calls == [
         check.command
         for check in quality_check.CHECKS
@@ -297,7 +287,7 @@ def test_contracts_only_stale_runtime_fails_without_preparation(
     assert 'TOTAL QUALITY FAILURES: 1' in output
 
 
-def test_no_fix_inert_admission_enables_runtime_child_checks(
+def test_no_fix_preserves_the_selected_runtime_for_child_checks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,18 +298,13 @@ def test_no_fix_inert_admission_enables_runtime_child_checks(
         lambda: pytest.fail('--no-fix must not load the quality-preparation owner'),
     )
     package_root = tmp_path / 'packages' / 'identified-runtime'
-    admission = type(
-        'Admission',
-        (),
-        {'receipt': {'package_root': str(package_root)}},
-    )()
+    monkeypatch.setenv('PYTHONPATH', str(package_root))
     admissions: list[Path] = []
 
-    def admit(root: Path):
+    def admit(root: Path) -> None:
         admissions.append(root)
-        return admission
 
-    monkeypatch.setattr(runtime_artifact, 'inspect_runtime_inputs', admit)
+    monkeypatch.setattr(gatelib, 'require_runtime', admit)
     calls: list[tuple[tuple[str, ...], bool, dict[str, str] | None]] = []
 
     def run(
@@ -508,15 +493,7 @@ def test_site_checks_run_in_order_and_propagate_failures(
 ) -> None:
     monkeypatch.setattr(sys, 'argv', ['tools/check.py', '--no-fix'])
     monkeypatch.setattr(quality_check, 'ROOT', tmp_path)
-    package_root = Path('/quality-runtime/package')
-    admission = type(
-        'Admission',
-        (),
-        {'receipt': {'package_root': str(package_root)}},
-    )()
-    monkeypatch.setattr(
-        runtime_artifact, 'inspect_runtime_inputs', lambda _root: admission
-    )
+    monkeypatch.setattr(gatelib, 'require_runtime', lambda _root: None)
     stale_page = tmp_path / 'site' / 'api' / 'index.html'
     if failed_step == 'build':
         stale_page.parent.mkdir(parents=True)

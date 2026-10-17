@@ -576,10 +576,10 @@ fn geographic_nearest_certificate_preserves_direct_q_au_pg_union_wkb() -> Result
         "the baseline union remains valid"
     );
     assert_eq!(
-        format!(
-            "{:x}",
-            Sha256::digest(crate::io::to_wkb(&result, None, false)?)
-        ),
+        crate::digest_encoding::hex_lower(&Sha256::digest(crate::io::to_wkb(
+            &result, None, false,
+        )?))
+        .to_string(),
         "3de292238e1cfcfa472ddd95548bb3ea28321182c2124f801d1fb63186fad206",
         "direct Q retains its producer-order parent WKB"
     );

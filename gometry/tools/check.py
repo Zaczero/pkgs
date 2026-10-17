@@ -179,9 +179,9 @@ sys.path.insert(0, {str(tools)!r})
 from _gatelib import prepend_tools_import_paths
 
 prepend_tools_import_paths()
-from runtime_artifact import require_runtime
+from _gatelib import require_runtime
 
-require_runtime(Path({str(ROOT)!r}), prepare_if_stale=False)
+require_runtime(Path({str(ROOT)!r}))
 arguments = sys.argv[1:]
 if not arguments:
     raise SystemExit("missing runtime consumer command")
@@ -327,19 +327,13 @@ def main() -> int:
             tools = ROOT / 'tools'
             if str(tools) not in sys.path:
                 sys.path.insert(0, str(tools))
-            import runtime_artifact
+            from _gatelib import require_runtime
         except Exception as error:
             runtime_failure = f'could not load runtime admission: {error}'
         else:
             try:
-                admission = runtime_artifact.inspect_runtime_inputs(ROOT)
-                environment = _child_environment(admission.receipt)
-            except runtime_artifact.QualityPreparationRequired as error:
-                runtime_failure = (
-                    f'{error}; run `{sys.executable} tools/check.py --prepare` '
-                    'to prepare it'
-                )
-            except Exception as error:
+                require_runtime(ROOT)
+            except (Exception, SystemExit) as error:
                 runtime_failure = str(error)
     else:
         if not prepare_only:

@@ -15,10 +15,9 @@ from typing import TYPE_CHECKING
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
-from _gatelib import prepend_rust_source_import_paths
-from runtime_artifact import require_runtime
+from _gatelib import prepend_tools_import_paths, require_runtime
 
-prepend_rust_source_import_paths()
+prepend_tools_import_paths()
 from public_inventory import load_public_symbols
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
@@ -206,7 +205,7 @@ def required_raises(
         # aggregate methods can never see a frame mismatch; only the free
         # functions (mixed iterables) carry the CRSMismatchError floor.
         required.add('InvalidGeometryError')
-        if owner == '':
+        if not owner:
             required.add('CRSMismatchError')
     # Polygonal-coverage free duals + GeometryArray methods. Free forms take
     # mixed iterables and therefore require CRSMismatchError; array methods
@@ -232,7 +231,7 @@ def required_raises(
             required.add('GeometryError')
         if name in ('coverage_simplify', 'coverage_union_all', 'coverage_clean'):
             required.add('InvalidGeometryError')
-        if owner == '':
+        if not owner:
             required.add('CRSMismatchError')
     if name in ('from_wkt', 'from_wkb', 'from_geojson', 'from_arrow') and owner in (
         '',

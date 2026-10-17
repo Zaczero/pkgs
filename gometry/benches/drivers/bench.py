@@ -56,6 +56,7 @@ from benchmark_identity import validate_producer_identity
 import artifact_content
 import release_artifact as artifact_release
 import source_artifact
+import operator
 
 
 def _serialize_public_operations(
@@ -156,8 +157,8 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
     """
     # Local import: builders register numpy-heavy public cases.
     from _bench_oracles import PUBLIC_CASE_BUILDERS, PUBLIC_SCALING_CASE_BUILDERS
-    import _bench_public_cases as _public_cases  # noqa: F401
-    import _bench_scaling_cases as _scaling_cases  # noqa: F401
+    import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
+    import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
     from bench_oracle import validate_builders
 
     gometry_names = [
@@ -767,7 +768,7 @@ def _retain_producer_receipts(
         })
     index = {
         'schema_version': 1,
-        'receipts': sorted(records, key=lambda item: (item['path'], item['sha256'])),
+        'receipts': sorted(records, key=operator.itemgetter('path', 'sha256')),
     }
     (receipt_directory / 'index.json').write_text(
         json.dumps(index, indent=2, sort_keys=True) + '\n',
@@ -1594,13 +1595,13 @@ def main() -> None:
     parser.add_argument(
         '--gometry-receipt',
         type=Path,
-        help='release wheel, quality receipt, release manifest, or runner-wheel receipt '
+        help='source-attributed wheel or quality runtime receipt '
         '(default: this worktree quality receipt)',
     )
     parser.add_argument(
         '--gometry-package-root',
         type=Path,
-        help='installed package root when benchmarking a release receipt',
+        help='installed package root when benchmarking a wheel',
     )
     parser.add_argument('--list', action='store_true')
     args = parser.parse_args()

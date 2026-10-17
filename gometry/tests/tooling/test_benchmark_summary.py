@@ -16,11 +16,11 @@ for _path in (_BENCHES / 'support',):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-import benchmark_observation as bo  # noqa: E402
-import benchmark_runtime  # noqa: E402
-import summarize_bench as sb  # noqa: E402
+import benchmark_observation as bo  # ruff: ignore[module-import-not-at-top-of-file]
+import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+import summarize_bench as sb  # ruff: ignore[module-import-not-at-top-of-file]
 
-from tests.tooling._bench_support import producer  # noqa: E402
+from tests.tooling._bench_support import producer  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _load(paths: list[Path]) -> dict[str, sb.BenchStats]:

@@ -24,10 +24,8 @@ from _artifact_common import (
     MATURIN_VERSION,
     REGISTRY_SOURCE,
     RELEASE_BUILD_INPUTS,
-    RELEASE_MANIFEST_NAME,
     RELEASE_MATURIN_ARGS,
     ROOT,
-    RUNNER_RECEIPT_NAME,
     SOURCE_INPUTS_FORMAT,
     SOURCE_TOOL_MEMBERS,
     _load_json,
@@ -61,7 +59,7 @@ from artifact_content import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 SOURCE_MANIFEST_NAME = 'gometry-source-manifest.json'
-SOURCE_MANIFEST_SCHEMA = 4
+SOURCE_MANIFEST_SCHEMA = 1
 _LIBTIFF_GITLINK = 'gometry/native/libtiff-sys/libtiff'
 _PRODUCER_FIXED_INPUTS = frozenset({
     '.gitignore',
@@ -336,10 +334,7 @@ def _clear_stage_outputs(out_dir: Path) -> None:
     for pattern in ('gometry-*.tar.gz', 'gometry-*.whl'):
         for path in out_dir.glob(pattern):
             path.unlink()
-    for name in (SOURCE_MANIFEST_NAME, RUNNER_RECEIPT_NAME, RELEASE_MANIFEST_NAME):
-        path = out_dir / name
-        if path.exists():
-            path.unlink()
+    (out_dir / SOURCE_MANIFEST_NAME).unlink(missing_ok=True)
 
 
 def _single_sdist(directory: Path, *, label: str) -> Path:
@@ -347,53 +342,6 @@ def _single_sdist(directory: Path, *, label: str) -> Path:
     if len(sdists) != 1:
         raise AssertionError(f'expected one {label} gometry sdist, found {sdists!r}')
     return sdists[0]
-
-
-def _source_tree_files(root: Path) -> dict[str, bytes]:
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in root.rglob('*')
-        if path.is_file()
-    }
-
-
-def _compare_restage_trees(bootstrap: Path, final: Path) -> None:
-    before = _source_tree_files(bootstrap)
-    after = _source_tree_files(final)
-    if admitted_hidden := sorted(
-        relative for relative in after if is_hidden_native_path(relative)
-    ):
-        raise AssertionError(
-            f'maturin restaging admitted hidden native files: {admitted_hidden[:20]}'
-        )
-    changed = sorted(
-        relative
-        for relative in set(before) & set(after)
-        if before[relative] != after[relative]
-        and relative not in {'Cargo.lock', 'PKG-INFO'}
-        and not is_hidden_native_path(relative)
-    )
-    # Maturin's second pass sees the extracted source as a non-git tree and
-    # consequently omits hidden submodule metadata. It is not a build input;
-    # every other source removal/addition is a restaging defect.
-    removed = sorted(
-        relative
-        for relative in set(before) - set(after)
-        if not is_hidden_native_path(relative)
-    )
-    added = sorted(set(after) - set(before))
-    if changed or removed or added:
-        details = []
-        if changed:
-            details.append(f'changed={changed[:20]}')
-        if removed:
-            details.append(f'removed={removed[:20]}')
-        if added:
-            details.append(f'added={added[:20]}')
-        raise AssertionError(
-            'maturin restaging changed source inputs unexpectedly: '
-            + ', '.join(details)
-        )
 
 
 def _source_manifest(
@@ -469,155 +417,103 @@ def _build_input_snapshot(snapshot: Mapping[str, str]) -> dict[str, str]:
 
 
 def stage_sdist(out_dir: Path) -> Path:
-    """Prepare and verify the one sdist used by every release wheel build."""
+    """Build one native Maturin sdist and bind its source and dependency inputs."""
     out_dir = out_dir.resolve()
-    producer_input_snapshot = _producer_input_snapshot(ROOT)
+    initial_snapshot = _producer_input_snapshot(ROOT)
     producer_commit = _retained_producer_commit(
-        _capture_git_head(),
-        producer_input_snapshot,
-        producer_input_snapshot,
+        _capture_git_head(), initial_snapshot, initial_snapshot
     )
     _clear_stage_outputs(out_dir)
     initial_python_members = python_member_hashes(ROOT / 'python' / 'gometry')
     source_tool_hashes = _source_tool_hashes(ROOT)
-    final: Path | None = None
-    # The PyPI rendering of README.md exists only for the staged sdist; the
-    # checkout keeps its relative links.
     readme = ROOT / 'README.md'
     checkout_readme = readme.read_bytes()
+    config = ROOT / '.cargo' / 'config.toml'
+    config_directory_existed = config.parent.is_dir()
+    previous_config = config.read_bytes() if config.exists() else None
+    canonical_config = (ROOT.parent / '.cargo' / 'config.toml').read_bytes()
+    destination: Path | None = None
     try:
-        pre_prepare_snapshot = _producer_input_snapshot(ROOT)
-        producer_commit = _retained_producer_commit(
-            producer_commit,
-            producer_input_snapshot,
-            pre_prepare_snapshot,
-        )
         verify_libtiff_checkout()
         prepared_hashes = _prepare_source_outputs()
         source_digests = source_input_digests()
+        config.parent.mkdir(exist_ok=True)
+        config.write_bytes(canonical_config)
         with tempfile.TemporaryDirectory(prefix='gometry-sdist-stage-') as temporary:
-            temporary_root = Path(temporary)
-            bootstrap_dir = temporary_root / 'bootstrap'
-            final_dir = temporary_root / 'final'
-            _run_maturin_sdist(bootstrap_dir)
-            bootstrap = _single_sdist(bootstrap_dir, label='bootstrap')
-            inspect_sdist(bootstrap, allow_hidden_native=True)
-            with tempfile.TemporaryDirectory(
-                prefix='gometry-sdist-bootstrap-'
-            ) as extracted_tmp:
-                extracted = Path(extracted_tmp)
-                with tarfile.open(bootstrap) as archive:
-                    extract_sdist(archive, extracted)
-                roots = [item for item in extracted.iterdir() if item.is_dir()]
-                if len(roots) != 1:
-                    raise AssertionError(
-                        f'expected one extracted bootstrap root, found {roots!r}'
-                    )
-                root = roots[0]
-                if {
-                    relative: sha256_file(root / relative)
-                    for relative in sorted(SOURCE_TOOL_MEMBERS)
-                } != source_tool_hashes:
-                    raise AssertionError(
-                        'bootstrap sdist source-tool identity differs from staging input'
-                    )
-                evidence = _verify_extracted_sdist(root, require_normalized=False)
-                if {key: evidence[key] for key in source_digests} != dict(
-                    source_digests
-                ):
-                    raise AssertionError(
-                        'bootstrap sdist source-input identity differs from checkout'
-                    )
-                normalized_lock = evidence['normalized_lock_bytes']
-                if not isinstance(normalized_lock, bytes):
-                    raise TypeError('Cargo lock normalization did not return bytes')
-                (root / 'Cargo.lock').write_bytes(normalized_lock)
-                _verify_locked_sdist(root, expected_lock=normalized_lock)
-                _run_maturin_sdist(final_dir, cwd=root)
-                final = _single_sdist(final_dir, label='final')
-                inspect_sdist(final, expected_libtiff=libtiff_source_members())
-                with tempfile.TemporaryDirectory(
-                    prefix='gometry-sdist-final-'
-                ) as final_tmp:
-                    final_extracted = Path(final_tmp)
-                    with tarfile.open(final) as archive:
-                        extract_sdist(archive, final_extracted)
-                    final_roots = [
-                        item for item in final_extracted.iterdir() if item.is_dir()
-                    ]
-                    if len(final_roots) != 1:
-                        raise AssertionError(
-                            f'expected one extracted final root, found {final_roots!r}'
-                        )
-                    _compare_restage_trees(root, final_roots[0])
-                    final_evidence = _verify_locked_sdist(
-                        final_roots[0],
-                        expected_lock=normalized_lock,
-                    )
-                    if (
-                        final_evidence['normalized_lock_sha256']
-                        != evidence['normalized_lock_sha256']
-                    ):
-                        raise AssertionError(
-                            'final sdist Cargo.lock hash changed during restaging'
-                        )
-                    if {key: final_evidence[key] for key in source_digests} != dict(
-                        source_digests
-                    ):
-                        raise AssertionError(
-                            'final sdist source-input identity differs from checkout'
-                        )
-                    python_members = python_member_hashes(
-                        final_roots[0] / 'python' / 'gometry'
-                    )
-                    if python_members != initial_python_members:
-                        raise AssertionError(
-                            'final sdist Python-member identity differs from staging input'
-                        )
-                    if source_input_digests() != source_digests:
-                        raise AssertionError(
-                            'checkout source inputs changed while staging the sdist'
-                        )
-                    if _prepared_output_hashes() != prepared_hashes:
-                        raise AssertionError(
-                            'prepared source outputs changed while staging the sdist'
-                        )
-                    current_input_snapshot = _producer_input_snapshot(ROOT)
-                    if _build_input_snapshot(
-                        current_input_snapshot
-                    ) != _build_input_snapshot(producer_input_snapshot):
-                        raise AssertionError(
-                            'release build inputs changed while staging the sdist'
-                        )
-                    producer_commit = _retained_producer_commit(
-                        producer_commit,
-                        producer_input_snapshot,
-                        current_input_snapshot,
-                        exclude_readme=True,
-                    )
-                    manifest = _source_manifest(
-                        commit=producer_commit,
-                        sdist=final,
-                        prepared_hashes=prepared_hashes,
-                        evidence=evidence,
-                        source_digests=source_digests,
-                        python_members=python_members,
-                    )
-            destination = out_dir / final.name
-            shutil.copyfile(final, destination)
+            staging = Path(temporary)
+            _run_maturin_sdist(staging)
+            sdist = _single_sdist(staging, label='staged')
+            inspect_sdist(sdist, expected_libtiff=libtiff_source_members())
+            with tarfile.open(sdist) as archive:
+                extracted = staging / 'extracted'
+                extract_sdist(archive, extracted)
+            roots = [item for item in extracted.iterdir() if item.is_dir()]
+            if len(roots) != 1:
+                raise AssertionError('staged sdist has no unique source root')
+            source_root = roots[0]
+            if (
+                source_root / '.cargo' / 'config.toml'
+            ).read_bytes() != canonical_config:
+                raise AssertionError(
+                    'sdist Cargo configuration differs from its source'
+                )
+            if {
+                relative: sha256_file(source_root / relative)
+                for relative in sorted(SOURCE_TOOL_MEMBERS)
+            } != source_tool_hashes:
+                raise AssertionError(
+                    'sdist source-tool identity differs from staging input'
+                )
+            evidence = _verify_extracted_sdist(source_root)
+            _verify_locked_sdist(
+                source_root, expected_lock=evidence['normalized_lock_bytes']
+            )
+            if {key: evidence[key] for key in source_digests} != source_digests:
+                raise AssertionError(
+                    'sdist source-input identity differs from checkout'
+                )
+            python_members = python_member_hashes(source_root / 'python' / 'gometry')
+            if python_members != initial_python_members:
+                raise AssertionError('sdist Python members differ from staging input')
+            if source_input_digests() != source_digests:
+                raise AssertionError('checkout source inputs changed while staging')
+            if _prepared_output_hashes() != prepared_hashes:
+                raise AssertionError('prepared source outputs changed while staging')
+            current_snapshot = _producer_input_snapshot(ROOT)
+            if _build_input_snapshot(current_snapshot) != _build_input_snapshot(
+                initial_snapshot
+            ):
+                raise AssertionError('release build inputs changed while staging')
+            producer_commit = _retained_producer_commit(
+                producer_commit, initial_snapshot, current_snapshot, exclude_readme=True
+            )
+            manifest = _source_manifest(
+                commit=producer_commit,
+                sdist=sdist,
+                prepared_hashes=prepared_hashes,
+                evidence=evidence,
+                source_digests=source_digests,
+                python_members=python_members,
+            )
+            destination = out_dir / sdist.name
+            shutil.copyfile(sdist, destination)
             manifest_path = out_dir / SOURCE_MANIFEST_NAME
             _write_json(manifest_path, manifest)
-            # Re-read the copied artifact and manifest so a partial destination
-            # write cannot be reported as the staged source.
             validate_source_manifest(destination, manifest_path)
             return destination
     except Exception:
-        if final is not None:
-            (out_dir / final.name).unlink(missing_ok=True)
+        if destination is not None:
+            destination.unlink(missing_ok=True)
         (out_dir / SOURCE_MANIFEST_NAME).unlink(missing_ok=True)
         raise
     finally:
         readme.write_bytes(checkout_readme)
+        if previous_config is None:
+            config.unlink(missing_ok=True)
+        else:
+            config.write_bytes(previous_config)
+        if not config_directory_existed and config.parent.exists():
+            config.parent.rmdir()
 
 
 def verify_libtiff_checkout() -> None:
@@ -692,19 +588,12 @@ def inspect_sdist(
     path: Path,
     *,
     expected_libtiff: set[str] | None = None,
-    allow_hidden_native: bool = False,
     expected_toolchain_channel: str | None = None,
 ) -> str:
     with tarfile.open(path) as archive:
         names = archive.getnames()
         if len(names) != len(set(names)):
             raise AssertionError(f'sdist contains duplicate members: {path}')
-        if not allow_hidden_native and (
-            hidden := sorted(name for name in names if is_hidden_native_path(name))
-        ):
-            raise AssertionError(
-                f'sdist contains hidden native metadata files: {hidden[:20]}'
-            )
         text_members: dict[str, str] = {}
         for member in archive.getmembers():
             if not member.isfile() or not is_text_member(member.name):
@@ -717,7 +606,6 @@ def inspect_sdist(
         names,
         path,
         expected_libtiff,
-        allow_hidden_native=allow_hidden_native,
     )
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
     required = {
@@ -725,6 +613,7 @@ def inspect_sdist(
         f'{root}/LICENSE-MIT.md',
         f'{root}/LICENSE-THIRD-PARTY.md',
         f'{root}/Cargo.lock',
+        f'{root}/.cargo/config.toml',
         f'{root}/pyproject.toml',
         f'{root}/rust-toolchain.toml',
         f'{root}/gometry/rust-toolchain.toml',
@@ -950,7 +839,7 @@ def required_source_records(
         ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',)),
         # H3 and PROJ are path packages in the standalone sdist; their exact
         # manifest paths and selected features attest the bundled sources.
-        ('h3o', '0.10.0', None, ('std',)),
+        ('h3o', '0.11.0', None, ('std',)),
         ('proj-sys', '0.27.0', None, ('bundled_proj', 'tiff')),
     )
     records: list[dict[str, Any]] = []
@@ -1066,7 +955,7 @@ def required_source_records(
     return records
 
 
-def _verify_extracted_sdist(root: Path, *, require_normalized: bool) -> dict[str, Any]:
+def _verify_extracted_sdist(root: Path) -> dict[str, Any]:
     lock_path = root / 'Cargo.lock'
     try:
         preimage_bytes = lock_path.read_bytes()
@@ -1093,11 +982,6 @@ def _verify_extracted_sdist(root: Path, *, require_normalized: bool) -> dict[str
             f'{unexpected}'
         )
     required_sources = required_source_records(metadata, root=root)
-    if require_normalized and preimage_bytes != normalized_bytes:
-        raise AssertionError(
-            'sdist Cargo.lock is not normalized: '
-            f'{_sha256_bytes(preimage_bytes)} != {_sha256_bytes(normalized_bytes)}'
-        )
     source_digests = source_input_digests(root / 'gometry')
     return {
         'preimage_lock_bytes': preimage_bytes,
@@ -1131,9 +1015,7 @@ def _verify_locked_sdist(root: Path, *, expected_lock: bytes) -> dict[str, Any]:
     }
 
 
-def verify_sdist_dependency_sources(
-    path: Path, *, require_normalized: bool = False
-) -> dict[str, Any]:
+def verify_sdist_dependency_sources(path: Path) -> dict[str, Any]:
     """Verify source identities before and after standalone Cargo normalization."""
     with tempfile.TemporaryDirectory(prefix='gometry-sdist-') as tmp:
         extracted = Path(tmp)
@@ -1143,7 +1025,7 @@ def verify_sdist_dependency_sources(
         if len(roots) != 1:
             raise AssertionError(f'expected one extracted sdist root, found {roots!r}')
         root = roots[0]
-        evidence = _verify_extracted_sdist(root, require_normalized=require_normalized)
+        evidence = _verify_extracted_sdist(root)
         normalized = evidence['normalized_lock_bytes']
         if not isinstance(normalized, bytes):
             raise TypeError('Cargo lock normalization did not return bytes')
@@ -1477,10 +1359,11 @@ def verify_source_artifact(sdist: Path, manifest_path: Path) -> dict[str, Any]:
             raise AssertionError(
                 'source manifest Python members do not match the sdist'
             )
-    evidence = verify_sdist_dependency_sources(sdist, require_normalized=True)
+    evidence = verify_sdist_dependency_sources(sdist)
     cargo = manifest['cargo']
     if (
-        cargo['lock_normalized_sha256'] != evidence['normalized_lock_sha256']
+        cargo['lock_preimage_sha256'] != evidence['preimage_lock_sha256']
+        or cargo['lock_normalized_sha256'] != evidence['normalized_lock_sha256']
         or cargo['required_sources'] != evidence['required_sources']
     ):
         raise AssertionError('source manifest Cargo evidence does not match the sdist')

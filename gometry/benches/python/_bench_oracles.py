@@ -75,7 +75,7 @@ class PairCase:
         self.compare(gometry_result, competitor_result, context)
 
 
-class OracleMismatch(Exception):  # noqa: N818 — spec name; not an Error suffix
+class OracleMismatch(Exception):  # ruff: ignore[error-suffix-on-exception-name] — spec name; not an Error suffix
     """Raised when a public competitive pair fails equivalence."""
 
     def __init__(
@@ -290,7 +290,7 @@ def metric_allclose(
     if right is None:
         _raise('metric_allclose requires a competitor result', context)
     unit = context.unit
-    if unit is None or unit == '':
+    if not unit:
         _raise(
             'metric_allclose refuses empty/missing unit '
             '(square-degree vs square-metre bug class)',

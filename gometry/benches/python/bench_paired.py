@@ -195,8 +195,8 @@ def run_block(
     if builder is None:
         # Import the workload catalog only after the worker has passed CLI and
         # oracle-gate checks; importing it constructs native-backed fixtures.
-        import _bench_public_cases as _public_cases  # noqa: F401
-        import _bench_scaling_cases as _scaling_cases  # noqa: F401
+        import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
+        import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
 
         case_builder = (
             PUBLIC_SCALING_CASE_BUILDERS.get(operation.gometry)

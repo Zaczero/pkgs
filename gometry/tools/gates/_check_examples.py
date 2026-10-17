@@ -36,8 +36,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 _TOOLS = _ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
-from _gatelib import prepend_tools_import_paths
-from runtime_artifact import require_runtime
+from _gatelib import prepend_tools_import_paths, require_runtime
 
 prepend_tools_import_paths()
 
@@ -322,7 +321,7 @@ def _check_file(page: _ParsedPage) -> tuple[int, int]:
         output = io.StringIO()
         try:
             with redirect_stdout(output):
-                exec(  # noqa: S102
+                exec(  # ruff: ignore[exec-builtin]
                     compile(fence.code, f'{page.path}:{fence.line}', 'exec'),
                     namespace,
                 )

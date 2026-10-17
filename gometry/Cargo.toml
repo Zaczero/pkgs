@@ -15,7 +15,7 @@ include = [
   "/LICENSE-*",
   "/rust-toolchain.toml",
   "/native/notices/nlohmann-json-license.md",
-  "/native/cmake_flags.rs",
+  "/native/*.rs",
   "/native/proj-sys/**",
   "/native/libtiff-sys/**",
   "/native/h3o/**",
@@ -78,11 +78,11 @@ zmij = { version = "1.0.21", default-features = false }
 [dev-dependencies]
 # Differential oracle for gometry's own S2 core (src/grid/s2), test-only.
 s2 = { version = "0.2.0", default-features = false }
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.30.1", default-features = false }
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true

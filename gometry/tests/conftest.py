@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import sys
 import sysconfig
 from pathlib import Path
@@ -13,18 +11,14 @@ TOOLS = GOMETRY_ROOT / 'tools'
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-# Resolve checkout-local tools only after selecting the repository tools path.
-from _gatelib import prepend_tools_import_paths  # noqa: E402
-from runtime_artifact import require_runtime  # noqa: E402
+# ruff: ignore[module-import-not-at-top-of-file] - Checkout tools follow path selection.
+from _gatelib import (
+    prepend_tools_import_paths,
+    require_runtime,
+)
 
 prepend_tools_import_paths()
-_producer_path = os.environ.get('GOMETRY_RUNTIME_RECEIPT')
-_producer = (
-    json.loads(Path(_producer_path).read_text(encoding='utf-8'))
-    if _producer_path is not None
-    else None
-)
-require_runtime(GOMETRY_ROOT, prepare_if_stale=False, build_receipt=_producer)
+require_runtime(GOMETRY_ROOT)
 
 
 def _free_threaded_gil_enabled() -> bool:

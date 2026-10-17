@@ -145,7 +145,7 @@ def producer(
             },
         })
     return {
-        'identity_schema_version': 3,
+        'identity_schema_version': 1,
         'harness_commit': harness_commit,
         'source_inputs_sha256': HASH,
         'extension': extension,

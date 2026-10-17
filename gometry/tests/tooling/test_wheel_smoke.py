@@ -8,7 +8,6 @@ import hashlib
 import io
 import json
 import os
-import platform
 import shutil
 import struct
 import subprocess
@@ -28,15 +27,14 @@ for _path in (TOOLS, BENCHMARK_SUPPORT):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-import _artifact_common as artifact_common  # noqa: E402
-import artifact_content  # noqa: E402
-import benchmark_runtime  # noqa: E402
-import quality_runtime  # noqa: E402
-import release_artifact  # noqa: E402
-import runtime_artifact  # noqa: E402
-import sanitizers  # noqa: E402
-import source_artifact  # noqa: E402
-import wheel_smoke as wheel_cli  # noqa: E402
+import _artifact_common as artifact_common  # ruff: ignore[module-import-not-at-top-of-file]
+import artifact_content  # ruff: ignore[module-import-not-at-top-of-file]
+import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+import quality_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+import release_artifact  # ruff: ignore[module-import-not-at-top-of-file]
+import runtime_artifact  # ruff: ignore[module-import-not-at-top-of-file]
+import sanitizers  # ruff: ignore[module-import-not-at-top-of-file]
+import source_artifact  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _record_digest(payload: bytes) -> str:
@@ -130,30 +128,6 @@ def test_sanitizer_wheel_rejects_a_different_native_abi_or_platform(tag: str) ->
                 'gil_disabled': False,
             },
         )
-
-
-@pytest.mark.parametrize('ordinary_receipt_present', [False, True])
-def test_explicit_producer_rejection_does_not_consult_quality_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    ordinary_receipt_present: bool,
-) -> None:
-    if ordinary_receipt_present:
-        path = quality_runtime.quality_receipt_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text('invalid ordinary receipt', encoding='utf-8')
-    monkeypatch.setattr(runtime_artifact, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(runtime_artifact, '_ACTIVE_RUNTIME', None)
-    producer = {
-        'schema': 0,
-        'kind': 'gometry-sanitizer-runtime',
-        'build': {},
-        'source': {},
-        'wheel': {},
-    }
-
-    with pytest.raises(AssertionError, match='sanitizer producer receipt'):
-        runtime_artifact.require_runtime(tmp_path, build_receipt=producer)
 
 
 def _record_bytes(
@@ -272,7 +246,7 @@ def _quality_settings_root(tmp_path: Path) -> Path:
         root / 'Cargo.toml': '[package]\nname = "gometry"\n',
         root / 'pyproject.toml': '[project]\nname = "gometry"\n',
         root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz': (
             'fixture archive'
         ),
         root / 'README.md': 'readme\n',
@@ -312,7 +286,7 @@ def _producer_git_fixture(
         'gometry/Cargo.toml': '[package]\nname = "gometry"\n',
         'gometry/pyproject.toml': '[project]\nname = "gometry"\n',
         'gometry/rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        'gometry/native/proj-sys/PROJSRC/proj-9.6.2.tar.gz': 'proj fixture',
+        'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz': 'proj fixture',
         'gometry/build.rs': 'fn main() {}\n',
         'gometry/src/lib.rs': 'pub fn value() {}\n',
         'gometry/native/fixture/Cargo.toml': '[package]\nname = "fixture"\n',
@@ -414,149 +388,6 @@ def _producer_git_fixture(
     ).stdout.strip()
     monkeypatch.setattr(source_artifact, 'LIBTIFF_COMMIT', libtiff_commit)
     return repo, root, commit
-
-
-@pytest.mark.parametrize(
-    ('dirty_readme', 'git_available', 'expected_bound'),
-    [(False, True, True), (True, True, False), (False, False, False)],
-    ids=(
-        'rendered-readme-keeps-captured-commit',
-        'dirty-original-readme-stays-unbound',
-        'unavailable-head-stays-unbound',
-    ),
-)
-def test_stage_sdist_keeps_initial_readme_commit_eligibility(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    dirty_readme: bool,
-    git_available: bool,
-    expected_bound: bool,
-) -> None:
-    _, root, captured_head = _producer_git_fixture(tmp_path, monkeypatch)
-    readme = root / 'README.md'
-    if dirty_readme:
-        readme.write_text('dirty original README\n', encoding='utf-8')
-    original_readme = readme.read_bytes()
-    monkeypatch.setattr(source_artifact, 'ROOT', root)
-    monkeypatch.setattr(
-        source_artifact,
-        '_capture_git_head',
-        lambda: captured_head if git_available else None,
-    )
-    monkeypatch.setattr(source_artifact, 'verify_libtiff_checkout', lambda: None)
-    prepared_hashes = {'README.md': 'a' * 64}
-
-    def prepare_source_outputs() -> dict[str, str]:
-        readme.write_text('rendered PyPI README\n', encoding='utf-8')
-        return prepared_hashes
-
-    monkeypatch.setattr(
-        source_artifact,
-        '_prepare_source_outputs',
-        prepare_source_outputs,
-    )
-    monkeypatch.setattr(
-        source_artifact,
-        '_prepared_output_hashes',
-        lambda: prepared_hashes,
-    )
-    source_digests = {
-        'source_inputs_sha256': 'b' * 64,
-        'native_source_inputs_sha256': 'c' * 64,
-    }
-    monkeypatch.setattr(
-        source_artifact,
-        'source_input_digests',
-        lambda: source_digests,
-    )
-    evidence = {
-        **source_digests,
-        'preimage_lock_sha256': 'd' * 64,
-        'normalized_lock_sha256': 'e' * 64,
-        'preimage_lock_bytes': b'preimage',
-        'normalized_lock_bytes': b'normalized',
-        'required_sources': [],
-    }
-    monkeypatch.setattr(
-        source_artifact,
-        '_verify_extracted_sdist',
-        lambda *_args, **_kwargs: evidence,
-    )
-    monkeypatch.setattr(
-        source_artifact,
-        '_verify_locked_sdist',
-        lambda *_args, **_kwargs: {
-            **source_digests,
-            'normalized_lock_sha256': 'e' * 64,
-        },
-    )
-    monkeypatch.setattr(source_artifact, '_compare_restage_trees', lambda *_args: None)
-    monkeypatch.setattr(
-        source_artifact, 'inspect_sdist', lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(source_artifact, 'libtiff_source_members', set)
-    monkeypatch.setattr(
-        source_artifact,
-        'validate_source_manifest',
-        lambda *_args, **_kwargs: {},
-    )
-
-    def run_maturin_sdist(out_dir: Path, *, cwd: Path = root) -> None:
-        package_root = 'gometry-1.0.0'
-        out_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = out_dir / f'{package_root}.tar.gz'
-        with tarfile.open(archive_path, 'w:gz') as archive:
-            for relative in sorted(source_artifact.SOURCE_TOOL_MEMBERS):
-                archive.add(
-                    root / relative,
-                    arcname=f'{package_root}/{relative}',
-                    recursive=False,
-                )
-            archive.add(
-                root / 'python' / 'gometry',
-                arcname=f'{package_root}/python/gometry',
-            )
-
-    monkeypatch.setattr(source_artifact, '_run_maturin_sdist', run_maturin_sdist)
-    retain = source_artifact._retained_producer_commit
-
-    def retain_from_captured_root(
-        producer_commit: str | None,
-        initial_snapshot: dict[str, str],
-        current_snapshot: dict[str, str],
-        *,
-        exclude_readme: bool = False,
-    ) -> str | None:
-        return retain(
-            producer_commit,
-            initial_snapshot,
-            current_snapshot,
-            root,
-            exclude_readme=exclude_readme,
-        )
-
-    monkeypatch.setattr(
-        source_artifact,
-        '_retained_producer_commit',
-        retain_from_captured_root,
-    )
-    published_commits: list[str | None] = []
-
-    def source_manifest(*, commit: str | None, **_kwargs: Any) -> dict[str, Any]:
-        published_commits.append(commit)
-        return {'commit': commit}
-
-    monkeypatch.setattr(source_artifact, '_source_manifest', source_manifest)
-
-    staged = source_artifact.stage_sdist(tmp_path / 'staged')
-    observed_commit = captured_head if expected_bound else None
-    assert published_commits == [observed_commit]
-    assert json.loads(
-        (staged.parent / source_artifact.SOURCE_MANIFEST_NAME).read_text(
-            encoding='utf-8'
-        )
-    ) == {'commit': observed_commit}
-    assert readme.read_bytes() == original_readme
 
 
 def test_sdist_python_member_identity_uses_maturin_package_root(
@@ -906,7 +737,7 @@ def test_producer_commit_binding_drops_late_changes_and_unavailable_heads(
     )
 
 
-def test_source_identity_accepts_null_commit_but_requires_current_schema() -> None:
+def test_source_identity_accepts_null_commit_but_requires_bound_source_fields() -> None:
     identity: dict[str, Any] = {
         'commit': None,
         'filename': 'gometry-1.0.0.tar.gz',
@@ -932,9 +763,6 @@ def test_source_identity_accepts_null_commit_but_requires_current_schema() -> No
     }
 
     assert source_artifact.validate_source_identity(identity) is identity
-    assert source_artifact.SOURCE_MANIFEST_SCHEMA == 4
-    assert release_artifact.RUNNER_RECEIPT_SCHEMA == 4
-    assert release_artifact.RELEASE_MANIFEST_SCHEMA == 4
     for invalid_commit in ('', False, 7, 'not-a-commit'):
         with pytest.raises(AssertionError, match='malformed source commit'):
             source_artifact.validate_source_identity({
@@ -947,13 +775,13 @@ def test_source_identity_accepts_null_commit_but_requires_current_schema() -> No
         source_artifact.validate_source_identity(missing_commit)
 
 
-def test_source_manifest_rejects_schema_three(tmp_path: Path) -> None:
+def test_source_manifest_rejects_an_unsupported_schema(tmp_path: Path) -> None:
     source_sdist = tmp_path / 'gometry-1.0.0.tar.gz'
     source_sdist.write_bytes(b'previous receipt')
     manifest_path = tmp_path / source_artifact.SOURCE_MANIFEST_NAME
     manifest_path.write_text(
         json.dumps({
-            'schema': 3,
+            'schema': 999,
             'kind': 'gometry-source-manifest',
         }),
         encoding='utf-8',
@@ -1153,46 +981,6 @@ def test_runtime_admission_rejects_package_or_extension_from_another_tree(
         )
 
 
-def test_installed_wheel_runtime_projection_preserves_the_existing_shape() -> None:
-    source = {
-        'commit': None,
-        'version': '1.2.3',
-        'python_members': {'gometry/__init__.py': 'a' * 64},
-    }
-    build = {'profile': 'release', 'target': 'x86_64-unknown-linux-gnu'}
-    wheel = {
-        'filename': 'gometry-1.2.3-cp314-cp314-manylinux_2_34_x86_64.whl',
-        'sha256': 'b' * 64,
-        'extension_member': 'gometry/_lib.cpython-314-x86_64-linux-gnu.so',
-        'extension_sha256': 'c' * 64,
-        'unrelated': 'ignored',
-    }
-
-    projected = release_artifact.installed_wheel_runtime_receipt(
-        identifier='cp314-manylinux_x86_64',
-        profile='release',
-        source=source,
-        build=build,
-        wheel=wheel,
-        prepared_inputs={'README.md': 'd' * 64},
-    )
-
-    assert projected == {
-        'identifier': 'cp314-manylinux_x86_64',
-        'profile': 'release',
-        'source': source,
-        'build': build,
-        'wheel': {
-            'filename': wheel['filename'],
-            'sha256': wheel['sha256'],
-            'extension_member': wheel['extension_member'],
-            'extension_sha256': wheel['extension_sha256'],
-        },
-        'python_members': source['python_members'],
-        'prepared_inputs': {'README.md': 'd' * 64},
-    }
-
-
 def test_record_accepts_only_matching_unrecorded_signature_members(
     tmp_path: Path,
 ) -> None:
@@ -1316,7 +1104,7 @@ def test_record_rejects_sha1_even_when_the_row_digest_matches(tmp_path: Path) ->
     weak_digest = (
         base64
         .urlsafe_b64encode(
-            hashlib.sha1(members['gometry/_api.py']).digest()  # noqa: S324
+            hashlib.sha1(members['gometry/_api.py']).digest()  # ruff: ignore[hashlib-insecure-hash-function]
         )
         .rstrip(b'=')
         .decode('ascii')
@@ -1424,7 +1212,7 @@ def test_python_member_identity_requires_py_typed(tmp_path: Path) -> None:
         )
 
 
-def test_cibw_policy_keeps_raw_aarch64_and_separates_gnu_from_musl() -> None:
+def test_build_identifiers_keep_raw_aarch64_and_separate_gnu_from_musl() -> None:
     gnu = artifact_content.build_identifier_policy('cp314-manylinux_aarch64')
     musl = artifact_content.build_identifier_policy('cp314-musllinux_aarch64')
 
@@ -1433,15 +1221,10 @@ def test_cibw_policy_keeps_raw_aarch64_and_separates_gnu_from_musl() -> None:
     assert gnu['target'] == 'aarch64-unknown-linux-gnu'
     assert musl['target'] == 'aarch64-unknown-linux-musl'
     assert musl['platform_family'] == 'linux-musl'
-    release_artifact._validate_runner_target('ubuntu-24.04-arm', musl)
-
-    with pytest.raises(AssertionError, match='raw target architecture'):
-        release_artifact._validate_runner_target(
-            'ubuntu-24.04-arm',
-            {**gnu, 'target': 'x86_64-unknown-linux-musl'},
-        )
-    with pytest.raises(AssertionError, match='unsupported gometry wheel Python tag'):
-        artifact_content.build_identifier_policy('cp315-manylinux_x86_64')
+    assert (
+        artifact_content.build_identifier_policy('cp315-manylinux_x86_64')['target']
+        == 'x86_64-unknown-linux-gnu'
+    )
     with pytest.raises(AssertionError, match='free-threaded Python tag is unsupported'):
         artifact_content.build_identifier_policy('cp313t-manylinux_x86_64')
     with pytest.raises(AssertionError, match='unsupported gometry wheel platform'):
@@ -1552,412 +1335,6 @@ def test_elf_rejects_an_out_of_bounds_dynamic_version_need_table() -> None:
 
     with pytest.raises(AssertionError, match='version-need record'):
         artifact_content.native_image_facts(corrupted, path)
-
-
-def _valid_build_identity() -> dict[str, Any]:
-    target = 'x86_64-unknown-linux-gnu'
-    policy = artifact_common.release_target_policy(target)
-    rustflags = artifact_common._flag_text(policy['rustflags'])
-    cflags = artifact_common._flag_text(policy['cflags'])
-    cxxflags = artifact_common._flag_text(policy['cxxflags'])
-    digest = 'a' * 64
-    native = {
-        'extension': {
-            'format': 'ELF',
-            'architecture': 'x86_64',
-            'libc': 'gnu',
-            'needed': ['libc.so.6'],
-            'glibc_versions': ['GLIBC_2.17'],
-        },
-        'libraries': {},
-    }
-    environment = {
-        'GOMETRY_RELEASE_TARGET': target,
-        'GOMETRY_RELEASE_TARGET_POLICY': policy['target_policy'],
-        'GOMETRY_RELEASE_RUSTFLAGS': rustflags,
-        'GOMETRY_RELEASE_CFLAGS': cflags,
-        'GOMETRY_RELEASE_CXXFLAGS': cxxflags,
-        'CARGO_BUILD_TARGET': target,
-        'RUSTFLAGS': rustflags,
-        'CARGO_ENCODED_RUSTFLAGS': '\x1f'.join(policy['rustflags']),
-        f'CFLAGS_{target.replace("-", "_")}': cflags,
-        f'CXXFLAGS_{target.replace("-", "_")}': cxxflags,
-        'MATURIN_PEP517_ARGS': artifact_common.RELEASE_MATURIN_ARGS,
-    }
-    return {
-        **policy,
-        'raw_target_arch': 'x86_64',
-        'command': {
-            'dispatched': {
-                'cibuildwheel_argv': [
-                    'uv',
-                    'tool',
-                    'run',
-                    '--from',
-                    'cibuildwheel==4.1.0',
-                    'cibuildwheel',
-                ],
-                'frontend': 'build[uv]',
-                'config_settings': {
-                    'MATURIN_PEP517_ARGS': artifact_common.RELEASE_MATURIN_ARGS,
-                },
-            },
-            'config_sha256': digest,
-            'host_log_sha256': 'b' * 64,
-            'host_exit_code': 0,
-            'capture_exit_code': 0,
-        },
-        'profile': artifact_common.RELEASE_PROFILE,
-        'interpreter': {
-            'executable': 'python/cp314',
-            'prefix': 'python-prefix/cp314',
-            'version': '3.14.7',
-            'implementation': 'CPython',
-            'cache_tag': 'cpython-314',
-            'ext_suffix': '.cpython-314-x86_64-linux-gnu.so',
-            'gil_disabled': False,
-        },
-        'compiler': {
-            'observed_at': 'before-build',
-            'rustc_vv': 'rustc 1.90.0-nightly\ncommit-hash: abcdef\n',
-        },
-        'cargo': 'cargo 1.90.0-nightly',
-        'maturin': {
-            'unrepaired_wheel_sha256': digest,
-            'wheel_member': 'gometry-1.dist-info/WHEEL',
-            'wheel_member_sha256': digest,
-            'generator': f'maturin ({artifact_common.MATURIN_VERSION})',
-            'repaired_wheel_member_sha256': digest,
-            'repaired_generator': f'maturin ({artifact_common.MATURIN_VERSION})',
-        },
-        'dependencies': {'lock_normalized_sha256': digest},
-        'settings': {
-            'config_sha256': digest,
-            'source_manifest_sha256': digest,
-            'source_sdist_sha256': digest,
-            'environment': environment,
-            'test_sources': dict.fromkeys(
-                release_artifact.CIBW_TEST_SOURCE_FILES, digest
-            ),
-            'test_source_root': 'test-sources',
-            'native': native,
-            'unrepaired_native': native,
-            'wheel_tags': [
-                'cp314-cp314-manylinux_2_17_x86_64',
-            ],
-            'build_inputs': dict.fromkeys(artifact_common.RELEASE_BUILD_INPUTS, digest),
-        },
-    }
-
-
-def test_smoke_identity_binds_runtime_loader_to_target_libc() -> None:
-    build = _valid_build_identity()
-    digest = 'a' * 64
-    extension_member = 'gometry/_lib.cpython-314-x86_64-linux-gnu.so'
-    smoke = {
-        'status': 'passed',
-        'exit_code': 0,
-        'interpreter': {
-            'pid': 123,
-            'executable': 'python/cpython-314',
-            'prefix': 'python-prefix/cpython-314',
-            'version': '3.14.7',
-            'implementation': 'CPython',
-            'cache_tag': 'cpython-314',
-            'ext_suffix': '.cpython-314-x86_64-linux-gnu.so',
-            'gil_disabled': False,
-        },
-        'module': {
-            'facade': {'member': 'gometry/__init__.py', 'sha256': digest},
-            'extension': {'member': extension_member, 'sha256': digest},
-        },
-        'source_inputs_sha256': digest,
-        'native_source_inputs_sha256': digest,
-        'distribution': {
-            'name': 'gometry',
-            'version': '1.0.0',
-            'metadata_sha256': digest,
-        },
-        'platform': {
-            'machine': 'x86_64',
-            'architecture': 'x86_64',
-            'target': build['target'],
-            'target_arch': build['raw_target_arch'],
-            'platform': 'linux-x86_64',
-            'libc': ['glibc', '2.17'],
-            'loader': {
-                'runtime_libc': 'gnu',
-                'loader_paths': ['loader/ld-linux-x86-64.so.2'],
-                'libc_paths': ['libc/libc.so.6'],
-            },
-            'gil_disabled': False,
-            'wheel_tags': build['settings']['wheel_tags'],
-            'native_image': build['settings']['native'],
-        },
-        'log_sha256': digest,
-    }
-    source = {
-        'version': '1.0.0',
-        'source_inputs_sha256': digest,
-        'native_source_inputs_sha256': digest,
-    }
-
-    release_artifact._validate_smoke_identity(
-        smoke,
-        field='smoke',
-        source=source,
-        build=build,
-        extension_member=extension_member,
-        extension_sha256=digest,
-    )
-
-    smoke['platform']['loader']['runtime_libc'] = 'musl'
-    with pytest.raises(AssertionError, match='loader/libc differs'):
-        release_artifact._validate_smoke_identity(
-            smoke,
-            field='smoke',
-            source=source,
-            build=build,
-            extension_member=extension_member,
-            extension_sha256=digest,
-        )
-
-
-def test_runner_build_identity_rejects_false_profile_and_partial_guards() -> None:
-    build = _valid_build_identity()
-    assert release_artifact._validate_build_identity(build)['profile'] == (
-        artifact_common.RELEASE_PROFILE
-    )
-
-    wrong_profile = json.loads(json.dumps(build))
-    wrong_profile['profile'] = 'release'
-    with pytest.raises(AssertionError, match='profile'):
-        release_artifact._validate_build_identity(wrong_profile)
-
-    missing_guard = json.loads(json.dumps(build))
-    del missing_guard['settings']['environment']['GOMETRY_RELEASE_CXXFLAGS']
-    with pytest.raises(TypeError, match='GOMETRY_RELEASE_CXXFLAGS'):
-        release_artifact._validate_build_identity(missing_guard)
-
-
-def _embedded_python_identity() -> dict[str, Any]:
-    gil_state = getattr(sys, '_is_gil_enabled', None)
-    return {
-        'version': sys.version,
-        'implementation': platform.python_implementation(),
-        'cache_tag': sys.implementation.cache_tag,
-        'ext_suffix': sysconfig.get_config_var('EXT_SUFFIX'),
-        'gil_disabled': bool(sysconfig.get_config_var('Py_GIL_DISABLED')),
-        'gil_enabled': gil_state() if gil_state is not None else None,
-    }
-
-
-def _native_receipt_observation(
-    executable: Path,
-    source_root: Path,
-    *,
-    invocation_run_id: str,
-    nextest_run_id: str,
-    embedded_python: dict[str, Any],
-) -> dict[str, Any]:
-    executable_bytes = executable.read_bytes()
-    digests = artifact_content.source_input_digests(source_root)
-    return {
-        'schema': 2,
-        'kind': 'gometry-native-test-binary',
-        'invocation_run_id': invocation_run_id,
-        'nextest_run_id': nextest_run_id,
-        'test_name': 'records_the_running_nextest_binary_when_requested',
-        'selected_python': sys.executable,
-        'embedded_python': embedded_python,
-        'pid': os.getpid(),
-        'executable': str(executable),
-        'size_bytes': len(executable_bytes),
-        'sha256': hashlib.sha256(executable_bytes).hexdigest(),
-        'source_inputs_format': artifact_common.SOURCE_INPUTS_FORMAT,
-        'source_inputs_sha256': digests['source_inputs_sha256'],
-        'native_source_inputs_format': artifact_common.SOURCE_INPUTS_FORMAT,
-        'native_source_inputs_sha256': digests['native_source_inputs_sha256'],
-        'profile_family': 'debug',
-        'opt_level': '0',
-        'debug_assertions': True,
-        'target': 'x86_64-unknown-linux-gnu',
-        'target_arch': 'x86_64',
-        'target_features': 'sse2',
-    }
-
-
-def test_native_receipt_binds_running_binary_and_python_to_nextest_junit(
-    tmp_path: Path,
-) -> None:
-    executable = tmp_path / 'gometry-nextest'
-    executable.write_bytes(b'\x7fELF' + b'running test executable')
-    source_root = _source_root(tmp_path)
-    digests = artifact_content.source_input_digests(source_root)
-    invocation_run_id = '00000000-0000-4000-8000-000000000001'
-    nextest_run_id = '00000000-0000-4000-8000-000000000002'
-    embedded_python = _embedded_python_identity()
-    observation = _native_receipt_observation(
-        executable,
-        source_root,
-        invocation_run_id=invocation_run_id,
-        nextest_run_id=nextest_run_id,
-        embedded_python=embedded_python,
-    )
-    binary_json = tmp_path / 'binary.json'
-    binary_json.write_text(json.dumps(observation), encoding='utf-8')
-    junit = tmp_path / 'junit.xml'
-    junit.write_text(
-        f'<testsuites name="nextest-run" tests="1" failures="0" errors="0" '
-        f'uuid="{nextest_run_id}"><testsuite name="gometry" tests="1" '
-        'disabled="0" errors="0" failures="0"><testcase classname="gometry" '
-        'name="native_test_identity::records_the_running_nextest_binary_when_requested"/>'
-        '</testsuite></testsuites>',
-        encoding='utf-8',
-    )
-
-    receipt_path = runtime_artifact.write_native_test_receipt(
-        binary_json,
-        junit,
-        tmp_path / 'receipt.json',
-        python=Path(sys.executable),
-        runner='ubuntu-latest',
-        profile='debug',
-        run_id=invocation_run_id,
-        root=source_root,
-    )
-    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
-    assert receipt['binary']['sha256'] == observation['sha256']
-    assert receipt['source_inputs_sha256'] == digests['source_inputs_sha256']
-    assert receipt['run_id'] == invocation_run_id
-    assert receipt['nextest_run_id'] == nextest_run_id
-    assert receipt['python']['embedded'] == embedded_python
-    assert receipt['junit']['test_cases'][0]['name'] == (
-        f'native_test_identity::{observation["test_name"]}'
-    )
-
-
-def test_native_receipt_rejects_a_junit_without_the_executed_elf_witness(
-    tmp_path: Path,
-) -> None:
-    executable = tmp_path / 'gometry-nextest'
-    executable.write_bytes(b'\x7fELF' + b'running test executable')
-    source_root = _source_root(tmp_path)
-    invocation_run_id = '00000000-0000-4000-8000-000000000003'
-    nextest_run_id = '00000000-0000-4000-8000-000000000004'
-    observation = _native_receipt_observation(
-        executable,
-        source_root,
-        invocation_run_id=invocation_run_id,
-        nextest_run_id=nextest_run_id,
-        embedded_python=_embedded_python_identity(),
-    )
-    binary_json = tmp_path / 'binary.json'
-    binary_json.write_text(json.dumps(observation), encoding='utf-8')
-    junit = tmp_path / 'junit.xml'
-    junit.write_text(
-        f'<testsuites name="nextest-run" tests="1" failures="0" errors="0" '
-        f'uuid="{nextest_run_id}"><testsuite name="gometry" tests="1" '
-        'disabled="0" errors="0" failures="0">'
-        '<testcase classname="gometry" name="unrelated"/>'
-        '</testsuite></testsuites>',
-        encoding='utf-8',
-    )
-
-    with pytest.raises(AssertionError, match='running-ELF witness'):
-        runtime_artifact.write_native_test_receipt(
-            binary_json,
-            junit,
-            tmp_path / 'receipt.json',
-            python=Path(sys.executable),
-            runner='ubuntu-latest',
-            profile='debug',
-            run_id=invocation_run_id,
-            root=source_root,
-        )
-
-
-def test_native_receipt_rejects_a_different_nextest_junit_run_uuid(
-    tmp_path: Path,
-) -> None:
-    executable = tmp_path / 'gometry-nextest'
-    executable.write_bytes(b'\x7fELF' + b'running test executable')
-    source_root = _source_root(tmp_path)
-    invocation_run_id = '00000000-0000-4000-8000-000000000005'
-    nextest_run_id = '00000000-0000-4000-8000-000000000006'
-    observation = _native_receipt_observation(
-        executable,
-        source_root,
-        invocation_run_id=invocation_run_id,
-        nextest_run_id=nextest_run_id,
-        embedded_python=_embedded_python_identity(),
-    )
-    binary_json = tmp_path / 'binary.json'
-    binary_json.write_text(json.dumps(observation), encoding='utf-8')
-    junit = tmp_path / 'junit.xml'
-    junit.write_text(
-        '<testsuites name="nextest-run" tests="1" failures="0" errors="0" '
-        'uuid="00000000-0000-4000-8000-000000000007">'
-        '<testsuite name="gometry" tests="1" disabled="0" errors="0" failures="0">'
-        '<testcase classname="gometry" '
-        'name="native_test_identity::records_the_running_nextest_binary_when_requested"/>'
-        '</testsuite></testsuites>',
-        encoding='utf-8',
-    )
-
-    with pytest.raises(AssertionError, match='run UUID differs'):
-        runtime_artifact.write_native_test_receipt(
-            binary_json,
-            junit,
-            tmp_path / 'receipt.json',
-            python=Path(sys.executable),
-            runner='ubuntu-latest',
-            profile='debug',
-            run_id=invocation_run_id,
-            root=source_root,
-        )
-
-
-def test_native_receipt_rejects_embedded_python_abi_mismatch(
-    tmp_path: Path,
-) -> None:
-    executable = tmp_path / 'gometry-nextest'
-    executable.write_bytes(b'\x7fELF' + b'running test executable')
-    source_root = _source_root(tmp_path)
-    invocation_run_id = '00000000-0000-4000-8000-000000000008'
-    nextest_run_id = '00000000-0000-4000-8000-000000000009'
-    embedded_python = _embedded_python_identity()
-    embedded_python['cache_tag'] = 'incompatible-cache-tag'
-    observation = _native_receipt_observation(
-        executable,
-        source_root,
-        invocation_run_id=invocation_run_id,
-        nextest_run_id=nextest_run_id,
-        embedded_python=embedded_python,
-    )
-    binary_json = tmp_path / 'binary.json'
-    binary_json.write_text(json.dumps(observation), encoding='utf-8')
-    junit = tmp_path / 'junit.xml'
-    junit.write_text(
-        f'<testsuites name="nextest-run" tests="1" failures="0" errors="0" '
-        f'uuid="{nextest_run_id}"><testsuite name="gometry" tests="1" '
-        'disabled="0" errors="0" failures="0"><testcase classname="gometry" '
-        'name="native_test_identity::records_the_running_nextest_binary_when_requested"/>'
-        '</testsuite></testsuites>',
-        encoding='utf-8',
-    )
-
-    with pytest.raises(AssertionError, match='embedded Python ABI differs'):
-        runtime_artifact.write_native_test_receipt(
-            binary_json,
-            junit,
-            tmp_path / 'receipt.json',
-            python=Path(sys.executable),
-            runner='ubuntu-latest',
-            profile='debug',
-            run_id=invocation_run_id,
-            root=source_root,
-        )
 
 
 def test_null_commit_still_binds_actual_python_and_wheel_bytes(
@@ -2078,204 +1455,6 @@ def test_null_commit_still_binds_actual_python_and_wheel_bytes(
         )
 
 
-def test_direct_runtime_preflight_records_the_selected_interpreter(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    gate = runtime_artifact
-    runtime = (object(), object(), {'interpreter': {'pid': 123, 'prefix': '/venv'}})
-    admission = type('Admission', (), {'root': tmp_path.resolve()})()
-    observed: list[tuple[Path, dict[str, Any] | None]] = []
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-
-    def inspect(
-        root: Path,
-        *,
-        expected_wheel: Path | None = None,
-        build_receipt: Any = None,
-        runtime_selection: dict[str, Any] | None = None,
-    ) -> Any:
-        observed.append((root, runtime_selection or {}))
-        return admission
-
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', inspect)
-    monkeypatch.setattr(gate, 'verify_admitted_runtime', lambda _admission: runtime)
-    monkeypatch.setattr(
-        gate.subprocess,
-        'run',
-        lambda *_args, **_kwargs: pytest.fail('valid runtime must not be rebuilt'),
-    )
-
-    result = gate.require_runtime(tmp_path, prepare_if_stale=False)
-
-    assert result == runtime
-    assert observed[0][0] == tmp_path.resolve()
-    assert '"pid":123' in capsys.readouterr().err
-
-
-def test_preimport_stale_runtime_prepares_once_then_readmits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = runtime_artifact
-    runtime = (object(), object(), {'interpreter': {'pid': 456}})
-    admission = type('Admission', (), {'root': tmp_path.resolve()})()
-    attempts: list[Path] = []
-    commands: list[tuple[list[str], Path]] = []
-
-    def inspect(root: Path, **_kwargs: Any) -> Any:
-        attempts.append(root)
-        if len(attempts) == 1:
-            raise gate.QualityPreparationRequired('stale native inputs')
-        return admission
-
-    def prepare(command: list[str], *, cwd: Path, check: bool) -> Any:
-        commands.append((command, cwd))
-        assert check is False
-        return type('Result', (), {'returncode': 0})()
-
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-    monkeypatch.setattr(gate, '_resident_gometry_modules', dict)
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', inspect)
-    monkeypatch.setattr(gate, 'verify_admitted_runtime', lambda _admission: runtime)
-    monkeypatch.setattr(gate.subprocess, 'run', prepare)
-
-    assert gate.require_runtime(tmp_path, prepare_if_stale=True) == runtime
-    assert attempts == [tmp_path.resolve(), tmp_path.resolve()]
-    assert commands == [
-        (
-            [
-                sys.executable,
-                str(tmp_path.resolve() / 'tools' / 'check.py'),
-                '--prepare',
-            ],
-            tmp_path.resolve(),
-        )
-    ]
-
-
-def test_readonly_stale_runtime_does_not_prepare(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = runtime_artifact
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-    monkeypatch.setattr(gate, '_resident_gometry_modules', dict)
-
-    def stale(_root: Path) -> Any:
-        raise gate.QualityPreparationRequired('missing local receipt')
-
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', stale)
-    monkeypatch.setattr(
-        gate.subprocess,
-        'run',
-        lambda *_args, **_kwargs: pytest.fail(
-            'readonly admission must not prepare a runtime'
-        ),
-    )
-
-    with pytest.raises(SystemExit, match=r'run .*tools/check\.py'):
-        gate.require_runtime(tmp_path)
-
-
-def test_runtime_that_remains_stale_after_preparation_is_not_retried(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = runtime_artifact
-    attempts: list[Path] = []
-    commands: list[list[str]] = []
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-    monkeypatch.setattr(gate, '_resident_gometry_modules', dict)
-
-    def stale(root: Path) -> Any:
-        attempts.append(root)
-        raise gate.QualityPreparationRequired('still missing local receipt')
-
-    def prepare(command: list[str], *, cwd: Path, check: bool) -> Any:
-        commands.append(command)
-        assert cwd == tmp_path.resolve()
-        assert check is False
-        return type('Result', (), {'returncode': 0})()
-
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', stale)
-    monkeypatch.setattr(gate.subprocess, 'run', prepare)
-
-    with pytest.raises(SystemExit, match='remains stale after preparation'):
-        gate.require_runtime(tmp_path, prepare_if_stale=True)
-
-    assert attempts == [tmp_path.resolve(), tmp_path.resolve()]
-    assert commands == [
-        [
-            sys.executable,
-            str(tmp_path.resolve() / 'tools' / 'check.py'),
-            '--prepare',
-        ]
-    ]
-
-
-def test_stale_runtime_with_resident_modules_fails_without_preparation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = runtime_artifact
-    resident = {'gometry': object()}
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-
-    def stale(_root: Path) -> Any:
-        raise gate.QualityPreparationRequired('stale source inputs')
-
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', stale)
-    monkeypatch.setattr(gate, '_resident_gometry_modules', lambda: resident)
-    monkeypatch.setattr(
-        gate.subprocess,
-        'run',
-        lambda *_args, **_kwargs: pytest.fail(
-            'a resident runtime must not trigger preparation'
-        ),
-    )
-
-    with pytest.raises(SystemExit, match='already imported'):
-        gate.require_runtime(tmp_path)
-
-
-def test_runtime_import_failure_is_terminal_without_preparation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = runtime_artifact
-    admission = type('Admission', (), {'root': tmp_path.resolve()})()
-    monkeypatch.setattr(gate, '_ACTIVE_ADMISSION', None)
-    monkeypatch.setattr(gate, '_ACTIVE_RUNTIME', None)
-    monkeypatch.setattr(gate, '_resident_gometry_modules', dict)
-    monkeypatch.setattr(gate, 'inspect_runtime_inputs', lambda _root: admission)
-
-    def fail_import(_admission: Any) -> Any:
-        raise ImportError('native import failed')
-
-    monkeypatch.setattr(
-        gate,
-        'verify_admitted_runtime',
-        fail_import,
-    )
-    monkeypatch.setattr(
-        gate.subprocess,
-        'run',
-        lambda *_args, **_kwargs: pytest.fail(
-            'an import failure must not trigger preparation'
-        ),
-    )
-
-    with pytest.raises(ImportError, match='native import failed'):
-        gate.require_runtime(tmp_path)
-
-
 def test_corrupt_quality_wheel_is_not_rebuilt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2381,7 +1560,7 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         root / 'Cargo.toml': ('[package]\nname = "gometry"\nversion = "1.0.0"\n'),
         root / 'pyproject.toml': '[project]\nname = "gometry"\n',
         root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz': (
             'fixture archive'
         ),
     }
@@ -2675,38 +1854,3 @@ def test_unsupported_or_malformed_quality_receipt_is_not_rebuildable(
 
     with pytest.raises(error):
         quality_runtime.read_quality_receipt(tmp_path)
-
-
-def test_wheel_receipt_cli_accepts_its_required_evidence_options(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = tmp_path / artifact_common.RUNNER_RECEIPT_NAME
-    observed: dict[str, Any] = {}
-
-    def write_receipt(*args: Any, **kwargs: Any) -> Path:
-        observed['args'] = args
-        observed['kwargs'] = kwargs
-        return output
-
-    monkeypatch.setattr(wheel_cli, 'write_runner_receipt', write_receipt)
-
-    status = wheel_cli.main([
-        '--write-wheel-receipt',
-        str(tmp_path / 'wheels'),
-        str(tmp_path / 'identifiers.txt'),
-        str(tmp_path / 'source-manifest.json'),
-        '--evidence-dir',
-        str(tmp_path / 'evidence'),
-        '--build-log',
-        str(tmp_path / 'build.log'),
-        '--build-exit-code',
-        '0',
-        '--capture-exit-code',
-        '0',
-        '--runner',
-        'ubuntu-latest',
-    ])
-
-    assert status == 0
-    assert observed['kwargs']['runner'] == 'ubuntu-latest'

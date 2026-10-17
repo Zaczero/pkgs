@@ -737,9 +737,9 @@ class _PerfCounterWindow:
         self.ack_read: int | None = None
         self.ack_buffer = bytearray()
         # These logs span the counter window and close with its owner.
-        self.log = tempfile.TemporaryFile()  # noqa: SIM115
+        self.log = tempfile.TemporaryFile()  # ruff: ignore[open-file-with-context-handler]
         try:
-            self.stderr = tempfile.TemporaryFile()  # noqa: SIM115
+            self.stderr = tempfile.TemporaryFile()  # ruff: ignore[open-file-with-context-handler]
         except BaseException:
             self.log.close()
             raise
@@ -1762,22 +1762,22 @@ def main() -> int:
     parser.add_argument(
         '--a-receipt',
         type=Path,
-        help='quality receipt, release manifest, or runner-wheel receipt for side A',
+        help='source-attributed wheel or quality runtime receipt for side A',
     )
     parser.add_argument(
         '--a-package-root',
         type=Path,
-        help='installed package root for a release subject on side A',
+        help='installed package root for a wheel on side A',
     )
     parser.add_argument(
         '--b-receipt',
         type=Path,
-        help='quality receipt, release manifest, or runner-wheel receipt for side B',
+        help='source-attributed wheel or quality runtime receipt for side B',
     )
     parser.add_argument(
         '--b-package-root',
         type=Path,
-        help='installed package root for a release subject on side B',
+        help='installed package root for a wheel on side B',
     )
     parser.add_argument(
         '--case',

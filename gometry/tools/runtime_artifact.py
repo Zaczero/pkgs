@@ -6,11 +6,8 @@ import importlib.metadata
 import importlib.util
 import json
 import platform
-import subprocess
 import sys
 import sysconfig
-import uuid
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -19,10 +16,7 @@ from typing import TYPE_CHECKING, Any
 from _artifact_common import (
     HEX_DIGEST,
     MATURIN_VERSION,
-    ROOT,
-    RUNNER_TARGETS,
     SOURCE_INPUTS_FORMAT,
-    _atomic_json,
     _runtime_interpreter,
     _sha256_bytes,
     _target_architecture,
@@ -34,7 +28,6 @@ from artifact_content import (
     inspect_wheel,
     native_image_facts,
     python_member_hashes,
-    source_input_digests,
     validate_wheel_native_target,
     wheel_matches_identifier,
     wheel_target_compatible,
@@ -57,266 +50,6 @@ SMOKE_EXPECTED_VERSION_ENV = 'GOMETRY_SMOKE_EXPECTED_VERSION'
 SMOKE_EXPECTED_TARGET_ENV = 'GOMETRY_SMOKE_EXPECTED_TARGET'
 SMOKE_EXPECTED_ARCHITECTURE_ENV = 'GOMETRY_SMOKE_EXPECTED_ARCHITECTURE'
 SMOKE_EXPECTED_HOST_ARCH_ENV = 'GOMETRY_SMOKE_EXPECTED_HOST_ARCHITECTURE'
-
-
-def write_native_test_receipt(
-    binary_observation_path: Path,
-    junit_path: Path,
-    receipt_path: Path,
-    *,
-    python: Path,
-    runner: str,
-    profile: str,
-    run_id: str,
-    root: Path = ROOT,
-) -> Path:
-    """Bind the ELF reported by a running Nextest binary to its JUnit result."""
-    if profile not in {'debug', 'release'}:
-        raise AssertionError(f'unsupported native test profile: {profile!r}')
-    try:
-        uuid.UUID(run_id)
-    except ValueError as error:
-        raise AssertionError('native test run identifier is not a UUID') from error
-    if runner not in RUNNER_TARGETS:
-        raise AssertionError(f'unknown native test runner: {runner!r}')
-    try:
-        identity = json.loads(binary_observation_path.read_text(encoding='utf-8'))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise AssertionError(
-            f'cannot read running native test identity: {error}'
-        ) from error
-    expected_identity_fields = {
-        'schema',
-        'kind',
-        'invocation_run_id',
-        'nextest_run_id',
-        'test_name',
-        'selected_python',
-        'embedded_python',
-        'pid',
-        'executable',
-        'size_bytes',
-        'sha256',
-        'source_inputs_format',
-        'source_inputs_sha256',
-        'native_source_inputs_format',
-        'native_source_inputs_sha256',
-        'profile_family',
-        'opt_level',
-        'debug_assertions',
-        'target',
-        'target_arch',
-        'target_features',
-    }
-    if (
-        not isinstance(identity, dict)
-        or set(identity) != expected_identity_fields
-        or identity.get('schema') != 2
-        or identity.get('kind') != 'gometry-native-test-binary'
-        or identity.get('invocation_run_id') != run_id
-        or identity.get('test_name')
-        != 'records_the_running_nextest_binary_when_requested'
-    ):
-        raise AssertionError('running native test identity fields are invalid')
-    nextest_run_id = identity.get('nextest_run_id')
-    try:
-        uuid.UUID(nextest_run_id)
-    except (TypeError, ValueError) as error:
-        raise AssertionError(
-            'running Nextest binary has no valid Nextest run UUID'
-        ) from error
-    executable = Path(identity['executable']).resolve()
-    if not executable.is_file() or not executable.read_bytes().startswith(b'\x7fELF'):
-        raise AssertionError('reported Nextest binary is not an existing ELF')
-    executable_bytes = executable.read_bytes()
-    executable_digest = _sha256_bytes(executable_bytes)
-    if (
-        identity.get('size_bytes') != len(executable_bytes)
-        or identity.get('sha256') != executable_digest
-    ):
-        raise AssertionError(
-            'running Nextest binary changed after its test observation'
-        )
-    root = root.resolve()
-    source_digests = source_input_digests(root)
-    if (
-        identity.get('source_inputs_format') != SOURCE_INPUTS_FORMAT
-        or identity.get('source_inputs_sha256')
-        != source_digests['source_inputs_sha256']
-        or identity.get('native_source_inputs_format') != SOURCE_INPUTS_FORMAT
-        or identity.get('native_source_inputs_sha256')
-        != source_digests['native_source_inputs_sha256']
-    ):
-        raise AssertionError('running Nextest binary source identity is stale')
-    target = identity.get('target')
-    if not isinstance(target, str):
-        raise TypeError('running Nextest binary has no target triple')
-    expected_target = RUNNER_TARGETS[runner]
-    if target != expected_target:
-        raise AssertionError(
-            f'running Nextest binary target differs from runner: {target!r} != '
-            f'{expected_target!r}'
-        )
-    expected_profile = {
-        'debug': ('debug', '0', True),
-        'release': ('release', '3', False),
-    }[profile]
-    if (
-        identity.get('profile_family') != expected_profile[0]
-        or identity.get('opt_level') != expected_profile[1]
-        or identity.get('debug_assertions') is not expected_profile[2]
-    ):
-        raise AssertionError('running Nextest binary profile facts are incorrect')
-
-    selected_python = python.resolve()
-    selected_python_value = identity.get('selected_python')
-    if (
-        not isinstance(selected_python_value, str)
-        or Path(selected_python_value).resolve() != selected_python
-    ):
-        raise AssertionError('Nextest binary selected a different PyO3 interpreter')
-    embedded_python = identity.get('embedded_python')
-    embedded_python_fields = {
-        'version',
-        'implementation',
-        'cache_tag',
-        'ext_suffix',
-        'gil_disabled',
-        'gil_enabled',
-    }
-    if (
-        not isinstance(embedded_python, dict)
-        or set(embedded_python) != embedded_python_fields
-        or not all(
-            isinstance(embedded_python.get(name), str) and embedded_python[name]
-            for name in (
-                'version',
-                'implementation',
-                'cache_tag',
-                'ext_suffix',
-            )
-        )
-        or not isinstance(embedded_python.get('gil_disabled'), bool)
-        or (
-            embedded_python.get('gil_enabled') is not None
-            and not isinstance(embedded_python.get('gil_enabled'), bool)
-        )
-    ):
-        raise AssertionError('Nextest binary embedded Python identity is malformed')
-    if (
-        embedded_python['gil_disabled']
-        and embedded_python.get('gil_enabled') is not False
-    ):
-        raise AssertionError('embedded free-threaded Python must keep the GIL disabled')
-    python_probe = (
-        'import json,platform,sys,sysconfig; '
-        'print(json.dumps({'
-        '"version":sys.version,'
-        '"implementation":platform.python_implementation(),'
-        '"cache_tag":sys.implementation.cache_tag,'
-        '"ext_suffix":sysconfig.get_config_var("EXT_SUFFIX"),'
-        '"gil_disabled":bool(sysconfig.get_config_var("Py_GIL_DISABLED")),'
-        '"gil_enabled":sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else None'
-        '}))'
-    )
-    python_result = subprocess.run(
-        [str(selected_python), '-c', python_probe],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if python_result.returncode:
-        raise AssertionError(
-            f'selected embedded Python identity failed: {python_result.stderr.strip()}'
-        )
-    try:
-        python_identity = json.loads(python_result.stdout)
-    except json.JSONDecodeError as error:
-        raise AssertionError(
-            'selected embedded Python returned invalid identity'
-        ) from error
-    if python_identity != embedded_python:
-        raise AssertionError(
-            'Nextest binary embedded Python ABI differs from the selected interpreter'
-        )
-    if (
-        python_identity.get('gil_disabled') is True
-        and python_identity.get('gil_enabled') is not False
-    ):
-        raise AssertionError('selected free-threaded Python must keep the GIL disabled')
-
-    try:
-        # Nextest emits this local runner-owned JUnit artifact.
-        junit_root = ET.parse(junit_path).getroot()  # noqa: S314
-    except (OSError, ET.ParseError) as error:
-        raise AssertionError(f'cannot read Nextest JUnit report: {error}') from error
-    if junit_root.get('uuid') != nextest_run_id:
-        raise AssertionError(
-            'Nextest JUnit run UUID differs from the running test binary'
-        )
-    test_cases = [
-        {
-            'classname': case.get('classname', ''),
-            'name': case.get('name', ''),
-        }
-        for case in junit_root.iter('testcase')
-    ]
-    witnesses = [
-        case
-        for case in junit_root.iter('testcase')
-        if case.get('name', '').rsplit('::', 1)[-1] == identity['test_name']
-    ]
-    if not test_cases or len(witnesses) != 1:
-        raise AssertionError('Nextest JUnit does not contain the running-ELF witness')
-    witness = witnesses[0]
-    if any(
-        witness.find(status) is not None for status in ('failure', 'error', 'skipped')
-    ):
-        raise AssertionError('Nextest JUnit did not pass the running-ELF witness')
-    if any(
-        case.find('failure') is not None or case.find('error') is not None
-        for case in junit_root.iter('testcase')
-    ):
-        raise AssertionError('Nextest JUnit contains failed tests')
-    junit_bytes = junit_path.read_bytes()
-    receipt = {
-        'schema': 2,
-        'kind': 'gometry-native-test-receipt',
-        'runner': runner,
-        'run_id': run_id,
-        'nextest_run_id': nextest_run_id,
-        'profile': profile,
-        'exit_code': 0,
-        'source_inputs_format': SOURCE_INPUTS_FORMAT,
-        'source_inputs_sha256': source_digests['source_inputs_sha256'],
-        'native_source_inputs_format': SOURCE_INPUTS_FORMAT,
-        'native_source_inputs_sha256': source_digests['native_source_inputs_sha256'],
-        'binary': {
-            'path': str(executable),
-            'size_bytes': len(executable_bytes),
-            'sha256': executable_digest,
-            'target': target,
-            'target_arch': identity['target_arch'],
-            'target_features': identity['target_features'],
-            'profile_family': identity['profile_family'],
-            'opt_level': identity['opt_level'],
-            'debug_assertions': identity['debug_assertions'],
-            'pid': identity['pid'],
-        },
-        'python': {
-            'selected_executable': str(selected_python),
-            'selected': python_identity,
-            'embedded': embedded_python,
-        },
-        'junit': {
-            'path': str(junit_path.resolve()),
-            'sha256': _sha256_bytes(junit_bytes),
-            'test_cases': test_cases,
-        },
-    }
-    _atomic_json(receipt_path, receipt)
-    return receipt_path
 
 
 def _runtime_loader_identity() -> dict[str, Any]:
@@ -861,10 +594,6 @@ def inspect_runtime_inputs(
     )
 
 
-_ACTIVE_ADMISSION: RuntimeAdmission | None = None
-_ACTIVE_RUNTIME: tuple[ModuleType, ModuleType, dict[str, Any]] | None = None
-
-
 def verify_runtime(
     root: Path,
     *,
@@ -1007,112 +736,6 @@ def verify_runtime_completion(
             ) from error
 
 
-def _report_runtime_selection(
-    runtime: tuple[ModuleType, ModuleType, dict[str, Any]],
-) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
-    print(
-        'gometry runtime selection: '
-        + json.dumps(
-            runtime[2]['interpreter'],
-            sort_keys=True,
-            separators=(',', ':'),
-        ),
-        file=sys.stderr,
-        flush=True,
-    )
-    return runtime
-
-
-def _verify_active_admission(
-    root: Path,
-) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
-    admission = _ACTIVE_ADMISSION
-    runtime = _ACTIVE_RUNTIME
-    if admission is None or runtime is None or admission.root != root:
-        raise AssertionError(
-            'active runtime admission does not belong to this checkout'
-        )
-    verify_runtime_completion(admission, runtime)
-    _runtime_selection_matches(_runtime_interpreter(), admission.runtime_selection)
-    return runtime
-
-
-def require_runtime(
-    root: Path = ROOT,
-    *,
-    prepare_if_stale: bool = False,
-    build_receipt: Mapping[str, Any] | None = None,
-) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
-    """Admit an identified runtime, preparing a stale one only when requested."""
-    global _ACTIVE_ADMISSION, _ACTIVE_RUNTIME
-    root = root.resolve()
-    if _ACTIVE_ADMISSION is not None:
-        if (
-            build_receipt is not None
-            and dict(build_receipt) != _ACTIVE_ADMISSION.receipt
-        ):
-            raise AssertionError(
-                'explicit producer differs from active runtime admission'
-            )
-        runtime = _verify_active_admission(root)
-        return _report_runtime_selection(runtime)
-
-    if build_receipt is not None:
-        admission = inspect_runtime_inputs(root, build_receipt=build_receipt)
-        runtime = verify_admitted_runtime(admission)
-        _ACTIVE_ADMISSION = admission
-        _ACTIVE_RUNTIME = runtime
-        return _report_runtime_selection(runtime)
-
-    try:
-        admission = inspect_runtime_inputs(root)
-    except QualityPreparationRequired as stale:
-        if _resident_gometry_modules():
-            raise SystemExit(
-                f'Gometry is already imported; cannot replace it after stale admission: '
-                f'{stale}. Start a fresh process after `{sys.executable} '
-                f'{root / "tools" / "check.py"} --prepare`'
-            ) from None
-        command = [
-            sys.executable,
-            str(root / 'tools' / 'check.py'),
-            '--prepare',
-        ]
-        if not prepare_if_stale:
-            raise SystemExit(
-                f'identified Gometry runtime is stale: {stale}; run '
-                f'`{sys.executable} {root / "tools" / "check.py"} --prepare` '
-                'to prepare it'
-            ) from None
-        print(
-            f'identified Gometry runtime is stale ({stale}); preparing it with '
-            + ' '.join(command),
-            file=sys.stderr,
-            flush=True,
-        )
-        try:
-            result = subprocess.run(command, cwd=root, check=False)
-        except OSError as error:
-            raise SystemExit(
-                f'could not start identified runtime preparation: {error}'
-            ) from None
-        if result.returncode != 0:
-            raise SystemExit(
-                f'identified runtime preparation failed with status {result.returncode}'
-            ) from None
-        try:
-            admission = inspect_runtime_inputs(root)
-        except QualityPreparationRequired as still_stale:
-            raise SystemExit(
-                f'identified runtime remains stale after preparation: {still_stale}'
-            ) from None
-
-    runtime = verify_admitted_runtime(admission)
-    _ACTIVE_ADMISSION = admission
-    _ACTIVE_RUNTIME = runtime
-    return _report_runtime_selection(runtime)
-
-
 def verify_admitted_runtime(
     admission: RuntimeAdmission,
 ) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
@@ -1212,7 +835,7 @@ def verify_admitted_runtime(
             'debug_assertions': False,
         }
     expected_info = {
-        'schema_version': 3,
+        'schema_version': 1,
         'source_inputs_format': SOURCE_INPUTS_FORMAT,
         'source_inputs_sha256': source_inputs,
         'native_source_inputs_format': SOURCE_INPUTS_FORMAT,

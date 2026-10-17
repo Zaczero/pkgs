@@ -18,12 +18,12 @@ for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-import bench as bench_driver  # noqa: E402
-import benchmark_runtime  # noqa: E402
-from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # noqa: E402
-from benchmark_observation import make_observation  # noqa: E402
+import bench as bench_driver  # ruff: ignore[module-import-not-at-top-of-file]
+import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # ruff: ignore[module-import-not-at-top-of-file]
+from benchmark_observation import make_observation  # ruff: ignore[module-import-not-at-top-of-file]
 
-from tests.tooling._bench_support import (  # noqa: E402
+from tests.tooling._bench_support import (  # ruff: ignore[module-import-not-at-top-of-file]
     HASH,
     file_identity,
     package_identity,

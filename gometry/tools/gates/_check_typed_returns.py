@@ -26,11 +26,11 @@ _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 from _gatelib import (
-    prepend_rust_source_import_paths,
+    prepend_tools_import_paths,
     rust_source_config,
 )
 
-prepend_rust_source_import_paths()
+prepend_tools_import_paths()
 
 from pyo3stubs.rust_scan import iter_sources
 

@@ -220,6 +220,6 @@ Endpoint growth (below-gate → above-gate): gometry median 1.005x, comparator m
 
 <!-- --8<-- [start:evidence] -->
 
-[Raw measurements](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/run.json) · [Build provenance](../assets/benchmark-runs/a29776bf4721aac9bed51f1a21377cc0dc9c8077e59f98d66504ccb9118131a1/receipts/index.json).
+[Raw measurements](../assets/benchmark-runs/d8a15306a7e5620cce06e55da04b185b308b4352befeb49bd63619feebcc8850/run.json) · [Build provenance](../assets/benchmark-runs/d8a15306a7e5620cce06e55da04b185b308b4352befeb49bd63619feebcc8850/receipts/index.json).
 
 <!-- --8<-- [end:evidence] -->

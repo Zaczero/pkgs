@@ -140,7 +140,7 @@ def _handler_environment(*, line_length: int = 88) -> tuple[Environment, Any]:
         **_kwargs: Any,
     ) -> Markup:
         del inline
-        return Markup(  # noqa: S704
+        return Markup(  # ruff: ignore[unsafe-markup-use]
             highlight(
                 html.unescape(str(source)),
                 get_lexer_by_name(language),

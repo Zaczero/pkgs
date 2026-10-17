@@ -13,7 +13,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _CASES = sorted((_ROOT / 'benches' / 'cases').glob('case_*.py'))
 sys.path.insert(0, str(_ROOT / 'tools'))
-from quality_runtime import read_quality_receipt  # noqa: E402
+from quality_runtime import read_quality_receipt  # ruff: ignore[module-import-not-at-top-of-file]
 
 _QUALITY_RECEIPT = read_quality_receipt(_ROOT)
 _CHILD_ENV = os.environ.copy()

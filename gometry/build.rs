@@ -3,7 +3,10 @@ use std::{env, fs};
 
 use sha2::{Digest as _, Sha256};
 
-const SOURCE_INPUTS_FORMAT: &str = "sha256-path-nul-content-nul-v5";
+#[path = "native/digest_encoding.rs"]
+mod digest_encoding;
+
+const SOURCE_INPUTS_FORMAT: &str = "sha256-path-nul-content-nul-v1";
 // The requested PEP 517 profile is not a Cargo-observed fact. Cargo reports
 // `PROFILE=release` for release-dist because it inherits the release profile.
 const RELEASE_ENV_VARS: &[&str] = &[
@@ -222,7 +225,7 @@ fn digest_files(files: &[(String, PathBuf)]) -> std::io::Result<String> {
         digest.update(&payload);
         digest.update([0]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(digest_encoding::hex_lower(&digest.finalize()).to_string())
 }
 
 fn collect_files(

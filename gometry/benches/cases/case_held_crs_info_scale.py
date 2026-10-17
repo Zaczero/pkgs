@@ -27,7 +27,7 @@ def _held_crs(n: int = 1000) -> list[gm.CRS]:
     for code in range(2000, 5000):
         try:
             held.append(gm.CRS(code))
-        except Exception:  # noqa: S112 — skip unconstructible EPSG codes
+        except Exception:  # ruff: ignore[try-except-continue] — skip unconstructible EPSG codes
             continue
         if len(held) >= n:
             break

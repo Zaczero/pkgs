@@ -24,11 +24,13 @@ _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 from _gatelib import (
-    prepend_rust_source_import_paths,
+    prepend_tools_import_paths,
     rust_source_config,
 )
 
-prepend_rust_source_import_paths()
+prepend_tools_import_paths()
+
+import operator
 
 from pyo3stubs.rust_scan import RustSource, iter_sources
 
@@ -183,7 +185,7 @@ def collect_algebraic_errors(
                 if _algebraic_member(node):
                     uses.append((node.start_point[0] + 1, fn_name))
         total_uses += len(uses)
-        for line, fn_name in sorted(uses, key=lambda use: use[0]):
+        for line, fn_name in sorted(uses, key=operator.itemgetter(0)):
             if fn_name is None:
                 errors.append(f'{source.label}:{line}:<unknown>: no enclosing fn')
             elif fn_name in WHITELIST:
@@ -222,7 +224,9 @@ def collect_decision_surface_errors(src_root: Path = ROOT / 'src') -> list[str]:
                         line,
                         f'{rel}:{line}: raw area float branch in decision module',
                     ))
-        errors.extend(error for _, error in sorted(findings, key=lambda item: item[0]))
+        errors.extend(
+            error for _, error in sorted(findings, key=operator.itemgetter(0))
+        )
     return errors
 
 
