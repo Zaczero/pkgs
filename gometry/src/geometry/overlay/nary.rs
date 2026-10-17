@@ -231,7 +231,9 @@ pub(crate) fn overlay_intersection_with_rectangle(
     subject_bounds: Option<Bounds>,
     strictness: Strictness,
 ) -> Result<Shape> {
-    let subject_bounds = subject_bounds.or_else(|| subject.bounds());
+    if subject_bounds.is_none() {
+        return Ok(empty_rectangle_result(subject));
+    }
     if let Some(shape) = rectangle_intersection_result(subject, subject_bounds, rectangle) {
         return Ok(shape);
     }

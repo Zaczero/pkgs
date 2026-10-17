@@ -445,6 +445,15 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn clip_by_rect_unary_packed(&self, py: Python<'_>, rect: Bounds) -> PyResult<Self> {
+        if let Some(bounds) = self.existing_element_bounds() {
+            return self.map_shapes_detached_indexed(py, move |shape, row| {
+                shape.clip_by_rect_with_bounds(
+                    rect,
+                    false,
+                    *bounds.get(row).expect("logical row has published bounds"),
+                )
+            });
+        }
         self.map_shapes_detached(py, move |shape| shape.clip_by_rect(rect, false))
     }
 

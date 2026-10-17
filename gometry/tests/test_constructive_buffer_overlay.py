@@ -1100,6 +1100,27 @@ def test_clip_by_rect_clips_scalar_array_and_preserves_line_axes() -> None:
         polygon.clip_by_rect(2, 0, 1, 1)
 
 
+@pytest.mark.parametrize('selection', ['all', 'slice', 'gather'])
+def test_clip_by_rect_after_indexing_preserves_logical_rows(selection: str) -> None:
+    source = gm.GeometryArray([
+        None,
+        gm.LineString([(2, 0.5), (3, 0.5)]),
+        gm.LineString([(-1, 0.5), (2, 0.5)]),
+        gm.LineString([(0.25, 0.5), (0.75, 0.5)]),
+        gm.from_wkt('LINESTRING EMPTY'),
+    ])
+    if selection == 'slice':
+        source = source[1:]
+    elif selection == 'gather':
+        source = source[[3, 0, 2, 4, 1, 2]]
+    expected = source.clip_by_rect(0, 0, 1, 1).to_wkb()
+    index = gm.SpatialIndex(source)
+    assert len(index) == sum(row is not None and not row.is_empty for row in source)
+    actual = source.clip_by_rect(0, 0, 1, 1)
+    assert actual.to_wkb() == expected
+    assert actual.is_missing.tolist() == source.is_missing.tolist()
+
+
 def test_clip_by_rect_wkb_matches_box_intersection_in_the_same_frame() -> None:
     rect = (-10.0, -10.0, 30.0, 50.0)
     subject = gm.box(-20, -15, 40, 55, crs=4326)
