@@ -25,7 +25,7 @@ def report(baseline: str, candidate: str, output: str = 'benchmark.svg') -> None
         unit='seconds',
         caption=(
             f'{metadata["cpu_model_name"]} · CPython {metadata["python_version"]}\n'
-            'SHA-1 · 6 digits · 30-second period · ±1 verification window\n'
+            f'{metadata["workload"]}\n'
             'Independent worker-process means · setup excluded'
         ),
     )
