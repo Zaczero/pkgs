@@ -460,7 +460,11 @@ fn overflowed_exact_point_distance_can_certify_maximum_with_large_error() {
         Ordering::Greater,
         "the exact squared distance must fit the chosen candidate allowance"
     );
-    let interval = SqrtInterval::from_squared_with_error(&scaled_squared, Some(&error)).unwrap();
+    let interval = SqrtInterval::from_squared_with_error(
+        &scaled_squared,
+        Some(&ErrorBound::Absolute(error.clone())),
+    )
+    .unwrap();
     let upper = interval
         .upper_rational()
         .expect("finite exact overflow upper");

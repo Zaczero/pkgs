@@ -3,7 +3,7 @@
 #[cfg(test)]
 use super::SqrtStats;
 use super::span_bounds::square_f64;
-use super::{ExactDyadic, FloatSqrtBracket, Ordering, Rational, Result, SqrtInterval};
+use super::{ErrorBound, ExactDyadic, FloatSqrtBracket, Ordering, Rational, Result, SqrtInterval};
 
 #[cfg(test)]
 pub(super) fn dyadic_as_f64(value: &ExactDyadic) -> Result<f64> {
@@ -81,7 +81,7 @@ impl FloatSqrtBracket {
     pub(super) fn into_interval(
         self,
         squared: &Rational,
-        error: Option<&Rational>,
+        error: Option<&ErrorBound>,
     ) -> Result<SqrtInterval> {
         match self.upper {
             None => SqrtInterval::overflow(squared, error),
@@ -120,7 +120,7 @@ impl SqrtInterval {
 
     pub(super) fn from_squared_with_error(
         squared: &Rational,
-        error: Option<&Rational>,
+        error: Option<&ErrorBound>,
     ) -> Result<Self> {
         #[cfg(test)]
         if exact_sqrt_path_forced() {
@@ -230,7 +230,7 @@ impl SqrtInterval {
 
     pub(super) fn from_squared_exact_with_error(
         squared: &Rational,
-        error: Option<&Rational>,
+        error: Option<&ErrorBound>,
     ) -> Result<Self> {
         if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
             return Self::overflow(squared, error);
@@ -300,10 +300,18 @@ impl SqrtInterval {
         }
     }
 
-    pub(super) fn overflow(squared: &Rational, error: Option<&Rational>) -> Result<Self> {
+    pub(super) fn overflow(squared: &Rational, error: Option<&ErrorBound>) -> Result<Self> {
         let maximum = Rational::from_f64(f64::MAX);
         let mut upper = squared.try_quotient(&maximum)?;
-        let target = error.map(|error| maximum.try_add(error)).transpose()?;
+        let target = match error {
+            None => None,
+            Some(ErrorBound::Absolute(error)) => Some(maximum.try_add(error)?),
+            Some(ErrorBound::Relative(relative)) => {
+                // MAX is the proven lower root endpoint, so r*MAX cannot
+                // exceed the relative allowance r*H of the true root.
+                Some(maximum.try_add(&maximum.try_product(relative)?)?)
+            },
+        };
         let target_squared = target.as_ref().map(Rational::try_square).transpose()?;
         for _ in 0..OVERFLOW_NEWTON_STEPS {
             upper = overflow_newton_step(squared, &upper)?;

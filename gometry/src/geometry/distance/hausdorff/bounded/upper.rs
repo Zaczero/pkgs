@@ -13,19 +13,8 @@ pub(super) fn sqrt_upper(squared: &Rational, context: &SearchContext<'_>) -> Res
     if context.exact_upper {
         return SqrtInterval::from_squared_with_error(squared, None);
     }
-    let mut interval = match &context.accuracy.error {
-        ErrorBound::Absolute(error) => SqrtInterval::from_squared_with_error(squared, Some(error))?,
-        ErrorBound::Relative(relative) => {
-            let mut interval = SqrtInterval::from_squared_with_error(squared, None)?;
-            if interval.upper.is_none() {
-                // MAX is the proven lower root endpoint, so r*MAX is no
-                // larger than r*H and remains a valid relative allowance.
-                let error = Rational::from_f64(f64::MAX).try_product(relative)?;
-                interval = SqrtInterval::overflow(squared, Some(&error))?;
-            }
-            interval
-        },
-    };
+    let mut interval =
+        SqrtInterval::from_squared_with_error(squared, Some(&context.accuracy.error))?;
     if let ErrorBound::Absolute(error) = &context.accuracy.error {
         interval.refine(squared, error)?;
     }
