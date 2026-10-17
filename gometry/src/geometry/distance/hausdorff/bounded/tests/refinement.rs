@@ -1,34 +1,49 @@
-#[test]
-fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
+fn assert_extreme_exponent_spread_refinement_work(max_error: Option<f64>) {
     use crate::geometry::numerics::product::exact_power_of_two;
     let length = exact_power_of_two(996);
     let height = exact_power_of_two(396);
     let offset = exact_power_of_two(344);
     let baseline = line(&[(0.0, 0.0), (length, height)]);
     let graph = line(&[(0.0, 0.0), (height, 0.0), (length, height + offset)]);
-    let errors = [
-        (
-            "one ULP",
-            Some(f64::from_bits(offset.to_bits() + 1) - offset),
-        ),
-        ("1e-12", Some(1e-12 * offset)),
-        ("1e-6", Some(1e-6 * offset)),
-        ("default", None),
-    ];
+    let (actual, work) = {
+        let _guard = limit_refinement_work(10_000);
+        let actual = distance(&baseline, &graph, max_error, 1.0).unwrap();
+        (actual, refinement_work())
+    };
 
-    for (name, max_error) in errors {
-        let (actual, work) = {
-            let _guard = limit_refinement_work(10_000);
-            let actual = distance(&baseline, &graph, max_error, 1.0).unwrap();
-            (actual, refinement_work())
-        };
+    assert_eq!(actual, offset, "max_error={max_error:?}");
+    assert!(
+        work <= 8,
+        "max_error={max_error:?} required {work} refinement steps"
+    );
+}
 
-        assert_eq!(actual, offset, "{name} max_error");
-        assert!(
-            work <= 8,
-            "{name} max_error required {work} refinement steps"
-        );
-    }
+#[test]
+fn extreme_exponent_spread_hausdorff_one_ulp_bounds_refinement_work() {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let offset = exact_power_of_two(344);
+    assert_extreme_exponent_spread_refinement_work(Some(
+        f64::from_bits(offset.to_bits() + 1) - offset,
+    ));
+}
+
+#[test]
+fn extreme_exponent_spread_hausdorff_tight_error_bounds_refinement_work() {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let offset = exact_power_of_two(344);
+    assert_extreme_exponent_spread_refinement_work(Some(1e-12 * offset));
+}
+
+#[test]
+fn extreme_exponent_spread_hausdorff_loose_error_bounds_refinement_work() {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let offset = exact_power_of_two(344);
+    assert_extreme_exponent_spread_refinement_work(Some(1e-6 * offset));
+}
+
+#[test]
+fn extreme_exponent_spread_hausdorff_default_error_bounds_refinement_work() {
+    assert_extreme_exponent_spread_refinement_work(None);
 }
 
 #[test]

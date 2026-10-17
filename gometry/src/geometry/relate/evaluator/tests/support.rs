@@ -187,12 +187,12 @@ fn assert_matrix_oracle_parity(name: &str, left: &Shape, right: &Shape) {
 }
 
 macro_rules! relation_case {
-    ($check:ident; $name:ident, $label:literal, $left:literal, $right:literal) => {
+    ($check:ident; $name:ident, $label:literal, $left:literal, $right:literal $(, $expected:expr)*) => {
         #[test]
         fn $name() {
             let left = crate::io::parse_wkt($left).expect("left fixture parses");
             let right = crate::io::parse_wkt($right).expect("right fixture parses");
-            $check($label, &left, &right);
+            $check($label, &left, &right $(, $expected)*);
         }
     };
 }

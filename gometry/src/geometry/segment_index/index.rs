@@ -120,13 +120,9 @@ pub(crate) struct ClearancePointQuery<'a> {
 
 #[cfg(test)]
 std::thread_local! {
-    pub(crate) static CLEARANCE_POINT_BUILD_SITES: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
     pub(crate) static CLEARANCE_POINT_NODES: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
     pub(crate) static CLEARANCE_POINT_LEAVES: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
-    pub(crate) static CLEARANCE_POINT_RECHECKS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -265,10 +261,6 @@ impl PointSetIndex {
             .copied()
             .enumerate()
             .filter_map(|(ordinal, point)| {
-                #[cfg(test)]
-                CLEARANCE_POINT_BUILD_SITES.with(|work| {
-                    work.set(work.get().saturating_add(1));
-                });
                 let unique =
                     point.x.is_nan() || point.y.is_nan() || seen.insert(PointKey::new(point));
                 unique.then_some(PointEntry {
@@ -353,12 +345,10 @@ impl ClearancePointQuery<'_> {
         let mut best: Option<(usize, SquaredDistanceKey)> = None;
         while let Some(node) = self.stack.pop() {
             let local = best.as_ref().map(|(_, key)| key);
-            if let Some(limit) = nearer_clearance_limit(local, incumbent)? {
-                #[cfg(test)]
-                CLEARANCE_POINT_RECHECKS.with(|work| work.set(work.get().saturating_add(1)));
-                if node.lower_bound.cmp_distance(limit)?.is_gt() {
-                    continue;
-                }
+            if let Some(limit) = nearer_clearance_limit(local, incumbent)?
+                && node.lower_bound.cmp_distance(limit)?.is_gt()
+            {
+                continue;
             }
             match node.node {
                 RTreeNode::Leaf(entry) => {

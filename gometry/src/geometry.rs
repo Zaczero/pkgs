@@ -370,10 +370,7 @@ pub(crate) use relate::{
     graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row, predicate_rows,
 };
 #[cfg(test)]
-pub(crate) use segment_index::{
-    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
-    CLEARANCE_POINT_RECHECKS,
-};
+pub(crate) use segment_index::{CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES};
 pub(crate) use segment_index::{
     ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
 };

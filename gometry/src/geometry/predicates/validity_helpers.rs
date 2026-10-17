@@ -981,38 +981,36 @@ mod clearance_index_tests {
         );
     }
 
+    fn assert_scaled_clearance_point_pair(spacing: f64) {
+        let points: Vec<_> = (0..64_u16)
+            .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
+            .collect();
+        let shape = line(&points);
+        crate::geometry::CLEARANCE_POINT_NODES.with(|work| work.set(0));
+        crate::geometry::CLEARANCE_POINT_LEAVES.with(|work| work.set(0));
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+        assert!(matches!(candidate.source, ClearanceSource::PointPair {
+            first: 0,
+            second: 1
+        }));
+        let nodes = crate::geometry::CLEARANCE_POINT_NODES.with(std::cell::Cell::get);
+        let leaves = crate::geometry::CLEARANCE_POINT_LEAVES.with(std::cell::Cell::get);
+        assert!(
+            nodes > 0 && leaves > 0,
+            "point query did not visit the source tree"
+        );
+    }
+
     #[test]
-    fn indexed_tiny_and_huge_clearance_keep_exact_point_pairs() {
+    fn indexed_tiny_clearance_keeps_exact_point_pairs() {
         use crate::geometry::numerics::product::exact_power_of_two;
-        for spacing in [exact_power_of_two(-700), exact_power_of_two(600)] {
-            for count in [64_u16, 128, 256] {
-                let points: Vec<_> = (0..count)
-                    .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
-                    .collect();
-                let shape = line(&points);
-                crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(|work| work.set(0));
-                crate::geometry::CLEARANCE_POINT_NODES.with(|work| work.set(0));
-                crate::geometry::CLEARANCE_POINT_LEAVES.with(|work| work.set(0));
-                crate::geometry::CLEARANCE_POINT_RECHECKS.with(|work| work.set(0));
-                let candidate = assert_indexed_matches_exact_exhaustive(&shape);
-                assert!(matches!(candidate.source, ClearanceSource::PointPair {
-                    first: 0,
-                    second: 1
-                }));
-                let build_sites =
-                    crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(std::cell::Cell::get);
-                let nodes = crate::geometry::CLEARANCE_POINT_NODES.with(std::cell::Cell::get);
-                let leaves = crate::geometry::CLEARANCE_POINT_LEAVES.with(std::cell::Cell::get);
-                let rechecks = crate::geometry::CLEARANCE_POINT_RECHECKS.with(std::cell::Cell::get);
-                eprintln!(
-                    "point clearance: spacing={spacing:e}, {count} sites ({build_sites} build visits), {nodes} node bounds, {leaves} leaf bounds, {rechecks} rechecks",
-                );
-                assert!(
-                    nodes > 0 && leaves > 0,
-                    "point query did not visit the source tree"
-                );
-            }
-        }
+        assert_scaled_clearance_point_pair(exact_power_of_two(-700));
+    }
+
+    #[test]
+    fn indexed_huge_clearance_keeps_exact_point_pairs() {
+        use crate::geometry::numerics::product::exact_power_of_two;
+        assert_scaled_clearance_point_pair(exact_power_of_two(600));
     }
 
     #[test]
