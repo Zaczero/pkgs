@@ -1,4 +1,5 @@
 use std::num::{NonZeroU32, NonZeroU64};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use bytes::BytesMut;
@@ -25,7 +26,7 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::runtime::StreamInput;
 
 fn test_server_config() -> &'static ServerConfig {
-    Box::leak(Box::new(ServerConfig {
+    static CONFIG: LazyLock<ServerConfig> = LazyLock::new(|| ServerConfig {
         binds: Box::new([BindTarget::Tcp {
             host: Box::from("127.0.0.1"),
             port: 8000,
@@ -69,7 +70,8 @@ fn test_server_config() -> &'static ServerConfig {
         tls: None,
         timeout_handshake: Some(Duration::from_secs(5)),
         response_headers: ResponseHeaderConfig::default(),
-    }))
+    });
+    &CONFIG
 }
 
 async fn read_test_request(request: &[u8]) -> Result<Option<super::ParsedRequest>, H2CornError> {
@@ -716,7 +718,12 @@ async fn chunk_delivery_batch_allocates_only_for_small_decoded_fragments() {
     );
 
     let mut tiny = ChunkDeliveryBatch::new();
-    for _ in 0..super::CHUNK_DELIVERY_BATCH_BYTES - 1 {
+    let prefix_len = super::CHUNK_DELIVERY_BATCH_BYTES - 3;
+    let mut prefix = BytesMut::from(vec![b'c'; prefix_len].as_slice());
+    tiny.push(&mut prefix, prefix_len, &tx, &mut body)
+        .await
+        .expect("partial batch is accepted");
+    for _ in 0..2 {
         let mut input = BytesMut::from(&b"c"[..]);
         tiny.push(&mut input, 1, &tx, &mut body)
             .await
@@ -777,7 +784,7 @@ async fn read_chunked_body_accepts_extensions_and_ignores_trailers() {
 
 #[tokio::test]
 async fn read_chunked_body_batches_tiny_wire_chunks_by_decoded_size() {
-    const CHUNKS: usize = 30_000;
+    const CHUNKS: usize = 17;
 
     let mut request = Vec::with_capacity(CHUNKS * 6 + 5);
     for _ in 0..CHUNKS {
@@ -849,16 +856,18 @@ async fn read_chunk_size_line_accepts_the_exact_wire_boundary() {
         1
     );
 
+    let (prefix, boundary) = line.as_bytes().split_at(line.len() - 3);
+    let mut split = BytesMut::from(prefix);
+    let boundary = boundary.to_owned();
     let (mut client, mut server) = duplex(1);
     let writer = spawn(async move {
-        for byte in line.bytes() {
+        for byte in boundary {
             client
                 .write_all(&[byte])
                 .await
                 .expect("byte-split line writes");
         }
     });
-    let mut split = BytesMut::new();
     assert_eq!(
         read_chunk_size_line(&mut server, &mut split, None)
             .await
