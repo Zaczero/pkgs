@@ -19,11 +19,19 @@ const source = await new Response(identity.stdout).text();
 if (await identity.exited)
     throw new Error("Could not identify WebAssembly source inputs");
 const hash = new Bun.CryptoHasher("sha256").update(source).update(version);
+const compiler = Bun.spawnSync(["rustc", "-vV"], {
+    cwd: repository,
+    stderr: "inherit",
+});
+if (compiler.exitCode) throw new Error("Could not identify WebAssembly compiler");
+hash.update(compiler.stdout);
 for (const file of [
     import.meta.path,
     join(root, "Cargo.toml"),
     join(root, "pyproject.toml"),
     join(repository, "Cargo.toml"),
+    join(repository, "Cargo.lock"),
+    join(repository, "rust-toolchain.toml"),
 ])
     hash.update(await Bun.file(file).arrayBuffer());
 const fingerprint = hash.digest("hex");
@@ -52,6 +60,8 @@ const tool = [
     "--python",
     "3.14",
     "--from",
+    "pyodide-cli==0.5.0",
+    "--with",
     "pyodide-build==0.39.1",
     "--with",
     "maturin==1.15.0",
