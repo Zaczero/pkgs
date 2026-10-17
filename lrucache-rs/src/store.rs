@@ -12,6 +12,9 @@ use pyo3::ffi::Py_hash_t;
 const INVALID: u32 = u32::MAX;
 pub(crate) const MAX_CAPACITY: usize = (u32::MAX - 1) as usize;
 
+#[cfg(kani)]
+mod proofs;
+
 #[derive(Clone, Copy)]
 struct Node {
     hash: Py_hash_t,
