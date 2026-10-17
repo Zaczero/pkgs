@@ -108,18 +108,16 @@ impl<T, const N: usize> InlineFifo<T, N> {
 
     pub(crate) fn clear(&mut self) {
         let live = self.len();
+        let front = self.front;
         // SAFETY: the live range contains contiguous initialized `T`s with
         // identical layout to `MaybeUninit<T>`. Marking the SmallVec empty
         // first transfers destruction responsibility to the temporary slice
         // and keeps `clear` sound even if an element destructor panics.
         let live = unsafe {
-            let live = ptr::slice_from_raw_parts_mut(
-                self.items.as_mut_ptr().add(self.front).cast::<T>(),
-                live,
-            );
             self.items.set_len(0);
             self.front = 0;
-            live
+            // Borrow inline storage only after set_len's exclusive borrow.
+            ptr::slice_from_raw_parts_mut(self.items.as_mut_ptr().add(front).cast::<T>(), live)
         };
         // SAFETY: ownership of every formerly live item was transferred to
         // this slice exactly once above.
@@ -150,11 +148,8 @@ impl<T, const N: usize> InlineFifo<T, N> {
         // to the start; shortening the MaybeUninit vector makes only the
         // destination range authoritative and drops no duplicate values.
         unsafe {
-            ptr::copy(
-                self.items.as_ptr().add(self.front),
-                self.items.as_mut_ptr(),
-                live,
-            );
+            let items = self.items.as_mut_ptr();
+            ptr::copy(items.add(self.front), items, live);
             self.items.set_len(live);
         }
         self.front = 0;
@@ -182,6 +177,22 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn clearing_inline_values_after_a_pop_destroys_each_owner_once() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut queue = InlineFifo::<_, 4>::new();
+        for _ in 0..3 {
+            queue.push_back(DropCount(Arc::clone(&drops)));
+        }
+        drop(queue.pop_front());
+        queue.clear();
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        assert!(queue.is_empty());
+        queue.push_back(DropCount(Arc::clone(&drops)));
+        drop(queue);
+        assert_eq!(drops.load(Ordering::Relaxed), 4);
     }
 
     #[test]
