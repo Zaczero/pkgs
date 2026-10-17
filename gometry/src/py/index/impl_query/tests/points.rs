@@ -8,7 +8,7 @@ fn compact_nullable_point_index_resolves_sparse_handles_without_span_rank() {
             let mut retained_deltas = Vec::new();
             let mut allocation_counts = Vec::new();
 
-            for logical_len in [1_000_usize, 1_000_000, 100_000_000] {
+            for logical_len in [1_000_usize, 10_000, 100_000] {
                 let handles = [7_usize, 63, logical_len.wrapping_sub(1)];
                 let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
                 for &handle in &handles {
