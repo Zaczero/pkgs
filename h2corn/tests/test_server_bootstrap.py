@@ -12,7 +12,7 @@ import threading
 import time
 import tomllib
 import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -64,7 +64,9 @@ def _assert_listener_accepts(listener: socket.socket) -> None:
         accepted.close()
 
 
-def _run_with_eager_task_factory(scenario: Callable[[], Awaitable[None]]) -> None:
+def _run_with_eager_task_factory(
+    scenario: Callable[[], Coroutine[Any, Any, None]],
+) -> None:
     eager_task_factory = getattr(asyncio, 'eager_task_factory', None)
     if eager_task_factory is None:
         pytest.skip('asyncio.eager_task_factory requires Python 3.12 or newer')
@@ -167,18 +169,14 @@ def test_event_loop_factory_selection_is_explicit() -> None:
             with pytest.raises(RuntimeError, match="loop='uvloop' requires"):
                 event_loop_factory('uvloop')
         else:
-            if sys.version_info >= (3, 14):
-                assert callable(event_loop_factory('auto'))
-                assert callable(event_loop_factory('uvloop'))
-            else:
-                automatic_loop = event_loop_factory('auto')()
-                created_loops.append(automatic_loop)
-                assert asyncio.get_event_loop() is automatic_loop
-                assert isinstance(automatic_loop, uvloop.Loop)
-                uvloop_loop = event_loop_factory('uvloop')()
-                created_loops.append(uvloop_loop)
-                assert isinstance(uvloop_loop, uvloop.Loop)
-                assert asyncio.get_event_loop() is uvloop_loop
+            automatic_loop = event_loop_factory('auto')()
+            created_loops.append(automatic_loop)
+            assert asyncio.get_event_loop() is automatic_loop
+            assert isinstance(automatic_loop, uvloop.Loop)
+            uvloop_loop = event_loop_factory('uvloop')()
+            created_loops.append(uvloop_loop)
+            assert isinstance(uvloop_loop, uvloop.Loop)
+            assert asyncio.get_event_loop() is uvloop_loop
     finally:
         asyncio.set_event_loop(original_loop)
         for loop in created_loops:

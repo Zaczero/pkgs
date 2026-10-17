@@ -55,9 +55,9 @@ h2corn = "h2corn._server:main"
 # uvloop has no PyPy wheel and its C source does not build there (it calls
 # `PyOS_AfterFork_Child`, which PyPy does not provide), so the marker excludes
 # it rather than letting resolution fail. The suite already runs asyncio-only
-# when uvloop is absent -- see `_event_loop_policies` in tests/conftest.py.
+# when uvloop is absent -- see `pytest_asyncio_loop_factories` in tests/conftest.py.
 uvloop = [
-  "uvloop>=0.21.0; sys_platform != 'win32' and platform_python_implementation != 'PyPy'",
+  "uvloop>=0.23.0; sys_platform != 'win32' and platform_python_implementation != 'PyPy'",
 ]
 
 [dependency-groups]

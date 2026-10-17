@@ -38,21 +38,22 @@ async def test_request_task_uses_factory_installed_after_server_start() -> None:
     assert status == 200
     assert body == b'ok'
     assert len(factory_kwargs) == 1
-    if sys.version_info >= (3, 14):
-        assert factory_kwargs[0]['eager_start'] is True
-    else:
-        assert 'eager_start' not in factory_kwargs[0]
+    if type(loop).create_task is asyncio.BaseEventLoop.create_task:
+        if sys.version_info >= (3, 14):
+            assert factory_kwargs[0]['eager_start'] is True
+        else:
+            assert 'eager_start' not in factory_kwargs[0]
 
 
 def test_request_task_uses_loop_subclass_create_task() -> None:
     request_tasks: list[str] = []
 
     class RecordingLoop(asyncio.SelectorEventLoop):
-        def create_task(self, coroutine, **kwargs):
-            code = getattr(coroutine, 'cr_code', None)
+        def create_task(self, coro, **kwargs):
+            code = getattr(coro, 'cr_code', None)
             if code is not None and code.co_name == 'app':
                 request_tasks.append(code.co_name)
-            return super().create_task(coroutine, **kwargs)
+            return super().create_task(coro, **kwargs)
 
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
