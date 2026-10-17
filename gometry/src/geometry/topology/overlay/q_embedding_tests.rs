@@ -581,7 +581,7 @@ fn q_nearest_first_fixed_grid_cases_keep_certified_nearest_tables() -> Result<()
 fn geographic_nearest_certificate_preserves_direct_q_au_pg_union_wkb() -> Result<()> {
     use sha2::{Digest as _, Sha256};
 
-    let shapes = b3_read_countries(&["AU", "PG"]);
+    let shapes = b3_au_pg_shapes();
     let frame = GeographicFrame::crs84();
     let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;

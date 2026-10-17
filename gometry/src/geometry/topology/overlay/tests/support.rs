@@ -302,38 +302,19 @@ fn q_ring_chart_points(
     Ok(chart_points)
 }
 
-const B3_COUNTRIES_FIXTURE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/fixtures/osm_countries_0_1.geojson"
-);
-
-fn b3_read_countries(codes: &[&str]) -> Vec<Shape> {
-    let document: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(B3_COUNTRIES_FIXTURE).expect("read OSM country GeoJSON fixture"),
-    )
-    .expect("parse OSM country GeoJSON fixture");
-    let features = document
-        .get("features")
+fn b3_au_pg_shapes() -> [Shape; 2] {
+    let document: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/au-pg.geojson"))
+            .expect("parse AU/PG geometry fixture");
+    let geometries = document
+        .get("geometries")
         .and_then(serde_json::Value::as_array)
-        .expect("OSM country feature collection");
-    codes
-        .iter()
-        .map(|code| {
-            let feature = features
-                .iter()
-                .find(|feature| {
-                    feature
-                        .get("properties")
-                        .and_then(|properties| properties.get("tags"))
-                        .and_then(|tags| tags.get("ISO3166-1:alpha2"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some(*code)
-                })
-                .unwrap_or_else(|| panic!("country fixture has no ISO alpha-2 code {code}"));
-            crate::io::parse_geojson(feature.get("geometry").expect("country geometry"))
-                .expect("parse country geometry")
-        })
-        .collect()
+        .expect("AU/PG geometry collection");
+    let [australia, papua_new_guinea] = geometries.as_slice() else {
+        panic!("AU/PG fixture must contain exactly two geometries");
+    };
+    [australia, papua_new_guinea]
+        .map(|geometry| crate::io::parse_geojson(geometry).expect("parse country geometry"))
 }
 
 fn b3_border_repair_shapes() -> [Shape; 3] {
