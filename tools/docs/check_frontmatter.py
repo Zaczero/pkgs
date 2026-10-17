@@ -76,8 +76,7 @@ def on_pre_build(*, config: ProperDocsConfig) -> None:
         tools = package_root / 'tools'
         if str(tools) not in sys.path:
             sys.path.insert(0, str(tools))
-        from _gatelib import prepend_tools_import_paths
-        from runtime_artifact import require_runtime
+        from _gatelib import prepend_tools_import_paths, require_runtime
 
         prepend_tools_import_paths()
         require_runtime(package_root)
