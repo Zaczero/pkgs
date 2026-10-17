@@ -1240,7 +1240,7 @@ def test_spatial_index_pickle_preserves_mutated_live_rows(
     assert ids(restored.query(gm.Point(6.0, 6.0, crs=4326))) == [expected_next]
 
 
-def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
+def test_spatial_index_pickle_keeps_high_sparse_handles() -> None:
     import pickle
 
     values = gm.GeometryArray([
@@ -1249,9 +1249,9 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
         gm.Point(9.0, 9.0),
     ])
     handles = (7, 63, 65_537)
-    small = _lib._unpickle_spatial_index_v2(values, handles, 70_000, False)
+    small = _lib._unpickle_spatial_index_v1(values, handles, 70_000, False)
     large_next = 1 << 40
-    large = _lib._unpickle_spatial_index_v2(values, handles, large_next, False)
+    large = _lib._unpickle_spatial_index_v1(values, handles, large_next, False)
 
     assert list(small) == [7, 63, 65_537]
     assert list(large) == [7, 63, 65_537]
@@ -1284,7 +1284,7 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     assert list(restored) == [63, 65_537, large_next]
 
     framed = gm.GeometryArray([gm.Point(1.0, 2.0, crs=4326, epoch=2020.0)])
-    empty = _lib._unpickle_spatial_index_v2(framed[:0], (), large_next, True)
+    empty = _lib._unpickle_spatial_index_v1(framed[:0], (), large_next, True)
     empty_roundtrip = pickle.loads(pickle.dumps(empty))
     assert list(empty_roundtrip) == []
     assert empty_roundtrip.crs == gm.CRS('EPSG:4326')
@@ -1292,7 +1292,7 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     assert (
         empty_roundtrip.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0)) == large_next
     )
-    exhausted = _lib._unpickle_spatial_index_v2(framed[:0], (), sys.maxsize, True)
+    exhausted = _lib._unpickle_spatial_index_v1(framed[:0], (), sys.maxsize, True)
     with pytest.raises(OverflowError):
         exhausted.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0))
     assert len(exhausted) == 0

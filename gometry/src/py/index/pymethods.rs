@@ -10,8 +10,7 @@ use crate::py::index::{
     PyAnyMethods as _, PyResult, PySpatialIndex, Python, QueryDomain, build_spatial_index,
     exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows, geometry_items,
     join_indexed, parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
-    restore_spatial_index, restore_spatial_index_v2, spatial_index, usize_array,
-    validate_nearest_k,
+    restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
 };
 use crate::py::numpy::int64_array;
 use crate::py::sizeof::python_sizeof;
@@ -51,24 +50,10 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
 
 #[expect(
     clippy::used_underscore_items,
-    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
-)]
-#[pyfunction]
-pub(crate) fn _unpickle_spatial_index_v1(
-    values: &crate::PyGeometryArray,
-    has_metadata: bool,
-) -> PyResult<PySpatialIndex> {
-    // Metadata presence is re-derived from the row storage — a forged
-    // has_metadata=false flag must not disable the CRS gate for present rows.
-    restore_spatial_index(values, has_metadata)
-}
-
-#[expect(
-    clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores this name in its stream"
 )]
 #[pyfunction]
-pub(crate) fn _unpickle_spatial_index_v2(
+pub(crate) fn _unpickle_spatial_index_v1(
     values: &crate::PyGeometryArray,
     handles: &Bound<'_, PyTuple>,
     next_handle: &Bound<'_, PyAny>,
@@ -104,7 +89,7 @@ pub(crate) fn _unpickle_spatial_index_v2(
         }
         parsed_handles.push(handle);
     }
-    restore_spatial_index_v2(values, &parsed_handles, next_handle, has_metadata)
+    restore_spatial_index(values, &parsed_handles, next_handle, has_metadata)
 }
 
 fn parse_index_next_handle(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -226,7 +211,7 @@ impl PySpatialIndex {
     /// handle order; removed and missing rows do not occupy pickle rows.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
         let callable = crate::gometry_lib_module(py)?
-            .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v2"))?
+            .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v1"))?
             .unbind();
         let frame = self.metadata.clone().unwrap_or_default();
         let (array, handles) = self.rows.pickle_live_rows(frame)?;

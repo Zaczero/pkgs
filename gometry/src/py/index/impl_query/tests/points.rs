@@ -230,7 +230,7 @@ fn compact_nullable_point_index_resolves_sparse_handles_without_span_rank() {
                 reset_count_valid_bytes();
                 let (restored, pickle_restore_allocations) =
                     crate::test_support::allocation_count(|| {
-                        restore_spatial_index_v2(
+                        restore_spatial_index(
                             &payload.0,
                             &payload.1,
                             payload.2,

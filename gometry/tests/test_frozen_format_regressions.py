@@ -7,8 +7,8 @@ import pickle
 import gometry as gm
 import pytest
 
-# Protocol-4 payloads captured for the first released wire format. These are
-# reader fixtures: do not regenerate them when changing the current writer.
+# Protocol-4 reader fixtures for the intended first public wire format.
+# Revise these with an intentional format change while the package is unreleased.
 _V1_PICKLES = {
     'point': (
         '8004956b000000000000008c0c676f6d657472792e5f6c6962948c155f756e7069636b6c65'
@@ -61,15 +61,15 @@ _V1_PICKLES = {
         '02000194879452942e'
     ),
     'index': (
-        '8004958a000000000000008c0c676f6d657472792e5f6c6962948c1a5f756e7069636b6c65'
-        '5f7370617469616c5f696e6465785f763194939468008c195f756e7069636b6c655f7061636b'
+        '8004958e000000000000008c0c676f6d657472792e5f6c6962948c1a5f756e7069636b6c65'
+        '5f7370617469616c5f696e6465785f76319493942868008c195f756e7069636b6c655f7061636b'
         '65645f61727261795f7631949394284310000000000000f03f0000000000001440944310000000'
-        '00000000400000000000001840944e4e294e4e4303000100947494529488869452942e'
+        '00000000400000000000001840944e4e294e4e4e749452944b004b0286944b0388749452942e'
     ),
 }
 
 
-def test_released_geometry_pickle_preserves_frame_and_ordinates() -> None:
+def test_v1_geometry_pickle_preserves_frame_and_ordinates() -> None:
     point = pickle.loads(bytes.fromhex(_V1_PICKLES['point']))
     assert type(point) is gm.Point
     assert (point.x, point.y, point.z, point.m) == (1, 2, 3, 4)
@@ -86,7 +86,7 @@ def test_released_geometry_pickle_preserves_frame_and_ordinates() -> None:
         ('mixed', ['POINT (1 2)', 'LINESTRING (3 4, 5 6)', None]),
     ],
 )
-def test_released_array_pickles_preserve_rows(kind: str, expected: list) -> None:
+def test_v1_array_pickles_preserve_rows(kind: str, expected: list) -> None:
     values = pickle.loads(bytes.fromhex(_V1_PICKLES[kind]))
     assert values.to_wkt(drop_epoch=True) == expected
     if kind == 'points':
@@ -97,13 +97,13 @@ def test_released_array_pickles_preserve_rows(kind: str, expected: list) -> None
         assert values.epoch is None
 
 
-def test_released_groups_pickle_preserves_empty_groups() -> None:
+def test_v1_groups_pickle_preserves_empty_groups() -> None:
     values = pickle.loads(bytes.fromhex(_V1_PICKLES['groups']))
     assert [row.tolist() for row in values] == [[7, 11], [], [13]]
     assert values.is_missing.tolist() == [False, False, False]
 
 
-def test_released_crs_and_cell_pickles_preserve_identity() -> None:
+def test_v1_crs_and_cell_pickles_preserve_identity() -> None:
     crs = pickle.loads(bytes.fromhex(_V1_PICKLES['crs']))
     cell = pickle.loads(bytes.fromhex(_V1_PICKLES['cell']))
     cells = pickle.loads(bytes.fromhex(_V1_PICKLES['cells']))
@@ -113,7 +113,7 @@ def test_released_crs_and_cell_pickles_preserve_identity() -> None:
     assert cells.is_missing.tolist() == [False, True]
 
 
-def test_released_index_pickle_preserves_removed_handles_and_next_handle() -> None:
+def test_v1_index_pickle_preserves_removed_handles_and_next_handle() -> None:
     index = pickle.loads(bytes.fromhex(_V1_PICKLES['index']))
     assert list(index) == [0, 2]
     assert index[0] == gm.Point(1, 2)

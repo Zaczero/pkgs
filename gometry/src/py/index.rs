@@ -77,19 +77,14 @@ mod impl_query;
 mod nearest_helpers;
 mod pymethods;
 
-pub(crate) use build::{
-    build_spatial_index, index_metadata, restore_spatial_index, restore_spatial_index_v2,
-    spatial_index,
-};
+pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_index, spatial_index};
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
     Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
-pub(crate) use pymethods::{
-    _unpickle_spatial_index_v1, _unpickle_spatial_index_v2, PySpatialIndexIter,
-};
+pub(crate) use pymethods::{_unpickle_spatial_index_v1, PySpatialIndexIter};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
@@ -965,8 +960,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m;
         nearest,
         join,
-        _unpickle_spatial_index_v1,
-        _unpickle_spatial_index_v2
+        _unpickle_spatial_index_v1
     );
     crate::add_classes!(m; PySpatialIndex, PySpatialIndexIter);
     m.py()

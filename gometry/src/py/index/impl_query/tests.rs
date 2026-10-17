@@ -6,7 +6,7 @@ use crate::array::BoundsSeed;
 use crate::crs::frame;
 use crate::geometry::storage::validity::{count_valid_bytes, reset_count_valid_bytes};
 use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel, SharedSlice};
-use crate::py::index::{build_spatial_index, restore_spatial_index_v2, spatial_index};
+use crate::py::index::{build_spatial_index, restore_spatial_index, spatial_index};
 
 include!("tests/support.rs");
 include!("tests/domain.rs");
