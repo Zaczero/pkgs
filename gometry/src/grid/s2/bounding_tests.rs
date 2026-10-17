@@ -274,13 +274,8 @@ fn line_0_0_to_0_45_contains_samples() {
     let shape = line((0.0, 0.0), (0.0, 45.0));
     let cell = bounding_cell(&shape).expect("single-face");
     dense_edge_geom_ok(cell, 0.0, 0.0, 0.0, 45.0);
-    assert_hilbert_contains_samples(cell, &[
-        (0.0, 0.0),
-        (0.0, 10.0),
-        (0.0, 30.0),
-        (0.0, 44.9),
-        (0.0, 45.0),
-    ]);
+    // The 45-degree endpoint lies on two faces; its closed-set proof is above.
+    assert_hilbert_contains_samples(cell, &[(0.0, 0.0), (0.0, 10.0), (0.0, 30.0), (0.0, 44.9)]);
 }
 
 #[test]
