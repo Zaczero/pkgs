@@ -6,6 +6,7 @@ on:
       package:
         required: true
         type: string
+
       plan:
         required: true
         type: string
@@ -23,13 +24,17 @@ env:
 jobs:
   test-rust:
     if: fromJson(inputs.plan).is-rusty == 'true'
+
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJson(inputs.plan).rust-test-runners }}
+
     runs-on: ${{ matrix.runner }}
+
     env:
       MATURIN_PEP517_ARGS: --profile dev
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,12 +96,15 @@ jobs:
 
   test-address-sanitizer:
     if: fromJson(inputs.plan).is-rusty == 'true'
+
     runs-on: ubuntu-26.04
+
     env:
       MATURIN_PEP517_ARGS: --profile dev
       PYTHONMALLOC: malloc
       # Embedded CPython retains process-lifetime allocations after tests finish.
       ASAN_OPTIONS: ${{ fromJson(inputs.plan).type == 'rust' && 'detect_leaks=1' || 'detect_leaks=0' }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -158,10 +166,13 @@ jobs:
 
   test-miri:
     if: fromJson(inputs.plan).is-rusty == 'true'
+
     runs-on: ubuntu-26.04
+
     env:
       # File-backed tests use uniquely owned host fixtures.
       MIRIFLAGS: -Zmiri-disable-isolation
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -203,14 +214,18 @@ jobs:
 
   test:
     if: fromJson(inputs.plan).type != 'rust'
+
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(inputs.plan).test-matrix }}
+
     runs-on: ${{ matrix.os }}
+
     env:
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -289,15 +304,19 @@ jobs:
 
   build:
     if: fromJson(inputs.plan).type != 'rust'
+
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(inputs.plan).build-matrix }}
+
     runs-on: ${{ matrix.runner }}
+
     env:
       RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -18,6 +18,7 @@ concurrency:
 jobs:
   detect:
     runs-on: ubuntu-26.04
+
     outputs:
       packages: ${{ steps.detect.outputs.packages }}
       release-package: ${{ steps.release.outputs.package }}
@@ -26,10 +27,12 @@ jobs:
       rust-toolchain: ${{ steps.matrix.outputs.rust-toolchain }}
       lint-python: ${{ steps.detect.outputs.lint-python }}
       lint-rust: ${{ steps.detect.outputs.lint-rust }}
+
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BEFORE_SHA: ${{ github.event.before }}
       EVENT_NAME: ${{ github.event_name }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,28 +118,36 @@ jobs:
   lint-python:
     needs: detect
     if: needs.detect.outputs.lint-python == 'true'
+
     runs-on: ubuntu-26.04
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           args: check --output-format github
+
       - run: ruff format --check .
 
   lint-rust:
     needs: detect
     if: needs.detect.outputs.lint-rust == 'true'
+
     runs-on: ubuntu-26.04
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
           persist-credentials: false
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ needs.detect.outputs.primary-python }}
+
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         # zizmor: ignore[cache-poisoning] -- This lint-only job produces no published artifacts.
         with:
@@ -144,11 +155,14 @@ jobs:
           components: clippy, rustfmt
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit
+
       - name: Audit Rust dependencies
         run: cargo audit --deny unsound --deny yanked
+
       - name: Check Rust
         shell: bash
         run: |
@@ -162,7 +176,9 @@ jobs:
   test-kani:
     needs: detect
     if: needs.detect.outputs.lint-rust == 'true'
+
     runs-on: ubuntu-26.04
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,10 +232,12 @@ jobs:
   test:
     needs: detect
     if: needs.detect.outputs.packages != '[]'
+
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.detect.outputs.plans) }}
+
     uses: ./.github/workflows/_test.yaml # zizmor: ignore[self-repository] -- actionlint does not yet accept GitHub's $/ workflow syntax
     with:
       package: ${{ matrix.package }}
@@ -234,14 +252,18 @@ jobs:
       && needs.lint-python.result == 'success'
       && needs.lint-rust.result == 'success'
       && needs.test-kani.result == 'success'
+
     runs-on: ubuntu-26.04
+
     environment:
       name: pypi
       url: https://pypi.org/p/${{ needs.detect.outputs.release-package }}
+
     permissions:
       actions: read
       contents: read
       id-token: write
+
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

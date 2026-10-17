@@ -21,6 +21,7 @@ on:
           - starlette-compress
           - totp-rs
           - zid
+
       version:
         description: Version
         required: true
@@ -37,10 +38,12 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-26.04
+
     env:
       PACKAGE: ${{ inputs.package }}
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.package }}/${{ inputs.version }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
