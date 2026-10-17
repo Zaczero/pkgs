@@ -57,8 +57,7 @@ impl GeodesicEnvelopeBound {
             return 0.0;
         }
 
-        let beta_south = reduced_latitude(bounds.south, self.one_minus_f);
-        let beta_north = reduced_latitude(bounds.north, self.one_minus_f);
+        let (beta_south, beta_north) = reduced_latitude_bounds(bounds, self.one_minus_f);
         let query_longitude = self.longitude.to_degrees();
         let full_longitude = bounds.west == -180.0 && bounds.east == 180.0;
         let sigma = if full_longitude || longitude_contains(bounds, query_longitude) {
@@ -173,8 +172,7 @@ impl GeodesicBoxEnvelopeBound {
 }
 
 fn unit_box(bounds: ChartBox, one_minus_f: f64) -> UnitBox {
-    let beta_south = reduced_latitude(bounds.south, one_minus_f);
-    let beta_north = reduced_latitude(bounds.north, one_minus_f);
+    let (beta_south, beta_north) = reduced_latitude_bounds(bounds, one_minus_f);
     let abs_min = if beta_south <= 0.0 && beta_north >= 0.0 {
         0.0
     } else {
@@ -279,6 +277,13 @@ fn component_gap(first: (f64, f64), second: (f64, f64)) -> f64 {
     }
 }
 
+fn reduced_latitude_bounds(bounds: ChartBox, one_minus_f: f64) -> (f64, f64) {
+    let south = reduced_latitude(bounds.south, one_minus_f);
+    let north = reduced_latitude(bounds.north, one_minus_f);
+    // Independent transcendental evaluations can reverse equal or adjacent inputs.
+    (south.min(north), south.max(north))
+}
+
 fn reduced_latitude(latitude_degrees: f64, one_minus_f: f64) -> f64 {
     let phi = latitude_degrees.to_radians();
     (one_minus_f * phi.tan())
@@ -357,6 +362,25 @@ mod tests {
             }
         }
         minimum
+    }
+
+    #[test]
+    fn flat_latitude_envelopes_keep_ordered_bounds_below_attained_distances() {
+        let geodesic = Geodesic::wgs84();
+        let query = Point::new_raw_xy(0.0, 0.0);
+        let bound = GeodesicEnvelopeBound::new(geodesic.a, geodesic.f, query);
+        for latitude in [-80.0_f64, -1.0, 1.0, 80.0] {
+            for north in [latitude, latitude.next_up()] {
+                for longitude in [0.0, 10.0] {
+                    let bounds = box_(longitude, latitude, longitude, north);
+                    let lower = bound.lower_bound(bounds);
+                    let attained: f64 = geodesic.inverse(0.0, 0.0, latitude, longitude);
+                    assert!(lower.is_finite());
+                    assert!(lower >= 0.0);
+                    assert!(lower <= attained, "{bounds:?}: {lower} > {attained}");
+                }
+            }
+        }
     }
 
     #[test]

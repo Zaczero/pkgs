@@ -225,8 +225,8 @@ pub(crate) fn geodesic_frechet_greedy_ub<S: Coordinates + ?Sized, L: Coordinates
 /// The discrete-Fréchet coupling DP with `short` as the rolling-row dimension,
 /// over geodesic edge distances (no squaring — the geodesic metric is already
 /// the distance). Mirrors [`frechet_dp_columns`] in the geometry layer: band
-/// pruning around [`geodesic_frechet_greedy_ub`], bit-identical to the full
-/// table.
+/// pruning around [`geodesic_frechet_greedy_ub`], within the backend's
+/// evaluation allowance of the full table.
 #[cfg(test)]
 pub(crate) fn geodesic_frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     metric: &EllipsoidMetric<'_>,
@@ -257,7 +257,10 @@ pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coord
         return INF;
     }
     let distance = |p: Point, q: Point| metric.segment_length(p, q);
-    let ub = geodesic_frechet_greedy_ub(metric, short, long);
+    // Greedy and DP evaluate the same pairs independently. Transcendental
+    // roundoff must not prune the coupling that supplied the upper bound.
+    let allowance = metric.geodesic_numerical_policy().evaluation_allowance(2.0);
+    let ub = (geodesic_frechet_greedy_ub(metric, short, long) + allowance).next_up();
     let (previous, current) = scratch.geodesic_buffers(width);
     previous[..width].fill(INF);
     current[..width].fill(INF);
@@ -319,9 +322,10 @@ pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coord
         std::mem::swap(previous, current);
         (prev_lo, prev_hi) = (cur_lo, cur_hi);
     }
-    if prev_hi == width - 1 {
-        previous[width - 1]
-    } else {
-        ub
-    }
+    debug_assert_eq!(
+        prev_hi,
+        width - 1,
+        "the coupling reaches its final endpoint"
+    );
+    previous[width - 1]
 }
