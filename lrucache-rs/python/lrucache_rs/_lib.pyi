@@ -30,7 +30,13 @@ class Cache:
 
     @property
     def maxsize(self) -> int:
-        """The configured maximum number of entries."""
+        """The configured maximum number of entries.
+
+        Returns
+        -------
+        int
+            The positive entry capacity.
+        """
 
     def __len__(self) -> int:
         """Return len(self)."""

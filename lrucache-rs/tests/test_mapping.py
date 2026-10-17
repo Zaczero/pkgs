@@ -16,12 +16,13 @@ def test_mapping_update_and_dict_conversion():
 
 def test_update_preserves_partial_progress():
     cache = LRUCache[str, int](3)
+    provider_error = ValueError('provider')
 
     def entries():
         yield 'kept', 17
-        raise ValueError('provider')
+        raise provider_error
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, check=lambda error: error is provider_error):
         cache.update(entries())
     assert list(cache.items()) == [('kept', 17)]
 
