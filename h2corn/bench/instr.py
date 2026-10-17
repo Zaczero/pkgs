@@ -80,9 +80,6 @@ REQUESTS = 200_000
 WARMUP_REQUESTS = 20_000
 MIN_ROUNDS = 4
 MAX_ROUNDS = 20
-# This is a percentage-point half-width on the paired relative delta: ±0.3%
-# of the control's instructions/request, not 0.3% of a possibly-zero delta.
-TARGET_HALF_WIDTH_PERCENT = 0.3
 TIME_BUDGET_SECONDS = 900.0
 LOAD_TIMEOUT_SECONDS = 120.0
 PERF_ATTACH_SETTLE_SECONDS = 0.05
@@ -293,7 +290,7 @@ def compare(
     max_rounds: int,
     deadline: float,
 ) -> dict[str, Any]:
-    """Run rotation-balanced pairs until instructions/request is resolved."""
+    """Run the configured number of rotation-balanced measurement pairs."""
     variants = {control.name: control, candidate.name: candidate}
     samples = {
         control.name: {metric: [] for metric in (*COUNTERS, 'ipc')},
@@ -316,13 +313,8 @@ def compare(
             samples[candidate.name]['instructions'],
             SEED,
         )
-        low, high = instructions.ci_percent
         print(f'  round {round_index}: {instructions.describe("instructions/request")}')
-        may_stop = round_index >= MIN_ROUNDS and (round_index - MIN_ROUNDS) % 4 == 0
-        if may_stop and (high - low) / 2 <= TARGET_HALF_WIDTH_PERCENT:
-            stopped = 'resolved'
-            break
-        if time.monotonic() > deadline:
+        if round_index < max_rounds and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
 
@@ -340,8 +332,8 @@ def compare(
         'requests_per_sample': requests,
         'warmup_requests': warmup_requests,
         'rounds': rounds,
+        'planned_rounds': max_rounds,
         'stopped': stopped,
-        'target_half_width_percent': TARGET_HALF_WIDTH_PERCENT,
         'control': control.name,
         'candidate': candidate.name,
         'commands': {
@@ -428,12 +420,8 @@ def main() -> int:
             f'({comparison["delta_percent"]:+.3f}%, 95% CI {low:+.3f}%..{high:+.3f}%)'
         )
     instructions = record['comparison']['instructions']
-    low, high = instructions['ci_percent']
-    if record['stopped'] != 'resolved':
-        print(
-            'INCONCLUSIVE within the budget — instructions/request remains wider than '
-            f'±{TARGET_HALF_WIDTH_PERCENT:.1f}% (observed ±{(high - low) / 2:.3f}%).'
-        )
+    if record['stopped'] == 'time-budget':
+        print('INCONCLUSIVE: the time budget ended before all planned rounds.')
     elif instructions['significant']:
         print('SIGNIFICANT: the instructions/request interval excludes zero.')
     else:

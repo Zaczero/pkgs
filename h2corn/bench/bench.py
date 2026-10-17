@@ -1,11 +1,9 @@
 """Cross-server benchmark suite: runs every scenario against every server and plots it.
 
 Servers and load generators run unpinned, exactly as a deployment runs them.
-Trials are rotation-balanced cold starts (3-9 per scenario). Sampling stops
-when the reported comparison is resolved — the leader is ahead of the runner-up
-and the leader's own interval is within the target half-width — or when the
-scenario's 240 s ceiling (suite 7200 s) is hit. There is no separate headroom
-phase.
+Trials are rotation-balanced cold starts with a fixed configured count.
+Scenario and suite deadlines bound the run; confidence intervals describe the
+result without deciding when sampling stops.
 
     uv run python bench/bench.py            # stage a run under bench/results/runs/
     uv run python bench/bench.py --publish  # also replace the checked-in plots
@@ -103,7 +101,7 @@ MAX_TRIALS = 4
 TARGET_HALF_WIDTH = 0.03
 #: Hard wall-clock ceiling per scenario and for the whole suite. Trial duration
 #: is never shortened to fit — the suite reports what it measured and says which
-#: scenarios stopped on time rather than on precision. The suite ceiling has to
+#: scenarios stopped on time rather than completing the trial count. The suite ceiling has to
 #: cover every scenario spending its own, or a full run dies partway with
 #: nothing published; `main` refuses a combination that cannot fit.
 SCENARIO_BUDGET_SECONDS = 240.0
@@ -734,7 +732,7 @@ def run_scenario(
             f'  after trial {trial}: median {medians} (leader CI ±{leader:.1%})',
             flush=True,
         )
-        if time.monotonic() > deadline:
+        if trial < max_trials and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
     final_rates = [

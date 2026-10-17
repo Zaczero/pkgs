@@ -8,7 +8,7 @@ Run from the `h2corn` checkout on Linux or macOS with Python 3.11+.
 Install `oha` for HTTP scenarios and `k6` for WebSockets, then:
 
 ```bash
-uv sync --all-groups
+uv sync
 uv run python bench/bench.py
 ```
 
@@ -43,9 +43,10 @@ with a reason; loopback results are not substituted.
 - Servers use the same application, asyncio loop, aligned settings, and access
   logging to `/dev/null`.
 - Server order is rotated; neither servers nor load generators are CPU-pinned.
-- Results report medians and observed ranges from 3–9 cold starts.
-- Sampling stops when the leading server separates from the runner-up and its
-  interval reaches the 3% target, or when the time budget expires.
+- Results report medians, bootstrap confidence intervals, and observed ranges
+  across cold starts.
+- Sampling uses the configured trial count or stops at the time budget.
+  Confidence intervals describe uncertainty without controlling sample size.
 - Unsupported competitor scenarios are excluded with their reason.
   An h2corn failure stops the run.
 - Peak proportional set size (PSS) is sampled across the supervisor and workers.

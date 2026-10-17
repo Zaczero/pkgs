@@ -2,9 +2,9 @@
 
 Nothing is pinned to a CPU. Server and load generator run the way a deployment
 runs them, and the noise of a shared development host is handled where it
-belongs — in the statistics: trials are rotation-balanced, the reported value is
-a median, and sampling stops when a bootstrap confidence interval is tight
-enough (or a hard time ceiling is reached), never after a fixed count.
+belongs — in the statistics: trials are rotation-balanced and the reported value
+is a median with a bootstrap confidence interval. Sampling uses the configured
+trial count, bounded by a hard time ceiling.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import h2.connection
 import h2.events
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Generator, Sequence
 
 HOST = '127.0.0.1'
 PORT = 8000
@@ -490,7 +490,7 @@ def terminate_process_group(process: subprocess.Popen[Any]) -> None:
 
 def _http_ready(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=1) as response:  # noqa: S310
+        with urllib.request.urlopen(url, timeout=1) as response:  # ruff: ignore[suspicious-url-open-usage]
             return response.status < 500
     except urllib.error.HTTPError as error:
         return error.code < 500
@@ -536,7 +536,7 @@ def _worker_pids(socket_path: Path | None, workers: int, deadline: float) -> set
                     f'http://{HOST}:{PORT}/__bench/worker-pid',
                     headers={'Connection': 'close'},
                 )
-                with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310
+                with urllib.request.urlopen(request, timeout=2) as response:  # ruff: ignore[suspicious-url-open-usage]
                     body = response.read()
         except (OSError, urllib.error.URLError):
             time.sleep(0.02)
@@ -615,7 +615,7 @@ def running_server(
     workers: int,
     socket_path: Path | None = None,
     output: int = subprocess.DEVNULL,
-) -> Iterator[ServerRun]:
+) -> Generator[ServerRun, None, None]:
     """Run a server for the duration of the block.
 
     Output goes to /dev/null by default: every server here logs one line per
@@ -1045,7 +1045,7 @@ def _receive_at_least(connection: socket.socket, buffer: bytearray, size: int) -
 def _probe_websocket(contract: ResponseContract) -> None:
     key = base64.b64encode(secrets.token_bytes(16)).decode()
     accept = base64.b64encode(
-        hashlib.sha1(  # noqa: S324 - the value RFC 6455 specifies
+        hashlib.sha1(  # ruff: ignore[hashlib-insecure-hash-function] - the value RFC 6455 specifies
             (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()
         ).digest()
     ).decode()

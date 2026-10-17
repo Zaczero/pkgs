@@ -2,11 +2,9 @@
 
 This is the tool that decides whether a code change helped. Each round starts
 both variants cold, in alternating order, and measures them back to back; the
-statistic is the *paired* per-round delta, so slow drift on a shared host
-cancels instead of being read as a code change. Rounds continue until the
-delta's bootstrap confidence interval is narrow enough to act on, or the time
-budget runs out — in which case the result is reported as inconclusive rather
-than rounded into a win.
+statistic is the *paired* per-round delta, reducing shared-host drift.
+Sampling uses the configured round count, independent of the observed interval.
+A time-budget interruption retains the partial measurements as inconclusive.
 
     # two builds, same scenario
     uv run python bench/compare.py \
@@ -73,8 +71,6 @@ WARMUP_DURATION = '2s'
 CONCURRENCY = 100
 MIN_ROUNDS = 4
 MAX_ROUNDS = 20
-#: Stop once the paired delta is resolved to better than this, in percent.
-TARGET_HALF_WIDTH_PERCENT = 1.0
 TIME_BUDGET_SECONDS = 900.0
 SEED = 20_260_726
 
@@ -166,16 +162,8 @@ def compare(
         rounds = round_index
 
         result = paired_comparison(rates[control.name], rates[candidate.name], SEED)
-        low, high = result.ci_percent
         print(f'  round {round_index}: {result.describe()}')
-        # Only consider stopping on a fixed schedule. Re-examining the interval
-        # after every single round is many chances to catch a momentarily narrow
-        # one, which biases both the stopping point and the final verdict.
-        may_stop = round_index >= MIN_ROUNDS and (round_index - MIN_ROUNDS) % 4 == 0
-        if may_stop and (high - low) / 2 <= TARGET_HALF_WIDTH_PERCENT:
-            stopped = 'resolved'
-            break
-        if time.monotonic() > deadline:
+        if round_index < max_rounds and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
 
@@ -186,6 +174,7 @@ def compare(
         'workers': scenario.workers,
         'duration': duration,
         'rounds': rounds,
+        'planned_rounds': max_rounds,
         'stopped': stopped,
         'control': control.name,
         'candidate': candidate.name,
@@ -231,11 +220,15 @@ def main() -> int:
         parser.error('--workers must be positive')
     if args.max_rounds < MIN_ROUNDS:
         parser.error(f'--max-rounds must be at least {MIN_ROUNDS}')
+    if args.time_budget <= 0:
+        parser.error('--time-budget must be positive')
     duration_seconds(args.duration)
     duration_seconds(args.warmup_duration)
 
     control = parse_variant(args.control, args.executable)
     candidate = parse_variant(args.candidate, args.executable)
+    if control.name == candidate.name:
+        parser.error('--control and --candidate need distinct names')
     plural = 's' if args.workers > 1 else ''
     scenario = Scenario(
         f'{args.scenario} ({args.workers} worker{plural})',
@@ -295,7 +288,7 @@ def main() -> int:
         f'{memory[candidate.name] / 1e6:,.1f} MB'
     )
     if record['stopped'] == 'time-budget':
-        print('INCONCLUSIVE within the time budget — the interval is still wide.')
+        print('INCONCLUSIVE: the time budget ended before all planned rounds.')
     elif comparison['significant']:
         print('SIGNIFICANT: the interval excludes zero.')
     else:
