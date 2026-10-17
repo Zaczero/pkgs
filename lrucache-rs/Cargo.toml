@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 name = "lrucache_rs"
 
 [dependencies]
-hashbrown = { version = "0.16.1", default-features = false, features = [
+hashbrown = { version = "0.17.1", default-features = false, features = [
   "inline-more"
 ] }
 parking_lot = "0.12.5"
