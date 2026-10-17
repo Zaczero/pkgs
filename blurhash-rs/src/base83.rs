@@ -54,3 +54,6 @@ pub(crate) fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
         out.push(byte);
     }
 }
+
+#[cfg(kani)]
+mod proofs;
