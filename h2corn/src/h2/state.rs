@@ -1024,6 +1024,9 @@ fn missing_receive_state(
     }
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use std::future::pending;
