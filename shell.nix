@@ -1,10 +1,10 @@
 { }:
 
 let
-  pkgs =
-    import
-      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/6b5e5b7a6631f065bf6908986990b37d845f847f.tar.gz")
-      { };
+  pkgs = import (fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/f20cd90e28fe0403873f473b29e42662cd86e8c4.tar.gz";
+    sha256 = "1vv6crfchmhjk5j61zgajggc3cgkalak2rvng07g41cvlcf6ldhj";
+  }) { };
 
   makeScript =
     with pkgs;
@@ -27,29 +27,21 @@ let
 
   packages' = with pkgs; [
     cargo-about
-    coreutils
-    curl
-    gnugrep
+    cmake
     h2spec
-    jq
     k6
     lychee
-    cmake
-    openssh
     oha
     pyright
-    rsync
-    ruff
-    uv
 
     (makeScript "nixpkgs-update" ''
-      hash=$(
-        curl -fsSL \
-          https://prometheus.nixos.org/api/v1/query \
-          -d 'query=channel_revision{channel="nixpkgs-unstable"}' \
-        | jq -r ".data.result[0].metric.revision")
-      sed -i "s|nixpkgs/archive/[0-9a-f]\{40\}|nixpkgs/archive/$hash|" shell.nix
-      echo "Nixpkgs updated to $hash"
+      revision=$(curl -fsSL https://channels.nixos.org/nixpkgs-unstable/git-revision)
+      [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+      hash=$(nix-prefetch-url --unpack "https://github.com/NixOS/nixpkgs/archive/$revision.tar.gz")
+      sed -i \
+        -e "s|nixpkgs/archive/[0-9a-f]\{40\}|nixpkgs/archive/$revision|" \
+        -e "s|sha256 = \"[^\"]*\"|sha256 = \"$hash\"|" shell.nix
+      echo "Nixpkgs updated to $revision"
     '')
 
     # docs-{serve,build,deploy} act on the package in CWD. Each requires a
@@ -62,7 +54,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --quiet --all-groups
+      uv sync --quiet
       if [ -f tools/check.py ]; then
         uv run --no-sync python tools/check.py --prepare
       fi
@@ -76,7 +68,7 @@ let
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --quiet --all-groups
+      uv sync --quiet
       if [ -f tools/check.py ]; then
         uv run --no-sync python tools/check.py --prepare
       fi
@@ -129,7 +121,7 @@ let
     export PYTHONPATH=""
     export COVERAGE_CORE=sysmon
 
-    # `uv sync --all-groups` builds through maturin's PEP 517 backend, which defaults to
+    # `uv sync` builds through maturin's PEP 517 backend, which defaults to
     # plain `--release` (thin LTO and default codegen-units), measured at 37 s for a one-line
     # change against 2 s for dev. The import hook is separately unset above, so
     # both paths agree on dev. Dev also turns on debug_assertions and
