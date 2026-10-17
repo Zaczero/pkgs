@@ -20,8 +20,13 @@ for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
 
 import bench as bench_driver  # ruff: ignore[module-import-not-at-top-of-file]
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
-from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # ruff: ignore[module-import-not-at-top-of-file]
-from benchmark_observation import make_observation  # ruff: ignore[module-import-not-at-top-of-file]
+from _bench_registry import (  # ruff: ignore[module-import-not-at-top-of-file]
+    ALL_PUBLIC_OPERATIONS,
+    scaling_record,
+)
+from benchmark_observation import (  # ruff: ignore[module-import-not-at-top-of-file]
+    make_observation,
+)
 
 from tests.tooling._bench_support import (  # ruff: ignore[module-import-not-at-top-of-file]
     HASH,

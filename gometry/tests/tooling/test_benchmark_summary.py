@@ -20,7 +20,9 @@ import benchmark_observation as bo  # ruff: ignore[module-import-not-at-top-of-f
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
 import summarize_bench as sb  # ruff: ignore[module-import-not-at-top-of-file]
 
-from tests.tooling._bench_support import producer  # ruff: ignore[module-import-not-at-top-of-file]
+from tests.tooling._bench_support import (  # ruff: ignore[module-import-not-at-top-of-file]
+    producer,
+)
 
 
 def _load(paths: list[Path]) -> dict[str, sb.BenchStats]:

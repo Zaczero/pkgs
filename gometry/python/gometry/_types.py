@@ -78,7 +78,9 @@ if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
     import pyarrow as pa
-    from pyproj import CRS as PyprojCrs  # ruff: ignore[constant-imported-as-non-constant] — CRS is a class, not a constant
+    from pyproj import (
+        CRS as PyprojCrs,  # ruff: ignore[constant-imported-as-non-constant] — CRS is a class, not a constant
+    )
     from pyproj.aoi import AreaOfInterest as PyprojAreaOfInterest
 
     PyArrowArray: TypeAlias = pa.Array | pa.ExtensionArray

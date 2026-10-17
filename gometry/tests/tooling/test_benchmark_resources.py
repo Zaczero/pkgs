@@ -18,7 +18,10 @@ for _path in (_SUPPORT, _DRIVERS):
 
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
 
-from tests.tooling._bench_support import HASH, producer  # ruff: ignore[module-import-not-at-top-of-file]
+from tests.tooling._bench_support import (  # ruff: ignore[module-import-not-at-top-of-file]
+    HASH,
+    producer,
+)
 
 _bench = importlib.import_module('bench')
 _CASE_PATH = _BENCHES / 'cases' / 'case_resource_tail.py'
