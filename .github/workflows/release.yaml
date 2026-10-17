@@ -46,6 +46,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          persist-credentials: true # zizmor: ignore[artipacked] -- this job pushes its release commit and tag and uploads no artifacts
 
       - name: Check existing tag
         id: tag
@@ -72,8 +73,10 @@ jobs:
 
       - name: Update Cargo lockfile
         if: steps.tag.outputs.exists == 'false' && steps.package.outputs.type == 'python-rust'
+        env:
+          CRATE: ${{ steps.package.outputs.crate }}
         shell: bash
-        run: cargo update -p "${{ steps.package.outputs.crate }}" --precise "$VERSION"
+        run: cargo update -p "$CRATE" --precise "$VERSION"
 
       - name: Commit and tag release
         if: steps.tag.outputs.exists == 'false'

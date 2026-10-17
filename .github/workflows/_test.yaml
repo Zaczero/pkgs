@@ -35,7 +35,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: false
 
@@ -57,22 +57,21 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: false
           python-version: "3.14"
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-key: ${{ env.PACKAGE }}-source
           cache-on-failure: false
           cache-save-if: false
-          rustflags: ""
 
       - name: Install cargo-about
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-about@0.8.4
 
@@ -92,7 +91,7 @@ jobs:
           uv run --no-sync --python 3.14 python tools/wheel_smoke.py \
             --stage-sdist "$RUNNER_TEMP/gometry-source"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gometry-source
           path: ${{ runner.temp }}/gometry-source
@@ -117,21 +116,20 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-key: ${{ env.PACKAGE }}
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           # Empty: preserve the .cargo/config.toml x86-64-v2 development baseline.
-          rustflags: ""
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         if: needs.resolve.outputs.type != 'rust'
         with:
           enable-cache: false
@@ -217,7 +215,7 @@ jobs:
             cargo nextest run --no-tests pass --release
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && inputs.package == 'gometry'
         with:
           name: gometry-native-tests-${{ matrix.runner }}
@@ -240,7 +238,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust interpreter toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           components: miri, rust-src
@@ -248,10 +246,9 @@ jobs:
           cache-directories: ~/.cache/miri
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-          rustflags: ""
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest
 
@@ -299,7 +296,7 @@ jobs:
           fi
           exit "$nextest_status"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: miri-${{ inputs.package }}
@@ -326,7 +323,7 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           cache-dependency-glob: |
             pyproject.toml
@@ -339,7 +336,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-key: ${{ env.PACKAGE }}
@@ -347,11 +344,10 @@ jobs:
           cache-save-if: >-
             ${{ github.ref == 'refs/heads/main'
                 && (matrix.primary == 'true' || runner.os != 'Linux') }}
-          rustflags: ""
 
       - name: Install sccache
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.17.0
 
@@ -362,7 +358,7 @@ jobs:
 
       - name: Install Gometry license generator
         if: inputs.package == 'gometry'
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-about@0.8.4
 
@@ -478,12 +474,12 @@ jobs:
 
       - name: Download staged gometry source
         if: inputs.package == 'gometry'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gometry-source
           path: source
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           cache-dependency-glob: |
             pyproject.toml
@@ -504,14 +500,13 @@ jobs:
 
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-key: ${{ env.PACKAGE }}
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: ${{ runner.os != 'Linux' }}
-          rustflags: ""
 
       - name: Rewrite README for PyPI
         if: inputs.package != 'gometry'
@@ -561,13 +556,13 @@ jobs:
 
       - name: Install cargo-about
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-about@0.8.4
 
       - name: Install sccache
         if: needs.resolve.outputs.is-rusty == 'true'
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.17.0
 
@@ -758,7 +753,7 @@ jobs:
             --output-dir dist \
             "$PACKAGE"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && inputs.package == 'gometry'
         with:
           name: gometry-build-evidence-${{ matrix.runner }}
@@ -772,7 +767,7 @@ jobs:
         shell: bash
         run: uv build -o dist "$PACKAGE"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.package == 'gometry'
         with:
           name: gometry-wheels-${{ matrix.runner }}
@@ -784,7 +779,7 @@ jobs:
         shell: bash
         run: uv build --sdist -o dist "$PACKAGE"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(github.ref, 'refs/tags/') && inputs.package != 'gometry'
         with:
           name: dist-${{ env.PACKAGE }}-${{ matrix.runner }}
@@ -810,20 +805,19 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
           cache-key: gometry-aggregate
           cache-on-failure: false
           cache-save-if: false
-          rustflags: ""
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gometry-source
           path: source
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: gometry-wheels-*
           path: runners
@@ -846,7 +840,7 @@ jobs:
             --assemble-release dist source runners \
             --expected-runners "$RUNNER_TEMP/gometry-runners.json"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: gometry-release-distributions
