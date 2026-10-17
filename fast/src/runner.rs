@@ -157,10 +157,6 @@ impl Runner {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "One contiguous lifecycle owns launch, completion, cancellation, and cleanup"
-    )]
     pub fn invoke(
         &mut self,
         command: &Command,

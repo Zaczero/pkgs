@@ -897,10 +897,6 @@ fn sweep_pieces(
     Ok(())
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "removed copy count scales the binary64 perimeter total"
-)]
 fn cancel_in_ring_group(
     metric: &impl ChartMetric,
     group: &ArcGroup,
@@ -1041,10 +1037,6 @@ fn source_parameter(
     numerator.try_quotient(&denominator)?.round()
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "removed copy count scales the binary64 perimeter total"
-)]
 fn cancel_seam_pieces(
     metric: &impl ChartMetric,
     frame: GeographicFrame,

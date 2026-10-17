@@ -770,10 +770,6 @@ fn record_shutdown_failure(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one lifecycle owner must keep startup errors, shutdown priority, and final resolution in order"
-)]
 async fn run_serve_task(task: ServeTask) {
     let ServeTask {
         app,
@@ -920,10 +916,6 @@ async fn run_serve_task(task: ServeTask) {
 #[expect(
     clippy::needless_pass_by_value,
     reason = "PyO3 requires PyRef by value for class arguments"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "listener adoption, shard ownership, and the awaitable handoff form one startup transaction"
 )]
 #[expect(
     clippy::significant_drop_tightening,

@@ -531,10 +531,6 @@ fn parse_headers_or_reject(
     HeadParseOutcome::Parsed(header_state)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the complete HTTP/1 request transition keeps parsing and route selection together"
-)]
 fn parsed_request_from_head(
     head: &Bytes,
     line: RequestLineParts<'_>,
@@ -1171,10 +1167,6 @@ fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
         && (path_and_query.is_empty() || request_path_is_valid(method, path_and_query))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the grammar stays auditable when token, quoted-string, and BWS states share one cursor"
-)]
 #[expect(
     clippy::indexing_slicing,
     reason = "a u8 index cannot leave a 256-entry table"

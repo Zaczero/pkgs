@@ -67,10 +67,6 @@ impl FramePayloadLen {
         if len > MAX_FRAME_SIZE_UPPER_BOUND {
             return None;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the bound above limits the value to 24 bits"
-        )]
         Some(Self(len as u32))
     }
 
@@ -80,10 +76,6 @@ impl FramePayloadLen {
             len <= MAX_FRAME_SIZE_UPPER_BOUND,
             "frame payload constant exceeds the HTTP/2 length field"
         );
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the assertion above bounds the value to 24 bits"
-        )]
         Self(len as u32)
     }
 
@@ -91,10 +83,6 @@ impl FramePayloadLen {
     /// valid, so clamping chains need no further checks.
     pub(crate) const fn min_usize(self, other: usize) -> Self {
         if other < self.0 as usize {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the comparison above bounds `other` by an already valid length"
-            )]
             Self(other as u32)
         } else {
             self

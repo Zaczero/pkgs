@@ -189,10 +189,6 @@ pub(super) fn lifted_position_cmp(left: (i64, f64), right: (i64, f64)) -> std::c
         .then_with(|| left.1.total_cmp(&right.1))
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "only exactly represented turn integers enter the float filter"
-)]
 pub(super) fn exactly_represented_lift(x: f64, turn: i64, period: f64) -> Option<f64> {
     if turn == 0 {
         return Some(x);

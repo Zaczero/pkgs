@@ -97,10 +97,6 @@ pub struct PyGeometryArray {
 /// Cached per-element bounding boxes (one entry per row, `None` for empty
 /// rows). The vector is kept behind an `Arc` so required construction can
 /// publish one fallibly allocated owner and cache-only callers can reuse it.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "crate-visible for the predicate broadcast dispatch"
-)]
 pub(crate) type ElementBounds = Arc<Vec<Option<Bounds>>>;
 
 /// Lazy array-wide aggregate bounds cache handle (`None` when every row is empty).

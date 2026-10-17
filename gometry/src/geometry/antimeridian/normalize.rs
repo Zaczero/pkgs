@@ -120,10 +120,7 @@ fn chart_longitude(
     })
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "Q admits at most u32 source edges, so the accumulated turn count is exactly representable as f64"
-)]
+// Q admits at most u32 source edges, so the accumulated turn count is exactly representable.
 fn longitude_with_turns(longitude: f64, turns: i64, period: f64) -> f64 {
     longitude + turns as f64 * period
 }

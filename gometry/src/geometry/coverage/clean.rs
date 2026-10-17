@@ -755,10 +755,7 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::suboptimal_flops,
-        reason = "separate roundings define the reproducible ULP jitter fixture"
-    )]
+    // Separate roundings define the reproducible ULP jitter fixture.
     fn ulp_jitter(value: f64, seed: usize) -> f64 {
         let magnitude = value.abs().max(1.0);
         let spacing = f64::from_bits(magnitude.to_bits().wrapping_add(1)) - magnitude;

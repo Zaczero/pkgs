@@ -360,7 +360,6 @@ pub(super) fn utm_crs(crs: &str) -> Option<(LocalUtmZone, GeodeticPole)> {
     }
 }
 
-#[expect(clippy::suboptimal_flops, reason = "standard projection formula")]
 fn utm_central_meridian(zone: LocalUtmZone) -> f64 {
     f64::from(zone.get()) * 6.0 - 183.0
 }
