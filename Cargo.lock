@@ -992,7 +992,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "gometry"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "h2corn"
-version = "1.6.0"
+version = "1.5.1"
 dependencies = [
  "anstream 0.6.21",
  "atoi_simd",

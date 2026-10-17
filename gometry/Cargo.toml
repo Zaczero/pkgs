@@ -1,6 +1,6 @@
 [package]
 name = "gometry"
-version = "1.0.0"
+version = "0.0.0"
 edition = "2024"
 description = "A geospatial engine for Python, written in Rust"
 repository = "https://github.com/Zaczero/pkgs/tree/main/gometry"
