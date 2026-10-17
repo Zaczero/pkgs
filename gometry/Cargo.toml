@@ -37,7 +37,7 @@ fast_hilbert = { version = "2.1.0", default-features = false }
 geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
-getrandom = { version = "0.3", default-features = false, features = ["std"] }
+getrandom = { version = "0.4.3", default-features = false, features = ["std"] }
 # Vendored from HydroniumLabs/h3o at fa1557fd1edd56f64e4da95b2fd294609ce2353e.
 # GOMETRY_DIVERGENCE.md records its raw-carrier API and local safe-traversal fix.
 h3o = { path = "native/h3o", default-features = false, features = [
@@ -76,11 +76,8 @@ thiserror = { version = "2.0", default-features = false, features = ["std"] }
 zmij = { version = "1.0.21", default-features = false }
 
 [dev-dependencies]
-# Differential oracle for gometry's own S2 core (src/grid/s2) — test-only. Upstream still
-# pulls unmaintained/unsound cgmath (RUSTSEC-2026-0196/0197); it is excluded
-# from production artifacts, and the exercised S2 source never calls the
-# affected swap_columns API. AGENTS.md records the release-audit decision.
-s2 = { version = "0.1.0", default-features = false }
+# Differential oracle for gometry's own S2 core (src/grid/s2), test-only.
+s2 = { version = "0.2.0", default-features = false }
 sha2 = { version = "0.10.9", default-features = false }
 
 [build-dependencies]

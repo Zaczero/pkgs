@@ -333,16 +333,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "cgmath"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a98d30140e3296250832bbaaff83b27dcd6fa3cc70fb6f1f3e5c9c0023b5317"
-dependencies = [
- "approx 0.4.0",
- "num-traits",
-]
-
-[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -974,7 +964,7 @@ dependencies = [
  "bytemuck",
  "fast_hilbert",
  "geographiclib-rs",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "h3o",
  "lexical-core",
  "libc",
@@ -2175,13 +2165,11 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "s2"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a23f65853fad73749bd4cdc1a69b7a18f9af9a2aec1a162066110aef1f4f90a"
+checksum = "081105773b1c0ff138641d8d27206aa1ea08fe604736a17f5af7d3c49f1500d7"
 dependencies = [
  "bigdecimal",
- "cgmath",
- "lazy_static",
  "libm",
 ]
 
