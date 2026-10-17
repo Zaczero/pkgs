@@ -1,6 +1,17 @@
+"""Pillow workflows measured with pyperf, with image setup excluded.
+
+The default dev environment supports blurhash-rs and blurhash. For
+blurhash-python, use ``uv run --no-dev --group compare-cffi`` in a separate
+environment: both comparator packages provide the ``blurhash`` import.
+Save runs with ``-o`` and compare matching cases with
+``python -m pyperf compare_to baseline.json candidate.json``.
+"""
+
 import argparse
+import hashlib
 import sys
 from importlib.metadata import version
+from pathlib import Path
 
 import pyperf
 from PIL import Image
@@ -62,62 +73,95 @@ def _run_suite(impl: str, pyperf_args: list[str]) -> int:
     else:
         from blurhash_rs import blurhash_decode, blurhash_encode
 
+    from blurhash_rs import _lib
     from blurhash_rs import blurhash_decode as decode_reference
     from blurhash_rs import blurhash_encode as encode_reference
 
-    sizes = [32, 64, 128]
-    x_components = 4
-    y_components = 3
+    cases = [
+        (32, 32, 'RGB', 4, 3),
+        (64, 64, 'RGB', 4, 3),
+        (128, 128, 'RGB', 4, 3),
+        (96, 54, 'RGB', 4, 3),
+        (54, 96, 'RGB', 3, 4),
+        (32, 32, 'RGB', 1, 1),
+        (32, 32, 'RGB', 9, 9),
+        (64, 32, 'RGBA', 4, 3),
+        (32, 32, 'L', 4, 3),
+    ]
 
     # pyperf spawns worker processes by re-running the "program". Since we
     # parse custom CLI args ourselves, we must include them in program_args so
     # workers can parse them too.
     runner = pyperf.Runner(program_args=(sys.argv[0], '--impl', impl))
     runner.metadata['implementation'] = f'{impl} {version(impl)}'
+    runner.metadata['benchmark_sha256'] = hashlib.sha256(
+        Path(__file__).read_bytes()
+    ).hexdigest()
+    runner.metadata['native_extension_sha256'] = hashlib.sha256(
+        Path(_lib.__file__).read_bytes()
+    ).hexdigest()
     runner.metadata['workload'] = (
-        'RGB Pillow images; 4x3 components; preserve input; return image'
+        'Square and thumbnail RGB/RGBA/grayscale Pillow images; '
+        '1x1, 3x4, 4x3 and 9x9 components; preserve input; return RGB images'
     )
     runner.parse_args(pyperf_args)
 
-    def encode_image(image):
+    def encode_image(image, x_components, y_components):
         if impl == 'blurhash-python':
-            return blurhash_encode(image.copy(), x_components, y_components)
-        if impl == 'blurhash':
             return blurhash_encode(
-                _pil_rgb_image_to_3d_array(image), x_components, y_components
+                image.copy() if image.mode == 'RGB' else image,
+                x_components,
+                y_components,
+            )
+        if impl == 'blurhash':
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            return blurhash_encode(
+                _pil_rgb_image_to_3d_array(image),
+                x_components,
+                y_components,
             )
         return blurhash_encode(image, x_components, y_components)
 
-    def decode_image(encoded, size):
-        decoded = blurhash_decode(encoded, size, size)
+    def decode_image(encoded, width, height):
+        decoded = blurhash_decode(encoded, width, height)
         if impl == 'blurhash':
             data = bytes(
                 channel for row in decoded for pixel in row for channel in pixel
             )
-            return Image.frombytes('RGB', (size, size), data)
+            return Image.frombytes('RGB', (width, height), data)
         return decoded
 
     # Encode benchmarks first (so pyperf compare_to shows them grouped).
-    for size in sizes:
-        img = _make_gradient_image(size, size)
+    for width, height, mode, x_components, y_components in cases:
+        img = _make_gradient_image(width, height)
+        if mode != 'RGB':
+            img = img.convert(mode)
 
         original = img.tobytes()
-        assert encode_image(img) == encode_reference(img, x_components, y_components)
+        assert encode_image(img, x_components, y_components) == encode_reference(
+            img, x_components, y_components
+        )
         assert img.tobytes() == original
         runner.bench_func(
-            f'encode {size}x{size} ({x_components}x{y_components})',
+            f'encode {width}x{height} ({x_components}x{y_components})'
+            + (f' {mode}' if mode != 'RGB' else ''),
             encode_image,
             img,
+            x_components,
+            y_components,
         )
 
     # Decode benchmarks second.
-    for size in sizes:
-        img = _make_gradient_image(size, size)
+    for width, height, mode, x_components, y_components in cases:
+        if mode != 'RGB':
+            continue
+        img = _make_gradient_image(width, height)
         h = encode_reference(img, x_components, y_components)
-        decoded = decode_image(h, size)
+        decoded = decode_image(h, width, height)
         assert decoded.mode == 'RGB'
-        assert decoded.size == (size, size)
-        expected = decode_reference(h, size, size)
+        assert decoded.size == (width, height)
+        expected = decode_reference(h, width, height)
         assert all(
             abs(actual - reference) <= 1
             for actual, reference in zip(
@@ -128,10 +172,11 @@ def _run_suite(impl: str, pyperf_args: list[str]) -> int:
         decoded.close()
 
         runner.bench_func(
-            f'decode {size}x{size} ({x_components}x{y_components})',
+            f'decode {width}x{height} ({x_components}x{y_components})',
             decode_image,
             h,
-            size,
+            width,
+            height,
         )
 
     return 0
