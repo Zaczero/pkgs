@@ -83,6 +83,7 @@ for (const arguments_ of [
         cwd: root,
         env: {
             ...process.env,
+            PYTHONPATH: undefined,
             CARGO_UNSTABLE_BUILD_STD: "std,panic_abort",
             CARGO_TARGET_DIR: join(repository, "target-pyodide"),
             EM_FROZEN_CACHE: "1",
