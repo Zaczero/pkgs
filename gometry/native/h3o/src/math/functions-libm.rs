@@ -14,6 +14,11 @@ pub fn cos(x: f64) -> f64 {
 }
 
 #[inline]
+pub fn sin_cos(x: f64) -> (f64, f64) {
+    libm::sincos(x)
+}
+
+#[inline]
 pub fn tan(x: f64) -> f64 {
     libm::tan(x)
 }
@@ -29,18 +34,8 @@ pub fn acos(x: f64) -> f64 {
 }
 
 #[inline]
-pub fn atan(x: f64) -> f64 {
-    libm::atan(x)
-}
-
-#[inline]
 pub fn atan2(y: f64, x: f64) -> f64 {
     libm::atan2(y, x)
-}
-
-#[inline]
-pub fn hypot(x: f64, y: f64) -> f64 {
-    libm::hypot(x, y)
 }
 
 #[inline]
@@ -55,5 +50,5 @@ pub fn round(x: f64) -> f64 {
 
 #[inline]
 pub fn mul_add(a: f64, b: f64, c: f64) -> f64 {
-    (a * b) + c
+    libm::fma(a, b, c)
 }

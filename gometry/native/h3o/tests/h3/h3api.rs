@@ -55,11 +55,8 @@ pub fn cell_to_boundary(index: CellIndex) -> Boundary {
     }
 
     let mut boundary = Boundary::new();
-    for i in 0..(result.numVerts as usize) {
-        boundary.push(
-            LatLng::from_radians(result.verts[i].lat, result.verts[i].lng)
-                .expect("vertex coordinate"),
-        );
+    for vertex in &result.verts[..result.numVerts as usize] {
+        boundary.push(LatLng::from_radians(vertex.lat, vertex.lng).expect("vertex coordinate"));
     }
 
     boundary
@@ -230,11 +227,8 @@ pub fn directed_edge_to_boundary(index: DirectedEdgeIndex) -> Boundary {
     }
 
     let mut boundary = Boundary::new();
-    for i in 0..(result.numVerts as usize) {
-        boundary.push(
-            LatLng::from_radians(result.verts[i].lat, result.verts[i].lng)
-                .expect("vertex coordinate"),
-        );
+    for vertex in &result.verts[..result.numVerts as usize] {
+        boundary.push(LatLng::from_radians(vertex.lat, vertex.lng).expect("vertex coordinate"));
     }
 
     boundary

@@ -1,7 +1,7 @@
 # Gometry divergence
 
-This in-tree `h3o` 0.10.0 source is vendored from `Zaczero/h3o` revision
-`005af2eb8499f039dce7a61456f2198c297c2c22`. Its BSD-3-Clause license is
+This in-tree `h3o` 0.11.0 source is vendored from `HydroniumLabs/h3o` revision
+`fa1557fd1edd56f64e4da95b2fd294609ce2353e`. Its BSD-3-Clause license is
 retained in `LICENSE`.
 
 This checkout carries the exact H3 projection carriers needed by gometry's
@@ -45,5 +45,4 @@ fork contracts:
 | `exhaustive_enums`, `variant_size_differences` | `ProjectionSeed` | Gometry's proof consumers exhaustively distinguish the two hidden carrier variants and retain exact intersection seeds in the fixed boundary sidecar. |
 | `large_types_passed_by_value` | `CapLatticeProfile::new` | The fixed arrays become owned profile fields; a borrowed constructor would still copy them into the owner. |
 | `too_many_lines`, `large_stack_arrays` | `cap_lattice_profile` | One bounded profile build constructs the fixed 60-seam table with shared face context. |
-| `suboptimal_flops` | `cagnoli` | Preserve H3's deliberate non-fused area evaluation order. |
 | `suboptimal_flops` | `math::mul_add` | The fork's unfused `(a * b) + c` keeps exact H3 decisions independent of host FMA support on the x86-64-v2 baseline. |

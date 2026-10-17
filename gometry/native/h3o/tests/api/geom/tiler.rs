@@ -658,3 +658,41 @@ fn issue_44() {
     );
     assert!(tiler.add(polygon).is_err());
 }
+
+#[test]
+fn empty_geometry() {
+    for mode in [
+        ContainmentMode::ContainsCentroid,
+        ContainmentMode::ContainsBoundary,
+        ContainmentMode::IntersectsBoundary,
+        ContainmentMode::Covers,
+    ] {
+        let tiler = TilerBuilder::new(Resolution::Six)
+            .containment_mode(mode)
+            .build();
+
+        assert_eq!(tiler.into_coverage().count(), 0, "{mode:?}");
+    }
+}
+
+#[test]
+fn clipped_away() {
+    // The polygon spans the antimeridian and after being "fixed" (by clipping)
+    // the resulting geometry is empty.
+    let polygon = Polygon::new(
+        LineString::from(vec![
+            (-180.0, 0.0),
+            (180.0, 0.0),
+            (180.0, 1.0),
+            (-180.0, 0.0),
+        ]),
+        vec![],
+    );
+    let mut tiler = TilerBuilder::new(Resolution::Six)
+        .containment_mode(ContainmentMode::Covers)
+        .build();
+    tiler.add(polygon).expect("add");
+
+    assert_eq!(tiler.coverage_size_hint(), 0);
+    assert_eq!(tiler.into_coverage().count(), 0);
+}

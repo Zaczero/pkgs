@@ -14,6 +14,11 @@ pub fn cos(x: f64) -> f64 {
 }
 
 #[inline]
+pub fn sin_cos(x: f64) -> (f64, f64) {
+    x.sin_cos()
+}
+
+#[inline]
 pub fn tan(x: f64) -> f64 {
     x.tan()
 }
@@ -29,18 +34,8 @@ pub fn acos(x: f64) -> f64 {
 }
 
 #[inline]
-pub fn atan(x: f64) -> f64 {
-    x.atan()
-}
-
-#[inline]
 pub fn atan2(y: f64, x: f64) -> f64 {
     y.atan2(x)
-}
-
-#[inline]
-pub fn hypot(x: f64, y: f64) -> f64 {
-    x.hypot(y)
 }
 
 #[inline]

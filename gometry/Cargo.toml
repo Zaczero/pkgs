@@ -38,7 +38,7 @@ geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
 getrandom = { version = "0.3", default-features = false, features = ["std"] }
-# Vendored from Zaczero/h3o at 005af2eb8499f039dce7a61456f2198c297c2c22.
+# Vendored from HydroniumLabs/h3o at fa1557fd1edd56f64e4da95b2fd294609ce2353e.
 # GOMETRY_DIVERGENCE.md records its raw-carrier API and local safe-traversal fix.
 h3o = { path = "native/h3o", default-features = false, features = [
   "std"

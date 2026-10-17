@@ -62,7 +62,7 @@ fn duplicate_simple() {
     let set = [0x89283082813FFFF, 0x89283082817FFFF, 0x89283082813FFFF]
         .into_iter()
         .map(|bits| CellIndex::try_from(bits).expect("cell index"));
-    let result = SolventBuilder::new().build().dissolve(set);
+    let result = SolventBuilder::default().build().dissolve(set);
 
     assert!(result.is_err())
 }
@@ -71,10 +71,17 @@ fn duplicate_simple() {
 fn consecutive_duplicate() {
     let set = [0x89283082813FFFF, 0x89283082817FFFF, 0x89283082817FFFF]
         .into_iter()
-        .map(|bits| CellIndex::try_from(bits).expect("cell index"));
-    let result = SolventBuilder::new().build().dissolve(set);
+        .map(|bits| CellIndex::try_from(bits).expect("cell index"))
+        .collect::<Vec<_>>();
 
-    assert!(result.is_err())
+    let result = SolventBuilder::new().build().dissolve(set.iter().copied());
+    assert!(result.is_err(), "homogeneous detection");
+
+    let result = SolventBuilder::new()
+        .enable_heterogeneous_support(Resolution::Nine)
+        .build()
+        .dissolve(set);
+    assert!(result.is_err(), "heterogeneous detection");
 }
 
 #[test]
@@ -120,13 +127,6 @@ fn unsupported_resolution() {
         .build()
         .dissolve(set.iter().copied());
     assert!(result.is_err(), "by dup-check");
-
-    let result = SolventBuilder::default()
-        .enable_heterogeneous_support(Resolution::Eight)
-        .disable_duplicate_detection()
-        .build()
-        .dissolve(set);
-    assert!(result.is_err(), "even with dup-check disabled");
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn paris_heterogeneous() {
     let mut compacted = cells.iter().copied().collect::<Vec<_>>();
     CellIndex::compact(&mut compacted).expect("compact");
 
-    let solvent = SolventBuilder::new().disable_duplicate_detection().build();
+    let solvent = SolventBuilder::new().build();
     let expected = solvent.dissolve(cells).expect("homo geom");
 
     assert_hetero_equal_homo(compacted, resolution, &expected);
@@ -454,7 +454,7 @@ fn rabi_heterogeneous() {
     let mut compacted = cells.iter().copied().collect::<Vec<_>>();
     CellIndex::compact(&mut compacted).expect("compact");
 
-    let solvent = SolventBuilder::new().disable_duplicate_detection().build();
+    let solvent = SolventBuilder::new().build();
     let expected = solvent.dissolve(cells).expect("homo geom");
 
     assert_hetero_equal_homo(compacted, resolution, &expected);
@@ -469,7 +469,7 @@ fn holes_heterogeneous() {
     let mut compacted = cells.iter().copied().collect::<Vec<_>>();
     CellIndex::compact(&mut compacted).expect("compact");
 
-    let solvent = SolventBuilder::new().disable_duplicate_detection().build();
+    let solvent = SolventBuilder::new().build();
     let expected = solvent.dissolve(cells).expect("homo geom");
 
     assert_hetero_equal_homo(compacted, resolution, &expected);
@@ -846,7 +846,6 @@ fn assert_hetero_equal_homo(
     expected: &MultiPolygon,
 ) {
     let solvent = SolventBuilder::new()
-        .disable_duplicate_detection()
         .enable_heterogeneous_support(resolution)
         .build();
     let result = solvent.dissolve(cells).expect("geometry");

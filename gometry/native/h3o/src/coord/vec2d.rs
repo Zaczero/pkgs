@@ -13,7 +13,7 @@
 use float_eq::float_eq;
 
 use super::{AP7_ROT_RADS, CoordIJK, EPSILON, INV_RES0_U_GNOMONIC, SQRT7_POWERS, Vec3d};
-use crate::math::{abs, acos, cos, hypot, mul_add, sin, tan};
+use crate::math::{abs, acos, mul_add, sin_cos, sqrt, tan};
 use crate::{Face, Resolution, face};
 
 /// 1/sin(60')
@@ -89,12 +89,13 @@ impl Vec2d {
         };
 
         // Convert to local x, y.
-        Self::new(r * cos(theta), r * sin(theta))
+        let (sin_t, cos_t) = sin_cos(theta);
+        Self::new(r * cos_t, r * sin_t)
     }
 
     /// Calculates the magnitude.
     pub fn magnitude(self) -> f64 {
-        hypot(self.x, self.y)
+        sqrt(mul_add(self.x, self.x, self.y * self.y))
     }
 
     /// Finds the intersection between two lines.

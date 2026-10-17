@@ -143,33 +143,24 @@ fn target_cap_profile_carries_all_native_suffixes_vertices_and_directed_seams() 
     for seam in profile.seams() {
         let left = seam.left();
         let right = seam.right();
-        let (
-            ProjectionSeed::Point {
-                face: left_face,
-                resolution: left_resolution,
-                substrate: left_substrate,
+        for seed in [left[0], right[0]] {
+            assert!(matches!(seed, ProjectionSeed::Point {
+                resolution: 16,
+                substrate: true,
                 ..
-            },
-            ProjectionSeed::Point {
-                face: right_face,
-                resolution: right_resolution,
-                substrate: right_substrate,
-                ..
-            },
-        ) = (left[0], right[0])
-        else {
-            panic!("cap seams are raw lattice point carriers");
-        };
+            }));
+        }
         assert_eq!(left[0].face(), left[1].face());
         assert_eq!(right[0].face(), right[1].face());
-        assert_ne!(left_face, right_face);
-        assert_eq!(left_resolution, 16);
-        assert_eq!(right_resolution, 16);
-        assert!(left_substrate && right_substrate);
+        assert_ne!(left[0].face(), right[0].face());
     }
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the table keeps raw point and inserted seam carriers beside their expected edge identities"
+)]
 fn projected_boundary_pins_raw_seed_order_and_insertion_edge_identity() {
     use crate::{Hex2Int, ProjectionSeed};
 

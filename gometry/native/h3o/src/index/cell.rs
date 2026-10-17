@@ -1465,7 +1465,7 @@ impl CellIndex {
         const IJ_MASK: u64 = 0o666666666666666;
 
         let resolution = self.resolution();
-        let res_offset = self.resolution().direction_offset();
+        let res_offset = resolution.direction_offset();
         // Shift to get rid of unused directions.
         let mut bits = u64::from(self) >> res_offset;
 
@@ -1515,7 +1515,7 @@ impl CellIndex {
     /// ```
     pub fn pred(self) -> Option<Self> {
         let resolution = self.resolution();
-        let res_offset = self.resolution().direction_offset();
+        let res_offset = resolution.direction_offset();
         // Shift to get rid of unused directions.
         let mut bits = u64::from(self) >> res_offset;
 
@@ -1583,6 +1583,19 @@ impl CellIndex {
     pub(crate) fn new_unchecked(value: u64) -> Self {
         debug_assert!(Self::try_from(value).is_ok(), "invalid cell index");
         Self(NonZeroU64::new(value).expect("valid cell index"))
+    }
+
+    /// Returns the edges making the outline of the cell at the given
+    /// resolution.
+    ///
+    /// If `resolution` is smaller than the cell resolution, an empty iterator
+    /// is returned.
+    #[cfg(feature = "geo")]
+    pub(crate) fn outline(
+        self,
+        resolution: Resolution,
+    ) -> impl ExactSizeIterator<Item = DirectedEdgeIndex> {
+        super::iterator::Gosper::new(self, resolution)
     }
 
     /// Get the number of CCW rotations of the cell's vertex numbers compared to

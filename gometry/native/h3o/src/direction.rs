@@ -5,7 +5,7 @@ use crate::coord::CoordIJK;
 use crate::{CellIndex, Edge, NUM_HEX_VERTS, NUM_PENT_VERTS, Vertex, error};
 
 /// Maximum value for a direction.
-const MAX: u8 = 6;
+pub const MAX: u8 = 6;
 
 /// Hexagon direction to vertex relationships (same face).
 const TO_VERTEX_HEXAGON: [Vertex; NUM_HEX_VERTS as usize] = [

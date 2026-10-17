@@ -1,8 +1,8 @@
-# Vendored from Zaczero/h3o revision 005af2eb8499f039dce7a61456f2198c297c2c22.
+# Vendored from HydroniumLabs/h3o revision fa1557fd1edd56f64e4da95b2fd294609ce2353e.
 # See GOMETRY_DIVERGENCE.md for local changes; LICENSE retains BSD-3-Clause terms.
 [package]
 name = "h3o"
-version = "0.10.0"
+version = "0.11.0"
 authors = ["Sylvain Laperche <sylvain.laperche@gmail.com>"]
 edition = "2024"
 description = "A Rust implementation of the H3 geospatial indexing system."

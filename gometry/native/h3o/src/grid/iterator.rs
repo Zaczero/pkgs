@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
+use core::iter::FusedIterator;
 
 #[cfg(feature = "std")]
 use ahash::{HashSet, HashSetExt};
@@ -102,6 +103,8 @@ impl Iterator for DiskDistancesSafe {
         None
     }
 }
+
+impl FusedIterator for DiskDistancesSafe {}
 
 // -----------------------------------------------------------------------------
 
@@ -209,6 +212,8 @@ impl Iterator for DiskDistancesUnsafe {
     }
 }
 
+impl FusedIterator for DiskDistancesUnsafe {}
+
 // -----------------------------------------------------------------------------
 
 /// Iterator over indexes at exactly grid distance `k` of the origin.
@@ -300,6 +305,8 @@ impl Iterator for RingUnsafe {
         (0, None)
     }
 }
+
+impl FusedIterator for RingUnsafe {}
 
 #[cfg(test)]
 #[path = "./iterator_tests.rs"]

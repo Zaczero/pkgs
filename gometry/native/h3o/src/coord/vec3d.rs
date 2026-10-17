@@ -2,7 +2,7 @@ use super::{
     AP7_ROT_RADS, EPSILON, FaceIJK, INV_SQRT7_POWERS, ONE_THIRD, RES0_U_GNOMONIC, Vec2d,
     to_positive_angle,
 };
-use crate::math::{atan, atan2, cos, mul_add, sin, sqrt};
+use crate::math::{atan2, mul_add, sin_cos, sqrt};
 use crate::resolution::ExtendedResolution;
 use crate::{CellIndex, Face, LatLng, Resolution, face};
 
@@ -51,26 +51,34 @@ impl Vec3d {
     ) -> Self {
         let face = usize::from(face);
 
-        let r = {
-            let mut r = value.magnitude();
-            if r < EPSILON {
-                return face::CENTER_POINT[face];
-            }
+        let r = value.magnitude();
+        if r < EPSILON {
+            return face::CENTER_POINT[face];
+        }
 
-            // Scale for current resolution length `u`.
-            r *= INV_SQRT7_POWERS[usize::from(resolution)];
+        // Scale for current resolution length `u`.
+        let mut scale = INV_SQRT7_POWERS[usize::from(resolution)];
 
-            // Scale accordingly if this is a substrate grid.
-            if is_substrate {
-                // gometry: consume the shared substrate scale used by raw seeds.
-                r *= ONE_THIRD;
-                // Substrate grid are always adjusted to the next class II.
-                debug_assert!(!resolution.is_class3());
-            }
+        // Scale accordingly if this is a substrate grid.
+        if is_substrate {
+            // gometry: consume the shared substrate scale used by raw seeds.
+            scale *= ONE_THIRD;
+            // Substrate grid are always adjusted to the next class II.
+            debug_assert!(!resolution.is_class3());
+        }
 
-            // Perform inverse gnomonic scaling of `r`.
-            atan(r * RES0_U_GNOMONIC)
-        };
+        // Gnomonic radius: q = r * scale * RES0_U_GNOMONIC.
+        // Instead of r = atan(q) followed by sincos(r), use the identities
+        //     cos(atan(q)) = 1/√(1+q²)
+        //     sin(atan(q)) = q/√(1+q²)
+        // => cheaper to compute.
+        let q = r * scale * RES0_U_GNOMONIC;
+        if q < EPSILON {
+            return face::CENTER_POINT[face];
+        }
+        let inv_hyp = 1. / sqrt(mul_add(q, q, 1.));
+        let cos_r = inv_hyp;
+        let sin_r = q * inv_hyp;
 
         let theta = {
             let mut theta = atan2(value.y, value.x);
@@ -85,14 +93,12 @@ impl Vec3d {
             to_positive_angle(face::AXES_AZ_RADS_CII[face] - theta)
         };
         let center = face::CENTER_POINT[face];
-        if r < EPSILON {
-            return center;
-        }
 
         // Now find the point at `(r,theta)` from the face center
         let (north, east) = center.tangent_basis();
-        let dir = linear_combination(cos(theta), &north, sin(theta), &east);
-        let mut res = linear_combination(cos(r), &center, sin(r), &dir);
+        let (sin_t, cos_t) = sin_cos(theta);
+        let dir = linear_combination(cos_t, &north, sin_t, &east);
+        let mut res = linear_combination(cos_r, &center, sin_r, &dir);
         res.normalize();
 
         res
@@ -226,12 +232,13 @@ impl Vec3d {
 impl From<LatLng> for Vec3d {
     #[inline]
     fn from(value: LatLng) -> Self {
-        let r = cos(value.lat_radians());
+        let (sin_lat, cos_lat) = sin_cos(value.lat_radians());
+        let (sin_lng, cos_lng) = sin_cos(value.lng_radians());
 
         Self {
-            x: cos(value.lng_radians()) * r,
-            y: sin(value.lng_radians()) * r,
-            z: sin(value.lat_radians()),
+            x: cos_lng * cos_lat,
+            y: sin_lng * cos_lat,
+            z: sin_lat,
         }
     }
 }
