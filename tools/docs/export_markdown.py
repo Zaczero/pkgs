@@ -56,9 +56,9 @@ def on_env(env: Environment, *, config: ProperDocsConfig, files: Files) -> Envir
         index.append(
             f'- [{page.title}]({urljoin(config.site_url, destination)}): {description}'
         )
-    Path(config.site_dir, 'llms.txt').write_text(
-        '\n'.join(index) + '\n', encoding='utf-8'
-    )
+    destination = Path(config.site_dir) / 'llms.txt'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text('\n'.join(index) + '\n', encoding='utf-8')
     return env
 
 
