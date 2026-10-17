@@ -141,6 +141,28 @@ def test_decode_known_hash_matches_reference_bytes() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ('punch', 'red'),
+    [(0.0, 0), (0.25, 5), (0.5, 10), (1.0, 18), (2.0, 29), (1e308, 255)],
+)
+def test_decode_punch_scales_ac_contrast(punch: float, red: int) -> None:
+    # Two horizontal components: black DC and red AC = 1/166 in linear RGB.
+    image = blurhash_decode('100000|c', 1, 1, punch=punch)
+    assert image.getpixel((0, 0)) == (red, 0, 0)
+
+
+@pytest.mark.parametrize('punch', [0.0, 0.5, 1.0, 2.0, 1e308])
+def test_decode_punch_preserves_dc_with_zero_ac(punch: float) -> None:
+    image = blurhash_decode('10TI:jfQ', 2, 2, punch=punch)
+    assert image.tobytes() == bytes((255, 0, 0)) * 4
+
+
+@pytest.mark.parametrize('punch', [-1.0, float('nan'), float('inf'), float('-inf')])
+def test_decode_rejects_invalid_punch(punch: float) -> None:
+    with pytest.raises(BlurhashDecodeError):
+        blurhash_decode('00TI:j', 1, 1, punch=punch)
+
+
 def test_decode_invalid_blurhash_raises() -> None:
     with pytest.raises(BlurhashDecodeError) as excinfo:
         blurhash_decode('not a blurhash', 8, 8)

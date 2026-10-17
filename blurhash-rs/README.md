@@ -82,11 +82,15 @@ y-component counts, each from 1 through 9, control the hash's detail.
 ### `blurhash_decode`
 
 Pass a hash and positive output dimensions to get an RGB Pillow `Image`.
-Use `punch` above 1 to increase contrast.
+Use finite, nonnegative `punch` values to control contrast: zero shows the
+constant DC color, values between zero and one reduce contrast, and values
+above one increase it.
 
 ### `BlurhashDecodeError`
 
-This exception reports a hash or image-dimension error from `blurhash_decode`. Its `blurhash` attribute contains the hash passed to the decoder.
+This exception reports an invalid hash, image dimension, or contrast scale
+from `blurhash_decode`. Its `blurhash` attribute contains the hash passed to
+the decoder.
 
 [Full reference](python/blurhash_rs/__init__.py) ·
 [Issues and questions](https://github.com/Zaczero/pkgs/issues) ·

@@ -32,6 +32,7 @@ pub(crate) struct DecodeLayout {
     pub(crate) num_y: usize,
     num_components: usize,
     max_value: f32,
+    punch: f64,
 }
 
 pub(crate) fn decode_rgb_into(
@@ -42,19 +43,49 @@ pub(crate) fn decode_rgb_into(
 ) -> Result<(), BlurhashError> {
     let bytes = blurhash.as_bytes();
     validate_output_buffer(dimensions.rgb_len(), out_pixels)?;
-    let colors = decode_component_vectors(bytes, layout)?;
-    render_pixels(
-        dimensions.width(),
-        dimensions.height(),
-        out_pixels,
-        layout,
-        &colors,
-    );
+    let mut colors = decode_component_vectors(bytes, layout)?;
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact unit contrast preserves the original DC accumulation order"
+    )]
+    if layout.punch == 1.0 {
+        render_pixels::<false>(
+            dimensions.width(),
+            dimensions.height(),
+            out_pixels,
+            layout,
+            &colors,
+            [0.0; 3],
+        );
+    } else {
+        let mut dc = [0.0; 3];
+        for (channel, dc) in colors.iter_mut().zip(&mut dc) {
+            let constant = channel
+                .first_mut()
+                .expect("the component grid includes DC")
+                .as_mut_array()
+                .first_mut()
+                .expect("a component vector includes its first lane");
+            *dc = *constant;
+            *constant = 0.0;
+        }
+        render_pixels::<true>(
+            dimensions.width(),
+            dimensions.height(),
+            out_pixels,
+            layout,
+            &colors,
+            dc,
+        );
+    }
 
     Ok(())
 }
 
-pub(crate) fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, BlurhashError> {
+pub(crate) fn decode_layout(bytes: &[u8], punch: f64) -> Result<DecodeLayout, BlurhashError> {
+    if !punch.is_finite() || punch < 0.0 {
+        return Err(BlurhashError::InvalidPunch);
+    }
     if unlikely(bytes.len() < 6) {
         return Err(BlurhashError::BlurhashLengthMismatch {
             expected: 6,
@@ -85,13 +116,14 @@ pub(crate) fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Bl
         return Err(BlurhashError::BlurhashMalformed { index: 1 });
     };
     let quantised_max_value = f32::from(quantised_max_value);
-    let max_value = ((quantised_max_value + 1.0) / 166.0) * punch.max(1.0);
+    let max_value = (quantised_max_value + 1.0) / 166.0;
 
     Ok(DecodeLayout {
         num_x,
         num_y,
         num_components,
         max_value,
+        punch,
     })
 }
 
@@ -203,28 +235,36 @@ fn set_component(channel: &mut [V4], slot: usize, lane: usize, value: f32) {
     *value_slot = value;
 }
 
-fn render_pixels(
+fn render_pixels<const SCALE_AC: bool>(
     width: usize,
     height: usize,
     out_pixels: &mut [u8],
     layout: &DecodeLayout,
     colors: &ComponentVectors,
+    dc: [f32; 3],
 ) {
     let blocks = layout.num_x.div_ceil(LANES);
     match blocks {
-        1 => render_pixels_with_blocks::<1>(width, height, out_pixels, layout, colors),
-        2 => render_pixels_with_blocks::<2>(width, height, out_pixels, layout, colors),
-        3 => render_pixels_with_blocks::<3>(width, height, out_pixels, layout, colors),
+        1 => {
+            render_pixels_with_blocks::<1, SCALE_AC>(width, height, out_pixels, layout, colors, dc);
+        },
+        2 => {
+            render_pixels_with_blocks::<2, SCALE_AC>(width, height, out_pixels, layout, colors, dc);
+        },
+        3 => {
+            render_pixels_with_blocks::<3, SCALE_AC>(width, height, out_pixels, layout, colors, dc);
+        },
         _ => unreachable!("component counts are decoded from one base83 size byte"),
     }
 }
 
-fn render_pixels_with_blocks<const BLOCKS: usize>(
+fn render_pixels_with_blocks<const BLOCKS: usize, const SCALE_AC: bool>(
     width: usize,
     height: usize,
     out_pixels: &mut [u8],
     layout: &DecodeLayout,
     colors: &ComponentVectors,
+    dc: [f32; 3],
 ) {
     debug_assert_eq!(layout.num_x.div_ceil(LANES), BLOCKS);
 
@@ -283,10 +323,20 @@ fn render_pixels_with_blocks<const BLOCKS: usize>(
                 acc_b += blue * basis_x;
             }
 
-            let r = acc_r.reduce_sum();
-            let g = acc_g.reduce_sum();
-            let b = acc_b.reduce_sum();
-
+            let mut r = acc_r.reduce_sum();
+            let mut g = acc_g.reduce_sum();
+            let mut b = acc_b.reduce_sum();
+            if SCALE_AC {
+                // Scale after the bounded AC sum so finite binary64 punch
+                // values cannot overflow coefficients or erase the DC term.
+                let scale = |value, dc| {
+                    (f64::from(value) * layout.punch + f64::from(dc)).clamp(0.0, 1.0) as f32
+                };
+                let [dc_r, dc_g, dc_b] = dc;
+                r = scale(r, dc_r);
+                g = scale(g, dc_g);
+                b = scale(b, dc_b);
+            }
             *pixel = [
                 srgb::linear_to_srgb_u8(r),
                 srgb::linear_to_srgb_u8(g),

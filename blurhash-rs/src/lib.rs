@@ -116,7 +116,7 @@ fn decode_rgb(
     blurhash: &str,
     width: usize,
     height: usize,
-    punch: f32,
+    punch: f64,
 ) -> PyResult<Py<PyBytes>> {
     let dimensions = RgbDimensions::new(width, height).map_err(BlurhashError::into_pyerr)?;
     let blurhash = blurhash.trim();

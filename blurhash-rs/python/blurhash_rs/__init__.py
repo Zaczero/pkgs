@@ -92,10 +92,10 @@ def blurhash_decode(
     width, height
         Positive output dimensions in pixels.
     punch
-        AC-component scale. Finite values below 1 do not reduce contrast;
-        finite values at least 1 are used directly. NaN and negative infinity
-        behave as 1, while positive infinity is accepted as an infinite scale
-        and can produce degenerate or clipped RGB output.
+        Finite, nonnegative AC-component contrast scale. Zero removes contrast,
+        values between zero and one reduce it, and values above one increase
+        it. The DC color is preserved; output RGB channels are clipped to their
+        displayable range.
 
     Returns
     -------
@@ -111,7 +111,8 @@ def blurhash_decode(
     ------
     BlurhashDecodeError
         If the hash is malformed or the dimensions are nonpositive or outside
-        the supported storage range. The exception retains ``blurhash``.
+        the supported storage range, or ``punch`` is negative or nonfinite.
+        The exception retains ``blurhash``.
     TypeError, OverflowError
         If an argument cannot be converted to the native input type.
     MemoryError

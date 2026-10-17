@@ -16,6 +16,8 @@ pub(crate) enum BlurhashError {
     BlurhashMalformed { index: usize },
     #[error("Invalid blurhash length: expected {expected}, got {got}")]
     BlurhashLengthMismatch { expected: usize, got: usize },
+    #[error("Invalid punch: expected a finite nonnegative contrast scale")]
+    InvalidPunch,
 }
 
 impl BlurhashError {
