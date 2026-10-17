@@ -10,8 +10,8 @@
 #include "proj_internal.h"
 #include "proj/crs.hpp"
 
-#if PROJ_VERSION_MAJOR != 9 || PROJ_VERSION_MINOR != 6 || PROJ_VERSION_PATCH != 2
-#error "gometry_proj_context.cpp requires bundled PROJ 9.6.2"
+#if PROJ_VERSION_MAJOR != 9 || PROJ_VERSION_MINOR != 9 || PROJ_VERSION_PATCH != 0
+#error "gometry_proj_context.cpp requires bundled PROJ 9.9.0"
 #endif
 
 extern "C" PJ_CONTEXT *gometry_proj_context_create() noexcept;

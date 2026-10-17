@@ -531,7 +531,8 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
 
 def test_compound_crs_axes_match_pyproj_components() -> None:
     for code in (7405, 7415, 5498):
-        crs = gm.CRS(code)
+        reference = pyproj.CRS.from_epsg(code)
+        crs = gm.CRS(reference.to_wkt())
         expected = [
             {
                 'name': axis.name,
@@ -540,7 +541,7 @@ def test_compound_crs_axes_match_pyproj_components() -> None:
                 'unit_name': axis.unit_name,
                 'unit_conversion_factor': pytest.approx(axis.unit_conversion_factor),
             }
-            for axis in pyproj.CRS.from_epsg(code).axis_info
+            for axis in reference.axis_info
         ]
         assert crs.axes == expected
         assert crs.axis_order == [
@@ -555,7 +556,7 @@ def test_compound_crs_axes_match_pyproj_components() -> None:
             else 'y'
             if axis.direction in {'north', 'south'}
             else 'other'
-            for axis in pyproj.CRS.from_epsg(code).axis_info
+            for axis in reference.axis_info
         ]
 
 
@@ -867,9 +868,11 @@ def test_utm_catalog_matches_the_named_datum_prefix() -> None:
         'DREF91' in name or name.startswith('SRB_ETRS89 /') for name in etrs89
     )
 
-    dref = names('ETRS89/DREF91/2016')
-    assert 'ETRS89/DREF91/2016 / UTM zone 32N' in dref
-    assert all(name.startswith('ETRS89/DREF91/2016 / UTM zone ') for name in dref)
+    dref = names('ETRS89-DEU [ETRS89/DREF91/2016]')
+    assert 'ETRS89-DEU [ETRS89/DREF91/2016] / UTM zone 32N' in dref
+    assert all(
+        name.startswith('ETRS89-DEU [ETRS89/DREF91/2016] / UTM zone ') for name in dref
+    )
 
     assert gm.crs_utm_zones(datum_name='WGS84') == []
     warsaw = gm.crs_utm_zones(

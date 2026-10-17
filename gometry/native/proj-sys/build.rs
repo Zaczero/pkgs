@@ -15,11 +15,11 @@ use flate2::read::GzDecoder;
 use tar::Archive;
 
 #[cfg(not(feature = "nobuild"))]
-const MINIMUM_PROJ_VERSION: &str = "9.6.2";
+const MINIMUM_PROJ_VERSION: &str = "9.9.0";
 #[cfg(not(feature = "nobuild"))]
-const PROJ_ARCHIVE_SIZE: usize = 6_394_614;
+const PROJ_ARCHIVE_SIZE: usize = 6_048_023;
 #[cfg(not(feature = "nobuild"))]
-const PROJ_ARCHIVE_FNV1A64: u64 = 0x0F8C94421730578E;
+const PROJ_ARCHIVE_FNV1A64: u64 = 0xCB0ADD31BCB48CC1;
 #[cfg(not(feature = "nobuild"))]
 const PROJ_SOURCE_OVERRIDES: [(&str, &str); 3] = [
     ("aea.cpp", "src/projections/aea.cpp"),
@@ -33,45 +33,55 @@ fn main() {} // Skip the build script on docs.rs
 #[cfg(not(feature = "nobuild"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=PROJSRC/proj-9.6.2.tar.gz");
+    println!("cargo:rerun-if-changed=PROJSRC/proj-9.9.0.tar.gz");
     for &(source, _) in &PROJ_SOURCE_OVERRIDES {
-        println!("cargo:rerun-if-changed=PROJSRC/patches/proj-9.6.2/{source}");
+        println!("cargo:rerun-if-changed=PROJSRC/patches/proj-9.9.0/{source}");
     }
     let include_path = if cfg!(feature = "bundled_proj") {
         eprintln!("feature flags specified source build");
         build_from_source()?
     } else {
         pkg_config::Config::new()
-        .atleast_version(MINIMUM_PROJ_VERSION)
-        .probe("proj")
-        .map(|pk| {
-            eprintln!("found acceptable libproj already installed at: {:?}", pk.link_paths);
-            if cfg!(feature = "network") {
-                // Generally, system proj installations have been built with tiff support
-                // allowing for network grid interaction. If this proves to be untrue
-                // could we try to determine some kind of runtime check and fall back
-                // to building from source?
-                eprintln!("assuming existing system libproj installation has network (tiff) support");
-            }
-            if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC") {
-                if val != "0" {
-                    panic!("for testing purposes: existing package was found, but should not have been");
+            .atleast_version(MINIMUM_PROJ_VERSION)
+            .probe("proj")
+            .map(|pk| {
+                eprintln!(
+                    "found acceptable libproj already installed at: {:?}",
+                    pk.link_paths
+                );
+                if cfg!(feature = "network") {
+                    // Generally, system proj installations have been built with tiff support
+                    // allowing for network grid interaction. If this proves to be untrue
+                    // could we try to determine some kind of runtime check and fall back
+                    // to building from source?
+                    eprintln!(
+                        "assuming existing system libproj installation has network (tiff) support"
+                    );
                 }
-            }
+                if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC")
+                    && val != "0"
+                {
+                    panic!(
+                        "for testing purposes: existing package was found, but should not have been"
+                    );
+                }
 
-            // Tell cargo to tell rustc to link the system proj
-            // shared library.
-            for path in &pk.link_paths {
-                println!("cargo:rustc-link-search=native={}", path.display());
-            }
-            println!("cargo:rustc-link-lib=proj");
+                // Tell cargo to tell rustc to link the system proj
+                // shared library.
+                for path in &pk.link_paths {
+                    println!("cargo:rustc-link-search=native={}", path.display());
+                }
+                println!("cargo:rustc-link-lib=proj");
 
-            pk.include_paths.into_iter().next().expect("pkg-config reported a PROJ include directory")
-        })
-        .or_else(|err| {
-            eprintln!("pkg-config unable to find existing libproj installation: {err}");
-            build_from_source()
-        })?
+                pk.include_paths
+                    .into_iter()
+                    .next()
+                    .expect("pkg-config reported a PROJ include directory")
+            })
+            .or_else(|err| {
+                eprintln!("pkg-config unable to find existing libproj installation: {err}");
+                build_from_source()
+            })?
     };
 
     #[cfg(feature = "buildtime_bindgen")]
@@ -114,12 +124,10 @@ fn generate_bindings(include_path: std::path::PathBuf) -> Result<(), Box<dyn std
 fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     eprintln!("building libproj from source");
     println!("cargo:rustc-cfg=bundled_build");
-    if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC") {
-        if val == "0" {
-            panic!(
-                "for testing purposes: package was building from source but should not have been"
-            );
-        }
+    if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC")
+        && val == "0"
+    {
+        panic!("for testing purposes: package was building from source but should not have been");
     }
 
     let path = PathBuf::from(format!("PROJSRC/proj-{MINIMUM_PROJ_VERSION}.tar.gz"));
@@ -858,6 +866,20 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
         "           0.0 * std::fabs(SIValue);",
     )?;
 
+    // Parsed Cartesian axes can have independent scales; normalization must
+    // preserve those axes instead of applying PROJ's new constructor default.
+    replace_pinned_source(
+        source_dir,
+        "include/proj/coordinatesystem.hpp",
+        "const CoordinateSystemAxisNNPtr &axis2, bool enforceSameUnit = true);",
+        "const CoordinateSystemAxisNNPtr &axis2, bool enforceSameUnit = false);",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "include/proj/coordinatesystem.hpp",
+        "const CoordinateSystemAxisNNPtr &axis3, bool enforceSameUnit = true);",
+        "const CoordinateSystemAxisNNPtr &axis3, bool enforceSameUnit = false);",
+    )?;
     replace_pinned_source(
         source_dir,
         "src/iso19111/coordinatesystem.cpp",
@@ -1113,8 +1135,14 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
     remove_pinned_source_section(
         source_dir,
         "src/iso19111/io.cpp",
-        "    if (std::abs(val * 10 - std::round(val * 10)) < 1e-8) {",
+        "    if (std::abs(val * 10 - std::round(val * 10)) < precision) {",
         "    return normalizeSerializedString(internal::toString(val));",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "static std::string formatToString(double val, double precision) {",
+        "static std::string formatToString(double val, double) {",
     )?;
 
     replace_pinned_source(
@@ -1209,11 +1237,12 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
     // Upstream PROJ 9.8 (PR #4674) zeroes northing when cos(phi) rounds to 1;
     // this patch uses the equivalent atan2 form, which keeps the true northing
     // in that band and removes the acos conditioning step.
-    replace_pinned_source(
+    replace_pinned_source_section(
         source_dir,
         "src/projections/tmerc.cpp",
-        "    xy.y = cosphi * cos(lp.lam) / sqrt(1. - b * b);\n\n    b = fabs(xy.y);\n    if (cosphi == 1 && (lp.lam < -M_HALFPI || lp.lam > M_HALFPI)) {\n        /* Helps to be able to roundtrip |longitudes| > 90 at lat=0 */\n        /* We could also map to -M_PI ... */\n        xy.y = M_PI;\n    } else if (b >= 1.) {\n        if ((b - 1.) > EPS10) {\n            proj_errno_set(P, PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN);\n            return xy;\n        } else\n            xy.y = 0.;\n    } else\n        xy.y = acos(xy.y);",
-        "    xy.y = atan2(fabs(sin(lp.phi)), cosphi * cos(lp.lam));",
+        "    if (cosphi == 1.0) {",
+        "\n    if (lp.phi < 0.)",
+        "    xy.y = atan2(fabs(sin(lp.phi)), cosphi * cos(lp.lam));\n",
     )?;
     replace_pinned_source(
         source_dir,

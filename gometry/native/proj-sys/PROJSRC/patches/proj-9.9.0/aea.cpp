@@ -46,56 +46,7 @@ constexpr double DOMAIN_ROUNDING =
 /* Karney's sixth-order auxiliary-latitude series is full-binary64 accurate
  * for ordinary flattening |f| <= 1/150. */
 constexpr double AUTHALIC_SERIES_MAX_FLATTENING = 1.0 / 150.0;
-constexpr int AUTHALIC_ORDER = 6;
-
-/* Stable q(sin(phi)) and q_p evaluators shared by setup and inverse. */
-static double authalic_q(double sinphi, const PJ *P) {
-    if (P->e < 1.0e-7)
-        return 2.0 * sinphi;
-    const double esin = P->e * sinphi;
-    const double denominator = 1.0 - esin * esin;
-    return P->one_es *
-           (sinphi / denominator + atanh(esin) / P->e);
-}
-
-static double authalic_poly(double n, const double *coeffs, int count) {
-    double value = 0.0;
-    for (int i = count - 1; i >= 0; --i)
-        value = value * n + coeffs[i];
-    return value;
-}
-
-/* Karney's sixth-order authalic-to-geographic coefficients. */
-static void authalic_coeffs(double n, double apa[AUTHALIC_ORDER]) {
-    static const double c0[] = {
-        4.0 / 3.0, 4.0 / 45.0, -16.0 / 35.0, -2582.0 / 14175.0,
-        60136.0 / 467775.0, 28112932.0 / 212837625.0};
-    static const double c1[] = {
-        46.0 / 45.0, 152.0 / 945.0, -11966.0 / 14175.0,
-        -21016.0 / 51975.0, 251310128.0 / 638512875.0};
-    static const double c2[] = {
-        3044.0 / 2835.0, 3802.0 / 14175.0, -94388.0 / 66825.0,
-        -8797648.0 / 10945935.0};
-    static const double c3[] = {
-        6059.0 / 4725.0, 41072.0 / 93555.0,
-        -1472637812.0 / 638512875.0};
-    static const double c4[] = {768272.0 / 467775.0,
-                                455935736.0 / 638512875.0};
-    apa[0] = n * authalic_poly(n, c0, 6);
-    apa[1] = n * n * authalic_poly(n, c1, 5);
-    apa[2] = n * n * n * authalic_poly(n, c2, 4);
-    apa[3] = n * n * n * n * authalic_poly(n, c3, 3);
-    apa[4] = n * n * n * n * n * authalic_poly(n, c4, 2);
-    apa[5] = n * n * n * n * n * n * 4210684958.0 / 1915538625.0;
-}
-
-static double authalic_inverse_series(double beta,
-                                      const double apa[AUTHALIC_ORDER]) {
-    double phi = beta;
-    for (int i = 0; i < AUTHALIC_ORDER; ++i)
-        phi += apa[i] * sin(2.0 * (i + 1) * beta);
-    return phi;
-}
+constexpr int AUTHALIC_ORDER = int(AuxLat::ORDER);
 
 /* Invert q(sin(phi)) with a monotone bracket when the ordinary series is not
  * within Karney's documented full-binary64 flattening range. */
@@ -110,7 +61,7 @@ static bool authalic_inverse_strong(double ratio, double qp, const PJ *P,
 
     for (;;) {
         const double sinphi = current;
-        const double residual = authalic_q(sinphi, P) - target;
+        const double residual = pj_authalic_lat_q(sinphi, P) - target;
         if (!isfinite(residual))
             return false;
         const double absolute_residual = fabs(residual);
@@ -129,8 +80,8 @@ static bool authalic_inverse_strong(double ratio, double qp, const PJ *P,
 
         const double midpoint = lo + 0.5 * (hi - lo);
         if (!(midpoint > lo && midpoint < hi)) {
-            const double lo_residual = authalic_q(lo, P) - target;
-            const double hi_residual = authalic_q(hi, P) - target;
+            const double lo_residual = pj_authalic_lat_q(lo, P) - target;
+            const double hi_residual = pj_authalic_lat_q(hi, P) - target;
             if (!isfinite(lo_residual) || !isfinite(hi_residual))
                 return false;
             if (fabs(lo_residual) < best_residual) {
@@ -192,7 +143,7 @@ static PJ_XY aea_e_forward(PJ_LP lp, PJ *P) { /* Ellipsoid/spheroid, forward */
     PJ_XY xy = {0.0, 0.0};
     struct pj_aea *Q = static_cast<struct pj_aea *>(P->opaque);
     const double radial =
-        Q->ellips ? Q->c - Q->n * authalic_q(sin(lp.phi), P)
+        Q->ellips ? Q->c - Q->n * pj_authalic_lat_q(sin(lp.phi), P)
                   : Q->c - Q->n2 * sin(lp.phi);
     if (radial < 0.) {
         proj_errno_set(P, PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN);
@@ -243,7 +194,7 @@ static PJ_LP aea_e_inverse(PJ_XY xy, PJ *P) { /* Ellipsoid/spheroid, inverse */
         else {
             const double beta = asin(ratio);
             if (Q->authalic_series)
-                lp.phi = authalic_inverse_series(beta, Q->apa);
+                lp.phi = pj_auxlat_convert(beta, Q->apa);
             else if (!authalic_inverse_strong(ratio, Q->qp, P, lp.phi)) {
                 proj_errno_set(
                     P, PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN);
@@ -287,14 +238,14 @@ static PJ *setup(PJ *P) {
         double ml1, m1;
 
         m1 = pj_msfn(sinphi, cosphi, P->es);
-        ml1 = authalic_q(sinphi, P);
+        ml1 = pj_authalic_lat_q(sinphi, P);
         if (secant) { /* secant cone */
             double ml2, m2;
 
             sinphi = sin(Q->phi2);
             cosphi = cos(Q->phi2);
             m2 = pj_msfn(sinphi, cosphi, P->es);
-            ml2 = authalic_q(sinphi, P);
+            ml2 = pj_authalic_lat_q(sinphi, P);
             if (ml2 == ml1)
                 return pj_aea_destructor(P, 0);
 
@@ -306,14 +257,14 @@ static PJ *setup(PJ *P) {
                                          PROJ_ERR_INVALID_OP_ILLEGAL_ARG_VALUE);
             }
         }
-        Q->qp = authalic_q(1.0, P);
+        Q->qp = pj_authalic_lat_q(1.0, P);
         Q->authalic_series =
             fabs(P->f) <= AUTHALIC_SERIES_MAX_FLATTENING;
         if (Q->authalic_series)
-            authalic_coeffs(P->n, Q->apa);
+            pj_auxlat_coeffs(P->n, AuxLat::AUTHALIC, AuxLat::GEOGRAPHIC, Q->apa);
         Q->c = m1 * m1 + Q->n * ml1;
         Q->dd = 1. / Q->n;
-        Q->rho0 = Q->dd * sqrt(Q->c - Q->n * authalic_q(sin(P->phi0), P));
+        Q->rho0 = Q->dd * sqrt(Q->c - Q->n * pj_authalic_lat_q(sin(P->phi0), P));
     } else {
         if (secant)
             Q->n = .5 * (Q->n + sin(Q->phi2));

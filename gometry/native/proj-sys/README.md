@@ -1,9 +1,8 @@
-# Low-level bindings for PROJ v9.6.x
+# Low-level bindings for PROJ v9.9.x
 
 This vendored tree is a path fork of `proj-sys` 0.27.0. Its fork-specific
 change replaces upstream system/dynamic libtiff and pkg-config linking with
-statically linked vendored libtiff and zlib. PROJ 9.6.2 and
-`network = ["tiff"]` are upstream proj-sys features.
+statically linked vendored libtiff and zlib.
 
 The libtiff source is the full upstream `v4.7.2` tree at commit
 `d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d`, recorded in
@@ -14,7 +13,7 @@ checkout:
 git submodule update --init gometry/native/libtiff-sys/libtiff
 ```
 
-The bundled build verifies the pinned PROJ 9.6.2 archive and applies the
+The bundled build verifies the pinned PROJ 9.9.0 archive and applies the
 reviewed exact-meaning CRS edits by unique source anchors. A changed archive,
 version, or upstream source layout fails the build instead of silently
 changing CRS axis, unit, datum, or conversion semantics.
@@ -23,7 +22,7 @@ Builds do not fetch source or transformation grids from the network. The
 `tiff` feature enables user-supplied PROJ GeoTIFF transformation grids; it is
 not a gometry raster API.
 
-Gometry's bundled target also contains a private 9.6.2 context constructor. It
+Gometry's bundled target also contains a private 9.9.0 context constructor. It
 starts from PROJ's native defaults instead of cloning the process default, so
 the gometry CRS layer does not need a per-context `proj.ini`. The constructor
 is deliberately unavailable to system/pkg-config builds.

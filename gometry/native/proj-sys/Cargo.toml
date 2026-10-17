@@ -10,7 +10,6 @@
 
 [package]
 edition = "2024"
-rust-version = "1.85"
 name = "proj-sys"
 version = "0.27.0"
 authors = ["The Georust developers <mods@georust.org>"]
@@ -21,7 +20,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Rust bindings for PROJ v9.6.x"
+description = "Rust bindings for PROJ v9.9.x"
 keywords = [
     "proj",
     "projection",
@@ -48,7 +47,7 @@ name = "proj_sys"
 path = "src/lib.rs"
 
 [dependencies.libsqlite3-sys]
-version = ">=0.28,<0.36"
+version = "0.38.2"
 
 [dependencies.link-cplusplus]
 version = "1.0.6"
@@ -58,7 +57,7 @@ path = "../libtiff-sys"
 optional = true
 
 [build-dependencies.bindgen]
-version = "0.71.1"
+version = "0.73.2"
 optional = true
 
 [build-dependencies.cmake]
