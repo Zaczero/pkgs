@@ -420,6 +420,10 @@ mod tests {
     use super::{Command, InvocationKind, Runner};
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "requires subprocesses and live procfs memory accounting"
+    )]
     fn launch_rss_exposes_inherited_parent_memory() {
         let mut runner = Runner::new(false).expect("runner");
         let command = Command {

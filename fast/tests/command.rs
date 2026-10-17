@@ -1,3 +1,6 @@
+// Every case executes the CLI in a subprocess, which Miri cannot interpret.
+#![cfg(not(miri))]
+
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::OsStringExt as _;

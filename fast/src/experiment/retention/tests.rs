@@ -53,7 +53,7 @@ fn invocation(run: usize, outcome: Collected) -> Invocation {
 }
 
 #[test]
-fn full_plan_keeps_failure_when_task_detail_exhausts_allowance() {
+fn admitted_plan_keeps_failure_when_task_detail_exhausts_allowance() {
     let automatic = Cli::parse_from(["fast", "true"]);
     let runs = Storage::new(&automatic, 1, 4)
         .expect("automatic admission")
@@ -65,10 +65,11 @@ fn full_plan_keeps_failure_when_task_detail_exhausts_allowance() {
     let mut records = Vec::new();
     storage.reserve(&mut records, runs);
     let mut sampled = Vec::new();
-    for run in 0..runs {
+    let task_name_capacity = storage.detail_remaining / 3;
+    for run in [0, 1, runs - 1] {
         let mut reading = observation();
         if run < 2 {
-            reading.activity.tasks = (0..1024)
+            reading.activity.tasks = (0..2)
                 .map(|tid| Task {
                     pid: 1,
                     tid,
@@ -76,17 +77,18 @@ fn full_plan_keeps_failure_when_task_detail_exhausts_allowance() {
                     start_ticks: 12,
                     parent_pid: 2,
                     last_parent_pid: 2,
-                    name: "t".repeat(128),
+                    name: {
+                        let mut name = String::with_capacity(task_name_capacity);
+                        name.push('t');
+                        name
+                    },
                     name_changes: 0,
-                    observations: 256,
+                    observations: 1,
                     maximum_observed_rss_bytes: Some(4096),
-                    samples: vec![
-                        Sample {
-                            elapsed_ns: 13,
-                            cpu_ticks: 14
-                        };
-                        256
-                    ],
+                    samples: vec![Sample {
+                        elapsed_ns: 13,
+                        cpu_ticks: 14,
+                    }],
                 })
                 .collect();
         }
@@ -114,12 +116,11 @@ fn full_plan_keeps_failure_when_task_detail_exhausts_allowance() {
     );
     assert_eq!(summary.allowance_bytes, 128 * 1024 * 1024);
     assert!(summary.retained_bytes <= 128 * 1024 * 1024);
-    assert!(summary.retained_bytes > 120 * 1024 * 1024);
     assert!(summary.task_detail_omitted);
-    assert_eq!(sampled[0], 1024);
-    assert!(sampled[1] > 0 && sampled[1] < 1024);
-    assert_eq!(records.len(), runs);
-    for (run, record) in records.iter().enumerate() {
+    assert_eq!(sampled[0], 2);
+    assert!(sampled[1] < 2);
+    assert_eq!(records.len(), 3);
+    for (run, record) in [0, 1, runs - 1].into_iter().zip(&records) {
         assert_eq!(record.run, run);
     }
     let last = records

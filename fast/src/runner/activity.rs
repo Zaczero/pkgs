@@ -275,6 +275,7 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    #[cfg_attr(miri, ignore = "requires live procfs and sysconf(_SC_CLK_TCK)")]
     fn large_sweep_yields_and_reports_incomplete_detail() {
         let barrier = Barrier::new(33);
         let (delay, activity) = std::thread::scope(|scope| {

@@ -658,6 +658,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "libc",
+ "libm",
  "perf-event-open-sys",
  "procfs-core",
  "serde",
