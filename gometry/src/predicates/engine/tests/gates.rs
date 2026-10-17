@@ -145,7 +145,7 @@ fn rectangle_gate_matches_the_general_evaluator_for_every_predicate() {
         let densified = |minx: f64, miny: f64, maxx: f64, maxy: f64| {
             parse_wkt_shape(&format!(
                 "POLYGON (({minx} {miny},{} {miny},{maxx} {miny},{maxx} {maxy},{minx} {maxy},{minx} {miny}))",
-                (minx + maxx) / 2.0
+                f64::midpoint(minx, maxx)
             ))
         };
         let base = densified(0.0, 0.0, 4.0, 4.0);

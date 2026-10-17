@@ -251,7 +251,7 @@ mod send_best_effort_tests {
     async fn send_best_effort_ignores_close_after_backpressure() {
         let (tx, rx) = mpsc::channel(1);
         tx.try_send(0).expect("channel has one available slot");
-        let mut send = Box::pin(send_best_effort(&tx, 1));
+        let mut send = std::pin::pin!(send_best_effort(&tx, 1));
         assert!(
             poll_once(send.as_mut()).is_pending(),
             "the queued item must force the best-effort send to wait"

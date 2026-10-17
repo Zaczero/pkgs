@@ -185,7 +185,7 @@ impl Query for PatternQuery {
         self.0
             .cells()
             .into_iter()
-            .any(|literal| matches!(literal, b'0' | b'1' | b'2'))
+            .any(|literal| matches!(literal, b'0'..=b'2'))
     }
 }
 

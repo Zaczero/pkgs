@@ -478,7 +478,7 @@ mod tests {
                 b'*' => true,
                 b'T' => entry != b'F',
                 b'F' => entry == b'F',
-                b'0' | b'1' | b'2' => entry == literal,
+                b'0'..=b'2' => entry == literal,
                 _ => unreachable!(),
             }
         };

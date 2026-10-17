@@ -13,7 +13,7 @@ use crate::store::Store;
 
 /// Native storage for the public Python-owned LRU mapping.
 #[pyclass(frozen, subclass, mapping, module = "lrucache_rs._lib", name = "Cache")]
-pub struct LRUCache {
+pub(crate) struct LRUCache {
     inner: Mutex<Store>,
     maxsize: NonZeroUsize,
 }
