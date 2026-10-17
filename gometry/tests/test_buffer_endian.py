@@ -215,6 +215,7 @@ def test_malformed_buffer_metadata_is_rejected_before_consumers_read(
     expected: str,
     tmp_path: Path,
 ) -> None:
+    # ruff: ignore[missing-f-string-syntax] - Source executed by the child interpreter.
     script = textwrap.dedent(
         """
         import array

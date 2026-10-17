@@ -119,7 +119,7 @@ strict = ["python/h2corn"]
 extend = "../ruff.toml"
 
 [tool.ruff.lint]
-extend-select = ["D405", "D406", "D407", "D408", "D409", "D410", "D411", "D412", "D414", "D416"]
+extend-select = ["non-capitalized-section-name", "missing-new-line-after-section-name", "missing-dashed-underline-after-section", "missing-section-underline-after-name", "mismatched-section-underline-length", "no-blank-line-after-section", "no-blank-line-before-section", "blank-lines-between-header-and-content", "empty-docstring-section", "missing-section-name-colon"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

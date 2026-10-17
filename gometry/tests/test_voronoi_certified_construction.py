@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import operator
 import random
 from fractions import Fraction
 from itertools import combinations, pairwise
@@ -57,8 +58,10 @@ def _outcome(
         segments = set()
         for edge in source.voronoi(output='edges', clip=clip):
             coords = [tuple(xy[:2]) for xy in edge.coords]
-            for start, end in pairwise(coords):
-                segments.add((start, end) if start <= end else (end, start))
+            segments.update(
+                (start, end) if start <= end else (end, start)
+                for start, end in pairwise(coords)
+            )
         return (
             'ok',
             tuple(
@@ -338,7 +341,7 @@ def test_strip_cells_take_adjacent_floats_beside_colliding_clip_vertices(
     # the bisector's side, splitting the rectangle into three horizontal strips.
     lower = math.nextafter(-0.45, math.inf)
     upper = math.nextafter(0.55, -math.inf)
-    assert sorted((cell.bounds for cell in cells), key=lambda b: b[1]) == [
+    assert sorted((cell.bounds for cell in cells), key=operator.itemgetter(1)) == [
         (-1.0, -2.0, 1.0, lower),
         (-1.0, lower, 1.0, upper),
         (-1.0, upper, 1.0, 2.0),

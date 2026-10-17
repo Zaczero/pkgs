@@ -779,7 +779,7 @@ def test_segmentize_periodic_longitude_aliases_preserve_line_topology(
     assert refined.length == pytest.approx(line.length, rel=1e-12, abs=1e-8)
 
     if turns == 0:
-        assert refined.to_wkb() == _CANONICAL_MERIDIAN_WKB[(path, target)]
+        assert refined.to_wkb() == _CANONICAL_MERIDIAN_WKB[path, target]
     else:
         assert all(
             _xy_bits(coordinate)[0] == _xy_bits((longitude, 0.0))[0]
@@ -1097,7 +1097,7 @@ def test_geographic_chart_lrs_matches_independent_parallel_oracle() -> None:
     assert substring.length == pytest.approx(
         length / 2.0,
         rel=0.0,
-        abs=_PARALLEL_60_SUBSTRING_LENGTH_BUDGETS_M[(0.25, 0.75)],
+        abs=_PARALLEL_60_SUBSTRING_LENGTH_BUDGETS_M[0.25, 0.75],
     )
 
     rows = gm.GeometryArray([line, line])

@@ -197,7 +197,7 @@ extend = "../ruff.toml"
 exclude = [".venv", ".ruff_cache", "site", "target*"]
 
 [tool.ruff.lint]
-extend-select = ["D405", "D406", "D407", "D408", "D409", "D410", "D411", "D412", "D414", "D416"]
+extend-select = ["non-capitalized-section-name", "missing-new-line-after-section-name", "missing-dashed-underline-after-section", "missing-section-underline-after-name", "mismatched-section-underline-length", "no-blank-line-after-section", "no-blank-line-before-section", "blank-lines-between-header-and-content", "empty-docstring-section", "missing-section-name-colon"]
 # Throwaway names are `_` and single-word `_name`s; multi-word `_`-prefixed
 # helpers are not, so redefining one still reports F811.
 dummy-variable-rgx = "^_[a-z0-9]*$"
@@ -205,23 +205,20 @@ dummy-variable-rgx = "^_[a-z0-9]*$"
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
-[tool.ruff.lint.per-file-ignores]
-# The docstring lives on the final (canonical) @overload variant by design —
-# stubs cannot carry a bare implementation def (PEP 484), and one copy per
-# symbol beats duplicating prose across variants (gen-docs enforces placement).
-"python/gometry/_lib.pyi" = ["D418"]
+[tool.ruff.lint.extend-per-file-ignores]
 # Standalone gate scripts import tools/ siblings via a sys.path shim that must
 # precede the import (the _gatelib.py sys.path pattern).
-"tools/**/*.py" = ["E402"]
+"tools/**/*.py" = ["module-import-not-at-top-of-file"]
 # Bench drivers/support scripts use the same late-import sys.path shim pattern.
-"benches/**/*.py" = ["E402", "I001"]
+"benches/**/*.py" = ["module-import-not-at-top-of-file", "unsorted-imports"]
 # Pickle round-trips of gometry's own objects are the feature under test; the
 # "untrusted data" caveat S301 guards does not apply to self-produced bytes.
-"tests/*.py" = ["S301"]
+"tests/*.py" = ["suspicious-pickle-usage"]
 # Deliberate import ordering: facade adapter imports are grouped with the
 # native exports, and optional-dependency typing blocks follow their guards.
-"python/gometry/__init__.py" = ["E402"]
-"python/gometry/_types.py" = ["E402"]
+"python/gometry/__init__.py" = ["module-import-not-at-top-of-file"]
+# Frozen slot initialization bypasses Features.__setattr__.
+"python/gometry/_types.py" = ["module-import-not-at-top-of-file", "unnecessary-dunder-call"]
 
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true }, benchroom = { path = "../benchroom", editable = true } }

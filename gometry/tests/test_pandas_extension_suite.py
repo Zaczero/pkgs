@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import itertools
+import operator
 
 import gometry as gm
 import numpy as np
@@ -286,7 +287,7 @@ class TestMethods(base.BaseMethodsTests):
     def test_combine_le(self, data_repeated):
         first, second = data_repeated(2)
         with pytest.raises(TypeError, match='not supported'):
-            pd.Series(first).combine(pd.Series(second), lambda a, b: a <= b)
+            pd.Series(first).combine(pd.Series(second), operator.le)
 
     def test_searchsorted(self, data_for_sorting, as_series):
         smallest = data_for_sorting.take([2, 0, 1])

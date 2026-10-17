@@ -2,6 +2,8 @@
 constructors, and parts/rings extraction helpers.
 """
 
+import operator
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -1063,11 +1065,11 @@ def test_with_coordinates_xy_ring_unchanged() -> None:
     'select',
     [
         # Window / slice (non-identity row_map → replace_packed_coords_detached)
-        lambda a: a[1:],
-        lambda a: a[0:1],
+        operator.itemgetter(slice(1, None)),
+        operator.itemgetter(slice(0, 1)),
         # Fancy gather
-        lambda a: a[[1]],
-        lambda a: a[[0, 2]],
+        operator.itemgetter([1]),
+        operator.itemgetter([0, 2]),
     ],
     ids=['slice_tail', 'slice_head', 'gather_one', 'gather_two'],
 )

@@ -626,7 +626,7 @@ def test_scalar_tuple_list_and_replace_at_index_boundaries() -> None:
 
     for index in (10**100, -(10**100)):
         with pytest.raises(IndexError):
-            array[(index,)]
+            array[index,]
         with pytest.raises(IndexError):
             array[[index]]
         with pytest.raises(IndexError):

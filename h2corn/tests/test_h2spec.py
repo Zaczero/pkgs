@@ -53,7 +53,7 @@ async def test_h2spec_conformance(tmp_path: Path) -> None:
         try:
             # The fixed h2spec executable above writes this report into
             # pytest's private temporary directory.
-            root = ET.parse(report).getroot()  # noqa: S314
+            root = ET.parse(report).getroot()  # ruff: ignore[suspicious-xml-element-tree-usage]
         except (FileNotFoundError, ET.ParseError) as error:
             pytest.fail(
                 f'h2spec did not write a parseable JUnit report: {error}\n{output}'

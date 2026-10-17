@@ -415,8 +415,7 @@ class _Supervisor:
             quiesce_write_fd,
         ]
         if self.signal_wakeup is not None:
-            discard.append(self.signal_wakeup.read_fd)
-            discard.append(self.signal_wakeup.write_fd)
+            discard.extend((self.signal_wakeup.read_fd, self.signal_wakeup.write_fd))
         if self.pid_fd is not None:
             discard.append(self.pid_fd)
         if self.parent_liveness_fd is not None:

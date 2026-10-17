@@ -529,8 +529,10 @@ def _matrix_wkts() -> list[str]:
             head, _, tail = body.partition(' ')
             out.append(f'{head} {_AXES_TAG[axes]}{tail}')
         out.append(f'{kind.upper()} EMPTY')
-    out.append('GEOMETRYCOLLECTION (POINT (1 2), LINESTRING (0 0, 1 1))')
-    out.append('GEOMETRYCOLLECTION EMPTY')
+    out.extend((
+        'GEOMETRYCOLLECTION (POINT (1 2), LINESTRING (0 0, 1 1))',
+        'GEOMETRYCOLLECTION EMPTY',
+    ))
     return out
 
 

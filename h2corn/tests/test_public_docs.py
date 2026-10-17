@@ -10,14 +10,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from bench.report import render_accessible_results  # noqa: E402
-from tools.docs.check import (  # noqa: E402
+from bench.report import render_accessible_results  # ruff: ignore[module-import-not-at-top-of-file]
+from tools.docs.check import (  # ruff: ignore[module-import-not-at-top-of-file]
     _Anchors,
     check_api,
     check_benchmark_results,
     check_configuration,
 )
-from tools.docs.config_reference import (  # noqa: E402
+from tools.docs.config_reference import (  # ruff: ignore[module-import-not-at-top-of-file]
     format_type,
     python_input_type,
     stored_type,

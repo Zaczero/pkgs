@@ -1146,7 +1146,7 @@ if TYPE_CHECKING:
     reveal_type(_multipolygon_sequence)
     reveal_type(_geometrycollection_sequence)
 
-    from collections.abc import Hashable, Iterable, Mapping
+    from collections.abc import Hashable, Mapping
     from pathlib import Path
     from tempfile import TemporaryDirectory
 

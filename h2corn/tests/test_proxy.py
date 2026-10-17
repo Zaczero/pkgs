@@ -928,7 +928,7 @@ async def test_proxy_protocol_v2_zero_destination_keeps_bind_server_tuple() -> N
                 port=port,
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
-                    server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
+                    server_host='0.0.0.0',  # ruff: ignore[hardcoded-bind-all-interfaces] - intentional wildcard destination tuple
                     client_port=0,
                     server_port=0,
                 ),
@@ -971,7 +971,7 @@ async def test_proxy_protocol_v2_zero_destination_uses_actual_multi_bind_listene
                 port=second_port,
                 prefix=proxy_v2_prefix(
                     client_host='203.0.113.10',
-                    server_host='0.0.0.0',  # noqa: S104 - intentional wildcard destination tuple
+                    server_host='0.0.0.0',  # ruff: ignore[hardcoded-bind-all-interfaces] - intentional wildcard destination tuple
                     client_port=0,
                     server_port=0,
                 ),

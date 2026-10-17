@@ -353,8 +353,10 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
     async def lifespan(app: FastAPI):
         app.state.message = 'ready'
         seen.append('startup')
-        yield
-        seen.append('shutdown')
+        try:
+            yield
+        finally:
+            seen.append('shutdown')
 
     fastapi_app = FastAPI(lifespan=lifespan)
 

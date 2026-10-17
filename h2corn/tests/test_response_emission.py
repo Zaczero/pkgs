@@ -1,7 +1,6 @@
 import asyncio
 from contextlib import suppress
 
-import h2.errors
 import h2.events
 import pytest
 from h2corn import Config

@@ -1,4 +1,5 @@
 target-version = "py311"
+preview = true
 
 # libtiff is an upstream submodule checked out under gometry/native, so its build
 # and documentation scripts are another project's source: holding them to our
@@ -14,62 +15,68 @@ extend-exclude = ["gometry/native/libtiff-sys/libtiff/**"]
 "pyo3stubs/**" = "py311"
 
 [lint]
+allowed-confusables = ["µ"]
 ignore = [
-  "ARG001",  # unused-function-argument
-  "ARG002",  # unused-method-argument
-  "ASYNC109",  # async-function-with-timeout
-  "ASYNC240",  # blocking-path-method-in-async-function
-  "B008",  # function-call-in-default-argument
-  "E731",  # lambda-assignment
-  "E741",  # ambiguous-variable-name
-  "LOG015",  # root-logger-call
-  "N803",  # invalid-argument-name
-  "N806",  # non-lowercase-variable-in-function
-  "PLC0415",  # import-outside-top-level
+  "unused-function-argument",
+  "unused-method-argument",
+  "async-function-with-timeout",
+  "blocking-path-method-in-async-function",
+  "function-call-in-default-argument",
+  "lambda-assignment",
+  "ambiguous-variable-name",
+  "root-logger-call",
+  "invalid-argument-name",
+  "non-lowercase-variable-in-function",
+  "import-outside-top-level",
+  "import-private-name",  # Internal modules are shared by package tools and tests.
   "PLR09",  # too-many-*
-  "PLR1702",  # too-many-nested-blocks
-  "PLR1704",  # redefined-argument-from-local
-  "PLR2",
-  "PLR6301",  # no-self-use
-  "PLW0603",  # global-statement
-  "PLW1514",  # unspecified-encoding
-  "PLW2901",  # redefined-loop-name
-  "PT001",  # pytest-fixture-incorrect-parentheses-style
-  "PT006",  # pytest-parametrize-names-wrong-type
-  "PT018",  # pytest-composite-assertion
-  "PT023",  # pytest-incorrect-mark-parentheses-style
-  "PYI015",  # assignment-default-in-stub
-  "PYI021",  # docstring-in-stub
-  "UP046",  # non-pep695-generic-class
-  "UP047",  # non-pep695-generic-function
-  "S101",  # assert
-  "S105",  # hardcoded-password-string
-  "S110",  # try-except-pass
-  "S311",  # suspicious-non-cryptographic-random-usage
-  "S404",  # suspicious-subprocess-import
+  "too-many-nested-blocks",
+  "redefined-argument-from-local",
+  "magic-value-comparison",
+  "no-self-use",
+  "global-statement",
+  "unspecified-encoding",
+  "redefined-loop-name",
+  "pytest-fixture-incorrect-parentheses-style",
+  "pytest-parametrize-names-wrong-type",
+  "pytest-composite-assertion",
+  "pytest-incorrect-mark-parentheses-style",
+  "assignment-default-in-stub",
+  "docstring-in-stub",
+  "assert",
+  "hardcoded-password-string",
+  "try-except-pass",
+  "suspicious-non-cryptographic-random-usage",
+  "suspicious-subprocess-import",
+  "suspicious-pickle-import",
+  "suspicious-xml-etree-import",
   "S6",
-  "SIM105",  # suppressible-exception
-  "SIM108",  # if-else-block-instead-of-if-exp
-  "SLF001",  # private-member-access
-  "TRY003",  # raise-vanilla-args
-  "TRY301", # raise-within-try
+  "suppressible-exception",
+  "if-else-block-instead-of-if-exp",
+  "raise-vanilla-args",
+  "raise-within-try",
+  "non-empty-init-module",  # Small packages keep their implementation at the public entry point.
+  "reimplemented-starmap",  # Comprehensions are faster on Python 3.12+.
+  "literal-membership",  # Short tuples need no hashability contract or dynamic set allocation.
+  "too-many-statements-in-try-clause",
+  "unused-async",  # ASGI and framework callbacks must retain their async interface.
 ]
 select = [
   "ARG",  # flake8-unused-arguments
   "ASYNC",  # flake8-async
   "B",  # flake8-bugbear
   "C4",  # flake8-comprehensions
-  "D200",  # unnecessary-multiline-docstring
-  "D201",  # blank-line-before-function
-  "D202",  # blank-line-after-function
-  "D207",  # under-indentation
-  "D208",  # over-indentation
-  "D209",  # new-line-after-last-paragraph
-  "D210",  # surrounding-whitespace
-  "D211",  # blank-line-before-class
-  "D403",  # first-word-uncapitalized
-  "D418",  # overload-with-docstring
-  "D419",  # empty-docstring
+  "unnecessary-multiline-docstring",
+  "blank-line-before-function",
+  "blank-line-after-function",
+  "under-indentation",
+  "over-indentation",
+  "new-line-after-last-paragraph",
+  "surrounding-whitespace",
+  "blank-line-before-class",
+  "first-word-uncapitalized",
+  "overload-with-docstring",
+  "empty-docstring",
   "DTZ",  # flake8-datetimez
   "E4",  # pycodestyle
   "E7",
@@ -82,30 +89,26 @@ select = [
   "I",  # isort
   "ICN",  # flake8-import-conventions
   "INT",  # flake8-gettext
-  "ISC003",  # explicit-string-concatenation
+  "explicit-string-concatenation",
   "LOG",  # flake8-logging
   "N",  # pep8-naming
   "NPY",  # numpy
   "PERF",  # perflint
-  "PGH003",  # blanket-type-ignore
-  "PGH004",  # blanket-noqa
+  "blanket-type-ignore",
+  "blanket-noqa",
   "PIE",  # flake8-pie
-  "PLC",  # pylint
-  "PLE",  # pylint
-  "PLR",  # pylint
-  "PLW",  # pylint
+  "PL",  # pylint
   "PT",  # flake8-pytest-style
   "PYI",  # flake8-pyi
   "RSE",  # flake8-raise
   "RUF",  # ruff
   "S",  # flake8-bandit
   "SIM",  # flake8-simplify
-  "SLF",  # flake8-self
   "SLOT",  # flake8-slots
   "T10",  # flake8-debugger
-  "TD006",  # invalid-todo-capitalization
+  "invalid-todo-capitalization",
   "TC",  # flake8-type-checking
-  "TID252",  # relative-imports
+  "relative-imports",
   "TRY",  # tryceratops
   "UP",  # pyupgrade
   "W6",
@@ -116,13 +119,34 @@ extend-safe-fixes = ["D2"]
 [lint.per-file-ignores]
 # Native extension stubs attach public documentation to the final canonical
 # overload because a .pyi overload set cannot include an implementation body.
-"**/_lib.pyi" = ["D418"]
+"**/_lib.pyi" = ["overload-with-docstring"]
+# Protocol tests need direct slots, builtin subclasses, and exact stored values.
+"**/tests/**" = [
+  "compare-to-empty-string",
+  "float-equality-comparison",
+  "subclass-builtin",
+  "unnecessary-dunder-call",
+]
+"**/benches/**" = ["float-equality-comparison"]
+
+[lint.flake8-import-conventions]
+extend-aliases = { geopandas = "gpd" }
+banned-aliases = { geopandas = [] }
 
 [lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
 [lint.pylint]
-max-args = 10
+allow-dunder-method-names = [
+  "__arrow_array__",
+  "__arrow_c_array__",
+  "__arrow_c_stream__",
+  "__arrow_ext_deserialize__",
+  "__arrow_ext_serialize__",
+  "__from_arrow__",
+  "__geo_interface__",
+  "__signature__",
+]
 
 [format]
 # Ruff formats Python code blocks inside Markdown. The docs embed their examples
@@ -133,4 +157,3 @@ max-args = 10
 # from double to single quotes into internal house style.
 exclude = ["**/*.md"]
 quote-style = "single"
-preview = true

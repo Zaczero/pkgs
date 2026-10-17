@@ -117,7 +117,7 @@ def check_rendered_anchors() -> None:
             if target_url.netloc != 'h2corn.invalid':
                 continue
             target = SITE / target_url.path.lstrip('/')
-            if target.is_dir() or (not target.exists() and target.suffix == ''):
+            if target.is_dir() or (not target.exists() and not target.suffix):
                 target /= 'index.html'
             if not target.exists():
                 missing.append(f'{page}: {href} (target is missing)')

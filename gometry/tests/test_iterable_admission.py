@@ -10,7 +10,6 @@ timeout contains a genuine hang without imposing a speed contract.
 from __future__ import annotations
 
 import collections
-import collections.abc
 import subprocess
 import sys
 import tempfile
@@ -513,11 +512,11 @@ def test_crs_configure_million_path_generator_matches_list() -> None:
     """
     n = 1 << 20
     try:
-        from_list = gm.crs_configure(search_paths=['/tmp'] * n)  # noqa: S108  # intentional stress path
+        from_list = gm.crs_configure(search_paths=['/tmp'] * n)  # ruff: ignore[hardcoded-temp-file]  # intentional stress path
         assert from_list['search_paths'] is not None
         assert len(from_list['search_paths']) == n
 
-        from_gen = gm.crs_configure(search_paths=('/tmp' for _ in range(n)))  # noqa: S108  # intentional stress path
+        from_gen = gm.crs_configure(search_paths=('/tmp' for _ in range(n)))  # ruff: ignore[hardcoded-temp-file]  # intentional stress path
         assert from_gen['search_paths'] is not None
         assert len(from_gen['search_paths']) == n
         assert from_gen['search_paths'] == from_list['search_paths']

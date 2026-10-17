@@ -24,7 +24,6 @@ from h2corn._log import LogFormat
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from typing import Self
 
 ProxyProtocolMode = Literal['off', 'v1', 'v2']

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from unittest import mock
@@ -12,7 +11,7 @@ import pytest
 
 pytest.importorskip(
     'lonboard',
-    reason='geoarrow-rust-core==0.6.3 has no CPython 3.14t wheel for lonboard',
+    reason='optional lonboard visualization dependencies are not installed',
 )
 
 
@@ -241,4 +240,4 @@ def test_repr_html_svg_renders_compact_grid() -> None:
     html = arr._repr_html_svg()
     assert '<svg' in html
     assert '2 geometries' in html
-    assert re.search(r'<div class="gometry-geom-array">', html)
+    assert r'<div class="gometry-geom-array">' in html

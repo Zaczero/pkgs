@@ -1345,7 +1345,7 @@ async def test_rfc4514_client_name_matches_cryptography(
     request: pytest.FixtureRequest,
 ) -> None:
     """DN rendering matches cryptography.x509.Name.rfc4514_string() for handshake subjects."""
-    import datetime
+    import datetime as dt
 
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -1353,7 +1353,7 @@ async def test_rfc4514_client_name_matches_cryptography(
 
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'test-ca')])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     ca_cert = (
         x509
         .CertificateBuilder()
@@ -1362,7 +1362,7 @@ async def test_rfc4514_client_name_matches_cryptography(
         .public_key(ca_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .sign(ca_key, hashes.SHA256())
     )
@@ -1375,7 +1375,7 @@ async def test_rfc4514_client_name_matches_cryptography(
         .public_key(client_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=1))
         .sign(ca_key, hashes.SHA256())
     )
     srv_dir = tmp_path / 'srv'

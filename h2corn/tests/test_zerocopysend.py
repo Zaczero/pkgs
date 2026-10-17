@@ -374,12 +374,12 @@ async def test_descriptor_closed_immediately_after_send_still_transfers(
         # point of this test is a descriptor opened and closed *inside* the
         # handler, around the send, which is exactly the lifetime the extension
         # has to survive.
-        handle = open(path, 'rb')  # noqa: ASYNC230, SIM115
+        handle = open(path, 'rb')  # ruff: ignore[blocking-open-call-in-async-function, open-file-with-context-handler]
         await send({'type': 'http.response.zerocopysend', 'file': handle})
         handle.close()
         # Churn descriptors so a stale number would be reused by something else
         # rather than merely being closed.
-        spare = [open(os.devnull, 'rb') for _ in range(64)]  # noqa: ASYNC230, SIM115
+        spare = [open(os.devnull, 'rb') for _ in range(64)]  # ruff: ignore[blocking-open-call-in-async-function, open-file-with-context-handler]
         for entry in spare:
             entry.close()
 
@@ -512,7 +512,7 @@ async def test_a_file_whose_size_is_not_its_length_is_rejected() -> None:
             seen.append(exc)
         await send({'type': 'http.response.body', 'body': b'fallback'})
 
-    with open('/proc/version', 'rb') as handle:  # noqa: ASYNC230
+    with open('/proc/version', 'rb') as handle:  # ruff: ignore[blocking-open-call-in-async-function]
         async with _serving(app) as server:
             status, body = await _http1(server_port(server))
 

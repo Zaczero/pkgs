@@ -69,10 +69,10 @@ class CompressMiddleware:
         self._remove_accept_encoding = remove_accept_encoding
 
         if zstd:
-            if sys.version_info < (3, 14):
-                from starlette_compress._zstd_legacy import ZstdResponder
-            else:
+            if sys.version_info >= (3, 14):
                 from starlette_compress._zstd import ZstdResponder
+            else:
+                from starlette_compress._zstd_legacy import ZstdResponder
 
             self._zstd = ZstdResponder(app, minimum_size, zstd_level)
         else:

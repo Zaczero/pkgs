@@ -105,7 +105,7 @@ def test_exact_cocircular_square_uses_the_lexicographic_lift(method: str) -> Non
             coordinates, coordinates[1:] + coordinates[:1], strict=True
         ):
             first, second = sorted((left, right))
-            edge_counts[(first, second)] = edge_counts.get((first, second), 0) + 1
+            edge_counts[first, second] = edge_counts.get((first, second), 0) + 1
     assert [edge for edge, count in edge_counts.items() if count == 2] == [
         ((0.0, 1.0), (1.0, 0.0))
     ]

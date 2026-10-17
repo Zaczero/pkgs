@@ -219,7 +219,7 @@ async def test_current_request_connect_timeout_bounds_async_validation(server_fa
 
     async with server_factory() as server:
         async with httpx_ssrf_protection(
-            httpx.AsyncClient(trust_env=False, timeout=None),  # noqa: S113 - The per-request deadline must override an unbounded client default.
+            httpx.AsyncClient(trust_env=False, timeout=None),  # ruff: ignore[request-without-timeout] - The per-request deadline must override an unbounded client default.
             check_globally_reachable=False,
             custom_validator=stalled,
         ) as client:

@@ -176,104 +176,107 @@ def _exact_cases() -> list[ExactCase]:
 
     a, b = _foot_point(0, 0), _foot_point(10, 0)
     fa, fb = _free_point(0, 0), _free_point(10, 0)
-    cases.append((
-        'distance',
-        lambda: gm.distance(a, b),
-        lambda: gm.distance(a, b, unit='meters'),
-        lambda: gm.distance(fa, fb, unit='meters'),
-        10.0,
-    ))
-    cases.append((
-        'dwithin',
-        lambda: float(gm.dwithin(a, b, 10.0)),
-        # Use the measured metre distance so float rounding cannot miss the edge.
-        lambda: float(
-            gm.dwithin(a, b, gm.distance(a, b, unit='meters'), unit='meters')
+    cases.extend([
+        (
+            'distance',
+            lambda: gm.distance(a, b),
+            lambda: gm.distance(a, b, unit='meters'),
+            lambda: gm.distance(fa, fb, unit='meters'),
+            10.0,
         ),
-        lambda: gm.dwithin(fa, fb, 10.0, unit='meters'),
-        1.0,  # True
-    ))
+        (
+            'dwithin',
+            lambda: float(gm.dwithin(a, b, 10.0)),
+            # Use the measured metre distance so float rounding cannot miss the edge.
+            lambda: float(
+                gm.dwithin(a, b, gm.distance(a, b, unit='meters'), unit='meters')
+            ),
+            lambda: gm.dwithin(fa, fb, 10.0, unit='meters'),
+            1.0,  # True
+        ),
+    ])
 
     line2 = _foot_line_offset(1.0)
     free_line2 = gm.LineString([(0.0, 1.0), (10.0, 1.0)])
-    cases.append((
-        'hausdorff_distance',
-        lambda: gm.hausdorff_distance(line, line2, max_error=1e-12),
-        lambda: gm.hausdorff_distance(line, line2, max_error=1e-12, unit='meters'),
-        lambda: gm.hausdorff_distance(
-            free_line,
-            free_line2,
-            max_error=1e-12,
-            unit='meters',
+    cases.extend([
+        (
+            'hausdorff_distance',
+            lambda: gm.hausdorff_distance(line, line2, max_error=1e-12),
+            lambda: gm.hausdorff_distance(line, line2, max_error=1e-12, unit='meters'),
+            lambda: gm.hausdorff_distance(
+                free_line,
+                free_line2,
+                max_error=1e-12,
+                unit='meters',
+            ),
+            1.0,
         ),
-        1.0,
-    ))
-    cases.append((
-        'frechet_distance',
-        lambda: gm.frechet_distance(line, line2),
-        lambda: gm.frechet_distance(line, line2, unit='meters'),
-        lambda: gm.frechet_distance(free_line, free_line2, unit='meters'),
-        1.0,
-    ))
-    cases.append((
-        'nearest_points',
-        lambda: gm.nearest_points(a, b),
-        lambda: gm.nearest_points(a, b, unit='meters'),
-        lambda: gm.nearest_points(fa, fb, unit='meters'),
-        10.0,
-    ))
-    cases.append((
-        'shortest_line',
-        lambda: gm.shortest_line(a, b),
-        lambda: gm.shortest_line(a, b, unit='meters'),
-        lambda: gm.shortest_line(fa, fb, unit='meters'),
-        10.0,
-    ))
-
-    cases.append((
-        'line_locate',
-        lambda: line.line_locate(_foot_point(5, 0)),
-        lambda: line.line_locate(_foot_point(5, 0), unit='meters'),
-        lambda: free_line.line_locate(_free_point(5, 0), unit='meters'),
-        5.0,
-    ))
-    cases.append((
-        'line_interpolate',
-        lambda: line.line_interpolate(1.0).x,
-        lambda: line.line_interpolate(FOOT_UNIT_M, unit='meters').x,
-        lambda: free_line.line_interpolate(1.0, unit='meters'),
-        1.0,
-    ))
-    cases.append((
-        'line_substring',
-        lambda: line.line_substring(0.0, 1.0).length,
-        lambda: line.line_substring(0.0, FOOT_UNIT_M, unit='meters').length,
-        lambda: free_line.line_substring(0.0, 1.0, unit='meters'),
-        1.0,
-    ))
-    cases.append((
-        'interpolate_m',
-        lambda: line.interpolate_m(0.0, 10.0).max_m,
-        # Measure values are the caller-supplied start/end; unit= scales how
-        # those map onto the line length, not the stored M labels.
-        lambda: line.interpolate_m(0.0, FOOT_UNIT_M, unit='meters').max_m,
-        lambda: free_line.interpolate_m(0.0, 10.0, unit='meters'),
-        10.0,
-    ))
-    cases.append((
-        'destination',
-        lambda: a.destination(90.0, 1.0).x,
-        lambda: a.destination(90.0, FOOT_UNIT_M, unit='meters').x,
-        lambda: fa.destination(90.0, 1.0, unit='meters'),
-        1.0,
-    ))
-    cases.append((
-        'point_between',
-        lambda: gm.point_between(a, b, 1.0).x,
-        lambda: gm.point_between(a, b, FOOT_UNIT_M, unit='meters').x,
-        lambda: gm.point_between(fa, fb, 1.0, unit='meters'),
-        1.0,
-    ))
+        (
+            'frechet_distance',
+            lambda: gm.frechet_distance(line, line2),
+            lambda: gm.frechet_distance(line, line2, unit='meters'),
+            lambda: gm.frechet_distance(free_line, free_line2, unit='meters'),
+            1.0,
+        ),
+        (
+            'nearest_points',
+            lambda: gm.nearest_points(a, b),
+            lambda: gm.nearest_points(a, b, unit='meters'),
+            lambda: gm.nearest_points(fa, fb, unit='meters'),
+            10.0,
+        ),
+        (
+            'shortest_line',
+            lambda: gm.shortest_line(a, b),
+            lambda: gm.shortest_line(a, b, unit='meters'),
+            lambda: gm.shortest_line(fa, fb, unit='meters'),
+            10.0,
+        ),
+        (
+            'line_locate',
+            lambda: line.line_locate(_foot_point(5, 0)),
+            lambda: line.line_locate(_foot_point(5, 0), unit='meters'),
+            lambda: free_line.line_locate(_free_point(5, 0), unit='meters'),
+            5.0,
+        ),
+        (
+            'line_interpolate',
+            lambda: line.line_interpolate(1.0).x,
+            lambda: line.line_interpolate(FOOT_UNIT_M, unit='meters').x,
+            lambda: free_line.line_interpolate(1.0, unit='meters'),
+            1.0,
+        ),
+        (
+            'line_substring',
+            lambda: line.line_substring(0.0, 1.0).length,
+            lambda: line.line_substring(0.0, FOOT_UNIT_M, unit='meters').length,
+            lambda: free_line.line_substring(0.0, 1.0, unit='meters'),
+            1.0,
+        ),
+        (
+            'interpolate_m',
+            lambda: line.interpolate_m(0.0, 10.0).max_m,
+            # Measure values are the caller-supplied start/end; unit= scales how
+            # those map onto the line length, not the stored M labels.
+            lambda: line.interpolate_m(0.0, FOOT_UNIT_M, unit='meters').max_m,
+            lambda: free_line.interpolate_m(0.0, 10.0, unit='meters'),
+            10.0,
+        ),
+        (
+            'destination',
+            lambda: a.destination(90.0, 1.0).x,
+            lambda: a.destination(90.0, FOOT_UNIT_M, unit='meters').x,
+            lambda: fa.destination(90.0, 1.0, unit='meters'),
+            1.0,
+        ),
+        (
+            'point_between',
+            lambda: gm.point_between(a, b, 1.0).x,
+            lambda: gm.point_between(a, b, FOOT_UNIT_M, unit='meters').x,
+            lambda: gm.point_between(fa, fb, 1.0, unit='meters'),
+            1.0,
+        ),
+    ])
     return cases
 
 

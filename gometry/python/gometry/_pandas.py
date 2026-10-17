@@ -12,9 +12,9 @@ Rust core uses while preserving pandas' nullable scalar conventions.
 
 from __future__ import annotations
 
-import builtins  # noqa: TC003 - required by runtime get_type_hints
-import types  # noqa: TC003 - required by runtime get_type_hints
-from collections.abc import (  # noqa: TC003 - required by runtime get_type_hints
+import builtins  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
+import types  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
+from collections.abc import (  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
     Callable,
     Hashable,
     Sequence,

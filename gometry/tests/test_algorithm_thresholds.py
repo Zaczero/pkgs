@@ -30,8 +30,7 @@ def test_hausdorff_equidistant_metric_stable_above_feature_param_budget() -> Non
         pts: list[gm.Point] = [gm.Point(0.0, 4.0), gm.Point(10.0, 1.0)]
         for i in range(n_extra):
             eps = (i + 1) * 1e-12
-            pts.append(gm.Point(0.0 + eps, 4.0))
-            pts.append(gm.Point(10.0 + eps, 1.0))
+            pts.extend((gm.Point(0.0 + eps, 4.0), gm.Point(10.0 + eps, 1.0)))
         return float(
             gm.hausdorff_distance(
                 src,

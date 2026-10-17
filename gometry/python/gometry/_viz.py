@@ -51,7 +51,7 @@ def _lonboard_importable() -> bool:
     global _lonboard_available
     if _lonboard_available is None:
         try:
-            import lonboard  # noqa: F401
+            import lonboard  # ruff: ignore[unused-import]
         except ModuleNotFoundError as error:
             if error.name != 'lonboard' and not (error.name or '').startswith(
                 'lonboard.'

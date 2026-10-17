@@ -9,7 +9,7 @@
 # Runtime dunder declarations below are intentional protocol surface, even where
 # Ruff's generic stub heuristic considers them redundant.
 # Keep the builtin object class explicit: PYI055's combined form is rejected by mypy.
-# ruff: noqa: PYI029, PYI055
+# ruff: file-ignore[str-or-repr-defined-in-stub, unnecessary-type-union]
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false

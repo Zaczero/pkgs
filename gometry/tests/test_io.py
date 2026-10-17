@@ -1673,7 +1673,7 @@ def test_serializer_precision_kwarg_rounds_output() -> None:
 
 def test_serializer_precision_kwarg_matches_quantize() -> None:
     geom = gm.LineString([(1.23456, 2.34567), (7.65432, 8.76543)], crs=4326)
-    array = gm.GeometryArray([geom, gm.Point(3.14159, 2.71828, crs=4326)])
+    array = gm.GeometryArray([geom, gm.Point(3.14159, 2.71828, crs=4326)])  # ruff: ignore[math-constant] - Deliberately rounded input for quantization.
     for precision in (1, 2, 5):
         assert geom.to_wkt(precision=precision) == geom.quantize(precision).to_wkt()
         assert geom.to_wkb(precision=precision) == geom.quantize(precision).to_wkb()

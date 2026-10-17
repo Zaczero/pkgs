@@ -12,7 +12,7 @@ from gometry._lib import (
     from_wkb,
 )
 from gometry._optional import missing_optional_dependency
-from gometry._types import (  # noqa: TC001 - required by annotations
+from gometry._types import (  # ruff: ignore[typing-only-first-party-import] - required by annotations
     CrsInput,
     _EpochInput,
 )

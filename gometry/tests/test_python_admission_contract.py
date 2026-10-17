@@ -668,7 +668,7 @@ def test_index_protocol_uses_the_builtin_int_slot_for_int_subclasses() -> None:
             raise RuntimeError('int subclass provider must not run')
 
     provider = IntSubclass(1)
-    assert array[(provider,)].to_wkt() == ['POINT (1 1)']
+    assert array[provider,].to_wkt() == ['POINT (1 1)']
     assert provider.calls == 0
 
 
@@ -724,7 +724,7 @@ def test_list_and_tuple_keep_distinct_mixed_provider_admission_order() -> None:
 
         tuple_provider = Provider(TypeError('tuple provider must not run'))
         with pytest.raises(TypeError) as excinfo:
-            array[(True, tuple_provider)]
+            array[True, tuple_provider]
         assert type(excinfo.value) is TypeError
         assert tuple_provider.calls == 0
 

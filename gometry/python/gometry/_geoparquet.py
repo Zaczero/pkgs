@@ -6,7 +6,7 @@ import itertools
 import json
 import math
 import numbers
-import os  # noqa: TC003 - required by runtime get_type_hints
+import os  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal

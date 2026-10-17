@@ -4,11 +4,9 @@ import os
 import sys
 from pathlib import Path
 
-import h2.config
 import h2.connection
 import h2.errors
 import h2.events
-import h2.exceptions
 import h2.settings
 import pytest
 from h2corn import Config, Server

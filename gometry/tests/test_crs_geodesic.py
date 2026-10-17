@@ -4,6 +4,7 @@ best-UTM selection, runtime config, cache info, and PROJ authority metadata.
 
 import json
 import math
+import operator
 from collections.abc import Callable
 from itertools import pairwise
 from typing import cast
@@ -128,7 +129,7 @@ def _near_pole_directed_reference(
             hi = min(target_samples, index + 1) / target_samples
             if lo < hi:
                 candidates.append(_golden_extremum(distance, lo, hi))
-        return min(candidates, key=lambda candidate: candidate[1])
+        return min(candidates, key=operator.itemgetter(1))
 
     parameters = np.linspace(0.0, 1.0, source_samples + 1)
     distances = [
@@ -166,7 +167,7 @@ def _near_pole_directed_reference(
                 maximum=True,
             )
         )
-    return max(candidates, key=lambda candidate: candidate[1])[1]
+    return max(candidates, key=operator.itemgetter(1))[1]
 
 
 def _projected_chart_outline(

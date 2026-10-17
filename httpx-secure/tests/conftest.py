@@ -15,7 +15,7 @@ from anyio.abc import SocketAttribute
 from anyio.streams.tls import TLSAttribute, TLSStream
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator
 
 
 @pytest.fixture(params=['asyncio', 'trio'])
@@ -161,7 +161,7 @@ def server_factory():
     @asynccontextmanager
     async def serve(
         *, host='127.0.0.1', port=0, tls=None, http2=False, responses=None
-    ) -> AsyncIterator[HTTPServer]:
+    ) -> AsyncGenerator[HTTPServer, None]:
         listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
         async with listener:
             server = HTTPServer(

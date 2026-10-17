@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -448,9 +449,9 @@ def test_darwin_kqueue_rebuilds_directory_watch(
     notifier = reload_module._KqueueNotifier((watched,), ('*.py',), ())
     first_fds = tuple(notifier._fds)
 
+    @dataclass
     class Event:
-        def __init__(self, ident: int) -> None:
-            self.ident = ident
+        ident: int
 
     initial_file_fd = next(
         fd for fd, path in notifier._paths.items() if path == watched / 'initial.py'

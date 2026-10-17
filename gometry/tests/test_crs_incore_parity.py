@@ -1040,7 +1040,7 @@ def test_observer_admitted_pairs_match_pyproj() -> None:
     assert last_transform_engine() is None
     compared = 0
     for source, target in pairs:
-        geographic, projected = pair_crs[(source, target)]
+        geographic, projected = pair_crs[source, target]
         lonlat = _pick_test_lonlat(
             source,
             target,

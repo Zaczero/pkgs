@@ -556,7 +556,7 @@ def test_features_copy_replace_and_identity_eq() -> None:
         copy.replace(features, banana=1)  # type: ignore[call-arg]
 
     # Identity short-circuit: equal to self without walking columns.
-    assert features == features  # noqa: PLR0124 — deliberate self-equality check
+    assert features == features  # ruff: ignore[comparison-with-itself] — deliberate self-equality check
     assert features != replaced
 
 

@@ -244,7 +244,7 @@ _register_native_sequences()
 del _register_native_sequences
 
 
-__all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contract
+__all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Python's sorted() contract
     'AccuracyWarning',
     'CRS',
     'CRSError',

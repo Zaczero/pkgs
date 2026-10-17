@@ -28,7 +28,6 @@ TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
-    from pathlib import Path
 
     from h2corn._lib import _LifespanHandoff, _PreparedTls
     from h2corn._types import Application, ASGIApp
@@ -101,8 +100,7 @@ class TlsMaterial:
 
 def _read_pem(path: os.PathLike[str] | str, setting: str) -> bytes:
     try:
-        with open(path, 'rb') as handle:
-            return handle.read()
+        return Path(path).read_bytes()
     except OSError as exc:
         raise ValueError(f'{setting}: {exc.strerror}: {path}') from exc
 

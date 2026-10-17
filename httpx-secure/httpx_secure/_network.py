@@ -118,7 +118,7 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 continue
             backend = pool._network_backend
             if isinstance(backend, _ProtectedBackend):
-                raise RuntimeError('SSRF protection is already configured')  # noqa: TRY004 - Installation state, not an invalid caller type.
+                raise RuntimeError('SSRF protection is already configured')  # ruff: ignore[type-check-without-type-error] - Installation state, not an invalid caller type.
             stock_backends: tuple[type[object], ...] = (
                 httpcore.AnyIOBackend,
                 httpcore.TrioBackend,

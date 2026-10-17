@@ -15,7 +15,7 @@ async def main() -> None:
         await server.wait_started()
         url = f'http://{server.addresses[0]}/'
         # Keep the event loop free to serve the synchronous client's request.
-        with await asyncio.to_thread(urlopen, url, timeout=5) as response:
+        with await asyncio.to_thread(urlopen, url, timeout=5) as response:  # ruff: ignore[suspicious-url-open-usage] - The URL is the local HTTP listener above.
             print(f'embedded request: {response.status}')
     finally:
         server.shutdown()

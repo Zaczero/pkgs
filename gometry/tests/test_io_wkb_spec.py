@@ -237,7 +237,7 @@ def test_empty_point_z_wkb_is_iso_1001_with_three_nan() -> None:
     assert wkb[0] == 1
     assert struct.unpack_from('<I', wkb, 1)[0] == 1001
     assert len(wkb) == 1 + 4 + 3 * 8
-    assert all(x != x for x in struct.unpack_from('<3d', wkb, 5))  # noqa: PLR0124
+    assert all(x != x for x in struct.unpack_from('<3d', wkb, 5))  # ruff: ignore[comparison-with-itself]
 
     zm = gm.from_wkt('POINT ZM EMPTY').to_wkb()
     assert struct.unpack_from('<I', zm, 1)[0] == 3001

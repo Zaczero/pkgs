@@ -10,7 +10,6 @@ import contextlib
 import sys
 from typing import Literal
 
-import h2.connection
 import h2.events
 import pytest
 from h2corn import Config

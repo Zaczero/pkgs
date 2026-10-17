@@ -13,8 +13,8 @@ import mkdocs_gen_files
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from h2corn._cli import build_parser  # noqa: E402
-from h2corn._config import (  # noqa: E402
+from h2corn._cli import build_parser  # ruff: ignore[module-import-not-at-top-of-file]
+from h2corn._config import (  # ruff: ignore[module-import-not-at-top-of-file]
     OPTION_GROUPS,
     Config,
     ConfigOption,
@@ -22,8 +22,8 @@ from h2corn._config import (  # noqa: E402
     config_options,
 )
 
-from bench.report import alt_text, render_accessible_results  # noqa: E402
-from tools.docs.config_reference import (  # noqa: E402
+from bench.report import alt_text, render_accessible_results  # ruff: ignore[module-import-not-at-top-of-file]
+from tools.docs.config_reference import (  # ruff: ignore[module-import-not-at-top-of-file]
     format_type,
     python_constructor_description,
     python_input_type,
@@ -208,8 +208,7 @@ def render() -> str:
         parts.append('## Other\n\n')
         parts.extend(_option_section(option) for option in leftover)
 
-    parts.append(_command_only_section())
-    parts.append(_factories_section())
+    parts.extend((_command_only_section(), _factories_section()))
     return ''.join(parts)
 
 

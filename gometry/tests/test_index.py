@@ -4,6 +4,7 @@ geodesic), mutability, and prepared geometry.
 
 import copy
 import math
+import operator
 import sys
 from typing import Any, cast
 
@@ -1565,7 +1566,7 @@ def test_geodesic_nearest_pruning_matches_brute_force_on_adversarial_points() ->
         got_ids, got_distances = idx.nearest(query, k=5, return_distance=True)
         brute = sorted(
             ((idx_, gm.distance(query, item)) for idx_, item in enumerate(items)),
-            key=lambda pair: (pair[1], pair[0]),
+            key=operator.itemgetter(1, 0),
         )[:5]
         assert ids(got_ids) == [i for i, _ in brute]
         for a, b in zip(got_distances, (d for _, d in brute), strict=True):
@@ -2115,7 +2116,7 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
                 assert gm.distance(query, item) == 0.0
         brute = sorted(
             ((i, gm.distance(query, item)) for i, item in enumerate(rows)),
-            key=lambda pair: (pair[1], pair[0]),
+            key=operator.itemgetter(1, 0),
         )
         for k in (1, 3):
             got_ids, _ = idx.nearest(query, k=k, return_distance=True)
@@ -2174,7 +2175,7 @@ def test_sparse_geodesic_chart_bounds_scale_with_live_lines_through_mutation_and
                 for handle, row in rows
                 if row is not None
             ),
-            key=lambda item: (item[1], item[0]),
+            key=operator.itemgetter(1, 0),
         )
         within = [
             handle

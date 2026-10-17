@@ -543,7 +543,7 @@ def test_nonzero_geographic_simplify_preserves_measured_disjoint_rows() -> None:
     source_ordinates = {(x, y): (z, m) for x, y, z, m in ring}
     for x, y, z, m in simplified[0].exterior.coords:
         if (x, y) in source_ordinates:
-            assert (z, m) == source_ordinates[(x, y)]
+            assert (z, m) == source_ordinates[x, y]
         else:
             assert math.isfinite(z)
             assert math.isfinite(m)

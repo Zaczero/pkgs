@@ -6,6 +6,8 @@ module is the trust-boundary battery for the Python callback.
 
 from __future__ import annotations
 
+import operator
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -121,7 +123,7 @@ def test_map_coordinates_mixed_geometry_types_array() -> None:
 def test_map_coordinates_wrong_row_count_raises() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 1.0)])
     with pytest.raises(gm.InvalidGeometryError, match='length 2'):
-        line.map_coordinates(lambda c: c[:1])
+        line.map_coordinates(operator.itemgetter(slice(1)))
     with pytest.raises(gm.InvalidGeometryError, match='length 2'):
         line.map_coordinates(lambda c: np.vstack([c, c[-1:]]))
 
@@ -199,7 +201,7 @@ def test_map_coordinates_array_wrong_total_count_raises() -> None:
         gm.LineString([(2.0, 2.0), (3.0, 3.0)]),
     ])
     with pytest.raises(gm.InvalidGeometryError, match='length 4'):
-        arr.map_coordinates(lambda c: c[:1])
+        arr.map_coordinates(operator.itemgetter(slice(1)))
     with pytest.raises(gm.InvalidGeometryError, match='finite'):
         arr.map_coordinates(lambda c: np.full_like(c, np.nan))
 

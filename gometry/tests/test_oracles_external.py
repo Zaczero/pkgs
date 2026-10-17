@@ -121,8 +121,10 @@ def test_utm_transforms_match_pyproj_oracle_across_zones() -> None:
     samples = []
     for zone in range(1, 61):
         lon = -183.0 + zone * 6.0
-        samples.append((f'EPSG:{32600 + zone}', lon, 40.0))
-        samples.append((f'EPSG:{32700 + zone}', lon, -40.0))
+        samples.extend((
+            (f'EPSG:{32600 + zone}', lon, 40.0),
+            (f'EPSG:{32700 + zone}', lon, -40.0),
+        ))
     samples.extend([
         ('EPSG:32632', 6.0, 60.0),
         ('EPSG:32633', 9.0, 78.0),
