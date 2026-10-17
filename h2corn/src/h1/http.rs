@@ -1,4 +1,4 @@
-use std::fmt::NumBuffer;
+use core::fmt::NumBuffer;
 use std::io;
 
 use http::StatusCode as StandardStatusCode;

@@ -1,7 +1,8 @@
 mod event;
 mod sink;
 
-use std::fmt::{self, NumBuffer, Write as _};
+use core::fmt::NumBuffer;
+use std::fmt::{self, Write as _};
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU64;

@@ -1,7 +1,7 @@
+use core::fmt::NumBuffer;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::NumBuffer;
 use std::hash::{Hash, Hasher};
 #[cfg(not(target_os = "linux"))]
 use std::time::{SystemTime, UNIX_EPOCH};
