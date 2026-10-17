@@ -13,10 +13,7 @@ mod topological;
 pub(crate) mod unary;
 
 pub(crate) use de9im::{equals, equals_exact, equals_identical, relate, relate_pattern};
-pub(crate) use engine::{
-    IndexEnvelope, Predicate, PredicateSpec, scalar_vs_shapes, topology_pair_after_gates,
-    topology_scalar_pair,
-};
+pub(crate) use engine::{IndexEnvelope, Predicate, PredicateSpec, scalar_vs_shapes};
 pub(crate) use pairwise::{
     distance, distance_3d, dwithin, frechet_distance, hausdorff_distance, nearest_points,
     shortest_line,

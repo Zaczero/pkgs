@@ -1,9 +1,7 @@
 use super::{
-    DistanceUnit, DwithinDistance, GateOperand, IndexPredicate, Predicate, PreparedIndexQuery,
-    PreparedPlan, PreparedTopologyPair, PyGeometry, PyResult, PySpatialIndex, QueryDomain,
-    ShapeRow, TopologyDomain, admitted_query, candidate_policy, crs, geographic_keep,
-    pair_dwithin_geodesic, pair_dwithin_planar, retain_row, row_kind_empty,
-    topology_pair_after_gates,
+    DistanceUnit, DwithinDistance, IndexPredicate, Predicate, PreparedIndexQuery, PreparedPlan,
+    PyGeometry, PyResult, PySpatialIndex, QueryDomain, ShapeRow, TopologyDomain, admitted_query,
+    candidate_policy, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
 
 impl PySpatialIndex {
@@ -20,52 +18,16 @@ impl PySpatialIndex {
         match plan {
             PreparedIndexQuery::Topological { predicate, .. } => {
                 let spec = predicate.spec();
-                // `query OP item`: the query is the fixed left operand of the
-                // shared batch engine (prepared/cached exactly like the
-                // broadcast surfaces); candidate handles feed it directly.
                 let query_cache = geometry.frame_cache();
-                let mut query_prepared = None;
-                retain_row(&mut matches, 0, |idx| match domain {
-                    TopologyDomain::Cartesian => {
-                        if let Some(verdict) = spec.pre_topology(
-                            &GateOperand::cartesian(
-                                ShapeRow::Shape(query_plan.shape()),
-                                query_plan.bounds(),
-                            ),
-                            &GateOperand::cartesian(products.row(idx)?, None),
-                        )? {
-                            return Ok(verdict);
-                        }
-                        let data = products.prepared(idx)?;
-                        Ok(topology_pair_after_gates(
-                            &spec,
-                            &PreparedTopologyPair::Cartesian {
-                                left: &query_plan,
-                                right: &data,
-                            },
-                        )?)
-                    },
-                    TopologyDomain::Geographic(frame) => {
-                        if let Some(verdict) = spec.predicate.kind_gate(
-                            row_kind_empty(ShapeRow::Shape(query_plan.shape())).0,
-                            row_kind_empty(products.row(idx)?).0,
-                        ) {
-                            return Ok(verdict);
-                        }
-                        let query =
-                            admitted_query(&mut query_prepared, &query_plan, &query_cache, frame)?;
-                        let data = products.prepared(idx)?;
-                        geographic_keep(
-                            &spec,
-                            &query,
-                            &crate::geometry::GeographicPrepared::try_new(
-                                &data,
-                                &*products.frame_cache(idx)?,
-                                frame,
-                            )?,
-                        )
-                    },
-                })?;
+                retain_topological(
+                    &query_plan,
+                    &query_cache,
+                    &spec,
+                    domain,
+                    &mut products,
+                    &mut matches,
+                    0,
+                )?;
             },
             PreparedIndexQuery::Dwithin {
                 resolved, distance, ..
@@ -190,47 +152,50 @@ impl PySpatialIndex {
         };
         self.collect_cover_candidates(shape.shape(), query_bounds, candidate_policy(&spec), out)?;
         let domain = crate::geometry::topology_domain(frame)?;
-        // The query is fixed for every candidate, so read its gate facts once.
-        // A candidate the gate settles is never prepared at all.
-        let mut query_prepared = None;
         let mut products = self.rows.operation();
-        retain_row(out, row_start, |idx| match domain {
-            TopologyDomain::Cartesian => {
-                if let Some(verdict) = spec.pre_topology(
-                    &GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
-                    &GateOperand::cartesian(products.row(idx)?, None),
-                )? {
-                    return Ok(verdict);
-                }
-                let data = products.prepared(idx)?;
-                Ok(topology_pair_after_gates(
-                    &spec,
-                    &PreparedTopologyPair::Cartesian {
-                        left: shape,
-                        right: &data,
-                    },
-                )?)
-            },
-            TopologyDomain::Geographic(frame) => {
-                if let Some(verdict) = spec.predicate.kind_gate(
-                    row_kind_empty(ShapeRow::Shape(shape.shape())).0,
-                    row_kind_empty(products.row(idx)?).0,
-                ) {
-                    return Ok(verdict);
-                }
-                let query = admitted_query(&mut query_prepared, shape, query_cache, frame)?;
-                let data = products.prepared(idx)?;
-                geographic_keep(
-                    &spec,
-                    &query,
-                    &crate::geometry::GeographicPrepared::try_new(
-                        &data,
-                        &*products.frame_cache(idx)?,
-                        frame,
-                    )?,
-                )
-            },
-        })?;
+        retain_topological(
+            shape,
+            query_cache,
+            &spec,
+            domain,
+            &mut products,
+            out,
+            row_start,
+        )?;
         Ok(())
     }
+}
+
+pub(super) fn retain_topological(
+    query: &PreparedPlan,
+    query_cache: &crate::geometry::FrameDependentCaches,
+    spec: &super::PredicateSpec,
+    domain: TopologyDomain,
+    products: &mut super::IndexRowOperation<'_>,
+    matches: &mut Vec<usize>,
+    row_start: usize,
+) -> PyResult<()> {
+    let evaluator = crate::predicates::engine::FixedPredicate::new(spec, query, true);
+    let element_count = matches.len().wrapping_sub(row_start);
+    let mut query_prepared = None;
+    retain_row(matches, row_start, |idx| {
+        let row = products.row(idx)?;
+        match domain {
+            TopologyDomain::Cartesian => {
+                Ok(evaluator.cartesian(row, None, element_count, || products.prepared(idx))?)
+            },
+            TopologyDomain::Geographic(frame) => {
+                if let Some(verdict) = evaluator.kind_gate(row) {
+                    return Ok(verdict);
+                }
+                let query = admitted_query(&mut query_prepared, query, query_cache, frame)?;
+                let data = products.prepared(idx)?;
+                let cache = products.frame_cache(idx)?;
+                Ok(evaluator.geographic(
+                    query,
+                    crate::geometry::GeographicPrepared::try_new(&data, &cache, frame)?,
+                )?)
+            },
+        }
+    })
 }

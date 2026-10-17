@@ -1,9 +1,8 @@
 use super::{
-    Arc, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GateOperand, GeodesicPruner,
-    IndexPredicate, PointRows, PreparedIndexQuery, PreparedPlan, PreparedTopologyPair,
-    PyGeometryArray, PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow,
-    TopologyDomain, ValidityMask, admitted_query, crs, geographic_keep, pair_dwithin_geodesic,
-    pair_dwithin_planar, retain_row, row_kind_empty, topology_pair_after_gates,
+    Arc, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GeodesicPruner, IndexPredicate,
+    PointRows, PreparedIndexQuery, PreparedPlan, PyGeometryArray, PyResult, PySpatialIndex,
+    RowMatches, Shape, ShapeData, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar,
+    retain_row,
 };
 
 impl PySpatialIndex {
@@ -167,48 +166,15 @@ impl PySpatialIndex {
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
                     let query_cache = query_rows.frame_cache(row);
-                    let mut query_prepared = None;
-                    retain_row(ids, row_start, |idx| match domain {
-                        TopologyDomain::Cartesian => {
-                            if let Some(verdict) = spec.pre_topology(
-                                &GateOperand::cartesian(
-                                    ShapeRow::Shape(query.shape()),
-                                    query.bounds(),
-                                ),
-                                &GateOperand::cartesian(index_products.row(idx)?, None),
-                            )? {
-                                return Ok(verdict);
-                            }
-                            let data = index_products.prepared(idx)?;
-                            Ok(topology_pair_after_gates(
-                                spec,
-                                &PreparedTopologyPair::Cartesian {
-                                    left: &query,
-                                    right: &data,
-                                },
-                            )?)
-                        },
-                        TopologyDomain::Geographic(frame) => {
-                            if let Some(verdict) = spec.predicate.kind_gate(
-                                row_kind_empty(ShapeRow::Shape(query.shape())).0,
-                                row_kind_empty(index_products.row(idx)?).0,
-                            ) {
-                                return Ok(verdict);
-                            }
-                            let query =
-                                admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
-                            let data = index_products.prepared(idx)?;
-                            geographic_keep(
-                                spec,
-                                &query,
-                                &crate::geometry::GeographicPrepared::try_new(
-                                    &data,
-                                    &*index_products.frame_cache(idx)?,
-                                    frame,
-                                )?,
-                            )
-                        },
-                    })?;
+                    super::refine::retain_topological(
+                        &query,
+                        &query_cache,
+                        spec,
+                        domain,
+                        &mut index_products,
+                        ids,
+                        row_start,
+                    )?;
                 },
                 (None, Some(_), Some(IndexPredicate::Dwithin)) => {
                     unreachable!("exact dwithin selects a typed point-row runner")

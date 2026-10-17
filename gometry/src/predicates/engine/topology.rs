@@ -1,12 +1,7 @@
 use super::{
-    CompiledPattern, GateOperand, GeometryKind, Loc, Predicate, PredicateSpec, PreparedPlan,
+    CompiledPattern, GateOperand, Loc, Predicate, PredicateSpec, PreparedPlan,
     PreparedTopologyPair, Shape, ShapeRow, cartesian_point_predicate, predicate_matrix_value,
 };
-
-/// Declared kind + emptiness for one storage row (no materialize for packed).
-pub(crate) fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
-    (row.kind(), row.is_empty())
-}
 
 pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
@@ -39,7 +34,7 @@ pub(crate) fn topology_scalar_pair(
     // admitting a pair to the relation; the scalar pair was the one lane that
     // did not, so `gm.intersects(a, b)` on two operands a hundred units apart
     // still built the exact pair topology to discover they share no point.
-    if let Some(verdict) = spec.pre_topology(&left, &right)? {
+    if let Some(verdict) = spec.pre_topology(&left, &right) {
         return Ok(verdict);
     }
     topology_pair_after_gates(spec, operands)

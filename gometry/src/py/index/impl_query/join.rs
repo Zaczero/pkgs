@@ -1,10 +1,8 @@
 use super::{
-    Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GateOperand, IndexPredicate, PointRows,
-    Predicate, PreparedIndexQuery, PreparedPlan, PreparedTopologyPair, PyGeometryArray, PyResult,
-    PySpatialIndex, QueryDomain, RowMatches, Shape, ShapeData, ShapeRow, TopologyDomain,
-    ValidityMask, admitted_query, candidate_policy, crs, csr_rows, geographic_keep,
-    pair_dwithin_geodesic, pair_dwithin_planar, retain_row, row_kind_empty,
-    topology_pair_after_gates, topology_scalar_pair,
+    Bounds, CsrBuilder, DistanceUnit, DwithinDistance, IndexPredicate, PointRows, Predicate,
+    PreparedIndexQuery, PreparedPlan, PyGeometryArray, PyResult, PySpatialIndex, QueryDomain,
+    RowMatches, Shape, ShapeData, ShapeRow, TopologyDomain, ValidityMask, admitted_query,
+    candidate_policy, crs, csr_rows, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
 
 impl PySpatialIndex {
@@ -63,45 +61,15 @@ impl PySpatialIndex {
                 (Some(spec), _) => {
                     let query = products.prepared(i)?;
                     let query_cache = products.frame_cache(i)?;
-                    let mut query_prepared = None;
-                    retain_row(&mut candidates, 0, |idx| match domain {
-                        TopologyDomain::Cartesian => {
-                            if let Some(verdict) = spec.pre_topology(
-                                &GateOperand::cartesian(products.row(i)?, None),
-                                &GateOperand::cartesian(products.row(idx)?, None),
-                            )? {
-                                return Ok(verdict);
-                            }
-                            let data = products.prepared(idx)?;
-                            Ok(topology_pair_after_gates(
-                                &spec,
-                                &PreparedTopologyPair::Cartesian {
-                                    left: &query,
-                                    right: &data,
-                                },
-                            )?)
-                        },
-                        TopologyDomain::Geographic(frame) => {
-                            if let Some(verdict) = spec.predicate.kind_gate(
-                                row_kind_empty(products.row(i)?).0,
-                                row_kind_empty(products.row(idx)?).0,
-                            ) {
-                                return Ok(verdict);
-                            }
-                            let query =
-                                admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
-                            let data = products.prepared(idx)?;
-                            geographic_keep(
-                                &spec,
-                                &query,
-                                &crate::geometry::GeographicPrepared::try_new(
-                                    &data,
-                                    &*products.frame_cache(idx)?,
-                                    frame,
-                                )?,
-                            )
-                        },
-                    })?;
+                    super::refine::retain_topological(
+                        &query,
+                        &query_cache,
+                        &spec,
+                        domain,
+                        &mut products,
+                        &mut candidates,
+                        0,
+                    )?;
                 },
                 (None, Some(resolved)) => {
                     let query = products.prepared(i)?;
@@ -202,34 +170,29 @@ impl PySpatialIndex {
             Vec::new()
         };
         let mut index_products = self.rows.operation();
-        let mut candidates = candidates.iter().peekable();
-        while let Some(first) = candidates.next() {
-            let idx = first.0;
+        for group in candidates.chunk_by(|left, right| left.0 == right.0) {
+            let [(idx, ..), ..] = group else {
+                unreachable!("chunk_by yields nonempty candidate groups");
+            };
+            let idx = *idx;
             let data = index_products.prepared(idx)?;
             let candidate_cache = index_products.frame_cache(idx)?;
             let mut candidate_proof = None;
-            let mut refine = |candidate: &(usize, usize, usize)| -> PyResult<()> {
-                let (_, row, position) = candidate;
+            let evaluator = crate::predicates::engine::FixedPredicate::new(&spec, &data, false);
+            for (_, row, position) in group {
                 let (query, query_cache) = queries
                     .get(*row)
                     .and_then(Option::as_ref)
                     .expect("every grouped point row has a candidate plan");
                 let keep_match = match domain {
-                    TopologyDomain::Cartesian => topology_scalar_pair(
-                        &spec,
-                        &PreparedTopologyPair::try_for_domain(
-                            query,
-                            query_cache,
-                            &data,
-                            &*index_products.frame_cache(idx)?,
-                            domain,
-                        )?,
+                    TopologyDomain::Cartesian => evaluator.cartesian(
+                        ShapeRow::Shape(query.shape()),
+                        query.bounds(),
+                        group.len(),
+                        || Ok(query),
                     )?,
                     TopologyDomain::Geographic(frame) => {
-                        if let Some(verdict) = spec.predicate.kind_gate(
-                            crate::geometry::GeometryKind::Point,
-                            row_kind_empty(ShapeRow::Shape(data.shape())).0,
-                        ) {
+                        if let Some(verdict) = evaluator.kind_gate(ShapeRow::Shape(query.shape())) {
                             verdict
                         } else {
                             let query_proof = query_proofs
@@ -242,18 +205,13 @@ impl PySpatialIndex {
                                 &candidate_cache,
                                 frame,
                             )?;
-                            geographic_keep(&spec, &query, &candidate)?
+                            evaluator.geographic(candidate, query)?
                         }
                     },
                 };
                 *keep
                     .get_mut(*position)
                     .expect("candidate position belongs to the CSR values") = keep_match;
-                Ok(())
-            };
-            refine(first)?;
-            while let Some(candidate) = candidates.next_if(|candidate| candidate.0 == idx) {
-                refine(candidate)?;
             }
         }
 

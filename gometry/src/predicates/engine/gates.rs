@@ -1,6 +1,6 @@
 use super::{
     Bounds, GeographicPrepared, GeometryKind, PackedRow, Predicate, PredicateSpec, Shape, ShapeRow,
-    SharedShapeOwners, ring_winding, row_kind_empty,
+    SharedShapeOwners, ring_winding,
 };
 
 /// One operand as the pre-topology gates see it: a storage row, its declared
@@ -28,11 +28,10 @@ impl<'a> GateOperand<'a> {
     /// Read Cartesian gate facts off `row`, preferring `bounds` when the caller
     /// already holds them cached. Packed rows stay unmaterialized.
     pub(crate) fn cartesian(row: ShapeRow<'a>, bounds: Option<Bounds>) -> Self {
-        let (kind, _) = row_kind_empty(row);
         let bounds = bounds.or_else(|| row.quick_bounds());
         Self {
             row,
-            kind,
+            kind: row.kind(),
             bounds,
             bounds_sound: true,
             rectangle: None,
@@ -44,10 +43,9 @@ impl<'a> GateOperand<'a> {
     pub(crate) fn from_prepared(prepared: &GeographicPrepared<'a>) -> Self {
         let plan = prepared.plan();
         let row = ShapeRow::Shape(plan.shape());
-        let (kind, _) = row_kind_empty(row);
         Self {
             row,
-            kind,
+            kind: row.kind(),
             bounds: plan.bounds(),
             bounds_sound: prepared.bounds_sound(),
             rectangle: None,
@@ -66,15 +64,14 @@ impl<'a> GateOperand<'a> {
         operand
     }
 
-    fn is_rectangle(&self, bounds: Bounds) -> crate::error::Result<bool> {
+    fn is_rectangle(&self, bounds: Bounds) -> bool {
         if let Some(known) = self.rectangle {
-            return Ok(known);
+            return known;
         }
         if self.kind != GeometryKind::Polygon {
-            return Ok(false);
+            return false;
         }
-        self.row
-            .try_with_shape(|shape| Ok(crate::geometry::is_axis_aligned_rectangle(shape, bounds)))
+        crate::geometry::is_axis_aligned_rectangle_row(self.row, bounds)
     }
 
     /// Positive-only proof for the empty-support equality case. A hole-free
@@ -179,65 +176,82 @@ impl PredicateSpec {
     ///
     /// Ordered by what each stage has to touch: declared kinds refute without
     /// reading coordinates, disjoint bounds refute shared-support predicates,
-    /// and two rectangles that meet settle `intersects` outright. `None` hands
-    /// the pair to the exact kernel.
+    /// and two rectangles settle every predicate from their bounds. `None`
+    /// hands the pair to the exact kernel.
     pub(crate) fn pre_topology(
         &self,
         left: &GateOperand<'_>,
         right: &GateOperand<'_>,
-    ) -> crate::error::Result<Option<bool>> {
+    ) -> Option<bool> {
         #[cfg(all(test, debug_assertions))]
         PRE_TOPOLOGY_CALLS.with(|calls| calls.set(calls.get().wrapping_add(1)));
         if let Some(verdict) = self.predicate.kind_gate(left.kind, right.kind) {
-            return Ok(Some(verdict));
+            return Some(verdict);
         }
         if !left.bounds_sound || !right.bounds_sound {
-            return Ok(None);
+            return None;
         }
         if let Some(verdict) = self.bounds_gate(left, right) {
-            return Ok(Some(verdict));
+            return Some(verdict);
         }
-        let (Some(left_bounds), Some(right_bounds)) = (left.bounds, right.bounds) else {
-            return Ok(None);
-        };
-        self.rectangles_meet(left, left_bounds, right, right_bounds)
+        let (left_bounds, right_bounds) = (left.bounds?, right.bounds?);
+        self.rectangle_pair(left, left_bounds, right, right_bounds)
     }
 
-    /// Two axis-aligned rectangles whose bounds overlap share ground, because
-    /// each covers its own bounding box exactly. Reaching here means the
-    /// bounds gate already found the boxes meet, so no graph decides this.
+    /// Two filled axis-aligned rectangles each cover their bounding box
+    /// exactly, so interval comparisons of the boxes decide every predicate
+    /// and no graph is needed.
     ///
     /// Geographic operands included, because this library charts a geographic
     /// edge as a straight segment between canonical endpoints rather than a
     /// great-circle arc, so a rectangle really is its box here. Only the seam,
     /// the poles and a non-canonical longitude break that, and reaching this
     /// point means both operands already passed all three.
-    fn rectangles_meet(
+    fn rectangle_pair(
         &self,
         left: &GateOperand<'_>,
         left_bounds: Bounds,
         right: &GateOperand<'_>,
         right_bounds: Bounds,
-    ) -> crate::error::Result<Option<bool>> {
-        let meeting = match self.predicate {
-            Predicate::Intersects => true,
-            Predicate::Disjoint => false,
-            Predicate::Contains
-            | Predicate::ContainsProperly
-            | Predicate::Within
-            | Predicate::Covers
-            | Predicate::CoveredBy
-            | Predicate::Touches
-            | Predicate::Crosses
-            | Predicate::Overlaps
-            | Predicate::Equals => return Ok(None),
-        };
+    ) -> Option<bool> {
         if left.rectangle == Some(false) || right.rectangle == Some(false) {
-            return Ok(None);
+            return None;
         }
-        Ok(
-            (left.is_rectangle(left_bounds)? && right.is_rectangle(right_bounds)?)
-                .then_some(meeting),
-        )
+        (left.is_rectangle(left_bounds) && right.is_rectangle(right_bounds))
+            .then(|| rectangle_predicate(self.predicate, left_bounds, right_bounds))
+    }
+}
+
+/// A predicate between two nondegenerate filled boxes. Closed boxes meet
+/// when their closed intervals overlap on both axes; their interiors meet
+/// when the open intervals do. A nondegenerate box inside another shares its
+/// interior, so containment and coverage coincide.
+fn rectangle_predicate(predicate: Predicate, left: Bounds, right: Bounds) -> bool {
+    let covers = |outer: Bounds, inner: Bounds| {
+        outer.minx() <= inner.minx()
+            && inner.maxx() <= outer.maxx()
+            && outer.miny() <= inner.miny()
+            && inner.maxy() <= outer.maxy()
+    };
+    let closed = left.intersects(right);
+    let open = left.minx() < right.maxx()
+        && right.minx() < left.maxx()
+        && left.miny() < right.maxy()
+        && right.miny() < left.maxy();
+    match predicate {
+        Predicate::Intersects => closed,
+        Predicate::Disjoint => !closed,
+        Predicate::Contains | Predicate::Covers => covers(left, right),
+        Predicate::Within | Predicate::CoveredBy => covers(right, left),
+        Predicate::ContainsProperly => {
+            left.minx() < right.minx()
+                && right.maxx() < left.maxx()
+                && left.miny() < right.miny()
+                && right.maxy() < left.maxy()
+        },
+        Predicate::Touches => closed && !open,
+        Predicate::Crosses => false,
+        Predicate::Overlaps => open && !covers(left, right) && !covers(right, left),
+        Predicate::Equals => covers(left, right) && covers(right, left),
     }
 }

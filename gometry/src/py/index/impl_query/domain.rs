@@ -1,8 +1,7 @@
 use super::{
-    Bounds, Crs, Frame, GateOperand, GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner, Point,
-    PredicateSpec, PreparedPlan, PreparedTopologyPair, PyGeometry, PyResult, PySpatialIndex,
-    TopologyDomain, crs, crs_label, crs_mismatch_error, epoch_label, epoch_mismatch_error,
-    index_envelopes, shape_pruner_point, topology_pair_after_gates,
+    Bounds, Crs, Frame, GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner, Point,
+    PreparedPlan, PyGeometry, PyResult, PySpatialIndex, TopologyDomain, crs, crs_label,
+    crs_mismatch_error, epoch_label, epoch_mismatch_error, index_envelopes, shape_pruner_point,
 };
 
 impl PySpatialIndex {
@@ -142,23 +141,6 @@ impl PySpatialIndex {
             .transpose()
             .map(|domain| domain.unwrap_or(TopologyDomain::Cartesian))?)
     }
-}
-
-pub(super) fn geographic_keep(
-    spec: &PredicateSpec,
-    query: &crate::geometry::GeographicPrepared<'_>,
-    candidate: &crate::geometry::GeographicPrepared<'_>,
-) -> PyResult<bool> {
-    if let Some(verdict) = spec.pre_topology(
-        &GateOperand::from_prepared(query),
-        &GateOperand::from_prepared(candidate),
-    )? {
-        return Ok(verdict);
-    }
-    Ok(topology_pair_after_gates(
-        spec,
-        &PreparedTopologyPair::from_geographic(*query, *candidate),
-    )?)
 }
 
 pub(super) fn admitted_query<'a>(

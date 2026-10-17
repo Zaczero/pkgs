@@ -20,6 +20,7 @@ use crate::test_support::binary_dispatch_counters::point_predicate_dispatch;
 use crate::{GeometryKind, PyGeometryArray, ShapeRow};
 
 mod batch;
+mod fixed;
 mod gates;
 mod points;
 #[cfg(test)]
@@ -27,6 +28,7 @@ mod tests;
 mod topology;
 
 pub(crate) use batch::scalar_vs_shapes;
+pub(crate) use fixed::FixedPredicate;
 pub(crate) use gates::GateOperand;
 #[cfg(all(test, debug_assertions))]
 use gates::PRE_TOPOLOGY_CALLS;
@@ -35,7 +37,7 @@ pub(crate) use points::row_point_intersection;
 #[cfg(test)]
 use topology::pattern_bounds_gate;
 pub(crate) use topology::{
-    row_kind_empty, topology_pair_after_gates, topology_scalar_pair, topology_scalar_pattern,
+    topology_pair_after_gates, topology_scalar_pair, topology_scalar_pattern,
     topology_shapes_predicate,
 };
 

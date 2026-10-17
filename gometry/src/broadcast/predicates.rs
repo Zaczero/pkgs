@@ -149,7 +149,7 @@ pub(crate) fn predicate_pairwise_arrays(
                                 .as_ref()
                                 .and_then(|bounds| bounds.get(index).copied().flatten()),
                         );
-                        if let Some(verdict) = spec.pre_topology(&left_gate, &right_gate)? {
+                        if let Some(verdict) = spec.pre_topology(&left_gate, &right_gate) {
                             return Ok(verdict);
                         }
                         if matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {

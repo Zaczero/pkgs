@@ -136,6 +136,73 @@ fn disjoint_support_refutations_match_partition_matrices() {
         }
     }
 
+    /// Two rectangles settle every predicate from their bounds. Each shell
+    /// carries an extra collinear vertex, which the gate still certifies as a
+    /// box but which sends the ungated evaluator through its general contact
+    /// path instead of its own rectangle shortcut.
+    #[test]
+fn rectangle_gate_matches_the_general_evaluator_for_every_predicate() {
+        let densified = |minx: f64, miny: f64, maxx: f64, maxy: f64| {
+            parse_wkt_shape(&format!(
+                "POLYGON (({minx} {miny},{} {miny},{maxx} {miny},{maxx} {maxy},{minx} {maxy},{minx} {miny}))",
+                (minx + maxx) / 2.0
+            ))
+        };
+        let base = densified(0.0, 0.0, 4.0, 4.0);
+        let cases = [
+            ("disjoint", densified(6.0, 0.0, 8.0, 4.0)),
+            ("shared edge", densified(4.0, 0.0, 8.0, 4.0)),
+            ("shared corner", densified(4.0, 4.0, 8.0, 8.0)),
+            ("partial edge", densified(4.0, 1.0, 6.0, 3.0)),
+            ("overlapping", densified(2.0, 2.0, 6.0, 6.0)),
+            ("crossing strip", densified(1.0, -1.0, 3.0, 5.0)),
+            ("strictly inside", densified(1.0, 1.0, 3.0, 3.0)),
+            ("inside touching edge", densified(0.0, 1.0, 2.0, 3.0)),
+            ("inside touching corner", densified(0.0, 0.0, 2.0, 2.0)),
+            ("equal", densified(0.0, 0.0, 4.0, 4.0)),
+            ("strictly containing", densified(-1.0, -1.0, 5.0, 5.0)),
+        ];
+        for (name, other) in &cases {
+            for (left, right) in [(&base, other), (other, &base)] {
+                let (left_plan, right_plan) = prepared_pair(left, right);
+                let pair = PreparedTopologyPair::cartesian(&left_plan, &right_plan);
+                let left_gate =
+                    GateOperand::cartesian(ShapeRow::Shape(left_plan.shape()), left_plan.bounds());
+                let right_gate =
+                    GateOperand::cartesian(ShapeRow::Shape(right_plan.shape()), right_plan.bounds());
+                for predicate in Predicate::ALL {
+                    let spec = predicate.spec();
+                    let gated = spec.pre_topology(&left_gate, &right_gate);
+                    let exact = topology_pair_after_gates(&spec, &pair)
+                        .expect("ungated Cartesian predicate succeeds");
+                    assert_eq!(gated, Some(exact), "{name}: {predicate:?}");
+                }
+
+                let (left_cache, right_cache) = (
+                    crate::geometry::FrameDependentCaches::default(),
+                    crate::geometry::FrameDependentCaches::default(),
+                );
+                let left_geographic =
+                    GeographicPrepared::try_new(&left_plan, &left_cache, degrees()).unwrap();
+                let right_geographic =
+                    GeographicPrepared::try_new(&right_plan, &right_cache, degrees()).unwrap();
+                let geographic_pair =
+                    PreparedTopologyPair::from_geographic(left_geographic, right_geographic);
+                for predicate in Predicate::ALL {
+                    let spec = predicate.spec();
+                    let gated = spec
+                        .pre_topology(
+                            &GateOperand::from_prepared(&left_geographic),
+                            &GateOperand::from_prepared(&right_geographic),
+                        );
+                    let exact = topology_pair_after_gates(&spec, &geographic_pair)
+                        .expect("ungated geographic predicate succeeds");
+                    assert_eq!(gated, Some(exact), "geographic {name}: {predicate:?}");
+                }
+            }
+        }
+    }
+
     #[test]
 fn disjoint_bounds_refute_intersections_and_only_certified_equality() {
         let intersections = [

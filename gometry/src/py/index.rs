@@ -33,8 +33,7 @@ use crate::{
     crs_label, epoch_label, exact_geometry, exact_geometry_array, geometry_items,
     global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
     pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds,
-    resolve_metric, topology_pair_after_gates, topology_scalar_pair, validate_dwithin_distance_arg,
-    validate_nearest_k,
+    resolve_metric, validate_dwithin_distance_arg, validate_nearest_k,
 };
 
 pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::error::Result<usize> {
