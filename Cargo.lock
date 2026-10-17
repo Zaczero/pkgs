@@ -1035,7 +1035,6 @@ dependencies = [
  "bytes",
  "flate2",
  "http",
- "itoa",
  "libc",
  "memchr",
  "mimalloc",

@@ -1,7 +1,7 @@
+use std::fmt::NumBuffer;
 use std::io;
 
 use http::StatusCode as StandardStatusCode;
-use itoa::Buffer as ItoaBuffer;
 use smallvec::SmallVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 
@@ -680,8 +680,8 @@ fn append_header_line_with_decimal(dst: &mut ResponseBuf, name: &[u8], value: us
 }
 
 fn append_decimal_usize(dst: &mut ResponseBuf, value: usize) {
-    let mut buf = ItoaBuffer::new();
-    dst.extend_from_slice(buf.format(value).as_bytes());
+    let mut buf = NumBuffer::new();
+    dst.extend_from_slice(value.format_into(&mut buf).as_bytes());
 }
 
 fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {

@@ -1,7 +1,7 @@
 mod event;
 mod sink;
 
-use std::fmt::{self, Write as _};
+use std::fmt::{self, NumBuffer, Write as _};
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU64;
@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
 use http::Method;
-use itoa::{Buffer as ItoaBuffer, Integer};
 use owo_colors::{OwoColorize as _, Style};
 use smallvec::SmallVec;
 
@@ -799,8 +798,8 @@ fn append_client_label(out: &mut ClientLabelBuf, host: &str, port: u16) {
     }
     if port != 0 {
         out.push(b':');
-        let mut port_buffer = ItoaBuffer::new();
-        out.extend_from_slice(port_buffer.format(port).as_bytes());
+        let mut port_buffer = NumBuffer::new();
+        out.extend_from_slice(port.format_into(&mut port_buffer).as_bytes());
     }
 }
 
@@ -979,9 +978,9 @@ fn write_scaled_to(
     out.write_str(unit)
 }
 
-fn write_integer<T: Integer>(out: &mut impl fmt::Write, value: T) -> fmt::Result {
-    let mut buffer = ItoaBuffer::new();
-    out.write_str(buffer.format(value))
+fn write_integer(out: &mut impl fmt::Write, value: u64) -> fmt::Result {
+    let mut buffer = NumBuffer::new();
+    out.write_str(value.format_into(&mut buffer))
 }
 
 fn write_two_digits(out: &mut impl fmt::Write, value: u8) -> fmt::Result {

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt::NumBuffer;
 use std::hash::{Hash, Hasher};
 #[cfg(not(target_os = "linux"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +10,6 @@ use std::{iter, str};
 use atoi_simd::parse_pos;
 use bitflags::bitflags;
 use bytes::Bytes;
-use itoa::Buffer as ItoaBuffer;
 use memchr::{memchr, memchr3};
 #[cfg(target_os = "linux")]
 use rustix::time::{ClockId, clock_gettime};
@@ -710,8 +710,8 @@ pub(crate) fn canonicalize_fixed_length_response_headers_with_scan(
     let len_value = if len == 0 {
         Bytes::from_static(b"0")
     } else {
-        let mut len_buffer = ItoaBuffer::new();
-        Bytes::copy_from_slice(len_buffer.format(len).as_bytes())
+        let mut len_buffer = NumBuffer::new();
+        Bytes::copy_from_slice(len.format_into(&mut len_buffer).as_bytes())
     };
 
     if content_length == ResponseContentLength::Missing {
