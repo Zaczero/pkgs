@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from pyo3stubs.config import Reasons
 
 
-class Findings(list[str]):
+class Findings(list[str]):  # ruff: ignore[subclass-builtin] - An annotated list; inherited mutation is intentional.
     """A gate's violations, and how many subjects it examined finding them.
 
     A ``list`` subclass because the violations *are* the result; the count is

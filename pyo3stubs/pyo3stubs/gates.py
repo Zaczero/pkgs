@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
+from itertools import repeat
 from typing import TYPE_CHECKING, cast
 
 from pyo3stubs.report import Findings
@@ -385,4 +386,4 @@ def run_all(cfg: StubConfig) -> tuple[Result, ...]:
     shares mutable state with another.
     """
     with ThreadPoolExecutor(max_workers=len(GATES)) as pool:
-        return tuple(pool.map(lambda entry: entry.run(cfg), GATES))
+        return tuple(pool.map(Gate.run, GATES, repeat(cfg)))

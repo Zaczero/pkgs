@@ -31,5 +31,11 @@ packages = ["pyo3stubs"]
 [tool.mypy]
 strict = true
 
+[tool.pyright]
+include = ["pyo3stubs", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.11"
+strict = ["pyo3stubs"]
+
 [tool.ruff]
 extend = "../ruff.toml"

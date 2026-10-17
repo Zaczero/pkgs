@@ -108,7 +108,7 @@ class SurfaceConfig:
     """
 
     targets: tuple[tuple[str, object], ...]
-    known_divergences: Reasons = field(default_factory=dict)
+    known_divergences: Reasons = field(default_factory=dict[str, str])
 
     def __bool__(self) -> bool:
         """Whether this config gives its gate anything to check.
@@ -137,8 +137,8 @@ class DualityConfig:
     """
 
     pairs: tuple[tuple[str, str], ...]
-    exempt: Reasons = field(default_factory=dict)
-    self_atoms: frozenset[str] = field(default_factory=frozenset)
+    exempt: Reasons = field(default_factory=dict[str, str])
+    self_atoms: frozenset[str] = frozenset()
 
     def __bool__(self) -> bool:
         """A pairless config activates nothing — see `SurfaceConfig.__bool__`."""
@@ -166,7 +166,7 @@ class TokenConfig:
     enum_macro: str = 'token_enum'
     #: Runtime vocabularies backed by a non-macro owner (for example an error
     #: attribute enum). They still compare their stub Literal exactly.
-    extra_vocabulary: frozenset[str] = field(default_factory=frozenset)
+    extra_vocabulary: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -249,21 +249,21 @@ class StubConfig:
     module: str
     stub_path: Path
     src_root: Path
-    leak_allowlist: Reasons = field(default_factory=dict)
+    leak_allowlist: Reasons = field(default_factory=dict[str, str])
     stubtest_allowlist: Path | None = None
     mypy_config: Path | None = None
     mypy_args: tuple[str, ...] = ()
     typecheck_targets: tuple[Path, ...] = ()
-    uninspectable_allowlist: Reasons = field(default_factory=dict)
-    doc_structure_allowlist: Reasons = field(default_factory=dict)
+    uninspectable_allowlist: Reasons = field(default_factory=dict[str, str])
+    doc_structure_allowlist: Reasons = field(default_factory=dict[str, str])
     docstring_style: Literal['numpy', 'google'] | None = None
-    extra_ignored_type_names: frozenset[str] = field(default_factory=frozenset)
+    extra_ignored_type_names: frozenset[str] = frozenset()
     macro_exports: tuple[MacroExport, ...] = ()
-    constructor_doc_macros: frozenset[str] = field(default_factory=frozenset)
+    constructor_doc_macros: frozenset[str] = frozenset()
     text_signature_default_aliases: dict[str, TextSignatureDefault] = field(
-        default_factory=dict
+        default_factory=dict[str, TextSignatureDefault]
     )
-    disabled_gates: frozenset[str] = field(default_factory=frozenset)
+    disabled_gates: frozenset[str] = frozenset()
     surface: SurfaceConfig | None = None
     duality: DualityConfig | None = None
     tokens: TokenConfig | None = None

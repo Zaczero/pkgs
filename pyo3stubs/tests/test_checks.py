@@ -13,6 +13,7 @@ Two gates were red against this very fixture with nothing noticing.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import sys
 from collections.abc import Callable
@@ -149,7 +150,7 @@ def _duality(**overrides: object) -> Build:
 
 
 def _surface_clean(tmp_path: Path, stub: str, src: str) -> StubConfig:
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     return make_config(
         tmp_path,
@@ -486,7 +487,7 @@ def test_signature_coverage_flags_stale_allowlist(tmp_path):
 
 
 def _class_signature_fixture(tmp_path, pristine_stub, monkeypatch, allowlist):
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     class UninspectableClassSignature(type):
         @property
@@ -705,7 +706,7 @@ def test_match_args_value_drift(tmp_path, pristine_stub):
 
 
 def test_doc_contract_flags_missing_runtime_doc(tmp_path, monkeypatch):
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     monkeypatch.setattr(lib.Sealed.method, '__doc__', None, raising=False)
     assert any('Sealed.method' in e for e in doc_contract(make_config(tmp_path)))
@@ -716,7 +717,7 @@ def test_doc_contract_flags_missing_annotated_descriptor_doc(
 ):
     from inspect import getattr_static
 
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     descriptor = getattr_static(lib.Sealed, 'maybe')
     monkeypatch.setattr(type(descriptor), '__doc__', None)
@@ -749,7 +750,7 @@ def helper(value):
 def test_doc_structure_checks_runtime_style_before_exemptions(
     tmp_path, monkeypatch, pristine_stub
 ):
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     cfg = make_config(
         tmp_path,
@@ -771,7 +772,7 @@ def test_doc_structure_requires_returns_for_annotated_descriptor(
 ):
     from inspect import getattr_static
 
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     descriptor = getattr_static(lib.Sealed, 'maybe')
     monkeypatch.setattr(type(descriptor), '__doc__', 'Optional payload.')
@@ -985,7 +986,7 @@ def test_doc_contract_accepts_an_override_documented_by_inheritance(
     method and its docstring, which type checkers show for an override that
     has none of its own. A def with no runtime counterpart still fires.
     """
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     class Base:
         def narrowed(self, value: int, flag: bool = True) -> int:
@@ -1385,7 +1386,9 @@ frozen_pymethods! {
 
     assert set(functions) == {'live', 'wrapped'}
     assert functions['live'].type_node is not None
-    assert functions['live'].type_node.text.decode() == functions['live'].ty
+    text = functions['live'].type_node.text
+    assert text is not None
+    assert text.decode() == functions['live'].ty
     assert functions['live'].ty.replace(' ', '').replace('\n', '') == (
         '::pyo3::PyResult<Option<crate::PyGeometry>>'
     )
@@ -1561,7 +1564,7 @@ def test_token_scan_is_bounded_by_its_own_macro(tmp_path, pristine_src):
 @pytest.mark.parametrize(
     ('descriptor', 'injected'),
     [
-        pytest.param(object.__lt__, False, id='wrapper_descriptor'),
+        pytest.param(vars(object)['__lt__'], False, id='wrapper_descriptor'),
         pytest.param(str.join, True, id='method_descriptor'),
         pytest.param(int.__dict__['real'], True, id='getset_descriptor'),
         pytest.param(dict.__dict__['fromkeys'], True, id='classmethod_descriptor'),
@@ -1580,9 +1583,9 @@ def test_only_cpython_slot_wrappers_keep_their_own_docs(descriptor, injected):
     instances of each, which is what makes this a test of the rule rather than
     of the fixture.
     """
-    from pyo3stubs.gen import _runtime_doc_for_stub
+    from pyo3stubs.ast_util import runtime_doc_for_stub
 
-    assert (_runtime_doc_for_stub('member', descriptor) is not None) is injected
+    assert (runtime_doc_for_stub('member', descriptor) is not None) is injected
 
 
 def test_gen_docs_leaves_cpython_slot_wrappers_alone(
@@ -1599,7 +1602,7 @@ def test_gen_docs_leaves_cpython_slot_wrappers_alone(
     is a plain function, and only a C-level slot reproduces the descriptor kind
     that tells the two apart.
     """
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     monkeypatch.setattr(lib.Sealed, '__len__', list.__len__, raising=False)
     assert lib.Sealed.__len__.__doc__ == 'Return len(self).'
@@ -1622,7 +1625,7 @@ def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
     pristine_stub,
     monkeypatch,
 ):
-    import fakepkg._lib as lib
+    lib = importlib.import_module('fakepkg._lib')
 
     class DescriptorAccessError(Exception):
         pass

@@ -30,10 +30,10 @@ from typing import TYPE_CHECKING, TypeVar
 import libcst as cst
 
 from pyo3stubs.ast_util import (
-    _runtime_doc_for_stub,
     annotated_data_descriptors,
     decorator_names,
     passive_class_member,
+    runtime_doc_for_stub,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.rust_scan import constructor_doc_sources
@@ -78,7 +78,7 @@ def _escape(text: str) -> str:
     return ''.join(out)
 
 
-def _docstring_statement(doc: str, indent: str) -> cst.BaseStatement:
+def _docstring_statement(doc: str, indent: str) -> cst.SimpleStatementLine:
     """Build an indented triple-quoted docstring statement line."""
     lines = _escape(inspect.cleandoc(doc)).split('\n')
     if len(lines) == 1:
@@ -86,7 +86,7 @@ def _docstring_statement(doc: str, indent: str) -> cst.BaseStatement:
     else:
         body = '\n'.join((indent + line) if line.strip() else '' for line in lines[1:])
         literal = f'"""{lines[0]}\n{body}\n{indent}"""'
-    return cst.parse_statement(literal, config=cst.PartialParserConfig())
+    return cst.SimpleStatementLine(body=[cst.Expr(cst.SimpleString(literal))])
 
 
 def _is_string_expr(stmt: object) -> bool:
@@ -172,7 +172,7 @@ def _def_totals(module: ast.Module) -> Counter[tuple[str, str]]:
     def count(scope: str, body: list[ast.stmt]) -> None:
         for node in _counted_defs(body):
             if 'setter' not in decorator_names(node):
-                totals[(scope, node.name)] += 1
+                totals[scope, node.name] += 1
 
     count('', module.body)
     for node in module.body:
@@ -192,7 +192,7 @@ def _descriptor_docs(
         if not isinstance(cls, type):
             continue
         for member_name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
-            if doc := _runtime_doc_for_stub(member_name, descriptor):
+            if doc := runtime_doc_for_stub(member_name, descriptor):
                 docs.setdefault(class_name, {})[member_name] = doc
     return docs
 
@@ -244,45 +244,45 @@ class DocInjector(cst.CSTTransformer):
         self._seen: Counter[tuple[str, str]] = Counter()
         self._stack: list[str] = []
 
-    def visit_ClassDef(self, node: cst.ClassDef) -> None:  # noqa: N802
+    def visit_ClassDef(self, node: cst.ClassDef) -> None:  # ruff: ignore[invalid-function-name]
         self._stack.append(node.name.value)
 
-    def leave_ClassDef(  # noqa: N802
-        self, original: cst.ClassDef, updated: cst.ClassDef
+    def leave_ClassDef(  # ruff: ignore[invalid-function-name]
+        self, original_node: cst.ClassDef, updated_node: cst.ClassDef
     ) -> cst.ClassDef:
         self._stack.pop()
-        name = original.name.value
+        name = original_node.name.value
         obj = getattr(self._runtime, name, None)
         if obj is None:
-            return updated  # stub-only typing helper (protocols)
+            return updated_node  # stub-only typing helper (protocols)
         if (attribute_docs := self._attribute_docs.get(name)) and isinstance(
-            updated.body, cst.IndentedBlock
+            updated_node.body, cst.IndentedBlock
         ):
-            updated = updated.with_changes(
+            updated_node = updated_node.with_changes(
                 body=_inject_attribute_docs(
-                    updated.body,
+                    updated_node.body,
                     attribute_docs,
                     '    ' * (len(self._stack) + 1),
                 )
             )
-        doc = _runtime_doc_for_stub(name, obj)
+        doc = runtime_doc_for_stub(name, obj)
         if doc:
-            return _apply(updated, doc, '    ' * (len(self._stack) + 1))
-        return updated
+            return _apply(updated_node, doc, '    ' * (len(self._stack) + 1))
+        return updated_node
 
-    def leave_FunctionDef(  # noqa: N802
-        self, original: cst.FunctionDef, updated: cst.FunctionDef
+    def leave_FunctionDef(  # ruff: ignore[invalid-function-name]
+        self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
     ) -> cst.FunctionDef:
-        name = original.name.value
+        name = original_node.name.value
         if any(
             isinstance(d.decorator, cst.Attribute)
             and d.decorator.attr.value == 'setter'
-            for d in original.decorators
+            for d in original_node.decorators
         ):
             # A property setter shares the getter's name but is not a variant of
             # it: the property's `__doc__` is the getter's, and treating the
             # pair as an overload set moved the prose onto the setter.
-            return updated
+            return updated_node
         scope = self._stack[-1] if self._stack else ''
         key = (scope, name)
         self._seen[key] += 1
@@ -291,31 +291,31 @@ class DocInjector(cst.CSTTransformer):
             indent = '    ' * (len(self._stack) + 1)
             cls = getattr(self._runtime, scope, None)
             if cls is None:
-                return updated  # stub-only typing helper (protocols)
+                return updated_node  # stub-only typing helper (protocols)
             constructor = self._constructors.get(scope) if name == '__new__' else None
             if name not in vars(cls) and constructor is None:
                 # Stub-only override of an inherited runtime member: it narrows
                 # types, so it documents itself — leave the group untouched.
-                return updated
+                return updated_node
             obj = passive_class_member(cls, name)
         else:
             indent = '    '
             constructor = None
             obj = getattr(self._runtime, name, None)
         if obj is None and constructor is None:
-            return updated  # stub-only typing helper
+            return updated_node  # stub-only typing helper
         if not carrier:
-            return _without_docstring(updated)
+            return _without_docstring(updated_node)
         if constructor is not None:
             return (
-                _apply(updated, constructor.prose, indent)
+                _apply(updated_node, constructor.prose, indent)
                 if constructor.prose is not None
-                else _without_docstring(updated)
+                else _without_docstring(updated_node)
             )
-        doc = _runtime_doc_for_stub(name, obj)
+        doc = runtime_doc_for_stub(name, obj)
         if doc:
-            return _apply(updated, doc, indent)
-        return updated
+            return _apply(updated_node, doc, indent)
+        return updated_node
 
 
 def render_stub_with_docs(cfg: StubConfig) -> str:

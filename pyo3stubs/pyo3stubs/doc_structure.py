@@ -24,16 +24,16 @@ import re
 import sys
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pyo3stubs.ast_util import (
-    _is_synthetic_doc,
-    _runtime_doc_for_stub,
     annotated_data_descriptors,
     class_prohibits_construction,
     decorator_names,
     function_groups,
+    is_synthetic_doc,
     passive_class_member,
+    runtime_doc_for_stub,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
@@ -547,7 +547,7 @@ def _entries(
     if not nonempty_indents:
         return ()
     base_indent = min(nonempty_indents) if style == 'google' else 0
-    starts = []
+    starts: list[int] = []
     for index, line in enumerate(lines):
         if _entry_indent(line) != base_indent:
             continue
@@ -1097,8 +1097,7 @@ def _doc_location(
 ) -> DocLocation:
     line = node.lineno
     if (
-        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.body
+        node.body
         and isinstance(node.body[0], ast.Expr)
         and isinstance(node.body[0].value, ast.Constant)
         and isinstance(node.body[0].value.value, str)
@@ -1108,7 +1107,9 @@ def _doc_location(
 
 
 def _runtime_location(obj: Any, fallback: DocLocation) -> DocLocation:
-    if isinstance(obj, property) and obj.fget is not None:
+    if isinstance(obj, property):
+        if obj.fget is None:
+            return fallback
         obj = obj.fget
     try:
         path = inspect.getsourcefile(obj)
@@ -1127,7 +1128,7 @@ def _is_public(name: str) -> bool:
 def _public_names(ctx: CheckContext, runtime: ModuleType) -> tuple[str, ...]:
     exported = getattr(runtime, '__all__', None)
     names = (
-        [name for name in exported if isinstance(name, str)]
+        [name for name in cast('Sequence[object]', exported) if isinstance(name, str)]
         if isinstance(exported, (list, tuple))
         else []
     )
@@ -1193,7 +1194,7 @@ def _class_subjects(
     class_doc = (
         ast.get_docstring(source_class.node)
         if source_class is not None
-        else _runtime_doc_for_stub(name, cls)
+        else runtime_doc_for_stub(name, cls)
     )
     groups = function_groups(class_node.body) if class_node is not None else {}
     new_defs = groups.get('__new__', [])
@@ -1202,7 +1203,9 @@ def _class_subjects(
     )
     constructible_stub = bool(new_defs) and not prohibited_stub_constructor
     source_constructor = constructor_sources.get(name)
-    source_members = source_class.members if source_class is not None else {}
+    source_members: Mapping[str, DocMemberSource] = (
+        source_class.members if source_class is not None else {}
+    )
     descriptor_carriers: dict[str, tuple[object, DocLocation, ast.AnnAssign]] = {}
     if class_node is not None:
         for (
@@ -1238,11 +1241,11 @@ def _class_subjects(
             constructor_declarations = (initialization.node,)
         else:
             runtime_new = inspect.getattr_static(cls, '__new__', None)
-            prose = _runtime_doc_for_stub('__new__', runtime_new)
+            prose = runtime_doc_for_stub('__new__', runtime_new)
             source = _runtime_location(runtime_new, class_source)
             if prose is None and carrier is not None:
                 prose = ast.get_docstring(carrier)
-                if _is_synthetic_doc('__new__', prose):
+                if is_synthetic_doc('__new__', prose):
                     prose = None
                 source = _doc_location(class_path, carrier)
         yield _subject(
@@ -1330,7 +1333,7 @@ def _class_subjects(
                 source_member.prose
                 if source_member is not None
                 else (
-                    _runtime_doc_for_stub(member_name, static)
+                    runtime_doc_for_stub(member_name, static)
                     if static is not None
                     else None
                 )
@@ -1370,7 +1373,7 @@ def _class_subjects(
         if member_name not in vars(cls) and defs:
             assert member_carrier is not None
             stub_doc = ast.get_docstring(member_carrier)
-            prose = stub_doc or _runtime_doc_for_stub(member_name, runtime_member)
+            prose = stub_doc or runtime_doc_for_stub(member_name, runtime_member)
             yield _subject(
                 f'{name}.{member_name}',
                 'callable',
@@ -1383,7 +1386,7 @@ def _class_subjects(
         yield _subject(
             f'{name}.{member_name}',
             'callable',
-            _runtime_doc_for_stub(member_name, runtime_member),
+            runtime_doc_for_stub(member_name, runtime_member),
             _parameters(runtime_member),
             source,
             declarations=tuple(defs),
@@ -1396,7 +1399,7 @@ def _class_subjects(
         yield _subject(
             f'{name}.{member_name}',
             'property',
-            _runtime_doc_for_stub(member_name, descriptor),
+            runtime_doc_for_stub(member_name, descriptor),
             None,
             source,
             declarations=(declaration,),
@@ -1475,7 +1478,7 @@ def iter_doc_subjects(
             subject = _subject(
                 name,
                 'callable',
-                _runtime_doc_for_stub(name, obj),
+                runtime_doc_for_stub(name, obj),
                 _parameters(obj),
                 source,
                 declarations=tuple(defs),

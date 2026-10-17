@@ -356,19 +356,22 @@ object
         'varies',
         'varies by call form',
     )
-    assert [occurrence.status for occurrence in rows['value'].occurrences] == [
+    required, defaulted = rows['value'].occurrences
+    assert required is not None
+    assert defaulted is not None
+    assert [required.status, defaulted.status] == [
         'required',
         'defaulted',
     ]
-    assert [occurrence.kind for occurrence in rows['value'].occurrences] == [
+    assert [required.kind, defaulted.kind] == [
         'positional-only',
         'keyword-only',
     ]
-    assert [occurrence.annotation for occurrence in rows['value'].occurrences] == [
+    assert [required.annotation, defaulted.annotation] == [
         'int',
         'int',
     ]
-    assert [occurrence.default for occurrence in rows['value'].occurrences] == [
+    assert [required.default, defaulted.default] == [
         None,
         '1',
     ]
@@ -382,7 +385,9 @@ object
         'varies by call form',
     )
     assert rows['optional'].occurrences[0] is None
-    assert rows['optional'].occurrences[1].default == 'None'
+    optional = rows['optional'].occurrences[1]
+    assert optional is not None
+    assert optional.default == 'None'
 
     fixed_default_claim = prose.replace(
         'value : int\n',
@@ -1020,8 +1025,7 @@ class Public(Base):
             return str(self.value)
 
     runtime = types.ModuleType('fakepkg.facade')
-    runtime.__all__ = ['Public']
-    runtime.Public = Public  # type: ignore[attr-defined]
+    vars(runtime).update(__all__=['Public'], Public=Public)
     cfg = make_config(tmp_path)
     ctx = CheckContext(cfg, _runtime_module=runtime)
     subjects = tuple(

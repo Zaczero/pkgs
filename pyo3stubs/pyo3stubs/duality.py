@@ -126,7 +126,7 @@ def _scalar_variant(
     variants = [_params(node) for node in defs]
     differing = {
         name
-        for name in set().union(*variants)
+        for name in {name for variant in variants for name in variant}
         if len({variant.get(name) for variant in variants}) > 1
     }
     matches = [
@@ -211,7 +211,7 @@ def _kind_duality(
                 }
             else:
                 returned = _return_atoms(node) or frozenset()
-                actual = set().union(
+                actual = set[str]().union(
                     *(
                         _atoms(_unwrap_array(atom, array_class) or atom)
                         for atom in returned
@@ -286,7 +286,7 @@ def collect_errors(cfg: StubConfig) -> Findings:
             ]
             if not scalar_atom_sets:
                 continue
-            scalar_atoms = frozenset().union(*scalar_atom_sets)
+            scalar_atoms = frozenset[str]().union(*scalar_atom_sets)
             kind_preserving = {'Self', *conf.self_atoms}
             preserving = scalar_atoms <= kind_preserving
             if preserving:
@@ -306,7 +306,8 @@ def collect_errors(cfg: StubConfig) -> Findings:
             catch_all = array_defs[-1]
             for node, atoms in array_returns:
                 if preserving:
-                    actual_ok = atoms == {'Self'}
+                    # Set equality deliberately accepts mutable and frozen sets.
+                    actual_ok = atoms == {'Self'}  # pyright: ignore[reportUnnecessaryComparison]
                 else:
                     inners: set[str] = set()
                     actual_ok = True
@@ -318,7 +319,7 @@ def collect_errors(cfg: StubConfig) -> Findings:
                         inners.update(e.strip() for e in inner.split('|'))
                     inners.discard('None')
                     if node is catch_all:
-                        actual_ok = actual_ok and inners == expected_atoms
+                        actual_ok = actual_ok and inners == expected_atoms  # pyright: ignore[reportUnnecessaryComparison]
                     else:
                         actual_ok = actual_ok and all(
                             any(_is_subclass(e, x, bases) for x in expected_atoms)

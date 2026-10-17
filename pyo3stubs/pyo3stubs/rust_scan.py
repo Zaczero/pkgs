@@ -207,7 +207,7 @@ def iter_sources(
     Unknown cfg predicates remain visible. ``all`` returns the raw attributed
     items, including test-only declarations.
     """
-    stamp = []
+    stamp: list[tuple[Path, int, int]] = []
     for path in sorted(cfg.src_root.rglob('*.rs')):
         stat = path.stat()
         stamp.append((path, stat.st_mtime_ns, stat.st_size))

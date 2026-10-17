@@ -32,11 +32,11 @@ _BUILTIN_DOCS = frozenset(
 )
 
 
-def _is_synthetic_doc(name: str, doc: str | None) -> bool:
+def is_synthetic_doc(name: str, doc: str | None) -> bool:
     return doc is not None and name.startswith('__') and doc in _BUILTIN_DOCS
 
 
-def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
+def runtime_doc_for_stub(name: str, obj: object) -> str | None:
     """Runtime prose suitable for a stub carrier, or None when it is synthetic.
 
     PyO3 installs wrapper descriptors for protocol slots, and CPython supplies
@@ -50,7 +50,7 @@ def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
     if isinstance(obj, types.WrapperDescriptorType):
         return None
     doc = doc_of(obj)
-    if _is_synthetic_doc(name, doc):
+    if is_synthetic_doc(name, doc):
         return None
     return doc
 
@@ -65,7 +65,8 @@ def passive_class_member(cls: type, name: str) -> object | None:
     """
     member = inspect.getattr_static(cls, name, None)
     if isinstance(member, (staticmethod, classmethod)):
-        member = member.__func__
+        # Runtime descriptors do not carry their callable's static signature.
+        member = member.__func__  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
     if isinstance(
         member,
         (
@@ -87,7 +88,7 @@ def decorator_names(
     node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
 ) -> set[str]:
     """Bare names of a def's decorators (`@x.setter` contributes ``setter``)."""
-    names = set()
+    names: set[str] = set()
     for dec in node.decorator_list:
         target = dec.func if isinstance(dec, ast.Call) else dec
         if isinstance(target, ast.Attribute):

@@ -63,7 +63,7 @@ def _annotation_type_names(node: ast.expr | None) -> set[str]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _annotation_type_names(node.left) | _annotation_type_names(node.right)
     if isinstance(node, ast.Tuple):
-        names = set()
+        names = set[str]()
         for elt in node.elts:
             names |= _annotation_type_names(elt)
         return names

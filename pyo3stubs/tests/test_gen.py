@@ -30,7 +30,7 @@ Q = '"'
 
 def rendered(doc: str, indent: str = '    ') -> str:
     """The value a reader of the generated stub would see."""
-    return eval(cst.Module(body=[_docstring_statement(doc, indent)]).code.strip())  # noqa: S307
+    return eval(cst.Module(body=[_docstring_statement(doc, indent)]).code.strip())  # ruff: ignore[suspicious-eval-usage]
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,10 @@ class C:
     runtime.C = owner  # type: ignore[attr-defined]
 
     generated = _inject(stub, runtime)
-    member = ast.parse(generated).body[0].body[-1]
+    class_node = ast.parse(generated).body[0]
+    assert isinstance(class_node, ast.ClassDef)
+    member = class_node.body[-1]
+    assert isinstance(member, ast.FunctionDef)
     assert ast.get_docstring(member) == vars(owner)[name].__doc__
     assert _inject(generated, runtime) == generated
 
@@ -187,6 +190,7 @@ class C:
     runtime = types.ModuleType('m')
     runtime.C = C  # type: ignore[attr-defined]
     class_node = ast.parse(stub).body[0]
+    assert isinstance(class_node, ast.ClassDef)
     descriptors = list(annotated_data_descriptors(C, class_node.body))
     assert [(name, prose) for name, _, prose, _ in descriptors] == [
         ('value', 'Stale descriptor prose.'),
@@ -288,12 +292,12 @@ def test_cpython_boilerplate_never_reaches_the_stub():
     times in gometry's shipped stub, and once each in h2corn's and
     lrucache-rs's.
     """
-    from pyo3stubs.gen import _runtime_doc_for_stub
+    from pyo3stubs.ast_util import runtime_doc_for_stub
 
-    assert _runtime_doc_for_stub('__new__', object.__new__) is None
-    assert _runtime_doc_for_stub('__class_getitem__', dict.__class_getitem__) is None
+    assert runtime_doc_for_stub('__new__', object.__new__) is None
+    assert runtime_doc_for_stub('__class_getitem__', dict.__class_getitem__) is None
     # The same text on a normal member is prose, not boilerplate.
-    assert _runtime_doc_for_stub('make', object.__new__) is not None
+    assert runtime_doc_for_stub('make', object.__new__) is not None
 
 
 def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
@@ -318,7 +322,7 @@ def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
         '    /// Widget\n'
         '    #[new]\n'
         '    #[pyo3(signature = (size = 3))]\n'
-        '    fn new(size: usize) -> Self { Self }\n'
+        '    fn new(size: usize) -> Self { Self }\n'  # ruff: ignore[missing-f-string-syntax] - Rust fixture.
         '}\n'
     )
     cfg = make_config(tmp_path, src_text=src)
@@ -402,7 +406,7 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
         'impl PyWidget {\n'
         '    /// Build a widget.\n'
         '    #[new]\n'
-        '    fn new() -> Self { Self }\n'
+        '    fn new() -> Self { Self }\n'  # ruff: ignore[missing-f-string-syntax] - Rust fixture.
         '}\n'
         '}\n'
     )
@@ -538,7 +542,7 @@ def test_h3_array_constructor_macro_recovers_each_authored_doc_from_source(tmp_p
                 '#[pymethods]\n'
                 'impl PyWidget {\n'
                 '    #[new]\n'
-                '    fn new(size: usize) -> Self { Self }\n'
+                '    fn new(size: usize) -> Self { Self }\n'  # ruff: ignore[missing-f-string-syntax] - Rust fixture.
                 '}\n'
                 'make_array! {\n'
                 '    /// Macro prose cannot replace the direct carrier.\n'
