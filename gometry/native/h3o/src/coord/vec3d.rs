@@ -15,7 +15,7 @@ const NORTH_POLE: Vec3d = Vec3d {
 // gometry: four-ULP sine/cosine errors contribute at most ten EPSILON to
 // either product coordinate; leave room for the dot product and square root.
 // This is a diagnostic unit-vector check, not a geometric decision tolerance.
-const UNIT_NORM_TOLERANCE: f64 = 16. * f64::EPSILON;
+pub(super) const UNIT_NORM_TOLERANCE: f64 = 16. * f64::EPSILON;
 
 /// A 3D normal vector to the Earth ellipsoid, represented as a n-vector.
 ///

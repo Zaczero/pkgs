@@ -18,7 +18,7 @@ them when updating h3o, or port the consuming certificate at the same time.
 | `src/coord/faceijk.rs` | `target_substrate_center_seed` | Gives each ancestor its center in the target substrate frame shared by descendants. |
 | `src/coord/mod.rs` | projection constants and `native_projection_point` | Central canonical constants plus a diagnostic raw-seed projector; predicates replay the seed outward. |
 | `src/coord/vec3d.rs` | shared `ONE_THIRD` use | Prevents a second substrate-scale literal from drifting from the raw projector. |
-| `src/coord/vec3d.rs` | unit-norm diagnostics | Allows accumulated transcendental, product, dot-product, and square-root rounding without changing coordinates or geometric decisions. Unit-sphere tests use the same diagnostic allowance. |
+| `src/coord/vec3d.rs`, `src/coord/faceijk.rs`, `src/coord/vec2d.rs` | unit-norm diagnostics | Allows accumulated transcendental, product, dot-product, and square-root rounding without changing coordinates or geometric decisions. All indexing consumers and unit-sphere tests use the same diagnostic allowance. |
 | `src/index/cell.rs` | `boundary_with_seeds`, target center | Native boundary and target-frame center carriers, neither represented by public rounded boundary/LatLng APIs. |
 | `src/index/cell_tests.rs` | projected-boundary/profile/raw-carrier tests | Pins public ABI preservation and every raw-carrier ordering/identity invariant. |
 | `src/lib.rs` | hidden carrier re-exports | Makes the private carrier usable by gometry without widening ordinary h3o public APIs. |
@@ -28,9 +28,9 @@ them when updating h3o, or port the consuming certificate at the same time.
 | `src/grid/iterator_tests.rs` | fast-ring size-hint regression | Checks the standard iterator length-hint bounds against a concrete undistorted ring. |
 
 Every source divergence above has a nearby `gometry:` marker.  Update this
-table and its marker together when the carrier changes.  Current audit: 25
-markers — 6 in `boundary.rs`, 5 in `coord/faceijk.rs`, 3 in `coord/mod.rs`, 2
-in `coord/vec3d.rs`, 2 in `index/cell.rs`, 1 each in `index/cell_tests.rs`,
+table and its marker together when the carrier changes.  Current audit: 27
+markers — 6 in `boundary.rs`, 6 in `coord/faceijk.rs`, 3 in `coord/mod.rs`, 2
+in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 2 in `index/cell.rs`, 1 each in `index/cell_tests.rs`,
 `lib.rs`, and `grid/iterator_tests.rs`, 2 in `grid/iterator.rs`, and 2 in
 `resolution.rs`.
 

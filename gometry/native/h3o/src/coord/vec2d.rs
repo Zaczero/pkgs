@@ -60,7 +60,12 @@ impl Vec2d {
     /// * `face` -  The icosahedral face of the coordinate.
     /// * `distance` - The squared euclidean distance from the face center.
     pub fn from_vec3d(value: Vec3d, resolution: Resolution, face: Face, distance: f64) -> Self {
-        float_eq::debug_assert_float_eq!(value.norm(), 1., abs <= f64::EPSILON);
+        // gometry: share the accumulated unit-vector diagnostic allowance.
+        float_eq::debug_assert_float_eq!(
+            value.norm(),
+            1.,
+            abs <= super::vec3d::UNIT_NORM_TOLERANCE
+        );
 
         let face = usize::from(face);
 

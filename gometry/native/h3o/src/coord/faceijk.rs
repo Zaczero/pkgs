@@ -218,7 +218,12 @@ impl FaceIJK {
     /// * `value` - The n-vector to encode.
     /// * `resolution` - The desired H3 resolution for the encoding.
     pub fn from_vec3d(value: Vec3d, resolution: Resolution) -> Self {
-        float_eq::debug_assert_float_eq!(value.norm(), 1., abs <= f64::EPSILON);
+        // gometry: share the accumulated unit-vector diagnostic allowance.
+        float_eq::debug_assert_float_eq!(
+            value.norm(),
+            1.,
+            abs <= super::vec3d::UNIT_NORM_TOLERANCE
+        );
 
         let (face, distance) = value.closest_face();
         let coord = Vec2d::from_vec3d(value, resolution, face, distance).into();
