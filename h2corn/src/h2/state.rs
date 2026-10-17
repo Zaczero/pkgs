@@ -1525,7 +1525,9 @@ mod tests {
     }
 
     async fn fragmented_backlog_is_byte_bounded(counts_toward_read_timeout: bool) {
-        const FRAME_COUNT: usize = 2 * 1024 * 1024;
+        const FRAME_BYTES: usize = 128;
+        const FRAME_COUNT: usize = 2 * INPUT_CHUNK_MAX_BYTES / FRAME_BYTES + 3;
+        const BODY_BYTES: usize = FRAME_COUNT * FRAME_BYTES;
 
         let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
@@ -1542,46 +1544,38 @@ mod tests {
 
         for index in 0..FRAME_COUNT {
             let body = if index & 1 == 0 {
-                Bytes::from_static(b"a")
+                Bytes::from_static(&[b'a'; FRAME_BYTES])
             } else {
-                Bytes::from_static(b"b")
+                Bytes::from_static(&[b'b'; FRAME_BYTES])
             };
-            stream.push_body_data(body, flow.credit(stream_id, NonZeroU32::new(1).unwrap()));
+            stream.push_body_data(
+                body,
+                flow.credit(stream_id, NonZeroU32::new(FRAME_BYTES as u32).unwrap()),
+            );
         }
         assert!(!flow.has_pending(), "queued input must retain every credit");
 
         let InputDelivery::Backlogged(queued) = &stream.delivery else {
             panic!("a stalled one-slot app channel must have a backlog");
         };
-        let expected_nodes = (FRAME_COUNT - 1).div_ceil(super::INPUT_CHUNK_MAX_BYTES);
-        assert_eq!(queued.queue.len(), expected_nodes);
-        assert!(queued.queue.len() <= 32, "two MiB needs at most 32 chunks");
+        assert_eq!(queued.queue.len(), 3, "two full chunks and a partial tail");
 
         stream.delivery.push(StreamInput::EndStream);
-        let mut consumed = 0_usize;
+        let mut consumed = Vec::with_capacity(BODY_BYTES);
         loop {
             let input = rx.recv().await.expect("input remains connected");
             match input {
                 StreamInput::Data { body, credit } => {
-                    for byte in body {
-                        assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                        consumed = consumed.wrapping_add(1);
-                    }
+                    consumed.extend_from_slice(&body);
                     credit.expect("H2 data retains credit").release();
                 },
                 StreamInput::BufferedData { body, credit } => {
-                    for byte in body {
-                        assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                        consumed = consumed.wrapping_add(1);
-                    }
+                    consumed.extend_from_slice(&body);
                     credit.expect("H2 data retains merged credit").release();
                 },
                 StreamInput::DataBatch { bodies, credit, .. } => {
                     for body in bodies {
-                        for byte in body {
-                            assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                            consumed = consumed.wrapping_add(1);
-                        }
+                        consumed.extend_from_slice(&body);
                     }
                     credit.expect("H2 data retains merged credit").release();
                 },
@@ -1590,14 +1584,17 @@ mod tests {
             }
             stream.delivery.flush();
         }
-        assert_eq!(consumed, FRAME_COUNT, "coalescing preserves every byte");
+        let expected: Vec<_> = (0..FRAME_COUNT)
+            .flat_map(|index| [if index & 1 == 0 { b'a' } else { b'b' }; FRAME_BYTES])
+            .collect();
+        assert_eq!(consumed, expected, "coalescing preserves every byte");
         assert!(!stream.delivery.has_backlog());
 
         let mut released = Vec::new();
         flow.drain_into(&mut released);
         assert_eq!(released.len(), 1, "same-stream releases coalesce");
         assert_eq!(released[0].stream_id, stream_id);
-        assert_eq!(released[0].bytes.get() as usize, FRAME_COUNT);
+        assert_eq!(released[0].bytes.get() as usize, BODY_BYTES);
         assert!(!flow.has_pending());
     }
 
