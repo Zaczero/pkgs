@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from pyo3stubs.config import StubConfig
 
+# Use Point indexing: tree-sitter 0.26's row/column getters return borrowed references.
 _LANGUAGE = Language(tree_sitter_rust.language())
 #: One parser per thread: a tree-sitter parser is mutable state, and
 #: ``run_all`` runs the Rust-reading gates concurrently.
