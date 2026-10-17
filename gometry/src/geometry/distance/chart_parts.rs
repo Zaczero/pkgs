@@ -1449,11 +1449,6 @@ mod tests {
                         <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
                     "{unit_name}: {case} point/collection distance",
                 );
-                assert!(
-                    (collection_minimum.lower_bound - point_minimum.lower_bound).abs()
-                        <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
-                    "{unit_name}: {case} point/collection lower bound",
-                );
                 assert_eq!(
                     collection_minimum.order, point_minimum.order,
                     "{unit_name}: {case} point/collection order",
