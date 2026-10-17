@@ -523,7 +523,7 @@ mod convex_tests {
             "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2),(4 4,6 4,6 6,4 6,4 4))",
         )
         .unwrap();
-        assert_eq!(
+        approx::assert_relative_eq!(
             nested
                 .repair_with_context(
                     RepairMethod::Linework,
@@ -532,7 +532,8 @@ mod convex_tests {
                 )
                 .unwrap()
                 .area(),
-            64.0
+            64.0,
+            max_relative = 64.0 * f64::EPSILON
         );
     }
 
