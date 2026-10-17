@@ -11,6 +11,7 @@ use std::ops::ControlFlow;
 
 use crate::curves::{morton_deinterleave, morton_interleave};
 use crate::geographic::lonlat::normalized_geographic_pole;
+use crate::geometry::numerics::product::exact_power_of_two;
 use crate::geometry::{Bounds, Point, Shape};
 use crate::grid::coverer::RectCell;
 
@@ -62,7 +63,7 @@ pub(crate) struct Tile {
 crate::heapless!(Tile);
 
 fn tile_cells(zoom: u8) -> f64 {
-    2_f64.powi(i32::from(zoom))
+    exact_power_of_two(i32::from(zoom))
 }
 
 /// One emitted longitude boundary in the canonical `[-180, 180]` spelling.
@@ -72,8 +73,17 @@ fn longitude_boundary(index: u32, cells: f64) -> f64 {
 
 /// One emitted latitude boundary, with rows increasing southward.
 fn latitude_boundary(index: u32, cells: f64) -> f64 {
+    if index == 0 {
+        return TILE_MAX_LATITUDE;
+    }
+    if index == cells as u32 {
+        return -TILE_MAX_LATITUDE;
+    }
     let n = PI * (1.0 - 2.0 * f64::from(index) / cells);
-    n.sinh().atan().to_degrees()
+    // These rounded values define half-open row ownership. Repeated platform
+    // libm evaluations may vary, so use one arithmetic kernel for emitted and
+    // queried boundaries.
+    libm::atan(libm::sinh(n)).to_degrees()
 }
 
 /// Correct a longitude seed against the emitted half-open boundaries.
@@ -364,6 +374,25 @@ impl RectCell for Tile {
 mod tests {
     use super::*;
 
+    fn boundary_indices(cells: u32) -> Vec<u32> {
+        let middle = cells / 2;
+        let mut indices = vec![
+            0,
+            1.min(cells),
+            cells / 4,
+            middle.saturating_sub(1),
+            middle,
+            middle.wrapping_add(1).min(cells),
+            cells.wrapping_mul(3) / 4,
+            cells.saturating_sub(2),
+            cells.wrapping_sub(1),
+            cells,
+        ];
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
     #[test]
     fn tile_cover_domain_keeps_first_bad_latitude_and_the_pole_exception() {
         let shape = Shape::geometry_collection(vec![
@@ -648,22 +677,13 @@ mod tests {
     fn emitted_boundaries_are_strictly_ordered() {
         for zoom in 0..=TILE_MAX_ZOOM {
             let cells = tile_cells(zoom) as u32;
-            let count = if zoom <= 20 { cells + 1 } else { 1_001 };
-            let mut previous_lon = longitude_boundary(0, f64::from(cells));
-            let mut previous_lat = latitude_boundary(0, f64::from(cells));
-            for offset in 1..count {
-                let index = if zoom <= 20 {
-                    offset
-                } else {
-                    u32::try_from(u64::from(offset) * u64::from(cells) / u64::from(count - 1))
-                        .expect("sampled boundary index fits u32")
-                };
+            for &[previous, index] in boundary_indices(cells).array_windows::<2>() {
+                let previous_lon = longitude_boundary(previous, f64::from(cells));
+                let previous_lat = latitude_boundary(previous, f64::from(cells));
                 let lon = longitude_boundary(index, f64::from(cells));
                 let lat = latitude_boundary(index, f64::from(cells));
                 assert!(lon > previous_lon, "longitude zoom={zoom} index={index}");
                 assert!(lat < previous_lat, "latitude zoom={zoom} index={index}");
-                previous_lon = lon;
-                previous_lat = lat;
             }
             assert_eq!(
                 latitude_boundary(0, f64::from(cells)).to_bits(),
@@ -684,17 +704,7 @@ mod tests {
             let cells = tile_cells(zoom);
             let child_cells = cells * 2.0;
             let count = cells as u32;
-            let indices = if zoom <= 20 {
-                (0..=count).collect::<Vec<_>>()
-            } else {
-                (0_u32..=1_000)
-                    .map(|offset| {
-                        u32::try_from(u64::from(offset) * u64::from(count) / 1_000)
-                            .expect("sampled boundary index fits u32")
-                    })
-                    .collect::<Vec<_>>()
-            };
-            for index in indices {
+            for index in boundary_indices(count) {
                 assert_eq!(
                     longitude_boundary(index, cells).to_bits(),
                     longitude_boundary(index * 2, child_cells).to_bits(),

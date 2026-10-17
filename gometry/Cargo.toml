@@ -47,6 +47,7 @@ lexical-core = { version = "1.0.6", default-features = false, features = [
   "parse-floats"
 ] }
 libc = { version = "0.2", default-features = false }
+libm = { version = "0.2.16", default-features = false }
 mimalloc = { version = "0.1.52", default-features = false, features = ["local_dynamic_tls"] }
 numpy = { version = "0.30.0", default-features = false }
 proj-sys = { path = "native/proj-sys", default-features = false, features = [

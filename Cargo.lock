@@ -981,6 +981,7 @@ dependencies = [
  "h3o",
  "lexical-core",
  "libc",
+ "libm",
  "mimalloc",
  "numpy",
  "proj-sys",
