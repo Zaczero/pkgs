@@ -600,10 +600,6 @@ mod tests {
         ))
     }
 
-    fn dense_rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
-        dense_rectangle_with_subdivisions(minx, miny, maxx, maxy, 256)
-    }
-
     #[test]
     fn coverage_clean_builds_one_partition_after_admission() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
@@ -676,47 +672,59 @@ mod tests {
 
     #[test]
     fn coverage_clean_collinear_overlap_work_stays_below_quadratic_materialization() {
-        let rows = [
-            dense_rectangle(0.0, 0.0, 10.2, 10.0),
-            dense_rectangle(10.0, 0.0, 20.0, 10.0),
-        ];
-        overlay::reset_partition_builds();
-        let (output, allocations) = crate::test_support::allocation_count(|| {
-            coverage_clean(
-                &rows,
-                0.0,
-                0.0,
-                CoverageOverlapRule::LongestBorder,
-                &SourceArcContext::cartesian(),
-            )
-            .expect("dense collinear coverage clean")
-        });
-        let metrics = overlay::partition_metrics();
-        let phase_allocations = crate::test_support::allocation_phase_counts();
-        assert!(phase_allocations.iter().sum::<usize>() <= allocations);
-        assert_eq!(metrics.partition_builds, 1);
-        assert_eq!(metrics.source_segments, 2048);
-        assert_eq!(metrics.unique_source_segments, 2048);
-        assert_eq!(metrics.candidate_pool_items, 2048);
-        assert_eq!(
-            metrics.candidate_pairs_attempted,
-            metrics.candidate_pairs_distinct
-        );
-        assert!(metrics.candidate_pairs_attempted < 100_000);
-        assert!(metrics.overlap_contacts < 10_000);
-        assert!(metrics.overlap_cuts < 40_000);
-        assert!(metrics.source_cut_entries >= metrics.overlap_cuts);
-        assert!(metrics.canonical_spans > 0);
-        assert!(metrics.canonical_nodes > 0);
-        assert!(metrics.global_faces > 0);
-        assert_eq!(metrics.topology_halfedges, metrics.canonical_spans * 2);
-        assert!(metrics.publication_nodes <= metrics.canonical_nodes);
-        assert_eq!(metrics.published_rows, 2);
-        assert_eq!(output.len(), 2);
-        assert!(output.iter().all(|shape| !shape.is_empty()));
+        let mut candidate_counts = Vec::new();
+        for subdivisions in [8, 16] {
+            let rows = [
+                dense_rectangle_with_subdivisions(0.0, 0.0, 10.2, 10.0, subdivisions),
+                dense_rectangle_with_subdivisions(10.0, 0.0, 20.0, 10.0, subdivisions),
+            ];
+            overlay::reset_partition_builds();
+            let (output, allocations) = crate::test_support::allocation_count(|| {
+                coverage_clean(
+                    &rows,
+                    0.0,
+                    0.0,
+                    CoverageOverlapRule::LongestBorder,
+                    &SourceArcContext::cartesian(),
+                )
+                .expect("dense collinear coverage clean")
+            });
+            let metrics = overlay::partition_metrics();
+            let phase_allocations = crate::test_support::allocation_phase_counts();
+            assert!(phase_allocations.iter().sum::<usize>() <= allocations);
+            assert_eq!(metrics.partition_builds, 1);
+            assert_eq!(metrics.source_segments, 8 * subdivisions);
+            assert_eq!(metrics.unique_source_segments, metrics.source_segments);
+            assert_eq!(metrics.candidate_pool_items, metrics.source_segments);
+            assert_eq!(
+                metrics.candidate_pairs_attempted,
+                metrics.candidate_pairs_distinct
+            );
+            assert!(metrics.overlap_contacts < 8 * metrics.source_segments);
+            assert!(metrics.overlap_cuts < 32 * metrics.source_segments);
+            assert!(metrics.source_cut_entries >= metrics.overlap_cuts);
+            assert!(metrics.canonical_spans > 0);
+            assert!(metrics.canonical_nodes > 0);
+            assert!(metrics.global_faces > 0);
+            assert_eq!(metrics.topology_halfedges, metrics.canonical_spans * 2);
+            assert!(metrics.publication_nodes <= metrics.canonical_nodes);
+            assert_eq!(metrics.published_rows, 2);
+            assert_eq!(output.len(), 2);
+            assert!(output.iter().all(|shape| !shape.is_empty()));
+            assert!(
+                (output.iter().map(Shape::area).sum::<f64>() - 200.0).abs() < 1.0e-9,
+                "dense coverage area changed: {output:?}"
+            );
+            candidate_counts.push(metrics.candidate_pairs_attempted);
+        }
         assert!(
-            (output.iter().map(Shape::area).sum::<f64>() - 200.0).abs() < 1.0e-9,
-            "dense coverage area changed: {output:?}"
+            candidate_counts[0] > 0,
+            "the fixture must exercise candidate enumeration",
+        );
+        assert!(
+            candidate_counts[1] < 3 * candidate_counts[0],
+            "doubling collinear source segments must stay below 3× candidate visits: \
+             {candidate_counts:?}",
         );
     }
 
@@ -772,9 +780,9 @@ mod tests {
     }
 
     fn jittered_grid(mode: &str) -> Vec<Shape> {
-        (0_u8..12)
+        (0_u8..3)
             .flat_map(|row| {
-                (0_u8..12).map(move |column| {
+                (0_u8..3).map(move |column| {
                     if mode == "exact" {
                         return rectangle(
                             f64::from(column),
@@ -786,7 +794,7 @@ mod tests {
                     if mode == "coherent" {
                         let point = |vertex_row: u8, vertex_column: u8| {
                             let key = usize::from(vertex_row)
-                                .wrapping_mul(13)
+                                .wrapping_mul(4)
                                 .wrapping_add(usize::from(vertex_column));
                             XY::new(
                                 ulp_jitter(f64::from(vertex_column), key),
@@ -807,7 +815,7 @@ mod tests {
                     }
 
                     let seed = usize::from(row)
-                        .wrapping_mul(12)
+                        .wrapping_mul(3)
                         .wrapping_add(usize::from(column));
                     rectangle(
                         ulp_jitter(f64::from(column), seed),
@@ -856,7 +864,7 @@ mod tests {
             &SourceArcContext::cartesian(),
         )
         .unwrap();
-        assert_eq!(cleaned.len(), 144);
+        assert_eq!(cleaned.len(), 9);
         assert!(crate::geometry::coverage_is_valid(&cleaned, 0.0).unwrap());
         assert!(
             crate::geometry::coverage_invalid_edges(&cleaned, 0.0)

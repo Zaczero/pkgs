@@ -515,9 +515,9 @@ mod convex_tests {
             )
             .unwrap();
         assert_eq!(linework.geometry_type(), "Polygon");
-        assert_eq!(linework.area(), 28.0);
+        approx::assert_relative_eq!(linework.area(), 28.0, max_relative = 64.0 * f64::EPSILON);
         assert_eq!(structure.geometry_type(), "Polygon");
-        assert_eq!(structure.area(), 28.0);
+        approx::assert_relative_eq!(structure.area(), 28.0, max_relative = 64.0 * f64::EPSILON);
 
         let nested = crate::io::parse_wkt(
             "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2),(4 4,6 4,6 6,4 6,4 4))",

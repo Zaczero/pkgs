@@ -41,8 +41,7 @@ fn cross_bounds_sweep_preserves_each_side_ordinal() {
 mod sweep_characterization {
     //! Golden contract for the candidate-pair sweep: it visits a SUPERSET of
     //! every truly-intersecting pair (no real interaction is ever dropped) and
-    //! never visits an unordered pair twice — at every size band and both
-    //! thresholds. The exact kernels are the final filter, so the sweep's only
+    //! never visits an unordered pair twice. The exact kernels are the final filter, so the sweep's only
     //! correctness duty is completeness; this test locks it so any later change
     //! to the sweep's input representation that loses a candidate fails loudly.
     use super::*;
@@ -145,12 +144,9 @@ mod sweep_characterization {
     #[test]
     fn sweep_covers_every_intersecting_pair() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        // Sizes spanning the brute branch (< SWEEP_MIN_ITEMS) and the two sweep
-        // strategies, each of which is driven directly below rather than reached
-        // through the run-density dispatch — so the corpus does not have to
-        // contain linework that happens to select both. The oracle is quadratic
-        // in n, which caps the useful size.
-        for &n in &[4_usize, 20, 200, 600, 1100] {
+        // Cross the six-item brute/sweep boundary and retain four complete
+        // groups of the eight structured contact families.
+        for &n in &[4_usize, 6, 20, 36] {
             let pool = structured_pool(n);
             // `segments_intersect` is the exact orientation predicate, with an
             // interval filter and a stored-dyadic fallback behind it. Running

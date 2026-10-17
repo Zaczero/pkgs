@@ -79,6 +79,7 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
     clippy::float_cmp,
     reason = "these exact coordinates identify original source roots; a tolerance could admit the wrong edge"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> Result<()> {
     let crs = concat!(
         "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",

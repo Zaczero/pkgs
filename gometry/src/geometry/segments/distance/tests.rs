@@ -823,20 +823,18 @@ fn ordinary_nearest_rows_use_no_exact_fallback() {
     let probe = XY::new(7.25, 2.75);
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
     for row in 0..128 {
-        let mut best = None;
-        for index in 0..16 {
-            let vertex = |column: i32| {
+        let vertices: Vec<_> = (0..17)
+            .map(|column| {
                 XY::new(
                     f64::from(column),
                     (f64::from(column) * 0.37 + f64::from(row) * 0.03125).sin()
                         + f64::from(row) * 0.002,
                 )
-            };
-            let key = point_segment_distance_key(probe, Segment {
-                start: vertex(index),
-                end: vertex(index + 1),
             })
-            .unwrap();
+            .collect();
+        let mut best = None;
+        for &[start, end] in vertices.array_windows::<2>() {
+            let key = point_segment_distance_key(probe, Segment { start, end }).unwrap();
             if best
                 .as_ref()
                 .is_none_or(|incumbent| key.cmp(incumbent).unwrap().is_lt())

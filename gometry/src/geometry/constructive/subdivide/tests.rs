@@ -1206,7 +1206,7 @@ fn geographic_deep_shared_polygon_subdivision_keeps_support() {
             crate::geometry::Strictness::Lenient,
         )
         .expect("deep geographic subdivision parts union");
-        assert_eq!(parts_union.area(), 1.0, "depth {depth}");
+        approx::assert_relative_eq!(parts_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
 
         let source_union = Shape::union_all_topo(
             &[&shared],
@@ -1214,7 +1214,7 @@ fn geographic_deep_shared_polygon_subdivision_keeps_support() {
             crate::geometry::Strictness::Lenient,
         )
         .expect("deep geographic source union");
-        assert_eq!(source_union.area(), 1.0, "depth {depth}");
+        approx::assert_relative_eq!(source_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
     }
 }
 

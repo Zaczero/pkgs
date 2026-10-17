@@ -345,7 +345,9 @@ fn pinned_clip_vertices_exhaust_a_constructed_nodes_adjacent_float_domain() {
 
 #[test]
 fn polygon_clip_with_many_disjoint_holes_is_budgeted_by_output() {
-    let holes = (0..1_334)
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+    let holes = (0..8)
         .map(|index| {
             let x = 1.0 + f64::from(index % 50) * 0.7;
             let y = -8.0 + f64::from(index / 50) * 0.6;
@@ -368,9 +370,10 @@ fn polygon_clip_with_many_disjoint_holes_is_budgeted_by_output() {
             .into(),
     );
     let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
+    budget.add(GENERATED_ITEM_LIMIT - 7).unwrap();
     let cells = source
         .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
-        .expect("the 5,346-position partition is below the generated-output budget");
+        .expect("stored input rings do not spend the seven generated-item credits");
 
     assert_eq!(cells.len(), 2);
     assert!(
@@ -389,9 +392,9 @@ fn polygon_clip_with_many_disjoint_holes_is_budgeted_by_output() {
                 + polygon.holes.iter().map(|ring| ring.len()).sum::<usize>(),
         )
     });
-    assert_eq!(hole_count, 1_334);
-    assert_eq!(coordinate_count, 5_346);
-    assert_eq!(budget.used(), 7);
+    assert_eq!(hole_count, 8);
+    assert_eq!(coordinate_count, 42);
+    assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
 }
 
 #[test]
@@ -476,11 +479,13 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
 
 #[test]
 fn sparse_collinear_edges_do_not_charge_clip_scan_work() {
-    let mut boundary = Vec::with_capacity(20_000);
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+    let mut boundary = Vec::with_capacity(32);
     for (start, end, subdivisions) in [
-        (XY::new(-2.0, -1.0), XY::new(2.0, -0.5), 9_999_u32),
+        (XY::new(-2.0, -1.0), XY::new(2.0, -0.5), 15_u32),
         (XY::new(2.0, -0.5), XY::new(2.0, 1.0), 1),
-        (XY::new(2.0, 1.0), XY::new(-2.0, 0.5), 9_999),
+        (XY::new(2.0, 1.0), XY::new(-2.0, 0.5), 15),
         (XY::new(-2.0, 0.5), XY::new(-2.0, -1.0), 1),
     ] {
         for step in 0..subdivisions {
@@ -492,19 +497,22 @@ fn sparse_collinear_edges_do_not_charge_clip_scan_work() {
         }
     }
     let polygon = Polygon::new(Ring::closed(boundary).unwrap(), Vec::new());
-    assert_eq!(polygon.shell.len() - 1, 20_000);
+    assert_eq!(polygon.shell.len() - 1, 32);
 
-    let sites = (0_u32..801)
-        .map(|index| Point::new_raw_xy(0.0, -0.5 + f64::from(index) / 800.0))
+    let sites = (0_u32..9)
+        .map(|index| Point::new_raw_xy(0.0, -0.5 + f64::from(index) / 8.0))
         .collect::<Vec<_>>();
     let source = Shape::MultiPoint(sites.into());
     let mut budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
+    budget
+        .add(GENERATED_ITEM_LIMIT - 24)
+        .expect("leave credits for eight separators and their endpoints");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
-        .expect("800 separator edges fit the output budget");
+        .expect("clip scans do not consume the 24 output credits");
 
-    assert_eq!(offsets.as_slice().len(), 801);
-    assert_eq!(offsets.as_slice().last(), Some(&1_600));
-    assert_eq!(coordinates.len(), 1_600);
-    assert_eq!(budget.used(), 2_400);
+    assert_eq!(offsets.as_slice().len(), 9);
+    assert_eq!(offsets.as_slice().last(), Some(&16));
+    assert_eq!(coordinates.len(), 16);
+    assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
 }

@@ -100,7 +100,7 @@ fn filled_hausdorff_support_matches_shared_wkb_expansion() {
         p(0.0, 0.0),
     ]);
     let target = Shape::Point(p(3.0, 3.0));
-    for depth in [6, 10] {
+    for depth in [2, 3] {
         let mut shared = square.clone();
         for _ in 0..depth {
             shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();

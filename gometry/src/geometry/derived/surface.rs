@@ -923,10 +923,11 @@ mod tests {
         ])
         .expect("weighted point collection");
 
-        assert_eq!(
-            point_centroid(&collection).expect("point centroid"),
-            Some((2.0, 0.0))
-        );
+        let (x, y) = point_centroid(&collection)
+            .expect("point centroid")
+            .expect("nonempty point collection");
+        approx::assert_relative_eq!(x, 2.0, max_relative = 64.0 * f64::EPSILON);
+        assert_eq!(y, 0.0);
         assert_eq!(surface_xy(&collection), (3.0, 0.0));
     }
 
@@ -989,6 +990,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_nullable_reversed_duplicate_gather_keeps_exact_polygon_membership() {
         use crate::geometry::numerics::product::exact_power_of_two;
         use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};

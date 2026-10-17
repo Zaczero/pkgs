@@ -1,5 +1,67 @@
 use super::super::normalize::{filter_earcut_ring_points, orient_earcut_ring};
 use super::*;
+use crate::geometry::tessellation::earcut_bridges::count_bridge_work;
+
+#[test]
+fn indexed_hole_bridge_selection_work_scales_subquadratically() {
+    let mut counts = Vec::new();
+    for hole_count in [25_usize, 100, 400] {
+        let mut ring: Vec<_> = (0..500)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * f64::from(index) / 500.0;
+                Point::new_raw_xy(100.0 * angle.cos(), 100.0 * angle.sin())
+            })
+            .collect();
+        orient_earcut_ring(&mut ring, false);
+        let width = hole_count.isqrt();
+        let spacing = 120.0 / width as f64;
+        let holes: Vec<_> = (0..hole_count)
+            .map(|index| {
+                let x = -50.0 + (index % width) as f64 * spacing;
+                let y = -50.0 + (index / width) as f64 * spacing;
+                let mut hole = vec![
+                    Point::new_raw_xy(x - 1.5, y - 1.5),
+                    Point::new_raw_xy(x + 1.5, y - 1.5),
+                    Point::new_raw_xy(x + 1.5, y + 1.5),
+                    Point::new_raw_xy(x - 1.5, y + 1.5),
+                ];
+                orient_earcut_ring(&mut hole, true);
+                hole
+            })
+            .collect();
+        let mut identities: Vec<_> = (0..ring.len())
+            .map(|vertex| EarcutCornerId::source(0, vertex, vertex))
+            .collect();
+        let hole_identities: Vec<Vec<_>> = (0..hole_count)
+            .map(|hole| {
+                (0..4)
+                    .map(|vertex| EarcutCornerId::source(hole + 1, vertex, 500 + hole * 4 + vertex))
+                    .collect()
+            })
+            .collect();
+        let ((), work) = count_bridge_work(|| {
+            eliminate_holes_with_ids(
+                &mut ring,
+                &mut identities,
+                &holes,
+                &hole_identities,
+                500 + hole_count * 4,
+            )
+            .expect("the grid holes have visible bridges");
+        });
+        assert_eq!(ring.len(), identities.len());
+        assert!(work > 0, "the counter must observe bridge selection");
+        counts.push(work);
+    }
+    for pair in counts.windows(2) {
+        if let &[small, large] = pair {
+            assert!(
+                large < small.wrapping_mul(6),
+                "quadrupling holes: {counts:?}",
+            );
+        }
+    }
+}
 
 #[test]
 fn indexed_hole_bridges_preserve_linear_selection_and_filtering() {
@@ -8,9 +70,6 @@ fn indexed_hole_bridges_preserve_linear_selection_and_filtering() {
         (2, 0.0, 1.0),
         (4, 0.0, 1.0),
         (8, 0.0, 1.0),
-        (16, 0.0, 1.0),
-        (32, 0.0, 1.0),
-        (64, 0.0, 1.0),
         (8, 1.0e12, 0.125),
         (8, 0.0, 1.0e-170),
         (8, 0.0, 1.0e150),

@@ -378,18 +378,11 @@ mod tests {
         assert_columns_match_scalar_reference(ring, probes);
     }
 
-    fn edge_probes(ring: &[XY]) -> Vec<XY> {
-        let mut probes = Vec::with_capacity(
-            ring.len()
-                .checked_mul(4)
-                .expect("each test-ring edge produces four probes"),
-        );
-        for (a, b) in ring
-            .iter()
-            .copied()
-            .zip(ring.iter().copied().cycle().skip(1))
-            .take(ring.len())
-        {
+    fn edge_probes(ring: &[XY], edges: impl Iterator<Item = usize>) -> Vec<XY> {
+        let mut probes = Vec::new();
+        for edge in edges {
+            let a = ring[edge];
+            let b = ring.get(edge.wrapping_add(1)).unwrap_or(&ring[0]);
             let mid = XY::new(a.x.midpoint(b.x), a.y.midpoint(b.y));
             probes.push(a);
             probes.push(XY::new(a.x - 10.0, a.y));
@@ -436,7 +429,7 @@ mod tests {
             ],
         ];
         for ring in rings {
-            let mut probes = edge_probes(&ring);
+            let mut probes = edge_probes(&ring, 0..ring.len());
             probes.extend([
                 XY::new(1.0, 1.0),
                 XY::new(3.0, 0.0),
@@ -647,7 +640,26 @@ mod tests {
                 ring.len() >= RAY_CROSSING,
                 "{name} must exercise the ray-crossing SIMD crossover",
             );
-            let mut probes = edge_probes(&ring);
+            let mut probes = edge_probes(
+                &ring,
+                [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    7,
+                    8,
+                    127,
+                    128,
+                    132,
+                    133,
+                    135,
+                    136,
+                    ring.len().wrapping_sub(1),
+                ]
+                .into_iter(),
+            );
             if huge {
                 probes.extend([
                     XY::new(0.0, 0.0),

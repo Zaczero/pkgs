@@ -9,6 +9,7 @@ use super::*;
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_parallel_pole_plateaus_close_with_second_order_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 85.0), p(179.0, 85.0)]);
     let geodesic = Geodesic::wgs84();
@@ -54,6 +55,7 @@ fn geographic_hausdorff_parallel_pole_plateaus_close_with_second_order_bounds() 
     Ok(())
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_endpoint_maximum_is_attained() -> Result<()> {
     assert_chart_edge_point_hausdorff(
         "maximum at the source endpoint",
@@ -63,6 +65,7 @@ fn geographic_hausdorff_endpoint_maximum_is_attained() -> Result<()> {
     )
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_short_way_seam_edge_uses_chart_interpolation() -> Result<()> {
     assert_chart_edge_point_hausdorff(
         "short-way seam crossing",
@@ -72,6 +75,7 @@ fn geographic_hausdorff_short_way_seam_edge_uses_chart_interpolation() -> Result
     )
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_near_antipodal_point_target_is_attained() -> Result<()> {
     assert_chart_edge_point_hausdorff(
         "near-antipodal target",
@@ -85,6 +89,7 @@ fn geographic_hausdorff_near_antipodal_point_target_is_attained() -> Result<()> 
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target =
@@ -104,6 +109,7 @@ fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let target = Shape::geometry_collection(vec![
@@ -128,6 +134,7 @@ fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_closes_an_exact_polar_parallel_family() -> Result<()> {
     let source = line(vec![p(-45.0, 85.0), p(45.0, 85.0)]);
     let pole = Shape::Point(p(10.0, 90.0));
@@ -188,6 +195,7 @@ fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames() {
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Result<()> {
     let original = line(vec![p(-10.0, 30.0), p(15.0, 40.0)]);
     let reversed = line(vec![p(15.0, 40.0), p(-10.0, 30.0)]);
@@ -202,6 +210,7 @@ fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Re
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() -> Result<()> {
     let source = line(vec![p(0.0, 90.0), p(180.0, 90.0)]);
     let target = Shape::Point(p(0.0, 90.000_000_000_000_01));
@@ -215,6 +224,7 @@ fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() ->
     Ok(())
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
     const MIXED_UNIT_CRS: &str = r#"GEOGCRS["West-radian south-grad WGS84",
  DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
@@ -275,6 +285,7 @@ fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_parallel_hausdorff_perturbations_have_bounded_work() {
     let cases = [
         ("exact", [10.0, 12.5]),
@@ -319,6 +330,7 @@ fn public_parallel_hausdorff_perturbations_have_bounded_work() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_refreshes_a_clipped_target_edge_correspondence() {
     let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
     let target = line(vec![p(10.8, 60.01), p(11.7, 60.01)]);
@@ -338,6 +350,7 @@ fn public_hausdorff_refreshes_a_clipped_target_edge_correspondence() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_maps_a_short_source_onto_the_target_edge_interior() {
     let source_edge = line(vec![p(10.5, 60.0), p(11.5, 60.0)]);
     let target = line(vec![p(10.0, 60.01), p(12.0, 60.01)]);
@@ -354,6 +367,7 @@ fn public_hausdorff_maps_a_short_source_onto_the_target_edge_interior() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_near_pole_hausdorff_has_bounded_symmetric_work() {
     let source = line(vec![p(170.0, 89.9), p(190.0, 89.91)]);
     let target = line(vec![p(170.000_001, 89.900_01), p(190.000_001, 89.910_01)]);
@@ -373,6 +387,7 @@ fn public_near_pole_hausdorff_has_bounded_symmetric_work() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_refreshes_resegmented_target_parameters() {
     let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
     let target = Shape::geometry_collection(vec![
@@ -392,6 +407,7 @@ fn public_hausdorff_refreshes_resegmented_target_parameters() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_keeps_candidate_edge_witnesses_separate_from_set_minima() {
     let source_edge = line(vec![p(10.5, 60.0), p(11.5, 60.0)]);
     let target_edge = line(vec![p(10.0, 60.01), p(12.0, 60.01)]);
@@ -420,6 +436,7 @@ fn public_hausdorff_keeps_candidate_edge_witnesses_separate_from_set_minima() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_does_not_use_another_feature_as_candidate_endpoint_witness() {
     let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
     let target = Shape::geometry_collection(vec![
@@ -438,6 +455,7 @@ fn public_hausdorff_does_not_use_another_feature_as_candidate_endpoint_witness()
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_hausdorff_keeps_the_fixed_witness_fallback_without_target_edges() {
     const SPHERE_CRS: &str = "+proj=longlat +a=6378137 +b=6378137 +type=crs";
     let source = line(vec![p(-40.0, 0.0), p(40.0, 0.0)]);
@@ -453,19 +471,23 @@ fn public_hausdorff_keeps_the_fixed_witness_fallback_without_target_edges() {
     assert!((work.distance - expected).abs() <= 0.01);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_fixed_span_flat_hausdorff_work_scales_by_vertex_count() {
     assert_public_hausdorff_work_scaling("fixed-span flat", false, 60.0, 0.0);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_fixed_span_oblique_hausdorff_work_scales_by_vertex_count() {
     // Densify one oblique support against a fixed two-vertex support.
     assert_public_hausdorff_work_scaling("fixed-span oblique", false, 10.0, 0.02);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_growing_span_flat_hausdorff_work_scales_by_vertex_count() {
     assert_public_hausdorff_work_scaling("growing-span flat", true, 60.0, 0.0);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_growing_span_oblique_hausdorff_work_scales_by_vertex_count() {
     // This series uses locally ordered edges whose total support grows with n.
     assert_public_hausdorff_work_scaling("growing-span oblique", true, 10.0, 0.02);

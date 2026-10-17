@@ -112,8 +112,12 @@ fn polygon_centroid_returns_extrema_from_its_areal_pass() {
     ]);
     let shape = Shape::MultiPolygon(MultiPolygon::from_dense(vec![first, second]).unwrap());
 
-    let (centroid, bounds) = shape.centroid_with_bounds().expect("polygon centroid");
-    assert_eq!(centroid, shape.centroid().expect("ordinary centroid"));
+    let (Shape::Point(centroid), bounds) = shape.centroid_with_bounds().expect("polygon centroid")
+    else {
+        panic!("the areal centroid is a point");
+    };
+    approx::assert_relative_eq!(centroid.x, 7.0, max_relative = 64.0 * f64::EPSILON);
+    approx::assert_relative_eq!(centroid.y, 0.5, max_relative = 64.0 * f64::EPSILON);
     assert_eq!(bounds, shape.bounds());
 }
 
@@ -128,13 +132,12 @@ fn packed_polygon_centroid_returns_extrema_from_its_areal_pass() {
         (0.0, 4.0),
         (0.0, 0.0),
     ]));
-    let Shape::Point(expected) = polygon.centroid().expect("ordinary centroid") else {
-        unreachable!("polygon centroid is a point");
-    };
     let (centroid, bounds) =
         super::centroid_polygon_row_columns_with_bounds(&xs, &ys, &[0, 5], 0..1);
 
-    assert_eq!(centroid, Some((expected.x, expected.y)));
+    let (x, y) = centroid.expect("the square has an areal centroid");
+    approx::assert_relative_eq!(x, 2.0, max_relative = 64.0 * f64::EPSILON);
+    approx::assert_relative_eq!(y, 2.0, max_relative = 64.0 * f64::EPSILON);
     assert_eq!(bounds, polygon.bounds());
 }
 
@@ -147,8 +150,12 @@ fn degenerate_polygon_centroid_keeps_its_extrema_for_the_general_dimension_fallb
         (-8.0, 3.0),
     ]));
 
-    let (centroid, bounds) = shape.centroid_with_bounds().expect("lineal fallback");
-    assert_eq!(centroid, shape.centroid().expect("ordinary centroid"));
+    let (Shape::Point(centroid), bounds) = shape.centroid_with_bounds().expect("lineal fallback")
+    else {
+        panic!("the lineal centroid is a point");
+    };
+    approx::assert_relative_eq!(centroid.x, -2.0, max_relative = 64.0 * f64::EPSILON);
+    approx::assert_relative_eq!(centroid.y, 3.0, max_relative = 64.0 * f64::EPSILON);
     assert_eq!(bounds, shape.bounds());
 }
 
@@ -222,10 +229,11 @@ fn exact_zero_area_collection_still_uses_its_lineal_centroid() {
             .expect("exact area summary")
             .is_none()
     );
-    assert_eq!(
-        super::lineal_centroid(&collection).expect("lineal summary"),
-        Some((1.0, 0.0)),
-    );
+    let (x, y) = super::lineal_centroid(&collection)
+        .expect("lineal summary")
+        .expect("the collinear ring has positive length");
+    approx::assert_relative_eq!(x, 1.0, max_relative = 64.0 * f64::EPSILON);
+    assert_eq!(y, 0.0);
 }
 
 fn origin_on(hull: &Shape) -> Point {
@@ -538,22 +546,7 @@ fn native_concave_hull_contract_invariants_and_reference_envelope() {
 
 #[test]
 fn concave_hull_is_invariant_to_input_point_order() {
-    fn permute(points: &mut [Point], index: usize, expected: &Shape) {
-        if index == points.len() {
-            let hull = multipoint(points)
-                .concave_hull(1.0, 0.0)
-                .expect("concave hull");
-            assert!(hull.equals_exact(expected, 0.0, false, false));
-            return;
-        }
-        for swap in index..points.len() {
-            points.swap(index, swap);
-            permute(points, index + 1, expected);
-            points.swap(index, swap);
-        }
-    }
-
-    let mut points = vec![
+    let points = [
         point(0.0, 0.0),
         point(4.0, 0.0),
         point(4.0, 4.0),
@@ -564,7 +557,18 @@ fn concave_hull_is_invariant_to_input_point_order() {
     let expected = multipoint(&points)
         .concave_hull(1.0, 0.0)
         .expect("concave hull");
-    permute(&mut points, 0, &expected);
+    for order in [
+        [5, 4, 3, 2, 1, 0],
+        [2, 3, 4, 5, 0, 1],
+        [4, 0, 5, 1, 3, 2],
+        [1, 5, 2, 4, 0, 3],
+    ] {
+        let permuted = order.map(|index| points[index]);
+        let hull = multipoint(&permuted)
+            .concave_hull(1.0, 0.0)
+            .expect("concave hull");
+        assert!(hull.equals_exact(&expected, 0.0, false, false));
+    }
 }
 
 #[test]

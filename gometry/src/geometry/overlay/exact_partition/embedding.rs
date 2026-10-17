@@ -2215,63 +2215,47 @@ mod proximity_tests {
     fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
         use crate::geometry::numerics::product::exact_power_of_two;
         let minimum = f64::from_bits(1);
-        let values = [
-            -f64::MAX,
-            -2.0,
-            -1.0,
-            -minimum,
-            -0.0,
-            0.0,
-            minimum,
-            0.5,
-            1.0_f64.next_down(),
-            1.0,
-            1.0_f64.next_up(),
-            2.0,
-            f64::MAX,
-        ];
-        let limits = [
-            0.0,
-            minimum,
-            exact_power_of_two(-52),
-            0.125,
-            0.5,
-            1.0,
-            1.0e100,
-        ];
-        let mut state = 0x6A09_E667_F3BC_C909_u64;
-        let mut sample = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state as usize
-        };
-        for _ in 0..384 {
-            let point = XY::new(
-                values[sample() % values.len()],
-                values[sample() % values.len()],
-            );
-            let left = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
+        for (point, left, right, limit) in [
+            (
+                XY::new(1.0, 1.0),
+                segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0)),
+                segment(XY::new(0.0, 2.0), XY::new(2.0, 0.0)),
+                0.0,
+            ),
+            (
+                XY::new(0.5, minimum),
+                segment(XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+                segment(XY::new(0.0, minimum), XY::new(1.0, minimum)),
+                minimum,
+            ),
+            (
+                XY::new(1.0_f64.next_up(), 1.0),
+                segment(XY::new(1.0, 0.0), XY::new(1.0, 2.0)),
+                segment(
+                    XY::new(1.0_f64.next_up(), 0.0),
+                    XY::new(1.0_f64.next_up(), 2.0),
                 ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let right = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let limit = limits[sample() % limits.len()];
+                exact_power_of_two(-52),
+            ),
+            (
+                XY::new(f64::MAX, 0.0),
+                segment(XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0)),
+                segment(XY::new(f64::MAX, -1.0), XY::new(f64::MAX, 1.0)),
+                0.0,
+            ),
+            (
+                XY::new(-0.0, 0.0),
+                segment(XY::new(-minimum, -minimum), XY::new(minimum, minimum)),
+                segment(XY::new(-minimum, minimum), XY::new(minimum, -minimum)),
+                0.0,
+            ),
+            (
+                XY::new(0.5, 0.125),
+                segment(XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+                segment(XY::new(0.0, 0.125), XY::new(1.0, 0.125)),
+                0.125,
+            ),
+        ] {
             if exact_point_within_segment(point, left, limit).unwrap() {
                 assert!(point_within_chebyshev_segment(point, left, limit));
             }

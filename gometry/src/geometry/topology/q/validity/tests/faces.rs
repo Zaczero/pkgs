@@ -152,9 +152,9 @@ fn tally_rows() -> Vec<TallyRow> {
             expected: Some("shared_linework"),
         },
         TallyRow {
-            name: "p11: one-ULP gap + seam cut pair",
+            name: "period-lift-stable gap + seam cut pair",
             polygons: vec![
-                vec![b(-20., -10.000_000_000_000_002, 0., 10.)],
+                vec![b(-20., -10.000_000_000_000_057, 0., 10.)],
                 vec![b(-10., 0., 0., 10.)],
                 vec![b(170., 180., 0., 10.)],
                 vec![b(-180., -170., 0., 10.)],
@@ -175,21 +175,39 @@ fn tally_rows() -> Vec<TallyRow> {
 }
 
 #[test]
-fn cross_ring_face_tallies_use_q_occupancy_and_exact_precedence() {
-    let rows = tally_rows();
-    assert_eq!(rows.len(), 21);
-    for row in rows {
-        for shift in [0.0, 360.0, -360.0] {
-            let geometry = multi_polygon(&shift_rings(&row.polygons, shift));
-            let actual = signature(&geometry);
-            if let Some(code) = row.expected {
-                assert_eq!(
-                    actual.code,
-                    Some(code),
-                    "{} shift {shift}: {actual:?}",
-                    row.name
-                );
-            }
-        }
+fn one_ulp_gap_with_a_seam_cut_pair_is_valid_without_rounding_the_source() {
+    let geometry = multi_polygon(&[
+        vec![box_ring(-20., -10.000_000_000_000_002, 0., 10.)],
+        vec![box_ring(-10., 0., 0., 10.)],
+        vec![box_ring(170., 180., 0., 10.)],
+        vec![box_ring(-180., -170., 0., 10.)],
+    ]);
+    assert_eq!(signature(&geometry).code, None);
+}
+
+fn assert_cross_ring_face_tallies(shift: f64) {
+    for row in tally_rows() {
+        let geometry = multi_polygon(&shift_rings(&row.polygons, shift));
+        let actual = signature(&geometry);
+        assert_eq!(
+            actual.code, row.expected,
+            "{} shift {shift}: {actual:?}",
+            row.name
+        );
     }
+}
+
+#[test]
+fn cross_ring_face_tallies_use_q_occupancy_and_exact_precedence() {
+    assert_cross_ring_face_tallies(0.0);
+}
+
+#[test]
+fn cross_ring_face_tallies_keep_exact_precedence_after_an_east_period_lift() {
+    assert_cross_ring_face_tallies(360.0);
+}
+
+#[test]
+fn cross_ring_face_tallies_keep_exact_precedence_after_a_west_period_lift() {
+    assert_cross_ring_face_tallies(-360.0);
 }

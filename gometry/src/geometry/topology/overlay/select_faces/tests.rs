@@ -36,8 +36,7 @@ fn q_component_hosts_match_nested_shell_point_location_expectations() -> Result<
             .points
             .iter()
             .position(|source| {
-                source.point.x.to_bits() == x.to_bits()
-                    && source.point.y.to_bits() == y.to_bits()
+                source.point.x.to_bits() == x.to_bits() && source.point.y.to_bits() == y.to_bits()
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("host witness point is missing".into()).into()
@@ -75,9 +74,7 @@ fn q_component_hosts_match_nested_shell_point_location_expectations() -> Result<
             .polygons
             .iter()
             .find(|polygon| polygon.row == row)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("host witness polygon is missing".into())
-            })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("host witness polygon is missing".into()))?;
         let ring = topology
             .sources
             .rings
@@ -99,9 +96,7 @@ fn q_component_hosts_match_nested_shell_point_location_expectations() -> Result<
             .ports
             .get(port_id.0 as usize)
             .map(|port| port.node)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("host witness port is unknown".into()).into()
-            })
+            .ok_or_else(|| GeometryErrorKind::Invalid("host witness port is unknown".into()).into())
     };
     let plan = build_q_plan(&topology, OverlayOp::Difference)?;
     let source_points = source_point_coordinates(&topology)?;
@@ -228,8 +223,8 @@ fn candidate_subgraph_rebuilds_cut_ports_on_a_full_longitude_band() -> Result<()
 }
 
 #[test]
-fn b3_tv_ar_uy_symdiff_wkb_is_byte_identical_across_all_orders() -> Result<()> {
-    let shapes = b3_read_countries(&["TV", "AR", "UY"]);
+fn b3_island_ar_uy_source_arcs_symdiff_wkb_is_identical_across_all_orders() -> Result<()> {
+    let shapes = b3_border_repair_shapes();
     let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
         2, 1, 0,
     ]];
@@ -248,7 +243,7 @@ fn b3_tv_ar_uy_symdiff_wkb_is_byte_identical_across_all_orders() -> Result<()> {
         if let Some(first) = &expected {
             assert_eq!(
                 &bytes, first,
-                "TV/AR/UY symmetric difference WKB differs in order {order:?}"
+                "island/AR/UY source-arc symmetric difference WKB differs in order {order:?}"
             );
         } else {
             expected = Some(bytes);
@@ -258,8 +253,8 @@ fn b3_tv_ar_uy_symdiff_wkb_is_byte_identical_across_all_orders() -> Result<()> {
 }
 
 #[test]
-fn b3_tv_ar_uy_symdiff_is_valid_and_byte_identical_in_all_orders() -> Result<()> {
-    let shapes = b3_read_countries(&["TV", "AR", "UY"]);
+fn b3_island_ar_uy_source_arcs_symdiff_is_valid_and_identical_in_all_orders() -> Result<()> {
+    let shapes = b3_border_repair_shapes();
     assert_eq!(shapes.len(), 3);
     let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
         2, 1, 0,
@@ -296,7 +291,7 @@ fn b3_tv_ar_uy_symdiff_is_valid_and_byte_identical_in_all_orders() -> Result<()>
         if let Some(issue) = issue {
             return Err(GeometryErrorKind::Invalid(
                 format!(
-                    "TV/AR/UY symmetric difference is invalid in operand order {order:?}: {issue:?}; certificate={certificate_path:?}, identity_conflicts={identity_conflicts:?}, moved_nodes={moved_nodes:?}"
+                    "island/AR/UY source-arc symmetric difference is invalid in operand order {order:?}: {issue:?}; certificate={certificate_path:?}, identity_conflicts={identity_conflicts:?}, moved_nodes={moved_nodes:?}"
                 )
                 .into(),
             )
@@ -306,7 +301,7 @@ fn b3_tv_ar_uy_symdiff_is_valid_and_byte_identical_in_all_orders() -> Result<()>
         if let Some(first) = &expected {
             assert_eq!(
                 &bytes, first,
-                "TV/AR/UY symmetric difference must be byte-identical in every order"
+                "island/AR/UY source-arc symmetric difference must be byte-identical in every order"
             );
         } else {
             expected = Some(bytes);
@@ -316,8 +311,8 @@ fn b3_tv_ar_uy_symdiff_is_valid_and_byte_identical_in_all_orders() -> Result<()>
 }
 
 #[test]
-fn b3_rebuild_and_compare_certifies_the_ar_uy_tv_neighbor_assignment() {
-    let shapes = b3_read_countries(&["TV", "AR", "UY"]);
+fn b3_rebuild_and_compare_certifies_the_ar_uy_island_neighbor_assignment() {
+    let shapes = b3_border_repair_shapes();
     assert_eq!(shapes.len(), 3);
     let topology = test_topology(&shapes);
     let plan = build_q_plan(&topology, OverlayOp::SymmetricDifference).expect("Q plan");
@@ -343,7 +338,7 @@ fn b3_rebuild_and_compare_certifies_the_ar_uy_tv_neighbor_assignment() {
         .collect::<BTreeSet<_>>();
     assert!(
         selected_cut_nodes.is_empty(),
-        "the AR/UY/TV witness must not rely on unchanged cut ports"
+        "the AR/UY/island witness must not rely on unchanged cut ports"
     );
 
     let exact = super::super::q::b3_subgraph_face_structure(
@@ -385,7 +380,7 @@ fn b3_rebuild_and_compare_certifies_the_ar_uy_tv_neighbor_assignment() {
     assert_eq!(
         constructed.len(),
         2,
-        "the study has two constructed collisions"
+        "the source arcs have two constructed collisions"
     );
     let mut witness = QCoordinates {
         node: coordinates.node.clone(),

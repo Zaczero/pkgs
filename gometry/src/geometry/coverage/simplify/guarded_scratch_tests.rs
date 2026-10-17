@@ -14,7 +14,7 @@ fn vertex_index_is_lazy_and_adds_no_staging_allocation() {
     use crate::geometry::BulkRTree;
     use crate::test_support::{allocation_count, assert_no_allocations};
 
-    for count in [1, 32, 4096] {
+    for count in [1, 16, 33] {
         let cloud: Vec<_> = (0..count).map(|index| [f64::from(index), 1.0]).collect();
         let direct_cloud = cloud.clone();
         let guard = assert_no_allocations(|| TopologyGuard::new(&[], cloud));

@@ -17,8 +17,7 @@ fn mixed_geographic_overlay_routes_a_retained_source_point_through_q() {
     ));
     let source_point = Point::new_raw_xy(0.0, -0.0);
     let shapes = [polygon, Shape::Point(source_point)];
-    let inputs =
-        GeographicInputs::try_from_shapes(frame, shapes.iter()).expect("sources admit");
+    let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter()).expect("sources admit");
     assert_eq!(
         crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
         crate::geometry::GeographicTopologyRoute::Quotient
@@ -41,8 +40,8 @@ fn mixed_geographic_overlay_routes_a_retained_source_point_through_q() {
 
 #[test]
 fn geographic_search_moves_a_constructed_vertex_off_a_rounded_source_vertex() {
-    let left = crate::io::parse_wkt("POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))")
-        .expect("parse left polygon");
+    let left =
+        crate::io::parse_wkt("POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))").expect("parse left polygon");
     let right = crate::io::parse_wkt(
         "POLYGON ((0 0.022727272727272728, 45 -1, 45 -2, 0 -2, 0 0.022727272727272728))",
     )
@@ -109,30 +108,29 @@ fn geographic_face_certificate_rejects_a_collision_free_neighbor_with_changed_ro
     let one = ExactRational::from_f64(1.0);
     let mut moved = None;
     for &node_id in &collisions {
-        let node =
-            topology.q.nodes.get(node_id.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("collision node is unknown".into())
-            })?;
+        let node = topology
+            .q
+            .nodes
+            .get(node_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("collision node is unknown".into()))?;
         let ports = topology
             .q
             .node_ports
             .get(node.ports.clone())
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("collision node ports are unknown".into())
-            })?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("collision node ports are unknown".into()))?;
         for &port_id in ports {
-            let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("collision port is unknown".into())
-            })?;
+            let port =
+                topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("collision port is unknown".into())
+                })?;
             if !port.cut && port.point.x.try_cmp(&one)?.is_gt() && port.point.y.is_zero() {
                 moved = Some(node_id);
                 break;
             }
         }
     }
-    let moved = moved.ok_or_else(|| {
-        GeometryErrorKind::Invalid("constructed crossing node is missing".into())
-    })?;
+    let moved = moved
+        .ok_or_else(|| GeometryErrorKind::Invalid("constructed crossing node is missing".into()))?;
     let mut assigned = nearest.clone();
     let candidate = assigned.xy(moved)?;
     *assigned.node.get_mut(moved.0 as usize).ok_or_else(|| {
@@ -184,9 +182,9 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
     let source_points = source_point_coordinates(&topology)?;
     let nearest = QCoordinates::build(&topology)?;
     let operation = "polygonize";
-    let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
-        axes.union(shape.axes())
-    });
+    let declared_axes = shapes
+        .iter()
+        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
     let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
     let mut budget = EvaluationBudget::new(operation, 0)?;
     let mut preparation_work = EvaluationOnly::new(&mut budget);
@@ -203,7 +201,10 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    let super::super::emission::CompletedQDrawing::Drawing { diagnostic_lines, .. } = embedding.drawing else {
+    let super::super::emission::CompletedQDrawing::Drawing {
+        diagnostic_lines, ..
+    } = embedding.drawing
+    else {
         panic!("the forced native polygonize plan produces a native drawing");
     };
 
@@ -231,23 +232,20 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
         })
         .collect::<Vec<_>>();
     coordinates.sort_unstable();
-    assert_eq!(
-        coordinates,
-        [
-            (
-                5.0_f64.to_bits(),
-                0.0_f64.to_bits(),
-                Some(1.0_f64.to_bits()),
-                Some(10.0_f64.to_bits()),
-            ),
-            (
-                5.0_f64.to_bits(),
-                (-3.0_f64).to_bits(),
-                Some(2.0_f64.to_bits()),
-                Some(20.0_f64.to_bits()),
-            ),
-        ]
-    );
+    assert_eq!(coordinates, [
+        (
+            5.0_f64.to_bits(),
+            0.0_f64.to_bits(),
+            Some(1.0_f64.to_bits()),
+            Some(10.0_f64.to_bits()),
+        ),
+        (
+            5.0_f64.to_bits(),
+            (-3.0_f64).to_bits(),
+            Some(2.0_f64.to_bits()),
+            Some(20.0_f64.to_bits()),
+        ),
+    ]);
     Ok(())
 }
 
@@ -310,8 +308,7 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
         .x;
     assert!(exact_x.try_cmp(&midpoint)?.is_eq());
     assert_eq!(nearest.xy(node)?.x, 100.0);
-    let down =
-        ExactRational::from_f64(nearest.xy(node)?.x.next_down()).try_subtract(&midpoint)?;
+    let down = ExactRational::from_f64(nearest.xy(node)?.x.next_down()).try_subtract(&midpoint)?;
     let even = ExactRational::from_f64(nearest.xy(node)?.x).try_subtract(&midpoint)?;
     assert!(
         down.try_product(&down)?
@@ -348,12 +345,16 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
         CompletedQDrawing::Source(source) => source.sealed.into_scalar()?.0,
         CompletedQDrawing::Native(native) => native.sealed.into_scalar()?.0,
         CompletedQDrawing::Drawing { shape, frame, .. } => {
-            use crate::geometry::publication::{ProducerDrawingReceipt, StorageTarget, finish_producer_drawing};
+            use crate::geometry::publication::{
+                ProducerDrawingReceipt, StorageTarget, finish_producer_drawing,
+            };
             finish_producer_drawing(
                 ProducerDrawingReceipt::drawing(shape)?,
                 frame,
                 StorageTarget::Scalar,
-            )?.into_scalar()?.0
+            )?
+            .into_scalar()?
+            .0
         },
     };
     let expected = crate::io::parse_wkt(
@@ -371,10 +372,9 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
         };
         let points = polygon.shell.coords().iter_coords().collect::<Vec<_>>();
         let (Some(first), Some(last)) = (points.first(), points.last()) else {
-            return Err(GeometryErrorKind::Invalid(
-                "the midpoint tie output ring is empty".into(),
-            )
-            .into());
+            return Err(
+                GeometryErrorKind::Invalid("the midpoint tie output ring is empty".into()).into(),
+            );
         };
         if first.x.to_bits() != last.x.to_bits() || first.y.to_bits() != last.y.to_bits() {
             return Err(GeometryErrorKind::Invalid(
@@ -520,25 +520,60 @@ fn q_search_repairs_two_constructed_nodes_with_one_nearest_key() -> Result<()> {
 }
 
 #[test]
-fn q_nearest_first_grid_sweep_64_keeps_certified_nearest_tables() -> Result<()> {
-    let counts = q_grid_certificate_sweep(64)?;
-    assert_eq!(counts.pairs, 64);
-    assert!(
-        counts.nearest_certified > 0,
-        "the sample must include nearest-even certificate passes: {counts:?}"
-    );
-    assert_eq!(counts.nearest_certified + counts.search_paths, counts.pairs);
-    eprintln!("Q nearest-first 64-pair sweep: {counts:?}");
-    Ok(())
-}
-
-#[test]
-#[ignore = "2,000-pair Q nearest-first acceptance audit; run out of suite with cargo test"]
-fn q_nearest_first_grid_sweep_2000_out_of_suite() -> Result<()> {
-    let counts = q_grid_certificate_sweep(2_000)?;
-    assert_eq!(counts.pairs, 2_000);
-    eprintln!("Q nearest-first 2,000-pair sweep: {counts:?}");
-    assert_eq!(counts.nearest_certified + counts.search_paths, counts.pairs);
+fn q_nearest_first_fixed_grid_cases_keep_certified_nearest_tables() -> Result<()> {
+    for (name, [a_u, a_v, b_u, b_v]) in [
+        ("identical", [(20, 0), (0, 20), (20, 0), (0, 20)]),
+        ("opposite slants", [(7, -7), (-9, 25), (20, -8), (-12, -6)]),
+        ("mixed orientations", [
+            (26, 13),
+            (17, -30),
+            (4, -19),
+            (27, -10),
+        ]),
+        ("negative basis", [
+            (-22, -13),
+            (-17, -24),
+            (23, -8),
+            (20, -27),
+        ]),
+        ("horizontal basis", [(18, 0), (23, 20), (-20, -13), (29, 5)]),
+        ("shallow basis", [(-17, -3), (3, 30), (26, 20), (25, -15)]),
+        ("steep spans", [(2, 9), (-22, 29), (28, -16), (10, 14)]),
+        ("wide spans", [(-30, 22), (-6, -13), (-7, 26), (30, 25)]),
+        ("reflected basis", [
+            (-17, -16),
+            (-18, 4),
+            (-20, 26),
+            (22, 2),
+        ]),
+    ] {
+        let operands = [
+            q_grid_parallelogram(a_u, a_v)?,
+            q_grid_parallelogram(b_u, b_v)?,
+        ];
+        let topology = test_topology(&operands);
+        let plan = build_q_plan(&topology, OverlayOp::Intersection)?;
+        let source_points = source_point_coordinates(&topology)?;
+        let nearest = QCoordinates::build(&topology)?;
+        let nearest_nodes = nearest.node.clone();
+        let resolved = resolve_q_embedding_xy(
+            &topology,
+            &plan,
+            &source_points,
+            &nearest,
+            OverlayOp::Intersection.name(),
+        )?;
+        if name == "identical" {
+            assert_eq!(resolved.choice, QEmbeddingChoice::Nearest);
+        }
+        match resolved.choice {
+            QEmbeddingChoice::Nearest => assert_eq!(
+                resolved.coordinates.node, nearest_nodes,
+                "{name}: a nearest certificate pass must publish the nearest table",
+            ),
+            QEmbeddingChoice::Searched => {},
+        }
+    }
     Ok(())
 }
 

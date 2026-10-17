@@ -1183,6 +1183,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn assigned_xy_uses_the_original_arc_request_on_an_actual_non_wgs84_ellipsoid() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -1229,6 +1230,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn source_arc_uses_original_root_frame_not_metric_chart_frame() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let runtime = crate::crs::runtime_state_snapshot().unwrap();
@@ -1304,6 +1306,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn source_endpoint_records_do_not_acquire_an_interior_metric() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -1447,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn exact_interior_parameters_that_round_to_endpoints_skip_full_length() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -1503,6 +1507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn xy_occurrence_leaves_the_exact_request_fraction_for_later_eligible_axes() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let runtime = crate::crs::runtime_state_snapshot().unwrap();
@@ -1565,6 +1570,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn exact_requests_reuse_root_total_without_collapsing_rounded_parameters() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let runtime = crate::crs::runtime_state_snapshot().unwrap();
@@ -1787,6 +1793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn cached_exact_request_fraction_still_requires_metric_authority() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let runtime = crate::crs::runtime_state_snapshot().unwrap();
@@ -1877,6 +1884,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn exact_parameter_rounding_is_paid_before_chart_edge_mutation() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let runtime = crate::crs::runtime_state_snapshot().unwrap();
@@ -1950,6 +1958,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn presentation_and_axis_ineligible_source_requests_do_not_acquire_a_metric() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let state = crate::crs::runtime_state_snapshot().unwrap();

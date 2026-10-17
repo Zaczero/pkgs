@@ -74,8 +74,6 @@ pub(crate) struct QuadratureTestProgress {
     pub(crate) current_refinements: u32,
     pub(crate) max_refinements: u32,
     pub(crate) station_measurements: u32,
-    pub(crate) station_best_returns: u32,
-    pub(crate) station_adjacent_stops: u32,
     pub(crate) fraction_measurements: u32,
 }
 
@@ -93,8 +91,6 @@ std::thread_local! {
             current_refinements: 0,
             max_refinements: 0,
             station_measurements: 0,
-            station_best_returns: 0,
-            station_adjacent_stops: 0,
             fraction_measurements: 0,
         }) };
 }
@@ -319,19 +315,10 @@ impl ChartEdge {
                 reason = "an iterate equal to a bracket endpoint cannot advance past adjacent binary64 values"
             )]
             if parameter == lower || parameter == upper {
-                #[cfg(test)]
-                update_test_progress(|progress| {
-                    progress.station_adjacent_stops =
-                        progress.station_adjacent_stops.wrapping_add(1);
-                });
                 break;
             }
         }
 
-        #[cfg(test)]
-        update_test_progress(|progress| {
-            progress.station_best_returns = progress.station_best_returns.wrapping_add(1);
-        });
         Ok(best
             .expect("station inversion measures its first iterate")
             .0)
@@ -584,5 +571,22 @@ impl ChartEdge {
         }
         let value = kronrod * half;
         (value, ((kronrod - gauss) * half).abs())
+    }
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::ChartStation;
+
+    #[test]
+    fn station_fraction_uses_the_retained_measure_only_at_its_parameter() {
+        let station = ChartStation {
+            parameter: 0.25,
+            arclength: 3.0,
+        };
+        assert_eq!(station.fraction_at(0.25, 8.0), Some(0.375));
+        assert_eq!(station.fraction_at(0.25_f64.next_up(), 8.0), None);
+        assert_eq!(station.fraction_at(0.25_f64.next_down(), 8.0), None);
+        assert_eq!(station.fraction_at(0.25, 0.0), None);
     }
 }

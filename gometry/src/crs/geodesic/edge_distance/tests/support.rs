@@ -59,7 +59,7 @@ pub(super) fn oracle_distance(
 }
 
 pub(super) fn dense_oracle(metric: &EllipsoidChartMetric, point: Point, edge: &ChartEdge) -> f64 {
-    const LAST_SAMPLE: u32 = 4_000;
+    const LAST_SAMPLE: u32 = 64;
     let mut samples = Vec::with_capacity(LAST_SAMPLE as usize + 1);
     let mut best_distance = f64::INFINITY;
     for index in 0..=LAST_SAMPLE {

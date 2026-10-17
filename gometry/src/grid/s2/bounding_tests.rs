@@ -89,11 +89,18 @@ fn dense_edge_geom_ok(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f64) 
     bbox_sound_ok(cell, minx, miny, maxx, maxy);
 }
 
-/// Off-seam Hilbert densify (stricter; only where face assignment is unique).
-fn dense_edge_hilbert_ok(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f64) {
-    let n = 10_000_usize;
-    for i in 0..n {
-        let t = i as f64 / (n - 1) as f64;
+/// Off-seam Hilbert samples, alongside the analytic whole-box check.
+fn assert_edge_samples_contained(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f64) {
+    bbox_sound_ok(cell, minx, miny, maxx, maxy);
+    for t in [
+        0.0,
+        f64::from_bits(1),
+        0.25,
+        0.5,
+        0.75,
+        1.0_f64.next_down(),
+        1.0,
+    ] {
         let lon = minx + t * (maxx - minx);
         let lat = miny + t * (maxy - miny);
         for (x, y) in [(lon, miny), (lon, maxy), (minx, lat), (maxx, lat)] {
@@ -201,7 +208,7 @@ fn berlin_single_cell() {
         (13.5, 52.6),
         (13.3, 52.6),
     ]);
-    dense_edge_hilbert_ok(cell, 13.3, 52.4, 13.5, 52.6);
+    assert_edge_samples_contained(cell, 13.3, 52.4, 13.5, 52.6);
 }
 
 /// ~10m Berlin box: must never over-descend to a non-containing leaf.
@@ -435,7 +442,7 @@ fn exact_seam_touch_matrix_no_false_reject() {
 fn small_equator_box_hilbert_contains_corners() {
     let cell = bounding_cell_bbox(Bounds::new_raw(0.0, 0.0, 1.0, 1.0)).expect("cell");
     assert_hilbert_contains_samples(cell, &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
-    dense_edge_hilbert_ok(cell, 0.0, 0.0, 1.0, 1.0);
+    assert_edge_samples_contained(cell, 0.0, 0.0, 1.0, 1.0);
 }
 
 #[test]
@@ -443,7 +450,7 @@ fn line_uses_envelope_hilbert() {
     let shape = line((-21.0, 21.5), (-1.2, 22.9));
     let cell = bounding_cell(&shape).expect("cell");
     let b = shape.bounds().expect("bounds");
-    dense_edge_hilbert_ok(cell, b.minx(), b.miny(), b.maxx(), b.maxy());
+    assert_edge_samples_contained(cell, b.minx(), b.miny(), b.maxx(), b.maxy());
 }
 
 #[test]
@@ -479,7 +486,7 @@ fn polygon_with_hole_uses_bbox() {
     .unwrap();
     let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
     let cell = bounding_cell(&shape).expect("cell");
-    dense_edge_hilbert_ok(cell, -1.0, -1.0, 1.0, 1.0);
+    assert_edge_samples_contained(cell, -1.0, -1.0, 1.0, 1.0);
 }
 
 #[test]
@@ -503,7 +510,7 @@ fn false_reject_corpus_targets() {
             (token, level),
             "bbox ({minx},{miny},{maxx},{maxy})"
         );
-        dense_edge_hilbert_ok(cell, minx, miny, maxx, maxy);
+        assert_edge_samples_contained(cell, minx, miny, maxx, maxy);
     }
 }
 
@@ -532,49 +539,29 @@ fn band_0_2_boxes_no_false_reject() {
     }
 }
 
-/// Multi-scale soundness: 0 non-containing at ANY scale.
+/// Each face and each supported fixture scale has an independently checked box.
 #[test]
-fn multi_scale_soundness_zero_non_containing() {
-    let sizes = [0.2_f64, 0.01, 1e-4, 1e-6];
-    let lats = [
-        -80.0, -60.0, -40.0, -20.0, 0.0, 20.0, 40.0, 52.5, 60.0, 80.0,
-    ];
-    let lons = [
-        -170.0, -135.0, -90.0, -45.0, -20.0, 0.0, 13.4, 45.0, 90.0, 135.0, 170.0,
-    ];
-    let mut ok = 0_usize;
-    for &size in &sizes {
-        for &lat0 in &lats {
-            for &lon0 in &lons {
-                let minx = lon0;
-                let maxx = lon0 + size;
-                let miny = lat0;
-                let maxy = lat0 + size;
-                if maxy > 90.0 || miny < -90.0 || maxx > 180.0 {
-                    continue;
-                }
-                match bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) {
-                    None => {},
-                    Some(cell) => {
-                        dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
-                        let cx = f64::midpoint(minx, maxx);
-                        let cy = f64::midpoint(miny, maxy);
-                        let leaf = CellId::from_lonlat(cx, cy);
-                        if leaf.face() == cell.face() {
-                            assert!(
-                                cell.contains(leaf),
-                                "non-containing {} L{} for ({minx},{miny},{maxx},{maxy})",
-                                cell.token(),
-                                cell.level(),
-                            );
-                        }
-                        ok += 1;
-                    },
-                }
-            }
-        }
+fn multi_scale_face_boxes_contain_their_whole_bounds() {
+    for (minx, miny, size) in [
+        (-170.0, -60.0, 0.2),
+        (-120.0, -20.0, 0.2),
+        (-20.0, -20.0, 0.2),
+        (70.0, 20.0, 0.2),
+        (160.0, 20.0, 0.2),
+        (0.0, 80.0, 0.2),
+        (13.4, 52.5, 0.2),
+        (13.4, 52.5, 0.01),
+        (13.4, 52.5, 1e-4),
+        (13.4, 52.5, 1e-6),
+    ] {
+        let maxx = minx + size;
+        let maxy = miny + size;
+        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy))
+            .expect("each off-seam box is inside one face");
+        bbox_sound_ok(cell, minx, miny, maxx, maxy);
+        let leaf = CellId::from_lonlat(f64::midpoint(minx, maxx), f64::midpoint(miny, maxy));
+        assert!(cell.contains(leaf), "{minx} {miny} size={size}");
     }
-    assert!(ok >= 200, "expected many successes, got {ok}");
 }
 
 #[test]

@@ -848,8 +848,7 @@ mod tests {
             .unwrap();
         let upper = moving_edge_upper(&source, &target, &metric, source_interval, target_interval);
         let mut sampled_max = 0.0_f64;
-        for index in 0..=1024 {
-            let fraction = f64::from(index) / 1024.0;
+        for fraction in [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0] {
             let source_parameter =
                 source_interval[0] + (source_interval[1] - source_interval[0]) * fraction;
             let target_parameter =

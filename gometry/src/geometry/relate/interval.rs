@@ -325,63 +325,95 @@ mod tests {
         }
     }
 
+    fn admitted_cells(maximum: Cell) -> impl Iterator<Item = Cell> {
+        [
+            Cell::Empty,
+            Cell::Dim(Dimension::Point),
+            Cell::Dim(Dimension::Curve),
+            Cell::Dim(Dimension::Surface),
+        ]
+        .into_iter()
+        .filter(move |&cell| cell <= maximum)
+    }
+
     #[test]
-    fn a_decided_interval_agrees_with_the_matrix_methods_on_every_predicate() {
-        // Walk matrices through the interval by witnessing each cell at its
-        // target and settling everything, then compare interval and decided
-        // projections for every matrix admitted by the operand caps.
-        let dims = [Dimension::Point, Dimension::Curve, Dimension::Surface];
-        let shapes = [POINT, LINE, RING, AREA];
-        for &left in &shapes {
-            for &right in &shapes {
+    fn settled_cell_primitives_agree_with_the_decided_matrix() {
+        // Predicate formulas share eval; only these Cells adapters differ.
+        for left in [POINT, LINE, RING, AREA] {
+            for right in [POINT, LINE, RING, AREA] {
                 let open = De9imInterval::open(left, right);
-                // Enumerate every lower-bound assignment consistent with the
-                // upper bounds: each cell ranges over F..=hi.
-                let choices: Vec<Vec<Cell>> = LOCATION_PAIRS
-                    .into_iter()
-                    .map(|(row, col)| {
-                        let mut options = vec![Cell::Empty];
-                        for dim in dims {
-                            if Cell::Dim(dim) <= *interval_cell(&open.hi, row, col) {
-                                options.push(Cell::Dim(dim));
+                for (row, col) in LOCATION_PAIRS {
+                    for value in admitted_cells(*interval_cell(&open.hi, row, col)) {
+                        let mut interval = open;
+                        if let Cell::Dim(dimension) = value {
+                            interval.witness(row, col, dimension);
+                        }
+                        settle_all(&mut interval);
+                        let decided = matrix_predicates::Decided(interval.matrix().unwrap());
+                        for cell in MatrixCell::ALL {
+                            assert_eq!(interval.is_empty(cell), decided.is_empty(cell));
+                            for dimension in
+                                [Dimension::Point, Dimension::Curve, Dimension::Surface]
+                            {
+                                assert_eq!(
+                                    interval.at_least(cell, dimension),
+                                    decided.at_least(cell, dimension)
+                                );
+                                assert_eq!(
+                                    interval.exactly(cell, dimension),
+                                    decided.exactly(cell, dimension)
+                                );
                             }
                         }
-                        options
-                    })
-                    .collect();
-                let mut counters = [0_usize; 9];
-                loop {
-                    let mut interval = open;
-                    for (cell, (row, col)) in LOCATION_PAIRS.into_iter().enumerate() {
-                        if let Cell::Dim(dim) = choices[cell][counters[cell]] {
-                            interval.witness(row, col, dim);
+                        for operand in [MatrixOperand::Left, MatrixOperand::Right] {
+                            assert_eq!(
+                                interval.interior_dim(operand),
+                                decided.interior_dim(operand)
+                            );
                         }
                     }
-                    settle_all(&mut interval);
-                    let matrix = interval.matrix().expect("settled");
-                    for predicate in Predicate::ALL {
-                        assert_eq!(
-                            matrix_predicates::eval(predicate, &interval).option(),
-                            Some(matrix_predicates::decided(predicate, matrix)),
-                            "{predicate:?} on {}",
-                            matrix.text()
-                        );
-                    }
-                    // Odometer step.
-                    let mut cell = 0;
-                    loop {
-                        if cell == 9 {
-                            break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settled_interior_dimensions_agree_on_every_admitted_row_and_column() {
+        for left in [POINT, LINE, RING, AREA] {
+            for right in [POINT, LINE, RING, AREA] {
+                let open = De9imInterval::open(left, right);
+                for (operand, locations) in [
+                    (MatrixOperand::Left, [
+                        (Loc::Interior, Loc::Interior),
+                        (Loc::Interior, Loc::Boundary),
+                        (Loc::Interior, Loc::Exterior),
+                    ]),
+                    (MatrixOperand::Right, [
+                        (Loc::Interior, Loc::Interior),
+                        (Loc::Boundary, Loc::Interior),
+                        (Loc::Exterior, Loc::Interior),
+                    ]),
+                ] {
+                    let [first, second, third] =
+                        locations.map(|(row, col)| *interval_cell(&open.hi, row, col));
+                    for a in admitted_cells(first) {
+                        for b in admitted_cells(second) {
+                            for c in admitted_cells(third) {
+                                let mut interval = open;
+                                for ((row, col), value) in locations.into_iter().zip([a, b, c]) {
+                                    if let Cell::Dim(dimension) = value {
+                                        interval.witness(row, col, dimension);
+                                    }
+                                }
+                                settle_all(&mut interval);
+                                let decided =
+                                    matrix_predicates::Decided(interval.matrix().unwrap());
+                                assert_eq!(
+                                    interval.interior_dim(operand),
+                                    decided.interior_dim(operand)
+                                );
+                            }
                         }
-                        counters[cell] += 1;
-                        if counters[cell] < choices[cell].len() {
-                            break;
-                        }
-                        counters[cell] = 0;
-                        cell += 1;
-                    }
-                    if cell == 9 {
-                        break;
                     }
                 }
             }

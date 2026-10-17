@@ -63,7 +63,7 @@ fn assert_expected(row: &RingRow, signature: &Signature) {
     }
 }
 
-fn assert_ring_rows(rows: impl IntoIterator<Item = RingRow>) {
+fn assert_ring_rows(rows: impl IntoIterator<Item = RingRow>, reversed: bool, shift: f64) {
     let mut failures = Vec::new();
     for row in rows {
         let closed_ring = row
@@ -74,23 +74,15 @@ fn assert_ring_rows(rows: impl IntoIterator<Item = RingRow>) {
             .len()
             .checked_sub(1)
             .expect("every source ring stores a closure");
-        let mut baseline = None;
-        for shift in [0.0, 360.0, -360.0] {
-            for reversed in [false, true] {
-                for offset in 0..variants {
-                    let actual = signature(&transformed(&row, offset, reversed, shift));
-                    if let Some(expected) = &baseline {
-                        if &actual != expected {
-                            failures.push(format!(
-                                    "{} rot{offset} reverse={reversed} shift={shift}: {actual:?} != {expected:?}",
-                                    row.name
-                                ));
-                        }
-                    } else {
-                        assert_expected(&row, &actual);
-                        baseline = Some(actual);
-                    }
-                }
+        let baseline = signature(&shape(&row.rings, row.multi));
+        assert_expected(&row, &baseline);
+        for offset in 0..variants {
+            let actual = signature(&transformed(&row, offset, reversed, shift));
+            if actual != baseline {
+                failures.push(format!(
+                    "{} rot{offset} reverse={reversed} shift={shift}: {actual:?} != {baseline:?}",
+                    row.name
+                ));
             }
         }
     }
@@ -119,42 +111,72 @@ fn ring_group(row: &RingRow) -> u8 {
     }
 }
 
-#[test]
-fn source_prototype_contains_84_ring_rule_rows() {
-    assert_eq!(rows().len(), 84);
+macro_rules! ring_rule_group {
+    ($name:ident, $group:expr) => {
+        mod $name {
+            use super::*;
+
+            #[test]
+            fn forward() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    false,
+                    0.0,
+                );
+            }
+
+            #[test]
+            fn forward_east_period() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    false,
+                    360.0,
+                );
+            }
+
+            #[test]
+            fn forward_west_period() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    false,
+                    -360.0,
+                );
+            }
+
+            #[test]
+            fn reversed() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    true,
+                    0.0,
+                );
+            }
+
+            #[test]
+            fn reversed_east_period() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    true,
+                    360.0,
+                );
+            }
+
+            #[test]
+            fn reversed_west_period() {
+                assert_ring_rows(
+                    rows().into_iter().filter(|row| ring_group(row) == $group),
+                    true,
+                    -360.0,
+                );
+            }
+        }
+    };
 }
 
-#[test]
-fn north_cap_ordinary_cut_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 0));
-}
-
-#[test]
-fn north_cap_seam_cut_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 1));
-}
-
-#[test]
-fn south_cap_ordinary_cut_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 2));
-}
-
-#[test]
-fn south_cap_seam_cut_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 3));
-}
-
-#[test]
-fn full_longitude_band_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 4));
-}
-
-#[test]
-fn pole_and_period_contact_rules_are_invariant_under_period_lifts() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 5));
-}
-
-#[test]
-fn ordinary_and_cross_ring_facts_are_invariant_under_rotation() {
-    assert_ring_rows(rows().into_iter().filter(|row| ring_group(row) == 6));
-}
+ring_rule_group!(north_cap_ordinary_cut, 0);
+ring_rule_group!(north_cap_seam_cut, 1);
+ring_rule_group!(south_cap_ordinary_cut, 2);
+ring_rule_group!(south_cap_seam_cut, 3);
+ring_rule_group!(full_longitude_band, 4);
+ring_rule_group!(pole_and_period_contact, 5);
+ring_rule_group!(ordinary_and_cross_ring, 6);

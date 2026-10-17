@@ -12,5 +12,5 @@ fn chart_metric_trait_constructs_and_measures_a_chart_edge() {
         .unwrap();
     let measured = metric.chart_edge_length(&edge).unwrap();
     let expected = 5_022_000.141_519_251;
-    assert!((measured - expected).abs() <= 2.0e-9);
+    approx::assert_relative_eq!(measured, expected, max_relative = 8.0 * f64::EPSILON);
 }

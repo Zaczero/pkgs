@@ -1,4 +1,5 @@
 use crate::geographic::lonlat::{MAX_LATITUDE, MIN_LATITUDE};
+use crate::geometry::numerics::product::exact_power_of_two;
 use crate::py::errors;
 use crate::py::functions::geocode::PyResult;
 
@@ -33,9 +34,9 @@ const fn build_shortlink_alphabet_lut() -> [i8; 256] {
 /// endpoint (and its rounded predecessor) at ``u32::MAX`` instead of wrapping
 /// through a signed intermediate to the south pole.
 pub(super) fn shortlink_encode(lon: f64, lat: f64, zoom: u8) -> String {
-    let x = ((lon + 180.0) * (2_f64.powi(32)) / 360.0) as i64 as u32;
+    let x = ((lon + 180.0) * exact_power_of_two(32) / 360.0) as i64 as u32;
     let lat = lat.clamp(MIN_LATITUDE, MAX_LATITUDE);
-    let scale = 2_f64.powi(32) / 180.0;
+    let scale = exact_power_of_two(32) / 180.0;
     let y = (lat * scale - MIN_LATITUDE * scale) as u32;
     // Ruby interleaves x into the higher bit of each pair.
     let code = crate::curves::morton_interleave(y, x);
@@ -134,8 +135,8 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
     let x = x.wrapping_shl(shift);
     let y = y.wrapping_shl(shift);
     Ok((
-        (x as f64) * 360.0 / 2_f64.powi(32) - 180.0,
-        (y as f64) * 180.0 / 2_f64.powi(32) - 90.0,
+        (x as f64) * 360.0 / exact_power_of_two(32) - 180.0,
+        (y as f64) * 180.0 / exact_power_of_two(32) - 90.0,
         zoom,
     ))
 }

@@ -7,6 +7,7 @@ use super::rays::{
     ring_has_point, ring_kind, ring_probe_columns,
 };
 use super::*;
+use crate::geometry::Coordinates as _;
 
 include!("tests/reference.rs");
 include!("tests/support.rs");

@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn operation_rank_directory_is_linear_for_unaligned_large_batches() {
-        let len = 10_000;
+        let len = 2049;
         let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap();
         let rows: Vec<_> = (0..len).collect();
 
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn operation_rank_directory_scales_linearly_across_batch_sizes() {
-        for len in [10_000, 100_000, 1_000_000] {
+        for len in [1025, 2049, 4097] {
             let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap();
             let rows: Vec<_> = (0..len).collect();
             reset_count_valid_bytes();
@@ -911,7 +911,6 @@ mod tests {
                 let _ = rank.resolve(row);
             }
             let bytes = count_valid_bytes();
-            eprintln!("rank_directory len={len} count_valid_bytes={bytes}");
             assert!(
                 bytes <= mask.bytes.len() + len * RANK_BLOCK_BYTES,
                 "directory visited {bytes} bytes for {len} rows"

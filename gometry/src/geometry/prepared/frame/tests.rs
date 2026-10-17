@@ -344,6 +344,7 @@ mod frame_cache_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn prepared_geographic_exact_topology_heap_bytes_survive_poison() {
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()

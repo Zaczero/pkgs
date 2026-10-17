@@ -30,6 +30,7 @@ fn geographic_clean_never_collapses_a_rational_sliver() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_attributes_belong_to_the_output_occurrence() {
     let rows = [
         crate::io::parse_wkt("POLYGON ZM ((0 0 10 7, 1 0 10 7, 1 1 10 7, 0 1 10 7, 0 0 10 7))")
@@ -101,6 +102,7 @@ fn geographic_clean_empty_row_preserves_source_axes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
     let outer = crate::io::parse_wkt(
         "POLYGON ZM ((0 80 1 101, 90 80 11 201, 180 80 21 301, 270 80 31 401, 0 80 1 101))",
@@ -133,6 +135,7 @@ fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_area_rankings_retain_source_ring_anchors() {
     let rows = [
         crate::io::parse_wkt("POLYGON ((10 60, 10 85, 0 85, 0 60, 10 60))")
@@ -156,6 +159,7 @@ fn geographic_clean_area_rankings_retain_source_ring_anchors() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_longest_border_retains_polar_boundary() {
     let model = crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric");
     let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");

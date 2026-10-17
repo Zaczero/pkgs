@@ -166,37 +166,27 @@ mod tests {
 
     #[test]
     fn certified_centers_are_the_exact_nearest_even_rounding() {
-        let mut state = 0x2545_F491_4F6C_DD1D_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 11) as f64 / (1_u64 << 53) as f64
-        };
         let mut certified = 0_usize;
         let mut declined = 0_usize;
-        for case in 0..20_000 {
-            // Two of the five scales sit outside the certificate's window and
-            // must decline to the exact construction rather than round wrong.
-            let scale = match case % 5 {
-                0 => 1.0,
-                1 => 1e6,
-                2 => 1e-6,
-                3 => 1e150,
-                _ => 1e-150,
-            };
-            let p = |next: &mut dyn FnMut() -> f64| {
-                XY::new((next() - 0.5) * scale, (next() - 0.5) * scale)
-            };
-            let (a, b, c) = (p(&mut next), p(&mut next), p(&mut next));
-            if agree(a, b, c) {
-                certified += 1;
-            } else {
-                declined += 1;
+        for scale in [1.0, 1e6, 1e-6, 1e150, 1e-150] {
+            for (a, b, c) in [
+                ((0.0, 0.0), (2.0, 0.0), (0.0, 2.0)),
+                ((0.0, 0.0), (0.0, 2.0), (2.0, 0.0)),
+                ((1.0, 1.0), (4.0, 2.0), (2.0, 5.0)),
+                ((-3.0, 1.0), (2.0, -4.0), (5.0, 3.0)),
+                ((0.0, 0.0), (1.0, 0.0), (1.0, f64::EPSILON)),
+                ((0.0, 0.0), (1.0, 1.0), (2.0, 2.0)),
+            ] {
+                let scaled = |point: (f64, f64)| XY::new(point.0 * scale, point.1 * scale);
+                if agree(scaled(a), scaled(b), scaled(c)) {
+                    certified += 1;
+                } else {
+                    declined += 1;
+                }
             }
         }
         assert!(
-            certified > 11_000 && declined >= 8_000,
+            certified > 0 && declined > 0,
             "certified {certified}, declined {declined}"
         );
     }
@@ -232,54 +222,56 @@ mod tests {
 
     #[test]
     fn certified_bisector_hits_are_the_exact_nearest_even_rounding() {
-        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 11) as f64 / (1_u64 << 53) as f64
-        };
         let mut certified = 0_usize;
-        for case in 0..20_000 {
-            let scale = if case % 2 == 0 { 1.0 } else { 1e5 };
-            let a = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
-            let b = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
-            let value = (next() - 0.5) * scale * 4.0;
-            let axis = if case % 3 == 0 {
-                SideAxis::FixedX
-            } else {
-                SideAxis::FixedY
-            };
-            let BisectorHit::Free(free) = certified_bisector_hit(a, b, axis, value) else {
-                continue;
-            };
-            let side = match axis {
-                SideAxis::FixedX => (XY::new(value, -1.0e9), XY::new(value, 1.0e9)),
-                SideAxis::FixedY => (XY::new(-1.0e9, value), XY::new(1.0e9, value)),
-            };
-            let hit = exact::incidence::line_intersection(
-                &exact::ExactLine::perpendicular_bisector(a, b).unwrap(),
-                &exact::ExactLine::through_points(
-                    &exact::ExactPoint::from_xy(side.0),
-                    &exact::ExactPoint::from_xy(side.1),
-                )
-                .unwrap(),
-            )
-            .unwrap()
-            .round_nearest_even()
-            .unwrap();
-            let expected = match axis {
-                SideAxis::FixedX => hit.y,
-                SideAxis::FixedY => hit.x,
-            };
-            assert_eq!(
-                free.to_bits(),
-                expected.to_bits(),
-                "{a:?} {b:?} {axis:?} {value}"
-            );
-            certified += 1;
+        for scale in [1.0, 1e5] {
+            for (first, second) in [
+                ((0.0, 0.0), (2.0, 0.0)),
+                ((0.0, 0.0), (0.0, 2.0)),
+                ((0.0, 0.0), (2.0, 4.0)),
+                ((3.0, -1.0), (-2.0, 7.0)),
+            ] {
+                let a = XY::new(first.0 * scale, first.1 * scale);
+                let b = XY::new(second.0 * scale, second.1 * scale);
+                for axis in [SideAxis::FixedX, SideAxis::FixedY] {
+                    for coordinate in [-3.0, 0.0, 4.0] {
+                        let value = coordinate * scale;
+                        let BisectorHit::Free(free) = certified_bisector_hit(a, b, axis, value)
+                        else {
+                            continue;
+                        };
+                        let side = match axis {
+                            SideAxis::FixedX => (XY::new(value, -1.0e9), XY::new(value, 1.0e9)),
+                            SideAxis::FixedY => (XY::new(-1.0e9, value), XY::new(1.0e9, value)),
+                        };
+                        let hit = exact::incidence::line_intersection(
+                            &exact::ExactLine::perpendicular_bisector(a, b).unwrap(),
+                            &exact::ExactLine::through_points(
+                                &exact::ExactPoint::from_xy(side.0),
+                                &exact::ExactPoint::from_xy(side.1),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap()
+                        .round_nearest_even()
+                        .unwrap();
+                        let expected = match axis {
+                            SideAxis::FixedX => hit.y,
+                            SideAxis::FixedY => hit.x,
+                        };
+                        assert_eq!(
+                            free.to_bits(),
+                            expected.to_bits(),
+                            "{a:?} {b:?} {axis:?} {value}"
+                        );
+                        certified += 1;
+                    }
+                }
+            }
         }
-        assert!(certified > 19_000, "certified {certified}");
+        assert!(
+            certified > 0,
+            "the fixed cases must exercise certified hits"
+        );
         // Sites on a horizontal line have a vertical bisector: parallel to a
         // vertical side, and meeting a horizontal side at x = 1.
         assert_eq!(

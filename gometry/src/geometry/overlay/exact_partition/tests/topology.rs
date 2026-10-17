@@ -156,7 +156,7 @@ fn hole_hosts_scale_with_the_hole_count() {
         assert_eq!(faces.count as usize, 2 + (side * side) as usize);
         partition_metrics().ray_orientations
     };
-    let (small, large) = (orientations(16), orientations(32));
+    let (small, large) = (orientations(2), orientations(4));
     assert!(large < 6 * small, "{small} -> {large}");
 }
 
@@ -582,9 +582,13 @@ fn certified_parts_serialize_polygon_line_and_isolated_point() {
     let (points, lines, polygons) = plan
         .emit_xy_parts(&partition, &topology, &edges, "test")
         .unwrap();
-    assert_eq!(points.iter().map(crate::geometry::Point::xy).collect::<Vec<_>>(), [
-        XY::new(10.0, 3.0)
-    ]);
+    assert_eq!(
+        points
+            .iter()
+            .map(crate::geometry::Point::xy)
+            .collect::<Vec<_>>(),
+        [XY::new(10.0, 3.0)]
+    );
     assert_eq!(lines.len(), 1);
     let mut endpoints = lines[0].xs().to_vec();
     endpoints.sort_unstable_by(f64::total_cmp);

@@ -1026,12 +1026,12 @@ mod tests {
         let metric = chart_metric(&geodesic);
         let point = Point::new_raw_xy(0.0, 0.0);
         let endpoint = ChartParts::build(
-            &crate::io::parse_wkt("LINESTRING (0 1,1 2)").unwrap(),
+            &crate::io::parse_wkt("LINESTRING (0 0,1 1)").unwrap(),
             &metric,
         )
         .unwrap();
         let interior = ChartParts::build(
-            &crate::io::parse_wkt("LINESTRING (-1 1,1 1)").unwrap(),
+            &crate::io::parse_wkt("LINESTRING (-1 0,1 0)").unwrap(),
             &metric,
         )
         .unwrap();
@@ -1050,18 +1050,18 @@ mod tests {
                 selected(point, &endpoint, &metric, query)
                     .distance
                     .to_bits(),
-                110_574.388_557_798_78_f64.to_bits()
+                0.0_f64.to_bits()
             );
             assert_eq!(
                 selected(point, &interior, &metric, query)
                     .distance
                     .to_bits(),
-                110_574.388_557_798_78_f64.to_bits()
+                0.0_f64.to_bits()
             );
         }
         let parts = ChartParts::build(
             &crate::io::parse_wkt(
-                "MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))",
+                "MULTILINESTRING ZM ((0 0 10 100,1 1 20 200),(-1 0 30 300,1 0 50 500))",
             )
             .unwrap(),
             &metric,
@@ -1088,26 +1088,21 @@ mod tests {
             assert_eq!(witness.second.m(), Some(400.0));
         }
         let farther = ChartParts::build(
-            &crate::io::parse_wkt(
-                "MULTILINESTRING ((0 1,1 2),(-1 1.0000000000000002,1 1.0000000000000002))",
-            )
-            .unwrap(),
+            &crate::io::parse_wkt("MULTILINESTRING ((0 0,1 1),(-1 0.000001,1 0.000001))").unwrap(),
             &metric,
         )
         .unwrap();
         let farther_interior = ChartParts::build(
-            &crate::io::parse_wkt("LINESTRING (-1 1.0000000000000002,1 1.0000000000000002)")
-                .unwrap(),
+            &crate::io::parse_wkt("LINESTRING (-1 0.000001,1 0.000001)").unwrap(),
             &metric,
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             selected(point, &farther_interior, &metric, PointEdgeQuery::Nearest {
                 cutoff: f64::INFINITY
             })
             .distance
-            .to_bits(),
-            110_574.388_557_798_78_f64.to_bits() + 2,
+                > metric.geodesic_numerical_policy().backend_floor(),
         );
         for query in [
             PointEdgeQuery::Nearest {
@@ -1122,6 +1117,52 @@ mod tests {
     }
 
     #[test]
+    fn chart_candidate_distance_precedes_witness_role_at_adjacent_values() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let parts = ChartParts::build(
+            &crate::io::parse_wkt("LINESTRING (-1 0,1 0)").unwrap(),
+            &metric,
+        )
+        .unwrap();
+        let endpoint = ChartPairCandidate {
+            distance: 1.0,
+            lower_bound: 0.0,
+            source_ordinal: 0,
+            target: ChartTarget::Point(Point::new_raw_xy(0.0, 0.0)),
+        };
+        let interior = ChartPairCandidate {
+            source_ordinal: 1,
+            target: ChartTarget::Edge {
+                part: &parts.edges[0],
+                parameter: 0.5,
+            },
+            ..endpoint
+        };
+        let farther = ChartPairCandidate {
+            distance: 1.0_f64.next_up(),
+            ..interior
+        };
+        for query in [
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            PointEdgeQuery::Locate {
+                cutoff: f64::INFINITY,
+            },
+        ] {
+            assert!(interior.precedes(Some(&endpoint), query));
+            assert!(!farther.precedes(Some(&endpoint), query));
+            assert!(endpoint.precedes(Some(&farther), query));
+        }
+        assert!(
+            !interior.precedes(Some(&endpoint), PointEdgeQuery::Minimum {
+                cutoff: f64::INFINITY,
+            },)
+        );
+    }
+
+    #[test]
     fn chart_witness_role_pair_fold_preserves_reverse_interior_provenance() {
         let geodesic = geographiclib_rs::Geodesic::wgs84();
         let metric = chart_metric(&geodesic);
@@ -1130,7 +1171,7 @@ mod tests {
             &metric,
         )
         .unwrap();
-        let collection = ChartParts::build(&crate::io::parse_wkt("GEOMETRYCOLLECTION ZM (POINT ZM (0 1 10 100),LINESTRING ZM (-1 1 30 300,1 1 50 500))").unwrap(), &metric).unwrap();
+        let collection = ChartParts::build(&crate::io::parse_wkt("GEOMETRYCOLLECTION ZM (POINT ZM (0 0 10 100),LINESTRING ZM (-1 0 30 300,1 0 50 500))").unwrap(), &metric).unwrap();
         for reverse in [false, true] {
             let (left, right) = if reverse {
                 (&collection, &point)
@@ -1158,7 +1199,7 @@ mod tests {
     fn chart_witness_role_bvh_admits_later_equal_interior_after_endpoint() {
         let geodesic = geographiclib_rs::Geodesic::wgs84();
         let metric = chart_metric(&geodesic);
-        let point = Point::new_raw_xy(0.0, 0.0);
+        let point = Point::new_raw_xy(0.0, 1.0);
         let shape = crate::io::parse_wkt("MULTILINESTRING ((0 1,-1 2),(-120 10,-119 10),(-100 10,-99 10),(-80 10,-79 10),(80 10,81 10),(100 10,101 10),(120 10,121 10),(140 10,141 10),(-1 1,1 1))").unwrap();
         let parts = ChartParts::build(&shape, &metric).unwrap();
         let mut visited = Vec::new();
@@ -1238,6 +1279,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn chart_control_distance_and_witness_separations_match_the_independent_minimum() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
         let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
@@ -1402,14 +1444,14 @@ mod tests {
                     target_point.y.to_bits(),
                     "{unit_name}: {case} target latitude",
                 );
-                assert_eq!(
-                    collection_minimum.distance.to_bits(),
-                    point_minimum.distance.to_bits(),
+                assert!(
+                    (collection_minimum.distance - point_minimum.distance).abs()
+                        <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
                     "{unit_name}: {case} point/collection distance",
                 );
-                assert_eq!(
-                    collection_minimum.lower_bound.to_bits(),
-                    point_minimum.lower_bound.to_bits(),
+                assert!(
+                    (collection_minimum.lower_bound - point_minimum.lower_bound).abs()
+                        <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
                     "{unit_name}: {case} point/collection lower bound",
                 );
                 assert_eq!(

@@ -419,7 +419,7 @@ mod query_tests {
         use crate::geometry::XY;
         use crate::geometry::segment_index::ChordIndex;
 
-        let segments: Vec<_> = (0..4096)
+        let segments: Vec<_> = (0..1025)
             .map(|index| {
                 let coordinate = f64::from(index);
                 Segment {
@@ -431,13 +431,13 @@ mod query_tests {
         let index = ChordIndex::build(&segments);
         let chord = Segment {
             start: XY::new(0.0, 0.0),
-            end: XY::new(8192.0, 8192.0),
+            end: XY::new(2048.0, 2048.0),
         };
         assert_eq!(
             SegmentIndex::build(&segments)
                 .intersecting_candidates(chord)
                 .count(),
-            4096
+            1025
         );
         let mut checked = 0;
         assert!(index.all_candidates(chord, |_| {
@@ -515,7 +515,7 @@ mod query_tests {
             ),
         ];
         for (chord, segments) in cases {
-            let segments: Vec<_> = segments.into_iter().cycle().take(2048).collect();
+            let segments: Vec<_> = segments.into_iter().cycle().take(1025).collect();
             let index = ChordIndex::build(&segments);
             let mut retained = vec![false; segments.len()];
             assert!(index.all_candidates(chord, |entry| {

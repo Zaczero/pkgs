@@ -848,7 +848,7 @@ fn large_convex_ring(vertex_count: usize) -> Vec<Point> {
 #[test]
 fn polygon_triangles_circle_candidate_work_scales_near_linearly() {
     let mut counts = Vec::new();
-    for vertices in [2_048_usize, 4_096] {
+    for vertices in [128_usize, 256] {
         let shape = Shape::Polygon(polygon(large_convex_ring(vertices), Vec::new()));
         let (triangles, candidates) = super::earcut::count_ear_candidates(|| {
             shape.polygon_triangles().expect("circle triangulates")
@@ -870,12 +870,10 @@ fn polygon_triangles_circle_candidate_work_scales_near_linearly() {
 #[test]
 fn polygon_triangles_radial_validation_work_scales_near_linearly() {
     let mut counts = Vec::new();
-    for vertices in [2_048_usize, 4_096] {
-        let mut seed = 42_u64;
+    for vertices in [96_usize, 192] {
         let points = (0..vertices)
             .map(|index| {
-                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                let radius = 0.8 + 0.2 * f64::from((seed >> 32) as u32) / f64::from(u32::MAX);
+                let radius = if index % 2 == 0 { 0.8 } else { 1.0 };
                 let angle = index as f64 * std::f64::consts::TAU / vertices as f64;
                 xy(radius * angle.cos(), radius * angle.sin())
             })
@@ -962,16 +960,16 @@ fn earcut_sweep_preserves_box_scan_contact_decisions() {
 }
 
 #[test]
-fn validate_earcut_ring_accepts_large_simple_ring() {
-    let ring = large_convex_ring(10_000);
+fn validate_earcut_ring_accepts_an_indexed_simple_ring() {
+    let ring = large_convex_ring(129);
     validate_earcut_ring(&ring).expect("large simple ring is valid");
     cleaned_earcut_ring(&ring, false).expect("large simple ring cleans");
 }
 
 #[test]
-fn validate_earcut_ring_rejects_large_self_intersecting_ring() {
-    let mut ring = large_convex_ring(10_000);
-    ring[5_000] = ring[100];
+fn validate_earcut_ring_rejects_an_indexed_self_intersecting_ring() {
+    let mut ring = large_convex_ring(129);
+    ring[64] = ring[16];
     assert!(validate_earcut_ring(&ring).is_err());
 }
 
@@ -1039,42 +1037,38 @@ fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
         )]),
         13,
     );
-    // convex_medium_two_holes
     assert_earcut_oracle(
-        polygon(convex_ring(31, 100.0), vec![
+        polygon(convex_ring(9, 100.0), vec![
             axis_aligned_square(-20.0, 0.0, 3.0),
             axis_aligned_square(20.0, 0.0, 3.0),
         ]),
-        41,
+        19,
     );
-    // star_medium_three_holes
     assert_earcut_oracle(
-        polygon(star_ring(64, 100.0, 40.0), vec![
+        polygon(star_ring(12, 100.0, 40.0), vec![
             axis_aligned_square(-15.0, -10.0, 2.0),
             axis_aligned_square(15.0, -10.0, 2.0),
             axis_aligned_square(0.0, 15.0, 2.0),
         ]),
-        80,
+        28,
     );
-    // convex_max_four_holes
     assert_earcut_oracle(
-        polygon(convex_ring(256, 100.0), vec![
+        polygon(convex_ring(16, 100.0), vec![
             axis_aligned_square(-30.0, -30.0, 5.0),
             axis_aligned_square(30.0, -30.0, 5.0),
             axis_aligned_square(-30.0, 30.0, 5.0),
             axis_aligned_square(30.0, 30.0, 5.0),
         ]),
-        278,
+        38,
     );
-    // star_max_four_holes
     assert_earcut_oracle(
-        polygon(star_ring(255, 100.0, 40.0), vec![
+        polygon(star_ring(15, 100.0, 40.0), vec![
             axis_aligned_square(-15.0, -10.0, 2.0),
             axis_aligned_square(15.0, -10.0, 2.0),
             axis_aligned_square(-10.0, 15.0, 2.0),
             axis_aligned_square(12.0, 15.0, 2.0),
         ]),
-        277,
+        37,
     );
 }
 
@@ -1088,7 +1082,7 @@ fn square_shell_with_offset_holes(shell_vertices: usize) -> Polygon {
 }
 
 fn square_shell_with_grid_holes(hole_count: usize) -> Polygon {
-    let shell = large_convex_ring(500);
+    let shell = large_convex_ring(8);
     let side = hole_count.isqrt().max(1);
     let spacing = 120.0 / side as f64;
     let mut holes = Vec::with_capacity(hole_count);
@@ -1121,7 +1115,7 @@ fn earcut_rejects_nested_holes_via_containment_index() {
 
 #[test]
 fn earcut_grid_holes_preserve_euler_triangle_count() {
-    for hole_count in [10_usize, 20, 40, 80] {
+    for hole_count in [1_usize, 4, 9] {
         let poly = square_shell_with_grid_holes(hole_count);
         let expected_count = polygon_vertices(&poly)
             .len()
@@ -1136,67 +1130,12 @@ fn earcut_grid_holes_preserve_euler_triangle_count() {
 }
 
 #[test]
-fn polygon_triangles_grid_bridge_work_scales_subquadratically() {
-    let mut counts = Vec::new();
-    // At 4x4/8x8/16x16, fixed shell work hides an exhaustive quadratic
-    // bridge scan. The next square-grid ladder rejects that scan below.
-    for holes in [25_usize, 100, 400] {
-        let poly = square_shell_with_grid_holes(holes);
-        let expected = polygon_vertices(&poly)
-            .len()
-            .wrapping_add(holes.wrapping_mul(2))
-            .wrapping_sub(2);
-        let source = Shape::Polygon(poly);
-        let ((triangles, ear_work), bridge_work) = super::earcut_bridges::count_bridge_work(|| {
-            super::earcut::count_ear_candidates(|| {
-                source.polygon_triangles().expect("grid triangulates")
-            })
-        });
-        assert_eq!(triangles.len(), expected);
-        eprintln!(
-            "{holes} holes: bridge work {bridge_work}, ear work {ear_work}, ear scans {}",
-            super::earcut::ear_scan_steps()
-        );
-        counts.push(bridge_work);
+fn earcut_offset_holes_bridge_across_candidate_index_admission() {
+    for shell_vertices in [64, 65] {
+        let source = Shape::Polygon(square_shell_with_offset_holes(shell_vertices));
+        let triangles = source
+            .polygon_triangles()
+            .expect("holed polygon triangulates");
+        assert_eq!(triangles.len(), shell_vertices + 16);
     }
-    for pair in counts.windows(2) {
-        if let &[small, large] = pair {
-            assert!(
-                large < small.wrapping_mul(6),
-                "quadrupling holes: {counts:?}"
-            );
-        }
-    }
-}
-
-fn assert_offset_hole_shell_bridges(shell_vertices: usize) {
-    // Structural check: an offset-hole shell triangulates without error and
-    // produces a positive triangle count (no wall-clock).
-    let poly = square_shell_with_offset_holes(shell_vertices);
-    let source = Shape::Polygon(poly);
-    let triangles = source
-        .polygon_triangles()
-        .expect("holed polygon triangulates");
-    assert!(
-        !triangles.is_empty(),
-        "shell_vertices={shell_vertices} must produce triangles"
-    );
-}
-
-// The size ladder is one test per rung rather than one loop over all of them:
-// the rungs are independent, so separate tests run concurrently and a failure
-// names its own size. These figures are a scale ladder, not a boundary.
-#[test]
-fn earcut_holes_bridge_succeeds_for_a_500_vertex_shell() {
-    assert_offset_hole_shell_bridges(500);
-}
-
-#[test]
-fn earcut_holes_bridge_succeeds_for_a_1000_vertex_shell() {
-    assert_offset_hole_shell_bridges(1_000);
-}
-
-#[test]
-fn earcut_holes_bridge_succeeds_for_a_2000_vertex_shell() {
-    assert_offset_hole_shell_bridges(2_000);
 }

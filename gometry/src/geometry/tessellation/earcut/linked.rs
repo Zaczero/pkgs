@@ -426,8 +426,6 @@ pub(crate) fn earcut_linked_ring_with_ids(
 }
 
 fn is_ear(arena: &EarArena, index: NodeId) -> bool {
-    #[cfg(test)]
-    EAR_SCAN_STEPS.with(|count| count.set(count.get().wrapping_add(1)));
     let (prev, next) = {
         let node = arena.node(index);
         (node.prev, node.next)
@@ -515,7 +513,6 @@ fn candidate_inside_ear(
 #[cfg(test)]
 thread_local! {
     static EAR_CANDIDATE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static EAR_SCAN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -523,14 +520,8 @@ pub(in crate::geometry::tessellation) fn count_ear_candidates<T>(
     operation: impl FnOnce() -> T,
 ) -> (T, usize) {
     EAR_CANDIDATE_VISITS.with(|count| count.set(0));
-    EAR_SCAN_STEPS.with(|count| count.set(0));
     let result = operation();
     (result, EAR_CANDIDATE_VISITS.with(std::cell::Cell::get))
-}
-
-#[cfg(test)]
-pub(in crate::geometry::tessellation) fn ear_scan_steps() -> usize {
-    EAR_SCAN_STEPS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]

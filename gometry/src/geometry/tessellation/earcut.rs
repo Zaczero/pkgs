@@ -20,9 +20,9 @@ pub(crate) use admission::{
 };
 use bridges::eliminate_holes_with_ids;
 pub(super) use bridges::point_in_triangle;
-pub(crate) use linked::earcut_linked_ring_with_ids;
 #[cfg(test)]
-pub(super) use linked::{count_ear_candidates, ear_scan_steps};
+pub(super) use linked::count_ear_candidates;
+pub(crate) use linked::earcut_linked_ring_with_ids;
 #[cfg(test)]
 pub(crate) use normalize::cleaned_earcut_ring;
 use normalize::cleaned_earcut_ring_with_ids;

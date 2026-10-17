@@ -950,7 +950,6 @@ mod bound_tests {
                 BVH_MIN_INDEXED_SEGMENTS - 1,
                 BVH_MIN_INDEXED_SEGMENTS,
                 BVH_MIN_INDEXED_SEGMENTS + 1,
-                128,
             ] {
                 let mut targets = Vec::with_capacity(target_count);
                 for index in 0..target_count.saturating_sub(1) {

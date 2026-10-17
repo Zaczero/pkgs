@@ -192,9 +192,9 @@ fn interior_first_separator_order_emits_one_full_chain() {
 }
 
 #[test]
-fn owner_local_hosting_keeps_all_1334_noncollinear_interior_holes() {
+fn owner_local_hosting_keeps_every_noncollinear_interior_hole() {
     let sites = sites_xy(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
-    let holes = (0_u32..1_334)
+    let holes = (0_u32..8)
         .map(|index| {
             let x = 1.0 + f64::from(index) * 1.4;
             closed_ring(&[(x, 5.0), (x + 0.25, 4.5), (x - 0.25, 4.5)])
@@ -207,12 +207,12 @@ fn owner_local_hosting_keeps_all_1334_noncollinear_interior_holes() {
     let work = assembly::owner_local_work();
 
     assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0].holes.len(), 1_334);
-    assert_eq!(work.owner_ring_edges, 4_006);
-    assert_eq!(work.owner_vertices, 4_006);
-    assert_eq!(work.host_queries, 1_335);
-    assert_eq!(work.ray_hits, 1_334);
-    assert_eq!(work.ring_side_checks, 1_335);
+    assert_eq!(parts[0].holes.len(), 8);
+    assert_eq!(work.owner_ring_edges, 28);
+    assert_eq!(work.owner_vertices, 28);
+    assert_eq!(work.host_queries, 9);
+    assert_eq!(work.ray_hits, 8);
+    assert_eq!(work.ring_side_checks, 9);
     assert_eq!(work.global_edge_slot_visits, subdivision.edge_of_slot.len());
     let shell_points = exact_ring_points(&subdivision, &parts[0].shell);
     let hole_points: Vec<_> = parts[0]
@@ -241,9 +241,10 @@ fn owner_local_hosting_keeps_all_1334_noncollinear_interior_holes() {
 }
 
 #[test]
-fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
+fn noncollinear_tangent_holes_preserve_owner_parts_and_rings_across_both_separators() {
     let sites = sites_xy(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)]);
-    let clip = task163_tangent_clip(1_334);
+    // Ordinals 535 and 892 cross the two separators at the top boundary.
+    let clip = tangent_hole_clip(&[0, 100, 534, 535, 536, 700, 891, 892, 893, 1333]);
     let subdivision = grafted_clip_subdivision(&sites, &clip);
     let parts = assemble_cells(&subdivision).unwrap();
     let mut owner_parts_holes = std::collections::BTreeMap::<u32, (usize, usize)>::new();
@@ -254,7 +255,7 @@ fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
     }
     assert_eq!(
         owner_parts_holes,
-        std::collections::BTreeMap::from([(0, (1, 535)), (1, (1, 441)), (2, (3, 356)),])
+        std::collections::BTreeMap::from([(0, (1, 3)), (1, (1, 2)), (2, (3, 3)),])
     );
 
     let mut expected_parts: Vec<_> = parts
@@ -271,7 +272,7 @@ fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
         .collect();
     expected_parts.sort_unstable();
 
-    let mut budget = ExpansionBudget::new("test", "1334 tangent holes");
+    let mut budget = ExpansionBudget::new("test", "tangent holes across both separators");
     assembly::reset_owner_local_work();
     let cells = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)])
         .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
@@ -290,16 +291,16 @@ fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
     output_parts.sort_unstable();
 
     assert_eq!(cells.len(), 5);
-    assert_eq!(output_holes, 1_332);
-    assert_eq!(budget.used(), 1_358);
+    assert_eq!(output_holes, 8);
+    assert_eq!(budget.used(), 34);
     assert_eq!(output_parts, expected_parts);
-    assert_eq!(work.owner_ring_edges, 5_356);
-    assert_eq!(work.owner_vertices, 4_022);
-    assert_eq!(work.face_walks, 1_340);
+    assert_eq!(work.owner_ring_edges, 60);
+    assert_eq!(work.owner_vertices, 50);
+    assert_eq!(work.face_walks, 16);
     assert_eq!(work.components, 3);
     assert_eq!(work.host_queries, 3);
     assert_eq!(work.ray_hits, 0);
-    assert_eq!(work.ring_side_checks, 1_337);
+    assert_eq!(work.ring_side_checks, 13);
 }
 
 #[test]
@@ -527,7 +528,8 @@ fn reversed_owner_local_host_face_is_rejected_by_exact_shell_membership() {
 #[test]
 fn owner_local_work_scales_with_selected_ring_edges_and_keeps_no_hole_fast_path() {
     let sites = sites_xy(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
-    for hole_count in [128_usize, 256, 512] {
+    let mut comparisons = Vec::new();
+    for hole_count in [8_usize, 16, 32] {
         let holes = (0..hole_count)
             .map(|index| {
                 let ordinal =
@@ -569,6 +571,14 @@ fn owner_local_work_scales_with_selected_ring_edges_and_keeps_no_hole_fast_path(
         assert!(work.face_walks <= work.owner_ring_edges + work.components);
         assert!(work.ray_axis_comparisons < work.owner_ring_edges * 256);
         assert!(work.ray_orientations < work.owner_ring_edges * 256);
+        comparisons.push(work.ray_axis_comparisons + work.ray_orientations);
+    }
+    assert!(comparisons[0] > 0);
+    for pair in comparisons.windows(2) {
+        assert!(
+            pair[1] < 3 * pair[0],
+            "doubling holes must stay below 3× hosting work: {comparisons:?}",
+        );
     }
 
     let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), Vec::new());

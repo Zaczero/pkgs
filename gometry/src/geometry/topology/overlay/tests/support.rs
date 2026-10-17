@@ -2,17 +2,14 @@ use super::*;
 use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
 use crate::geometry::Coordinates as _;
 use crate::geometry::overlay::{Strictness, overlay_all};
-use crate::geometry::topology::emission::sites::canonicalize_ring_vertices;
 use crate::geometry::topology::emission::ring_roles::round_canonical_longitude;
+use crate::geometry::topology::emission::sites::canonicalize_ring_vertices;
 use crate::geometry::topology::q_embedding::compare_q_ring_role;
 use crate::geometry::topology::q_embedding::face_structure::{
     QFaceStructure, face_structure_mismatch_nodes, subgraph_chart,
 };
 
-fn build_q_plan(
-    topology: &ExactGeographicTopology,
-    operation: OverlayOp,
-) -> Result<QEmissionPlan> {
+fn build_q_plan(topology: &ExactGeographicTopology, operation: OverlayOp) -> Result<QEmissionPlan> {
     let mut work = crate::work::Unmetered;
     QEmissionPlan::build(topology, operation, &mut work)
 }
@@ -44,15 +41,13 @@ fn draw_q_plan_unmetered<'topology>(
     plan.drawing(topology, coordinates, source_points, &mut work)
 }
 
-
 fn exact_boundary(shape: &Shape) -> Shape {
     let frame = GeographicFrame::crs84();
-    let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
-        .expect("source admits");
+    let inputs =
+        GeographicInputs::try_from_shapes(frame, std::iter::once(shape)).expect("source admits");
     let topology =
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied()).unwrap();
-    exact_geographic_boundary::<crate::crs::GeodesicMetric>(&topology, shape.axes(), None)
-        .unwrap()
+    exact_geographic_boundary::<crate::crs::GeodesicMetric>(&topology, shape.axes(), None).unwrap()
 }
 
 fn source_boundary_sink(
@@ -129,8 +124,6 @@ fn test_node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrd
     node_ordinates::<crate::crs::GeodesicMetric>(topology, CoordinateAxes::XY, None, &mut work)
 }
 
-
-
 fn resolve_q_embedding_xy(
     topology: &ExactGeographicTopology,
     plan: &QEmissionPlan,
@@ -138,8 +131,7 @@ fn resolve_q_embedding_xy(
     nearest: &QCoordinates,
     operation: &'static str,
 ) -> Result<CertifiedQEmission> {
-    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
-        None;
+    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
     let mut budget = EvaluationBudget::new(operation, 0)?;
     let mut preparation_work = EvaluationOnly::new(&mut budget);
     let mut expansion_budget = ExpansionBudget::new(operation, "computed edges");
@@ -167,8 +159,7 @@ fn certify_q_embedding_nearest_xy<'topology>(
     budget: &mut EvaluationBudget,
 ) -> Result<NearestQCertificate> {
     let ordinates = test_node_ordinates(topology)?;
-    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
-        None;
+    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
     let certification = QEmbeddingCertification {
         topology,
         emission,
@@ -183,8 +174,8 @@ fn certify_q_embedding_nearest_xy<'topology>(
 }
 
 fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {
-    let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
-        .expect("source admits");
+    let inputs =
+        GeographicInputs::try_from_shapes(frame, std::iter::once(shape)).expect("source admits");
     let topology =
         ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
             .expect("Q topology builds");
@@ -197,7 +188,6 @@ fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {
     )
     .expect("Q source-only union emits")
 }
-
 
 fn emitted_single_point(shape: &Shape) -> Point {
     match shape {
@@ -229,10 +219,6 @@ fn collect_points(shape: &Shape, output: &mut Vec<Point>) {
         | Shape::Empty(..) => {},
     }
 }
-
-
-
-
 
 type TestPoint = (u64, u64);
 type TestEdge = (TestPoint, TestPoint);
@@ -350,6 +336,17 @@ fn b3_read_countries(codes: &[&str]) -> Vec<Shape> {
         .collect()
 }
 
+fn b3_border_repair_shapes() -> [Shape; 3] {
+    let [argentina, uruguay] = argentina_uruguay_source_arc_polygons();
+    let island = fixture_polygon(&[
+        (-177.0, -9.0),
+        (-176.5, -9.0),
+        (-176.5, -8.5),
+        (-177.0, -9.0),
+    ]);
+    [island, argentina, uruguay]
+}
+
 fn append_xy_bits(shape: &Shape, output: &mut Vec<(u64, u64)>) {
     let mut append = |point: Point| output.push((point.x.to_bits(), point.y.to_bits()));
     match shape {
@@ -397,14 +394,10 @@ fn test_topology(shapes: &[Shape]) -> ExactGeographicTopology {
     ExactGeographicTopology::from_views(frame, views).expect("build exact test Q topology")
 }
 
-
-
-
 fn q_grid_parallelogram(u: (i32, i32), v: (i32, i32)) -> Result<Shape> {
     // 2^-46 is the spacing between adjacent binary64 values at 100.0.
     let unit = f64::from_bits(0x3D10_0000_0000_0000);
-    let add =
-        |left: i32, right: i32| left.checked_add(right).expect("Q grid offsets are bounded");
+    let add = |left: i32, right: i32| left.checked_add(right).expect("Q grid offsets are bounded");
     let subtract =
         |left: i32, right: i32| left.checked_sub(right).expect("Q grid offsets are bounded");
     let negate = |value: i32| value.checked_neg().expect("Q grid offsets are bounded");
@@ -415,114 +408,16 @@ fn q_grid_parallelogram(u: (i32, i32), v: (i32, i32)) -> Result<Shape> {
         (subtract(u.0, v.0), subtract(u.1, v.1)),
         (add(u.0, v.0), add(u.1, v.1)),
     ];
-    let wkt = points
-        .iter()
-        .map(|&(x, y)| {
-            format!(
-                "{} {}",
-                100.0 + f64::from(x) * unit,
-                80.0 + f64::from(y) * unit
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    crate::io::parse_wkt(&format!("POLYGON (({wkt}))"))
+    let points = points
+        .map(|(x, y)| Point::new_raw_xy(100.0 + f64::from(x) * unit, 80.0 + f64::from(y) * unit));
+    let ring = crate::geometry::Ring::try_from_closed(crate::geometry::CoordSeq::try_from_points(
+        &points,
+    )?)?;
+    Ok(Shape::Polygon(crate::geometry::Polygon::new(
+        ring,
+        Vec::new(),
+    )))
 }
-
-fn next_q_grid_pair(random: &mut u64) -> Result<[Shape; 2]> {
-    let mut draw = || {
-        *random ^= *random << 13;
-        *random ^= *random >> 7;
-        *random ^= *random << 17;
-        i32::try_from(*random % 61)
-            .expect("bounded")
-            .checked_sub(30)
-            .expect("Q grid draw is bounded")
-    };
-    let determinant = |u: (i32, i32), v: (i32, i32)| {
-        i64::from(u.0)
-            .checked_mul(i64::from(v.1))
-            .expect("Q grid determinant is bounded")
-            .checked_sub(
-                i64::from(u.1)
-                    .checked_mul(i64::from(v.0))
-                    .expect("Q grid determinant is bounded"),
-            )
-            .expect("Q grid determinant is bounded")
-    };
-    loop {
-        let (a_u, a_v, b_u, b_v) = (
-            (draw(), draw()),
-            (draw(), draw()),
-            (draw(), draw()),
-            (draw(), draw()),
-        );
-        if determinant(a_u, a_v).abs() >= 100 && determinant(b_u, b_v).abs() >= 100 {
-            return Ok([
-                q_grid_parallelogram(a_u, a_v)?,
-                q_grid_parallelogram(b_u, b_v)?,
-            ]);
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct QGridSweepCounts {
-    pairs: usize,
-    nearest_certified: usize,
-    search_paths: usize,
-}
-
-fn q_grid_certificate_sweep(pair_count: usize) -> Result<QGridSweepCounts> {
-    let mut random = 0x81C4_4B29_35AF_108D_u64;
-    let mut counts = QGridSweepCounts::default();
-    for _ in 0..pair_count {
-        let operands = next_q_grid_pair(&mut random)?;
-        let topology = test_topology(&operands);
-        let plan = build_q_plan(&topology, OverlayOp::Intersection)?;
-        let source_points = source_point_coordinates(&topology)?;
-        let nearest = QCoordinates::build(&topology)?;
-        let nearest_nodes = nearest.node.clone();
-        let resolved = resolve_q_embedding_xy(
-            &topology,
-            &plan,
-            &source_points,
-            &nearest,
-            OverlayOp::Intersection.name(),
-        )?;
-        counts.pairs = counts
-            .pairs
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        match resolved.choice {
-            QEmbeddingChoice::Nearest => {
-                counts.nearest_certified = counts
-                    .nearest_certified
-                    .checked_add(1)
-                    .ok_or(ResourceError::SizeOverflow)?;
-                assert_eq!(
-                    resolved.coordinates.node, nearest_nodes,
-                    "nearest certificate pass must publish the nearest table"
-                );
-            },
-            QEmbeddingChoice::Searched => {
-                counts.search_paths = counts
-                    .search_paths
-                    .checked_add(1)
-                    .ok_or(ResourceError::SizeOverflow)?;
-            },
-        }
-    }
-    Ok(counts)
-}
-
-
-
-
-
-
-
-
 
 fn b3_selected_subgraph(
     topology: &ExactGeographicTopology,
@@ -555,12 +450,11 @@ fn b3_selected_subgraph(
                         }
                     },
                     PlannedAreaRing::Source { ring, .. } => {
-                        let source_ring =
-                            topology.sources.rings.get(ring).ok_or_else(|| {
-                                GeometryErrorKind::Invalid(
-                                    "B3 polygon plan references an unknown source ring".into(),
-                                )
-                            })?;
+                        let source_ring = topology.sources.rings.get(ring).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "B3 polygon plan references an unknown source ring".into(),
+                            )
+                        })?;
                         for cycle in &plan.cycles {
                             if !cycle_belongs_to_source_ring(
                                 topology,
@@ -571,11 +465,8 @@ fn b3_selected_subgraph(
                                 continue;
                             }
                             for &dart_id in &cycle.darts {
-                                let dart = topology
-                                    .q
-                                    .darts
-                                    .get(dart_id.0 as usize)
-                                    .ok_or_else(|| {
+                                let dart =
+                                    topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                                         GeometryErrorKind::Invalid(
                                             "B3 source cycle references an unknown dart".into(),
                                         )

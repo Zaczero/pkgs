@@ -661,6 +661,7 @@ fn raw_tick_refusal_leaves_the_shared_balance_unchanged() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn native_source_arc_quadrature_funds_refinement_before_progress() {
     const OPERATION: &str = "quadrature_source_arc";
     let runtime =

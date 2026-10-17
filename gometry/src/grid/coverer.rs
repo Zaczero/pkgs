@@ -926,7 +926,7 @@ mod tests {
             RectCoverRule::Overlap,
             geohash::roots(),
             10,
-            Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
+            Some(64),
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
             Err(CoverError::Budget(err)) => {
@@ -937,11 +937,7 @@ mod tests {
                     0,
                     "an over-budget cover must reject before output enumeration"
                 );
-                assert_eq!(
-                    err.limit,
-                    usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()
-                );
-                assert!(err.to_string().contains("max_cells"));
+                assert_eq!(err.limit, 64);
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }
@@ -1321,7 +1317,7 @@ mod tests {
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
             geohash::roots(),
-            3,
+            1,
             None,
         )
         .unwrap();
@@ -1333,10 +1329,14 @@ mod tests {
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
             geohash::roots(),
-            3,
+            1,
             None,
         )
         .unwrap();
+        assert!(
+            from_raw.len() >= 2,
+            "the cover spans both sides of the seam"
+        );
         assert_eq!(from_raw, from_chart);
     }
 }

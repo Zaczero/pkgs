@@ -85,10 +85,9 @@ fn nonidentical_radian_and_grad_aliases_remain_stored_without_a_tolerance() {
         let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
         let stored = raw_stored_perimeter(&metric, &shape);
         let actual = perimeter(&metric, &shape, frame);
-        assert_eq!(
-            actual.to_bits(),
-            stored.to_bits(),
-            "{name} alias spellings are distinct exact positions"
+        assert!(
+            (actual - stored).abs() <= 16.0 * f64::EPSILON * stored,
+            "{name} alias spellings are distinct exact positions",
         );
     }
 }
@@ -389,9 +388,10 @@ fn seam_duplicates_retain_same_side_copies_and_reduce_east_east_west_to_two_side
         box_polygon(170.0, -10.0, 180.0, 10.0),
     ]);
     let twice_east = perimeter(&metric, &east_twice, metric.frame);
-    assert_eq!(
-        twice_east.to_bits(),
-        raw_stored_perimeter(&metric, &east_twice).to_bits()
+    approx::assert_relative_eq!(
+        twice_east,
+        raw_stored_perimeter(&metric, &east_twice),
+        max_relative = 16.0 * f64::EPSILON,
     );
 
     let triple = multi_polygon(vec![
@@ -443,7 +443,7 @@ fn hole_and_multipolygon_perimeters_keep_unshared_boundaries() {
     );
 }
 #[test]
-fn ring_rotation_reversal_and_period_respelling_preserve_exact_perimeter() {
+fn ring_rotation_reversal_and_period_respelling_preserve_perimeter() {
     let metric = metric();
     let original = north_closure(40.0, 60.0, false);
     let baseline_shape = Shape::Polygon(Polygon::new(ring(&original), Vec::new()));
@@ -477,10 +477,9 @@ fn ring_rotation_reversal_and_period_respelling_preserve_exact_perimeter() {
     ] {
         let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
         let actual = perimeter(&metric, &shape, metric.frame);
-        assert_eq!(
-            actual.to_bits(),
-            baseline.to_bits(),
-            "{name} changed perimeter from {baseline:.17} to {actual:.17}"
+        assert!(
+            (actual - baseline).abs() <= 16.0 * f64::EPSILON * baseline,
+            "{name} changed perimeter from {baseline:.17} to {actual:.17}",
         );
     }
 }

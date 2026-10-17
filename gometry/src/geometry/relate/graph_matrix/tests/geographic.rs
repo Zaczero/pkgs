@@ -62,24 +62,48 @@ fn retained_geographic_queries_match_closed_point_and_line_support() {
         ("POINT (1 2)", Point::new_raw_xy(1.0, 2.5), false),
         ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.0), true),
         ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.5), false),
-        ("POLYGON ((0 0,2 2,4 4,0 0))", Point::new_raw_xy(1.0, 1.0), true),
-        ("POLYGON ((0 0,2 2,4 4,0 0))", Point::new_raw_xy(1.0, 1.5), false),
-        ("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 90.0), true),
-        ("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 89.0), false),
+        (
+            "POLYGON ((0 0,2 2,4 4,0 0))",
+            Point::new_raw_xy(1.0, 1.0),
+            true,
+        ),
+        (
+            "POLYGON ((0 0,2 2,4 4,0 0))",
+            Point::new_raw_xy(1.0, 1.5),
+            false,
+        ),
+        (
+            "LINESTRING (10 80,10 90)",
+            Point::new_raw_xy(-100.0, 90.0),
+            true,
+        ),
+        (
+            "LINESTRING (10 80,10 90)",
+            Point::new_raw_xy(-100.0, 89.0),
+            false,
+        ),
     ] {
         let plan = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
         let cache = crate::geometry::FrameDependentCaches::default();
-        let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+        let prepared =
+            GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
         let queries = prepared.prepare_point_covers(7).unwrap();
         assert_eq!(queries.covers(point).unwrap(), covered, "{wkt}");
         assert_eq!(
-            prepared.exact_topology().unwrap().locate_point(point).unwrap().geometry != Loc::Exterior,
+            prepared
+                .exact_topology()
+                .unwrap()
+                .locate_point(point)
+                .unwrap()
+                .geometry
+                != Loc::Exterior,
             covered,
             "{wkt}: quotient authority"
         );
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
     let hexagon = Shape::Polygon(polygon(&[
         [1.0, 0.0],
@@ -119,6 +143,7 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_relation_matches_known_matrices() {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
@@ -206,6 +231,7 @@ fn ordinary_geographic_relation_matches_known_matrices() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_country_charts_match_q_relation() {
     const COUNTRIES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -262,6 +288,7 @@ fn ordinary_country_charts_match_q_relation() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_pair_q_matches_known_matrices_at_quotient_aliases() {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
@@ -411,6 +438,7 @@ fn geographic_split_crossing_keeps_boundary_point_relation() {
     assert_eq!(split_probe_relation, raw_probe_relation);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_aggregate_contacts_use_quotient_face_locations() {
     let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
     let right = Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0));
@@ -478,6 +506,7 @@ fn geographic_aggregate_contacts_use_quotient_face_locations() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
     let frame = crate::crs::info("EPSG:4807")
         .unwrap()
@@ -511,6 +540,7 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
     let left = Shape::geometry_collection(vec![
         Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),

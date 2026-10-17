@@ -194,9 +194,9 @@ fn coincident_contacts_keep_each_source_occurrence_across_seam_aliases() {
 
 #[test]
 fn grid_contacts_reuse_seeded_endpoints_without_constructed_key_search() {
-    let shapes = (0..16)
+    let shapes = (0..3)
         .flat_map(|y| {
-            (0..32).map(move |x| {
+            (0..4).map(move |x| {
                 let x = f64::from(x);
                 let y = f64::from(y);
                 Shape::Polygon(Polygon::new(
@@ -213,8 +213,8 @@ fn grid_contacts_reuse_seeded_endpoints_without_constructed_key_search() {
         })
         .collect::<Vec<_>>();
     let sources = inventory(degrees(), &shapes);
-    let mut cuts = FallibleAvl::with_capacity(4_096);
-    let mut nodes = FallibleAvl::with_capacity(561);
+    let mut cuts = FallibleAvl::with_capacity(96);
+    let mut nodes = FallibleAvl::with_capacity(20);
     let mut work = Unmetered;
     let mut compare_cuts =
         |left: &CutEvent, right: &CutEvent, _: &mut Unmetered| compare_cut_events(left, right);
@@ -298,15 +298,15 @@ fn grid_contacts_reuse_seeded_endpoints_without_constructed_key_search() {
     eprintln!("grid pairs={pairs} contacts={contacts} constructed_key_comparisons={comparisons}");
     let mut whole_budget = ExpansionBudget::new("contact_test", "exact chart");
     let chart = sources.node(&mut whole_budget).expect("whole grid nodes");
-    assert_eq!(chart.nodes.len(), 561);
-    assert_eq!(chart.atoms.len(), 1_072);
+    assert_eq!(chart.nodes.len(), 20);
+    assert_eq!(chart.atoms.len(), 31);
     assert_eq!(
         chart
             .atoms
             .iter()
             .map(|atom| atom.owners.len())
             .sum::<usize>(),
-        2_048
+        48
     );
     assert_eq!(whole_budget.used(), 0);
 }

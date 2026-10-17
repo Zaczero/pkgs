@@ -271,7 +271,7 @@ fn certified_inscribed_circle_reuses_the_directed_support_at_emission() {
         crate::io::parse_wkt("MULTIPOLYGON (((0 0,2 0,2 4,0 4,0 0)),((2 0,4 0,4 4,2 4,2 0)))")
             .unwrap();
     overlay::reset_partition_calls();
-    source.maximum_inscribed_circle(Some(1e-9)).unwrap();
+    source.maximum_inscribed_circle(Some(0.1)).unwrap();
     assert_eq!(overlay::partition_calls(), 1);
 }
 

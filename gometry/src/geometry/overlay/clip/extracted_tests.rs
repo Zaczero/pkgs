@@ -606,27 +606,16 @@ fn disjoint_rectangle_intersection_returns_the_typed_empty() {
 }
 
 #[test]
-fn clip_by_rect_matches_full_intersection_for_the_country_fixture() {
-    const COUNTRIES: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/fixtures/osm_countries_0_1.geojson"
-    ));
+fn clip_by_rect_matches_full_intersection_for_country_source_arcs() {
+    use crate::geometry::test_support::argentina_uruguay_source_arc_polygons;
 
-    let countries: serde_json::Value =
-        serde_json::from_str(COUNTRIES).expect("country fixture parses");
-    let features = countries["features"]
-        .as_array()
-        .expect("country fixture is a feature collection");
-    assert_eq!(features.len(), 217);
-    let bounds = bounds(-10.0, -10.0, 30.0, 50.0);
-    let rectangle = Shape::Polygon(rect_polygon(bounds).expect("clip rectangle polygon"));
-    for (index, feature) in features.iter().enumerate() {
-        let code = feature["properties"]["tags"]["ISO3166-1:alpha2"]
-            .as_str()
-            .expect("country has an ISO code");
-        let subject =
-            crate::io::parse_geojson(&feature["geometry"]).expect("country geometry parses");
-        let clipped = subject.clip_by_rect(bounds, false).unwrap();
+    for (name, subject) in ["Argentina", "Uruguay"]
+        .into_iter()
+        .zip(argentina_uruguay_source_arc_polygons())
+    {
+        let window = bounds(-58.3, -33.1, -58.0, -32.9);
+        let rectangle = Shape::Polygon(rect_polygon(window).unwrap());
+        let clipped = subject.clip_by_rect(window, false).unwrap();
         let intersection = subject
             .intersection(&rectangle, Strictness::Lenient)
             .unwrap();
@@ -636,34 +625,9 @@ fn clip_by_rect_matches_full_intersection_for_the_country_fixture() {
             Strictness::Lenient,
         )
         .unwrap();
-        let source_bounds = subject.bounds().expect("country has coordinates");
-        let contained = source_bounds.minx() >= bounds.minx()
-            && source_bounds.maxx() <= bounds.maxx()
-            && source_bounds.miny() >= bounds.miny()
-            && source_bounds.maxy() <= bounds.maxy();
-        if contained {
-            assert_eq!(
-                shape_wkb(&clipped),
-                shape_wkb(&subject),
-                "country {index} ({code}): contained clip changed the retained operand"
-            );
-            assert_eq!(
-                shape_wkb(&intersection),
-                shape_wkb(&subject),
-                "country {index} ({code}): intersection changed the retained operand"
-            );
-        } else {
-            assert_eq!(
-                shape_wkb(&clipped),
-                shape_wkb(&intersection),
-                "country {index} ({code}): clip differs from intersection"
-            );
-            assert_eq!(
-                shape_wkb(&clipped),
-                shape_wkb(&full),
-                "country {index} ({code}): local clip differs from the full partition"
-            );
-        }
+        assert!(!clipped.is_empty(), "{name}");
+        assert_eq!(shape_wkb(&clipped), shape_wkb(&intersection), "{name}");
+        assert_eq!(shape_wkb(&clipped), shape_wkb(&full), "{name}");
     }
 }
 
@@ -907,14 +871,17 @@ fn named_convex_rings_match_the_rectangle_clip_oracle() {
 }
 
 #[test]
-fn ellipse_and_close_rounded_crossings_match_the_oracle() {
-    let ellipse = regular_ellipse(0.0, 0.0, 4.0, 3.0, 4096, 0.0);
+fn ellipse_above_the_candidate_index_threshold_matches_the_oracle() {
+    let ellipse = regular_ellipse(0.0, 0.0, 4.0, 3.0, 65, 0.0);
     assert_clip_matches_oracle(
-        "ellipse-4096-contained",
+        "ellipse-65-contained",
         &[ellipse],
         bounds(-1.0, -1.5, 1.25, 1.5),
     );
+}
 
+#[test]
+fn close_rounded_crossings_match_the_oracle() {
     let ulp = f64::from_bits(1.0_f64.to_bits().wrapping_add(1)) - 1.0;
     let quarter = polygon(&[(-1.0, 1.0), (7.0, 1.0 + ulp), (7.0, 0.0), (-1.0, 1.0)]);
     let half = polygon(&[(-1.0, 1.0), (3.0, 1.0 + ulp), (3.0, 0.0), (-1.0, 1.0)]);

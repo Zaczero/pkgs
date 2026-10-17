@@ -275,47 +275,6 @@ fn lattice_crossing_group(origin: f64, ulp: f64) -> [Segment; 3] {
     ]
 }
 
-fn argentina_uruguay_minimal_segments() -> [Segment; 6] {
-    [
-        seg(
-            -58.404_001_6,
-            -33.178_818,
-            -58.122_989_509_606_21,
-            -33.022_490_639_567_15,
-        ),
-        seg(
-            -58.122_989_509_606_21,
-            -33.022_490_639_567_15,
-            -58.127_583_9,
-            -33.022_275,
-        ),
-        seg(
-            -58.114_883_013_439_915,
-            -33.017_980_986_099_005,
-            -58.113_024_156_144_505,
-            -33.016_946_901_572_59,
-        ),
-        seg(
-            -58.113_024_156_144_505,
-            -33.016_946_901_572_59,
-            -58.100_100_6,
-            -32.951_622_7,
-        ),
-        seg(
-            -58.111_802_159_656_57,
-            -33.011_057_831_530_63,
-            -58.112_953_902_396_03,
-            -33.016_907_819_328_67,
-        ),
-        seg(
-            -58.112_953_902_396_03,
-            -33.016_907_819_328_67,
-            -58.404_001_6,
-            -33.178_818,
-        ),
-    ]
-}
-
 fn lattice_group_emission(partition: &ExactPartition<'_>, origin: f64) -> embedding::Emission {
     let span_ids = partition
         .spans
@@ -886,7 +845,7 @@ fn lattice_crossings_rounding_into_one_stored_vertex_are_repaired() {
 
 #[test]
 fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
-    let case = run(&argentina_uruguay_minimal_segments());
+    let case = run(&argentina_uruguay_source_segments());
     let partition = case.partition();
     let at_58 = partition
         .stored_node(XY::new(-58.122_989_509_606_21, -33.022_490_639_567_15))
@@ -973,29 +932,11 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
 }
 
 #[test]
-fn full_ar_uy_symmetric_difference_repairs_nearest_embedding() {
+fn ar_uy_source_arcs_symmetric_difference_repairs_nearest_embedding() {
     use crate::geometry::TopologyDomain;
     use crate::geometry::overlay::{Strictness, overlay_all};
 
-    const COUNTRIES: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/fixtures/osm_countries_0_1.geojson"
-    ));
-
-    let countries: serde_json::Value = serde_json::from_str(COUNTRIES).unwrap();
-    let features = countries["features"].as_array().unwrap();
-    let country = |code: &str| {
-        let feature = features
-            .iter()
-            .rev()
-            .find(|feature| {
-                feature["properties"]["tags"]["ISO3166-1:alpha2"].as_str() == Some(code)
-            })
-            .unwrap();
-        crate::io::parse_geojson(&feature["geometry"]).unwrap()
-    };
-    let argentina = country("AR");
-    let uruguay = country("UY");
+    let [argentina, uruguay] = argentina_uruguay_source_arc_polygons();
     let mut expected_wkb = None;
     for (left, right) in [(&argentina, &uruguay), (&uruguay, &argentina)] {
         let mut operands = [left, right];
@@ -1038,7 +979,7 @@ fn full_ar_uy_symmetric_difference_repairs_nearest_embedding() {
             )
             .unwrap()
             .is_break(),
-            "the full country symmetric difference must require embedding repair"
+            "the source-arc symmetric difference must require embedding repair"
         );
 
         let repaired = partition.embed(&emissions, "symmetric_difference").unwrap();
@@ -1046,7 +987,7 @@ fn full_ar_uy_symmetric_difference_repairs_nearest_embedding() {
             emission.items.iter().flatten().any(|&node| {
                 repaired.xy(node) != embedding::Embedding::xy_at(nearest.coordinates(), node)
             }),
-            "the full country repair did not move any emitted node"
+            "the source-arc repair did not move any emitted node"
         );
         let repaired_segments: Vec<_> = emission
             .items
@@ -1686,9 +1627,13 @@ fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes
         (
             "vertical",
             dyadic(1.0e100),
-            dyadic(-1.0).try_add(dyadic(exact_power_of_two(-55))).unwrap(),
+            dyadic(-1.0)
+                .try_add(dyadic(exact_power_of_two(-55)))
+                .unwrap(),
             dyadic(1.0e100),
-            dyadic(1.0).try_add(dyadic(exact_power_of_two(-54))).unwrap(),
+            dyadic(1.0)
+                .try_add(dyadic(exact_power_of_two(-54)))
+                .unwrap(),
         ),
     ];
 
@@ -2187,7 +2132,10 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let nearest = embedding::Embedding::nearest(&partition);
     assert_eq!(
         nearest.xy(center),
-        XY::new(1.0 + 4.0 * exact_power_of_two(-52), 1.0 + 8.0 * exact_power_of_two(-52))
+        XY::new(
+            1.0 + 4.0 * exact_power_of_two(-52),
+            1.0 + 8.0 * exact_power_of_two(-52)
+        )
     );
     let (topology, edges) = partition.local_topology().unwrap();
     let global = partition.global_faces(&topology, &edges).unwrap();

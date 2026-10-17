@@ -92,6 +92,7 @@ fn unique_checked_index(records: &[CheckedPublicationLiteral], logical: usize) -
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn mixed_boundary_rows_preserve_q_and_drawing_expectations() {
     let (rows, expected, frame) = mixed_rows();
     let output = rows.finish(frame.clone()).unwrap();
@@ -108,6 +109,7 @@ fn mixed_boundary_rows_preserve_q_and_drawing_expectations() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn receipt_required_arrays_accept_authentic_q_rows() {
     let frame = frame();
     let pending = pending(SEAM, 0, &frame);
@@ -127,6 +129,7 @@ fn receipt_required_arrays_accept_authentic_q_rows() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn drawing_groups_reject_authentic_q_rows_with_group_addresses() {
     let frame = frame();
     let mut pending = pending(SEAM, 0, &frame);
@@ -155,6 +158,7 @@ fn drawing_groups_reject_authentic_q_rows_with_group_addresses() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
     for logical in [0, 2] {
         let (mut rows, mut expected, frame) = mixed_rows();
@@ -187,6 +191,7 @@ fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
     for logical in [0, 2] {
         let (mut rows, _expected, frame) = mixed_rows();
@@ -197,6 +202,7 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories() {
     for logical in [0, 2] {
         let (mut rows, _expected, frame) = mixed_rows();
@@ -211,6 +217,7 @@ fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories() 
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_same_sized_row_swaps() {
     let frame = frame();
     let first = pending(ORDINARY, 0, &frame);
@@ -228,6 +235,7 @@ fn boundary_final_writer_rejects_same_sized_row_swaps() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_a_structurally_valid_shortened_line() {
     let frame = frame();
     let pending = pending(ORDINARY, 0, &frame);
@@ -285,6 +293,7 @@ fn public_boundary_dispatch_preserves_nullable_mixed_rows_and_epoch() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_checked_append_preserves_the_remaining_q_account() {
     let frame = frame();
     let mut pending = pending(SEAM, 0, &frame);
@@ -304,6 +313,7 @@ fn boundary_checked_append_preserves_the_remaining_q_account() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_readback_consumes_the_same_remaining_q_account() {
     let frame = frame();
     let mut pending = pending(SEAM, 0, &frame);

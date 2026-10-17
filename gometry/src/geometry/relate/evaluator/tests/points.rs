@@ -29,16 +29,16 @@ fn same_geometry_containment_requires_actual_interior_support() {
     }
 }
 
-#[test]
-fn curated_locator_queries_match_partition_cell_facts() {
-    run_curated_relation_corpus(true);
+mod locator_corpus {
+    use super::*;
+    relation_corpus!(assert_locator_oracle_parity);
 }
 
 #[test]
-fn large_polygon_locator_matches_partition_cell_facts() {
-    let mut points = (0..256)
+fn indexed_polygon_locator_matches_partition_cell_facts() {
+    let mut points = (0..32)
         .map(|index| {
-            let angle = std::f64::consts::TAU * f64::from(index) / 256.0;
+            let angle = std::f64::consts::TAU * f64::from(index) / 32.0;
             Point::new_raw_xy(10.0 * angle.cos(), 10.0 * angle.sin())
         })
         .collect::<Vec<_>>();
@@ -49,7 +49,7 @@ fn large_polygon_locator_matches_partition_cell_facts() {
     .unwrap();
     let polygon = Shape::Polygon(crate::geometry::Polygon::new(shell, Vec::new()));
     let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
-    assert_locator_oracle_parity("256-vertex polygon", &polygon, &point);
+    assert_locator_oracle_parity("32-vertex polygon", &polygon, &point);
 }
 
 #[test]

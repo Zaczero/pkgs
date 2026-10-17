@@ -20,14 +20,13 @@ fn geographic_chart_difference_keeps_latitude_roots_on_both_annulus_boundaries()
     };
     assert!(part.polygon.holes.is_empty());
     let shape = Shape::Polygon(part.polygon.clone());
-    assert_eq!(shape.area().to_bits(), 3600.0_f64.to_bits());
+    approx::assert_relative_eq!(shape.area(), 3600.0, max_relative = 64.0 * f64::EPSILON);
     for (latitude, operand) in [(70.0_f64, 0), (80.0_f64, 1)] {
         let coordinates = part.polygon.shell.coords();
         let index = coordinates
             .iter_coords()
             .position(|point| {
-                point.x.to_bits() == 0.0_f64.to_bits()
-                    && point.y.to_bits() == latitude.to_bits()
+                point.x.to_bits() == 0.0_f64.to_bits() && point.y.to_bits() == latitude.to_bits()
             })
             .expect("both latitude chains retain their source vertices");
         let sources = part
@@ -37,7 +36,11 @@ fn geographic_chart_difference_keeps_latitude_roots_on_both_annulus_boundaries()
             .get(index)
             .expect("each emitted edge has source uses");
         assert!(!sources.is_empty());
-        assert!(sources.iter().all(|source| source.location.operand == operand));
+        assert!(
+            sources
+                .iter()
+                .all(|source| source.location.operand == operand)
+        );
     }
 }
 

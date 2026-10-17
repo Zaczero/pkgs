@@ -50,9 +50,9 @@ fn crossing_line_matrix_matches_partition_in_all_evaluator_modes() {
     }
 }
 
-#[test]
-fn curated_relation_corpus_matches_partition_in_both_orders() {
-    run_curated_relation_corpus(false);
+mod matrix_corpus {
+    use super::*;
+    relation_corpus!(assert_matrix_oracle_parity);
 }
 
 #[test]

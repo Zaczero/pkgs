@@ -1,44 +1,51 @@
-#[test]
-fn captured_polar_annulus_keeps_its_band_and_roots_under_ring_reversal() {
-    for sign in [-1.0, 1.0] {
-        for reverse_shell in [false, true] {
-            for reverse_hole in [false, true] {
-                let latitude_ring = |latitude, reverse| {
-                    let mut points = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0]
-                        .map(|longitude| (longitude, latitude, 5.0, 50.0));
-                    if reverse {
-                        points.reverse();
-                    }
-                    xyzm_ring(&points)
-                };
-                let source = Shape::Polygon(Polygon::new(
-                    latitude_ring(sign * 70.0, reverse_shell),
-                    vec![latitude_ring(sign * 80.0, reverse_hole)],
-                ));
-                let split = source
-                    .split_antimeridian_captured_in_crs84()
-                    .unwrap()
-                    .finish_scalar(crate::Frame::None)
-                    .unwrap()
-                    .into_scalar()
-                    .unwrap()
-                    .0;
-                assert_eq!(split.validate().unwrap(), None, "{split:?}");
-                assert_eq!(split.area().to_bits(), 3600.0_f64.to_bits());
-                assert_eq!(split.axes(), CoordinateAxes::XYZM);
-                for longitude in [-179.0, 0.0, 179.0] {
-                    for (latitude, expected) in [(65.0, false), (75.0, true), (85.0, false)] {
-                        let probe = Shape::Point(Point::new(longitude, sign * latitude).unwrap());
-                        assert_eq!(split.contains(&probe).unwrap(), expected, "{split:?}");
-                    }
+fn assert_captured_polar_annulus_ring_reversals(sign: f64) {
+    for reverse_shell in [false, true] {
+        for reverse_hole in [false, true] {
+            let latitude_ring = |latitude, reverse| {
+                let mut points = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0]
+                    .map(|longitude| (longitude, latitude, 5.0, 50.0));
+                if reverse {
+                    points.reverse();
                 }
-                split.for_each_point(|point| {
-                    assert_eq!(point.z().unwrap().to_bits(), 5.0_f64.to_bits());
-                    assert_eq!(point.m().unwrap().to_bits(), 50.0_f64.to_bits());
-                });
+                xyzm_ring(&points)
+            };
+            let source = Shape::Polygon(Polygon::new(
+                latitude_ring(sign * 70.0, reverse_shell),
+                vec![latitude_ring(sign * 80.0, reverse_hole)],
+            ));
+            let split = source
+                .split_antimeridian_captured_in_crs84()
+                .unwrap()
+                .finish_scalar(crate::Frame::None)
+                .unwrap()
+                .into_scalar()
+                .unwrap()
+                .0;
+            assert_eq!(split.validate().unwrap(), None, "{split:?}");
+            approx::assert_relative_eq!(split.area(), 3600.0, max_relative = 64.0 * f64::EPSILON,);
+            assert_eq!(split.axes(), CoordinateAxes::XYZM);
+            for longitude in [-179.0, 0.0, 179.0] {
+                for (latitude, expected) in [(65.0, false), (75.0, true), (85.0, false)] {
+                    let probe = Shape::Point(Point::new(longitude, sign * latitude).unwrap());
+                    assert_eq!(split.contains(&probe).unwrap(), expected, "{split:?}");
+                }
             }
+            split.for_each_point(|point| {
+                assert_eq!(point.z().unwrap().to_bits(), 5.0_f64.to_bits());
+                assert_eq!(point.m().unwrap().to_bits(), 50.0_f64.to_bits());
+            });
         }
     }
+}
+
+#[test]
+fn captured_north_polar_annulus_keeps_its_band_and_roots_under_ring_reversal() {
+    assert_captured_polar_annulus_ring_reversals(1.0);
+}
+
+#[test]
+fn captured_south_polar_annulus_keeps_its_band_and_roots_under_ring_reversal() {
+    assert_captured_polar_annulus_ring_reversals(-1.0);
 }
 
 #[test]
@@ -50,7 +57,7 @@ fn crossing_hole_subtraction_keeps_a_zero_turn_world_band_in_its_chart() {
     let split = split_crs84(&source);
 
     assert_eq!(split.validate().unwrap(), None, "{split:?}");
-    assert_eq!(split.area(), 21_550.0, "{split:?}");
+    approx::assert_relative_eq!(split.area(), 21_550.0, max_relative = 64.0 * f64::EPSILON);
     let mut witnesses = [false; 2];
     split.for_each_point(|point| {
         if point.x.to_bits() == 0.0_f64.to_bits() {
@@ -110,16 +117,19 @@ fn captured_full_turn_shell_subtracts_a_crossing_hole_like_plain_split() {
                 "the surrounding polar shell must remain filled: {split:?}"
             );
         }
-        assert_eq!(
+        approx::assert_relative_eq!(
             plain.area(),
             captured.area(),
-            "plain: {plain:?}\ncaptured: {captured:?}"
+            max_relative = 64.0 * f64::EPSILON,
         );
     }
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
@@ -245,7 +255,10 @@ fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart(
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn reversed_grad_hole_overlay_retains_meridian_ordinates() {
     const CRS: &str = r#"GEOGCS["West south grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]"#;

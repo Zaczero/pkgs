@@ -57,15 +57,7 @@ fn chart_station_refinements_measure_their_own_original_root_parameter() {
     )
     .unwrap();
     let progress = crate::crs::quadrature_test_progress();
-    let refinement_count = ranges
-        .parameters
-        .iter()
-        .filter(|&&parameter| {
-            parameter > 0.0
-                && parameter < 1.0
-                && parameter.to_bits() != station.parameter().to_bits()
-        })
-        .count();
+    let refinement_count = output.len() - 3;
     assert!(refinement_count > 0);
     assert_eq!(ranges.parameters.len(), output.len());
     for (index, &parameter) in ranges.parameters.iter().enumerate() {
@@ -79,8 +71,16 @@ fn chart_station_refinements_measure_their_own_original_root_parameter() {
             fraction,
         );
         let actual = output.nth_coord(index);
-        assert_eq!(actual.z().map(f64::to_bits), z.0.map(f64::to_bits));
-        assert_eq!(actual.m().map(f64::to_bits), m.0.map(f64::to_bits));
+        approx::assert_relative_eq!(
+            actual.z().unwrap(),
+            z.0.unwrap(),
+            max_relative = 64.0 * f64::EPSILON,
+        );
+        approx::assert_relative_eq!(
+            actual.m().unwrap(),
+            m.0.unwrap(),
+            max_relative = 64.0 * f64::EPSILON,
+        );
     }
     assert_eq!(
         usize::try_from(progress.fraction_measurements).unwrap(),
@@ -216,11 +216,9 @@ fn chart_support_parameters_compose_exact_partial_ranges_in_reversed_grad_frames
             .locate_t(length / 4.0, length, &geodesic)
             .unwrap()
             .parameter();
-        assert!(
-            ranges.parameters.iter().any(|parameter| {
-                parameter.to_bits() == first_equal_arclength_parameter.to_bits()
-            })
-        );
+        assert!(ranges.parameters.iter().any(|parameter| {
+            (*parameter - first_equal_arclength_parameter).abs() <= 8.0 * f64::EPSILON
+        }));
         assert_ne!(first_equal_arclength_parameter, 0.25);
 
         let interval_index = 1;

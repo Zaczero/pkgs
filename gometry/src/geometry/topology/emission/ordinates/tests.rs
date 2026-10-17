@@ -1,4 +1,3 @@
-
 #[test]
 fn emission_ordinate_rows_and_ports_are_reserved_before_progress() {
     let empty = crate::io::parse_wkt("POINT EMPTY").unwrap();
@@ -224,8 +223,7 @@ fn live_presentation_use_cannot_inherit_colocated_source_axes() {
         .ok_or_else(|| GeometryErrorKind::Invalid("source ordinate row is missing".into()))
         .unwrap()
         .z = source_z;
-    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
-        None;
+    let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> = None;
     let mut work = Unmetered;
     let (ordinates, axes) = resolve_emission_ordinates(
         &plan,
@@ -255,8 +253,7 @@ fn live_presentation_use_cannot_inherit_colocated_source_axes() {
         longitude: crate::geographic::RetainedLongitudeSite::new(longitude, 0),
         latitude: 0.0,
     }];
-    let written =
-        native_port_point(&plan, &sites, &ordinates, EmissionPortId(0), axes).unwrap();
+    let written = native_port_point(&plan, &sites, &ordinates, EmissionPortId(0), axes).unwrap();
     assert_eq!(written.z(), None);
     assert_eq!(written.m(), None);
     assert_eq!(
@@ -287,6 +284,7 @@ fn live_presentation_use_cannot_inherit_colocated_source_axes() {
     clippy::panic_in_result_fn,
     reason = "assertions are the exact ordinate and strict-axis regression oracle"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_values()
 -> Result<()> {
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
@@ -302,11 +300,9 @@ fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_
             crate::io::parse_wkt("LINESTRING ZM (170 -30 5 50, -170 70 5 50)")?,
             crate::io::parse_wkt("LINESTRING ZM (170 70 5 50, -170 -30 5 50)")?,
         ];
-        let inputs =
-            crate::geographic::GeographicInputs::try_from_shapes(frame, constant.iter())
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let topology =
-            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+        let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, constant.iter())
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let (cut_port, requests) = source_requests_at_shared_port(&topology, 2, false)?;
         let (ordinates, axes) = resolve_native_root_occurrences(
             &topology,
@@ -323,13 +319,10 @@ fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_
         assert_eq!(ordinates.m.value(), Some(50.0));
 
         let varying = crate::io::parse_wkt("LINESTRING ZM (170 -30 1 5, -170 70 9 45)")?;
-        let inputs = crate::geographic::GeographicInputs::try_from_shapes(
-            frame,
-            std::iter::once(&varying),
-        )
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let topology =
-            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+        let inputs =
+            crate::geographic::GeographicInputs::try_from_shapes(frame, std::iter::once(&varying))
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let (cut_port, requests) = source_requests_at_shared_port(&topology, 1, true)?;
         let (root, parameter) = requests
             .iter()
@@ -349,9 +342,10 @@ fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_
                     "varying shared port has no interior source-root request".into(),
                 )
             })?;
-        let edge = topology.sources.edges.get(root.index()).ok_or_else(|| {
-            GeometryErrorKind::Invalid("varying source root is unknown".into())
-        })?;
+        let edge =
+            topology.sources.edges.get(root.index()).ok_or_else(|| {
+                GeometryErrorKind::Invalid("varying source root is unknown".into())
+            })?;
         let chart_parameter = parameter.round_with_work(&mut request_work)?;
         let chart_edge = crate::crs::ChartEdge::from_retained(
             edge.source[0],
@@ -359,8 +353,7 @@ fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_
             frame,
             edge.retained_longitude(),
         )?;
-        let fraction =
-            metric.chart_edge_arclength_fraction(&chart_edge, chart_parameter, None)?;
+        let fraction = metric.chart_edge_arclength_fraction(&chart_edge, chart_parameter, None)?;
         assert_ne!(
             fraction, chart_parameter,
             "the source sample distinguishes ellipsoidal arclength from chart t"
@@ -398,8 +391,7 @@ fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_
         let inputs =
             crate::geographic::GeographicInputs::try_from_shapes(frame, conflicting.iter())
                 .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        let topology =
-            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+        let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let (cut_port, requests) = source_requests_at_shared_port(&topology, 2, false)?;
         let Err(error) = resolve_native_root_occurrences(
             &topology,

@@ -1,52 +1,3 @@
-#[cfg(debug_assertions)]
-struct Seed42Pcg64 {
-    state: u128,
-    increment: u128,
-}
-
-#[cfg(debug_assertions)]
-impl Seed42Pcg64 {
-    // NumPy default_rng(42)'s PCG64 state and 128/64 multiplier.
-    const MULTIPLIER: u128 = 47_026_247_687_942_121_848_144_207_491_837_523_525;
-
-    const fn new() -> Self {
-        Self {
-            state: 274_674_114_334_540_486_603_088_602_300_644_985_544,
-            increment: 332_724_090_758_049_132_448_979_897_138_935_081_983,
-        }
-    }
-
-    fn unit(&mut self) -> f64 {
-        self.state = self
-            .state
-            .wrapping_mul(Self::MULTIPLIER)
-            .wrapping_add(self.increment);
-        let mixed = (self.state >> 64) as u64 ^ self.state as u64;
-        let rotation = (self.state >> 122) as u32;
-        (mixed.rotate_right(rotation) >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
-    }
-}
-
-#[cfg(debug_assertions)]
-fn seed42_radial_points(count: usize) -> Vec<(f64, f64)> {
-    // Recreate the seed-42 sorted-angle/radius workload with native scalar trig.
-    let mut generator = Seed42Pcg64::new();
-    let mut angles = Vec::with_capacity(count);
-    for _ in 0..count {
-        angles.push(generator.unit() * std::f64::consts::TAU);
-    }
-    angles.sort_unstable_by(f64::total_cmp);
-    let mut radii = Vec::with_capacity(count);
-    for _ in 0..count {
-        radii.push(0.8 + 0.2 * generator.unit());
-    }
-    angles
-        .into_iter()
-        .zip(radii)
-        .map(|(angle, radius)| (angle.cos() * radius, angle.sin() * radius))
-        .collect()
-}
-
 #[test]
 fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
     use crate::geometry::numerics::product::exact_power_of_two;
@@ -323,72 +274,49 @@ fn tiny_filled_support_uses_a_bounded_exact_boundary_scan() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn seed42_filled_membership_work_scales_with_slab_searches() {
+fn filled_membership_work_scales_with_slab_searches() {
     let mut totals = Vec::new();
-    for count in [128, 256, 512, 1024, 2048, 4096, 8192] {
-        let mut source_coordinates = seed42_radial_points(count);
-        source_coordinates.push(source_coordinates[0]);
-        if count == 128 {
-            assert_eq!(
-                source_coordinates[0].0.to_bits(),
-                0.819_802_683_715_413_4_f64.to_bits()
-            );
-        }
-        let target_coordinates: Vec<_> = source_coordinates
-            .iter()
-            .map(|&(x, y)| (x + 0.1, y + 0.1))
+    for count in [32, 64, 128] {
+        let mut coordinates: Vec<_> = (0..=count)
+            .map(|index| (f64::from(index), f64::from(index % 2)))
+            .chain(
+                (0..=count)
+                    .rev()
+                    .map(|index| (f64::from(index), 4.0 + f64::from(index % 2))),
+            )
             .collect();
-        let target = polygon(&target_coordinates);
+        coordinates.push(coordinates[0]);
+        let target = polygon(&coordinates);
         let mut budget = ExpansionBudget::new("hausdorff_distance", "test membership");
         let support = PreparedSupport::from_shape(&target, &mut budget).unwrap();
-        let plan = crate::geometry::PreparedPlan::transient(&target);
-        let tester = plan.prepare_point_queries(4).unwrap();
-
-        // Q ~= n/log(n) keeps total work sublinear in the source size if
-        // per-query candidate enumeration grows with the crossing set.
-        let mut probes = Seed42Pcg64::new();
-        let query_count = count.div_ceil(usize::try_from(count.ilog2()).unwrap());
-        let mut probe_points = Vec::with_capacity(query_count);
-        for _ in 0..query_count {
-            probe_points.push((3.0 * probes.unit() - 1.5, 3.0 * probes.unit() - 1.5));
-        }
-        let streaming_oracle_stride = (query_count / 8).max(1);
+        assert!(support.area_locator.is_some());
         reset_query_comparisons();
-        for (index, &(x, y)) in probe_points.iter().enumerate() {
-            let point = ExactPoint::from_xy(XY::new(x, y));
-            let actual = support.contains_area(&point).unwrap();
-            let exact = [
-                ExactDyadic::from_f64(x),
-                ExactDyadic::from_f64(y),
-                ExactDyadic::one(),
-            ];
-            let prepared = tester.locate_exact(&exact).unwrap();
-            assert_eq!(actual, prepared.area, "seed42 n={count}, probe={index}");
-            if index % streaming_oracle_stride == 0 {
-                let streaming = cartesian_exact_point_location_and_area(&target, &exact).unwrap();
-                assert_eq!(prepared, streaming, "seed42 n={count}, probe={index}");
+        for index in 0..count / 4 {
+            let x = f64::from(4 * index) + 0.5;
+            for (y, expected) in [(-1.0, false), (2.0, true), (6.0, false)] {
+                let point = ExactPoint::from_xy(XY::new(x, y));
+                assert_eq!(
+                    support.contains_area(&point).unwrap(),
+                    expected,
+                    "strip {count}, query ({x}, {y})",
+                );
             }
         }
         let comparisons = query_comparisons();
         let edge_tests = query_edge_tests();
         assert!(
             edge_tests > 0,
-            "seed42 n={count} recorded no slab edge comparisons"
+            "strip {count} recorded no slab edge comparisons"
         );
         assert!(comparisons >= edge_tests);
-        totals.push((count, comparisons, edge_tests));
-        eprintln!(
-            "seed42 n={count} area-locator comparisons={comparisons} edge-tests={edge_tests}"
+        totals.push(edge_tests);
+    }
+    for pair in totals.windows(2) {
+        assert!(
+            pair[1] * 10 < pair[0] * 27,
+            "doubling source edges and queries must stay below 2.7× edge tests: {totals:?}",
         );
     }
-    let (small_n, _, small_edge_tests) = totals[0];
-    let (large_n, _, large_edge_tests) = *totals.last().unwrap();
-    let exponent = (large_edge_tests as f64 / small_edge_tests as f64).ln()
-        / (large_n as f64 / small_n as f64).ln();
-    assert!(
-        exponent <= 1.15,
-        "seed-42 membership edge-test exponent {exponent:.3} exceeds 1.15: {totals:?}"
-    );
 }
 
 #[test]

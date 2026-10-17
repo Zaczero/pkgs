@@ -559,6 +559,7 @@ fn geographic_hull_pending() -> (PendingPublicationRow, Frame) {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_array_hull_final_writer_rejects_m_only_corruption() {
     let (pending, frame) = geographic_hull_pending();
     let expected = pending.shape.points_vec().unwrap();
@@ -613,6 +614,7 @@ fn geographic_array_hull_final_writer_rejects_m_only_corruption() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_array_hull_final_writer_rejects_an_omitted_literal() {
     let (pending, frame) = geographic_hull_pending();
     let mut rows = PublicationRows::with_producer_drawing_capacity(1);
@@ -626,6 +628,7 @@ fn geographic_array_hull_final_writer_rejects_an_omitted_literal() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_array_hull_final_writer_rejects_a_wrong_logical_identity() {
     let (pending, frame) = geographic_hull_pending();
     let mut rows = PublicationRows::with_producer_drawing_capacity(1);

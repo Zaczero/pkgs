@@ -356,7 +356,7 @@ fn chart_bvh_locate_keeps_earliest_ordinal_when_a_later_leaf_is_visited_first() 
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, GeographicFrame::crs84());
     let index = ChartLineIndex::build_chart(&shape, &metric).unwrap();
-    let probe = Point::new_raw_xy(0.0, 0.0);
+    let probe = Point::new_raw_xy(0.0, 1.0);
     let mut best = f64::INFINITY;
     let mut visited = Vec::new();
     index
@@ -393,6 +393,7 @@ fn chart_bvh_locate_keeps_earliest_ordinal_when_a_later_leaf_is_visited_first() 
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn cached_chart_locate_preserves_source_then_query_domain_error_precedence() {
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
     let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();

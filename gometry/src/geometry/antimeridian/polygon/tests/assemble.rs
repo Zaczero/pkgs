@@ -65,8 +65,7 @@ fn crs84_zero_to_full_turn_band_rewrites() {
     assert_eq!(split, expected);
 }
 
-#[test]
-fn splitting_a_polar_annulus_keeps_the_full_longitude_band() {
+fn assert_split_polar_annulus_band(longitude: f64) {
     let latitude_ring = |latitude| {
         [
             (0.0, latitude),
@@ -82,39 +81,38 @@ fn splitting_a_polar_annulus_keeps_the_full_longitude_band() {
     let source = polygon(&shell, &[&hole]);
     let split = split_crs84(&source);
     assert_eq!(split.validate().unwrap(), None, "{split:?}");
-    let point = Shape::Point(Point::new_raw_xy(0.0, 75.0));
     let source_plan = crate::geometry::PreparedPlan::transient(&split);
-    let point_plan = crate::geometry::PreparedPlan::transient(&point);
     let source_cache = crate::geometry::FrameDependentCaches::default();
-    let point_cache = crate::geometry::FrameDependentCaches::default();
     let frame = GeographicFrame::crs84();
     let source_prepared =
         crate::geometry::GeographicPrepared::try_new(&source_plan, &source_cache, frame).unwrap();
-    let point_prepared =
-        crate::geometry::GeographicPrepared::try_new(&point_plan, &point_cache, frame).unwrap();
-    assert!(
-        crate::geometry::graph_relate_data_geographic(source_prepared, point_prepared)
-            .unwrap()
-            .is_contains(),
-        "{split:?}"
-    );
-
-    for longitude in [0.0, 180.0, -180.0] {
-        for (latitude, expected) in [(75.0, true), (89.0, false), (65.0, false)] {
-            let point = Shape::Point(Point::new_raw_xy(longitude, latitude));
-            let point_plan = crate::geometry::PreparedPlan::transient(&point);
-            let point_cache = crate::geometry::FrameDependentCaches::default();
-            let point_prepared =
-                crate::geometry::GeographicPrepared::try_new(&point_plan, &point_cache, frame)
-                    .unwrap();
-            let relation =
-                crate::geometry::graph_relate_data_geographic(source_prepared, point_prepared)
-                    .unwrap();
-            assert_eq!(
-                relation.is_contains(),
-                expected,
-                "({longitude}, {latitude}) in {split:?}"
-            );
-        }
+    for (latitude, expected) in [(75.0, true), (89.0, false), (65.0, false)] {
+        let point = Shape::Point(Point::new_raw_xy(longitude, latitude));
+        let point_plan = crate::geometry::PreparedPlan::transient(&point);
+        let point_cache = crate::geometry::FrameDependentCaches::default();
+        let point_prepared =
+            crate::geometry::GeographicPrepared::try_new(&point_plan, &point_cache, frame).unwrap();
+        let relation =
+            crate::geometry::graph_relate_data_geographic(source_prepared, point_prepared).unwrap();
+        assert_eq!(
+            relation.is_contains(),
+            expected,
+            "({longitude}, {latitude}) in {split:?}"
+        );
     }
+}
+
+#[test]
+fn split_polar_annulus_keeps_the_band_at_the_central_meridian() {
+    assert_split_polar_annulus_band(0.0);
+}
+
+#[test]
+fn split_polar_annulus_keeps_the_band_at_the_east_seam() {
+    assert_split_polar_annulus_band(180.0);
+}
+
+#[test]
+fn split_polar_annulus_keeps_the_band_at_the_west_seam() {
+    assert_split_polar_annulus_band(-180.0);
 }

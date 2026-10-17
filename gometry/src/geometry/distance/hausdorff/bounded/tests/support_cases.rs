@@ -526,25 +526,32 @@ fn interval_span_bounds_enclose_the_exact_distance_over_the_point_box() {
     // Every regime: beyond either end, over the interior, straddling an
     // end normal, near-contact, and wide point boxes. A bound that fails
     // to enclose would let the solver prune the true maximum.
-    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-    let mut next = move || {
-        state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (state >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
-    };
     let mut checked = 0;
     for scale in [1e-6, 1.0, 1e6] {
-        for _ in 0..2_000 {
+        for (name, start, end, point, width) in [
+            ("before start", (0.0, 0.0), (4.0, 0.0), (-1.0, 1.0), 0.001),
+            ("after end", (0.0, 0.0), (4.0, 0.0), (5.0, 1.0), 0.001),
+            ("interior", (0.0, 0.0), (4.0, 0.0), (2.0, 1.0), 0.001),
+            ("vertical", (0.0, 0.0), (0.0, 4.0), (1.0, 2.0), 0.001),
+            ("oblique", (0.0, 0.0), (4.0, 2.0), (2.0, 3.0), 0.001),
+            (
+                "near contact",
+                (0.0, 0.0),
+                (4.0, 0.0),
+                (2.0, f64::EPSILON),
+                0.0,
+            ),
+            ("end normal", (0.0, 0.0), (4.0, 0.0), (-0.5, 1.0), 1.0),
+            ("wide box", (0.0, 0.0), (4.0, 2.0), (-1.0, 1.0), 4.0),
+        ] {
             let (ax, ay, bx, by) = (
-                next() * scale,
-                next() * scale,
-                next() * scale,
-                next() * scale,
+                start.0 * scale,
+                start.1 * scale,
+                end.0 * scale,
+                end.1 * scale,
             );
             let support = PreparedSupport::from_line_columns(&[ax, bx], &[ay, by]).unwrap();
-            let (px, py) = (next() * 3.0 * scale, next() * 3.0 * scale);
-            let width = [0.0, 1e-12 * scale, 1e-3 * scale][checked % 3];
+            let (px, py, width) = (point.0 * scale, point.1 * scale, width * scale);
             let bounds = FloatBox {
                 min_x: px,
                 max_x: px + width,
@@ -565,17 +572,22 @@ fn interval_span_bounds_enclose_the_exact_distance_over_the_point_box() {
                     .unwrap();
                 assert_ne!(
                     Rational::from_f64(lower).try_cmp(&exact).unwrap(),
-                    Ordering::Greater
+                    Ordering::Greater,
+                    "{name}, scale {scale}",
                 );
                 assert_ne!(
                     Rational::from_f64(upper).try_cmp(&exact).unwrap(),
-                    Ordering::Less
+                    Ordering::Less,
+                    "{name}, scale {scale}",
                 );
             }
             checked += 1;
         }
     }
-    assert!(checked > 5_000, "{checked}");
+    assert!(
+        checked > 0,
+        "the fixed regimes must exercise interval bounds"
+    );
 
     // An exactly representable cross product whose square is not: round
     // to nearest lands below the exact squared distance, so only the

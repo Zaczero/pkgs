@@ -1,7 +1,11 @@
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
 
+mod country_arcs;
 mod recording_work;
+pub(in crate::geometry) use country_arcs::{
+    argentina_uruguay_source_arc_polygons, argentina_uruguay_source_segments,
+};
 pub(crate) use recording_work::RecordingWork;
 
 pub(in crate::geometry) fn frame() -> GeographicFrame {

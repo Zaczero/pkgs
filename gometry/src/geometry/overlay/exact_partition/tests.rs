@@ -16,6 +16,9 @@ use crate::geometry::segments::contact::{
     SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation,
 };
 use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
+use crate::geometry::test_support::{
+    argentina_uruguay_source_arc_polygons, argentina_uruguay_source_segments,
+};
 use crate::work::{Unmetered, Work};
 
 #[test]

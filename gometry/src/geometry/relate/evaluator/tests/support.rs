@@ -180,212 +180,64 @@ fn assert_direction_against_oracle(
     }
 }
 
-fn run_curated_relation_corpus(locator_only: bool) {
-    let cases = [
-        ("empty polygons", "POLYGON EMPTY", "POLYGON EMPTY"),
-        (
-            "empty collection and line",
-            "GEOMETRYCOLLECTION EMPTY",
-            "LINESTRING (0 0,1 1)",
-        ),
-        (
-            "empty line and polygon",
-            "LINESTRING EMPTY",
-            "POLYGON ((0 0,2 0,2 2,0 2,0 0))",
-        ),
-        (
-            "equal points with different ZM",
-            "POINT ZM (1 2 3 4)",
-            "POINT ZM (1 2 30 40)",
-        ),
-        (
-            "point sets partly equal",
-            "MULTIPOINT ((0 0),(1 1),(2 2))",
-            "MULTIPOINT ((1 1),(3 3))",
-        ),
-        (
-            "point in area",
-            "POINT (1 1)",
-            "POLYGON ((0 0,3 0,3 3,0 3,0 0))",
-        ),
-        (
-            "point on area edge",
-            "POINT (1 0)",
-            "POLYGON ((0 0,3 0,3 3,0 3,0 0))",
-        ),
-        (
-            "point in hole",
-            "POINT (5 5)",
-            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
-        ),
-        (
-            "crossing lines, non-dyadic node",
-            "LINESTRING (0 0,3 3)",
-            "LINESTRING (0 1,2 0)",
-        ),
-        (
-            "vertex-through crossing",
-            "LINESTRING (-1 0,0 0,1 0)",
-            "LINESTRING (0 -1,0 1)",
-        ),
-        (
-            "collinear partial overlap",
-            "LINESTRING (0 0,4 0)",
-            "LINESTRING (2 0,6 0)",
-        ),
-        (
-            "collinear reversed overlap",
-            "LINESTRING (0 0,4 0)",
-            "LINESTRING (6 0,2 0)",
-        ),
-        (
-            "collinear disjoint",
-            "LINESTRING (0 0,1 0)",
-            "LINESTRING (2 0,3 0)",
-        ),
-        (
-            "closed line",
-            "LINESTRING (0 0,4 0,4 4,0 0)",
-            "LINESTRING (0 0,4 4,4 0,0 0)",
-        ),
-        ("collapsed line", "LINESTRING (7 7,7 7)", "POINT (7 7)"),
-        (
-            "line endpoint parity",
-            "MULTILINESTRING ((0 0,1 0),(1 0,2 0),(2 0,0 0))",
-            "POINT (1 0)",
-        ),
-        (
-            "nested polygons",
-            "POLYGON ((0 0,10 0,10 10,0 10,0 0))",
-            "POLYGON ((2 2,4 2,4 4,2 4,2 2))",
-        ),
-        (
-            "polygon overlap",
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0))",
-            "POLYGON ((2 -1,5 -1,5 2,2 2,2 -1))",
-        ),
-        (
-            "shared polygon edge",
-            "POLYGON ((0 0,2 0,2 2,0 2,0 0))",
-            "POLYGON ((2 0,4 0,4 2,2 2,2 0))",
-        ),
-        (
-            "vertex-touching polygons",
-            "POLYGON ((0 0,2 0,2 2,0 2,0 0))",
-            "POLYGON ((2 2,4 2,4 4,2 4,2 2))",
-        ),
-        (
-            "disjoint polygons",
-            "POLYGON ((0 0,1 0,1 1,0 1,0 0))",
-            "POLYGON ((3 3,4 3,4 4,3 4,3 3))",
-        ),
-        (
-            "line crosses polygon",
-            "LINESTRING (-1 1,4 1)",
-            "POLYGON ((0 0,3 0,3 3,0 3,0 0))",
-        ),
-        (
-            "line inside polygon",
-            "LINESTRING (1 1,2 2)",
-            "POLYGON ((0 0,3 0,3 3,0 3,0 0))",
-        ),
-        (
-            "line on polygon edge",
-            "LINESTRING (0 0,3 0)",
-            "POLYGON ((0 0,3 0,3 3,0 3,0 0))",
-        ),
-        (
-            "line through polygon hole",
-            "LINESTRING (-1 5,11 5)",
-            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
-        ),
-        (
-            "hole exterior point",
-            "POINT (11 11)",
-            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(11 11,13 11,13 13,11 13,11 11))",
-        ),
-        (
-            "hole touches shell",
-            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(0 5,2 4,2 6,0 5))",
-            "LINESTRING (-1 5,3 5)",
-        ),
-        (
-            "bow-tie ring",
-            "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
-            "POLYGON ((1 1,3 1,3 3,1 3,1 1))",
-        ),
-        (
-            "spiked ring",
-            "POLYGON ((0 0,4 0,4 4,2 2,4 4,0 4,0 0))",
-            "POLYGON ((1 1,3 1,3 3,1 3,1 1))",
-        ),
-        (
-            "collapsed polygon ring",
-            "POLYGON ((0 0,2 0,0 0,2 0,0 0))",
-            "LINESTRING (0 0,2 0)",
-        ),
-        (
-            "mixed collection",
-            "GEOMETRYCOLLECTION (POINT (1 1),LINESTRING (0 0,3 0),POLYGON ((0 0,2 0,2 2,0 2,0 0)))",
-            "LINESTRING (1 0,3 0)",
-        ),
-        (
-            "repeated members",
-            "GEOMETRYCOLLECTION (LINESTRING (0 0,2 0),LINESTRING (2 0,0 0),POINT (1 0),POINT (1 0))",
-            "LINESTRING (1 -1,1 1)",
-        ),
-        (
-            "overlapping multipolygon members",
-            "MULTIPOLYGON (((0 0,3 0,3 3,0 3,0 0)),((2 0,5 0,5 3,2 3,2 0)))",
-            "POLYGON ((1 1,4 1,4 2,1 2,1 1))",
-        ),
-        (
-            "three concurrent segments",
-            "MULTILINESTRING ((-2 0,2 0),(0 -2,0 2),(-2 -2,2 2))",
-            "LINESTRING (-2 2,2 -2)",
-        ),
-        (
-            "shell equals hole",
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
-            "POLYGON ((1 1,2 1,2 2,1 2,1 1))",
-        ),
-        (
-            "hole encloses shell",
-            "POLYGON ((2 2,4 2,4 4,2 4,2 2),(0 0,10 0,10 10,0 10,0 0))",
-            "POINT (3 3)",
-        ),
-        (
-            "large coordinates",
-            "LINESTRING (1e150 1e150,3e150 3e150)",
-            "LINESTRING (1e150 2e150,2e150 1e150)",
-        ),
-        (
-            "tiny coordinates",
-            "POLYGON ((1e-150 1e-150,3e-150 1e-150,3e-150 3e-150,1e-150 3e-150,1e-150 1e-150))",
-            "POLYGON ((2e-150 0.5e-150,4e-150 0.5e-150,4e-150 2e-150,2e-150 2e-150,2e-150 0.5e-150))",
-        ),
-        (
-            "one-ulp-offset lines",
-            "LINESTRING (0 0,1 1)",
-            "LINESTRING (0 5e-324,1 1.0000000000000002)",
-        ),
-        (
-            "duplicate source segment",
-            "GEOMETRYCOLLECTION (LINESTRING (0 0,2 0),LINESTRING (2 0,0 0))",
-            "LINESTRING (1 -1,1 1)",
-        ),
-    ];
-    for (name, left_wkt, right_wkt) in cases {
-        let left = crate::io::parse_wkt(left_wkt)
-            .unwrap_or_else(|error| panic!("{name}: left WKT did not parse: {error}"));
-        let right = crate::io::parse_wkt(right_wkt)
-            .unwrap_or_else(|error| panic!("{name}: right WKT did not parse: {error}"));
-        if locator_only {
-            assert_locator_oracle_parity(name, &left, &right);
-        } else {
-            let oracle = partition_oracle(&left, &right)
-                .unwrap_or_else(|error| panic!("{name}: exact partition failed: {error}"));
-            assert_full_oracle_and_controls(name, &left, &right, oracle);
+fn assert_matrix_oracle_parity(name: &str, left: &Shape, right: &Shape) {
+    let oracle = partition_oracle(left, right)
+        .unwrap_or_else(|error| panic!("{name}: exact partition failed: {error}"));
+    assert_full_oracle_and_controls(name, left, right, oracle);
+}
+
+macro_rules! relation_case {
+    ($check:ident; $name:ident, $label:literal, $left:literal, $right:literal) => {
+        #[test]
+        fn $name() {
+            let left = crate::io::parse_wkt($left).expect("left fixture parses");
+            let right = crate::io::parse_wkt($right).expect("right fixture parses");
+            $check($label, &left, &right);
         }
-    }
+    };
+}
+
+macro_rules! relation_corpus {
+    ($check:ident) => {
+        relation_case!($check; empty_polygons, "empty polygons", "POLYGON EMPTY", "POLYGON EMPTY");
+        relation_case!($check; empty_collection_and_line, "empty collection and line", "GEOMETRYCOLLECTION EMPTY", "LINESTRING (0 0,1 1)");
+        relation_case!($check; empty_line_and_polygon, "empty line and polygon", "LINESTRING EMPTY", "POLYGON ((0 0,2 0,2 2,0 2,0 0))");
+        relation_case!($check; equal_points_with_different_zm, "equal points with different ZM", "POINT ZM (1 2 3 4)", "POINT ZM (1 2 30 40)");
+        relation_case!($check; point_sets_partly_equal, "point sets partly equal", "MULTIPOINT ((0 0),(1 1),(2 2))", "MULTIPOINT ((1 1),(3 3))");
+        relation_case!($check; point_in_area, "point in area", "POINT (1 1)", "POLYGON ((0 0,3 0,3 3,0 3,0 0))");
+        relation_case!($check; point_on_area_edge, "point on area edge", "POINT (1 0)", "POLYGON ((0 0,3 0,3 3,0 3,0 0))");
+        relation_case!($check; point_in_hole, "point in hole", "POINT (5 5)", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))");
+        relation_case!($check; crossing_lines_non_dyadic_node, "crossing lines, non-dyadic node", "LINESTRING (0 0,3 3)", "LINESTRING (0 1,2 0)");
+        relation_case!($check; vertex_through_crossing, "vertex-through crossing", "LINESTRING (-1 0,0 0,1 0)", "LINESTRING (0 -1,0 1)");
+        relation_case!($check; collinear_partial_overlap, "collinear partial overlap", "LINESTRING (0 0,4 0)", "LINESTRING (2 0,6 0)");
+        relation_case!($check; collinear_reversed_overlap, "collinear reversed overlap", "LINESTRING (0 0,4 0)", "LINESTRING (6 0,2 0)");
+        relation_case!($check; collinear_disjoint, "collinear disjoint", "LINESTRING (0 0,1 0)", "LINESTRING (2 0,3 0)");
+        relation_case!($check; closed_line, "closed line", "LINESTRING (0 0,4 0,4 4,0 0)", "LINESTRING (0 0,4 4,4 0,0 0)");
+        relation_case!($check; collapsed_line, "collapsed line", "LINESTRING (7 7,7 7)", "POINT (7 7)");
+        relation_case!($check; line_endpoint_parity, "line endpoint parity", "MULTILINESTRING ((0 0,1 0),(1 0,2 0),(2 0,0 0))", "POINT (1 0)");
+        relation_case!($check; nested_polygons, "nested polygons", "POLYGON ((0 0,10 0,10 10,0 10,0 0))", "POLYGON ((2 2,4 2,4 4,2 4,2 2))");
+        relation_case!($check; polygon_overlap, "polygon overlap", "POLYGON ((0 0,4 0,4 4,0 4,0 0))", "POLYGON ((2 -1,5 -1,5 2,2 2,2 -1))");
+        relation_case!($check; shared_polygon_edge, "shared polygon edge", "POLYGON ((0 0,2 0,2 2,0 2,0 0))", "POLYGON ((2 0,4 0,4 2,2 2,2 0))");
+        relation_case!($check; vertex_touching_polygons, "vertex-touching polygons", "POLYGON ((0 0,2 0,2 2,0 2,0 0))", "POLYGON ((2 2,4 2,4 4,2 4,2 2))");
+        relation_case!($check; disjoint_polygons, "disjoint polygons", "POLYGON ((0 0,1 0,1 1,0 1,0 0))", "POLYGON ((3 3,4 3,4 4,3 4,3 3))");
+        relation_case!($check; line_crosses_polygon, "line crosses polygon", "LINESTRING (-1 1,4 1)", "POLYGON ((0 0,3 0,3 3,0 3,0 0))");
+        relation_case!($check; line_inside_polygon, "line inside polygon", "LINESTRING (1 1,2 2)", "POLYGON ((0 0,3 0,3 3,0 3,0 0))");
+        relation_case!($check; line_on_polygon_edge, "line on polygon edge", "LINESTRING (0 0,3 0)", "POLYGON ((0 0,3 0,3 3,0 3,0 0))");
+        relation_case!($check; line_through_polygon_hole, "line through polygon hole", "LINESTRING (-1 5,11 5)", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))");
+        relation_case!($check; hole_exterior_point, "hole exterior point", "POINT (11 11)", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(11 11,13 11,13 13,11 13,11 11))");
+        relation_case!($check; hole_touches_shell, "hole touches shell", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(0 5,2 4,2 6,0 5))", "LINESTRING (-1 5,3 5)");
+        relation_case!($check; bow_tie_ring, "bow-tie ring", "POLYGON ((0 0,4 4,0 4,4 0,0 0))", "POLYGON ((1 1,3 1,3 3,1 3,1 1))");
+        relation_case!($check; spiked_ring, "spiked ring", "POLYGON ((0 0,4 0,4 4,2 2,4 4,0 4,0 0))", "POLYGON ((1 1,3 1,3 3,1 3,1 1))");
+        relation_case!($check; collapsed_polygon_ring, "collapsed polygon ring", "POLYGON ((0 0,2 0,0 0,2 0,0 0))", "LINESTRING (0 0,2 0)");
+        relation_case!($check; mixed_collection, "mixed collection", "GEOMETRYCOLLECTION (POINT (1 1),LINESTRING (0 0,3 0),POLYGON ((0 0,2 0,2 2,0 2,0 0)))", "LINESTRING (1 0,3 0)");
+        relation_case!($check; repeated_members, "repeated members", "GEOMETRYCOLLECTION (LINESTRING (0 0,2 0),LINESTRING (2 0,0 0),POINT (1 0),POINT (1 0))", "LINESTRING (1 -1,1 1)");
+        relation_case!($check; overlapping_multipolygon_members, "overlapping multipolygon members", "MULTIPOLYGON (((0 0,3 0,3 3,0 3,0 0)),((2 0,5 0,5 3,2 3,2 0)))", "POLYGON ((1 1,4 1,4 2,1 2,1 1))");
+        relation_case!($check; three_concurrent_segments, "three concurrent segments", "MULTILINESTRING ((-2 0,2 0),(0 -2,0 2),(-2 -2,2 2))", "LINESTRING (-2 2,2 -2)");
+        relation_case!($check; shell_equals_hole, "shell equals hole", "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))", "POLYGON ((1 1,2 1,2 2,1 2,1 1))");
+        relation_case!($check; hole_encloses_shell, "hole encloses shell", "POLYGON ((2 2,4 2,4 4,2 4,2 2),(0 0,10 0,10 10,0 10,0 0))", "POINT (3 3)");
+        relation_case!($check; large_coordinates, "large coordinates", "LINESTRING (1e150 1e150,3e150 3e150)", "LINESTRING (1e150 2e150,2e150 1e150)");
+        relation_case!($check; tiny_coordinates, "tiny coordinates", "POLYGON ((1e-150 1e-150,3e-150 1e-150,3e-150 3e-150,1e-150 3e-150,1e-150 1e-150))", "POLYGON ((2e-150 0.5e-150,4e-150 0.5e-150,4e-150 2e-150,2e-150 2e-150,2e-150 0.5e-150))");
+        relation_case!($check; one_ulp_offset_lines, "one-ulp-offset lines", "LINESTRING (0 0,1 1)", "LINESTRING (0 5e-324,1 1.0000000000000002)");
+        relation_case!($check; duplicate_source_segment, "duplicate source segment", "GEOMETRYCOLLECTION (LINESTRING (0 0,2 0),LINESTRING (2 0,0 0))", "LINESTRING (1 -1,1 1)");
+    };
 }

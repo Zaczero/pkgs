@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn packed_to_crs_lines_rebuild_offsets_after_edge_subdivision() {
     let source = PyGeometryArray::packed_lines(
         CoordSeq::try_from_vecs(

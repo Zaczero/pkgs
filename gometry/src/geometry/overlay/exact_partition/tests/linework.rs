@@ -98,7 +98,11 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
         )
         .unwrap();
     assert_eq!(parts.len(), 3);
-    assert_eq!(parts.iter().map(Shape::area).sum::<f64>(), 3.0);
+    approx::assert_relative_eq!(
+        parts.iter().map(Shape::area).sum::<f64>(),
+        3.0,
+        max_relative = 64.0 * f64::EPSILON,
+    );
 }
 
 #[test]

@@ -399,12 +399,11 @@ fn site_shape(points: &[(f64, f64)]) -> Shape {
     )
 }
 
-fn task163_tangent_clip(hole_count: usize) -> Polygon {
-    let holes = (0..hole_count)
-        .map(|index| {
-            let ordinal =
-                f64::from(u32::try_from(index).expect("the fixture has fewer than u32 holes"));
-            let x = 1.0 + ordinal * 1.4;
+fn tangent_hole_clip(ordinals: &[u16]) -> Polygon {
+    let holes = ordinals
+        .iter()
+        .map(|&ordinal| {
+            let x = 1.0 + f64::from(ordinal) * 1.4;
             closed_ring(&[(x, 10.0), (x + 0.25, 9.5), (x - 0.25, 9.5)])
         })
         .collect();

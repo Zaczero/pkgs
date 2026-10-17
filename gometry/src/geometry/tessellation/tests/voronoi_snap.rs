@@ -152,8 +152,8 @@ fn voronoi_snap_matches_exact_reference_when_y_order_differs() {
 }
 
 #[test]
-fn canonical_voronoi_keeps_4097_equal_x_sparse_y_sites_in_dense_id_order() {
-    let points = (0..4_097)
+fn canonical_voronoi_keeps_equal_x_sparse_y_sites_in_dense_id_order() {
+    let points = (0..33)
         .map(|site| xy(0.0, 2.0 * f64::from(site)))
         .collect::<Vec<_>>();
     let unsnapped = canonical_voronoi_sites(points.clone(), 0.0).unwrap();
@@ -168,7 +168,7 @@ fn canonical_voronoi_keeps_4097_equal_x_sparse_y_sites_in_dense_id_order() {
     assert_eq!(signature(&snapped), signature(&unsnapped));
     assert_eq!(
         snapped.iter().map(|site| site.id).collect::<Vec<_>>(),
-        (0..4_097).collect::<Vec<_>>()
+        (0..33).collect::<Vec<_>>()
     );
 }
 

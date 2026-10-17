@@ -392,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_on_source_uses_the_original_wgs84_root_arclength() -> Result<()> {
         let source = [
             Point::new_axes(10.0, 5.0, ZOrdinate(Some(0.0)), MOrdinate(None))?,

@@ -385,7 +385,7 @@ fn chart_area_uses_typed_topology_poles_and_rejects_ambiguous_turns() {
     clippy::excessive_precision,
     reason = "Independent Decimal integrals pin periodic bands and multi-turn source walks"
 )]
-fn chart_area_preserves_world_circle_and_multi_turn_walks() {
+fn chart_area_preserves_a_world_band() {
     let metric = metric();
     let frame = metric.frame;
     let world_band = polygon(&full_longitude_band(40.0, -60.0, 60.0), &[]);
@@ -396,7 +396,16 @@ fn chart_area_preserves_world_circle_and_multi_turn_walks() {
         (actual - expected_world_band).abs() <= 1.0e-14 * expected_world_band,
         "world-band area={actual:.17}, expected={expected_world_band:.17}"
     );
+}
 
+#[test]
+#[expect(
+    clippy::excessive_precision,
+    reason = "Independent Decimal integral pins the full-turn cap"
+)]
+fn chart_area_preserves_a_full_turn_circle_cap() {
+    let metric = metric();
+    let frame = metric.frame;
     let circle_cap = polygon(
         &[(40.0, 60.0), (400.0, 60.0), (400.0, 90.0), (40.0, 90.0)],
         &[],
@@ -407,7 +416,12 @@ fn chart_area_preserves_world_circle_and_multi_turn_walks() {
         (actual - expected_circle_cap).abs() <= 1.0e-14 * expected_circle_cap,
         "Circle cap area={actual:.17}, expected={expected_circle_cap:.17}"
     );
+}
 
+#[test]
+fn chart_area_preserves_a_south_polar_cap() {
+    let metric = metric();
+    let frame = metric.frame;
     let south_cap = polygon(
         &[(0.0, -80.0), (90.0, -80.0), (180.0, -80.0), (270.0, -80.0)],
         &[],
@@ -418,7 +432,16 @@ fn chart_area_preserves_world_circle_and_multi_turn_walks() {
         (actual - expected_south_cap).abs() <= 1.0e-14 * expected_south_cap,
         "south cap area={actual:.17}, expected={expected_south_cap:.17}"
     );
+}
 
+#[test]
+#[expect(
+    clippy::excessive_precision,
+    reason = "Independent Decimal integral pins the multi-turn source walk"
+)]
+fn chart_area_preserves_a_multi_turn_walk() {
+    let metric = metric();
+    let frame = metric.frame;
     let multi_turn = polygon(
         &[
             (0.0, 1.0),

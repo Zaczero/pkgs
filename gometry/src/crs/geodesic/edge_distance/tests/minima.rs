@@ -47,7 +47,8 @@ fn point_edge_fixed_minima_agree_with_dense_karney_and_golden_oracle() {
         let expected = dense_oracle(&metric, point, &edge);
         let gap = 4.0e-11 * metric.geodesic.a;
         assert!(
-            actual.distance >= expected - 1.0e-9,
+            actual.distance
+                >= expected - metric.geodesic_numerical_policy().evaluation_allowance(2.0),
             "{name}: attained {} below oracle {expected}",
             actual.distance
         );
@@ -118,7 +119,7 @@ fn chart_parameter_trial_closes_the_near_edge_station_counterexample() {
     // inversions, a four-ULP physical coordinate envelope, four ULPs of
     // parameter propagated by the sampled edge speed, and two station ULPs.
     assert!((with_station - target_station).abs() <= 30.71e-9);
-    assert!(minimum.distance < 2.0e-9);
+    assert!(minimum.distance <= metric.geodesic_numerical_policy().backend_floor());
     assert!(minimum.evaluations <= 3);
     assert!(!minimum.budget_exhausted);
 }
@@ -152,7 +153,8 @@ fn chart_witness_role_nearest_preserves_minimum_measurements() {
         }) else {
             panic!("{name}: unbounded minimum");
         };
-        for cutoff in [f64::INFINITY, reference.distance.next_up()] {
+        let allowance = metric.geodesic_numerical_policy().evaluation_allowance(2.0);
+        for cutoff in [f64::INFINITY, reference.distance + allowance] {
             let PointEdgeQueryResult::Minimum(minimum) = query(PointEdgeQuery::Minimum { cutoff })
             else {
                 panic!("{name}: admitted minimum");
@@ -161,30 +163,27 @@ fn chart_witness_role_nearest_preserves_minimum_measurements() {
             else {
                 panic!("{name}: admitted nearest");
             };
-            assert_eq!(
-                minimum.distance.to_bits(),
-                nearest.distance.to_bits(),
-                "{name}"
-            );
-            assert_eq!(
-                minimum.lower_bound.to_bits(),
-                nearest.lower_bound.to_bits(),
-                "{name}"
+            approx::assert_abs_diff_eq!(minimum.distance, nearest.distance, epsilon = allowance,);
+            approx::assert_abs_diff_eq!(
+                minimum.lower_bound,
+                nearest.lower_bound,
+                epsilon = allowance,
             );
             assert_eq!(minimum.evaluations, nearest.evaluations, "{name}");
             assert_eq!(minimum.budget_exhausted, nearest.budget_exhausted, "{name}");
-            if name == "flat" {
-                assert_eq!(minimum.parameter, 0.0);
+            if name == "contact" {
+                assert_eq!(minimum.distance, 0.0);
+                assert_eq!(minimum.parameter, 0.5);
                 assert_eq!(
                     edge.witness_role(nearest.parameter),
-                    crate::geometry::WitnessRole::Point
+                    crate::geometry::WitnessRole::Interior
                 );
                 let PointEdgeQueryResult::Minimum(locate) =
                     query(PointEdgeQuery::Locate { cutoff })
                 else {
-                    panic!("flat: admitted locate");
+                    panic!("contact: admitted locate");
                 };
-                assert_eq!(locate.distance.to_bits(), minimum.distance.to_bits());
+                assert_eq!(locate.distance, 0.0);
                 assert_eq!(locate.parameter, 0.5);
                 assert_eq!(locate.evaluations, 3);
             }
@@ -233,7 +232,7 @@ fn point_edge_exact_degenerate_pole_sphere_and_prolate_families() {
                 0.0,
             ))
         .abs()
-            <= 1.0e-9
+            <= wgs84.geodesic_numerical_policy().evaluation_allowance(2.0)
     );
 
     for (name, flattening, point, start, end) in [

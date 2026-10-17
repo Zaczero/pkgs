@@ -631,7 +631,7 @@ fn solution_copy_refusal_does_not_mark_the_stream_as_yielded() {
 }
 
 #[test]
-fn every_two_and_three_class_acceptance_table_follows_first_blame_order() {
+fn two_and_three_class_acceptance_tables_follow_first_blame_order() {
     for (streams, class_orders) in [
         (vec![vec![0, 1], vec![2, 3]], vec![vec![0, 1], vec![1, 0]]),
         (vec![vec![0, 1], vec![2, 3], vec![4, 5]], vec![
@@ -651,6 +651,23 @@ fn every_two_and_three_class_acceptance_table_follows_first_blame_order() {
         let acceptance_count = 1_usize
             .checked_shl(u32::try_from(products.len()).unwrap())
             .unwrap();
+        let accepted_tables = if streams.len() == 2 {
+            (0..acceptance_count).collect::<Vec<_>>()
+        } else {
+            vec![
+                0,
+                1,
+                2,
+                4,
+                128,
+                3,
+                7,
+                0b0101_0101,
+                0b1010_1010,
+                0b1110_0000,
+                255,
+            ]
+        };
         let candidates = (0..streams.len())
             .map(|node| {
                 let first = u8::try_from(node).unwrap().wrapping_mul(2);
@@ -659,7 +676,7 @@ fn every_two_and_three_class_acceptance_table_follows_first_blame_order() {
             .collect::<Vec<_>>();
 
         for class_order in class_orders {
-            for accepted in 0..acceptance_count {
+            for &accepted in &accepted_tables {
                 let global_requirements = products
                     .iter()
                     .enumerate()

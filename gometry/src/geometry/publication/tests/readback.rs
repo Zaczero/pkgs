@@ -316,6 +316,7 @@ fn producer_drawing_rejects_final_storage_readback_mismatch() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn minimum_clearance_line_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let shape = crate::io::parse_wkt("MULTIPOINT ((0 0), (1 0))").unwrap();
@@ -345,6 +346,7 @@ fn minimum_clearance_line_receipt_omission_fails_final_readback() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn nearest_points_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
@@ -410,6 +412,7 @@ fn nearest_point_columns_reject_a_shortened_missing_mask() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn shortest_line_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
@@ -513,6 +516,7 @@ fn split_groups_receipt_omission_fails_final_readback() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn convex_hull_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let shape = crate::io::parse_wkt("MULTIPOINT ((0 0), (2 0), (1 2))").unwrap();
@@ -551,6 +555,7 @@ fn convex_hull_receipt_omission_fails_final_readback() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn degenerate_minimum_rectangle_receipt_omission_fails_final_readback() {
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
     let shape = crate::io::parse_wkt("LINESTRING (0 0, 1 1)").unwrap();

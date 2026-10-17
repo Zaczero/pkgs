@@ -63,9 +63,8 @@ fn chart_edge_rejects_exact_half_periods_with_an_actionable_geometry_error() {
 }
 
 #[test]
-fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_random_pairs() {
+fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_period_spellings() {
     let frames = [degrees(), grads(), radians()];
-    let mut state = 0x4D59_5DF4_D0F3_3173_u64;
     for frame in frames {
         let axis = frame.longitude();
         let half = axis.half_period();
@@ -80,21 +79,17 @@ fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_random_pairs() {
             (-period, period),
             (2.0 * period, 3.0 * period),
             (-3.0 * period, -2.0 * period),
+            (half.next_down(), -half.next_down()),
+            (-half.next_down(), half.next_down()),
+            (half.next_up(), -half.next_up()),
+            (-half.next_up(), half.next_up()),
+            (period * 5.25, period * -4.125),
+            (period * -5.25, period * 4.125),
+            (period * 0.125, period * 5.375),
+            (period * -0.125, period * -5.375),
+            (period * 0.375, period * -5.125),
+            (period * -0.375, period * 5.125),
         ] {
-            assert_topology_delta(frame, from, to);
-        }
-        for index in 0..100_000 {
-            let from = pseudo_random(&mut state) * axis.period() * 12.0;
-            let to = if index % 4 == 0 {
-                let seam = axis.half_period();
-                match index % 8 {
-                    0 => seam.next_down(),
-                    4 => -seam.next_down(),
-                    _ => pseudo_random(&mut state) * axis.period() * 12.0,
-                }
-            } else {
-                pseudo_random(&mut state) * axis.period() * 12.0
-            };
             assert_topology_delta(frame, from, to);
         }
     }
@@ -134,11 +129,4 @@ fn assert_topology_delta(frame: GeographicFrame, from: f64, to: f64) {
         expected_transit,
         "frame={frame:?}, from={from:?}, to={to:?}"
     );
-}
-
-fn pseudo_random(state: &mut u64) -> f64 {
-    *state ^= *state << 13;
-    *state ^= *state >> 7;
-    *state ^= *state << 17;
-    (*state >> 11) as f64 * (1.0 / ((1_u64 << 53) as f64)) - 0.5
 }

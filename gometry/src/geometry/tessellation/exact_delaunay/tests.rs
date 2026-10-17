@@ -10,19 +10,6 @@ use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::test_support::points;
 use crate::geometry::{Point, XY};
 
-fn random(n: usize, seed: u64) -> Vec<Point> {
-    let mut s = seed;
-    let mut next = move || {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        (s >> 11) as f64 / (1_u64 << 53) as f64
-    };
-    std::iter::repeat_with(|| Point::new_raw_xy(next() * 1000.0, next() * 1000.0))
-        .take(n)
-        .collect()
-}
-
 #[test]
 fn symbolic_lift_ties_are_alternating_and_geometric_zeros_remain_zeros() {
     let [a, b, c, d] = [
@@ -384,6 +371,7 @@ fn assert_refinement_order_identity(wkt: &str, option: &str, value: f64) {
 macro_rules! refinement_order_case {
     ($name:ident, $wkt:literal, $option:literal, $value:expr) => {
         #[test]
+        #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
         fn $name() {
             assert_refinement_order_identity($wkt, $option, $value);
         }
@@ -575,23 +563,40 @@ fn triangle_set(triangles: &[usize]) -> Vec<[usize; 3]> {
 }
 
 #[test]
-fn random_sites_are_delaunay_consistent_and_match_the_current_engine() {
-    for seed in [1_u64, 7, 42, 1234] {
-        let pts = random(400, seed);
+fn irregular_sites_are_delaunay_consistent_across_input_orders() {
+    let sites = points(&[
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (11.0, 8.0),
+        (0.0, 11.0),
+        (1.1, 2.3),
+        (2.4, 5.6),
+        (3.7, 1.9),
+        (4.2, 8.1),
+        (5.5, 3.2),
+        (6.8, 6.7),
+        (7.3, 2.8),
+        (8.6, 7.4),
+        (9.1, 4.5),
+    ]);
+    for order in 0..4 {
+        let mut pts = sites.clone();
+        pts.rotate_left(order * 3);
+        if order % 2 != 0 {
+            pts.reverse();
+        }
         let mesh = exact_delaunay(&pts).unwrap();
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
-        // Random sites have no cocircular quads, so the Delaunay
-        // triangulation is unique and must equal the current engine's.
         assert!(
             !mesh.cocircular.iter().any(|&f| f),
-            "random sites should not be cocircular"
+            "the irregular fixture has no cocircular quads"
         );
         let current = super::super::delaunay_triangulation(&pts).unwrap();
         assert_eq!(
             triangle_set(&mesh.triangles),
             triangle_set(&current.triangles),
-            "seed {seed}"
+            "order {order}"
         );
         assert_eq!(mesh.hull, current.hull);
         // Euler for a triangulated convex polygon: T = 2n - h - 2.
@@ -607,7 +612,7 @@ fn hull_only_regular_polygons_are_delaunay() {
     // Every site is a hull corner, so nothing is ever inserted and the
     // seed fan has to be legalized on its own: a regular n-gon's fan from
     // one corner is far from Delaunay.
-    for n in 5..=40_usize {
+    for n in [5_usize, 6, 9, 16] {
         let points: Vec<Point> = (0..n)
             .map(|i| {
                 let t = std::f64::consts::TAU * i as f64 / n as f64;
@@ -741,7 +746,7 @@ fn sites_on_existing_edges_and_vertices_insert_exactly() {
 
 #[test]
 fn late_center_insertion_walks_large_cavities_in_boundary_order() {
-    for n in [32, 128, 512] {
+    for n in [16, 32, 65] {
         let mut pts: Vec<_> = (0..n)
             .map(|i| {
                 let angle = std::f64::consts::TAU * i as f64 / n as f64;

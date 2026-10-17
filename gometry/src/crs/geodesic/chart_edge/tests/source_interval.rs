@@ -65,9 +65,7 @@ fn retained_producer_branches_keep_long_half_and_multiple_turn_intent() {
             "positive half" => &[0.0, 90.0, 180.0],
             "positive half opposite spelling" => &[0.0, 90.0, -180.0],
             "negative half" => &[0.0, -90.0, -180.0],
-            "positive two turns" => {
-                &[0.0, 90.0, 180.0, 270.0, 360.0, 450.0, 540.0, 630.0, 720.0]
-            },
+            "positive two turns" => &[0.0, 90.0, 180.0, 270.0, 360.0, 450.0, 540.0, 630.0, 720.0],
             "negative two turns" => &[
                 0.0, -90.0, -180.0, -270.0, -360.0, -450.0, -540.0, -630.0, -720.0,
             ],
@@ -109,6 +107,7 @@ fn retained_source_connection_preserves_relative_lift_and_public_half_turn_polic
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn source_sheet_publication_uses_rust_admitted_frame_periods_and_branches() {
     let grad_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
     let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();

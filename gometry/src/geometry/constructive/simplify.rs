@@ -51,6 +51,10 @@ fn rdp_keep(
     rdp_keep_with_edge_guard(xs, ys, tolerance, PlanarRdpGuard, keep, stack)
 }
 
+const fn rdp_scan_budget(count: usize) -> usize {
+    count.saturating_mul(8 * count.ilog2() as usize)
+}
+
 /// Monomorphized DP keep mask with a planar or geographic edge-span policy.
 pub(crate) fn rdp_keep_with_edge_guard<G: RdpEdgeSpanGuard>(
     xs: &[f64],
@@ -72,7 +76,7 @@ pub(crate) fn rdp_keep_with_edge_guard<G: RdpEdgeSpanGuard>(
         let mut scanned = 0_usize;
         // Balanced partitions fit this scan budget. An unbalanced chain builds
         // the range index before repeated scans can become quadratic.
-        let budget = count.saturating_mul(8 * count.ilog2() as usize);
+        let budget = rdp_scan_budget(count);
         rdp_keep_with_query(xs, edge_guard, keep, stack, |start, end| {
             if let Some(index) = &index {
                 return index.split(start, end, tolerance);
@@ -1182,16 +1186,26 @@ mod keep_identity_tests {
     }
 
     #[test]
-    fn dp_sawtooth_source_work_grows_below_quadratic() {
+    fn dp_indexed_sawtooth_source_work_grows_below_quadratic() {
         let mut counts = Vec::new();
-        for count in [1025, 2050] {
+        for count in [128, 256] {
             let xs: Vec<_> = (0..count).map(f64::from).collect();
             let ys: Vec<_> = (0..count).map(|index| f64::from(index % 2)).collect();
-            let line = Shape::LineString(line_xy(&xs, &ys));
             super::rdp::take_source_visits();
-            let simplified = line.simplify_dp(0.1, false).unwrap();
+            let index = super::rdp::Index::new(&xs, &ys).unwrap();
+            let mut keep = Vec::new();
+            let mut stack = Vec::new();
+            let simplified = super::rdp_keep_with_query(
+                &xs,
+                super::PlanarRdpGuard,
+                &mut keep,
+                &mut stack,
+                |start, end| index.split(start, end, 0.1),
+            )
+            .unwrap();
             counts.push(super::rdp::take_source_visits());
-            assert_eq!(simplified, line);
+            assert_eq!(simplified, Some(xs.len()));
+            assert!(keep.iter().all(|kept| *kept));
         }
         assert!(
             counts[0] > 0,
@@ -1200,6 +1214,42 @@ mod keep_identity_tests {
         assert!(
             counts[1] * 10 < counts[0] * 27,
             "doubling sawtooth source visits must stay below 2.7×: {counts:?}",
+        );
+    }
+
+    #[test]
+    fn dp_automatic_range_index_bounds_source_work_after_scan_budget() {
+        let count = 1025_usize;
+        let xs: Vec<_> = (0..count).map(|index| index as f64).collect();
+        let ys: Vec<_> = (0..count).map(|index| (index % 2) as f64).collect();
+        let line = Shape::LineString(line_xy(&xs, &ys));
+        let mut keep = Vec::new();
+        let mut stack = Vec::new();
+        super::rdp::take_source_visits();
+        let index = super::rdp::Index::new(&xs, &ys).unwrap();
+        assert_eq!(
+            super::rdp_keep_with_query(
+                &xs,
+                super::PlanarRdpGuard,
+                &mut keep,
+                &mut stack,
+                |start, end| index.split(start, end, 0.1),
+            )
+            .unwrap(),
+            Some(count),
+        );
+        let indexed_work = super::rdp::take_source_visits();
+        assert!(keep.iter().all(|kept| *kept));
+        let simplified = line.simplify_dp(0.1, false).unwrap();
+        let automatic_work = super::rdp::take_source_visits();
+        assert_eq!(simplified, line);
+        // An uncertain range repeats its approximate scan once in exact
+        // resolution. Index admission precedes the first over-budget scan.
+        let limit = indexed_work + 2 * super::rdp_scan_budget(count);
+        assert!(
+            automatic_work <= limit,
+            "automatic visits {automatic_work} exceed indexed visits {indexed_work} \
+             plus the bounded scan prefix ({limit})",
         );
     }
 

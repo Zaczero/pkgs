@@ -6,6 +6,7 @@ use super::super::{
 };
 use super::support::{chart_step_identity_holds, degrees, inventory, line, ring};
 use crate::geographic::{AngularFactor, GeographicFrame, source_admission_counts};
+use crate::geometry::numerics::product::exact_power_of_two;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, ExpansionBudget, LineSeq, MOrdinate, Point, Polygon, Shape, ZOrdinate,
@@ -36,7 +37,14 @@ fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence() {
         (degree, 175.0, 180.0, 175.0, -180.0, 1),
         (degree, 530.0, 190.0, 170.0, -170.0, 1),
         (degree, 190.0, 530.0, -170.0, 170.0, -1),
-        (degree, 2_f64.powi(60), 2_f64.powi(60), 136.0, 136.0, 0),
+        (
+            degree,
+            exact_power_of_two(60),
+            exact_power_of_two(60),
+            136.0,
+            136.0,
+            0,
+        ),
         (degree, -0.0, tiny, 0.0, tiny, 0),
         (degree, tiny, -tiny, tiny, -tiny, 0),
         (degree, 1.0e-20, 360.0, 1.0e-20, 0.0, 0),

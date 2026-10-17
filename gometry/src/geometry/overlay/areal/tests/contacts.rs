@@ -375,7 +375,7 @@ fn convex_intersection_rejects_an_invalid_shell() {
     let cutter = square(1.0, 1.0, 5.0, 5.0);
     let result = intersection(&invalid, &cutter);
     assert!(matches!(result, Shape::MultiPolygon(_)), "{result:?}");
-    assert_eq!(result.area(), 4.5);
+    approx::assert_relative_eq!(result.area(), 4.5, max_relative = 64.0 * f64::EPSILON);
 }
 
 #[test]

@@ -184,6 +184,9 @@ mod tests {
     use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
     use crate::geometry::embedding_completion::storage::FrozenLiteralBuffers;
     use crate::geometry::ordinates::NodeOrdinates;
+    use crate::geometry::test_support::{
+        argentina_uruguay_source_arc_polygons, polygon as fixture_polygon,
+    };
     use crate::geometry::topology::emission::draw::{
         boundary_source_points, source_point_coordinates,
     };

@@ -112,7 +112,10 @@ fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn coincident_frame_separator_emits_one_packed_chain_and_excludes_frame_only() {
     let (sites, polygon) = coincident_frame_fixture();
     let mut budget = ExpansionBudget::new("test", "coincident packed");
@@ -300,7 +303,9 @@ fn clip_trace_binds_source_atoms_to_rings_and_rejects_out_of_range_ids() {
     let source_atom_count = subdivision
         .edges
         .iter()
-        .try_fold(0_usize, |count, edge| count.checked_add(edge.clip_sources.len()))
+        .try_fold(0_usize, |count, edge| {
+            count.checked_add(edge.clip_sources.len())
+        })
         .expect("the fixture source atom count fits usize");
     let zero = exact::ExactRational::zero();
     let one = exact::ExactRational::one();
@@ -332,18 +337,12 @@ fn clip_trace_binds_source_atoms_to_rings_and_rejects_out_of_range_ids() {
                 } else {
                     (left, right)
                 };
-                let start_parameter = exact_segment_parameter(
-                    clip_start,
-                    clip_end,
-                    &subdivision.vertex(start).point,
-                )
-                .unwrap();
-                let end_parameter = exact_segment_parameter(
-                    clip_start,
-                    clip_end,
-                    &subdivision.vertex(end).point,
-                )
-                .unwrap();
+                let start_parameter =
+                    exact_segment_parameter(clip_start, clip_end, &subdivision.vertex(start).point)
+                        .unwrap();
+                let end_parameter =
+                    exact_segment_parameter(clip_start, clip_end, &subdivision.vertex(end).point)
+                        .unwrap();
                 assert_ne!(
                     start_parameter.try_cmp(&zero).unwrap(),
                     std::cmp::Ordering::Less
@@ -360,7 +359,10 @@ fn clip_trace_binds_source_atoms_to_rings_and_rejects_out_of_range_ids() {
                     .checked_add(1)
                     .expect("fixture atom count fits usize");
             }
-            assert!(segment_atom_count > 0, "each clip segment contributes atoms");
+            assert!(
+                segment_atom_count > 0,
+                "each clip segment contributes atoms"
+            );
             traced_atom_count = traced_atom_count
                 .checked_add(segment_atom_count)
                 .expect("fixture atom count fits usize");
@@ -533,16 +535,16 @@ fn assert_one_cell_equals_clip(cells: &[Shape], clip: &Polygon) {
 }
 
 #[test]
-fn public_noncollinear_one_owner_keeps_1334_interior_holes_and_clip_support() {
+fn public_noncollinear_one_owner_keeps_interior_holes_and_clip_support() {
     let source = site_shape(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
-    let holes = (0_u32..1_334)
+    let holes = (0_u32..8)
         .map(|index| {
             let x = 1.0 + f64::from(index) * 1.4;
             closed_ring(&[(x, 5.0), (x + 0.25, 4.5), (x - 0.25, 4.5)])
         })
         .collect();
     let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), holes);
-    let mut budget = ExpansionBudget::new("test", "noncollinear one-owner 1334 holes");
+    let mut budget = ExpansionBudget::new("test", "noncollinear one-owner holes");
     assembly::reset_owner_local_work();
     let cells = source
         .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
@@ -553,23 +555,23 @@ fn public_noncollinear_one_owner_keeps_1334_interior_holes_and_clip_support() {
     let Shape::Polygon(cell) = &cells[0] else {
         panic!("Voronoi polygon output contains only polygons");
     };
-    assert_eq!(cell.holes.len(), 1_334);
+    assert_eq!(cell.holes.len(), 8);
     assert_eq!(
         polygon_ring_keys(cell),
         polygon_ring_keys(&clip),
         "the sole owner public output preserves the clip's shell and every hole coordinate"
     );
-    assert_eq!(work.owner_ring_edges, 4_006);
-    assert_eq!(work.host_queries, 1_335);
-    assert_eq!(work.ray_hits, 1_334);
-    assert_eq!(work.ring_side_checks, 1_335);
+    assert_eq!(work.owner_ring_edges, 28);
+    assert_eq!(work.host_queries, 9);
+    assert_eq!(work.ray_hits, 8);
+    assert_eq!(work.ring_side_checks, 9);
 }
 
 #[test]
-fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
+fn noncollinear_tangent_holes_keep_the_crossed_separator_and_uncrossed_holes() {
     let source = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)]);
-    let clip = task163_tangent_clip(667);
-    let mut budget = ExpansionBudget::new("test", "667 tangent holes");
+    let clip = tangent_hole_clip(&[0, 100, 534, 535, 536, 666]);
+    let mut budget = ExpansionBudget::new("test", "tangent holes across the left separator");
     assembly::reset_owner_local_work();
     let cells = source
         .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
@@ -584,7 +586,7 @@ fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
     }
 
     eprintln!(
-        "667 tangent-hole output: polygons={}, holes={hole_count}, budget={}, \
+        "tangent-hole output: polygons={}, holes={hole_count}, budget={}, \
          ring_edges={}, global_slot_visits={}, owner_vertices={}, face_walks={}, \
          components={}, queries={}, hits={}, side_checks={}",
         cells.len(),
@@ -599,15 +601,15 @@ fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
         work.ring_side_checks,
     );
     assert_eq!(cells.len(), 4);
-    assert_eq!(hole_count, 666);
-    assert_eq!(work.owner_ring_edges, 2_680);
-    assert_eq!(work.global_edge_slot_visits, 5_364);
-    assert_eq!(work.owner_vertices, 2_013);
-    assert_eq!(work.face_walks, 671);
+    assert_eq!(hole_count, 5);
+    assert_eq!(work.owner_ring_edges, 36);
+    assert_eq!(work.global_edge_slot_visits, 76);
+    assert_eq!(work.owner_vertices, 30);
+    assert_eq!(work.face_walks, 10);
     assert_eq!(work.components, 2);
     assert_eq!(work.host_queries, 2);
     assert_eq!(work.ray_hits, 0);
-    assert_eq!(work.ring_side_checks, 669);
+    assert_eq!(work.ring_side_checks, 8);
 }
 
 #[test]

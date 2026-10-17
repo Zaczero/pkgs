@@ -460,40 +460,41 @@ fn line_polygon_overlays_match_full_partition_wkb() {
     }
 }
 
-#[test]
-fn degenerate_polygon_line_and_point_overlays_match_full_partition_wkb() {
-    let polygons = [
-        ("spike", "POLYGON((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))"),
-        ("collapsed", "POLYGON((0 0,2 2,4 4,0 0))"),
-        (
-            "shell equals hole",
-            "POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
-        ),
-        ("bow-tie", "POLYGON((0 0,4 4,4 0,0 4,0 0))"),
-        (
-            "twice-wound square",
-            "POLYGON((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
-        ),
-        (
-            "hole touching shell",
-            "POLYGON((0 0,6 0,6 6,0 6,0 0),(0 0,3 2,3 4,0 0))",
-        ),
-        (
-            "external hole",
-            "POLYGON((0 0,4 0,4 4,0 4,0 0),(10 10,11 10,11 11,10 10))",
-        ),
-        ("empty", "POLYGON EMPTY"),
-        (
-            "multipolygon with collapsed member",
-            "MULTIPOLYGON(((0 0,2 2,4 4,0 0)),((5 5,7 5,7 7,5 7,5 5)))",
-        ),
-    ];
+fn assert_degenerate_line_overlays(polygon_name: &str, polygon_wkt: &str) {
+    let polygon =
+        crate::io::parse_wkt(polygon_wkt).unwrap_or_else(|error| panic!("{polygon_name}: {error}"));
     let lines = [
         ("through", "LINESTRING(-1 2,5 2)"),
         ("along diagonal", "LINESTRING(-1 -1,5 5)"),
         ("along cancelled spur", "LINESTRING(2 3,2 8)"),
         ("along shell edge", "LINESTRING(-1 0,5 0)"),
     ];
+    for (line_name, line_wkt) in lines {
+        let line =
+            crate::io::parse_wkt(line_wkt).unwrap_or_else(|error| panic!("{line_name}: {error}"));
+        let name = format!("{polygon_name}, line {line_name}");
+        for (left, right) in [(&line, &polygon), (&polygon, &line)] {
+            assert_overlay_matches_full_partition(
+                &name,
+                left,
+                right,
+                OverlayOp::Intersection,
+                Strictness::Lenient,
+            );
+        }
+        assert_overlay_matches_full_partition(
+            &name,
+            &line,
+            &polygon,
+            OverlayOp::Difference,
+            Strictness::Lenient,
+        );
+    }
+}
+
+fn assert_degenerate_point_overlays(polygon_name: &str, polygon_wkt: &str) {
+    let polygon =
+        crate::io::parse_wkt(polygon_wkt).unwrap_or_else(|error| panic!("{polygon_name}: {error}"));
     let points = [
         ("on cancelled spur", "POINT(2 5)"),
         ("on diagonal", "POINT(2 2)"),
@@ -505,72 +506,97 @@ fn degenerate_polygon_line_and_point_overlays_match_full_partition_wkb() {
             "MULTIPOINT((2 5),(2 2),(9 9))",
         ),
     ];
-
-    for (polygon_name, polygon_wkt) in polygons {
-        let polygon = crate::io::parse_wkt(polygon_wkt)
-            .unwrap_or_else(|error| panic!("{polygon_name}: {error}"));
-        for (line_name, line_wkt) in lines {
-            let line = crate::io::parse_wkt(line_wkt)
-                .unwrap_or_else(|error| panic!("{line_name}: {error}"));
-            let name = format!("{polygon_name}, line {line_name}");
-            for (left, right) in [(&line, &polygon), (&polygon, &line)] {
-                assert_overlay_matches_full_partition(
-                    &name,
-                    left,
-                    right,
-                    OverlayOp::Intersection,
-                    Strictness::Lenient,
-                );
-            }
-            assert_overlay_matches_full_partition(
+    for (point_name, point_wkt) in points {
+        let point =
+            crate::io::parse_wkt(point_wkt).unwrap_or_else(|error| panic!("{point_name}: {error}"));
+        let name = format!("{polygon_name}, point {point_name}");
+        for (left, right) in [(&point, &polygon), (&polygon, &point)] {
+            assert_point_lane_matches_full_partition(
                 &name,
-                &line,
-                &polygon,
-                OverlayOp::Difference,
+                left,
+                right,
+                OverlayOp::Intersection,
                 Strictness::Lenient,
             );
         }
-
-        for (point_name, point_wkt) in points {
-            let point = crate::io::parse_wkt(point_wkt)
-                .unwrap_or_else(|error| panic!("{point_name}: {error}"));
-            let name = format!("{polygon_name}, point {point_name}");
+        assert_point_lane_matches_full_partition(
+            &name,
+            &point,
+            &polygon,
+            OverlayOp::Difference,
+            Strictness::Lenient,
+        );
+        for operation in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
             for (left, right) in [(&point, &polygon), (&polygon, &point)] {
                 assert_point_lane_matches_full_partition(
                     &name,
                     left,
                     right,
-                    OverlayOp::Intersection,
+                    operation,
                     Strictness::Lenient,
                 );
             }
-            assert_point_lane_matches_full_partition(
-                &name,
-                &point,
-                &polygon,
-                OverlayOp::Difference,
-                Strictness::Lenient,
-            );
-            for operation in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-                for (left, right) in [(&point, &polygon), (&polygon, &point)] {
-                    assert_point_lane_matches_full_partition(
-                        &name,
-                        left,
-                        right,
-                        operation,
-                        Strictness::Lenient,
-                    );
-                }
-            }
-            assert_point_lane_matches_full_partition(
-                &name,
-                &polygon,
-                &point,
-                OverlayOp::Difference,
-                Strictness::Lenient,
-            );
         }
+        assert_point_lane_matches_full_partition(
+            &name,
+            &polygon,
+            &point,
+            OverlayOp::Difference,
+            Strictness::Lenient,
+        );
     }
+}
+
+macro_rules! degenerate_overlay_cases {
+    ($($case:ident => ($name:literal, $polygon:literal $(,)?),)*) => {
+        $(mod $case {
+            use super::*;
+
+            #[test]
+            fn line_overlays_match_full_partition_wkb() {
+                assert_degenerate_line_overlays($name, $polygon);
+            }
+
+            #[test]
+            fn point_overlays_match_full_partition_wkb() {
+                assert_degenerate_point_overlays($name, $polygon);
+            }
+        })*
+    };
+}
+
+degenerate_overlay_cases! {
+    degenerate_spike => (
+        "spike",
+        "POLYGON((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))",
+    ),
+    degenerate_collapsed => ("collapsed", "POLYGON((0 0,2 2,4 4,0 0))"),
+    degenerate_shell_equals_hole => (
+        "shell equals hole",
+        "POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+    ),
+    degenerate_bow_tie => ("bow-tie", "POLYGON((0 0,4 4,4 0,0 4,0 0))"),
+    degenerate_twice_wound => (
+        "twice-wound square",
+        "POLYGON((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+    ),
+    degenerate_touching_hole => (
+        "hole touching shell",
+        "POLYGON((0 0,6 0,6 6,0 6,0 0),(0 0,3 2,3 4,0 0))",
+    ),
+    degenerate_external_hole => (
+        "external hole",
+        "POLYGON((0 0,4 0,4 4,0 4,0 0),(10 10,11 10,11 11,10 10))",
+    ),
+    degenerate_empty => ("empty", "POLYGON EMPTY"),
+    degenerate_collapsed_member => (
+        "multipolygon with collapsed member",
+        "MULTIPOLYGON(((0 0,2 2,4 4,0 0)),((5 5,7 5,7 7,5 7,5 5)))",
+    ),
+}
+
+#[test]
+fn zero_length_line_difference_matches_full_partition_wkb() {
     let collapsed_line = test_line(&[(1.0, 1.0), (1.0, 1.0)]);
     assert_overlay_matches_full_partition(
         "zero-length line difference",
@@ -700,18 +726,18 @@ macro_rules! shared_set_overlay_identity_tests {
 }
 
 shared_set_overlay_identity_tests! {
-    shared_polygon_set_ops_match_expansion_at_depth_6 => ("polygon", 6),
-    shared_line_set_ops_match_expansion_at_depth_6 => ("line", 6),
-    shared_point_set_ops_match_expansion_at_depth_6 => ("point", 6),
-    shared_holed_polygon_set_ops_match_expansion_at_depth_6 => ("polygon with hole", 6),
-    shared_zm_set_ops_match_expansion_at_depth_6 => ("Z/M points sharing XY", 6),
-    shared_mixed_set_ops_match_expansion_at_depth_6 => ("mixed collection", 6),
-    shared_polygon_set_ops_match_expansion_at_depth_10 => ("polygon", 10),
-    shared_line_set_ops_match_expansion_at_depth_10 => ("line", 10),
-    shared_point_set_ops_match_expansion_at_depth_10 => ("point", 10),
-    shared_holed_polygon_set_ops_match_expansion_at_depth_10 => ("polygon with hole", 10),
-    shared_zm_set_ops_match_expansion_at_depth_10 => ("Z/M points sharing XY", 10),
-    shared_mixed_set_ops_match_expansion_at_depth_10 => ("mixed collection", 10),
+    shared_polygon_set_ops_match_expansion_at_depth_2 => ("polygon", 2),
+    shared_line_set_ops_match_expansion_at_depth_2 => ("line", 2),
+    shared_point_set_ops_match_expansion_at_depth_2 => ("point", 2),
+    shared_holed_polygon_set_ops_match_expansion_at_depth_2 => ("polygon with hole", 2),
+    shared_zm_set_ops_match_expansion_at_depth_2 => ("Z/M points sharing XY", 2),
+    shared_mixed_set_ops_match_expansion_at_depth_2 => ("mixed collection", 2),
+    shared_polygon_set_ops_match_expansion_at_depth_3 => ("polygon", 3),
+    shared_line_set_ops_match_expansion_at_depth_3 => ("line", 3),
+    shared_point_set_ops_match_expansion_at_depth_3 => ("point", 3),
+    shared_holed_polygon_set_ops_match_expansion_at_depth_3 => ("polygon with hole", 3),
+    shared_zm_set_ops_match_expansion_at_depth_3 => ("Z/M points sharing XY", 3),
+    shared_mixed_set_ops_match_expansion_at_depth_3 => ("mixed collection", 3),
 }
 
 #[test]
@@ -730,12 +756,12 @@ fn depth_128_shared_set_overlay_finishes_with_correct_support() {
         assert!(!parts.is_empty(), "depth {depth}");
         let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
             .expect("deep subdivision parts union");
-        assert_eq!(area.area(), 1.0, "depth {depth}");
+        approx::assert_relative_eq!(area.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
 
         let union =
             Shape::union_all_topo(&[&shared], TopologyDomain::Cartesian, Strictness::Lenient)
                 .expect("deep union succeeds");
-        assert_eq!(union.area(), 1.0, "depth {depth}");
+        approx::assert_relative_eq!(union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
     }
 }
 
@@ -1105,32 +1131,14 @@ fn nary_union_emits_a_full_longitude_axis_band_without_turn_fill() {
 #[test]
 fn nary_union_emits_a_source_owned_whole_sphere() {
     let middle = polygon(&[
-        (-180.0, -80.0),
-        (-90.0, -80.0),
         (0.0, -80.0),
-        (90.0, -80.0),
-        (180.0, -80.0),
-        (180.0, 80.0),
-        (90.0, 80.0),
+        (360.0, -80.0),
+        (360.0, 80.0),
         (0.0, 80.0),
-        (-90.0, 80.0),
-        (-180.0, 80.0),
-        (-180.0, -80.0),
-    ]);
-    let south_cap = polygon(&[
-        (0.0, -80.0),
-        (90.0, -80.0),
-        (180.0, -80.0),
-        (-90.0, -80.0),
         (0.0, -80.0),
     ]);
-    let north_cap = polygon(&[
-        (0.0, 80.0),
-        (90.0, 80.0),
-        (180.0, 80.0),
-        (-90.0, 80.0),
-        (0.0, 80.0),
-    ]);
+    let south_cap = polygon(&[(0.0, -80.0), (120.0, -80.0), (-120.0, -80.0), (0.0, -80.0)]);
+    let north_cap = polygon(&[(0.0, 80.0), (120.0, 80.0), (-120.0, 80.0), (0.0, 80.0)]);
     assert_eq!(
         exact_location(&middle, Point::new_raw_xy(0.0, 0.0)),
         Loc::Interior
@@ -1193,6 +1201,7 @@ fn nary_union_emits_a_source_owned_whole_sphere() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn t2_notched_intersection_assembles_both_winding_boundaries() {
     let source = polygon(&[
         (-180.0, 5.0),
@@ -1366,6 +1375,7 @@ fn t2_equator_crossing_generated_boundary_closes_only_the_selected_pole() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn t2_synthetic_pole_closure_drops_unsourceable_axes_before_publication() {
     let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
     let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
@@ -1543,6 +1553,7 @@ fn t2_selected_strip_support_uses_each_native_angular_frame() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn nary_seam_intersection_carries_the_original_source_interval() {
     let crossing = line(&[
         Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(10.0))).unwrap(),

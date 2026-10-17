@@ -99,6 +99,7 @@ fn sparse_face_row_sweep_retains_overlap_owners_together() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_labels_preserve_overlap_tie_rules() {
     let rows = [
         crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))").expect("larger polygon"),
@@ -139,6 +140,7 @@ fn geographic_face_labels_preserve_overlap_tie_rules() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_sweep_and_selector_charge_the_supplied_work_account() {
     let rows =
         [crate::io::parse_wkt("POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))").expect("coverage polygon")];
@@ -235,6 +237,7 @@ fn geographic_clean_labels_seam_overlap_without_absorbing_greenwich_rows() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_labels_fill_only_the_enclosed_narrow_gap() {
     let rows: Vec<_> = (0..3)
         .flat_map(|x| {
@@ -277,6 +280,7 @@ fn geographic_face_labels_fill_only_the_enclosed_narrow_gap() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_labels_fill_a_seam_bordered_hole() {
     let holed = crate::io::parse_wkt(
         "POLYGON ((160 -10, -160 -10, -160 10, 160 10, 160 -10), \
@@ -300,6 +304,7 @@ fn geographic_face_labels_fill_a_seam_bordered_hole() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_labels_keep_a_polar_hole_distinct_from_the_complement() {
     for (shell_latitude, hole_latitude) in [(70.0, 89.0), (-70.0, -89.0)] {
         let holed = crate::io::parse_wkt(&format!(
@@ -344,6 +349,7 @@ fn geographic_face_labels_keep_a_polar_hole_distinct_from_the_complement() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_zero_keeps_the_whole_sphere_row() {
     let whole_sphere = crate::io::parse_wkt(
         "POLYGON ((-180 -90, -90 -90, 0 -90, 90 -90, 180 -90, \
