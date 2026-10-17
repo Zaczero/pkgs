@@ -60,6 +60,14 @@ def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
     return create_current_event_loop
 
 
+def _run_loop_thread(  # pyright: ignore[reportUnusedFunction] - Called by Rust.
+    run: Callable[[], None],
+) -> None:
+    # Keep a Python frame alive while native loop setup and teardown call
+    # debug traceback capture on a freshly attached thread.
+    run()
+
+
 @contextmanager
 def event_loop_runner(loop: str) -> Generator[asyncio.Runner, None, None]:
     """Run on a new current loop and leave no current loop behind.

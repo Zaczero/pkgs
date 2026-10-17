@@ -380,12 +380,18 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
     not _gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
-async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None:
-    main_loop_id = id(asyncio.get_running_loop())
+async def test_each_debug_loop_has_transactional_lifespan_and_isolated_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv('PYTHONASYNCIODEBUG', '1')
+    main_loop = asyncio.get_running_loop()
+    main_loop.set_debug(True)
+    main_loop_id = id(main_loop)
     lock = threading.Lock()
     startups: list[int] = []
     shutdowns: list[int] = []
     loop_modules: list[str] = []
+    loop_debug_modes: list[bool] = []
 
     async def app(scope, receive, send):
         if scope['type'] == 'lifespan':
@@ -394,6 +400,7 @@ async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None
             with lock:
                 startups.append(loop_id)
                 loop_modules.append(type(asyncio.get_running_loop()).__module__)
+                loop_debug_modes.append(asyncio.get_running_loop().get_debug())
             assert (await receive())['type'] == 'lifespan.startup'
             await send({'type': 'lifespan.startup.complete'})
             assert (await receive())['type'] == 'lifespan.shutdown'
@@ -416,6 +423,7 @@ async def test_each_loop_has_transactional_lifespan_and_isolated_state() -> None
 
         assert startups[0] == main_loop_id
         assert len(set(startups)) == 4
+        assert loop_debug_modes == [True] * 4
         assert set(bodies) == set(startups)
         main_family = type(asyncio.get_running_loop()).__module__.split('.', 1)[0]
         assert {module.split('.', 1)[0] for module in loop_modules} == {main_family}

@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyDict};
+use pyo3::types::{PyBool, PyCFunction, PyDict};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
 use tokio::runtime::Runtime;
@@ -663,35 +663,38 @@ pub(crate) fn spawn_shard_thread(
         .name(format!("h2corn-loop-{index}"))
         .spawn(move || {
             Python::attach(|py| {
-                let setup = || -> PyResult<(Shard, Py<PyAny>)> {
+                let initialized = tx.clone();
+                let run = PyCFunction::new_closure(py, None, None, move |args, _| {
+                    let py = args.py();
                     let event_loop = factory.create(py)?;
-                    let actual = SecondaryLoopFactory::classify(&event_loop)?;
-                    if actual != factory {
-                        if let Err(error) = event_loop.call_method0("close") {
+                    let setup = || -> PyResult<Shard> {
+                        let actual = SecondaryLoopFactory::classify(&event_loop)?;
+                        if actual != factory {
+                            return Err(PyRuntimeError::new_err(format!(
+                                "{factory:?} secondary-loop factory returned {actual:?} loop"
+                            )));
+                        }
+                        ShardHandle::from_event_loop(py, &event_loop)
+                    };
+                    let result = setup();
+                    if let Ok(shard) = &result {
+                        drop(initialized.send(Ok(Arc::clone(shard))));
+                        // Blocks this thread until ShardHandle::stop.
+                        if let Err(error) = event_loop.call_method0("run_forever") {
                             error.write_unraisable(py, Some(&event_loop));
                         }
-                        return Err(PyRuntimeError::new_err(format!(
-                            "{factory:?} secondary-loop factory returned {actual:?} loop"
-                        )));
                     }
-                    let shard = ShardHandle::from_event_loop(py, &event_loop)?;
-                    Ok((shard, event_loop.unbind()))
-                };
-                match setup() {
-                    Ok((shard, event_loop)) => {
-                        drop(tx.send(Ok(Arc::clone(&shard))));
-                        // Blocks this thread until ShardHandle::stop.
-                        if let Err(error) = event_loop.bind(py).call_method0("run_forever") {
-                            error.write_unraisable(py, Some(event_loop.bind(py)));
-                        }
-                        if let Err(error) = event_loop.bind(py).call_method0("close") {
-                            error.write_unraisable(py, Some(event_loop.bind(py)));
-                        }
-                        drop(shard);
-                    },
-                    Err(err) => {
-                        drop(tx.send(Err(err)));
-                    },
+                    if let Err(error) = event_loop.call_method0("close") {
+                        error.write_unraisable(py, Some(&event_loop));
+                    }
+                    result.map(drop)
+                })
+                .and_then(|run| {
+                    py.import("h2corn._server")?
+                        .call_method1("_run_loop_thread", (run,))
+                });
+                if let Err(error) = run {
+                    drop(tx.send(Err(error)));
                 }
             });
         })
