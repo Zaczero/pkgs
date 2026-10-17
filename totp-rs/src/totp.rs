@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use hmac::digest::{FixedOutputReset, KeyInit};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, HmacReset, Mac};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use subtle::ConstantTimeEq as _;
@@ -106,21 +106,24 @@ pub(crate) fn verify(
 ) -> bool {
     match algorithm {
         Algorithm::Sha1 => verify_with_mac(
-            <Hmac<Sha1> as KeyInit>::new_from_slice(secret).expect("HMAC accepts any key size"),
+            <HmacReset<Sha1> as KeyInit>::new_from_slice(secret)
+                .expect("HMAC accepts any key size"),
             counter,
             window,
             modulus,
             code,
         ),
         Algorithm::Sha256 => verify_with_mac(
-            <Hmac<Sha256> as KeyInit>::new_from_slice(secret).expect("HMAC accepts any key size"),
+            <HmacReset<Sha256> as KeyInit>::new_from_slice(secret)
+                .expect("HMAC accepts any key size"),
             counter,
             window,
             modulus,
             code,
         ),
         Algorithm::Sha512 => verify_with_mac(
-            <Hmac<Sha512> as KeyInit>::new_from_slice(secret).expect("HMAC accepts any key size"),
+            <HmacReset<Sha512> as KeyInit>::new_from_slice(secret)
+                .expect("HMAC accepts any key size"),
             counter,
             window,
             modulus,
