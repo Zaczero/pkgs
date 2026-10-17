@@ -447,10 +447,11 @@ async def test_lease_owned_fds_releases_child_descriptors_on_rejection(
         listener_fd = listener_endpoint.detach()
     keep_fd = os.open(os.devnull, os.O_RDONLY)
     environment = os.environ.copy()
-    python_path = str(Path(__file__).resolve().parents[1] / 'python')
+    python_path = str(Path(socket_module.__file__).resolve().parents[1])
     environment['PYTHONPATH'] = os.pathsep.join(
-        filter(None, (environment.get('PYTHONPATH'), python_path))
+        filter(None, (python_path, environment.get('PYTHONPATH')))
     )
+    # ruff: ignore[missing-f-string-syntax] - Source executed by the child interpreter.
     child = textwrap.dedent(
         """
         import errno
@@ -2325,7 +2326,7 @@ async def test_max_requests_jitter_applied_once(
     captured_configs: list[Config] = []
 
     class FakeContext:
-        def Process(self, *, kwargs, **_ignored):  # noqa: N802
+        def Process(self, *, kwargs, **_ignored):  # ruff: ignore[invalid-function-name]
             captured_configs.append(kwargs['config'])
             return FakeWorker()
 

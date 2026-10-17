@@ -21,6 +21,13 @@ to_pandas = _pandas.to_pandas
 
 
 @pytest.fixture
+def geopandas_available() -> None:
+    pytest.importorskip(
+        'geopandas', reason='GeoPandas is an optional interop dependency'
+    )
+
+
+@pytest.fixture
 def points() -> gm.GeometryArray:
     return gm.GeometryArray([
         gm.Point(0, 0, crs=4326),
@@ -545,6 +552,7 @@ def test_extension_array_concat(points: gm.GeometryArray) -> None:
     assert canon(merged.geometry_array) == canon(points)
 
 
+@pytest.mark.usefixtures('geopandas_available')
 def test_from_geopandas_roundtrip(points: gm.GeometryArray) -> None:
     geoseries = points.to_geopandas()
     restored = gm.from_geopandas(geoseries)
@@ -552,6 +560,7 @@ def test_from_geopandas_roundtrip(points: gm.GeometryArray) -> None:
     assert restored.crs == points.crs
 
 
+@pytest.mark.usefixtures('geopandas_available')
 def test_to_geopandas_rejects_epoch_loss_without_flag(points: gm.GeometryArray) -> None:
     epoch_points = points.with_epoch(2020.0)
     with pytest.raises(ValueError, match='drop_epoch=True'):
@@ -562,6 +571,7 @@ def test_to_geopandas_rejects_epoch_loss_without_flag(points: gm.GeometryArray) 
     assert restored.epoch is None
 
 
+@pytest.mark.usefixtures('geopandas_available')
 def test_from_geopandas_gdf_roundtrip(points: gm.GeometryArray) -> None:
     import geopandas as gpd
 
@@ -571,6 +581,7 @@ def test_from_geopandas_gdf_roundtrip(points: gm.GeometryArray) -> None:
     assert restored.crs == points.crs
 
 
+@pytest.mark.usefixtures('geopandas_available')
 def test_gometry_extension_array_from_geopandas(points: gm.GeometryArray) -> None:
     series = to_pandas(points)
     with pytest.raises(TypeError, match='use from_pandas'):

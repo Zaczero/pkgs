@@ -9,10 +9,10 @@ import pytest
 def standalone():
     """Execute the distributed copy-and-paste generator in fresh state."""
     readme = (Path(__file__).parents[1] / 'README.md').read_text()
-    section = readme.split('## Installation (copy & paste)', 1)[1]
+    section = readme.split('## Standalone implementation', 1)[1]
     code = section.split('```py\n', 1)[1].split('```', 1)[0]
     module = ModuleType('standalone_zid')
-    exec(compile(code, 'README.md', 'exec'), module.__dict__)  # noqa: S102 - Execute the public runnable example.
+    exec(compile(code, 'README.md', 'exec'), module.__dict__)  # ruff: ignore[exec-builtin] - Execute the public runnable example.
     return module
 
 

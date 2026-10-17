@@ -793,7 +793,7 @@ def test_cells_sort_by_id_and_reject_foreign_comparisons() -> None:
     assert sorted(s2_cells) == sorted(s2_cells, key=int)
     # FURB192 would rewrite the right-hand side to min() as well, which is
     # the one thing this line cannot say: that the two agree.
-    assert min(s2_cells) == sorted(s2_cells)[0]  # noqa: FURB192
+    assert min(s2_cells) == sorted(s2_cells)[0]  # ruff: ignore[sorted-min-max]
     with pytest.raises(TypeError):
         _ = h3_cells[0] < 5
     assert hex(h3_cells[0]).startswith('0x')
@@ -815,7 +815,7 @@ def test_cell_array_missing_rows_are_pythonic_and_lossless_in_numpy() -> None:
     with pytest.raises(ValueError, match='masked'):
         np.asarray(cells, dtype=np.uint64)
     with pytest.raises(gm.GeometryError, match='copying'):
-        np.asarray(cells, dtype=object, copy=False)
+        cells.__array__(dtype=np.dtype(object), copy=False)
 
 
 def test_weakref_support_on_data_types() -> None:
@@ -1567,7 +1567,7 @@ def test_cell_membership_answers_like_a_list() -> None:
                 array.index(foreign)
         assert member in array
         with pytest.raises(RuntimeError, match='boom'):
-            RaisingIndex() in array  # noqa: B015
+            RaisingIndex() in array  # ruff: ignore[useless-comparison]
 
 
 def test_untested_accessors_report_their_values() -> None:
