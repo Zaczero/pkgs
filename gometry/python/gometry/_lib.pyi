@@ -12690,9 +12690,10 @@ class CRS:
 
     A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
     ``crs.ellipsoid``), serialize it (``crs.to_wkt()``, ``crs.to_epsg()``),
-    evaluate it (``crs.factors(...)``), and attach it to geometries via
-    ``to_crs``. Accepts an authority string, EPSG code,
-    authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
+    evaluate it (``crs.factors(...)``), assign it to geometries with
+    ``with_crs``, or transform coordinates with ``to_crs``. Accepts an authority
+    string, EPSG code, authority tuple, PROJJSON/CF mapping, WKT/PROJ string,
+    or another ``CRS``.
 
     Equality is structural between ``CRS`` instances: the stored normalized
     definitions must match. Other operand types do not compare equal; use
@@ -21858,7 +21859,7 @@ def crs_engine() -> CrsEngineInfo:
     --------
     >>> import gometry as gm
     >>> gm.crs_engine()['version']
-    '9.6.2'
+    '9.9.0'
     """
 
 def crs_configure(

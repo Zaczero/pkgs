@@ -11,7 +11,7 @@ use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_engine()['version']
-/// '9.6.2'
+/// '9.9.0'
 #[pyfunction]
 pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
     let state = crs::runtime_state_snapshot()?;
