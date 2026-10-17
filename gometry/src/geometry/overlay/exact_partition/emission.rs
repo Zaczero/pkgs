@@ -159,6 +159,31 @@ impl CoverageFaceState {
 }
 
 impl BoundaryPlan {
+    pub(super) fn from_non_areal_partition(
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Self {
+        let mut source_darts = Vec::with_capacity(partition.spans.len());
+        let mut lines = Vec::with_capacity(partition.spans.len());
+        for (slot, (owner, target)) in topology.owners.iter().zip(&topology.targets).enumerate() {
+            if owner < target {
+                let start = source_darts.len();
+                source_darts.push(slot as u32);
+                lines.push(PlannedChord {
+                    sources: start..source_darts.len(),
+                    sides: [0, 0],
+                });
+            }
+        }
+        Self {
+            source_darts,
+            walks: Vec::new(),
+            lines,
+            points: partition.isolated.iter().map(|&node| (node, 0)).collect(),
+            face_quotient: Vec::new(),
+        }
+    }
+
     fn chord_count(&self) -> usize {
         self.walks
             .iter()

@@ -118,13 +118,15 @@ mod shape;
 pub(in crate::geometry) use areal::binary_areal_overlay;
 pub(in crate::geometry) use areal::ray_crossing;
 pub(crate) use assembly::{merge_chains, merge_chains_with_origins};
-pub(crate) use clip::intersect_rectangular_polygonal;
+pub(crate) use clip::intersect_rectangle;
 pub(super) use clip::polygon_parts_to_shape;
 pub(in crate::geometry) use exact_partition::model::{
     ExactChainView, ExactMetricSpan, ExactMetricSupport, ExactPartition, ExactSourceInventory,
     NodeId, StagedExactSources, StagedRelationItem, StagedSourceComponent,
 };
-pub(in crate::geometry) use exact_partition::operations::clip_polygonal_rectangle;
+pub(in crate::geometry) use exact_partition::operations::{
+    clip_non_areal_rectangle, clip_polygonal_rectangle,
+};
 pub(in crate::geometry) use exact_partition::serialize::ExactLineEmission;
 pub(in crate::geometry) use exact_partition::subdivision::{
     SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,

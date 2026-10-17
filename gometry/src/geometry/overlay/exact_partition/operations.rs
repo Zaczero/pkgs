@@ -7,6 +7,36 @@ use super::{
 };
 use crate::geometry::graph::GlobalFaces;
 
+pub(in crate::geometry) fn clip_non_areal_rectangle(
+    subject: &Shape,
+    bounds: Bounds,
+    strict: bool,
+) -> Result<Shape> {
+    let (inventory, intervals) = ExactSourceInventory::from_non_areal_rect_clip(subject, bounds)?;
+    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
+    let partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
+    let (topology, edges) = partition.local_topology()?;
+    let plan = emission::BoundaryPlan::from_non_areal_partition(&partition, &topology);
+    let result = inventory.emit_overlay_plan::<crate::crs::GeodesicMetric>(
+        &partition,
+        &topology,
+        &edges,
+        &plan,
+        crate::geometry::OverlayOp::Intersection,
+        subject.axes(),
+        strict,
+        &SourceArcContext::cartesian(),
+    )?;
+    if result.is_empty() {
+        Ok(super::super::nary::empty_shape_for_dimension_with_axes(
+            subject.topological_dimension(),
+            subject.axes(),
+        ))
+    } else {
+        result.normalize()
+    }
+}
+
 pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     polygons: &[P],
     rectangle: &Polygon,
@@ -477,6 +507,29 @@ impl ExactSourceInventory {
             ordinate_protected.as_deref(),
             None,
         )?;
+        self.emit_overlay_plan(
+            partition,
+            topology,
+            edges,
+            &plan,
+            operation,
+            declared_axes,
+            strict,
+            context,
+        )
+    }
+
+    fn emit_overlay_plan<M: ChartMetric>(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        plan: &emission::BoundaryPlan,
+        operation: crate::geometry::OverlayOp,
+        declared_axes: CoordinateAxes,
+        strict: bool,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Shape> {
         if declared_axes == CoordinateAxes::XY && plan.points.is_empty() && plan.lines.is_empty() {
             let (_, _, polygons) =
                 plan.emit_xy_parts(partition, topology, edges, operation.name())?;

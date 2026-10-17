@@ -522,6 +522,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a, const ORDINATES: bool>(
 pub(in crate::geometry) fn partition_unique_segments_in_window<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
+    isolated: &[XY],
     intervals: &[SegmentClipInterval],
     window: Bounds,
     budget: &mut ExpansionBudget,
@@ -529,7 +530,7 @@ pub(in crate::geometry) fn partition_unique_segments_in_window<'a, const ORDINAT
     partition_unique_segments_with_budget::<ORDINATES>(
         unique,
         provenance,
-        &[],
+        isolated,
         Some((intervals, window)),
         Some(budget),
     )
@@ -608,6 +609,18 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
             end_handle.push(intern_stored!(segment.end, endpoint_of, forest)?);
         }
     }
+    let mut extra_handles = Vec::with_capacity(isolated.len());
+    let mut point_handles = Vec::with_capacity(isolated.len());
+    for &point in isolated {
+        let key = PointKey::new(point);
+        let existed = endpoint_of.contains_key(&key);
+        let handle = intern_stored!(point, endpoint_of, forest)?;
+        point_handles.push(handle);
+        if existed {
+            continue;
+        }
+        extra_handles.push(handle);
+    }
     if !clip_endpoint_keys.is_empty() {
         for &(key, handle) in &clip_endpoint_keys {
             if let Some(&stored) = endpoint_of.get(&key)
@@ -629,18 +642,6 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         }
     }
 
-    let mut extra_handles = Vec::with_capacity(isolated.len());
-    let mut point_handles = Vec::with_capacity(isolated.len());
-    for &point in isolated {
-        let key = PointKey::new(point);
-        let existed = endpoint_of.contains_key(&key);
-        let handle = intern_stored!(point, endpoint_of, forest)?;
-        point_handles.push(handle);
-        if existed {
-            continue;
-        }
-        extra_handles.push(handle);
-    }
     drop(endpoint_of);
     let pool = if let Some((intervals, _)) = windowed {
         let capacity = unique
@@ -788,6 +789,20 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
                     Ok(())
                 },
             )?;
+        }
+        // Window endpoints can be constructed points, so a contact at the
+        // clipped boundary must join the endpoint's exact identity.
+        if windowed.is_some() {
+            for (contact, endpoint) in [
+                (group.first(), start_handle[index]),
+                (group.last(), end_handle[index]),
+            ] {
+                if let Some(&contact) = contact
+                    && forest.points.same_exact_point(contact, endpoint)?
+                {
+                    equal_pairs.push((contact, endpoint));
+                }
+            }
         }
     }
     for (left, right) in equal_pairs {

@@ -82,6 +82,7 @@ impl ExactSourceInventory {
             partition_unique_segments_in_window::<true>(
                 &self.unique,
                 &self.provenance,
+                &self.isolated,
                 intervals,
                 bounds,
                 budget,
@@ -90,6 +91,7 @@ impl ExactSourceInventory {
             partition_unique_segments_in_window::<false>(
                 &self.unique,
                 &self.provenance,
+                &self.isolated,
                 intervals,
                 bounds,
                 budget,

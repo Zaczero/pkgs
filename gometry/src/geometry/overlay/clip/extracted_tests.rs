@@ -83,7 +83,7 @@ fn assert_clip_matches_oracle(name: &str, subjects: &[Polygon], bounds: Bounds) 
         Strictness::Lenient,
     );
     let expected = expected.unwrap();
-    let actual = super::intersect_rectangular_polygonal(
+    let actual = super::intersect_rectangle(
         &subject,
         &rectangle_polygon,
         bounds,
@@ -141,6 +141,63 @@ fn assert_public_clip_matches_intersection(name: &str, source_wkt: &str, rect: B
         (actual, expected) => {
             panic!("{name}: clip returned {actual:?}, intersection returned {expected:?}")
         },
+    }
+}
+
+#[test]
+fn rectangle_linework_preserves_exact_contacts_and_ordinates() {
+    let unit = bounds(0.0, 0.0, 1.0, 1.0);
+    for (name, source, rect, expected) in [
+        (
+            "crossing-at-window-end",
+            "MULTILINESTRING ((-1 -1,1 1),(-1 1,1 -1))",
+            unit,
+            "LINESTRING (0 0,1 1)",
+        ),
+        (
+            "point-at-constructed-end",
+            "GEOMETRYCOLLECTION (LINESTRING (-1 -1,2 2),POINT (0 0),POINT (0 1),POINT (2 0))",
+            unit,
+            "GEOMETRYCOLLECTION (POINT (0 1),LINESTRING (0 0,1 1))",
+        ),
+        (
+            "overlapping-carriers",
+            "MULTILINESTRING ((-1 0.5,2 0.5),(0.25 0.5,3 0.5))",
+            unit,
+            "LINESTRING (0 0.5,0.25 0.5,1 0.5)",
+        ),
+        (
+            "interior-crossing",
+            "MULTILINESTRING ((-1 -1,2 2),(-1 2,2 -1))",
+            unit,
+            "MULTILINESTRING ((0 0,0.5 0.5),(0 1,0.5 0.5),(0.5 0.5,1 0),(0.5 0.5,1 1))",
+        ),
+        (
+            "point-window",
+            "LINESTRING (-1 -1,2 2)",
+            bounds(0.0, 0.0, 0.0, 0.0),
+            "POINT (0 0)",
+        ),
+        (
+            "zero-length-source",
+            "MULTILINESTRING ((0 0,0 0),(-1 1,-1 1))",
+            unit,
+            "POINT (0 0)",
+        ),
+        (
+            "zm-window-parameters",
+            "LINESTRING ZM (-1 0.5 0 2,2 0.5 9 11)",
+            unit,
+            "LINESTRING ZM (0 0.5 3 5,1 0.5 6 8)",
+        ),
+    ] {
+        let actual = assert_public_clip_matches_intersection(name, source, rect);
+        let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
+        assert_eq!(
+            shape_wkb(&actual),
+            shape_wkb(&expected),
+            "{name}: {actual:?}"
+        );
     }
 }
 

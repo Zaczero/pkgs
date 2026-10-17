@@ -1,8 +1,8 @@
 use crate::error::Result;
-use crate::geometry::overlay::clip_polygonal_rectangle;
+use crate::geometry::overlay::{clip_non_areal_rectangle, clip_polygonal_rectangle};
 use crate::geometry::{Bounds, CoordinateAxes, Polygon, Shape, Strictness};
 
-pub(crate) fn intersect_rectangular_polygonal(
+pub(crate) fn intersect_rectangle(
     subject: &Shape,
     rectangle: &Polygon,
     bounds: Bounds,
@@ -10,6 +10,9 @@ pub(crate) fn intersect_rectangular_polygonal(
     strictness: Strictness,
 ) -> Result<Option<Shape>> {
     let strict = strictness.is_strict();
+    if subject.topological_dimension() == crate::geometry::Dimension::Curve {
+        return clip_non_areal_rectangle(subject, bounds, strict).map(Some);
+    }
     match subject {
         Shape::Polygon(polygon) => clip_polygonal_rectangle(
             std::slice::from_ref(polygon),

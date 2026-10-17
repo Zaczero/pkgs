@@ -9,8 +9,7 @@ use crate::geometry::ordinates::AxisValue;
 use crate::geometry::output::build_certified_shape;
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, OverlayPolygonPartWithSources, Strictness,
-    intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
-    rectangle_bounds,
+    intersect_rectangle, merge_chains, overlay_declared_axes, rect_polygon, rectangle_bounds,
 };
 use crate::geometry::segments::crossing_point;
 use crate::geometry::tessellation::exact::ExactDyadic;
@@ -188,7 +187,7 @@ fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
         if op == OverlayOp::Intersection
             && let Some(bounds) = right_rectangle
             && let Shape::Polygon(rectangle) = right
-            && let Some(shape) = intersect_rectangular_polygonal(
+            && let Some(shape) = intersect_rectangle(
                 left,
                 rectangle,
                 bounds,
@@ -201,7 +200,7 @@ fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
         if op == OverlayOp::Intersection
             && let Some(bounds) = left_rectangle
             && let Shape::Polygon(rectangle) = left
-            && let Some(shape) = intersect_rectangular_polygonal(
+            && let Some(shape) = intersect_rectangle(
                 right,
                 rectangle,
                 bounds,
@@ -240,7 +239,7 @@ pub(crate) fn overlay_intersection_with_rectangle(
     let rectangle_first =
         crate::geometry::compare_shapes(&Shape::Polygon(rectangle_polygon.clone()), subject)
             .is_lt();
-    if let Some(shape) = intersect_rectangular_polygonal(
+    if let Some(shape) = intersect_rectangle(
         subject,
         &rectangle_polygon,
         rectangle,

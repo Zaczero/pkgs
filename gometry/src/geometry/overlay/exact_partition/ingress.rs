@@ -241,6 +241,47 @@ impl ExactSourceInventory {
         )))
     }
 
+    pub(super) fn from_non_areal_rect_clip(
+        shape: &Shape,
+        bounds: Bounds,
+    ) -> Result<(Self, Vec<SegmentClipInterval>)> {
+        let mut inventory = Self::from_shapes(&[shape])?;
+        debug_assert_eq!(inventory.polygon_count, 0);
+        let mut unique = Vec::with_capacity(inventory.unique.len());
+        let mut intervals = Vec::with_capacity(inventory.unique.len());
+        let mut offsets = Vec::with_capacity(inventory.unique.len().saturating_add(1));
+        let mut entries = Vec::new();
+        offsets.push(0);
+        for (&segment, owners) in inventory.unique.iter().zip(inventory.provenance.iter()) {
+            if let Some(interval) = clip_segment_rect_interval(segment, bounds)? {
+                unique.push(segment);
+                intervals.push(interval);
+                entries.extend_from_slice(owners);
+                offsets
+                    .push(u32::try_from(entries.len()).map_err(|_| ResourceError::SizeOverflow)?);
+            }
+        }
+        inventory.unique = unique;
+        inventory.provenance = SegmentProvenance::from_csr(offsets, entries);
+        let mut retained = 0_usize;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "staging admits the parallel point columns together; compaction writes at or before the current source row"
+        )]
+        for row in 0..inventory.isolated.len() {
+            if bounds.contains_point(inventory.isolated[row]) {
+                inventory.isolated[retained] = inventory.isolated[row];
+                inventory.isolated_points[retained] = inventory.isolated_points[row];
+                inventory.isolated_operands[retained] = inventory.isolated_operands[row];
+                retained = retained.wrapping_add(1);
+            }
+        }
+        inventory.isolated.truncate(retained);
+        inventory.isolated_points.truncate(retained);
+        inventory.isolated_operands.truncate(retained);
+        Ok((inventory, intervals))
+    }
+
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
         let mut staged = StagedExactSources::new(1);
         staged.reserve_segments(segments.len());
