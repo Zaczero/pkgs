@@ -132,6 +132,28 @@ pub(crate) fn verify(
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::dynamic_truncate;
+
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn dynamic_truncation_matches_the_unsigned_big_endian_window() {
+        let bytes: [u8; 64] = kani::any();
+        let length = match kani::any::<u8>() % 3 {
+            0 => 20,
+            1 => 32,
+            _ => 64,
+        };
+        let digest = &bytes[..length];
+        let offset = usize::from(digest[length - 1] % 16);
+        let window = digest[offset..offset + 4]
+            .iter()
+            .fold(0_u64, |value, &byte| value * 256 + u64::from(byte));
+        assert_eq!(u64::from(dynamic_truncate(digest)), window % (1_u64 << 31));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::dynamic_truncate;
