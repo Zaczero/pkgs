@@ -152,7 +152,12 @@ fn normalize_and_magnitude() {
     assert_float_eq!(v.norm(), 13., abs <= f64::EPSILON, "norm");
 
     v.normalize();
-    assert_float_eq!(v.norm(), 1., abs <= f64::EPSILON, "normalized norm is unit");
+    assert_float_eq!(
+        v.norm(),
+        1.,
+        abs <= UNIT_NORM_TOLERANCE,
+        "normalized norm is unit"
+    );
 
     let mut zero = Vec3d::new(0., 0., 0.);
     zero.normalize();
@@ -164,10 +169,12 @@ fn normalize_and_magnitude() {
 
 #[test]
 fn from_latlng_unit_sphere() {
-    let ll = LatLng::new_unchecked(0.5, -1.3);
-    let res = Vec3d::from(ll);
-
-    assert_float_eq!(res.norm(), 1., abs <= f64::EPSILON);
+    for (lat, lng) in [(0.5, -1.3), (FRAC_PI_2 / 2., PI), (80_f64.to_radians(), 0.)] {
+        let res = Vec3d::from(LatLng::new_unchecked(lat, lng));
+        assert_float_eq!(res.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
+        let _ = res.closest_face();
+        let _ = res.to_cell(Resolution::Nine);
+    }
 }
 
 #[test]
@@ -175,7 +182,7 @@ fn from_cell_unit_sphere() {
     let cell = LatLng::new_unchecked(0.6, -1.2).to_cell(Resolution::Five);
     let res = Vec3d::from(cell);
 
-    assert_float_eq!(res.norm(), 1., abs <= f64::EPSILON);
+    assert_float_eq!(res.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
 }
 
 #[test]

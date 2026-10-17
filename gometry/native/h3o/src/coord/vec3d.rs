@@ -12,6 +12,11 @@ const NORTH_POLE: Vec3d = Vec3d {
     z: 1.,
 };
 
+// gometry: four-ULP sine/cosine errors contribute at most ten EPSILON to
+// either product coordinate; leave room for the dot product and square root.
+// This is a diagnostic unit-vector check, not a geometric decision tolerance.
+const UNIT_NORM_TOLERANCE: f64 = 16. * f64::EPSILON;
+
 /// A 3D normal vector to the Earth ellipsoid, represented as a n-vector.
 ///
 /// See: `<https://www.ffi.no/en/research/n-vector/n-vector-explained>`
@@ -111,7 +116,7 @@ impl Vec3d {
     ///
     /// `self` is expected to be on the unit sphere.
     pub fn to_cell(self, resolution: Resolution) -> CellIndex {
-        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= f64::EPSILON);
+        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
         FaceIJK::from_vec3d(self, resolution).to_cell(resolution)
     }
 
@@ -142,7 +147,7 @@ impl Vec3d {
         // than 4.
         const MAX_DIST: f64 = 5.0;
 
-        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= f64::EPSILON);
+        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
 
         let (face, distance) = face::CENTER_POINT.iter().enumerate().fold(
             (0, MAX_DIST),
