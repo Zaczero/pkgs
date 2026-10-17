@@ -2,10 +2,9 @@ use std::cell::UnsafeCell;
 use std::hint;
 use std::hint::{likely, unlikely};
 use std::num::NonZeroU32;
+use std::random::{Rng as _, SystemRng};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use rand::RngCore as _;
 
 use crate::constants::MAX_TIMESTAMP;
 use crate::errors::ZidError;
@@ -37,7 +36,7 @@ impl RandBuffer {
 
     fn next_u16(&mut self) -> u16 {
         if unlikely(self.pos == self.buffer.len()) {
-            rand::rng().fill_bytes(self.buffer.as_flattened_mut());
+            SystemRng.fill_bytes(self.buffer.as_flattened_mut());
             self.pos = 0;
         }
         let bytes = self

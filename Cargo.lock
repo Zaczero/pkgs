@@ -2900,7 +2900,6 @@ name = "zid"
 version = "1.5.0"
 dependencies = [
  "pyo3",
- "rand 0.9.5",
  "thiserror",
 ]
 

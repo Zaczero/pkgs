@@ -1,4 +1,5 @@
 #![feature(likely_unlikely)]
+#![feature(random)]
 
 mod constants;
 mod core;
