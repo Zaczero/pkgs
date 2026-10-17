@@ -4,7 +4,6 @@ fn sliced_list_snapshot_rebases_offsets_and_projects_child() {
     // This is intentionally below the Python decode layer: decoded geometry
     // cannot observe a temporary physical-parent copy. Restoring a full
     // parent snapshot makes the three exact byte/value assertions fail.
-    ensure_python();
     let validity = [0_u8, 0b0000_0100, 0_u8];
     let offsets: [i32; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16];
     let values: [f64; 16] = std::array::from_fn(|index| index as f64);
@@ -61,7 +60,6 @@ fn sliced_list_snapshot_rebases_offsets_and_projects_child() {
 
 #[test]
 fn binary_data_len_reads_terminal_offset_at_matching_width() {
-    ensure_python();
     let offsets: [i32; 3] = [0, 3, 7];
     // Minimal non-null data buffer so snapshot of index 2 is non-empty span.
     let data = [0_u8; 7];
@@ -93,6 +91,7 @@ fn binary_data_len_reads_terminal_offset_at_matching_width() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot attach CPython exception metadata")]
 fn binary_data_len_rejects_negative_terminal_offset() {
     ensure_python();
     let offsets: [i32; 2] = [0, -1];

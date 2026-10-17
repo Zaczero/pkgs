@@ -1,6 +1,5 @@
 #[test]
 fn binary_view_rejects_out_of_range_buffer_index() {
-    ensure_python();
     // One non-inline view: length=13, buffer_index=5, but only validity,
     // views, and the mandatory sizes table (no variadic data) → reject.
     let mut view = [0_u8; 16];
@@ -13,7 +12,6 @@ fn binary_view_rejects_out_of_range_buffer_index() {
 
 #[test]
 fn zero_length_skips_binary_view_descriptor_scan() {
-    ensure_python();
     let bufs = dummy_buffers(3);
     let mut array = stack_array(0, 0, -1, 3, 0, bufs.as_ptr(), ptr::null_mut());
     with_owned_content_layout(
@@ -34,7 +32,6 @@ fn zero_length_skips_binary_view_descriptor_scan() {
 
 #[test]
 fn binary_view_huge_n_buffers_length_zero_is_sparse_not_oom() {
-    ensure_python();
     // Release blocker: format "vz", length=0, n_buffers huge must not
     // allocate `vec![0; n_buffers-3]` (capacity overflow / multi-GB).
     let n_buffers = 1_000_000;
@@ -61,7 +58,6 @@ fn binary_view_huge_n_buffers_length_zero_is_sparse_not_oom() {
 
 #[test]
 fn binary_view_selected_fragment_does_not_retain_unreferenced_size_entries() {
-    ensure_python();
     // One high-index payload has a 5,000-entry producer size table. The
     // imported node owns only that descriptor's 8-byte declaration and
     // selected payload, not all 40 KiB of unrelated advisory metadata.
@@ -105,7 +101,6 @@ fn binary_view_selected_fragment_does_not_retain_unreferenced_size_entries() {
 
 #[test]
 fn binary_view_sparse_high_buffer_index_rejects_not_dense_grow() {
-    ensure_python();
     // Present non-inline: buffer_index=5 with no variadic data buffers
     // (only validity, views, and sizes) → reject. No dense growth to 5.
     let mut view = [0_u8; 16];
@@ -119,7 +114,6 @@ fn binary_view_sparse_high_buffer_index_rejects_not_dense_grow() {
 
 #[test]
 fn binary_view_multi_buffer_endpoints_are_sparse_and_correct() {
-    ensure_python();
     // Two non-inline rows on distinct data buffers: ends keyed sparsely.
     let mut views = [0_u8; 32];
     let data0 = *b"0123456789abcdefghijklmnopqrstuv";
@@ -165,7 +159,6 @@ fn binary_view_multi_buffer_endpoints_are_sparse_and_correct() {
 
 #[test]
 fn binary_view_null_row_descriptor_is_ignored_not_oob() {
-    ensure_python();
     // Conforming null row: validity bit0=0, ignored descriptor claims a
     // 1_000_000-byte span over a 1-byte data buffer. Pre-fix code treated
     // the descriptor as live and OOB-read the allocation.
@@ -195,7 +188,6 @@ fn binary_view_null_row_descriptor_is_ignored_not_oob() {
 
 #[test]
 fn binary_view_present_descriptor_snapshots_selected_payload() {
-    ensure_python();
     // Present non-inline: length=20, buffer_index=0, byte_offset=2 → end=22.
     let mut view = [0_u8; 16];
     view[0..4].copy_from_slice(&20_i32.to_le_bytes());
@@ -224,7 +216,6 @@ fn binary_view_present_descriptor_snapshots_selected_payload() {
 
 #[test]
 fn binary_view_rebases_nonzero_selected_payload_origin() {
-    ensure_python();
     // One selected non-inline descriptor starts at physical byte 2. Native
     // admission must copy only [2, 22) and rewrite the owned descriptor
     // to offset 0; otherwise downstream BinaryView decode indexes the
@@ -270,7 +261,6 @@ fn binary_view_rebases_nonzero_selected_payload_origin() {
 
 #[test]
 fn binary_view_rejects_span_beyond_declared_variadic_buffer_size() {
-    ensure_python();
     // The backing allocation is 21 bytes, but the mandatory sizes table
     // declares only one byte. Old code read the external prefix anyway.
     let mut view = [0_u8; 16];

@@ -652,6 +652,7 @@ mod frame_cache_ownership_tests {
     use crate::crs::frame::crs_arc_static;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn scalar_retag_preserves_row_products_but_new_shapes_are_fresh() {
         let geometry =
             PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 2.0)), Frame::None);

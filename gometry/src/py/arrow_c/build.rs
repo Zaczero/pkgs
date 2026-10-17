@@ -833,13 +833,8 @@ pub(crate) const fn wkb_schema(nullable: bool) -> SchemaNode {
 mod owner_export_tests {
     use super::*;
 
-    fn ensure_python() {
-        crate::test_support::initialize_python();
-    }
-
     #[test]
     fn primitive_window_rejects_out_of_range() {
-        ensure_python();
         let values = SharedSlice::from_vec(vec![1.0_f64, 2.0, 3.0]);
         primitive_f64_array_windowed(values.clone(), 0, 3).unwrap();
         assert!(primitive_f64_array_windowed(values, 2, 2).is_err());
@@ -847,7 +842,6 @@ mod owner_export_tests {
 
     #[test]
     fn make_array_rejects_length_past_owned_f64_column() {
-        ensure_python();
         // Same residual the skeptic named: free length over a short Arc.
         let short = SharedSlice::from_vec(vec![1.0_f64]);
         assert!(
@@ -863,7 +857,6 @@ mod owner_export_tests {
 
     #[test]
     fn validity_mask_length_checked_in_release() {
-        ensure_python();
         let mut array = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         let short = storage::ValidityMask::from_vec(1, vec![true]).unwrap();
         assert!(apply_top_level_validity(&mut array, &short).is_err());
@@ -873,7 +866,6 @@ mod owner_export_tests {
 
     #[test]
     fn aligned_validity_window_shares_arc_with_arrow_owner() {
-        ensure_python();
         let parent = storage::ValidityMask::from_vec(8, vec![
             false, false, false, true, false, true, false, false,
         ])
@@ -979,8 +971,8 @@ mod owner_export_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn extension_metadata_json_wraps_cached_projjson() {
-        ensure_python();
         let projjson = crate::crs::to_projjson("EPSG:4326").expect("cached EPSG:4326 PROJJSON");
         let text = extension_metadata_json(Some("EPSG:4326"), Some(2010.0))
             .unwrap()

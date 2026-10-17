@@ -482,6 +482,7 @@ mod edge_trace_tests {
     use crate::py::cells::coverage_ops::GridCoverError;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn invalid_authority_retains_its_geometry_diagnostic() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 91.0));
         let authority = PreparedPlan::transient(&shape);
@@ -530,6 +531,7 @@ mod edge_trace_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn center_cover_is_sorted_and_unique() {
         let shape = Shape::Polygon(Polygon::new(
             Ring::from_closed(

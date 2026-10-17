@@ -754,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn scalar_empty_is_empty_coverage() {
         let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon());
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
@@ -763,6 +764,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn invalid_lonlat_is_native_geometry() {
         let geometry = crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0)));
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
@@ -785,6 +787,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn source_error_prefix_uses_the_paired_transform_publisher() {
         let line = |points: &[Point]| {
             Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
@@ -822,6 +825,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn internal_admission_drop_consumes_live_transform_diagnostic() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();

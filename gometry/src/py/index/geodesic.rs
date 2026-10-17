@@ -272,6 +272,7 @@ mod tests {
     /// point of the rect — including the adversarial equatorial micro-delta,
     /// seam, and polar cases.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn envelope_lower_bound_is_sound_against_sampled_karney_distances() {
         let wgs84 = Geodesic::wgs84();
         let cases: &[((f64, f64), [f64; 4])] = &[
@@ -322,6 +323,7 @@ mod tests {
 
     /// A zero-radius window at the seam covers both spellings of ±180.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn seam_window_includes_both_longitude_spellings() {
         let windows = pruner(-180.0, 0.0)
             .dwithin_windows(0.0)
@@ -336,6 +338,7 @@ mod tests {
 
     /// A radius that reaches a pole widens to the full longitude range.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn pole_reaching_window_spans_all_longitudes() {
         let windows = pruner(0.0, 89.0)
             .dwithin_windows(500_000.0)
@@ -349,6 +352,7 @@ mod tests {
     /// Every sampled point within `distance` of the query lies inside at
     /// least one returned window (or the windows are `None` = whole world).
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn dwithin_windows_contain_every_point_within_distance() {
         let wgs84 = Geodesic::wgs84();
         let cases: &[((f64, f64), f64)] = &[

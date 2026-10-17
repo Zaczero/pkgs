@@ -636,12 +636,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn many_samples_resolve_one_chart_index_and_preserve_geographic_bits() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
         assert_many_samples_match_single_samples(&model);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn coordinate_sequence_locate_builds_one_chart_index_per_line() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
         let crate::crs::MetricModel::Geodesic {

@@ -113,7 +113,8 @@ unsafe extern "C" fn count_moved_array_release(array: *mut ArrowArray) {
 }
 
 fn ensure_python() {
-    // `NullCount::parse` and friends construct `PyErr` on failure paths.
+    // Exception formatting, metadata attachment, and capsule operations need
+    // the interpreter; constructing and dropping lazy PyErr values does not.
     crate::test_support::initialize_python();
 }
 

@@ -1,6 +1,5 @@
 #[test]
 fn null_count_accepts_unknown_minus_one_and_known_in_range() {
-    ensure_python();
     assert_eq!(NullCount::parse(-1, 10).unwrap(), NullCount::Unknown);
     assert_eq!(NullCount::parse(-1, 0).unwrap(), NullCount::Unknown);
     assert_eq!(NullCount::parse(0, 10).unwrap(), NullCount::Known(0));
@@ -11,7 +10,6 @@ fn null_count_accepts_unknown_minus_one_and_known_in_range() {
 
 #[test]
 fn null_count_rejects_below_minus_one() {
-    ensure_python();
     assert!(NullCount::parse(-2, 10).is_err());
     assert!(NullCount::parse(-100, 1).is_err());
     assert!(NullCount::parse(i64::MIN, 0).is_err());
@@ -19,7 +17,6 @@ fn null_count_rejects_below_minus_one() {
 
 #[test]
 fn null_count_rejects_known_exceeding_logical_length() {
-    ensure_python();
     assert!(NullCount::parse(1, 0).is_err());
     assert!(NullCount::parse(11, 10).is_err());
     assert!(NullCount::parse(i64::MAX, 1).is_err());
@@ -27,7 +24,6 @@ fn null_count_rejects_known_exceeding_logical_length() {
 
 #[test]
 fn arrow_format_parse_is_fallible_rejects_other_and_accepts_large_list() {
-    ensure_python();
     assert_eq!(ArrowFormat::parse("g").unwrap(), ArrowFormat::Float64);
     assert_eq!(ArrowFormat::parse("z").unwrap(), ArrowFormat::Binary);
     assert_eq!(ArrowFormat::parse("Z").unwrap(), ArrowFormat::LargeBinary);
@@ -47,7 +43,6 @@ fn arrow_format_parse_is_fallible_rejects_other_and_accepts_large_list() {
 
 #[test]
 fn validity_snapshot_uses_offset_plus_length_not_null_count() {
-    ensure_python();
     // Visible rows [5, 10) straddle bitmap bytes 0 and 1.  This enters
     // `snapshot_native_buffers`, the only shipping owner of the visible
     // validity window.  Mutating `visible_validity_range` to `(0, 0)`
@@ -73,7 +68,6 @@ fn validity_snapshot_uses_offset_plus_length_not_null_count() {
 
 #[test]
 fn validated_array_rejects_excessive_null_count_at_construction() {
-    ensure_python();
     let bufs = dummy_buffers(2);
     let mut array = stack_array(3, 0, 4, 2, 0, bufs.as_ptr(), ptr::null_mut());
     assert!(try_with_stack_layout(&mut array, ArrowFormat::Float64, 0, |_| Ok(())).is_err());
@@ -82,6 +76,7 @@ fn validated_array_rejects_excessive_null_count_at_construction() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot format CPython exceptions")]
 fn known_null_count_must_match_visible_validity_bitmap() {
     ensure_python();
     // null_count=1 but validity bit set (all valid) — P02 mismatch.
@@ -107,7 +102,6 @@ fn known_null_count_must_match_visible_validity_bitmap() {
 
 #[test]
 fn validated_array_accepts_unknown_null_count() {
-    ensure_python();
     let bufs = dummy_buffers(3);
     let mut array = stack_array(4, 0, -1, 3, 0, bufs.as_ptr(), ptr::null_mut());
     with_stack_layout(&mut array, ArrowFormat::Binary, 0, |validated| {
@@ -118,7 +112,6 @@ fn validated_array_accepts_unknown_null_count() {
 
 #[test]
 fn layout_rejects_wrong_buffer_and_child_cardinalities() {
-    ensure_python();
     // Float64 with excess n_buffers (pointer-table OOB path).
     let bufs = dummy_buffers(3);
     let mut array = stack_array(1, 0, 0, 3, 0, bufs.as_ptr(), ptr::null_mut());
@@ -136,6 +129,7 @@ fn layout_rejects_wrong_buffer_and_child_cardinalities() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot format CPython exceptions")]
 fn struct_child_rejects_visible_end_beyond_raw_allocation() {
     ensure_python();
     let bufs = dummy_buffers(2);
@@ -161,7 +155,6 @@ fn struct_child_rejects_visible_end_beyond_raw_allocation() {
 
 #[test]
 fn struct_child_null_count_validated_against_raw_not_projected() {
-    ensure_python();
     // Parent offset=2, length=3; child raw length=10, null_count=6.
     // Old code rejected 6 > 3; fixed code accepts and exposes Unknown.
     let bufs = dummy_buffers(2);

@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_strict_membership_retains_shared_line_boundary_parity() {
     let line = crate::io::parse_wkt("LINESTRING (179 0,181 0)").unwrap();
     let shared = shared_collection(line, 2);
@@ -32,6 +33,7 @@ fn geographic_strict_membership_retains_shared_line_boundary_parity() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_point_membership_matches_full_relation() {
     for wkt in [
         "POLYGON ((0 0,4 0,4 4,0 4,0 0))",

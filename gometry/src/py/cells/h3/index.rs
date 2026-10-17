@@ -228,8 +228,6 @@ mod tests {
 
     #[test]
     fn generic_validation_preserves_concrete_index_types() {
-        crate::test_support::initialize_python();
-
         let cell: CellIndex = "8928308280fffff".parse().unwrap();
         let vertex = cell.vertexes().next().unwrap();
         let edge = cell.edges().next().unwrap();
@@ -246,8 +244,31 @@ mod tests {
             validate_h3_index_id::<DirectedEdgeIndex>(edge.into()).unwrap(),
             edge
         );
-        let _cell_error = validate_h3_index_id::<CellIndex>(0).unwrap_err();
-        let _vertex_error = validate_h3_index_id::<VertexIndex>(0).unwrap_err();
-        let _edge_error = validate_h3_index_id::<DirectedEdgeIndex>(0).unwrap_err();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot attach CPython exception metadata")]
+    fn invalid_typed_ids_keep_parse_error_metadata() {
+        use crate::py::errors::ParseError;
+
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            for error in [
+                validate_h3_index_id::<CellIndex>(0).unwrap_err(),
+                validate_h3_index_id::<VertexIndex>(0).unwrap_err(),
+                validate_h3_index_id::<DirectedEdgeIndex>(0).unwrap_err(),
+            ] {
+                assert!(error.is_instance_of::<ParseError>(py));
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("format")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "h3"
+                );
+            }
+        });
     }
 }

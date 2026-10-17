@@ -291,6 +291,7 @@ fn holes_serialize_clockwise() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_geojson_orientation_keeps_full_records_and_closure() {
     let xyz_ring = |coordinates: &[(f64, f64, f64)]| {
         Ring::closed(
@@ -443,6 +444,7 @@ fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn write_rejects_out_of_domain_geographic_positions() {
     // Latitude beyond ±90 and longitude beyond ±180 fail on a geographic
     // domain. The low-level serializer still accepts an explicitly selected
@@ -573,6 +575,7 @@ fn read_rejects_out_of_domain_positions() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_line_is_cut_at_the_antimeridian_and_round_trips() {
     let crossing = line(&[(170.0, 0.0), (-170.0, 0.0)]);
     let cut = written(&crossing, geographic_domain());

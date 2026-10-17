@@ -498,6 +498,7 @@ mod footprint_tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn identify_memo_heap_is_reported_after_resolution() {
         let crs = PyCrs::from_definition("EPSG:3857".into());
         let cold = crs.heap_bytes();
