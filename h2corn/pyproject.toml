@@ -62,24 +62,7 @@ uvloop = [
 
 [dependency-groups]
 dev = [
-  "benchroom",
-  "fastapi>=0.118.0",
-  "griffe-inherited-docstrings>=1.0",
-  "gunicorn>=25.3.0",
-  "h2>=4.2.0",
-  "h2corn[uvloop]",
-  "hpack>=4.1.0",
-  "hypercorn>=0.18.0",
-  "pytest>=9.1",
-  "pytest-asyncio>=1.4",
-  "pytest-timeout>=2.4",
-  "pytest-xdist[psutil]>=3.8",
-  "starlette>=0.46.0",
-  "trustme>=1.2.0",
-  "uvicorn>=0.43.0",
-  "websockets>=16.0",
-]
-docs = [
+  { include-group = "freethreaded" },
   "markdownify>=1",
   "matplotlib>=3.10.8",
   "mkdocs-gen-files>=0.5",
@@ -88,8 +71,28 @@ docs = [
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
+  "pyo3stubs",
 ]
-ci = ["pyo3stubs"]
+
+# Native parser dependencies in dev do not have free-threaded builds.
+freethreaded = [
+  "benchroom",
+  "fastapi>=0.118.0",
+  "griffe-inherited-docstrings>=1.0",
+  "gunicorn>=25.3.0",
+  "h2>=4.2.0",
+  "h2corn[uvloop]",
+  "hpack>=4.1.0",
+  "hypercorn>=0.18.0",
+  "pytest-asyncio>=1.4",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
+  "pytest>=9.1",
+  "starlette>=0.46.0",
+  "trustme>=1.2.0",
+  "uvicorn>=0.43.0",
+  "websockets>=16.0",
+]
 
 [build-system]
 requires = ["maturin~=1.14"]
@@ -97,7 +100,10 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
+]
 module-name = "h2corn._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
@@ -108,8 +114,6 @@ include = ["bench", "python/h2corn", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"
 strict = ["python/h2corn"]
-venv = ".venv"
-venvPath = "."
 
 [tool.ruff]
 extend = "../ruff.toml"

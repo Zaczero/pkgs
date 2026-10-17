@@ -31,11 +31,16 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/lrucache-rs"
 
 [dependency-groups]
 dev = [
-  "pytest>=9.1",
+  { include-group = "freethreaded" },
+  "pyo3stubs",
+]
+
+# Native parser dependencies in dev do not have free-threaded builds.
+freethreaded = [
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
+  "pytest>=9.1",
 ]
-ci = ["pyo3stubs; python_version >= '3.11'"]
 
 [tool.uv]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true } }
@@ -46,7 +51,10 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
+]
 module-name = "lrucache_rs._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]

@@ -31,7 +31,7 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/osm-shortlink"
 
 [dependency-groups]
-dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
+dev = ["pyperf>=2.9", "pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
 
 [build-system]
 requires = ["maturin~=1.14"]
@@ -39,12 +39,16 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
+]
 module-name = "osm_shortlink._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
 
 [tool.pyright]
+extraPaths = ["python"]
 include = ["python/osm_shortlink", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"

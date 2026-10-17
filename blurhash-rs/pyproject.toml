@@ -40,9 +40,21 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/blurhash-rs"
 
 [dependency-groups]
-dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
-bench = ["benchroom", "blurhash-python"]
-bench-2 = ["benchroom", "blurhash"]
+dev = [
+  "benchroom",
+  "blurhash",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
+  "pytest>=9.1",
+]
+
+compare-cffi = [
+  "benchroom",
+  "blurhash-python",
+]
+
+[tool.uv]
+conflicts = [[{ group = "dev" }, { group = "compare-cffi" }]]
 
 [tool.uv.sources]
 benchroom = { path = "../benchroom", editable = true }
@@ -53,12 +65,16 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
+]
 module-name = "blurhash_rs._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
 
 [tool.pyright]
+extraPaths = ["python"]
 include = ["python/blurhash_rs", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"

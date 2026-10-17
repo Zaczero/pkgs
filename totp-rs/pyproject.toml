@@ -31,8 +31,13 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/totp-rs"
 
 [dependency-groups]
-dev = ["pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
-bench = ["benchroom", "pyotp"]
+dev = [
+  "benchroom",
+  "pyotp",
+  "pytest-timeout>=2.4",
+  "pytest-xdist[psutil]>=3.8",
+  "pytest>=9.1",
+]
 
 [tool.uv.sources]
 benchroom = { path = "../benchroom", editable = true }
@@ -43,12 +48,16 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
+]
 module-name = "totp_rs._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
 
 [tool.pyright]
+extraPaths = ["python"]
 include = ["python/totp_rs", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"
