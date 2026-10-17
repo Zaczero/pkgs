@@ -20,6 +20,14 @@ from pathlib import Path
 import pytest
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addini(
+        'asyncio_default_fixture_loop_scope',
+        help='Default event-loop scope for asynchronous fixtures.',
+        default='function',
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Keep `ResourceWarning` fatal everywhere it can name a culprit.
 
