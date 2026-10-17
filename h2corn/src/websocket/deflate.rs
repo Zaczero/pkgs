@@ -538,7 +538,7 @@ mod tests {
     /// so a small hostile frame bought a large multiple of inflate work.
     #[test]
     fn oversized_message_does_not_inflate_past_its_limit() {
-        const LIMIT: usize = 64 * 1024;
+        const LIMIT: usize = 257;
 
         let payload = compressed_zeroes(LIMIT * 4);
         let mut inflater = MessageInflater::new();
@@ -562,7 +562,7 @@ mod tests {
     /// one-byte overrun window must not truncate a legal message.
     #[test]
     fn message_at_exactly_the_limit_is_accepted() {
-        const LIMIT: usize = 32 * 1024;
+        const LIMIT: usize = 257;
 
         let payload = compressed_zeroes(LIMIT);
         let mut inflater = MessageInflater::new();

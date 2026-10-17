@@ -12,6 +12,11 @@ members = [
   "zid",
 ]
 
+[patch.crates-io]
+# The released core passes references through futex varargs; remove this pin
+# when a release includes the upstream integer-pointer and provenance fixes.
+parking_lot_core = { git = "https://github.com/Amanieu/parking_lot", rev = "94d1070a4eceb15002a6fc236556f6a2db50cc5a" }
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }

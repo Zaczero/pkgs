@@ -1,10 +1,8 @@
 #[cfg(test)]
-use std::env::temp_dir;
-#[cfg(test)]
-use std::fs::{File, remove_file, write};
+use std::fs::File;
 use std::io;
 #[cfg(test)]
-use std::process::id;
+use std::io::Write as _;
 #[cfg(test)]
 use std::{
     pin::Pin,
@@ -1069,9 +1067,8 @@ mod tests {
     #[tokio::test]
     async fn pathsend_final_buffered_chunk_carries_end_stream() {
         let stream_id = StreamId::new(1).unwrap();
-        let path = temp_dir().join(format!("h2corn-flush-pathsend-{}", id()));
-        write(&path, b"abc").unwrap();
-        let file = File::open(&path).unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"abc").unwrap();
 
         let mut streams = new_stream_map();
         let mut ready_streams = ReadyStreamQueue::new();
@@ -1086,7 +1083,12 @@ mod tests {
         );
         stream.open_response(false).unwrap();
         stream
-            .queue_file(FileStreamer::new(file, 0, b"abc".len(), true))
+            .queue_file(FileStreamer::new(
+                file.reopen().unwrap(),
+                0,
+                b"abc".len(),
+                true,
+            ))
             .unwrap();
         ready_streams.schedule(stream, stream_id, false);
 
@@ -1107,19 +1109,25 @@ mod tests {
         writer.flush().await.unwrap();
 
         let frames = parse_data_frames(&writer.get_ref().bytes);
-        assert_eq!(frames, vec![(
-            b"abc".len(),
-            FrameFlags::END_STREAM.bits(),
-            stream_id.get()
-        )]);
+        let (last, preceding) = frames
+            .split_last()
+            .expect("file data reaches the transport");
+        assert!(
+            preceding
+                .iter()
+                .all(|&(_, flags, id)| flags == 0 && id == stream_id.get())
+        );
+        assert_eq!(
+            (last.1, last.2),
+            (FrameFlags::END_STREAM.bits(), stream_id.get())
+        );
+        assert_eq!(parse_data_payload(&writer.get_ref().bytes), b"abc");
         assert!(ready_streams.is_empty());
         assert!(streams.is_empty());
         assert_eq!(response_closes.as_slice(), &[(
             ResponseClose::Clean,
             stream_id
         )]);
-
-        remove_file(path).unwrap();
     }
 
     /// Reconstruct the concatenated DATA payload bytes for one stream.
@@ -1348,8 +1356,8 @@ mod tests {
         let mut connection_send_window = 4_i64;
         let mut header_state = HeaderEncodeState::new();
 
-        let path = temp_dir().join(format!("h2corn-flush-exact-{}", id()));
-        write(&path, b"file-body").unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"file-body").unwrap();
         let stream = writer_stream(&mut streams, stream_id, i64::from(u16::MAX));
         stream.open_response(false).unwrap();
         stream
@@ -1357,7 +1365,7 @@ mod tests {
             .unwrap();
         stream
             .queue_file(FileStreamer::new(
-                File::open(&path).expect("temp file opens"),
+                file.reopen().expect("temp file opens"),
                 0,
                 b"file-body".len(),
                 true,
@@ -1387,7 +1395,6 @@ mod tests {
         // shared credit makes the writer spin against zero, retrying a flush
         // that cannot make progress until the peer grants more.
         assert_eq!(ready_streams.iter().collect::<Vec<_>>(), []);
-        drop(remove_file(&path));
     }
 
     #[tokio::test]

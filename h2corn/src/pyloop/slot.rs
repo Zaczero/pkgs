@@ -240,6 +240,7 @@ mod tests {
     use crate::pyloop::ShardHandle;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn task_created_after_abandonment_is_returned_for_cancellation() {
         Python::initialize();
         Python::attach(|py| {
@@ -250,6 +251,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn abandoning_a_running_task_returns_its_anchor_once() {
         Python::initialize();
         Python::attach(|py| {
@@ -264,6 +266,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dropping_an_unpolled_completed_future_discards_the_value() {
         Python::initialize();
         let shard = Python::attach(ShardHandle::test_stub);
@@ -275,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn completion_abandonment_race_resolves_to_exactly_one_transition() {
         Python::initialize();
         let shard = Python::attach(ShardHandle::test_stub);

@@ -465,10 +465,7 @@ fn append_response_action(
 
 #[cfg(test)]
 mod tests {
-    use std::env::temp_dir;
-    use std::fs;
-    use std::fs::File;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::io::Write as _;
 
     use super::{
         FinalResponseBody, WriterCommand, WriterCommandBatch, push_final_response_commands,
@@ -480,22 +477,15 @@ mod tests {
 
     #[test]
     fn final_file_response_batches_headers_then_pathsend() {
-        let path = temp_dir().join(format!(
-            "h2corn-final-response-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock is after epoch")
-                .as_nanos(),
-        ));
-        fs::write(&path, b"x").unwrap();
-        let file = File::open(&path).unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"x").unwrap();
 
         let mut commands = WriterCommandBatch::new();
         push_final_response_commands(
             StreamId::new(1).unwrap(),
             &mut commands,
             ResponseStart::new(status_code::OK, ResponseHeaders::new()),
-            FinalResponseBody::File(FileSegment::new(file, 0, 1, None)),
+            FinalResponseBody::File(FileSegment::new(file.reopen().unwrap(), 0, 1, None)),
             &ResponseHeaderConfig::default(),
         );
 
@@ -542,8 +532,6 @@ mod tests {
             Some(WriterCommand::SendFile { .. })
         ));
         assert!(commands.is_empty());
-
-        fs::remove_file(path).expect("temporary pathsend file is removable");
     }
 
     #[test]

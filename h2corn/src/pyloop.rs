@@ -814,6 +814,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn shard_thread_shutdown_returns_join_panic() {
         const CHILD: &str = "H2CORN_SHARD_JOIN_CHILD";
         const TEST: &str = "pyloop::tests::shard_thread_shutdown_returns_join_panic";
@@ -850,6 +851,7 @@ mod tests {
 
     #[cfg(Py_GIL_DISABLED)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dropping_shard_thread_stops_loop_and_releases_handle() {
         pyo3::Python::initialize();
         let thread = super::spawn_shard_thread(999, super::SecondaryLoopFactory::Asyncio)

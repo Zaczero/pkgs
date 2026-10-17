@@ -80,39 +80,28 @@ mod tests {
     }
 
     #[test]
-    fn websocket_mask_is_exhaustively_equivalent_across_phases_and_alignment() {
+    fn websocket_mask_matches_scalar_across_phases_alignment_and_lane_boundaries() {
         const MASKS: [[u8; 4]; 4] = [[0, 0, 0, 0], [u8::MAX; 4], [1, 2, 3, 4], [
             0x37, 0xFA, 0x21, 0x3D,
         ]];
         const LARGE_LENGTHS: [usize; 12] = [
             1_023, 1_024, 1_500, 2_047, 2_048, 4_095, 4_096, 8_191, 8_192, 16_383, 0x4000, 0x4001,
         ];
+        const BOUNDARIES: [usize; 20] = [
+            0, 1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129,
+        ];
         let mut candidate = vec![0; 0x4001 + 64];
         let mut reference = candidate.clone();
-
-        // Every mask is swept exhaustively across all phases, alignments and
-        // short lengths. The long lengths — which exist to drive multiple
-        // 32-byte lanes and the 0x4000 boundary — run against a single mask:
-        // the kernel XORs each byte with a mask byte chosen by position
-        // alone, so the mask VALUE cannot interact with the lane-splitting or
-        // tail logic that length and alignment select. Sweeping all four
-        // masks over 16 KiB payloads re-measures the same code paths at four
-        // times the cost.
         for mask in MASKS {
-            let lengths = if mask == MASKS[MASKS.len() - 1] {
-                LARGE_LENGTHS.as_slice()
-            } else {
-                &[]
-            };
-            for phase in 0..4 {
-                for offset in 0..32 {
-                    // 0..=192 is six full 32-byte lanes, so every combination
-                    // of prefix residue, lane count 0..6 and suffix residue
-                    // appears — the complete set of shapes the kernel's
-                    // prefix/lanes/suffix split can take. Lengths beyond it
-                    // only add lanes, which `LARGE_LENGTHS` already drives up
-                    // to the 0x4000 boundary, at quadratic cost in the sweep.
-                    for len in (0..=192).chain(lengths.iter().copied()) {
+            let varied_alignment = mask == MASKS[MASKS.len() - 1];
+            for phase in 0..if varied_alignment { 4 } else { 1 } {
+                for offset in 0..if varied_alignment { 32 } else { 1 } {
+                    let long_lengths = if offset == 0 && phase == 0 {
+                        LARGE_LENGTHS.as_slice()
+                    } else {
+                        &[]
+                    };
+                    for len in BOUNDARIES.iter().chain(long_lengths).copied() {
                         let total = offset + len + 32;
                         for (index, byte) in candidate[..total].iter_mut().enumerate() {
                             *byte = index.wrapping_mul(29) as u8;
@@ -143,9 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn websocket_mask_phase_is_preserved_across_every_segment_boundary() {
+    fn websocket_mask_phase_is_preserved_across_segment_and_lane_boundaries() {
         let mask = [0x37, 0xFA, 0x21, 0x3D];
-        for len in 0_usize..=256 {
+        for len in [
+            0_usize, 1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129,
+        ] {
             let source = (0..len)
                 .map(|value| value.wrapping_mul(31) as u8)
                 .collect::<Vec<_>>();

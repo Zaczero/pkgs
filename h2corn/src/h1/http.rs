@@ -710,7 +710,7 @@ fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
-    use std::io;
+    use std::io::{self, Write as _};
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
@@ -858,13 +858,17 @@ mod tests {
         state.streaming_framing = StreamingBodyFraming::Chunked;
         let mut writer = BufWriter::new(RecordingWriter::default());
 
-        let source = File::open("/etc/hostname").expect("a readable regular file");
-        let len = usize::try_from(source.metadata().expect("metadata reads").len())
-            .expect("the file fits usize");
-        assert!(len > 0, "the fixture file must have contents to stream");
+        let payload = b"file contents";
+        let mut source = tempfile::NamedTempFile::new().expect("a temporary file is allocated");
+        source
+            .write_all(payload)
+            .expect("fixture contents are written");
 
         state
-            .write_streaming_file(&mut writer, FileSegment::new(source, 0, len, None))
+            .write_streaming_file(
+                &mut writer,
+                FileSegment::new(source.reopen().unwrap(), 0, payload.len(), None),
+            )
             .await
             .expect("the file segment is written");
         state

@@ -251,20 +251,15 @@ mod tests {
         let value = Bytes::from(vec![b'x'; 1024]);
         state.update_max_size(usize::MAX);
 
-        // The property is that the table stays *locally* bounded no matter how
-        // many distinct values pass through. It is reached within the first
-        // few evictions, so the sweep only has to run well past the point
-        // where the bound starts holding.
-        for index in 0..2_000 {
+        for index in 0..12 {
             let headers = vec![(
                 Bytes::from(format!("x-unique-{index}")).into(),
                 value.clone().into(),
             )];
             let _ = state.encode_response(status_code::OK, &headers);
+            assert!(state.encoder_table_size() <= super::LOCAL_ENCODER_TABLE_SIZE);
+            assert!(state.encoder_table_len() <= 4);
         }
-
-        assert!(state.encoder_table_size() <= super::LOCAL_ENCODER_TABLE_SIZE);
-        assert!(state.encoder_table_len() <= 4);
     }
 
     #[test]

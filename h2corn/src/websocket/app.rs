@@ -278,6 +278,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn joined_outcome_is_terminal_and_surfaced_once() {
         let app = test_app();
         let mut task = WebSocketAppTask::new(completed_app_future(&app, &app.main_shard()));
@@ -293,6 +294,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn abort_transitions_running_task_to_terminal_state() {
         let app = test_app();
         let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(&app));
@@ -307,6 +309,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn dropping_running_task_aborts_instead_of_detaching() {
         let app = test_app();
         let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(&app));

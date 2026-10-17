@@ -1547,6 +1547,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn asgi_value_and_sequence_errors_have_stable_python_types() {
         Python::initialize();
         Python::attach(|py| {
@@ -1595,6 +1596,7 @@ mod tests {
     /// swallow — an application saw `send()` fail with `RuntimeError` for a
     /// malformed value it had supplied.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn every_application_facing_error_has_a_decided_python_type() {
         Python::initialize();
         Python::attach(|py| {
@@ -1642,6 +1644,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn python_errors_keep_io_types_and_pathsend_causes() {
         Python::initialize();
         Python::attach(|py| {

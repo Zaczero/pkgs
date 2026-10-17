@@ -1199,6 +1199,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot spawn subprocesses")]
     fn reaped_stream_task_panics_are_reported_and_cancellation_is_silent() {
         const CHILD: &str = "H2CORN_STREAM_JOIN_CHILD";
         const TEST: &str =
@@ -1235,7 +1236,7 @@ mod tests {
                         .await
                         .expect("task published completion and is pending");
                     let reaping = {
-                        let mut reaping = Box::pin(tasks.wait_for_completion());
+                        let mut reaping = std::pin::pin!(tasks.wait_for_completion());
                         poll_once(reaping.as_mut())
                     };
                     assert!(

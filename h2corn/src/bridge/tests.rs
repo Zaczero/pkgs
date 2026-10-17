@@ -70,6 +70,7 @@ fn init_python() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn http_response_start_requires_status() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -91,6 +92,7 @@ fn http_response_start_requires_status() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn asgi_message_boundaries_name_the_event_and_bad_field() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -164,6 +166,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn asgi_outbound_type_dispatches_interned_values_and_falls_back_to_strings() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -225,6 +228,7 @@ fn asgi_outbound_type_dispatches_interned_values_and_falls_back_to_strings() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn websocket_send_accepts_exactly_one_payload_variant() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -254,6 +258,7 @@ fn websocket_send_accepts_exactly_one_payload_variant() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn unexpected_websocket_event_reports_its_asgi_type_not_application_payload() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -275,6 +280,7 @@ fn unexpected_websocket_event_reports_its_asgi_type_not_application_payload() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn websocket_send_rejects_missing_or_ambiguous_payload() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -300,6 +306,7 @@ fn websocket_send_rejects_missing_or_ambiguous_payload() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn websocket_accept_owns_handshake_headers_at_ingress() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -347,6 +354,7 @@ fn websocket_accept_owns_handshake_headers_at_ingress() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn http_response_start_defaults_trailers_to_false() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -372,6 +380,7 @@ fn http_response_start_defaults_trailers_to_false() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn response_status_validation_handles_python_integer_boundaries() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -452,6 +461,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn http_response_start_accepts_tuple_headers_via_generic_fallback() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -476,6 +486,7 @@ fn http_response_start_accepts_tuple_headers_via_generic_fallback() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn response_header_iterable_never_calls_len() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -517,10 +528,7 @@ headers = (Headers(0), Headers(1), Headers(2))
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one Python fixture shares iterator state across the precedence matrix"
-)]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn generic_header_pairs_preserve_iterator_error_precedence() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -678,6 +686,7 @@ class Headers:
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn exact_header_list_reserves_all_builtin_default_slots() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -767,6 +776,7 @@ fn exact_header_list_reserves_all_builtin_default_slots() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn response_headers_and_trailers_enforce_their_own_field_policies() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -858,6 +868,7 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn response_connection_directive_has_exactly_one_meaning() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -915,6 +926,7 @@ fn response_connection_directive_has_exactly_one_meaning() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn http_request_event_omits_default_body_and_more_body() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -936,6 +948,7 @@ fn http_request_event_omits_default_body_and_more_body() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn batched_http_request_materializes_one_contiguous_python_body() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
@@ -970,6 +983,7 @@ fn batched_http_request_materializes_one_contiguous_python_body() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn cancelled_receive_requeue_retains_h2_credit_until_conversion() {
     init_python();
     let flow = Arc::new(H2InputCreditQueue::default());
@@ -1004,6 +1018,7 @@ fn cancelled_receive_requeue_retains_h2_credit_until_conversion() {
     clippy::significant_drop_tightening,
     reason = "the test deliberately retains the owned receive guard until cancellation resolution"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 async fn cancelled_in_flight_receive_requeues_before_a_concurrent_waiter() {
     init_python();
     let flow = Arc::new(H2InputCreditQueue::default());

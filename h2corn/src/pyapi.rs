@@ -1081,6 +1081,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn timeout_admission_rejects_duration_beyond_monotonic_deadline_range() {
         Python::initialize();
         Python::attach(|py| {
@@ -1096,6 +1097,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn runtime_gil_detection_matches_the_interpreter() {
         Python::initialize();
         Python::attach(|py| {
@@ -1120,6 +1122,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn concurrent_runtime_initialization_admits_one_worker_count() {
         if std::env::var_os("H2CORN_RUNTIME_INIT_RACE_CHILD").is_some() {
             Python::initialize();
@@ -1201,6 +1204,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn shutdown_failure_becomes_primary_only_without_an_existing_error() {
         Python::initialize();
         Python::attach(|py| {
@@ -1229,6 +1233,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn typed_lifespan_handoff_installs_exact_app_state_and_config() {
         Python::initialize();
         Python::attach(|py| {
@@ -1476,6 +1481,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn extract_server_config_matches_python_stub() {
         Python::initialize();
         Python::attach(|py| {
@@ -1497,6 +1503,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn parse_bind_target_rejects_empty_unix_path_and_negative_fd() {
         Python::initialize();
         Python::attach(|_| {

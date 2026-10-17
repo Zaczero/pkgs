@@ -237,7 +237,7 @@ mod tests {
         const OPERATIONS: usize = 4;
         const DEPTH: u32 = 4;
 
-        for (initial, consumed) in [(0, 0), (N, 0), (N + 1, 0), (2 * N + 1, N)] {
+        for (initial, consumed) in const { [(0, 0), (N, 0), (N + 1, 0), (2 * N + 1, N)] } {
             for mut program in 0..OPERATIONS.pow(DEPTH) {
                 let mut queue = InlineFifo::<u32, N>::new();
                 let mut model = VecDeque::new();

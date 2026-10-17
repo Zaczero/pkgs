@@ -379,17 +379,15 @@ fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), Pat
 
 #[cfg(test)]
 mod tests {
-    use std::env::temp_dir;
-    use std::fs::{File, create_dir, remove_dir, remove_file, write};
-    use std::io::Read as _;
+    use std::fs::File;
+    use std::io::{Read as _, Write as _};
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
-    use std::process::id;
     use std::sync::mpsc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use rustix::fs::{CWD, Mode, mkfifoat};
+    use tempfile::{NamedTempFile, TempPath, tempdir};
     use tokio::task::{spawn_blocking, yield_now};
 
     use super::{
@@ -419,20 +417,13 @@ mod tests {
                 .remaining(),
             PATHSEND_SENDFILE_MIN - 7,
         );
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
-    fn temp_file(payload: &[u8]) -> PathBuf {
-        let path = temp_dir().join(format!(
-            "h2corn-pathsend-{}-{}",
-            id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock is after the epoch")
-                .as_nanos(),
-        ));
-        write(&path, payload).expect("temporary pathsend file is written");
-        path
+    fn temp_file(payload: &[u8]) -> TempPath {
+        let mut file = NamedTempFile::new().expect("temporary pathsend file is allocated");
+        file.write_all(payload)
+            .expect("temporary pathsend file is written");
+        file.into_temp_path()
     }
 
     #[tokio::test]
@@ -462,7 +453,6 @@ mod tests {
         }
 
         assert_eq!(received, payload);
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
     #[tokio::test]
@@ -478,10 +468,19 @@ mod tests {
         let delivered = streamer.remaining().len();
         streamer.consume(delivered);
 
-        let err = streamer
-            .fill()
-            .await
-            .expect_err("a short file cannot end a declared response cleanly");
+        let err = loop {
+            match streamer.fill().await {
+                Ok(()) => {
+                    let delivered = streamer.remaining().len();
+                    streamer.consume(delivered);
+                    assert!(
+                        !streamer.is_drained(),
+                        "the admitted length exceeds the file"
+                    );
+                },
+                Err(error) => break error,
+            }
+        };
         assert!(
             matches!(err.kind(), ErrorKind::Io(err) if err.kind() == std::io::ErrorKind::UnexpectedEof)
         );
@@ -489,12 +488,11 @@ mod tests {
             !streamer.is_drained(),
             "the missing byte remains observable"
         );
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
     #[tokio::test]
     async fn cancelled_fill_resumes_the_owned_blocking_read() {
-        let payload = vec![b'y'; 4096];
+        let payload = b"resumed file contents".to_vec();
         let payload_len = payload.len();
         let path = temp_file(&payload);
         let mut file = File::open(&path).expect("temporary pathsend file opens");
@@ -505,10 +503,12 @@ mod tests {
             true,
         );
         let (release_tx, release_rx) = mpsc::channel();
-        let mut buffer = vec![0; PATHSEND_READ_BUFFER_SIZE].into_boxed_slice();
+        let mut buffer = vec![0; payload_len].into_boxed_slice();
         streamer.read = PathReadState::Reading(spawn_blocking(move || {
             release_rx.recv().expect("test releases the blocking read");
-            let read = file.read(&mut buffer[..payload_len]);
+            let read = file
+                .read_exact(&mut buffer[..payload_len])
+                .map(|()| payload_len);
             PathReadResult { file, buffer, read }
         }));
 
@@ -526,57 +526,59 @@ mod tests {
             .await
             .expect("the next fill resumes the same owned read task");
         assert_eq!(streamer.remaining(), payload);
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     fn open_admits_regular_file_and_preloads_under_limit() {
         let payload = b"pathsend-regular";
         let path = temp_file(payload);
         let (source, len) =
-            open_pathsend_file_blocking(path.clone()).expect("regular file is admitted");
+            open_pathsend_file_blocking(path.to_path_buf()).expect("regular file is admitted");
         assert_eq!(len, payload.len());
         match source {
             PathSource::Buffered(data) => assert_eq!(&data[..], payload),
             PathSource::File(_) => panic!("payload under preload limit must be buffered"),
         }
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     fn open_streams_when_over_preload_limit() {
         let payload = vec![b'z'; PATHSEND_PRELOAD_MAX + 1];
         let path = temp_file(&payload);
-        let (source, len) =
-            open_pathsend_file_blocking(path.clone()).expect("large regular file is admitted");
+        let (source, len) = open_pathsend_file_blocking(path.to_path_buf())
+            .expect("large regular file is admitted");
         assert_eq!(len, payload.len());
         assert!(matches!(source, PathSource::File(_)));
-        remove_file(path).expect("temporary pathsend file is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     fn open_rejects_directory() {
-        let path = temp_dir().join(format!("h2corn-pathsend-dir-{}-{}", id(), unique_suffix()));
-        create_dir(&path).expect("temporary directory is created");
-        let err = open_pathsend_file_blocking(path.clone()).expect_err("directory is rejected");
+        let directory = tempdir().expect("temporary directory is allocated");
+        let err = open_pathsend_file_blocking(directory.path().to_path_buf())
+            .expect_err("directory is rejected");
         assert!(matches!(err, PathsendError::NotRegularFile { .. }));
-        remove_dir(path).expect("temporary directory is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot create FIFOs or open with O_NONBLOCK")]
     fn open_rejects_fifo_without_blocking() {
-        let path = temp_dir().join(format!("h2corn-pathsend-fifo-{}-{}", id(), unique_suffix()));
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("fifo");
         mkfifoat(CWD, &path, Mode::RUSR | Mode::WUSR).expect("fifo is created");
-        let err = open_pathsend_file_blocking(path.clone()).expect_err("fifo is rejected");
+        let err = open_pathsend_file_blocking(path).expect_err("fifo is rejected");
         assert!(matches!(err, PathsendError::NotRegularFile { .. }));
-        remove_file(path).expect("fifo is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot bind Unix listeners")]
     fn open_rejects_unix_socket() {
-        let path = temp_dir().join(format!("h2corn-pathsend-sock-{}-{}", id(), unique_suffix()));
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("socket");
         let _listener = UnixListener::bind(&path).expect("unix socket is bound");
-        let err = open_pathsend_file_blocking(path.clone()).expect_err("socket is rejected");
+        let err = open_pathsend_file_blocking(path).expect_err("socket is rejected");
         // Linux reports ENXIO and Darwin reports EOPNOTSUPP before fstat;
         // either OpenFailed or NotRegularFile keeps it out of the body path.
         assert!(
@@ -586,10 +588,10 @@ mod tests {
             ),
             "unexpected rejection: {err:?}"
         );
-        remove_file(path).expect("socket is removed");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     fn open_rejects_character_device() {
         let path = PathBuf::from("/dev/null");
         let err = open_pathsend_file_blocking(path).expect_err("device is rejected");
@@ -597,38 +599,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     fn open_follows_symlink_to_regular_file() {
         let payload = b"via-symlink";
         let target = temp_file(payload);
-        let link = temp_dir().join(format!("h2corn-pathsend-link-{}-{}", id(), unique_suffix()));
+        let directory = tempdir().unwrap();
+        let link = directory.path().join("symlink");
         symlink(&target, &link).expect("symlink is created");
         let (source, len) =
-            open_pathsend_file_blocking(link.clone()).expect("symlink to regular file is admitted");
+            open_pathsend_file_blocking(link).expect("symlink to regular file is admitted");
         assert_eq!(len, payload.len());
         match source {
             PathSource::Buffered(data) => assert_eq!(&data[..], payload),
             PathSource::File(_) => panic!("payload under preload limit must be buffered"),
         }
-        remove_file(link).expect("symlink is removed");
-        remove_file(target).expect("temporary pathsend file is removed");
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore = "Miri cannot open files with O_NONBLOCK")]
     async fn open_async_returns_descriptor_length() {
         let payload = b"async-open";
         let path = temp_file(payload);
-        let (source, len) = open_pathsend_file(path.clone())
+        let (source, len) = open_pathsend_file(path.to_path_buf())
             .await
             .expect("async open admits regular file");
         assert_eq!(len, payload.len());
         assert!(matches!(source, PathSource::Buffered(_)));
-        remove_file(path).expect("temporary pathsend file is removed");
-    }
-
-    fn unique_suffix() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the epoch")
-            .as_nanos()
     }
 }

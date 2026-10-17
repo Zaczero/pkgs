@@ -1153,6 +1153,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn forged_x_forwarded_for_never_reaches_the_log_client_column() {
         Python::initialize();
         Python::attach(|py| {
@@ -1215,6 +1216,7 @@ mod tests {
     /// address -- mis-attributing security-relevant evidence to save an
     /// `IpAddr::Display`.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn a_trusted_proxy_gets_a_fresh_client_label_for_every_request() {
         Python::initialize();
         Python::attach(|py| {

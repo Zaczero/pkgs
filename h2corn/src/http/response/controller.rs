@@ -703,11 +703,8 @@ fn complete_response(
 
 #[cfg(test)]
 mod tests {
-    use std::env::temp_dir;
-    use std::fs::{File, remove_file, write};
-    use std::io::{Error, ErrorKind};
+    use std::io::{Error, ErrorKind, Write as _};
     use std::path::{Path, PathBuf};
-    use std::process::id;
 
     use bytes::Bytes;
 
@@ -1165,12 +1162,12 @@ mod tests {
             ),
             Ok(true)
         ));
-        let temp_path = temp_dir().join(format!("h2corn-response-test-{}", id()));
-        write(&temp_path, b"demo").expect("temp file is created");
+        let mut file = tempfile::NamedTempFile::new().expect("temp file is created");
+        file.write_all(b"demo").unwrap();
         controller
             .handle_pathsend(
                 &mut actions,
-                http::pathsend::PathSource::File(File::open(&temp_path).expect("temp file opens")),
+                http::pathsend::PathSource::File(file.reopen().expect("temp file opens")),
                 4,
             )
             .expect("pathsend is accepted");
@@ -1194,7 +1191,6 @@ mod tests {
             )
         ));
         drop(actions);
-        remove_file(temp_path).expect("temporary response file is removable");
     }
 
     fn start_unary(

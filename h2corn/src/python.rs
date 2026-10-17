@@ -558,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_dict_interns_static_string_literal_values() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -575,6 +576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_match_cached_bytes_list_form_caches_each_literal() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -590,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_dict_caches_static_bytes_literal_values() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -610,6 +613,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_dict_uses_python_bool_singletons_for_bool_literals() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -627,6 +631,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_dict_static_slots_keep_conditional_fields_sparse_and_ordered() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -649,6 +654,7 @@ mod tests {
 
     #[cfg(not(Py_GIL_DISABLED))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn py_dict_scratch_partial_drop_releases_every_initialized_value() {
         static FIRST: StaticPyKey = StaticPyKey::new("first");
         static THIRD: StaticPyKey = StaticPyKey::new("third");
@@ -676,6 +682,7 @@ mod tests {
 
     #[cfg(Py_GIL_DISABLED)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn static_key_lookup_survives_concurrent_dict_mutation() {
         static VALUE_KEY: StaticPyKey = StaticPyKey::new("value");
         const ITERATIONS: usize = 50_000;

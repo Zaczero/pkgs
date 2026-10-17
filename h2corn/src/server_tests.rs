@@ -99,6 +99,7 @@ fn serve_fd_duplicates_are_independent_of_sources() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot query process resource limits")]
 fn listener_duplication_failure_is_atomic_and_keeps_sources_open() {
     let Some(invalid_fd) = invalid_fd_outside_rlimit() else {
         eprintln!("skipping: RLIMIT_NOFILE is infinite or not representable as an fd");
@@ -114,6 +115,7 @@ fn listener_duplication_failure_is_atomic_and_keeps_sources_open() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot query process resource limits")]
 fn quiesce_duplication_failure_is_atomic_and_keeps_sources_open() {
     let Some(invalid_fd) = invalid_fd_outside_rlimit() else {
         eprintln!("skipping: RLIMIT_NOFILE is infinite or not representable as an fd");
@@ -179,15 +181,10 @@ fn mid_adoption_failure_closes_prior_current_and_remaining_handles() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot bind Unix listeners")]
 fn tls_adoption_rejects_unix_listeners_at_the_ownership_boundary() {
-    let path = std::env::temp_dir().join(format!("h2corn-adopt-tls-{}.sock", std::process::id()));
-    if let Err(error) = std::fs::remove_file(&path) {
-        assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::NotFound,
-            "stale test socket must be removable"
-        );
-    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("listener.sock");
     let listener = UnixListener::bind(&path).expect("temporary Unix listener binds");
     let fd: OwnedFd = listener.into();
     let binds = [BindTarget::Fd { fd: 0 }];
@@ -200,10 +197,10 @@ fn tls_adoption_rejects_unix_listeners_at_the_ownership_boundary() {
             .to_string()
             .contains("TLS is supported only on TCP listeners")
     );
-    std::fs::remove_file(path).expect("temporary Unix listener path is removable");
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn application_failures_keep_the_python_traceback() {
     pyo3::Python::initialize();
     pyo3::Python::attach(|py| {
@@ -223,6 +220,7 @@ fn application_failures_keep_the_python_traceback() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot spawn subprocesses")]
 fn normal_connection_join_reports_panics_and_keeps_cancellation_silent() {
     const CHILD: &str = "H2CORN_CONNECTION_JOIN_CHILD";
     const TEST: &str =

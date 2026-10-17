@@ -276,6 +276,7 @@ mod tests {
     use crate::runtime::test_fixtures;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn abandoned_task_cancel_failure_reaches_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {
@@ -323,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn abandoned_task_cancel_success_does_not_call_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {
@@ -354,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn failed_task_outcome_without_a_waiter_reaches_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {
@@ -404,6 +407,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn failed_application_task_without_a_waiter_reaches_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {
@@ -454,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn cancelled_task_outcome_without_a_waiter_stays_silent() {
         Python::initialize();
         Python::attach(|py| {
@@ -510,6 +515,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "process_event consumes and reports the owned Python exception on its loop thread"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn completed_failure_abandoned_before_poll_reaches_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {
@@ -559,6 +565,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "process_event converts the native error under Python attachment on the owning loop"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn completed_application_failure_abandoned_before_poll_reaches_unraisable_hook() {
         Python::initialize();
         Python::attach(|py| {

@@ -1286,6 +1286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn response_header_kind_is_classified_at_construction() {
         use bytes::Bytes;
 

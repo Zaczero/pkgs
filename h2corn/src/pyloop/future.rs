@@ -531,6 +531,7 @@ def assert_matches_native(*args):
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn callback_equality_can_reenter_done() {
         Python::initialize();
         Python::attach(|py| {
@@ -574,6 +575,7 @@ assert registered.observed_done is False
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn removed_context_finalizer_can_reenter_future() {
         const CHILD_MARKER: &str = "H2CORN_CALLBACK_FINALIZER_CHILD";
         if std::env::var_os(CHILD_MARKER).is_some() {
@@ -644,6 +646,7 @@ assert result.returncode == 0, (result.stdout, result.stderr)
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn concurrent_add_survives_remove_snapshot() {
         Python::initialize();
         Python::attach(|py| {
@@ -703,6 +706,7 @@ assert future.remove_done_callback(added_during_comparison) == 1
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn concurrent_removals_commit_one_coherent_snapshot() {
         Python::initialize();
         Python::attach(|py| {
@@ -758,6 +762,7 @@ assert sorted(removed_counts) == [0, 1]
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn equality_error_does_not_partially_remove_callbacks() {
         Python::initialize();
         Python::attach(|py| {
@@ -811,6 +816,7 @@ else:
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn reentrant_cancel_wins_callback_removal_race() {
         Python::initialize();
         Python::attach(|py| {
@@ -861,6 +867,7 @@ event_loop.close()
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_preserves_exception_instance() {
         Python::initialize();
         Python::attach(|py| {
@@ -881,6 +888,7 @@ assert not future.done()
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_preserves_matching_exception_instance() {
         Python::initialize();
         Python::attach(|py| {
@@ -900,6 +908,7 @@ assert actual is error
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_constructs_class_without_value_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -917,6 +926,7 @@ assert actual.args == ()
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_constructs_class_from_value_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -934,6 +944,7 @@ assert actual.args == ("single value",)
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_wraps_nonmatching_exception_instance_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -953,6 +964,7 @@ assert actual.args[0] is other_exception
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_constructs_class_from_tuple_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -970,6 +982,7 @@ assert actual.args == ("first", "second")
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_attaches_traceback_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -1002,6 +1015,7 @@ assert contains_traceback(actual, supplied_traceback)
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_rejects_instance_with_separate_value_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -1019,6 +1033,7 @@ expected, actual = assert_matches_native(error, "separate value")
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_rejects_non_exception_type_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {
@@ -1035,6 +1050,7 @@ expected, actual = assert_matches_native(object)
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn throw_rejects_non_traceback_like_native_coroutine() {
         Python::initialize();
         Python::attach(|py| {

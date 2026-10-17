@@ -1047,6 +1047,7 @@ mod tests {
         use super::super::test_fixtures;
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
         fn connection_scope_cache_initializes_concurrently_while_attached() {
             const THREADS: usize = 8;
             const ITERATIONS: usize = 1_000;
@@ -1137,6 +1138,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn request_settlement_waits_for_the_done_callback_owner() {
         let app = test_app_runtime();
         let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
@@ -1208,6 +1210,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn request_settlement_normal_completion_releases_on_final_owner_drop() {
         let app = test_app_runtime();
         let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
@@ -1231,6 +1234,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the settlement future must borrow `app` across the final assertion"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn settlement_wake_orders_after_the_app_owner_release() {
         let app = test_app_runtime();
         let guard = request_task_guard(&app);
@@ -1255,6 +1259,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the wait future must borrow `app` across the final assertion"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn connection_share_pins_teardown_until_every_clone_drops() {
         let app = test_app_runtime();
         let connection = super::test_fixtures::connection_context_for(Arc::clone(&app));
@@ -1281,6 +1286,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn request_settlement_tracks_abandonment_after_task_assignment() {
         let app = test_app_runtime();
         let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));

@@ -445,6 +445,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn configured_root_path_is_built_once() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -478,6 +479,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn known_header_names_share_one_exhaustive_python_bytes_cache() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -505,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn http_scope_omits_empty_root_path_and_reuses_default_endpoint_objects() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -538,6 +541,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn scope_keeps_untrusted_proxy_headers_in_the_asgi_header_list() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -571,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn http_scope_shares_asgi_metadata_and_isolates_extensions() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -633,6 +638,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn websocket_scope_extension_dicts_are_isolated_per_request() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
@@ -673,6 +679,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn websocket_scope_always_exposes_http_version_and_subprotocols() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
