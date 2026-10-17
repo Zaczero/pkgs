@@ -29,6 +29,7 @@ mod tests {
     use super::ZidError;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn public_exception_classes_distinguish_horizon_and_count() {
         Python::initialize();
         Python::attach(|py| {

@@ -162,9 +162,11 @@ pub(crate) const fn parse_zid_timestamp(zid: u64) -> u64 {
     zid >> 16
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::sync::Barrier;
     use std::sync::atomic::Ordering;
     use std::thread;
@@ -266,7 +268,7 @@ mod tests {
     fn overlapping_reservations_are_disjoint_at_rollover() {
         let generator = Generator::new();
         let barrier = Barrier::new(8);
-        let reservations = thread::scope(|scope| {
+        let mut reservations = thread::scope(|scope| {
             let handles: Vec<_> = std::iter::repeat_with(|| {
                 let generator = &generator;
                 let barrier = &barrier;
@@ -286,14 +288,21 @@ mod tests {
                 .flat_map(|handle| handle.join().expect("worker"))
                 .collect::<Vec<_>>()
         });
-        let mut ids = BTreeSet::new();
-        for (time, sequence) in reservations {
-            for offset in 0..1024 {
-                assert!(ids.insert((time << 16) | u64::from(sequence + offset)));
-            }
+        reservations.sort_unstable();
+        assert_eq!(reservations.len(), 256);
+        assert_eq!(reservations.first(), Some(&(11, 0)));
+        assert_eq!(reservations.last(), Some(&(14, 0xFC00)));
+        for pair in reservations.windows(2) {
+            let [
+                (previous_time, previous_sequence),
+                (next_time, next_sequence),
+            ] = pair
+            else {
+                unreachable!()
+            };
+            let previous = (previous_time << 16) | u64::from(*previous_sequence);
+            let next = (next_time << 16) | u64::from(*next_sequence);
+            assert_eq!(next, previous + 1024);
         }
-        assert_eq!(ids.len(), 0x0004_0000);
-        assert_eq!(ids.first(), Some(&(11 << 16)));
-        assert_eq!(ids.last(), Some(&((15 << 16) - 1)));
     }
 }
