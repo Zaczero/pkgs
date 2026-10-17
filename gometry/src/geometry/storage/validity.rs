@@ -730,6 +730,9 @@ pub(crate) fn union_many<'a>(
     ValidityMask::from_bitmap(SharedSlice::from_vec(bytes), 0, first.len())
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     #[test]
