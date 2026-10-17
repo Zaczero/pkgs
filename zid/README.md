@@ -3,7 +3,7 @@
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/zid)](https://pypi.org/p/zid)
 
 **zid** generates sortable, signed-64-bit-compatible integer identifiers for
-Python 3.10 and later. A ZID stores a 47-bit logical UNIX millisecond timestamp
+Python 3.11 and later. A ZID stores a 47-bit logical UNIX millisecond timestamp
 and a 16-bit sequence. Generation reserves increasing identifiers within one
 process; independently initialized processes can collide.
 

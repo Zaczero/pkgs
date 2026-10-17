@@ -1,6 +1,10 @@
-from typing import Any
+import sys
+from typing import Any, Self
 
-from typing_extensions import Self, disjoint_base
+if sys.version_info >= (3, 15):
+    from typing import disjoint_base
+else:
+    from typing_extensions import disjoint_base
 
 from lrucache_rs._entries import Entry, Request
 

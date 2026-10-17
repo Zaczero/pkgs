@@ -4,7 +4,7 @@
 
 **starlette-compress** compresses ASGI HTTP responses with Zstandard, Brotli, or
 Gzip. Use it with [Starlette](https://www.starlette.io), FastAPI, or another
-ASGI application on Python 3.10+.
+ASGI application on Python 3.11+.
 
 Works with asyncio and Trio, including streaming responses and server-sent events.
 

@@ -2,7 +2,7 @@
 name = "sizestr"
 description = "Format byte counts as human-readable binary units"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "0BSD"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 keywords = ["file-size", "human-readable", "humanize", "stringify"]
@@ -11,11 +11,11 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Zero-Clause BSD (0BSD)",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
@@ -39,7 +39,7 @@ path = "sizestr/__init__.py"
 [tool.pyright]
 include = ["sizestr", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 strict = ["sizestr"]
 
 [tool.ruff]

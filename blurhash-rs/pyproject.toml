@@ -2,7 +2,7 @@
 name = "blurhash-rs"
 description = "BlurHash encoder and decoder for Python"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Kamil Monicz", email = "kamil@monicz.dev" }]
 keywords = [
@@ -20,11 +20,11 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
   "Programming Language :: Rust",
@@ -61,7 +61,7 @@ exclude = ["**/__pycache__/**", "**/*.py[co]"]
 [tool.pyright]
 include = ["python/blurhash_rs", "tests"]
 pythonPlatform = "All"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 strict = ["python/blurhash_rs"]
 
 [tool.ruff]

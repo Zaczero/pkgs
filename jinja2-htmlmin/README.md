@@ -1,6 +1,6 @@
 # jinja2-htmlmin
 
-Minify HTML template **source** before Jinja compiles it. For Python 3.10+
+Minify HTML template **source** before Jinja compiles it. For Python 3.11+
 applications using source-backed Jinja loaders.
 
 <a id="why-use-this"></a>

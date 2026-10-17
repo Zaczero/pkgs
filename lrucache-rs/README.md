@@ -3,7 +3,7 @@
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/lrucache-rs)](https://pypi.org/p/lrucache-rs)
 
 `LRUCache` is a bounded mutable mapping for Python applications that need
-least-recently-used eviction without wrapping a function. It supports CPython 3.10
+least-recently-used eviction without wrapping a function. It supports CPython 3.11
 and newer, including free-threaded builds, and PyPy 3.11.
 
 ## Installation

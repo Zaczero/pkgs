@@ -4,7 +4,7 @@
 
 Block requests to private and non-global IP addresses in an existing HTTPX
 `AsyncClient`. Add your own destination rules without changing HTTPX's request
-API. Python 3.10+, with asyncio or Trio.
+API. Python 3.11+, with asyncio or Trio.
 
 ## Installation
 

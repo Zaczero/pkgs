@@ -96,8 +96,7 @@ _EVIDENCE_ROOT = GOMETRY_ROOT / 'docs' / 'assets' / 'benchmark-runs'
 
 
 def _stamp() -> str:
-    utc = getattr(dt, 'UTC', dt.timezone.utc)  # noqa: UP017 — Python 3.10 compatibility
-    return dt.datetime.now(utc).replace(microsecond=0).strftime('%Y%m%dT%H%M%SZ')
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).strftime('%Y%m%dT%H%M%SZ')
 
 
 def _rows(profile: Profile) -> dict[str, tuple[str, ...]]:

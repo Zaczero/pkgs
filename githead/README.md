@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/githead)](https://pypi.org/p/githead)
 
-Read a checkout's Git HEAD from Python without launching Git. Python 3.10+.
+Read a checkout's Git HEAD from Python without launching Git. Python 3.11+.
 
 ## Installation
 

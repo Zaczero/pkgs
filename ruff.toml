@@ -1,4 +1,4 @@
-target-version = "py310"
+target-version = "py311"
 
 # libtiff is an upstream submodule checked out under gometry/native, so its build
 # and documentation scripts are another project's source: holding them to our

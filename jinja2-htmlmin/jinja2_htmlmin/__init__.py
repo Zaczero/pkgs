@@ -8,17 +8,11 @@ from htmlmin import Minifier
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    import sys
     from collections.abc import Callable, Collection
-    from typing import TypedDict, TypeVar
+    from typing import TypedDict, TypeVar, Unpack
 
     from htmlmin.parser import HTMLMinParser
     from jinja2 import BaseLoader, Environment
-
-    if sys.version_info >= (3, 11):
-        from typing import Unpack
-    else:
-        from typing_extensions import Unpack
 
     _Loader = TypeVar('_Loader', bound=BaseLoader)
 

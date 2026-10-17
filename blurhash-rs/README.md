@@ -1,7 +1,7 @@
 # blurhash-rs
 
 Encode images as compact [BlurHash](https://blurha.sh) placeholders and decode
-them into Pillow previews. Written in Rust, for Python 3.10+.
+them into Pillow previews. Written in Rust, for Python 3.11+.
 
 ## Install
 

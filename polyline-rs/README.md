@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/polyline-rs)](https://pypi.org/p/polyline-rs)
 
-Encode and decode Google Encoded Polyline strings from Python with an explicit choice of `(latitude, longitude)` or `(longitude, latitude)` coordinate order. Requires Python 3.10 or newer.
+Encode and decode Google Encoded Polyline strings from Python with an explicit choice of `(latitude, longitude)` or `(longitude, latitude)` coordinate order. Requires Python 3.11 or newer.
 
 [Encoded Polyline Algorithm Format](https://developers.google.com/maps/documentation/utilities/polylinealgorithm)
 

@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/sizestr)](https://pypi.org/p/sizestr)
 
-Human-readable byte counts for Python 3.10+.
+Human-readable byte counts for Python 3.11+.
 
 ## Installation
 

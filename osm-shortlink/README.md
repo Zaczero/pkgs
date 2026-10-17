@@ -2,7 +2,7 @@
 
 [![PyPI - Python Version](https://shields.monicz.dev/pypi/pyversions/osm-shortlink)](https://pypi.org/p/osm-shortlink)
 
-Encode and decode OpenStreetMap shortlink codes from Python 3.10 or newer. The
+Encode and decode OpenStreetMap shortlink codes from Python 3.11 or newer. The
 API uses explicit `(longitude, latitude, zoom)` arguments.
 
 ## Installation

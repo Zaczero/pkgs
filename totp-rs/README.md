@@ -2,7 +2,7 @@
 
 Generate and verify time-based one-time passwords in Python, backed by Rust.
 Supports [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238) with SHA-1,
-SHA-256, or SHA-512. Python 3.10+.
+SHA-256, or SHA-512. Python 3.11+.
 
 ## Installation
 
