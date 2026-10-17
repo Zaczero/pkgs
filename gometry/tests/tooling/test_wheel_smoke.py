@@ -899,8 +899,9 @@ def test_runtime_preimport_resolution_rejects_an_installed_fallback(
 
 def test_runtime_completion_rechecks_admitted_package_bytes(
     monkeypatch: pytest.MonkeyPatch,
+    quality_artifact_root: Path,
 ) -> None:
-    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    admission = runtime_artifact.inspect_runtime_inputs(quality_artifact_root)
     runtime = runtime_artifact.verify_admitted_runtime(admission)
     runtime_artifact.verify_runtime_completion(admission, runtime)
 
@@ -911,13 +912,14 @@ def test_runtime_completion_rechecks_admitted_package_bytes(
 
 def test_runtime_admission_uses_receipt_without_build_tools(
     monkeypatch: pytest.MonkeyPatch,
+    quality_artifact_root: Path,
 ) -> None:
     def unexpected_build_tool(*_args: Any, **_kwargs: Any) -> None:
         pytest.fail('runtime admission invoked producer build tooling')
 
     monkeypatch.setattr(quality_runtime, '_tool_output', unexpected_build_tool)
     monkeypatch.setattr(quality_runtime, 'cargo_metadata', unexpected_build_tool)
-    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    admission = runtime_artifact.inspect_runtime_inputs(quality_artifact_root)
     runtime = runtime_artifact.verify_admitted_runtime(admission)
     runtime_artifact.verify_runtime_completion(admission, runtime)
 
@@ -936,9 +938,10 @@ def test_runtime_admission_rejects_package_or_extension_from_another_tree(
     member: str,
     message: str,
     monkeypatch: pytest.MonkeyPatch,
+    quality_artifact_root: Path,
 ) -> None:
     monkeypatch.setattr(runtime_artifact, '_resident_gometry_modules', dict)
-    quality_receipt = quality_runtime.read_quality_receipt(GOMETRY_ROOT)
+    quality_receipt = quality_runtime.read_quality_receipt(quality_artifact_root)
     original_root = Path(quality_receipt['package_root'])
     alternate_root = tmp_path / 'alternate-site-packages'
 
@@ -972,10 +975,12 @@ def test_runtime_admission_rejects_package_or_extension_from_another_tree(
             changed_file.write_bytes(payload)
 
     quality_receipt['package_root'] = str(alternate_root)
-    wheel_path = (GOMETRY_ROOT.parent / quality_receipt['wheel']['path']).resolve()
+    wheel_path = (
+        quality_artifact_root.parent / quality_receipt['wheel']['path']
+    ).resolve()
     with pytest.raises(runtime_artifact.QualityPreparationRequired, match=message):
         runtime_artifact.inspect_runtime_inputs(
-            GOMETRY_ROOT,
+            quality_artifact_root,
             expected_wheel=wheel_path,
             build_receipt=quality_receipt,
         )
@@ -1339,8 +1344,9 @@ def test_elf_rejects_an_out_of_bounds_dynamic_version_need_table() -> None:
 
 def test_null_commit_still_binds_actual_python_and_wheel_bytes(
     tmp_path: Path,
+    quality_artifact_root: Path,
 ) -> None:
-    receipt_path = quality_runtime.quality_receipt_path(GOMETRY_ROOT)
+    receipt_path = quality_runtime.quality_receipt_path(quality_artifact_root)
     subject = benchmark_runtime.load_subject(receipt_path)
     receipt = subject['runtime_receipt']
     root = receipt_path.parents[2]

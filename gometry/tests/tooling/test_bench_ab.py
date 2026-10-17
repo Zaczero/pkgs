@@ -20,7 +20,10 @@ GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(GOMETRY_ROOT / 'benches' / 'support'))
 sys.path.insert(0, str(GOMETRY_ROOT / 'tools'))
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
-from benchmark_observation import make_observation, validate_observation  # ruff: ignore[module-import-not-at-top-of-file]
+from benchmark_observation import (  # ruff: ignore[module-import-not-at-top-of-file]
+    make_observation,
+    validate_observation,
+)
 
 
 def _module():
@@ -201,9 +204,12 @@ def test_run_blocks_records_real_typed_pairs_and_excludes_warmups() -> None:
 
 def test_wrapper_selected_case_process_supplies_identity_without_a_probe(
     tmp_path: Path,
+    quality_artifact_root: Path,
 ) -> None:
     bench_ab = _module()
-    subject = benchmark_runtime.load_subject()
+    subject = benchmark_runtime.load_subject(
+        benchmark_runtime.default_subject_path(quality_artifact_root)
+    )
     package_root = benchmark_runtime.package_root_for_subject(subject)
     case = tmp_path / 'case_protocol.py'
     marker = tmp_path / 'timing-started'
@@ -247,9 +253,12 @@ def test_wrapper_selected_case_process_supplies_identity_without_a_probe(
 
 def test_counter_callbacks_bracket_permission_and_completion_ack(
     tmp_path: Path,
+    quality_artifact_root: Path,
 ) -> None:
     bench_ab = _module()
-    subject = benchmark_runtime.load_subject()
+    subject = benchmark_runtime.load_subject(
+        benchmark_runtime.default_subject_path(quality_artifact_root)
+    )
     package_root = benchmark_runtime.package_root_for_subject(subject)
     case = tmp_path / 'case_counter_window.py'
     marker = tmp_path / 'timing-started'
@@ -289,9 +298,12 @@ def test_missing_default_quality_receipt_fails_without_preparation(
 
 def test_missing_path_entry_does_not_fall_back_to_a_valid_installed_package(
     tmp_path: Path,
+    quality_artifact_root: Path,
 ) -> None:
     bench_ab = _module()
-    subject = benchmark_runtime.load_subject()
+    subject = benchmark_runtime.load_subject(
+        benchmark_runtime.default_subject_path(quality_artifact_root)
+    )
     package_root = benchmark_runtime.package_root_for_subject(subject)
     case = tmp_path / 'case_stale_fallback.py'
     marker = tmp_path / 'timing-started'
@@ -329,9 +341,12 @@ def test_missing_path_entry_does_not_fall_back_to_a_valid_installed_package(
 
 def test_driver_withholds_permission_for_an_identity_from_another_subject(
     tmp_path: Path,
+    quality_artifact_root: Path,
 ) -> None:
-    subject = benchmark_runtime.load_subject()
-    root = GOMETRY_ROOT
+    subject = benchmark_runtime.load_subject(
+        benchmark_runtime.default_subject_path(quality_artifact_root)
+    )
+    root = quality_artifact_root
     quality_receipt = subject['runtime_receipt']
     wheel_path = (root.parent / quality_receipt['wheel']['path']).resolve()
     admission = benchmark_runtime.runtime_artifact.inspect_runtime_inputs(
