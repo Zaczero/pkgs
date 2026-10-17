@@ -137,3 +137,19 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
         z,
     ))
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::interleave_bits;
+
+    #[kani::proof]
+    fn morton_bits_preserve_both_coordinate_lanes() {
+        let x: u32 = kani::any();
+        let y: u32 = kani::any();
+        let bit: u32 = kani::any();
+        kani::assume(bit < 32);
+        let packed = interleave_bits(x, y);
+        assert_eq!((packed >> (2 * bit)) & 1, u64::from((y >> bit) & 1));
+        assert_eq!((packed >> (2 * bit + 1)) & 1, u64::from((x >> bit) & 1));
+    }
+}

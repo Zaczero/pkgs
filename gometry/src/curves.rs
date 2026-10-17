@@ -143,6 +143,22 @@ const fn compact_bits(mut v: u64) -> u32 {
     v as u32
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::{morton_deinterleave, morton_interleave};
+
+    #[kani::proof]
+    fn morton_coordinates_match_alternating_key_bits() {
+        let key: u64 = kani::any();
+        let bit: u32 = kani::any();
+        kani::assume(bit < 32);
+        let (x, y) = morton_deinterleave(key);
+        assert_eq!(u64::from((x >> bit) & 1), (key >> (2 * bit)) & 1);
+        assert_eq!(u64::from((y >> bit) & 1), (key >> (2 * bit + 1)) & 1);
+        assert_eq!(morton_interleave(x, y), key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

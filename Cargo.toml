@@ -152,6 +152,7 @@ redundant_lifetimes = "warn"
 single_use_lifetimes = "warn"
 # The other half of the edition 2024 drop-timing change.
 tail_expr_drop_order = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 unit_bindings = "warn"
 # Crates are unpublished (only the Python wheels ship), so the narrowest accurate
 # visibility is the goal: an item not reachable from the crate's real public API
