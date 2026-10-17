@@ -122,11 +122,18 @@ mod tests {
 
     #[test]
     fn clearance_squared_bound_is_below_exact_source_square() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let cases = [
             ([0.0, 0.0], [1.0, 2.0]),
             ([0.0, 0.0], [f64::from_bits(323_u64 << 52), 0.0]),
-            ([0.0, 0.0], [2.0_f64.powi(600), 2.0_f64.powi(599)]),
-            ([0.0, 0.0], [2.0_f64.powi(-700), 2.0_f64.powi(-701)]),
+            ([0.0, 0.0], [
+                exact_power_of_two(600),
+                exact_power_of_two(599),
+            ]),
+            ([0.0, 0.0], [
+                exact_power_of_two(-700),
+                exact_power_of_two(-701),
+            ]),
         ];
         for (left, right) in cases {
             let lower = aabb_distance_squared_lower(
@@ -143,9 +150,13 @@ mod tests {
 
     #[test]
     fn clearance_squared_bound_survives_a_translated_rounded_up_square_sum() {
-        let origin = 2.0_f64.powi(60);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let origin = exact_power_of_two(60);
         let left = [origin, origin];
-        let right = [origin + 2.0_f64.powi(40), origin + 3.0 * 2.0_f64.powi(12)];
+        let right = [
+            origin + exact_power_of_two(40),
+            origin + 3.0 * exact_power_of_two(12),
+        ];
         let left_aabb = point_aabb(left[0], left[1]);
         let right_aabb = point_aabb(right[0], right[1]);
         let exact = exact_squared_distance(left, right);

@@ -49,9 +49,10 @@ fn seed42_radial_points(count: usize) -> Vec<(f64, f64)> {
 
 #[test]
 fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
-    let length = 2.0_f64.powi(996);
-    let height = 2.0_f64.powi(396);
-    let offset = 2.0_f64.powi(344);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let length = exact_power_of_two(996);
+    let height = exact_power_of_two(396);
+    let offset = exact_power_of_two(344);
     let baseline = line(&[(0.0, 0.0), (length, height)]);
     let graph = line(&[(0.0, 0.0), (height, 0.0), (length, height + offset)]);
     let errors = [
@@ -464,9 +465,10 @@ fn filled_square_to_point_distance_attains_the_farthest_corner() {
 
 #[test]
 fn output_units_preserve_extreme_finite_distances() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     for (coordinate, scale) in [
-        (2.0_f64.powi(1023), 2.0_f64.powi(-1023)),
-        (2.0_f64.powi(-1023), 2.0_f64.powi(1023)),
+        (exact_power_of_two(1023), f64::from_bits(1_u64 << 51)),
+        (f64::from_bits(1_u64 << 51), exact_power_of_two(1023)),
     ] {
         let left = Shape::Point(Point::new_raw_xy(-coordinate, 0.0));
         let right = Shape::Point(Point::new_raw_xy(coordinate, 0.0));
@@ -476,7 +478,8 @@ fn output_units_preserve_extreme_finite_distances() {
 
 #[test]
 fn output_range_and_scaled_absolute_error_are_certified() {
-    let huge = 2.0_f64.powi(1023);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let huge = exact_power_of_two(1023);
     let left = Shape::Point(Point::new_raw_xy(-huge, 0.0));
     let right = Shape::Point(Point::new_raw_xy(huge, 0.0));
     distance(&left, &right, Some(1.0), 1.0).unwrap_err();
@@ -655,9 +658,10 @@ fn default_allowance_is_bounded_by_the_true_distance() {
 
 #[test]
 fn default_relative_error_accepts_a_valid_minimum_subnormal_result() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let minimum_subnormal = f64::from_bits(1);
     let almost_one = 1.0_f64.next_down();
-    let small_ordinate = 3.0 * 2.0_f64.powi(-28);
+    let small_ordinate = 3.0 * exact_power_of_two(-28);
     let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
     let nearby = Shape::Point(Point::new_raw_xy(almost_one, small_ordinate));
 

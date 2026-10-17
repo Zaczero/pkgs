@@ -288,6 +288,7 @@ fn chart_edge_parallel_inversion_is_exact_and_seam_positions_follow_the_lifted_c
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn chart_edge_fraction_uses_the_actual_non_wgs84_ellipsoid() {
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
     let state = crate::crs::runtime_state_snapshot().unwrap();

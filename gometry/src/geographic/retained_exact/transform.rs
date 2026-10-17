@@ -277,6 +277,7 @@ mod tests {
     }
     #[test]
     fn scalar_and_retained_projection_share_exact_rounding_without_lift_narrowing() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let degree = GeographicFrame::crs84().longitude();
         let grad = GeographicFrame::try_new(
             crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 200.0)
@@ -333,7 +334,7 @@ mod tests {
         );
         assert!(lift.is_zero());
         for axis in [degree, grad, radian] {
-            let huge = ExactRational::from_f64(2.0_f64.powi(80))
+            let huge = ExactRational::from_f64(exact_power_of_two(80))
                 .try_product(&ExactRational::from_f64(axis.period()))
                 .unwrap()
                 .try_add(&third)

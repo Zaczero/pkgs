@@ -253,6 +253,7 @@ fn native_polygonize_emission_keeps_diagnostic_source_tags() -> Result<()> {
 
 #[test]
 fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<()> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let shapes = [
         q_grid_parallelogram((30, -22), (-10, 27))?,
         q_grid_parallelogram((4, 13), (10, -18))?,
@@ -279,7 +280,7 @@ fn q_nearest_even_tie_is_published_byte_identically_when_certified() -> Result<(
     );
 
     let midpoint = ExactRational::from_f64(100.0)
-        .try_subtract(&ExactRational::from_f64(2.0_f64.powi(-47)))?;
+        .try_subtract(&ExactRational::from_f64(exact_power_of_two(-47)))?;
     let node = QNodeId(5);
     let q_node = topology
         .q

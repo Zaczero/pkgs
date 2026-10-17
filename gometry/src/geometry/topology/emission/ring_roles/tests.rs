@@ -181,8 +181,9 @@
     #[test]
     fn interval_ring_filter_declines_uncertain_signs_and_exact_fallback_preserves_errors()
     -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let frame = GeographicFrame::crs84();
-        let epsilon = ExactRational::from_f64(2.0_f64.powi(-54));
+        let epsilon = ExactRational::from_f64(exact_power_of_two(-54));
         let mut counterclockwise = exact_points(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (0.0, 0.0)]);
         counterclockwise[2].y = ExactRational::from_f64(2.0).try_add(&epsilon)?;
         let mut clockwise = counterclockwise.clone();
@@ -242,8 +243,9 @@
 
     #[test]
     fn interval_ring_filter_rejects_uncertain_clockwise_cancellation() -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let frame = GeographicFrame::crs84();
-        let epsilon = ExactRational::from_f64(2.0_f64.powi(-54));
+        let epsilon = ExactRational::from_f64(exact_power_of_two(-54));
         let mut clockwise = exact_points(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (0.0, 0.0)]);
         clockwise[2].y = ExactRational::from_f64(2.0).try_subtract(&epsilon)?;
 

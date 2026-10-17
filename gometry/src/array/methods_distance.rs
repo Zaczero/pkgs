@@ -557,6 +557,7 @@ mod root_capture_tests {
     use crate::geometry::Ring;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn geographic_xy_hull_and_mrr_skip_source_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         Python::initialize();

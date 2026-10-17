@@ -114,6 +114,7 @@ mod tests {
     use crate::geometry::Point;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn nullable_row_lists_publish_without_native_staging() {
         Python::initialize();
         let array = PyGeometryArray::from_shapes(
@@ -148,6 +149,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dense_row_list_publishes_without_native_staging() {
         Python::initialize();
         let array = PyGeometryArray::from_shapes(

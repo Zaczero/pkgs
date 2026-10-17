@@ -2187,6 +2187,7 @@ mod proximity_tests {
 
     #[test]
     fn chebyshev_proximity_includes_isolated_points_and_uses_relative_slack() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let point = segment(XY::new(1.0, 0.0), XY::new(1.0, 0.0));
         let line = segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
         assert!(segments_within_chebyshev(point, line, 0.0));
@@ -2194,16 +2195,16 @@ mod proximity_tests {
         let limit = proximity_limit(1.0, 0.0);
         assert!(segments_within_chebyshev(
             segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-41)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-41))
+                XY::new(0.0, 1.0 + exact_power_of_two(-41)),
+                XY::new(2.0, 1.0 + exact_power_of_two(-41))
             ),
             segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
             limit
         ));
         assert!(!segments_within_chebyshev(
             segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-38)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-38))
+                XY::new(0.0, 1.0 + exact_power_of_two(-38)),
+                XY::new(2.0, 1.0 + exact_power_of_two(-38))
             ),
             segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
             limit
@@ -2212,6 +2213,7 @@ mod proximity_tests {
 
     #[test]
     fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let minimum = f64::from_bits(1);
         let values = [
             -f64::MAX,
@@ -2228,7 +2230,15 @@ mod proximity_tests {
             2.0,
             f64::MAX,
         ];
-        let limits = [0.0, minimum, 2.0_f64.powi(-52), 0.125, 0.5, 1.0, 1.0e100];
+        let limits = [
+            0.0,
+            minimum,
+            exact_power_of_two(-52),
+            0.125,
+            0.5,
+            1.0,
+            1.0e100,
+        ];
         let mut state = 0x6A09_E667_F3BC_C909_u64;
         let mut sample = || {
             state ^= state << 13;

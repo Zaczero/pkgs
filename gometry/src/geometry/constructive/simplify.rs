@@ -1184,7 +1184,7 @@ mod keep_identity_tests {
     #[test]
     fn dp_sawtooth_source_work_grows_below_quadratic() {
         let mut counts = Vec::new();
-        for count in [2048, 4096] {
+        for count in [1025, 2050] {
             let xs: Vec<_> = (0..count).map(f64::from).collect();
             let ys: Vec<_> = (0..count).map(|index| f64::from(index % 2)).collect();
             let line = Shape::LineString(line_xy(&xs, &ys));
@@ -1194,6 +1194,10 @@ mod keep_identity_tests {
             assert_eq!(simplified, line);
         }
         assert!(
+            counts[0] > 0,
+            "the source-work counter observes the operation"
+        );
+        assert!(
             counts[1] * 10 < counts[0] * 27,
             "doubling sawtooth source visits must stay below 2.7×: {counts:?}",
         );
@@ -1201,23 +1205,32 @@ mod keep_identity_tests {
 
     #[test]
     fn guarded_radial_simplification_contact_work_stays_below_quadratic() {
+        let source: Vec<_> = (0..32)
+            .map(|index| {
+                let angle = f64::from(index) * std::f64::consts::TAU / 32.0;
+                let radius = 0.8 + 0.2 * (f64::from(index * 37 % 101) / 100.0);
+                (radius * angle.cos(), radius * angle.sin())
+            })
+            .collect();
         let mut counts = Vec::new();
-        for count in [2048, 4096] {
+        // Densify one boundary so doubling rows changes neither its shape nor
+        // the simplification tolerance.
+        for pieces in [4, 8] {
             let mut xs = Vec::new();
             let mut ys = Vec::new();
-            for index in 0..count {
-                let angle = f64::from(index) * std::f64::consts::TAU / f64::from(count);
-                let radius = 0.8 + 0.2 * (f64::from(index * 37 % 101) / 100.0);
-                xs.push(radius * angle.cos());
-                ys.push(radius * angle.sin());
+            for (index, &(start_x, start_y)) in source.iter().enumerate() {
+                let (end_x, end_y) = source[(index + 1) % source.len()];
+                for piece in 0..pieces {
+                    let fraction = f64::from(piece) / f64::from(pieces);
+                    xs.push(start_x + (end_x - start_x) * fraction);
+                    ys.push(start_y + (end_y - start_y) * fraction);
+                }
             }
             xs.push(xs[0]);
             ys.push(ys[0]);
             let polygon = Shape::Polygon(Polygon::new(closed_ring(&xs, &ys), Vec::new()));
             take_contact_visits();
-            let simplified = polygon
-                .simplify_vw((1.0 / f64::from(count)).sqrt(), true)
-                .unwrap();
+            let simplified = polygon.simplify_vw(0.05, true).unwrap();
             counts.push(take_contact_visits());
             assert!(!simplified.is_empty());
             assert!(simplified.is_simple().unwrap());

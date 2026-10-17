@@ -679,6 +679,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "request-table assertions are the test oracle while Result propagates setup errors"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn repeated_lineage_contributors_share_one_root_request() -> Result<()> {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
@@ -721,6 +722,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn zero_length_root_conflicts_are_axis_local_and_direction_independent() {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
@@ -756,6 +758,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn pole_alias_zero_length_root_keeps_equal_bits_and_conflicts_on_m() {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();
@@ -788,6 +791,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn numerical_zero_length_underflow_is_an_error() {
         let frame = GeographicFrame::crs84();
         let metric = crs84_metric();

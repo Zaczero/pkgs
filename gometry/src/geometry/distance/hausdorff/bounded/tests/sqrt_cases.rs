@@ -49,6 +49,7 @@ fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
 
 #[test]
 fn verified_sqrt_brackets_cover_irrational_exact_and_boundary_values() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     reset_sqrt_stats();
     let minimum_subnormal = f64::from_bits(1);
     let largest_subnormal = f64::from_bits(0x000F_FFFF_FFFF_FFFF);
@@ -85,7 +86,7 @@ fn verified_sqrt_brackets_cover_irrational_exact_and_boundary_values() {
             "root just beyond maximum",
             Rational::from_dyadic(
                 ExactDyadic::from_f64(maximum)
-                    .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
+                    .try_add(ExactDyadic::from_f64(exact_power_of_two(969)))
                     .unwrap(),
             )
             .try_square()
@@ -95,7 +96,7 @@ fn verified_sqrt_brackets_cover_irrational_exact_and_boundary_values() {
             "root at overflow rounding midpoint",
             Rational::from_dyadic(
                 ExactDyadic::from_f64(maximum)
-                    .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
+                    .try_add(ExactDyadic::from_f64(exact_power_of_two(970)))
                     .unwrap(),
             )
             .try_square()
@@ -133,6 +134,7 @@ fn endpoint_verification_rejects_a_reversed_sqrt_comparison() {
 
 #[test]
 fn verified_sqrt_candidate_matches_complete_rounding_at_extrema() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let minimum_subnormal = f64::from_bits(1);
     let largest_subnormal = f64::from_bits(0x000F_FFFF_FFFF_FFFF);
     let minimum_normal = f64::from_bits(0x0010_0000_0000_0000);
@@ -156,14 +158,14 @@ fn verified_sqrt_candidate_matches_complete_rounding_at_extrema() {
         squared(maximum),
         Rational::from_dyadic(
             ExactDyadic::from_f64(maximum)
-                .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
+                .try_add(ExactDyadic::from_f64(exact_power_of_two(969)))
                 .unwrap(),
         )
         .try_square()
         .unwrap(),
         Rational::from_dyadic(
             ExactDyadic::from_f64(maximum)
-                .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
+                .try_add(ExactDyadic::from_f64(exact_power_of_two(970)))
                 .unwrap(),
         )
         .try_square()

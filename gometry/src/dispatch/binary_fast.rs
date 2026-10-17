@@ -412,6 +412,7 @@ mod tests {
     use crate::py::errors::InvalidGeometryError;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dispatch_predicate_point_crosses_invalid_latitude_is_false() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -444,6 +445,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dispatch_predicate_point_intersects_invalid_latitude_is_lonlat_error() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -474,6 +476,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn similarity_many_skips_shape_materialization_for_missing_rows() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

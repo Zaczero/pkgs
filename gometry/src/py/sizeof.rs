@@ -34,6 +34,7 @@ mod tests {
     use super::checked_sizeof;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn python_sizeof_accepts_signed_limit_and_rejects_overflow() {
         let limit = usize::try_from(isize::MAX).expect("isize maximum fits usize");
         let one_below = limit.checked_sub(1).expect("isize maximum is nonzero");

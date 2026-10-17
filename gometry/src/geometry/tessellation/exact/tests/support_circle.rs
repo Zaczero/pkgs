@@ -44,10 +44,11 @@ fn minimum_circle_rounds_exact_midpoint_and_circumradius_without_recomputing() {
 
 #[test]
 fn minimum_circle_diameter_filter_handles_mixed_exponents_without_allocation() {
-    let scale = 2.0_f64.powi(200);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let scale = exact_power_of_two(200);
     let support = [
         XY::new(-scale, -scale),
-        XY::new(scale, -scale + 2.0_f64.powi(148)),
+        XY::new(scale, -scale + exact_power_of_two(148)),
     ];
     let point = XY::new(0.0, 0.0);
     let (result, allocations) =
@@ -61,8 +62,9 @@ fn minimum_circle_diameter_filter_handles_mixed_exponents_without_allocation() {
 
 #[test]
 fn minimum_circle_three_support_rounding_handles_mixed_exponents() {
-    let scale = 2.0_f64.powi(200);
-    let tiny = 2.0_f64.powi(-200);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let scale = exact_power_of_two(200);
+    let tiny = exact_power_of_two(-200);
     let support = [
         XY::new(-scale, 0.0),
         XY::new(scale, 0.0),

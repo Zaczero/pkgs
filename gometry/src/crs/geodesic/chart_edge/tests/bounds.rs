@@ -36,6 +36,7 @@ fn chart_edge_bounds_contain_conditioned_positions_across_native_frames() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn huge_source_alias_has_a_conservative_metric_box_and_authentic_endpoint_distance() {
     const CRS: &str = "EPSG:4326";
     let state = crate::crs::runtime_state_snapshot().unwrap();

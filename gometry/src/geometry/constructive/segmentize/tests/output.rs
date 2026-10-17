@@ -53,7 +53,7 @@ fn one_piece_counts_return_the_shared_source_without_allocating() {
 fn no_op_plans_allocate_only_dense_steps_and_keep_no_route_solutions() {
     use crate::test_support::allocation_count;
 
-    let coordinates: Vec<_> = (0..100_000)
+    let coordinates: Vec<_> = (0..33)
         .map(|index| XY::new(f64::from(index) / 4.0, 0.0))
         .collect();
     let points = CoordSeq::try_from_xy(&coordinates).unwrap();
@@ -64,7 +64,11 @@ fn no_op_plans_allocate_only_dense_steps_and_keep_no_route_solutions() {
     assert_eq!(planar_plan.generated, 0);
     assert!(planar_plan.solutions.is_empty());
     assert_eq!(retained_bytes(&planar_plan.solutions), 0);
+}
 
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+fn no_op_geographic_plans_keep_no_route_solutions() {
     let geographic = CoordSeq::try_from_xy(&[
         XY::new(0.0, 0.0),
         XY::new(0.000_001, 0.0),

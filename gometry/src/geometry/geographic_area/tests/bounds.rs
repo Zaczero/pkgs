@@ -122,11 +122,12 @@ fn ceil_log2_matches_positive_integer_width_boundaries() {
 
 #[test]
 fn eft_receipts_cover_cancellation_and_subnormal_inputs() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     assert_receipt_bound_covers(&[(1.0e16, 0.0), (1.0, 2.0 * f64::EPSILON), (-1.0e16, 0.0)]);
 
     let mut mixed_scale = Vec::with_capacity(162);
     for exponent in -40..=40 {
-        let value = 2.0_f64.powi(exponent);
+        let value = exact_power_of_two(exponent);
         mixed_scale.push((value, value * f64::EPSILON));
         mixed_scale.push((-value, 0.0));
     }

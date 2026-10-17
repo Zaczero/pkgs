@@ -355,6 +355,7 @@ mod lonlat_points_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compact_projected_points_transform_present_columns_in_place() {
         let present = packed_xy(
             vec![960_464.566_564_364_4],
@@ -379,6 +380,7 @@ mod lonlat_points_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compact_projected_transform_failure_maps_present_rank_to_logical_row() {
         let present = packed_xy(
             vec![500_000.0, 1e300],
@@ -395,6 +397,7 @@ mod lonlat_points_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn mixed_point_transform_failure_maps_present_rank_to_logical_row() {
         let array = PyGeometryArray::mixed_shapes(
             vec![
@@ -416,6 +419,7 @@ mod lonlat_points_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn projected_transform_plan_failure_remains_setup() {
         let unavailable = "urn:example:unavailable";
         let array = packed_xy(
@@ -474,6 +478,7 @@ mod lonlat_points_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compact_projected_all_missing_skips_transform() {
         // Same unavailable label Frame tests already store without a PROJ
         // query. TransformPlan::new to EPSG:4326 fails; EPSG:3857 would

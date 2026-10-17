@@ -1316,6 +1316,7 @@ mod geographic_total_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn mixed_total_bounds_folds_certified_rows_and_retains_alias_crossing() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("CRS84");
@@ -1372,6 +1373,7 @@ mod mixed_replacement_row_note_tests {
     use crate::geometry::{CoordinateAxes, Shape, SharedSlice};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn present_empty_mixed_replacement_error_keeps_logical_row_note() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

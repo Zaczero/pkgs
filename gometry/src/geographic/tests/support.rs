@@ -134,6 +134,7 @@ pub(super) fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Sh
     })
 }
 pub(super) fn exact_native_alias_oracle(longitude: f64, period: f64, periods: i128) -> f64 {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let (longitude_significand, longitude_exponent) = decompose(longitude.abs());
     let (period_significand, period_exponent) = decompose(period);
     let exponent = longitude_exponent.min(period_exponent);
@@ -149,9 +150,10 @@ pub(super) fn exact_native_alias_oracle(longitude: f64, period: f64, periods: i1
         .checked_mul(periods)
         .unwrap();
     let sum = longitude.checked_add(shift).unwrap();
-    sum as f64 * 2.0_f64.powi(exponent)
+    sum as f64 * exact_power_of_two(exponent)
 }
 pub(super) fn exact_periodic_oracle(value: f64, period: f64) -> f64 {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let negative = value.is_sign_negative();
     let (significand, exponent) = decompose(value.abs());
     let (period_significand, period_exponent) = decompose(period);
@@ -166,7 +168,7 @@ pub(super) fn exact_periodic_oracle(value: f64, period: f64) -> f64 {
             .expect("a reduced binary64 significand fits in u128");
         remainder = doubled.rem_euclid(u128::from(period_significand)) as u64;
     }
-    let mut result = (remainder as f64) * 2.0_f64.powi(period_exponent);
+    let mut result = (remainder as f64) * exact_power_of_two(period_exponent);
     if negative {
         result = -result;
     }

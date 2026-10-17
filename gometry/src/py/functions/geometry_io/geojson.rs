@@ -1756,6 +1756,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn feature_build_checks_native_pending_interrupt_before_exhaustion() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {
@@ -1801,6 +1802,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn feature_build_preserves_native_provider_exception_identity() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {

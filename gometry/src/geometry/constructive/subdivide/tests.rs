@@ -430,6 +430,7 @@ fn ordinary_geographic_xy_polygon_seam_uses_partition_roots_only() -> Result<()>
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -475,6 +476,7 @@ fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices(
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -519,6 +521,7 @@ fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_zm_subdivision_uses_one_request_table_per_cut() -> Result<()> {
     let (frame, metric) = wgs84_geodesic_metric()?;
     let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
@@ -601,6 +604,7 @@ fn ordinary_geographic_zm_subdivision_uses_one_request_table_per_cut() -> Result
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> Result<()> {
     let crs = concat!(
         "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",
@@ -737,6 +741,7 @@ fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> R
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> Result<()> {
     let crs = concat!(
         "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",

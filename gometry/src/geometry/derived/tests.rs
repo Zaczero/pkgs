@@ -154,8 +154,9 @@ fn degenerate_polygon_centroid_keeps_its_extrema_for_the_general_dimension_fallb
 
 #[test]
 fn areal_centroid_replays_multipolygon_when_positive_child_weight_rounds_to_zero() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let tiny = f64::from_bits(1);
-    let x = 2.0_f64.powi(51);
+    let x = exact_power_of_two(51);
     let ordinary = centroid_test_polygon(&[
         (-0.5, -0.5),
         (0.5, -0.5),
@@ -183,7 +184,8 @@ fn areal_centroid_replays_multipolygon_when_positive_child_weight_rounds_to_zero
 
 #[test]
 fn areal_centroid_propagates_rounded_zero_through_nested_collections() {
-    let side = 2.0_f64.powi(-540);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let side = exact_power_of_two(-540);
     let square = centroid_test_polygon(&[
         (0.0, 0.0),
         (side, 0.0),

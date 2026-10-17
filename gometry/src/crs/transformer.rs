@@ -827,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn target_metric_comes_from_the_output_frame_owned_by_the_plan() {
         let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions::default());
         assert_eq!(plan.output_frame().crs_str(), Some("EPSG:4326"));
@@ -844,6 +845,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn proj_numeric_target_geographic_output_canonicalizes_only_longitude() {
         let plan = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
             authority: Some("EPSG".into()),
@@ -886,6 +888,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn default_proj_source_latitude_failure_transforms_only_its_valid_prefix() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
@@ -929,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn default_proj_source_latitude_precedes_later_backend_failure() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
@@ -957,6 +961,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn earlier_proj_domain_failure_precedes_later_invalid_source_latitude() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
@@ -983,6 +988,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn identity_geometry_admission_is_pure_and_uses_the_source_frame() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
@@ -1009,6 +1015,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn empty_bulk_bounds_do_not_acquire_proj_pipeline() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
@@ -1032,6 +1039,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn identity_bounds_share_native_endpoint_intervals_for_scalar_and_bulk() {
         let plan = TransformPlan::new("EPSG:4326", "EPSG:4326").unwrap();
         let wide_2d = (-170.0, -1.0, 170.0, 1.0);
@@ -1064,6 +1072,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn force_over_identity_bounds_keep_literal_numeric_longitude_extrema() {
         let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:4326", TransformOptions {
             force_over: true,
@@ -1099,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn target_geographic_transform_subdivides_its_produced_major_chart_edge() {
         let source = crate::geometry::Shape::LineString(
             crate::geometry::LineSeq::try_new(
@@ -1133,6 +1143,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn force_over_shape_transform_keeps_unrolled_longitudes_and_edge_count() {
         let source = crate::geometry::Shape::LineString(
             crate::geometry::LineSeq::try_new(

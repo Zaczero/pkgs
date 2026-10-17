@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn imported_capsules_move_once_and_release_the_owned_shells() {
     ensure_python();
     let _guard = CAPSULE_RELEASE_TEST_LOCK
@@ -70,6 +71,7 @@ fn imported_capsules_move_once_and_release_the_owned_shells() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn admit_releases_array_shell_per_batch_with_owned_schema() {
     ensure_python();
     let _guard = CAPSULE_RELEASE_TEST_LOCK

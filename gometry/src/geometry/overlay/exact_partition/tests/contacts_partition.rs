@@ -557,7 +557,8 @@ fn overlap_reversed_duplicate_keeps_reverse_owner() {
 
 #[test]
 fn exact_partition_orders_extreme_horizontal_cuts_and_keeps_owner() {
-    for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    for scale in [exact_power_of_two(-600), exact_power_of_two(600)] {
         let segments = std::iter::once(seg(0.0, 0.0, 4.0 * scale, 0.0))
             .chain(
                 [3.0, 1.0, 2.0]

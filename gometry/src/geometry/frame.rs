@@ -18,7 +18,7 @@ pub(crate) fn axis_pow2_scale(max_abs: f64) -> f64 {
     let scale_exp = floor_binary_exponent(max_abs)
         .wrapping_neg()
         .clamp(-1022, 1023);
-    exact_power_of_two(i16::try_from(scale_exp).expect("axis scale exponent fits i16"))
+    exact_power_of_two(scale_exp)
 }
 
 /// Residual in a power-of-two frame.
@@ -39,7 +39,7 @@ pub(crate) fn scaled_residual(value: f64, origin: f64, scale: f64) -> f64 {
 pub(crate) fn scale_by_power_of_two(mut value: f64, mut exponent: i32) -> f64 {
     while exponent != 0 {
         let step = exponent.clamp(-1022, 1023);
-        let factor = exact_power_of_two(i16::try_from(step).expect("scale step fits i16"));
+        let factor = exact_power_of_two(step);
         value *= factor;
         exponent = exponent.wrapping_sub(step);
     }
@@ -143,13 +143,14 @@ mod tests {
 
     #[test]
     fn axis_scale_uses_the_exact_binary_exponent_at_boundaries() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         assert_eq!(
             axis_pow2_scale(0.25_f64.next_down()).to_bits(),
             8.0_f64.to_bits()
         );
         assert_eq!(
             axis_pow2_scale(f64::from_bits((1_u64 << 52) - 1)).to_bits(),
-            2.0_f64.powi(1023).to_bits()
+            exact_power_of_two(1023).to_bits()
         );
     }
 

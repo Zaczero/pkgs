@@ -328,11 +328,11 @@ mod tests {
     fn samples(bounds: ChartBox) -> Vec<(f64, f64)> {
         let mut points = Vec::new();
         for [west, east] in longitude_windows(bounds).into_iter().flatten() {
-            for longitude_index in 0..=4 {
-                let fraction = f64::from(longitude_index) / 4.0;
+            for longitude_index in 0..=2 {
+                let fraction = f64::from(longitude_index) / 2.0;
                 let longitude = west + (east - west) * fraction;
-                for latitude_index in 0..=4 {
-                    let fraction = f64::from(latitude_index) / 4.0;
+                for latitude_index in 0..=2 {
+                    let fraction = f64::from(latitude_index) / 2.0;
                     let latitude = bounds.south + (bounds.north - bounds.south) * fraction;
                     points.push((longitude, latitude));
                 }

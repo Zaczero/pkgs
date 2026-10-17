@@ -354,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn safe_geographic_edges_reuse_the_original_projected_shape() {
         let points =
             CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.1, 0.0), XY::new(0.2, 0.0)])
@@ -385,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn failed_geographic_edge_uses_chart_counts_and_the_callers_budget() {
         let west = -0.463_147_336_714_631_5;
         let east = 6.463_147_336_714_631_5;
@@ -413,6 +415,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn refinement_lineage_preserves_safe_and_repeated_collection_chains() {
         let safe = Shape::LineString(
             LineSeq::try_new(
@@ -466,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn selected_projection_pieces_stay_within_budget_for_each_family() {
         const SAMPLES_PER_PIECE: usize = 129;
 
@@ -626,6 +630,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn using_an_unselected_zone_certificate_misses_meridian_curvature() {
         let source = Shape::LineString(
             LineSeq::try_new(
@@ -672,6 +677,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn parallel_only_estimate_misses_the_utm32_meridian_curve() {
         let source = Shape::LineString(
             LineSeq::try_new(
@@ -706,6 +712,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_clearance_uses_original_sites_and_emits_refined_source_support() {
         let west = -0.463_147_336_714_631_5;
         let east = 6.463_147_336_714_631_5;

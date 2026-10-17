@@ -1446,6 +1446,7 @@ mod root_capture_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_xy_hull_and_rectangle_kernels_skip_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let frame = Frame::Crs("OGC:CRS84".into());

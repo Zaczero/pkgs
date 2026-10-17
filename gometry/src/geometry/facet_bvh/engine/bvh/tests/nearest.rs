@@ -8,6 +8,7 @@ use super::{
 use crate::geometry::CLEARANCE_STRIP_SUPPORT_FALLBACKS;
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_clearance_bounds_radial_candidate_work() {
     crate::test_support::initialize_python();
     Python::attach(|py| {
@@ -87,12 +88,14 @@ fn public_clearance_bounds_radial_candidate_work() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_clearance_bit_reversal_work_scales_at_extreme_magnitudes() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     crate::test_support::initialize_python();
     Python::attach(|py| {
         let module = PyModule::new(py, "gometry._lib").unwrap();
         crate::lib(&module).unwrap();
-        for scale in [1.0, 2.0_f64.powi(-700), 2.0_f64.powi(600)] {
+        for scale in [1.0, exact_power_of_two(-700), exact_power_of_two(600)] {
             let mut previous = None;
             for count in [64_usize, 256] {
                 let lines = PyList::empty(py);
@@ -142,6 +145,7 @@ fn public_clearance_bit_reversal_work_scales_at_extreme_magnitudes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_split_bounds_point_projection_work() {
     crate::test_support::initialize_python();
     Python::attach(|py| {

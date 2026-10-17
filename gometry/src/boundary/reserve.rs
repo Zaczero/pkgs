@@ -415,6 +415,7 @@ mod tests {
 
     use super::*;
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn at_most_collector_drops_retained_values_before_excess_error() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -459,6 +460,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn at_most_collector_preserves_provider_error_identity_after_cleanup() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {
@@ -496,6 +498,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn string_collection_checks_native_pending_interrupt_before_exhaustion() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {
@@ -537,6 +540,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn string_collection_preserves_provider_exception_identity() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {
@@ -569,6 +573,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn string_collection_keeps_returned_wrong_type_as_type_error() {
         crate::test_support::initialize_python();
         Python::attach(|py| -> PyResult<()> {
@@ -587,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn string_collection_preserves_unicode_conversion_error() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

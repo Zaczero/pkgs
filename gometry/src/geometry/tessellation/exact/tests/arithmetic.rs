@@ -285,8 +285,9 @@ fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
 
 #[test]
 fn predicate_filters_preserve_signs_across_exponent_ranges() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     for exponent in [-600, -451, -450, -201, -200, 0, 199, 200, 449, 450, 600] {
-        let scale = 2.0_f64.powi(exponent);
+        let scale = exact_power_of_two(exponent);
         let origin = XY::new(0.0, 0.0);
         let east = XY::new(scale, 0.0);
         let north = XY::new(0.0, scale);
@@ -344,7 +345,8 @@ fn incircle_cocircular_underflow_negative() {
 
 #[test]
 fn incircle_cocircular_squares_underflow_to_opposite_wrong_signs() {
-    for scale in [3.0 * 2.0_f64.powi(-270), 13.0 * 2.0_f64.powi(-272)] {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    for scale in [3.0 * exact_power_of_two(-270), 13.0 * exact_power_of_two(-272)] {
         let [a, b, c, d] = [
             XY::new(0.0, 0.0),
             XY::new(scale, 0.0),
@@ -361,9 +363,10 @@ fn incircle_cocircular_squares_underflow_to_opposite_wrong_signs() {
 
 #[test]
 fn orient2d_uses_the_shared_underflow_ray_resolver_for_all_permutations() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let mu = f64::from_bits(1);
     let a = XY::new(1.0, -4096.0 * mu);
-    let b = XY::new(-(2.0_f64.powi(-12)), 6144.0 * mu);
+    let b = XY::new(-(exact_power_of_two(-12)), 6144.0 * mu);
     let p = XY::new(f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
     for ((left, middle, right), expected) in [
         ((a, b, p), ExactSign::Positive),
@@ -386,6 +389,7 @@ fn orient2d_uses_the_shared_underflow_ray_resolver_for_all_permutations() {
 /// decline is conservative and is not itself a contract here.
 #[test]
 fn filtered_predicates_never_contradict_exact_signs() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let mu = f64::from_bits(1);
     let orientation_cases = [
         (
@@ -426,7 +430,7 @@ fn filtered_predicates_never_contradict_exact_signs() {
         (
             "underflow ray",
             XY::new(1.0, f64::from_bits(0x8000_0000_0000_1000)),
-            XY::new(-(2.0_f64.powi(-12)), f64::from_bits(0x1800)),
+            XY::new(-(exact_power_of_two(-12)), f64::from_bits(0x1800)),
             XY::new(f64::from_bits(0x3FD9_9733_3333_3333), f64::from_bits(0x800)),
             ExactSign::Positive,
         ),
@@ -440,7 +444,7 @@ fn filtered_predicates_never_contradict_exact_signs() {
         (
             "lattice exponent spread",
             XY::new(1.0, 1.0),
-            XY::new(2.0_f64.powi(30), 0.0),
+            XY::new(exact_power_of_two(30), 0.0),
             XY::new(0.0, 3.0),
             ExactSign::Positive,
         ),
@@ -460,7 +464,7 @@ fn filtered_predicates_never_contradict_exact_signs() {
         }
     }
 
-    let scale = 2.0_f64.powi(-270);
+    let scale = exact_power_of_two(-270);
     let incircle_cases = [
         (
             "unit inside",
@@ -944,6 +948,7 @@ fn exact_singleton_and_equal_magnitude_brackets_preserve_sign() {
 
 #[test]
 fn single_limb_fast_paths_match_the_general_kernels() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let values = [
         0.1,
         -0.3,
@@ -955,8 +960,8 @@ fn single_limb_fast_paths_match_the_general_kernels() {
         12345.678,
         -0.000_123,
         f64::from_bits(1),
-        2.0_f64.powi(62),
-        -(2.0_f64.powi(63)) - 2048.0,
+        exact_power_of_two(62),
+        -(exact_power_of_two(63)) - 2048.0,
     ];
     for &left in &values {
         for &right in &values {
@@ -994,6 +999,7 @@ fn single_limb_fast_paths_match_the_general_kernels() {
 
 #[test]
 fn filtered_ratio_order_matches_the_exact_products() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     type Ratio = (ExactDyadic, ExactDyadic);
     let value = |x: f64| ExactDyadic::from_f64(x);
     let tail = |exponent| ExactDyadic::from_parts(false, vec![1], exponent);
@@ -1011,8 +1017,8 @@ fn filtered_ratio_order_matches_the_exact_products() {
         ((under_two, value(1.0)), (value(1.0), value(0.5)), false),
         ((value(1.0), value(3.0)), (value(1.0), value(2.0)), true),
         (
-            (value(2.0_f64.powi(1000)), value(1.0)),
-            (value(2.0_f64.powi(-1000)), value(1.0)),
+            (value(exact_power_of_two(1000)), value(1.0)),
+            (value(exact_power_of_two(-1000)), value(1.0)),
             true,
         ),
         ((value(-5.0), value(2.0)), (value(3.0), value(7.0)), true),

@@ -95,6 +95,7 @@ fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
     reason = "these tests characterize exact binary64 spellings at a periodic seam"
 )]
 fn removed_period_workarounds_preserve_finite_longitude_bits() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
         let mut reduced = value % axis.period();
         if value.fract() == 0.0 && axis.period().fract() == 0.0 {
@@ -151,7 +152,7 @@ fn removed_period_workarounds_preserve_finite_longitude_bits() {
     for axis in axes {
         let half = axis.half_period();
         let period = axis.period();
-        let large_alias = period * (2.0_f64.powi(40));
+        let large_alias = period * (exact_power_of_two(40));
         let values = [
             -half,
             half,
@@ -225,16 +226,18 @@ fn nearest_longitude_alias_rounds_the_selected_source_translation_once() {
 }
 #[test]
 fn nearest_longitude_alias_fuses_an_integer_shift_rounded_to_the_exactness_boundary() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let axis = frame(std::f64::consts::TAU / 107.0).longitude();
     // 84_179_432_287_299 * 107 = 2^53 + 1, whose rounded product is 2^53.
     assert_bits(
-        axis.nearest_longitude_alias(0.0, -(2.0_f64.powi(53)))
+        axis.nearest_longitude_alias(0.0, -(exact_power_of_two(53)))
             .unwrap(),
         1.0,
     );
 }
 #[test]
 fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let axis = degrees().longitude();
     // 27_777_777_777_777_778 * 360 - 10_000_000_000_000_000_000 = 80.
     assert_bits(axis.nearest_longitude_alias(1.0, -1.0e19).unwrap(), 80.0);
@@ -265,7 +268,7 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
     let selected_period_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
     assert_bits(
         selected_period_tie
-            .nearest_longitude_alias(0.0, -(2.0_f64.powi(54) + 8.0))
+            .nearest_longitude_alias(0.0, -(exact_power_of_two(54) + 8.0))
             .unwrap(),
         -8.0,
     );
@@ -582,6 +585,7 @@ fn largest_gap_union_distinguishes_exact_gaps_that_round_equal() {
 }
 #[test]
 fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let axis = degrees().longitude();
     assert_eq!(axis.seam_transit(170.0, -170.0).unwrap(), 1);
     assert_eq!(axis.seam_transit(-170.0, 170.0).unwrap(), -1);
@@ -616,7 +620,7 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
     );
     assert_eq!(
         axis.chart_step(180.0_f64.next_down(), -180.0).unwrap(),
-        ChartStep::Shortest(EdgeDirection::Minor(2.0_f64.powi(-45)))
+        ChartStep::Shortest(EdgeDirection::Minor(exact_power_of_two(-45)))
     );
     assert_eq!(
         axis.chart_step(-180.0, 180.0).unwrap(),

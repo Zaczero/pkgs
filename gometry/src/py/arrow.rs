@@ -941,6 +941,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn pyarrow_import_reclassifies_only_missing_root_module() {
         Python::initialize();
         Python::attach(|py| -> PyResult<()> {

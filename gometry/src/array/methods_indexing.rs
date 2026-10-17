@@ -1065,6 +1065,7 @@ mod fancy_index_tests {
     use crate::test_support::allocation_count;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn known_length_integer_indices_reserve_once() {
         Python::initialize();
         Python::attach(|py| {
@@ -1096,6 +1097,7 @@ mod replacement_tests {
     use crate::geometry::{Point, ShapeData};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn replacement_starts_with_fresh_products_and_releases_the_source_owner() {
         use pyo3::IntoPyObjectExt as _;
 

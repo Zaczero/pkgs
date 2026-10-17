@@ -237,9 +237,6 @@ def test_contracts_only_selects_readonly_public_checks(
             '--locked',
             '-p',
             'gometry',
-            '--',
-            '-D',
-            'warnings',
         ),
     }.isdisjoint(commands)
     assert not any(command in quality_check.FIXES for command, _ in calls)

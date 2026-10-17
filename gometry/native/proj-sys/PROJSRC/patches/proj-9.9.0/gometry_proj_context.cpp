@@ -3,7 +3,6 @@
 #include <memory>
 #include <cmath>
 #include <cstring>
-#include <limits>
 #include <string>
 
 #include "filemanager.hpp"
@@ -39,25 +38,6 @@ extern "C" int gometry_proj_context_enable_default_angular_units(
     }
     context->gometryDefaultAngularUnits = true;
     return 1;
-}
-
-extern "C" double
-gometry_proj_conventional_period(double radians_per_unit) noexcept {
-    if (!std::isfinite(radians_per_unit) || radians_per_unit <= 0.0) {
-        return 0.0;
-    }
-    const double period = 2.0 * M_PI / radians_per_unit;
-    if (!std::isfinite(period) || period <= 0.0) {
-        return 0.0;
-    }
-    const double nearest = std::round(period);
-    if (nearest <= 0.0 ||
-        std::fabs(period - nearest) >
-            8.0 * std::numeric_limits<double>::epsilon() *
-                std::fabs(nearest)) {
-        return 0.0;
-    }
-    return nearest;
 }
 
 namespace {

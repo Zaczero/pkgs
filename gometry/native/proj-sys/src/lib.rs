@@ -78,8 +78,6 @@ unsafe extern "C" {
     pub fn gometry_proj_context_enable_default_angular_units(
         context: *mut PJ_CONTEXT,
     ) -> std::ffi::c_int;
-    /// Resolve a recognized conventional angular period, or return zero.
-    pub fn gometry_proj_conventional_period(radians_per_unit: f64) -> f64;
     /// Bind the original endpoint prime-meridian phase to a normalized no-op PJ.
     ///
     /// # Safety
@@ -94,27 +92,27 @@ unsafe extern "C" {
     );
 }
 
+/// Resolve a conventional angular period for Rust admission and bundled PROJ.
+#[unsafe(no_mangle)]
+pub extern "C" fn gometry_proj_conventional_period(radians_per_unit: f64) -> f64 {
+    if !radians_per_unit.is_finite() || radians_per_unit <= 0.0 {
+        return 0.0;
+    }
+    let turns = std::f64::consts::TAU / radians_per_unit;
+    if !turns.is_finite() || turns <= 0.0 {
+        return 0.0;
+    }
+    let nearest = turns.round();
+    if nearest > 0.0 && (turns - nearest).abs() <= 8.0 * f64::EPSILON * nearest.abs() {
+        nearest
+    } else {
+        0.0
+    }
+}
+
 /// The pinned PROJ and Rust CRS admission share this recognition rule.
 pub fn gometry_conventional_period(radians_per_unit: f64) -> Option<f64> {
-    #[cfg(bundled_build)]
-    // SAFETY: the helper is pure and accepts a binary64 value by value.
-    let period = unsafe { gometry_proj_conventional_period(radians_per_unit) };
-
-    #[cfg(not(bundled_build))]
-    let period = {
-        let turns = std::f64::consts::TAU / radians_per_unit;
-        let nearest = turns.round();
-        if radians_per_unit.is_finite()
-            && radians_per_unit > 0.0
-            && nearest > 0.0
-            && (turns - nearest).abs() <= 8.0 * f64::EPSILON * nearest.abs()
-        {
-            nearest
-        } else {
-            0.0
-        }
-    };
-
+    let period = gometry_proj_conventional_period(radians_per_unit);
     (period > 0.0).then_some(period)
 }
 

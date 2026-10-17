@@ -1,8 +1,9 @@
     #[test]
     fn published_sample_has_its_own_native_neighbor_domain() -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let topology = topology(&[crate::io::parse_wkt("LINESTRING (0 0, 10 10)")?])?;
         let frame = topology.sources.frame;
-        let half_ulp = ExactRational::from_f64(2.0_f64.powi(-54));
+        let half_ulp = ExactRational::from_f64(exact_power_of_two(-54));
         let exact = ExactChartPoint::from_rationals(
             ExactRational::from_f64(10.0).try_add(&half_ulp)?,
             ExactRational::from_f64(1.0).try_add(&half_ulp)?,

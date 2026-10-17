@@ -1174,9 +1174,10 @@ mod tests {
 
     #[test]
     fn raw_sum_rounds_at_midpoint_and_subnormal_boundaries() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let midpoint = actual_sum(&[
             (TestOperation::Add, 1.0, 1.0),
-            (TestOperation::Add, 2.0_f64.powi(-53), 1.0),
+            (TestOperation::Add, exact_power_of_two(-53), 1.0),
         ]);
         assert_eq!(midpoint.round_to_binary64().to_bits(), 1.0_f64.to_bits());
 
@@ -1196,15 +1197,16 @@ mod tests {
 
     #[test]
     fn raw_sum_rounds_the_binary64_overflow_midpoint() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let below = actual_sum(&[
             (TestOperation::Add, f64::MAX, 1.0),
-            (TestOperation::Add, 2.0_f64.powi(969), 1.0),
+            (TestOperation::Add, exact_power_of_two(969), 1.0),
         ]);
         assert_eq!(below.round_to_binary64().to_bits(), f64::MAX.to_bits());
 
         let midpoint = actual_sum(&[
             (TestOperation::Add, f64::MAX, 1.0),
-            (TestOperation::Add, 2.0_f64.powi(970), 1.0),
+            (TestOperation::Add, exact_power_of_two(970), 1.0),
         ]);
         assert!(midpoint.round_to_binary64().is_infinite());
     }

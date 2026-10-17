@@ -112,7 +112,14 @@ impl Authalic {
         qp.is_finite().then_some(Self { es, e, qp, apa })
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "the exact sine endpoints are the geographic poles"
+    )]
     pub(super) fn q(self, sin_phi: f64) -> f64 {
+        if sin_phi.abs() == 1.0 {
+            return self.qp.copysign(sin_phi);
+        }
         let esin = self.e * sin_phi;
         (1.0 - self.es) * (sin_phi / (1.0 - esin * esin) + esin.atanh() / self.e)
     }

@@ -153,7 +153,8 @@ fn exact_interior_ratio_that_rounds_to_one_keeps_large_ordinates_interior() {
 
 #[test]
 fn exact_clamp_classification_wins_around_one_plus_two_to_the_minus_fifty_four() {
-    let half_ulp = 2.0_f64.powi(-53);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let half_ulp = exact_power_of_two(-53);
     let segment = Segment {
         start: XY::new(0.0, -half_ulp),
         end: XY::new(1.0, 1.0 - half_ulp),
@@ -161,7 +162,7 @@ fn exact_clamp_classification_wins_around_one_plus_two_to_the_minus_fifty_four()
     let point = XY::new(1.0, 1.0);
     let terms = super::exact_projection_terms(point, segment).unwrap();
     let expected_numerator = ExactDyadic::from_f64(1.0)
-        .try_add(ExactDyadic::from_f64(2.0_f64.powi(-54)))
+        .try_add(ExactDyadic::from_f64(exact_power_of_two(-54)))
         .unwrap();
     assert_eq!(
         compare_ratios(

@@ -109,6 +109,7 @@ mod tests {
         clippy::float_cmp,
         reason = "the fixture checks exact seam coordinates from the split chart"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn split_hole_overlay_keeps_the_original_root_for_a_late_coowned_sample() {
         const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
         let state = crate::crs::runtime_state_snapshot().unwrap();

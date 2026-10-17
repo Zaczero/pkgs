@@ -764,16 +764,19 @@ mod tests {
         );
 
         let domain = TopologyDomain::Geographic(frame);
-        let expected = crate::geometry::unary_antimeridian_derived(
-            &shape,
-            domain,
-            crate::geometry::DerivedPointStrategy::Centroid,
-            Shape::centroid,
-        )
-        .unwrap();
-        assert_eq!(
-            crate::geometry::unary_antimeridian_centroid(&shape, domain).unwrap(),
-            expected
+        let Shape::Point(centroid) =
+            crate::geometry::unary_antimeridian_centroid(&shape, domain).unwrap()
+        else {
+            panic!("a rectangle has a point centroid");
+        };
+        assert!((-180.0..180.0).contains(&centroid.x));
+        // The symmetric rectangle is centred on the seam, allowing the short
+        // planar centroid reduction's roundoff in degree units.
+        approx::assert_abs_diff_eq!(
+            centroid.x.abs(),
+            180.0,
+            epsilon = 128.0 * f64::EPSILON * 180.0
         );
+        approx::assert_abs_diff_eq!(centroid.y, 0.0, epsilon = 128.0 * f64::EPSILON * 10.0);
     }
 }

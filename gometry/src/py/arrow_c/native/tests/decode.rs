@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn owned_batch_decoder_runs_detached() {
     ensure_python();
     let leaf = |value: f64| NativeNode {
@@ -60,6 +61,7 @@ fn owned_batch_decoder_runs_detached() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn native_c_struct_decode_publishes_packed_points_without_python_import() {
     ensure_python();
     let mut x_schema = ArrowSchema {

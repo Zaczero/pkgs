@@ -228,10 +228,11 @@ fn minimum_circle_emission_retries_when_rounded_radius_is_below_tangent() {
 
 #[test]
 fn minimum_circle_polygon_admits_the_complete_requested_ring_before_emission() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let points = [
-        Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
-        Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),
-        Point::new_raw_xy(2.0_f64.powi(60) + 256.0, 2.0_f64.powi(60) + 768.0),
+        Point::new_raw_xy(exact_power_of_two(60), exact_power_of_two(60)),
+        Point::new_raw_xy(exact_power_of_two(60) + 1024.0, exact_power_of_two(60)),
+        Point::new_raw_xy(exact_power_of_two(60) + 256.0, exact_power_of_two(60) + 768.0),
     ];
     let disk = smallest_enclosing_circle(&points)
         .expect("three sites")

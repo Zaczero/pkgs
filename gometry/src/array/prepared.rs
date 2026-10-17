@@ -1689,6 +1689,7 @@ mod frame_cache_row_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geodesic_metric_initializes_only_refined_duplicate_row() {
         let array = points().gather_logical_rows(&[1, 1, 2]).unwrap();
         let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(3.0, 3.0)));

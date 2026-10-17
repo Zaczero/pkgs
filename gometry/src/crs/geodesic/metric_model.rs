@@ -529,6 +529,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "the test asserts allocation counts after fallible CRS fixture setup"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn metric_axis_factors_add_no_storage_to_cached_crs_lookups() -> Result<()> {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = runtime_state_snapshot()?;
@@ -557,6 +558,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "the test asserts declared axis factors after fallible CRS fixture setup"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compound_axis_factors_distinguish_horizontal_and_vertical_units() -> Result<()> {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = runtime_state_snapshot()?;
@@ -584,6 +586,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "the test uses assertions to distinguish a failed child CRS from a nonmetric result"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compound_factor_lookup_does_not_hide_a_failed_child_crs() -> Result<()> {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = runtime_state_snapshot()?;

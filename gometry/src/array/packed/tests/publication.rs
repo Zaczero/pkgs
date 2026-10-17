@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn compact_bulk_publication_and_validation_use_the_cursor() {
     let present = PyGeometryArray::packed_points(
         CoordSeq::try_from_vecs(

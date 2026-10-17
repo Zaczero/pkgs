@@ -148,7 +148,8 @@ fn segment_cross_point_places_near_parallel_crossing_symmetrically() {
 /// rounding of the exact point, invariant under operand order and direction.
 #[test]
 fn segment_cross_point_rounds_crossings_of_extreme_finite_coordinates() {
-    let scale = 2.0_f64.powi(600);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let scale = exact_power_of_two(600);
     let left = Segment {
         start: XY::new(scale, scale),
         end: XY::new(2.0 * scale, 2.0 * scale),
@@ -244,8 +245,9 @@ fn segment_cross_point_preserves_mixed_exponent_axes() {
 /// representable range; the exact construction still places it.
 #[test]
 fn segment_cross_point_preserves_mixed_exponents_within_each_axis() {
-    let huge = 2.0_f64.powi(1000);
-    let tiny = 2.0_f64.powi(-999);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let huge = exact_power_of_two(1000);
+    let tiny = exact_power_of_two(-999);
     let long = Segment {
         start: XY::new(0.0, 0.0),
         end: XY::new(huge, huge),
@@ -254,7 +256,7 @@ fn segment_cross_point_preserves_mixed_exponents_within_each_axis() {
         start: XY::new(0.0, tiny),
         end: XY::new(tiny, 0.0),
     };
-    let expected = 2.0_f64.powi(-1000);
+    let expected = exact_power_of_two(-1000);
     let point = segment_cross_point(long, short)
         .unwrap()
         .expect("mixed-scale diagonal crossing");

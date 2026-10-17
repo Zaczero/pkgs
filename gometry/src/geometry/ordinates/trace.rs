@@ -1690,10 +1690,11 @@ mod tests {
 
     #[test]
     fn request_table_shares_exact_keys_and_keeps_each_axis_mask() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let root = RootId::from_index(4);
         let half = ExactRational::from_f64(0.5);
         let rounded_twin = half
-            .try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))
+            .try_add(&ExactRational::from_f64(exact_power_of_two(-54)))
             .unwrap();
         assert_eq!(rounded_twin.round().unwrap(), 0.5);
         assert_ne!(rounded_twin, half);

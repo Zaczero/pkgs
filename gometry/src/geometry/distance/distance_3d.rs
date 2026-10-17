@@ -640,9 +640,10 @@ mod bound_tests {
 
     #[test]
     fn bound_covers_overlap_gaps_extrema_and_signed_zero() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let min_subnormal = f64::from_bits(1);
         let min_normal = f64::from_bits(0x0010_0000_0000_0000);
-        let huge_origin = 2.0_f64.powi(900);
+        let huge_origin = exact_power_of_two(900);
         let cases = [
             ("overlap", [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
                 0.5, 0.5, 0.5, 2.0, 2.0, 2.0,
@@ -697,10 +698,10 @@ mod bound_tests {
                 [
                     min_subnormal,
                     1.0,
-                    2.0_f64.powi(500),
+                    exact_power_of_two(500),
                     min_subnormal,
                     1.0,
-                    2.0_f64.powi(500),
+                    exact_power_of_two(500),
                 ],
                 [0.0; 6],
             ),
@@ -893,6 +894,7 @@ mod bound_tests {
 
     #[test]
     fn indexed_distance_matches_exhaustive_for_segment_shapes() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let cases = [
             (
                 "skew",
@@ -921,11 +923,11 @@ mod bound_tests {
             ),
             (
                 "mixed_exponents",
-                ([0.0, 0.0, 0.0], [2.0_f64.powi(-500), 0.0, 0.0]),
-                ([0.0, 2.0_f64.powi(-450), 2.0_f64.powi(-500)], [
+                ([0.0, 0.0, 0.0], [exact_power_of_two(-500), 0.0, 0.0]),
+                ([0.0, exact_power_of_two(-450), exact_power_of_two(-500)], [
                     0.0,
-                    2.0_f64.powi(-449),
-                    2.0_f64.powi(-500),
+                    exact_power_of_two(-449),
+                    exact_power_of_two(-500),
                 ]),
             ),
             (

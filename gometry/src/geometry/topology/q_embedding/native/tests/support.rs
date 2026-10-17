@@ -480,6 +480,7 @@ use crate::work::Work;
         budget: &mut EvaluationBudget,
         assigned: QCandidate,
     ) -> Result<(NativeReference<'topology>, EmissionPortId)> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         use super::super::emission::{
             EmissionBuilder, FeatureFamily, FeatureFamilyParent, PublishedSample,
             SampleProducerKind, VertexOrigin,
@@ -487,8 +488,8 @@ use crate::work::Work;
 
         let selected = QEmissionPlan::build(topology, OverlayOp::Union, budget)?;
         let exact = ExactChartPoint::from_rationals(
-            ExactRational::from_f64(10.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
-            ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
+            ExactRational::from_f64(10.0).try_add(&ExactRational::from_f64(exact_power_of_two(-54)))?,
+            ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(exact_power_of_two(-54)))?,
         );
         let sample = PublishedSample {
             request_row: RequestRowId::from_index(0)?,

@@ -86,6 +86,10 @@ impl ProjectionKernel for Aea {
         ],
         finalize,
     }];
+    #[expect(
+        clippy::float_cmp,
+        reason = "equal latitude parameters share one evaluation and exact poles use their analytic sine and cosine"
+    )]
     fn setup(e: Ellipsoid, p: AeaParams) -> Result<Setup> {
         let auth = Authalic::new(e)
             .ok_or_else(|| GeometryErrorKind::projection("invalid Albers Equal Area ellipsoid"))?;
@@ -103,12 +107,20 @@ impl ProjectionKernel for Aea {
             ));
         }
         let es = eccentricity_squared(e);
-        let (s1, c1) = p1.sin_cos();
+        let (s1, c1) = if p.lat_1.abs() == 90.0 {
+            (p.lat_1.signum(), 0.0)
+        } else {
+            p1.sin_cos()
+        };
         let m1 = msfn(s1, c1, es);
         let m1_squared = m1 * m1;
         let q1 = auth.q(s1);
         let n = if (p1 - p2).abs() >= EPS10 {
-            let (s2, c2) = p2.sin_cos();
+            let (s2, c2) = if p.lat_2.abs() == 90.0 {
+                (p.lat_2.signum(), 0.0)
+            } else {
+                p2.sin_cos()
+            };
             let m2 = msfn(s2, c2, es);
             let m2_squared = m2 * m2;
             let q2 = auth.q(s2);
@@ -123,7 +135,14 @@ impl ProjectionKernel for Aea {
         }
         let c = m1_squared + n * q1;
         let dd = 1.0 / n;
-        let r = c - n * auth.q(p0.sin());
+        let q0 = if p.lat_0 == p.lat_1 {
+            q1
+        } else if p.lat_0.abs() == 90.0 {
+            auth.q(p.lat_0.signum())
+        } else {
+            auth.q(p0.sin())
+        };
+        let r = m1_squared + n * (q1 - q0);
         if r < 0.0 {
             return Err(GeometryErrorKind::projection(
                 "invalid Albers Equal Area parameters",
@@ -138,12 +157,21 @@ impl ProjectionKernel for Aea {
             a: e.a,
         })
     }
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact polar latitude has an analytic authalic ordinate"
+    )]
     fn forward_unframed(s: &Setup, lam: f64, phi: f64) -> Result<(f64, f64)> {
         // At the exact +/-180 degree cone seam, equivalent longitude spellings
         // can round onto opposite signed sides before `adjlon`. The point is far
         // outside every admitted CRS area of use; preserve the raw arithmetic
         // instead of imposing an arbitrary canonical seam side.
-        let r = s.c - s.n * s.auth.q(phi.sin());
+        let sin_phi = if phi.abs() == std::f64::consts::FRAC_PI_2 {
+            phi.signum()
+        } else {
+            phi.sin()
+        };
+        let r = s.c - s.n * s.auth.q(sin_phi);
         if r < 0.0 {
             return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Albers Equal Area domain",

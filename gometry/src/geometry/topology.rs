@@ -571,13 +571,14 @@ mod tests {
 
     #[test]
     fn ray_crossing_simd_declines_wrong_nonzero_underflow_sign() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let mu = f64::from_bits(1);
         let splat = ReduceSimd::splat;
         assert!(
             ray_crossing_lanes(
                 splat(1.0),
                 splat(-4096.0 * mu),
-                splat(-(2.0_f64.powi(-12))),
+                splat(-exact_power_of_two(-12)),
                 splat(6144.0 * mu),
                 splat(f64::from_bits(0x3FD9_9733_3333_3333)),
                 splat(2048.0 * mu),

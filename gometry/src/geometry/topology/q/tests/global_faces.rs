@@ -7,6 +7,7 @@
         ring_index: usize,
         cut: &ExactRational,
     ) -> Option<i64> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         use crate::geographic::Latitude;
         let frame = sources.frame;
         let ring = &sources.rings[ring_index];
@@ -56,7 +57,7 @@
             lifted.push((start, ExactRational::from_f64(closure_latitude)));
         }
         let germ_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North))
-            .try_subtract(&ExactRational::from_f64(2.0_f64.powi(-60)))
+            .try_subtract(&ExactRational::from_f64(exact_power_of_two(-60)))
             .unwrap();
         let image_radius = i64::try_from(edges.len()).unwrap().checked_add(1).unwrap();
         let k_low = image_radius.checked_neg().unwrap();

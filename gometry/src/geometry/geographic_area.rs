@@ -76,6 +76,7 @@ pub(crate) fn polygon_area(
     polygon: &Polygon,
     frame: GeographicFrame,
 ) -> Result<f64> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     // Shell and holes share one basis so signed source moments can cancel
     // before ring magnitudes or the final ellipsoid scale are rounded.
     let first = polygon.shell.nth_coord(0);
@@ -107,7 +108,7 @@ pub(crate) fn polygon_area(
     )
     .map_err(|_| crate::error::ResourceError::SizeOverflow)?
     .wrapping_neg();
-    let longitude_scale = 2.0_f64.powi(x_exponent);
+    let longitude_scale = exact_power_of_two(x_exponent);
     let longitude_coordinate_scale =
         Bounded::exact(axis.radians_per_unit() * frame.longitude_orientation_sign())
             .mul(Bounded::exact(longitude_scale));

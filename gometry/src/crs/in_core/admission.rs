@@ -374,6 +374,7 @@ mod tests {
     use crate::crs::runtime_state_snapshot;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn admits_etrs89_utm_pair() {
         let options = TransformOptions::default();
         let state = runtime_state_snapshot().unwrap();
@@ -394,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn admits_epsg_102100_web_mercator_alias() {
         let state = runtime_state_snapshot().unwrap();
         assert!(
@@ -404,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn admits_nad83_spcs_tm_pair() {
         let options = TransformOptions::default();
         let state = runtime_state_snapshot().unwrap();

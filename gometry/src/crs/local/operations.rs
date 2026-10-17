@@ -495,6 +495,7 @@ mod tests {
     use crate::geometry::{BufferCapStyle, BufferJoinStyle, CoordSeq, LineSeq, XY};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_bounding_circle_of_one_point_keeps_the_source_record() {
         let source = Shape::Point(Point::new_raw_xy(370.125, -0.0));
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
@@ -505,6 +506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_bounding_circle_across_the_seam_publishes_minor_edges() {
         let source = crate::io::parse_wkt("MULTIPOINT ((179.8 0), (-179.8 0))").unwrap();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
@@ -527,6 +529,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn buffer_near_the_seam_keeps_canonical_vertices_without_densifying() {
         let state = runtime_state_snapshot().unwrap();
         let input = Shape::Point(Point::new_raw_xy(179.9, 0.0));
@@ -567,6 +570,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn polar_buffer_keeps_its_certified_minor_edges_and_complete_turn() {
         let state = runtime_state_snapshot().unwrap();
         let input = Shape::Point(Point::new_raw_xy(0.0, 89.9));
@@ -627,6 +631,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_bounding_radius_keeps_point_sets_geodesic_and_lines_local() {
         let coordinates = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.0, 1.0)]).unwrap();
         let point_set = Shape::MultiPoint(
@@ -658,6 +663,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn projected_buffer_path_charges_refinement_before_kernel_work() {
         let half_width = 6.926_294_673_429_263 / 60.0;
         let west = 3.0 - half_width;

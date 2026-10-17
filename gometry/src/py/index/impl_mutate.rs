@@ -586,6 +586,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn public_copy_protocols_preserve_live_handles() {
         Python::initialize();
         Python::attach(|py| {

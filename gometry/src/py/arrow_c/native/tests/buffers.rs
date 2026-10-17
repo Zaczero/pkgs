@@ -104,6 +104,7 @@ fn binary_data_len_rejects_negative_terminal_offset() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn checked_byte_span_rejects_overflow_and_isize_max() {
     ensure_python();
     Python::attach(|py| {

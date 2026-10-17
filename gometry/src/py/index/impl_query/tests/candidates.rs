@@ -34,6 +34,7 @@ fn projected_candidate_preparation_does_not_materialize_polygon_shape() {
     }
 
     #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn empty_cartesian_query_has_no_index_matches() {
         pyo3::Python::initialize();
         let item = PyGeometry::with_frame(

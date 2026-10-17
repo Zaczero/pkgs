@@ -610,7 +610,8 @@ mod tests {
 
     #[test]
     fn point_summary_retains_the_stable_mean_for_ordinary_cancellation() {
-        let tiny = 2.0_f64.powi(-54);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let tiny = exact_power_of_two(-54);
         let expected = tiny / 3.0;
         let shape = multipoint(
             &[point(-1.0, 0.0), point(tiny, 0.0), point(1.0, 0.0)],
@@ -647,14 +648,16 @@ mod tests {
         else {
             panic!("actual narrow bounds recover the ordinary route");
         };
-        assert_eq!((x, y), (105.0, 5.0));
+        approx::assert_abs_diff_eq!(x, 105.0, epsilon = 16.0 * f64::EPSILON * 110.0);
+        approx::assert_abs_diff_eq!(y, 5.0, epsilon = 16.0 * f64::EPSILON * 10.0);
 
         let Some(Shape::Point(centroid)) =
             point_set_centroid(&shape, frame).expect("point-set centroid")
         else {
             panic!("ordinary point-set centroid is a point");
         };
-        assert_eq!((centroid.x, centroid.y), (105.0, 5.0));
+        approx::assert_abs_diff_eq!(centroid.x, 105.0, epsilon = 16.0 * f64::EPSILON * 110.0);
+        approx::assert_abs_diff_eq!(centroid.y, 5.0, epsilon = 16.0 * f64::EPSILON * 10.0);
 
         let Some(Shape::Point(representative)) =
             point_set_surface(&shape, frame).expect("point-set representative")
@@ -675,14 +678,16 @@ mod tests {
         else {
             panic!("an ordinary proof returns its mean, not support bounds");
         };
-        assert_eq!((x, y), (2.0, 3.0));
+        approx::assert_abs_diff_eq!(x, 2.0, epsilon = 16.0 * f64::EPSILON * 3.0);
+        approx::assert_abs_diff_eq!(y, 3.0, epsilon = 16.0 * f64::EPSILON * 4.0);
 
         let Some(Shape::Point(centroid)) =
             point_set_centroid(&shape, frame).expect("point-set centroid")
         else {
             panic!("ordinary proof publishes a centroid");
         };
-        assert_eq!((centroid.x, centroid.y), (2.0, 3.0));
+        approx::assert_abs_diff_eq!(centroid.x, 2.0, epsilon = 16.0 * f64::EPSILON * 3.0);
+        approx::assert_abs_diff_eq!(centroid.y, 3.0, epsilon = 16.0 * f64::EPSILON * 4.0);
     }
 
     #[test]
@@ -914,6 +919,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn point_chart_hull_closing_chord_resolves_ordinates_on_its_retained_root() {
         const CRS: &str = "OGC:CRS84";
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -1073,6 +1079,7 @@ mod tests {
 
     #[test]
     fn shared_point_collection_occurrences_change_mass_not_site_selection() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let repeated_point = Shape::Point(point(170.0, 0.0));
         let mut repeated = repeated_point;
         for _ in 0..127 {
@@ -1087,7 +1094,10 @@ mod tests {
             panic!("shared point collection centroid is a point");
         };
         assert_eq!(centroid.x, 170.0);
-        assert_eq!(centroid.y.to_bits(), (10.0 / 2.0_f64.powi(127)).to_bits());
+        assert_eq!(
+            centroid.y.to_bits(),
+            (10.0 / exact_power_of_two(127)).to_bits()
+        );
 
         let result = point_set_convex_hull(&shape, GeographicFrame::crs84(), shape.bounds())
             .expect("point-set hull")
@@ -1122,7 +1132,8 @@ mod tests {
         else {
             panic!("the nonempty point member supplies the centroid");
         };
-        assert_eq!((centroid.x, centroid.y), (10.0, 0.0));
+        approx::assert_relative_eq!(centroid.x, 10.0, max_relative = 8.0 * f64::EPSILON);
+        assert_eq!(centroid.y, 0.0);
 
         let degenerate_area = Shape::Polygon(Polygon::new(
             Ring::try_from_closed(

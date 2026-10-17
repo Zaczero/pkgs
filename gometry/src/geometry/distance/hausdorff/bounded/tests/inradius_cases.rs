@@ -126,10 +126,11 @@ fn directed_inradius_selects_the_first_equal_multipart_winner() {
 
 #[test]
 fn directed_inradius_accounts_for_rounding_an_exact_witness_center() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let shape = polygon(&[
         (1.0, 0.0),
-        (2.0_f64.powi(60), 0.0),
-        (2.0_f64.powi(60), 4.0),
+        (exact_power_of_two(60), 0.0),
+        (exact_power_of_two(60), 4.0),
         (1.0, 4.0),
         (1.0, 0.0),
     ]);

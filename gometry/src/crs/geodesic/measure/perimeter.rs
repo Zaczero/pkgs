@@ -297,6 +297,7 @@ fn split_north_cap_at_eighty_degrees_has_the_analytic_parallel_perimeter() {
     );
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_scalar_length_uses_the_polar_chart_cut_perimeter() {
     crate::test_support::initialize_python();
     let metric = metric();

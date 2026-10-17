@@ -301,6 +301,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn shared_invalid_index_owner_keeps_its_original_diagnostic_path() {
         let frame = frame();
         let shared_bad_owner = Shape::geometry_collection(vec![

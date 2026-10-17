@@ -1,8 +1,9 @@
 #[test]
 fn certified_ring_sign_matches_reference_on_slivers_and_generated_cycles() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let tiny = f64::from_bits(1);
-    let sliver = 2.0_f64.powi(-54);
-    let translated = 2.0_f64.powi(-54);
+    let sliver = exact_power_of_two(-54);
+    let translated = exact_power_of_two(-54);
     for (xs, ys) in [
         (
             vec![
@@ -18,9 +19,9 @@ fn certified_ring_sign_matches_reference_on_slivers_and_generated_cycles() {
                 2.371_948_131_117_221_8e-110,
             ],
         ),
-        (vec![0.0, 1.0, 1.0 - 2.0_f64.powi(-27), 0.0], vec![
+        (vec![0.0, 1.0, 1.0 - exact_power_of_two(-27), 0.0], vec![
             0.0,
-            1.0 + 2.0_f64.powi(-27),
+            1.0 + exact_power_of_two(-27),
             1.0,
             0.0,
         ]),
@@ -106,7 +107,8 @@ fn near_collinear_ring_preserves_original_product_sum() {
 
 #[test]
 fn ring_sign_retains_product_tails_and_subnormal_products() {
-    for epsilon in [2.0_f64.powi(-27), 2.0_f64.powi(-28)] {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    for epsilon in [exact_power_of_two(-27), exact_power_of_two(-28)] {
         let xs = [0.0, 1.0, 1.0 - epsilon, 0.0];
         let ys = [0.0, 1.0 + epsilon, 1.0, 0.0];
         assert_eq!(
@@ -123,7 +125,8 @@ fn ring_sign_retains_product_tails_and_subnormal_products() {
 
 #[test]
 fn translated_thin_triangle_retains_clockwise_sign() {
-    let tiny = 2.0_f64.powi(-54);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let tiny = exact_power_of_two(-54);
     let xs = [1.0, 0.0, tiny, 1.0];
     let ys = [0.0, 1.0, 1.0, 0.0];
     assert_eq!(
@@ -134,8 +137,9 @@ fn translated_thin_triangle_retains_clockwise_sign() {
 
 #[test]
 fn ring_sign_defers_underflowed_products_to_exact_sum() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     for exponent in [-537, -600] {
-        let tiny = 2.0_f64.powi(exponent);
+        let tiny = exact_power_of_two(exponent);
         assert_eq!(
             exact_ring_area_sign_columns(&[0.0, tiny, 0.0, 0.0], &[0.0, 0.0, tiny, 0.0], 3),
             AreaSign::Positive,
@@ -193,11 +197,12 @@ fn rounded_filter_defers_residual_product_and_sum_overflow_to_exact_sum() {
 
 #[test]
 fn rounded_residual_error_bound_covers_stored_dyadic_subtractions() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let tiny = f64::from_bits(1);
     // 2^-54 is lost when subtracting from one; its known exact residual
     // error must remain inside the residual-relative enclosure.
-    let rounded = 2.0_f64.powi(-54) - 1.0;
-    assert!(2.0_f64.powi(-54) <= rounded_residual_error_bound(rounded.abs()));
+    let rounded = exact_power_of_two(-54) - 1.0;
+    assert!(exact_power_of_two(-54) <= rounded_residual_error_bound(rounded.abs()));
     let subnormal = 2.0 * tiny - 5.0 * tiny;
     assert_eq!(subnormal, -3.0 * tiny);
     assert!(rounded_residual_error_bound(subnormal.abs()) >= tiny);
@@ -241,10 +246,11 @@ fn rounded_translated_rings_preserve_both_orientations() {
 
 #[test]
 fn open_thin_triangle_retains_clockwise_sign() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let points = [
         XY::new(1.0, 0.0),
         XY::new(0.0, 1.0),
-        XY::new(2.0_f64.powi(-54), 1.0),
+        XY::new(exact_power_of_two(-54), 1.0),
     ];
     assert_eq!(open_xy_cycle_sign(&points), AreaSign::Negative);
     let reversed = [points[2], points[1], points[0]];
@@ -252,7 +258,7 @@ fn open_thin_triangle_retains_clockwise_sign() {
     let point_cycle = [
         Point::new_raw_xy(1.0, 0.0),
         Point::new_raw_xy(0.0, 1.0),
-        Point::new_raw_xy(2.0_f64.powi(-54), 1.0),
+        Point::new_raw_xy(exact_power_of_two(-54), 1.0),
     ];
     assert_eq!(exact_open_point_sign(&point_cycle), AreaSign::Negative);
 }

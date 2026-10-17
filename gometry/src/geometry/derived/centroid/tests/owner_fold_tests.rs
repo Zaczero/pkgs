@@ -1,6 +1,23 @@
 use super::*;
 use crate::geometry::{CoordinateAxes, LineSeq, MOrdinate, ZOrdinate};
 
+fn assert_ordinary_point(point: Point, expected: (f64, f64)) {
+    // These short fixtures have at most eight sites or one five-vertex ring.
+    // Allow the algebraic measurement reductions to reassociate their operations.
+    approx::assert_relative_eq!(
+        point.x,
+        expected.0,
+        epsilon = 128.0 * f64::EPSILON,
+        max_relative = 128.0 * f64::EPSILON
+    );
+    approx::assert_relative_eq!(
+        point.y,
+        expected.1,
+        epsilon = 128.0 * f64::EPSILON,
+        max_relative = 128.0 * f64::EPSILON
+    );
+}
+
 fn polygon(x: f64, y: f64, side: f64) -> Shape {
     let points = [
         Point::new_raw_xy(x, y),
@@ -140,7 +157,7 @@ fn repeated_shared_line_dags_wait_for_the_repeat_work_budget() {
             assert!(matches!(outcome, CentroidAttempt::ExactAtRoot(_)));
             assert!(repeated_work > CENTROID_FAST_REPEAT_WORK_BUDGET);
         }
-        assert_eq!((point_from(&shape).x, point_from(&shape).y), (1.0, 0.0));
+        assert_ordinary_point(point_from(&shape), (1.0, 0.0));
     }
 }
 
@@ -166,7 +183,7 @@ fn puntal_dags_replay_occurrences_until_the_repeat_work_budget() {
     );
     assert!(admission.as_ref().unwrap().repeated_work <= CENTROID_FAST_REPEAT_WORK_BUDGET);
     assert_eq!(staged, 8);
-    assert_eq!((point_from(&small).x, point_from(&small).y), (4.0, 2.0));
+    assert_ordinary_point(point_from(&small), (4.0, 2.0));
 
     let large = repeated(source, 8);
     let mut admission = None;
@@ -203,13 +220,10 @@ fn external_polygon_alias_does_not_start_collection_admission() {
     else {
         panic!("one reachable externally aliased child remains on the fast path");
     };
-    assert_eq!(area, 1.0);
-    assert_eq!((x, y), (0.5, 0.5));
+    approx::assert_relative_eq!(area, 1.0, max_relative = 64.0 * f64::EPSILON);
+    assert_ordinary_point(Point::new_raw_xy(x, y), (0.5, 0.5));
     assert!(admission.is_none());
-    assert_eq!(
-        source.centroid().unwrap(),
-        Shape::Point(Point::new_raw_xy(0.5, 0.5))
-    );
+    assert_ordinary_point(point_from(&source), (0.5, 0.5));
     drop(external_alias);
 }
 
@@ -223,9 +237,10 @@ fn external_collection_alias_occurring_once_keeps_its_centroid() {
     else {
         panic!("one externally aliased collection occurrence keeps the fast path");
     };
-    assert_eq!((area, x, y), (1.0, 0.5, 0.5));
+    approx::assert_relative_eq!(area, 1.0, max_relative = 64.0 * f64::EPSILON);
+    assert_ordinary_point(Point::new_raw_xy(x, y), (0.5, 0.5));
     assert!(admission.is_some());
-    assert_eq!(point_from(&root), Point::new_raw_xy(0.5, 0.5));
+    assert_ordinary_point(point_from(&root), (0.5, 0.5));
     drop(external_collection_alias);
 }
 
@@ -311,10 +326,13 @@ fn unshared_collection_members_construct_no_tier_admission() {
     assert!(!collection.members_are_shared());
 
     let mut areal_admission = None;
-    assert!(matches!(
-        areal_centroid_summary(&shape, &mut areal_admission),
-        CentroidAttempt::Ready(Some((1.0, 0.5, 0.5)))
-    ));
+    let CentroidAttempt::Ready(Some((area, x, y))) =
+        areal_centroid_summary(&shape, &mut areal_admission)
+    else {
+        panic!("unshared members stay on the ordinary areal route");
+    };
+    approx::assert_relative_eq!(area, 1.0, max_relative = 64.0 * f64::EPSILON);
+    assert_ordinary_point(Point::new_raw_xy(x, y), (0.5, 0.5));
     assert!(areal_admission.is_none());
 
     let mut lineal_admission = None;
@@ -330,7 +348,7 @@ fn unshared_collection_members_construct_no_tier_admission() {
         CentroidAttempt::Ready(())
     ));
     assert!(puntal_admission.is_none());
-    assert_eq!(point_from(&shape), Point::new_raw_xy(0.5, 0.5));
+    assert_ordinary_point(point_from(&shape), (0.5, 0.5));
 }
 
 #[test]
@@ -416,7 +434,7 @@ fn unshared_polygon_centroid_does_not_allocate_owner_state() {
     let (centroid, allocations) =
         crate::test_support::allocation_count(|| shape.centroid().unwrap());
 
-    assert_eq!(point_from(&centroid), Point::new_raw_xy(0.5, 0.5));
+    assert_ordinary_point(point_from(&centroid), (0.5, 0.5));
     assert_eq!(allocations, 0);
 }
 
@@ -432,13 +450,14 @@ fn repeated_zero_length_line_occurrences_keep_puntal_anchors() {
 
     let centroid = point_from(&shape);
 
-    assert_eq!((centroid.x, centroid.y), (14.0 / 3.0, 8.0 / 3.0));
+    assert_ordinary_point(centroid, (14.0 / 3.0, 8.0 / 3.0));
 }
 
 #[test]
 fn zero_length_far_line_does_not_move_positive_line_rescue_frame() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let maximum = f64::MAX;
-    let anchor = 3.0_f64 * 2.0_f64.powi(970);
+    let anchor = 3.0_f64 * exact_power_of_two(970);
     let minimum = 2.0 * anchor - maximum;
     let zero = line(&[(minimum, 0.0), (minimum, 0.0)]);
     let positive = line(&[(maximum, -maximum), (maximum, maximum)]);

@@ -1119,6 +1119,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn selected_local_frames_preserve_the_source_datum() {
         let state = runtime_state_snapshot().unwrap();
         let cases = [
@@ -1199,6 +1200,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn pipeline_owner_rejects_the_previous_cross_datum_fallbacks() {
         let state = runtime_state_snapshot().unwrap();
         for (source, previous_target) in [("EPSG:4807", "EPSG:32631"), ("EPSG:4269", "EPSG:5042")] {
@@ -1210,6 +1212,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn analytic_piece_counts_bound_the_600_km_parallel_at_both_budgets() {
         let west = -0.463_147_336_714_631_5;
         let east = 6.463_147_336_714_631_5;
@@ -1259,6 +1262,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn arithmetic_screen_scans_straight_edges_without_allocating() {
         let points =
             CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.1, 0.0), XY::new(0.2, 0.0)])
@@ -1283,6 +1287,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn spherical_transverse_mercator_has_finite_analytic_piece_counts() {
         let points = CoordSeq::try_from_xy(&[XY::new(-0.2, -0.1), XY::new(0.2, 0.2)]).unwrap();
         let shape = Shape::LineString(LineSeq::try_new(points).unwrap());
@@ -1311,6 +1316,7 @@ mod datum_preserving_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn ups_pole_parallel_is_recognized_in_native_latitude_units() {
         let state = runtime_state_snapshot().unwrap();
         let local = LocalCrsDefinition::authority("EPSG:5042".to_owned());

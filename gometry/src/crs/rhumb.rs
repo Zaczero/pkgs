@@ -509,6 +509,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn clenshaw_series_matches_the_naive_sum_within_a_few_ulp() {
         let ellipsoid = RhumbEllipsoid::for_crs("EPSG:4326").unwrap();
         let mut max_ulp = 0_i64;
@@ -557,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn recurrence_slope_matches_the_naive_trig_form() {
         let ellipsoid = RhumbEllipsoid::for_crs("EPSG:4326").unwrap();
         for a in -80..=80 {
@@ -574,6 +576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn split_distance_matches_a_naive_full_inverse() {
         // The distance-only kernel must equal a naïve inverse built from the
         // faithful `isometric` plus the pre-refactor series/slope — proof that
@@ -609,6 +612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn rhumb_destination_round_trips_the_inverse() {
         let (lon0, lat0) = (-73.7781_f64, 40.6413_f64);
         let (lon1, lat1) = (2.3522_f64, 48.8566_f64);

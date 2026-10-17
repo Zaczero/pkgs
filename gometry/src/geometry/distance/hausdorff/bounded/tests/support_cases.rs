@@ -426,6 +426,7 @@ fn parallel_strip_rejects_outside_points_with_reversed_carriers() {
 
 #[test]
 fn supporting_line_lower_stays_below_exact_segment_distance() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let subnormal = f64::from_bits(1);
     let cases = [
         (
@@ -454,7 +455,7 @@ fn supporting_line_lower_stays_below_exact_segment_distance() {
                 start: XY::new(0.0, 0.0),
                 end: XY::new(1.0, 1.0),
             },
-            XY::new(0.5, 0.5 + 2.0_f64.powi(-52)),
+            XY::new(0.5, 0.5 + exact_power_of_two(-52)),
         ),
         (
             Segment {
@@ -605,10 +606,11 @@ fn interval_span_bounds_enclose_the_exact_distance_over_the_point_box() {
 
 #[test]
 fn unreduced_distances_match_reduced_point_and_span_references() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let point_support = PreparedSupport::from_line_columns(&[0.0], &[0.0]).unwrap();
     for point in [
         ExactPoint::from_xy(XY::new(3.0, 4.0)),
-        ExactPoint::from_xy(XY::new(2.0_f64.powi(500), -(2.0_f64.powi(500)))),
+        ExactPoint::from_xy(XY::new(exact_power_of_two(500), -(exact_power_of_two(500)))),
         ExactPoint::from_xy(XY::new(f64::from_bits(1), -f64::from_bits(2))),
     ] {
         let actual = point_support
@@ -629,9 +631,9 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
         ([0.0, 3.0], [0.0, 4.0], (1.0, 3.0)),
         ([3.0, 0.0], [4.0, 0.0], (1.0, 3.0)),
         (
-            [0.0, 2.0_f64.powi(500)],
+            [0.0, exact_power_of_two(500)],
             [0.0, 0.0],
-            (0.0, 2.0_f64.powi(500)),
+            (0.0, exact_power_of_two(500)),
         ),
         (
             [0.0, f64::from_bits(2)],

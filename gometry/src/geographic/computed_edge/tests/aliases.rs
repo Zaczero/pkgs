@@ -85,7 +85,8 @@ fn zero_longitude_class_crosses_ring_closure_without_rewriting_nonzero_neighbors
 }
 #[test]
 fn tiny_nonzero_edge_next_to_preserved_meridian_stays_canonical() {
-    let tiny = 2.0_f64.powi(-20);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let tiny = exact_power_of_two(-20);
     let points = [
         Point::new_raw_xy(250.0, 0.0),
         Point::new_raw_xy(250.0, 1.0),

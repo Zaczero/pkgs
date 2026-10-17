@@ -409,6 +409,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn planar_geographic_source_metric_is_lazy_and_uses_admission_snapshot() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         binary_dispatch_counters::reset();
@@ -472,6 +473,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geodesic_operation_reuses_its_resolved_metric_for_source_carry() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         binary_dispatch_counters::reset();
@@ -541,6 +543,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn projected_planar_source_metric_is_not_admitted() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         binary_dispatch_counters::reset();
@@ -572,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn wgs84_geographic_carry_captures_runtime_before_lazy_metric_resolution() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         for code in ["EPSG:4326", "EPSG:4979"] {

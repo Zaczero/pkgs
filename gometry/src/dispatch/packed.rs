@@ -829,6 +829,7 @@ mod geographic_mixed_storage_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn mixed_geographic_predicates_keep_values_with_seam_row_at_either_end() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -857,6 +858,7 @@ mod geographic_mixed_storage_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn mixed_geographic_preflight_keeps_first_error_before_or_after_seam_row() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -904,6 +906,7 @@ mod geographic_mixed_storage_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_ambiguous_ring_declines_the_column_and_reaches_row_validity() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -923,6 +926,7 @@ mod geographic_mixed_storage_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_geographic_fallback_preserves_nullable_gathered_error_order() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

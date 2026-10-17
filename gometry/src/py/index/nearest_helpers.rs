@@ -228,6 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn retain_row_stops_after_the_first_refinement_error() {
         crate::test_support::initialize_python();
         let (message, visited) = pyo3::Python::attach(|py| {

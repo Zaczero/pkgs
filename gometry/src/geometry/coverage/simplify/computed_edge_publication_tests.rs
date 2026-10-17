@@ -45,6 +45,7 @@ fn coverage_simplification_subdivides_a_wide_generated_chord() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn coverage_edge_role_publisher_carries_native_samples_by_ellipsoidal_arclength() {
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
     let state = crate::crs::runtime_state_snapshot().unwrap();

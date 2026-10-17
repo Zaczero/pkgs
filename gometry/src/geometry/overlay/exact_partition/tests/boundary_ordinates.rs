@@ -87,10 +87,11 @@ fn boundary_emission_preserves_source_zm_for_area_and_residual_points() {
 
 #[test]
 fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_point() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let source_point = |xy: XY| {
         Point::new_axes(xy.x, xy.y, ZOrdinate(Some(17.25)), MOrdinate(Some(73.5))).unwrap()
     };
-    let mut sources: Vec<_> = lattice_crossing_group(1.0, 2.0_f64.powi(-52))
+    let mut sources: Vec<_> = lattice_crossing_group(1.0, exact_power_of_two(-52))
         .into_iter()
         .map(|segment| {
             Shape::LineString(

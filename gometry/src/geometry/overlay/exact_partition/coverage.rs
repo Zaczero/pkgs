@@ -698,7 +698,8 @@ mod tests {
 
     #[test]
     fn compensated_length_rank_retains_small_following_terms() {
-        let large = ScaledLength::from_finite(2.0_f64.powi(60));
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let large = ScaledLength::from_finite(exact_power_of_two(60));
         let mut base = ScaledLengthSum::default();
         base.add(large);
         let base_rank = base.rank();

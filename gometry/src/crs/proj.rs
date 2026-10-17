@@ -784,6 +784,7 @@ mod tests {
     use crate::crs::context::with_proj_context;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn mandatory_context_is_non_null() {
         let context = ProjContext::new().expect("bundled PROJ creates a context");
         assert!(!context.as_ptr().is_null());
@@ -812,6 +813,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn with_proj_context_lends_typed_borrow() {
         let value = with_proj_context(|ctx| {
             assert!(!ctx.as_ptr().is_null());
@@ -825,6 +827,7 @@ mod tests {
     /// it; afterwards PROJ catalog queries still succeed (no double-free /
     /// corruption from a leaked or double-destroyed list).
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn owned_string_list_releases_on_panic() {
         let panicked = catch_unwind(AssertUnwindSafe(|| {
             let context = ProjContext::new().expect("context");

@@ -992,7 +992,8 @@ mod snap_reference_tests {
 
     #[test]
     fn indexed_nearest_full_scans_underflowed_and_overflowed_tolerance_squares() {
-        for tolerance in [f64::from_bits(1), 2.0_f64.powi(-600)] {
+        use crate::geometry::numerics::product::exact_power_of_two;
+        for tolerance in [f64::from_bits(1), exact_power_of_two(-600)] {
             let mut tiny_points = vec![XY::new(tolerance, 0.0)];
             tiny_points.extend(
                 (0..(SNAP_INDEX_MIN_POINTS - 1)).map(|index| XY::new(10.0 + index as f64, 10.0)),
@@ -1023,9 +1024,10 @@ mod snap_reference_tests {
 
     #[test]
     fn inserted_source_ordinates_follow_zero_and_one_rounded_exact_ratios() {
-        let zero_t = 2.0_f64.powi(-100);
-        let zero_tolerance = 2.0_f64.powi(-101);
-        let extent = 2.0_f64.powi(1023);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let zero_t = exact_power_of_two(-100);
+        let zero_tolerance = exact_power_of_two(-101);
+        let extent = exact_power_of_two(1023);
         let zero_source_start =
             Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(0.0)));
         let zero_source_end = Point::new_raw_axes(
@@ -1046,7 +1048,7 @@ mod snap_reference_tests {
         assert_eq!(zero_inserted[0].m().unwrap().to_bits(), zero_t.to_bits());
 
         let previous = 1.0_f64.next_down();
-        let large = 2.0_f64.powi(1023);
+        let large = exact_power_of_two(1023);
         let one_source_start =
             Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-large)), MOrdinate(Some(-large)));
         let one_source_end =

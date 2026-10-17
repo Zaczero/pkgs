@@ -5,6 +5,7 @@ use super::GeoParquetAdmissionError;
 use crate::py::errors::{GeometryError, ParseError};
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geoparquet_error_categories_keep_python_projections_distinct() {
     crate::test_support::initialize_python();
     pyo3::Python::attach(|py| {
@@ -59,6 +60,7 @@ fn geoparquet_error_categories_keep_python_projections_distinct() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geoparquet_python_memory_errors_preserve_exception_identity() {
     crate::test_support::initialize_python();
     pyo3::Python::attach(|py| {

@@ -492,7 +492,8 @@ mod tests {
         two_y[0] = web_y;
         transform_in_core_xy_batch(&two, &mut two_x, &mut two_y).unwrap();
         transform_in_core_xy_batch(&two.reversed(), &mut two_x, &mut two_y).unwrap();
-        assert!((two_x[0] - web_x).abs() < 1e-9);
-        assert!((two_y[0] - web_y).abs() < 1e-9);
+        // Two projection pairs accumulate transcendental rounding in metre units.
+        approx::assert_relative_eq!(two_x[0], web_x, max_relative = 64.0 * f64::EPSILON);
+        approx::assert_relative_eq!(two_y[0], web_y, max_relative = 64.0 * f64::EPSILON);
     }
 }

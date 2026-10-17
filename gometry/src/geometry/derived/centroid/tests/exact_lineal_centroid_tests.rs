@@ -2,7 +2,8 @@ use super::exact_lineal_centroid_runs;
 
 #[test]
 fn exact_line_sum_recovers_subnormal_moment_products() {
-    let delta = 2.0_f64.powi(-540);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let delta = exact_power_of_two(-540);
     let first_x = [-0.5 * delta, 0.5 * delta];
     let first_y = [0.0, 0.0];
     let second_x = [3.5 * delta, 4.5 * delta];

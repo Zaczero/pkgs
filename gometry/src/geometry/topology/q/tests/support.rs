@@ -71,10 +71,11 @@ pub(super) fn native_frames() -> [(&'static str, GeographicFrame); 3] {
 
 pub(super) fn native_ring(frame: GeographicFrame, points: &[(f64, f64)]) -> Ring {
     fn longitude(period: f64, degrees: f64) -> f64 {
+        use crate::geometry::numerics::product::exact_power_of_two;
         if degrees >= 360.0 {
             longitude(period, degrees - 360.0) + period
         } else {
-            let scale = 2.0_f64.powi(44);
+            let scale = exact_power_of_two(44);
             (period * (degrees / 360.0) * scale).round() / scale
         }
     }

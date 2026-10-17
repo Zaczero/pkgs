@@ -65,6 +65,7 @@ fn classify(shape: &Shape) -> H3LeafClass {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn h3_hash_entropy_failure_preserves_native_kind_and_python_exception() {
     let error = super::H3UniqueCells::with_capacity_using(1, 1, None, || {
         Err(crate::error::ResourceError::Entropy.into())

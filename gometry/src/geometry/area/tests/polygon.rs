@@ -1,7 +1,8 @@
 #[test]
 fn packed_polygon_measure_preserves_extreme_semantic_values() {
-    let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
-    let mixed_ys = [0.0, f64::from_bits(2), 2.0_f64.powi(-20), 0.0];
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let mixed_xs = [0.0, f64::from_bits(1), exact_power_of_two(-20), 0.0];
+    let mixed_ys = [0.0, f64::from_bits(2), exact_power_of_two(-20), 0.0];
     assert_eq!(
         polygon_area_measure_columns(&mixed_xs, &mixed_ys, &[0, 4], 0..1),
         0.0
@@ -15,8 +16,9 @@ fn packed_polygon_measure_preserves_extreme_semantic_values() {
 
 #[test]
 fn shell_hole_cancellation_rounds_the_exact_area_once() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     type Columns<'a> = (&'a [f64], &'a [f64]);
-    let (lo, hi) = (2.0_f64.powi(-60), 1.0 - 2.0_f64.powi(-53));
+    let (lo, hi) = (exact_power_of_two(-60), 1.0 - exact_power_of_two(-53));
     let cases: [(Columns<'_>, Columns<'_>, f64); 2] = [
         // The shell bumps 2^-52 above its equal hole: both rings round to
         // one binary64 area, and their exact difference is 2^-53.
@@ -25,19 +27,19 @@ fn shell_hole_cancellation_rounds_the_exact_area_once() {
                 0.0,
                 0.0,
                 1.0,
-                1.0 + 2.0_f64.powi(-52),
+                1.0 + exact_power_of_two(-52),
                 1.0,
                 0.0,
             ]),
             (&[0.0, 0.0, 1.0, 1.0, 0.0], &[0.0, 1.0, 1.0, 0.0, 0.0]),
-            2.0_f64.powi(-53),
+            exact_power_of_two(-53),
         ),
         // A valid thin annulus whose rounded rings leave a finite
         // difference with no reliable bits.
         (
             (&[0.0, 1.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 1.0, 0.0]),
             (&[lo, lo, hi, hi, lo], &[lo, hi, hi, lo, lo]),
-            2.0_f64.powi(-52) + 2.0_f64.powi(-59),
+            exact_power_of_two(-52) + exact_power_of_two(-59),
         ),
     ];
     for ((shell_xs, shell_ys), (hole_xs, hole_ys), expected) in cases {
@@ -92,11 +94,12 @@ fn packed_polygon_area_falls_back_on_shell_hole_cancellation() {
 
 #[test]
 fn thin_open_cycle_and_closed_polygon_round_to_known_area() {
-    let tiny = 2.0_f64.powi(-54);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let tiny = exact_power_of_two(-54);
     let open = [XY::new(1.0, 0.0), XY::new(0.0, 1.0), XY::new(tiny, 1.0)];
     assert_eq!(
         open_xy_cycle_magnitude(&open).get().to_bits(),
-        2.0_f64.powi(-55).to_bits()
+        exact_power_of_two(-55).to_bits()
     );
     let open_points = [
         Point::new_raw_xy(1.0, 0.0),
@@ -105,7 +108,7 @@ fn thin_open_cycle_and_closed_polygon_round_to_known_area() {
     ];
     assert_eq!(
         open_point_cycle_magnitude(&open_points).get().to_bits(),
-        2.0_f64.powi(-55).to_bits()
+        exact_power_of_two(-55).to_bits()
     );
 
     // The middle rounded cross product is zero, while the exact doubled
@@ -114,7 +117,7 @@ fn thin_open_cycle_and_closed_polygon_round_to_known_area() {
     let closed_ys = [0.0, 1.000_000_007_450_580_6, 1.0, 0.0];
     assert_eq!(
         polygon_area_measure_columns(&closed_xs, &closed_ys, &[0, 4], 0..1).to_bits(),
-        2.0_f64.powi(-55).to_bits()
+        exact_power_of_two(-55).to_bits()
     );
 }
 

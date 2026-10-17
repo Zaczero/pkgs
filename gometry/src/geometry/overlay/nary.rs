@@ -2356,6 +2356,7 @@ mod nary_work_tests {
     use super::NARY_CANDIDATE_WORK;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn public_nary_overlays_bound_repeated_input_work() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

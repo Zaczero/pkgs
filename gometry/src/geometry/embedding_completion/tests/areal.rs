@@ -219,6 +219,7 @@ fn areal_fan_uses_cyclic_order_not_opposed_ray_identity() {
 
 #[test]
 fn known_graph_accepts_admitted_midpoint_repair_that_changes_opposition() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let two_to_53 = 1_i64 << 53;
     let ratio = |numerator, denominator| {
         ExactRational::new(
@@ -270,7 +271,7 @@ fn known_graph_accepts_admitted_midpoint_repair_that_changes_opposition() {
         (ExactRational::from_f64(1.0), ExactRational::zero()),
         (upper_x, ExactRational::from_f64(0.5)),
         (
-            ExactRational::from_f64(1.0 + 2.0_f64.powi(-52)),
+            ExactRational::from_f64(1.0 + exact_power_of_two(-52)),
             ExactRational::one(),
         ),
         (ExactRational::from_f64(1.0), ExactRational::from_f64(0.75)),
@@ -332,6 +333,7 @@ fn known_graph_accepts_admitted_midpoint_repair_that_changes_opposition() {
 
 #[test]
 fn degree_three_areal_fan_accepts_opposition_change_without_reordering() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let two_to_53 = 1_i64 << 53;
     let epsilon = ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(two_to_53)).unwrap();
     let constructed_y = ExactRational::one().try_add(&epsilon).unwrap();
@@ -367,7 +369,7 @@ fn degree_three_areal_fan_accepts_opposition_change_without_reordering() {
         (0.0, 0.0),
         (1.0, -1.0),
         (0.0, 1.0),
-        (-1.0, 1.0 + 2.0_f64.powi(-52)),
+        (-1.0, 1.0 + exact_power_of_two(-52)),
         (-1.0, 1.0),
     ]);
     assert!(
@@ -379,6 +381,7 @@ fn degree_three_areal_fan_accepts_opposition_change_without_reordering() {
 
 #[test]
 fn reflected_closed_line_seals_beside_an_unrelated_polygon() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let half_ulp =
         ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
     let line_apex_y = ExactRational::one().try_add(&half_ulp).unwrap();
@@ -424,7 +427,7 @@ fn reflected_closed_line_seals_beside_an_unrelated_polygon() {
             .is_none()
     );
 
-    let lower = 1.0 - 2.0_f64.powi(-53);
+    let lower = 1.0 - exact_power_of_two(-53);
     let repaired = points(&[
         (-4.0, -4.0),
         (-2.0, -4.0),
@@ -499,6 +502,7 @@ fn reflected_closed_line_seals_beside_an_unrelated_polygon() {
 
 #[test]
 fn point_leaving_a_closed_line_face_keeps_its_areal_host() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let half_ulp =
         ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
     let point_y = ExactRational::one().try_add(&half_ulp).unwrap();
@@ -546,7 +550,7 @@ fn point_leaving_a_closed_line_face_keeps_its_areal_host() {
             .is_none()
     );
 
-    let lower = 1.0 - 2.0_f64.powi(-53);
+    let lower = 1.0 - exact_power_of_two(-53);
     let repaired = points(&[
         (-4.0, -4.0),
         (-2.0, -4.0),
@@ -627,6 +631,7 @@ fn point_leaving_a_closed_line_face_keeps_its_areal_host() {
 
 #[test]
 fn moving_a_point_across_an_areal_wall_changes_its_host() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let half_ulp =
         ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
     let point_x = ExactRational::one().try_add(&half_ulp).unwrap();
@@ -659,7 +664,7 @@ fn moving_a_point_across_an_areal_wall_changes_its_host() {
         (1.0, 0.0),
         (1.0, 2.0),
         (0.0, 2.0),
-        (1.0 - 2.0_f64.powi(-53), 1.0),
+        (1.0 - exact_power_of_two(-53), 1.0),
     ]);
     assert!(
         admit_candidate(&graph, &layout, lower, &mut work)
@@ -672,7 +677,7 @@ fn moving_a_point_across_an_areal_wall_changes_its_host() {
         (1.0, 0.0),
         (1.0, 2.0),
         (0.0, 2.0),
-        (1.0 + 2.0_f64.powi(-52), 1.0),
+        (1.0 + exact_power_of_two(-52), 1.0),
     ]);
     assert!(
         admit_candidate(&graph, &layout, upper, &mut work)
@@ -683,6 +688,7 @@ fn moving_a_point_across_an_areal_wall_changes_its_host() {
 
 #[test]
 fn attached_chord_between_wall_vertices_uses_the_areal_host_view() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let half_ulp =
         ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
     let line_midpoint_y = ExactRational::one().try_add(&half_ulp).unwrap();
@@ -714,7 +720,7 @@ fn attached_chord_between_wall_vertices_uses_the_areal_host_view() {
         (2.0, 0.0),
         (2.0, 2.0),
         (0.0, 2.0),
-        (1.0, 1.0 - 2.0_f64.powi(-53)),
+        (1.0, 1.0 - exact_power_of_two(-53)),
     ]);
     assert!(
         admit_candidate(&graph, &layout, lower, &mut work)
@@ -725,6 +731,7 @@ fn attached_chord_between_wall_vertices_uses_the_areal_host_view() {
 
 #[test]
 fn line_bridge_between_areal_components_keeps_each_wall_host() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let half_ulp =
         ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
     let bridge_y = ExactRational::one().try_add(&half_ulp).unwrap();
@@ -802,7 +809,7 @@ fn line_bridge_between_areal_components_keeps_each_wall_host() {
         (4.0, 0.0),
         (4.0, 1.0),
         (3.0, 1.0),
-        (2.0, 1.0 - 2.0_f64.powi(-53)),
+        (2.0, 1.0 - exact_power_of_two(-53)),
     ]);
     assert!(
         admit_candidate(&graph, &layout, lower, &mut work)

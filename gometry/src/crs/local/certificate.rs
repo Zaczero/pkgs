@@ -1236,6 +1236,7 @@ mod certificate_math {
         use super::*;
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
         fn long_parallel_certificate_bounds_offset_endpoint_direction() {
             let state = crate::crs::runtime_state_snapshot().unwrap();
             let frame = crate::crs::info_with_state("EPSG:4326", &state)

@@ -158,6 +158,7 @@ fn planar_locate_ordinals_preserve_shared_multipart_occurrences() {
 }
 #[test]
 fn prepared_planar_locate_matches_streaming_across_seeded_ties_zero_edges_and_empty_parts() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     use crate::geometry::{CoordinateAxes, MultiLineString, MultiMember};
 
     let line = |points: &[Point]| {
@@ -202,7 +203,7 @@ fn prepared_planar_locate_matches_streaming_across_seeded_ties_zero_edges_and_em
             MultiMember::Value(near_zero_probe),
             MultiMember::Empty,
             MultiMember::Value(line(&[
-                Point::new_raw_xy(2.0_f64.powi(-27), -9.0),
+                Point::new_raw_xy(exact_power_of_two(-27), -9.0),
                 Point::new_raw_xy(1.0, -9.0),
             ])),
             MultiMember::Value(line(&[

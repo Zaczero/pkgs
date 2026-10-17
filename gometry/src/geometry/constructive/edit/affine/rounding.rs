@@ -303,10 +303,11 @@ mod affine_rounding_tests {
 
     #[test]
     fn residual_bound_rejects_an_expansion_whose_exact_value_crosses_halfway() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         // The retained sum is 2^-106 below halfway; the residual moves it
         // 2^-106 above halfway and therefore changes the rounded result.
-        let low = 2.0_f64.powi(-53) - 2.0_f64.powi(-106);
-        let residual = 2.0_f64.powi(-105);
+        let low = exact_power_of_two(-53) - exact_power_of_two(-106);
+        let residual = exact_power_of_two(-105);
         let row = AffineOriginRow {
             coefficient_x: 0.0,
             coefficient_y: 0.0,
@@ -334,12 +335,13 @@ mod affine_rounding_tests {
 
     #[test]
     fn row_admission_rejects_a_product_with_a_half_subnormal_tail() {
-        let one_plus_ulp = 1.0 + 2.0_f64.powi(-52);
-        let coefficient_x = one_plus_ulp * 2.0_f64.powi(-400);
-        let value_x = one_plus_ulp * 2.0_f64.powi(-571);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let one_plus_ulp = 1.0 + exact_power_of_two(-52);
+        let coefficient_x = one_plus_ulp * exact_power_of_two(-400);
+        let value_x = one_plus_ulp * exact_power_of_two(-571);
         let coefficient_y = -0.5;
-        let value_y = 2.0_f64.powi(-970) + 2.0_f64.powi(-1021);
-        let origin_y = 2.0_f64.powi(-52);
+        let value_y = exact_power_of_two(-970) + exact_power_of_two(-1021);
+        let origin_y = exact_power_of_two(-52);
         let row = AffineOriginRow::new(
             coefficient_x,
             coefficient_y,
@@ -392,17 +394,18 @@ mod affine_rounding_tests {
 
     #[test]
     fn admitted_coordinate_loop_matches_exact_rows_and_fixes_uncertain_vertices() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let xs = [
-            2.0_f64.powi(-100),
+            exact_power_of_two(-100),
             1.0,
-            2.0_f64.powi(100),
-            -(2.0_f64.powi(100)),
+            exact_power_of_two(100),
+            -(exact_power_of_two(100)),
         ];
         let ys = [
-            -(2.0_f64.powi(-80)),
+            -(exact_power_of_two(-80)),
             0.25,
-            -(2.0_f64.powi(100)),
-            2.0_f64.powi(99),
+            -(exact_power_of_two(100)),
+            exact_power_of_two(99),
         ];
         let transform = AffineLinear::new([1.25, -0.75, 0.5, 2.0])
             .unwrap()
@@ -465,8 +468,19 @@ mod affine_rounding_tests {
 
     #[test]
     fn origin_zero_single_product_rows_match_exact_product_rounding() {
-        let xs = [-0.0, 2.0_f64.powi(-500), 1.0, -(2.0_f64.powi(100))];
-        let ys = [0.0, -(2.0_f64.powi(-200)), -3.0, 2.0_f64.powi(100)];
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let xs = [
+            -0.0,
+            exact_power_of_two(-500),
+            1.0,
+            -(exact_power_of_two(100)),
+        ];
+        let ys = [
+            0.0,
+            -(exact_power_of_two(-200)),
+            -3.0,
+            exact_power_of_two(100),
+        ];
         let transform = AffineLinear::new([1.25, 0.0, 0.0, 0.75])
             .unwrap()
             .at((0.0, 0.0))

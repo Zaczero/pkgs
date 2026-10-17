@@ -40,6 +40,7 @@ fn dwithin_exact_refinement_preserves_unset_query_bounds() {
     }
 
     #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_spatial_index_keeps_a_full_turn_line_for_nearest_and_dwithin() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

@@ -123,6 +123,7 @@ fn emitted_chords_allow_only_prescribed_endpoint_contacts() {
 
 #[test]
 fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let case = run(&[seg(0.0, 0.0, 2.0, 0.0)]);
     let mut partition = case.partition();
     // A node at exact (x, 0), as a crossing whose exact point is known.
@@ -146,7 +147,7 @@ fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
     let first = push(ExactDyadic::from_f64(1.0));
     let second = push(
         ExactDyadic::from_f64(1.0)
-            .try_add(ExactDyadic::from_f64(2.0_f64.powi(-54)))
+            .try_add(ExactDyadic::from_f64(exact_power_of_two(-54)))
             .unwrap(),
     );
     assert_eq!(
@@ -223,17 +224,18 @@ fn append_lattice_collision_points_in_order(
     count: usize,
     order: &[usize],
 ) -> Vec<NodeId> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let offsets = [
-        2.0_f64.powi(-54),
-        2.0_f64.powi(-55),
-        2.0_f64.powi(-56),
-        2.0_f64.powi(-57),
-        2.0_f64.powi(-58),
-        2.0_f64.powi(-59),
-        2.0_f64.powi(-60),
-        2.0_f64.powi(-61),
-        2.0_f64.powi(-62),
-        2.0_f64.powi(-63),
+        exact_power_of_two(-54),
+        exact_power_of_two(-55),
+        exact_power_of_two(-56),
+        exact_power_of_two(-57),
+        exact_power_of_two(-58),
+        exact_power_of_two(-59),
+        exact_power_of_two(-60),
+        exact_power_of_two(-61),
+        exact_power_of_two(-62),
+        exact_power_of_two(-63),
     ];
     assert_eq!(order.len(), count);
     let one = dyadic(1.0);
@@ -805,7 +807,8 @@ fn ten_node_collision_class_is_proved_unrepresentable_by_matching() {
 
 #[test]
 fn lattice_crossings_rounding_into_one_stored_vertex_are_repaired() {
-    let ulp = 2.0_f64.powi(-52);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let ulp = exact_power_of_two(-52);
     let case = run(&lattice_crossing_group(1.0, ulp));
     let partition = case.partition();
     assert_eq!(constructed_count(&partition), 2);
@@ -1084,7 +1087,8 @@ fn full_ar_uy_symmetric_difference_repairs_nearest_embedding() {
 
 #[test]
 fn only_free_neighbor_cells_occupied_by_stored_nodes_are_unrepresentable() {
-    let ulp = 2.0_f64.powi(-52);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let ulp = exact_power_of_two(-52);
     let segments = [
         seg(
             1.0 - 100.0 * ulp,
@@ -1124,6 +1128,7 @@ fn only_free_neighbor_cells_occupied_by_stored_nodes_are_unrepresentable() {
 
 #[test]
 fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let down = 1.0_f64.next_down();
     let up = 1.0_f64.next_up();
     let case = run(&[
@@ -1132,7 +1137,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
         seg(down, up, up, up),
     ]);
     let mut partition = case.partition();
-    let ulp = 2.0_f64.powi(-52);
+    let ulp = exact_power_of_two(-52);
     let exact = dyadic(1.0).try_add(dyadic(ulp / 4.0)).unwrap();
     let point = append_constructed_point(&mut partition, exact.clone(), exact);
     let mut emission = partition.span_emission(0..u32::try_from(partition.spans.len()).unwrap());
@@ -1482,8 +1487,9 @@ fn rectangle_and_geographic_domains_filter_boundary_neighbors() {
 
 #[test]
 fn distant_collision_classes_are_searched_independently() {
-    let first_group = lattice_crossing_group(1.0, 2.0_f64.powi(-52));
-    let second_group = lattice_crossing_group(8.0, 2.0_f64.powi(-49));
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let first_group = lattice_crossing_group(1.0, exact_power_of_two(-52));
+    let second_group = lattice_crossing_group(8.0, exact_power_of_two(-49));
     let case = run(&[
         first_group[0],
         first_group[1],
@@ -1666,6 +1672,7 @@ fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
 
 #[test]
 fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let source = run(&[seg(0.0, 0.0, 0.0, 0.0)]);
     let minimum_subnormal = dyadic(f64::from_bits(1));
     let cases = [
@@ -1679,9 +1686,9 @@ fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes
         (
             "vertical",
             dyadic(1.0e100),
-            dyadic(-1.0).try_add(dyadic(2.0_f64.powi(-55))).unwrap(),
+            dyadic(-1.0).try_add(dyadic(exact_power_of_two(-55))).unwrap(),
             dyadic(1.0e100),
-            dyadic(1.0).try_add(dyadic(2.0_f64.powi(-54))).unwrap(),
+            dyadic(1.0).try_add(dyadic(exact_power_of_two(-54))).unwrap(),
         ),
     ];
 
@@ -1806,7 +1813,8 @@ fn degree_two_reversal_segments() -> [Segment; 3] {
 }
 
 fn fan_reversal_quad_segments() -> [Segment; 6] {
-    let step = 2.0_f64.powi(-52);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let step = exact_power_of_two(-52);
     let point = |(x, y): (i32, i32)| XY::new(1.0 + f64::from(x) * step, 1.0 + f64::from(y) * step);
     let [a, b, c, d] = [(0, 9), (9, 5), (11, 5), (3, 8)].map(point);
     [
@@ -2150,6 +2158,7 @@ fn classify_fan_candidates(
 
 #[test]
 fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let mut case = run(&fan_reversal_quad_segments());
     case.isolated.push(XY::new(7.0, 7.0));
     let partition = case.partition();
@@ -2165,7 +2174,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
         partition.node_count(),
         "the four-departure fan is the final CSR row"
     );
-    let step = 2.0_f64.powi(-52);
+    let step = exact_power_of_two(-52);
     let lattice =
         |(x, y): (i32, i32)| XY::new(1.0 + f64::from(x) * step, 1.0 + f64::from(y) * step);
     let [q0, q1, q2, q3] = [(0, 9), (9, 5), (11, 5), (3, 8)].map(lattice);
@@ -2178,7 +2187,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let nearest = embedding::Embedding::nearest(&partition);
     assert_eq!(
         nearest.xy(center),
-        XY::new(1.0 + 4.0 * 2.0_f64.powi(-52), 1.0 + 8.0 * 2.0_f64.powi(-52))
+        XY::new(1.0 + 4.0 * exact_power_of_two(-52), 1.0 + 8.0 * exact_power_of_two(-52))
     );
     let (topology, edges) = partition.local_topology().unwrap();
     let global = partition.global_faces(&topology, &edges).unwrap();

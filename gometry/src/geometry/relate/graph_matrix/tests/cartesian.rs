@@ -1,5 +1,6 @@
 #[test]
 fn convex_pair_relations_match_known_matrices() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let ccw_outer = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
     let cw_outer = Shape::Polygon(polygon(&[
         [0.0, 0.0],
@@ -24,8 +25,8 @@ fn convex_pair_relations_match_known_matrices() {
     let tiny_base = Shape::Polygon(rectangle(1.0e-150, 1.0e-150, 2.0e-150, 2.0e-150));
     let cancellation = Shape::Polygon(polygon(&[
         [0.0, 0.0],
-        [1.0, 1.0 + 2.0_f64.powi(-27)],
-        [1.0 - 2.0_f64.powi(-27), 1.0],
+        [1.0, 1.0 + exact_power_of_two(-27)],
+        [1.0 - exact_power_of_two(-27), 1.0],
         [0.0, 0.0],
     ]));
 
@@ -235,6 +236,7 @@ fn strict_convexity_rejects_short_rings_but_permissive_convexity_remains() {
 }
 #[test]
 fn exact_areal_relation_transposes_for_curated_pairs() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let shell_with_hole = Shape::Polygon(donut());
     let cases = vec![
         (
@@ -343,8 +345,8 @@ fn exact_areal_relation_transposes_for_curated_pairs() {
             "exact sign near cancellation",
             Shape::Polygon(polygon(&[
                 [0.0, 0.0],
-                [1.0, 1.0 + 2.0_f64.powi(-27)],
-                [1.0 - 2.0_f64.powi(-27), 1.0],
+                [1.0, 1.0 + exact_power_of_two(-27)],
+                [1.0 - exact_power_of_two(-27), 1.0],
                 [0.0, 0.0],
             ])),
             Shape::Polygon(rectangle(3.0, 0.0, 4.0, 1.0)),

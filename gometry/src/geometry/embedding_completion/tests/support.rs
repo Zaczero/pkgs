@@ -156,8 +156,9 @@ fn exact_points(values: &[(ExactRational, ExactRational)]) -> ExactPoints {
 }
 
 fn near_one_exact_chart_point() -> ExactChartPoint {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let x = ExactDyadic::from_f64(1.0)
-        .try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(-256)), &mut Unmetered)
+        .try_add_with_work(ExactDyadic::from_f64(exact_power_of_two(-256)), &mut Unmetered)
         .expect("the test rational is representable");
     ExactChartPoint::from_rationals(ExactRational::from_dyadic(x), ExactRational::from_f64(0.0))
 }

@@ -105,6 +105,7 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
     Ok(())
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_distance_measures_a_full_turn_line_as_its_parallel() {
     crate::test_support::initialize_python();
     Python::attach(|py| {

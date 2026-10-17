@@ -1,4 +1,5 @@
 #![feature(
+    cfg_sanitize,
     once_cell_try,
     portable_simd,
     slice_partition_dedup,
@@ -65,9 +66,12 @@ mod work;
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: test_support::CountingAllocator = test_support::CountingAllocator;
-#[cfg(not(test))]
+// Sanitizers must observe allocation lifetimes and allocator synchronization.
+#[cfg(not(any(test, sanitize = "address", sanitize = "thread")))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(any(test, sanitize = "address", sanitize = "thread"))]
+use mimalloc as _;
 #[macro_use]
 mod heap_size;
 pub(crate) use heap_size::HeapSize;
@@ -448,6 +452,7 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions include the first mismatching coordinate in the failure"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn contains_coordinates_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -505,6 +510,7 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions verify public predicate results and nullable row positions"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn predicate_iterables_keep_nullable_row_positions() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -534,6 +540,7 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions verify SpatialIndex mapping values and unhashability"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn spatial_index_equality_compares_mapping_contents_and_disables_hashing() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -563,6 +570,7 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions verify the public error type and original array row"
     )]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn distance_3d_array_missing_z_raises_on_its_logical_row() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {

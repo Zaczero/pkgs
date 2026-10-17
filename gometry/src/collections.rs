@@ -394,6 +394,7 @@ mod row_id_sort_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn collection_entropy_failure_remains_retryable_and_maps_to_os_error() {
         use crate::error::{ErrorKind, ResourceError};
         pyo3::Python::initialize();

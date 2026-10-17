@@ -209,11 +209,12 @@ pub(super) fn scale_area_fast(
     density: &GeographicAreaDensity,
     x_exponent: i32,
 ) -> Option<(f64, PositiveBound)> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     if !integral.is_normal() {
         return None;
     }
     let scale_exponent = x_exponent.checked_neg()?.checked_add(3)?;
-    let power = 2.0_f64.powi(scale_exponent);
+    let power = exact_power_of_two(scale_exponent);
     if !power.is_normal() {
         return None;
     }
@@ -396,6 +397,7 @@ impl PositiveBound {
     }
 
     pub(super) fn add_upper(self, other: Self) -> Option<Self> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         if self.is_zero() {
             return Some(other);
         }
@@ -411,7 +413,7 @@ impl PositiveBound {
         if difference < -1074 {
             return Self::from_parts(large.mantissa.next_up(), large.exponent);
         }
-        let aligned = small.mantissa * 2.0_f64.powi(difference);
+        let aligned = small.mantissa * exact_power_of_two(difference);
         if aligned == 0.0 {
             return Self::from_parts(large.mantissa.next_up(), large.exponent);
         }
@@ -493,18 +495,19 @@ impl PositiveBound {
     }
 
     pub(super) fn ceil_to_usize(self) -> Option<usize> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         if self.is_zero() {
             return Some(0);
         }
         if self.exponent < 0 {
-            let value = self.mantissa * 2.0_f64.powi(self.exponent);
+            let value = self.mantissa * exact_power_of_two(self.exponent);
             return Some(value.ceil() as usize);
         }
         let exponent = u32::try_from(self.exponent).ok()?;
         if exponent >= usize::BITS {
             return None;
         }
-        let value = self.mantissa * 2.0_f64.powi(self.exponent);
+        let value = self.mantissa * exact_power_of_two(self.exponent);
         if !value.is_finite() || value.ceil() > usize::MAX as f64 {
             return None;
         }

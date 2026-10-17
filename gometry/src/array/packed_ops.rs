@@ -629,6 +629,7 @@ mod geographic_validity_admission_tests {
     use crate::py::errors::InvalidGeometryError;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn out_of_domain_latitude_is_false_in_array_validity_without_raising() {
         Python::initialize();
         let invalid = parse_wkt("POLYGON ((0 0, 10 0, 10 100, 0 0))").unwrap();

@@ -8,6 +8,11 @@ status-level = "leak"
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "1s" }
 leak-timeout = { period = "1s", result = "fail" }
 
+[[profile.default-miri.overrides]]
+# Both arms must exceed the production range-index admission threshold.
+filter = "test(=geometry::constructive::simplify::keep_identity_tests::dp_sawtooth_source_work_grows_below_quadratic)"
+slow-timeout = { period = "60s", terminate-after = 15, grace-period = "1s" }
+
 [profile.default-miri.junit]
 path = "junit.xml"
 report-name = "miri"

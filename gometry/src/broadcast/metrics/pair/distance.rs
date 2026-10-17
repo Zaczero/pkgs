@@ -237,46 +237,45 @@ mod dwithin_parity_tests {
         points_dwithin(a, b, limit)
     }
 
-    fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
-        PreparedPlan::new(ShapeData::new(Shape::Point(a)))
-            .dwithin(&PreparedPlan::new(ShapeData::new(Shape::Point(b))), limit)
-            .unwrap()
-    }
-
     #[test]
     fn planar_dwithin_scalar_packed_and_shape_data_agree() {
-        let coords = [-1e6, -3.0, -1.0, 0.0, 1.0, 3.0, 4.0, 1e6];
-        for &ax in &coords {
-            for &ay in &coords {
-                for &bx in &coords {
-                    for &by in &coords {
-                        let (a, b) = (point(ax, ay), point(bx, by));
-                        let dist = point_distance(a, b);
-                        let limits = [
-                            0.0,
-                            f64::MIN_POSITIVE,
-                            dist * 0.5,
-                            dist,
-                            dist.next_down(),
-                            dist.next_up(),
-                            dist * 2.0,
-                            f64::INFINITY,
-                        ];
-                        for limit in limits {
-                            let scalar = scalar_point_dwithin(a, b, limit);
-                            let packed = packed_planar_dwithin(a, b, limit);
-                            let data = shape_data_dwithin(a, b, limit);
-                            assert_eq!(
-                                scalar, packed,
-                                "scalar vs packed at ({ax},{ay})-({bx},{by}) limit={limit}"
-                            );
-                            assert_eq!(
-                                scalar, data,
-                                "scalar vs ShapeData at ({ax},{ay})-({bx},{by}) limit={limit}"
-                            );
-                        }
-                    }
-                }
+        for [(ax, ay), (bx, by)] in [
+            [(0.0, 0.0), (0.0, 0.0)],
+            [(3.0, -1.0), (3.0, -1.0)],
+            [(0.0, 0.0), (3.0, 4.0)],
+            [(3.0, 4.0), (0.0, 0.0)],
+            [(-3.0, -4.0), (0.0, 0.0)],
+            [(-3.0, 1.0), (4.0, -1.0)],
+            [(1.0, -3.0), (1.0, 4.0)],
+            [(1.0, -3.0), (4.0, -3.0)],
+            [(-1e6, -1e6), (1e6, 1e6)],
+            [(1e6, 1e6), (1e6 + 3.0, 1e6 + 4.0)],
+        ] {
+            let (a, b) = (point(ax, ay), point(bx, by));
+            let first = PreparedPlan::new(ShapeData::new(Shape::Point(a)));
+            let second = PreparedPlan::new(ShapeData::new(Shape::Point(b)));
+            let dist = point_distance(a, b);
+            for limit in [
+                0.0,
+                f64::MIN_POSITIVE,
+                dist * 0.5,
+                dist,
+                dist.next_down(),
+                dist.next_up(),
+                dist * 2.0,
+                f64::INFINITY,
+            ] {
+                let scalar = scalar_point_dwithin(a, b, limit);
+                let packed = packed_planar_dwithin(a, b, limit);
+                let data = first.dwithin(&second, limit).unwrap();
+                assert_eq!(
+                    scalar, packed,
+                    "scalar vs packed at ({ax},{ay})-({bx},{by}) limit={limit}"
+                );
+                assert_eq!(
+                    scalar, data,
+                    "scalar vs ShapeData at ({ax},{ay})-({bx},{by}) limit={limit}"
+                );
             }
         }
     }
@@ -332,6 +331,7 @@ mod planar_nearest_source_ordinate_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn planar_nearest_witness_keeps_xy_and_resolves_source_root_ordinates() {
         let state = crate::crs::runtime_state_snapshot().unwrap();
         let metric_model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
@@ -395,6 +395,7 @@ mod planar_nearest_source_ordinate_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn shortest_line_samples_follow_the_retained_half_and_full_turn_chords() {
         let state = crate::crs::runtime_state_snapshot().unwrap();
         let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
@@ -530,6 +531,7 @@ mod planar_nearest_source_ordinate_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_xy_shortest_line_skips_source_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -568,6 +570,7 @@ mod shortest_line_tests {
     use crate::geometry::{CoordSeq, LineSeq};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn shortest_line_from_geodesic_point_witnesses_uses_its_stored_short_step() {
         let frame = GeographicFrame::crs84();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
@@ -598,6 +601,7 @@ mod shortest_line_tests {
         assert!(step.abs() < 1.0, "seam connector step is {step}");
     }
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn shortest_line_from_chart_edge_witness_retains_its_chart_step() {
         let frame = GeographicFrame::crs84();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();

@@ -423,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_frames_follow_axis_roles_units_and_prime_meridian() {
         let epsg = info("EPSG:4326").unwrap();
         let crs84 = info("OGC:CRS84").unwrap();
@@ -462,6 +463,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_frames_cover_compound_and_exclude_nonperiodic_crs() {
         let horizontal = info("EPSG:4326").unwrap().geographic_frame().unwrap();
         let compound = info("EPSG:9707").unwrap();
@@ -484,6 +486,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn numeric_unit_equality_does_not_confuse_angular_and_linear_axes() {
         let radians = r#"GEOGCRS["Radian axes",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]],CS[ellipsoidal,2],AXIS["longitude",east,ORDER[1],ANGLEUNIT["radian",1]],AXIS["latitude",north,ORDER[2],ANGLEUNIT["radian",1]]]"#;
         let angular = info(radians).unwrap();
@@ -502,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_frame_is_retained_by_the_info_cache() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let first = info("EPSG:4807").unwrap();
@@ -520,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_frame_reads_axis_factors_independently() {
         let wkt = r#"GEOGCRS["Mixed angular units",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.015707963267948967]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["grad",0.015707963267948967]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["radian",1]]]"#;
         let metadata = info(wkt).unwrap();
@@ -534,6 +539,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn malformed_geographic_axes_are_an_error_not_nongeographic() {
         let wkt = r#"GEOGCRS["No longitude",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],CS[ellipsoidal,2],AXIS["latitude one",north,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],AXIS["latitude two",north,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"#;
         let error = info(wkt).unwrap_err().to_string();
@@ -546,6 +552,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn metadata_pole_round_trips_require_one_exterior_ulp_allowance() {
         let radian_wkt = r#"GEOGCRS["Radian text round trip",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["radian",1]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["radian",1]]]"#;
         let grad_wkt = r#"GEOGCRS["Grad text round trip",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.015707963267948967]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["grad",0.015707963267948967]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"#;
@@ -624,6 +631,7 @@ mod tests {
     /// Geometry epoch policy: the WGS 84 ensemble and dynamic datums admit
     /// epochs; a static datum and a merely dynamic-member ensemble do not.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geometry_epoch_admission_matches_frame_policy() {
         for (crs, expected) in [
             ("EPSG:4326", true),  // WGS 84 ensemble of dynamic realizations
@@ -666,6 +674,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn authored_axis_meaning_is_preserved_in_native_forward_inverse_pipeline() {
         let a = 6_378_137.0;
         let degree = std::f64::consts::PI / 180.0;
@@ -727,6 +736,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn authored_native_values_keep_near_units_prime_meridian_and_offsets() {
         let degree = std::f64::consts::PI / 180.0;
         for factor in [

@@ -428,6 +428,7 @@ fn schema_only_export_releases_without_array_export() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn schema_only_uses_borrowed_description_without_payload_work() {
     let _test_lock = NATIVE_SCHEMA_TEST_LOCK
         .lock()
@@ -529,6 +530,7 @@ fn stream_export_release_is_idempotent_after_batch_move() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
     let _test_lock = NATIVE_SIGNAL_STREAM_TEST_LOCK
         .lock()

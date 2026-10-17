@@ -69,6 +69,7 @@ fn selected_sampling_draws() -> Vec<Point> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
@@ -192,6 +193,7 @@ fn sampling_array_readback_rejects_a_corrupted_area_draw() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();

@@ -1,5 +1,6 @@
 fn check_cocircular_underflow(exponent: i32) {
-    let scale = 2.0_f64.powi(exponent);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let scale = exact_power_of_two(exponent);
     let points = [
         XY::new(5.0 * scale, 0.0),
         XY::new(3.0 * scale, 4.0 * scale),

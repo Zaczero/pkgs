@@ -719,8 +719,9 @@ mod tests {
 
     #[test]
     fn exact_endpoint_gap_contact_survives_distance_rounding_up() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let x = 1.0_f64.next_down();
-        let y = 2.0_f64.powi(-26).next_down();
+        let y = exact_power_of_two(-26).next_down();
         let neighbor = [rectangle(x, y, x + 0.125, 2.0 * y)];
         let prepared = coverage_rows(&neighbor, 1.0).unwrap();
         let edge = Segment {
@@ -814,6 +815,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn public_coverage_operations_visit_only_local_rows() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

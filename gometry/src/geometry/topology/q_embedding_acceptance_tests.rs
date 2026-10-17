@@ -64,6 +64,7 @@ fn sealed_shape(output: QEmbeddingOutput) -> Result<crate::geometry::Shape> {
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
 fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf() -> Result<()> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let shapes = published_sample_contact_fixture()?;
     let topology = topology(&shapes)?;
     let mut budget = EvaluationBudget::new(OverlayOp::Intersection.name(), 0)?;
@@ -77,7 +78,7 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
     )?;
 
     let expected_sample_y =
-        ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-53)))?;
+        ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(exact_power_of_two(-53)))?;
     let expected_sample_x = ExactRational::from_f64(90.0);
     let mut sample_index = None;
     for (index, sample) in publication.samples.iter().enumerate() {
@@ -443,9 +444,10 @@ fn assigned_endpoint_publisher_shrinks_away_the_midpoint_sample() -> Result<()> 
         ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent,
         publish_computed_chain_with_vertex_intents_and_samples,
     };
+    use crate::geometry::numerics::product::exact_power_of_two;
     use crate::geometry::{ExpansionBudget, MOrdinate, ZOrdinate};
 
-    let u = 2.0_f64.powi(-45);
+    let u = exact_power_of_two(-45);
     let shapes = [
         line_shape(&[(0.0, 1.0), (180.0, 1.0)])?,
         line_shape(&[(180.0 - u, 0.0), (180.0, 2.0)])?,
@@ -694,7 +696,8 @@ fn assigned_endpoint_publisher_shrinks_away_the_midpoint_sample() -> Result<()> 
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
 fn publication_sample_survives_constructed_endpoint_repair() -> Result<()> {
-    let u = 2.0_f64.powi(-45);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let u = exact_power_of_two(-45);
     let shapes = [
         line_shape(&[(0.0, 1.0), (180.0, 1.0)])?,
         line_shape(&[(180.0 - u, 0.0), (180.0, 2.0)])?,

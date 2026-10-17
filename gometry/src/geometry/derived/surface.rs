@@ -669,7 +669,8 @@ mod tests {
 
     #[test]
     fn adjacent_float_triangles_publish_only_exactly_covered_points() {
-        let unit = 2.0_f64.powi(-52);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let unit = exact_power_of_two(-52);
         let vertices = [(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)];
         for (reflect_x, reflect_y, translate_y) in [
             (false, false, 0.0),
@@ -962,7 +963,8 @@ mod tests {
 
     #[test]
     fn packed_polygon_row_falls_back_when_rounded_point_is_outside() {
-        let unit = 2.0_f64.powi(-52);
+        use crate::geometry::numerics::product::exact_power_of_two;
+        let unit = exact_power_of_two(-52);
         let source = polygon(
             &[(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)],
             &[],
@@ -988,10 +990,11 @@ mod tests {
 
     #[test]
     fn packed_nullable_reversed_duplicate_gather_keeps_exact_polygon_membership() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
 
         crate::test_support::initialize_python();
-        let unit = 2.0_f64.powi(-52);
+        let unit = exact_power_of_two(-52);
         let triangle = polygon(
             &[(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)],
             &[],

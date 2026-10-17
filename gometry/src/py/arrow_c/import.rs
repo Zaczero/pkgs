@@ -307,6 +307,7 @@ mod tests {
     use super::native_stream_memory_error;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn stream_memory_error_preserves_provider_detail() {
         Python::initialize();
         Python::attach(|py| {

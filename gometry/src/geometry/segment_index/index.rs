@@ -531,25 +531,26 @@ mod query_tests {
 
     #[test]
     fn clearance_point_query_matches_exact_exhaustive_source_order() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let cases = [
             vec![
                 Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(1.0, 2.0_f64.powi(-28)),
+                Point::new_raw_xy(1.0, exact_power_of_two(-28)),
                 Point::new_raw_xy(1.0, 0.0),
                 Point::new_raw_xy(-0.0, 0.0),
                 Point::new_raw_xy(20.0, 20.0),
             ],
             vec![
                 Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0_f64.powi(-700), 0.0),
-                Point::new_raw_xy(3.0 * 2.0_f64.powi(-700), 0.0),
+                Point::new_raw_xy(exact_power_of_two(-700), 0.0),
+                Point::new_raw_xy(3.0 * exact_power_of_two(-700), 0.0),
                 Point::new_raw_xy(100.0, 100.0),
             ],
             vec![
                 Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0_f64.powi(600), 0.0),
-                Point::new_raw_xy(3.0 * 2.0_f64.powi(600), 0.0),
-                Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+                Point::new_raw_xy(exact_power_of_two(600), 0.0),
+                Point::new_raw_xy(3.0 * exact_power_of_two(600), 0.0),
+                Point::new_raw_xy(-(exact_power_of_two(600)), exact_power_of_two(600)),
             ],
         ];
         for points in cases {

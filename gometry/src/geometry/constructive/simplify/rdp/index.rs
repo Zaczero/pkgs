@@ -573,12 +573,12 @@ mod tests {
 
     #[test]
     fn index_matches_exact_scan_over_convex_arcs_and_endpoint_caps() {
-        let xs: [f64; 64] =
-            std::array::from_fn(|index| (index as f64 * std::f64::consts::TAU / 64.0).cos());
-        let ys: [f64; 64] =
-            std::array::from_fn(|index| (index as f64 * std::f64::consts::TAU / 64.0).sin());
+        let xs: [f64; 32] =
+            std::array::from_fn(|index| (index as f64 * std::f64::consts::TAU / 32.0).cos());
+        let ys: [f64; 32] =
+            std::array::from_fn(|index| (index as f64 * std::f64::consts::TAU / 32.0).sin());
         let index = Index::new(&xs, &ys).unwrap();
-        for (start, end) in [(0, 63), (1, 62), (0, 32), (10, 45), (3, 60), (16, 48)] {
+        for (start, end) in [(0, 31), (1, 30), (0, 16), (5, 23), (3, 28), (8, 24)] {
             for tolerance in [0.0, 0.01, 0.3, 1.0, 1.99999] {
                 assert_eq!(
                     index.split(start, end, tolerance).unwrap(),

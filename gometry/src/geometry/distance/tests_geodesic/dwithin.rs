@@ -86,6 +86,7 @@ fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()
     clippy::panic_in_result_fn,
     reason = "assertions define the test oracle while Result propagates setup errors"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
     crate::test_support::initialize_python();
     let geodesic = Geodesic::wgs84();

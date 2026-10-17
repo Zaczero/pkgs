@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn point_view_is_one_coordinate() {
     let view = CoordinateView::from_shape(Arc::new(ShapeData::new(Shape::Point(pt(1.0, 2.0)))));
     assert_eq!(view.len(), 1);
@@ -8,6 +9,7 @@ fn point_view_is_one_coordinate() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn linestring_view_is_zero_copy() {
     let view = CoordinateView::from_shape(line(&[(0.0, 0.0), (1.0, 2.0), (3.0, 4.0)]));
     assert_eq!(view.len(), 3);
@@ -25,6 +27,7 @@ fn linestring_view_is_zero_copy() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn polygon_view_flattens_shell_then_holes() {
     let shell = Ring::closed(vec![pt(0.0, 0.0), pt(4.0, 0.0), pt(4.0, 4.0), pt(0.0, 4.0)]).unwrap();
     let hole = Ring::closed(vec![pt(1.0, 1.0), pt(2.0, 1.0), pt(2.0, 2.0), pt(1.0, 2.0)]).unwrap();
@@ -46,6 +49,7 @@ fn polygon_view_flattens_shell_then_holes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_polygon_view_walks_csr_rows_and_rings_in_order() {
     let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
         pt(0.0, 0.0),
@@ -116,6 +120,7 @@ fn packed_polygon_view_walks_csr_rows_and_rings_in_order() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn identity_packed_lines_row_index_fills_from_csr_offsets() {
     let coords = CoordSeq::try_from_points(&[
         pt(0.0, 0.0),
@@ -134,6 +139,7 @@ fn identity_packed_lines_row_index_fills_from_csr_offsets() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn identity_packed_polygons_row_index_spans_all_rings() {
     let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
         pt(0.0, 0.0),
@@ -166,6 +172,7 @@ fn identity_packed_polygons_row_index_spans_all_rings() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn gathered_packed_lines_row_index_uses_logical_rows() {
     let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
         pt(0.0, 0.0),
@@ -193,6 +200,7 @@ fn gathered_packed_lines_row_index_uses_logical_rows() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn collection_flattens_in_declaration_order() {
     let collection = Shape::geometry_collection(vec![
         Shape::Point(pt(9.0, 9.0)),
@@ -212,6 +220,7 @@ fn collection_flattens_in_declaration_order() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn optional_z_preserves_absent_vs_nan() {
     // Mixed Z presence must keep None for axes-absent vertices and
     // Some(NaN) for a measured NaN — the list path needs the distinction,
@@ -246,6 +255,7 @@ fn optional_z_preserves_absent_vs_nan() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_polygon_window_column_borrows_visible_span() {
     use crate::geometry::{MColumn, MOrdinate, ZOrdinate};
     let ring = |z: f64, m: f64| {
@@ -314,6 +324,7 @@ fn packed_polygon_window_column_borrows_visible_span() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_line_window_column_borrows_visible_span() {
     let coords = CoordSeq::try_from_points(&[
         pt(9.0, 9.0),

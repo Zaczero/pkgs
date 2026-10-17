@@ -243,10 +243,15 @@ pub(crate) fn floor_binary_exponent(value: f64) -> i32 {
     }
 }
 
-pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
-    let stored = i32::from(shift).wrapping_add(1023);
-    debug_assert!((1..=2046).contains(&stored));
-    f64::from_bits((stored as u64) << 52)
+// `powi` has unspecified precision; exact scales and outward bounds need the
+// represented power itself, including at the subnormal and overflow endpoints.
+pub(crate) const fn exact_power_of_two(shift: i32) -> f64 {
+    match shift {
+        ..=-1075 => 0.0,
+        -1074..=-1023 => f64::from_bits(1_u64 << shift.wrapping_add(1074)),
+        -1022..=1023 => f64::from_bits((shift.wrapping_add(1023) as u64) << 52),
+        _ => f64::INFINITY,
+    }
 }
 
 /// A product decomposition whose residual is exactly representable as binary64.
@@ -323,6 +328,25 @@ impl ExactSign {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_powers_cover_normal_subnormal_and_range_endpoints() {
+        for (exponent, expected) in [
+            (i32::MIN, 0.0),
+            (-1075, 0.0),
+            (-1074, f64::from_bits(1)),
+            (-1023, f64::MIN_POSITIVE / 2.0),
+            (-1022, f64::MIN_POSITIVE),
+            (-1, 0.5),
+            (0, 1.0),
+            (1, 2.0),
+            (1023, f64::from_bits(0x7FE0_0000_0000_0000)),
+            (1024, f64::INFINITY),
+            (i32::MAX, f64::INFINITY),
+        ] {
+            assert_eq!(exact_power_of_two(exponent).to_bits(), expected.to_bits());
+        }
+    }
 
     /// Known residuals, including magnitudes a splitter would overflow and a
     /// residual rounded to the subnormal grid.

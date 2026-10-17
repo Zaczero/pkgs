@@ -161,6 +161,7 @@ fn fast_and_exact_contractions_include_the_last_active_degree() {
 
 #[test]
 fn exact_factorial_contraction_retains_scaled_terms_below_binary64_factors() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     const DEGREE: usize = 1025;
     let mut harmonics = [Harmonic {
         coefficient: 0.0,
@@ -169,7 +170,7 @@ fn exact_factorial_contraction_retains_scaled_terms_below_binary64_factors() {
         cosine: 0.0,
     }; MAX_AUTHALIC_HARMONICS];
     harmonics[8] = Harmonic {
-        coefficient: 2.0_f64.powi(-64),
+        coefficient: exact_power_of_two(-64),
         order: 17.0,
         sine: 0.0,
         cosine: 1.0,
@@ -217,6 +218,7 @@ fn exact_factorial_contraction_retains_scaled_terms_below_binary64_factors() {
 
 #[test]
 fn exact_publication_handles_scale_overflow_underflow_and_subnormal_quantization() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let mut coefficients = [0.0; MAX_AUTHALIC_HARMONICS];
     coefficients[0] = 1.0;
 
@@ -242,7 +244,7 @@ fn exact_publication_handles_scale_overflow_underflow_and_subnormal_quantization
     assert!(actual.is_finite());
     assert!((actual / expected - 1.0).abs() <= 2.0e-15);
 
-    let small_axis = 2.0_f64.powi(-538);
+    let small_axis = exact_power_of_two(-538);
     let small_density = GeographicAreaDensity::new(
         coefficients,
         1,

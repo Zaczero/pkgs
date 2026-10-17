@@ -52,6 +52,7 @@ fn crs84_canonical_noncrossing_line_matches_source_and_skips_chart_alloc() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn canonical_native_frame_line_skips_temporary_chart_allocation() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
     let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -76,6 +77,7 @@ fn crs84_half_period_endpoint_is_identity() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn frame_only_capture_requires_metric_authority_for_interior_ordinates() {
     let source = Shape::LineString(
         LineSeq::try_new(

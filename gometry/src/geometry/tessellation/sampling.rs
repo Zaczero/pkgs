@@ -231,10 +231,11 @@ pub(crate) fn publish_sampling_groups(
 /// huge-but-valid coordinates (exact in binary floating point; weights
 /// only need relative consistency).
 pub(crate) fn weight_scale(largest: f64) -> f64 {
-    if largest > 2.0_f64.powi(500) {
+    use crate::geometry::numerics::product::exact_power_of_two;
+    if largest > exact_power_of_two(500) {
         // Admitted finite binary64 coordinates have a ceiling exponent at most 1024.
         let exponent = largest.log2().ceil() as i32;
-        2.0_f64.powi(500_i32.wrapping_sub(exponent))
+        exact_power_of_two(500_i32.wrapping_sub(exponent))
     } else {
         1.0
     }

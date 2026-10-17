@@ -1,5 +1,6 @@
 #[test]
 fn fused_long_area_keeps_reference_bits_for_random_and_degenerate_rings() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let radial = |count: usize, radius: f64, phase: f64| {
         let mut xs = Vec::with_capacity(count + 1);
         let mut ys = Vec::with_capacity(count + 1);
@@ -72,9 +73,9 @@ fn fused_long_area_keeps_reference_bits_for_random_and_degenerate_rings() {
     ];
     assert_area_bits_match_reference(&[(&sliver_xs, &sliver_ys, false)]);
 
-    let (lo, hi) = (2.0_f64.powi(-60), 1.0 - 2.0_f64.powi(-53));
+    let (lo, hi) = (exact_power_of_two(-60), 1.0 - exact_power_of_two(-53));
     let shell_xs = [0.0, 1.0, 1.0, 0.5, 0.0, 0.0];
-    let shell_ys = [0.0, 0.0, 1.0, 1.0 + 2.0_f64.powi(-52), 1.0, 0.0];
+    let shell_ys = [0.0, 0.0, 1.0, 1.0 + exact_power_of_two(-52), 1.0, 0.0];
     let hole_xs = [0.0, 0.0, 1.0, 1.0, 0.0];
     let hole_ys = [0.0, 1.0, 1.0, 0.0, 0.0];
     let thin_hole_xs = [lo, lo, hi, hi, lo];

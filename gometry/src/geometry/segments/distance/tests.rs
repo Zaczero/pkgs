@@ -147,6 +147,7 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
 
 #[test]
 fn clearance_aabb_certificates_enclose_and_compare_exact_source_distances() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let point = XY::new(0.0, 0.0);
     let minimum = SquaredDistanceFilter::MIN_OPERAND;
     let maximum = SquaredDistanceFilter::MAX_OPERAND;
@@ -217,7 +218,7 @@ fn clearance_aabb_certificates_enclose_and_compare_exact_source_distances() {
         1
     );
 
-    let tiny = 2.0_f64.powi(-700);
+    let tiny = exact_power_of_two(-700);
     let (tiny_witness, out_of_band_filter) = clearance_aabb_filter(point, [tiny, 0.0, tiny, 0.0]);
     assert!(!out_of_band_filter.lo.is_finite() || !out_of_band_filter.hi.is_finite());
     assert_eq!(CLEARANCE_AABB_FILTER_DECLINES.with(std::cell::Cell::get), 1);
@@ -236,21 +237,26 @@ fn clearance_aabb_certificates_enclose_and_compare_exact_source_distances() {
 
 #[test]
 fn binary64_filter_declines_nonzero_products_that_underflow() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     assert_eq!(
-        checked_normal_product(2.0_f64.powi(-600), 2.0_f64.powi(-450)),
+        checked_normal_product(exact_power_of_two(-600), exact_power_of_two(-450)),
         None,
         "a nonzero subnormal product is not an exact zero"
     );
     assert_eq!(
-        checked_normal_product(2.0_f64.powi(-600), 2.0_f64.powi(-500)),
+        checked_normal_product(exact_power_of_two(-600), exact_power_of_two(-500)),
         None,
         "a nonzero product rounded all the way to zero must decline"
     );
-    assert_eq!(checked_normal_product(0.0, 2.0_f64.powi(200)), Some(0.0));
+    assert_eq!(
+        checked_normal_product(0.0, exact_power_of_two(200)),
+        Some(0.0)
+    );
 }
 
 #[test]
 fn point_segment_binary64_filters_enclose_exact_oblique_distances_and_decline_edges() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     POINT_SEGMENT_BINARY64_DECISIONS.with(|count| count.set(0));
     POINT_SEGMENT_BINARY64_DECLINES.with(|count| count.set(0));
     let cases = [
@@ -329,7 +335,7 @@ fn point_segment_binary64_filters_enclose_exact_oblique_distances_and_decline_ed
     );
 
     for exponent in [-180, -120, -60, 0, 60, 120, 180] {
-        let scale = 2.0_f64.powi(exponent);
+        let scale = exact_power_of_two(exponent);
         let point = XY::new(0.375 * scale, 1.75 * scale);
         let segment = Segment {
             start: XY::new(-2.0 * scale, -0.75 * scale),
@@ -375,7 +381,7 @@ fn point_segment_binary64_filters_enclose_exact_oblique_distances_and_decline_ed
     assert!(!boundary.is_bounded());
     assert!(boundary.contains_exact());
 
-    let tiny = 2.0_f64.powi(-700);
+    let tiny = exact_power_of_two(-700);
     let tiny_key = point_segment_exact_distance_key(XY::new(0.0, tiny), Segment {
         start: XY::new(0.0, 0.0),
         end: XY::new(tiny, tiny),
@@ -412,6 +418,7 @@ fn touching_distance_intervals_defer_equal_witnesses_to_exact_selection() {
 
 #[test]
 fn binary64_source_dot_enclosures_match_exact_dyadic_values() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let cases = [
         ([1.0, 1.0], XY::new(3.0, 4.0), XY::new(1.0, 2.0)),
         ([0.0, 1.0], XY::new(0.0, 3.0), XY::new(8.0, 1.0)),
@@ -422,8 +429,11 @@ fn binary64_source_dot_enclosures_match_exact_dyadic_values() {
         ),
         (
             [1.0, -1.0],
-            XY::new(2.0_f64.powi(60) + 2.0_f64.powi(40), 2.0_f64.powi(60)),
-            XY::new(2.0_f64.powi(60), 2.0_f64.powi(60)),
+            XY::new(
+                exact_power_of_two(60) + exact_power_of_two(40),
+                exact_power_of_two(60),
+            ),
+            XY::new(exact_power_of_two(60), exact_power_of_two(60)),
         ),
     ];
     for (normal, left, right) in cases {
@@ -482,6 +492,7 @@ fn binary64_source_dot_enclosures_match_exact_dyadic_values() {
 
 #[test]
 fn clearance_strip_binary64_decisions_keep_ties_and_decline_extremes() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     CLEARANCE_STRIP_BINARY64_DECISIONS.with(|count| count.set(0));
     CLEARANCE_STRIP_BINARY64_DECLINES.with(|count| count.set(0));
     CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(0));
@@ -577,7 +588,7 @@ fn clearance_strip_binary64_decisions_keep_ties_and_decline_extremes() {
         1
     );
 
-    let tiny = 2.0_f64.powi(-700);
+    let tiny = exact_power_of_two(-700);
     let tiny_incumbent = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tiny, 0.0));
     assert_eq!(
         clearance_strip_binary64_result(
@@ -613,6 +624,7 @@ fn clearance_strip_binary64_decisions_keep_ties_and_decline_extremes() {
 
 #[test]
 fn clearance_strip_bounds_compare_exact_source_distances_at_all_scales() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     CLEARANCE_STRIP_BINARY64_DECISIONS.with(|count| count.set(0));
     CLEARANCE_STRIP_BINARY64_DECLINES.with(|count| count.set(0));
     CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(0));
@@ -693,7 +705,7 @@ fn clearance_strip_bounds_compare_exact_source_distances_at_all_scales() {
         ordinary_fallbacks,
         "an oblique strict bound above the incumbent should prune"
     );
-    for spacing in [2.0_f64.powi(-700), 1.0, 2.0_f64.powi(600)] {
+    for spacing in [exact_power_of_two(-700), 1.0, exact_power_of_two(600)] {
         let low = XY::new(0.0, 0.0);
         let high = XY::new(0.0, spacing);
         let incumbent = point_pair_distance_key(low, XY::new(spacing, 0.0));
@@ -727,8 +739,11 @@ fn clearance_strip_bounds_compare_exact_source_distances_at_all_scales() {
         "out-of-band strip comparisons should decline"
     );
 
-    let origin = 2.0_f64.powi(60);
-    let translated = XY::new(origin + 2.0_f64.powi(40), origin + 3.0 * 2.0_f64.powi(12));
+    let origin = exact_power_of_two(60);
+    let translated = XY::new(
+        origin + exact_power_of_two(40),
+        origin + 3.0 * exact_power_of_two(12),
+    );
     let source_origin = XY::new(origin, origin);
     assert_eq!(
         source_dot_cmp([1.0, -1.0], translated, source_origin).unwrap(),
@@ -788,7 +803,8 @@ fn ordinary_selection_uses_no_exact_fallback() {
 
 #[test]
 fn clearance_distance_comparison_counts_its_exact_fallback() {
-    let tiny = 2.0_f64.powi(-700);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let tiny = exact_power_of_two(-700);
     let near = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tiny, 0.0));
     let far = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(2.0 * tiny, 0.0));
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));

@@ -383,10 +383,11 @@
     }
     #[test]
     fn exact_source_producer_identity_distinguishes_sub_ulp_latitudes() -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let frame = GeographicFrame::crs84();
         let one = ExactRational::one();
-        let quarter_ulp = ExactRational::from_f64(2.0_f64.powi(-54));
-        let half_ulp = ExactRational::from_f64(2.0_f64.powi(-53));
+        let quarter_ulp = ExactRational::from_f64(exact_power_of_two(-54));
+        let half_ulp = ExactRational::from_f64(exact_power_of_two(-53));
         let left = ExactChartPoint::from_rationals(
             ExactRational::from_f64(25.0),
             one.try_add(&quarter_ulp)?,

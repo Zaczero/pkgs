@@ -27,25 +27,26 @@ fn facet_center_midpoints_stay_finite_at_coordinate_extremes() {
 
 #[test]
 fn clearance_strip_supports_enclose_every_source_vertex() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let maximum = f64::MAX;
     let points = [
         Point::new_raw_xy(-maximum, -maximum),
         Point::new_raw_xy(maximum, maximum),
         Point::new_raw_xy(maximum, -maximum),
         Point::new_raw_xy(-maximum, maximum),
-        Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
-        Point::new_raw_xy(2.0_f64.powi(600), -(2.0_f64.powi(600))),
+        Point::new_raw_xy(-(exact_power_of_two(600)), exact_power_of_two(600)),
+        Point::new_raw_xy(exact_power_of_two(600), -(exact_power_of_two(600))),
         Point::new_raw_xy(-maximum, -maximum),
         Point::new_raw_xy(maximum, maximum),
         Point::new_raw_xy(maximum, -maximum),
         Point::new_raw_xy(-maximum, maximum),
-        Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
-        Point::new_raw_xy(2.0_f64.powi(600), -(2.0_f64.powi(600))),
+        Point::new_raw_xy(-(exact_power_of_two(600)), exact_power_of_two(600)),
+        Point::new_raw_xy(exact_power_of_two(600), -(exact_power_of_two(600))),
         Point::new_raw_xy(-maximum, -maximum),
         Point::new_raw_xy(maximum, maximum),
         Point::new_raw_xy(maximum, -maximum),
         Point::new_raw_xy(-maximum, maximum),
-        Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+        Point::new_raw_xy(-(exact_power_of_two(600)), exact_power_of_two(600)),
     ];
     let first_chain =
         CoordSeq::try_from_points(points.get(..9).expect("first facet chain exists")).unwrap();

@@ -764,6 +764,7 @@ mod shape_streaming_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn unary_shape_stream_keeps_nullable_measured_lines_packed() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -787,6 +788,7 @@ mod shape_streaming_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn unary_linref_stream_keeps_nullable_measured_lines_packed() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -812,6 +814,7 @@ mod shape_streaming_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn budgeted_shape_stream_keeps_nullable_points_packed() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -850,6 +853,7 @@ mod shape_streaming_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn unary_shape_stream_preserves_present_typed_empty_results() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -889,6 +893,7 @@ mod shape_streaming_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn unary_shape_stream_reports_first_error_with_logical_row() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

@@ -211,6 +211,7 @@ fn struct_child_null_count_validated_against_raw_not_projected() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn struct_child_exposes_only_the_parent_slice() {
     ensure_python();
     // This fixture uses the same process-global release callbacks as the

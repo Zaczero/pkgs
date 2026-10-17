@@ -561,6 +561,7 @@ fn failure_with_deps(fx: &Fixture, src: &Path, outputs: &FixtureOutputs, err: &s
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot spawn the compiler subprocess")]
 fn compile_fail_fixtures_guard_production() {
     let src = src_dir();
     let discovered = discover_fragments(&src);

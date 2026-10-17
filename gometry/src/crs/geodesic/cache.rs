@@ -211,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn axis_arithmetic_boundaries_admit_scaled_physical_distances() {
         for axis in [
             f64::from_bits(0x2006_A09E_667F_3BCD),
@@ -233,6 +234,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn axis_arithmetic_boundaries_reject_adjacent_unrepresentable_areas() {
         for axis in [
             f64::from_bits(0x2006_A09E_667F_3BCC),

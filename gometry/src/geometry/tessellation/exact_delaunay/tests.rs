@@ -129,6 +129,7 @@ fn location_propagates_arithmetic_error_from_the_bounded_fallback_scan() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_delaunay_triangles_are_canonical_across_insertion_orders() {
     use std::fmt::Write as _;
 
@@ -257,6 +258,7 @@ for case in range(200):
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_refinement_is_canonical_across_insertion_and_ring_orders() {
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyModule};

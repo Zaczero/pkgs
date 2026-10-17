@@ -348,6 +348,7 @@ fn source_interval_readback_keeps_pole_degeneracy_distinct_from_rounded_motion()
 
 #[test]
 fn source_sheet_publication_keeps_readable_circles_and_rejects_collapsed_intervals() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let meridian_start = Point::new_raw_xy(370.0, -30.0);
     let meridian_end = Point::new_raw_xy(370.0, 70.0);
     let meridian = ChartEdge::new(meridian_start, meridian_end, degrees()).unwrap();
@@ -537,7 +538,7 @@ fn source_sheet_publication_keeps_readable_circles_and_rejects_collapsed_interva
         (1.0, 10.0, false),
     ]);
 
-    let large_start = Point::new_raw_xy(360.0 * 2.0_f64.powi(44), 0.0);
+    let large_start = Point::new_raw_xy(360.0 * exact_power_of_two(44), 0.0);
     let large_end = Point::new_raw_xy(large_start.x + 5.0, 0.0);
     let large_edge = ChartEdge::new(large_start, large_end, degrees()).unwrap();
     let large_site = retained_source_sheet_site(

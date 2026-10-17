@@ -1,4 +1,5 @@
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn cell_array_depth_is_not_admitted_without_a_present_row() {
         Python::initialize();
         Python::attach(|py| {
@@ -35,6 +36,7 @@
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn cell_array_depth_is_parsed_once_at_first_present_row() {
         Python::initialize();
         Python::attach(|py| {
@@ -91,6 +93,7 @@
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn empty_missing_and_max_depth_neighbors_children_succeed() {
         Python::initialize();
         Python::attach(|py| {

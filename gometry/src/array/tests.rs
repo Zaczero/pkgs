@@ -278,6 +278,7 @@ mod multipart_storage_tests {
     use crate::io::{parse_wkt, to_wkt};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_coordinate_axes_publish_without_shape_or_vector_staging() {
         Python::initialize();
         let polygon = parse_wkt(

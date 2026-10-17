@@ -191,8 +191,9 @@ mod tests {
 
     #[test]
     fn hull_contact_candidates_retain_exact_contacts_across_scales() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         for exponent in [-500, 0, 500] {
-            let scale = 2.0_f64.powi(exponent);
+            let scale = exact_power_of_two(exponent);
             let segments: Vec<_> = (0..2048)
                 .map(|index| {
                     let x = f64::from(index % 64) - 32.0;

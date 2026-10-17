@@ -973,6 +973,7 @@ name = "gometry"
 version = "0.0.0"
 dependencies = [
  "ahash",
+ "approx",
  "bytemuck",
  "fast_hilbert",
  "geographiclib-rs",

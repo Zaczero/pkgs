@@ -152,6 +152,7 @@ mod tests {
 
     #[test]
     fn rounding_certificate_uses_signed_asymmetric_cells() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let one = Bounded::exact(1.0);
         let lower = 0.5 * (1.0 - 1.0_f64.next_down());
         let upper = 0.5 * (1.0_f64.next_up() - 1.0);
@@ -164,7 +165,7 @@ mod tests {
         // lower end crosses the predecessor midpoint.
         assert_eq!(
             Bounded {
-                err: 3.0 * 2.0_f64.powi(-55),
+                err: 3.0 * exact_power_of_two(-55),
                 ..one
             }
             .certified_rounding(),
@@ -172,7 +173,7 @@ mod tests {
         );
         assert_eq!(
             Bounded {
-                err: 2.0_f64.powi(-56),
+                err: exact_power_of_two(-56),
                 ..one
             }
             .certified_rounding(),
@@ -182,7 +183,7 @@ mod tests {
         let negative = Bounded {
             hi: -1.0,
             lo: 0.0,
-            err: 2.0_f64.powi(-56),
+            err: exact_power_of_two(-56),
         };
         assert_eq!(negative.certified_rounding(), Some(-1.0));
         assert_eq!(Bounded::exact(0.0).certified_rounding(), None);

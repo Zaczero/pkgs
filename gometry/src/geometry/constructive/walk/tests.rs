@@ -42,8 +42,9 @@ fn assert_plan_count_matches_materialization(
 
 #[test]
 fn reflex_cross_retains_an_exact_endpoint_local_parameter() {
-    let length = 2.0_f64.powi(1023);
-    let x = 2.0_f64.powi(-52);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let length = exact_power_of_two(1023);
+    let x = exact_power_of_two(-52);
     let incoming = Segment {
         start: XY::new(0.0, 0.0),
         end: XY::new(length, 0.0),

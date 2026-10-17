@@ -766,6 +766,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_geodesic_length_applies_rule_t_and_uses_published_bounds() {
         crate::test_support::initialize_python();
         let ordinary = polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
@@ -809,6 +810,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_geodesic_length_uses_the_shared_ambiguous_pole_gate() {
         crate::test_support::initialize_python();
         let ambiguous = polygon(&[
@@ -831,6 +833,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn geographic_missing_rows_keep_the_packed_bounds_lane() {
         crate::test_support::initialize_python();
         let array = PyGeometryArray::from_shapes(
@@ -854,6 +857,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_bounds_keep_narrow_noncanonical_aliases_on_the_crossing_path() {
         crate::test_support::initialize_python();
         let shape = polygon(&[
@@ -875,6 +879,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_centroid_keeps_narrow_noncanonical_aliases_on_the_crossing_path() {
         crate::test_support::initialize_python();
         let shape = polygon(&[
@@ -910,6 +915,7 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn geographic_nary_overlays_ignore_missing_rows_before_graph_assembly() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame");

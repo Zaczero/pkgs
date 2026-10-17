@@ -1,4 +1,5 @@
     #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn compact_nullable_point_index_resolves_sparse_handles_without_span_rank() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

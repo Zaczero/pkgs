@@ -375,6 +375,7 @@ mod tests {
 
     #[test]
     fn certificates_agree_with_unfiltered_distances_at_scale_and_projection_boundaries() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let cases: &[(&[f64], &[f64])] = &[
             (
                 &[0.0, -4.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0, 10.0, 9.0, 8.0],
@@ -423,7 +424,7 @@ mod tests {
         ];
         for &(xs, ys) in cases {
             for exponent in [-500, -100, 0, 100, 500] {
-                let scale = 2.0_f64.powi(exponent);
+                let scale = exact_power_of_two(exponent);
                 let xs: Vec<_> = xs.iter().map(|x| x * scale).collect();
                 let ys: Vec<_> = ys.iter().map(|y| y * scale).collect();
                 for tolerance in [0.0, 0.7, 1.0_f64.next_down(), 1.0, 1.0_f64.next_up(), 3.0] {

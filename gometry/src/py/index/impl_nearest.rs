@@ -725,6 +725,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn nearest_max_distance_rejects_nan_at_parser() {
         Python::initialize();
         parse_max_distance(Some(f64::NAN)).unwrap_err();
@@ -738,6 +739,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn overflow_run_nearest_frontier_matches_exhaustive_distances() {
         Python::initialize();
         Python::attach(|_py| {

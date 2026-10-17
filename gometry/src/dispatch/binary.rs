@@ -1275,6 +1275,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn binary_geometry_scalar_array_stream_keeps_nullable_lines_packed() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1309,6 +1310,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn binary_geometry_array_scalar_stream_keeps_nullable_lines_packed() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1337,6 +1339,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn binary_geometry_array_pair_stream_unions_missing_rows() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1361,6 +1364,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn binary_array_rows_preserve_values_and_admission_counts() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1400,6 +1404,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn three_d_binary_array_resolves_metric_once() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1445,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn binary_array_kernel_error_is_propagated() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1476,6 +1482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn metric_array_admission_resolves_the_specialized_lane_once() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
@@ -1502,6 +1509,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn metric_resolution_error_precedes_binary_kernel() {
         Python::initialize();
         Python::attach(|py| {

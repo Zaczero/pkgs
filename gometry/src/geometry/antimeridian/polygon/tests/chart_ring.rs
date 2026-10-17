@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn chart_ring_interpolates_ordinates_at_full_turn_witnesses() {
     let point = |x, y, z, m| Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
     let ring = Ring::closed_coordseq(

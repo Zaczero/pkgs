@@ -226,6 +226,7 @@ mod lonlat_shape_under_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn nad83_transform_error_precedes_lonlat_domain_validation() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
         let direct_error = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")

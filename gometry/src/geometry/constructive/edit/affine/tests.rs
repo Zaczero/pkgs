@@ -84,6 +84,7 @@ fn affine_origin_row_uses_both_input_pivots() {
 }
 #[test]
 fn affine_origin_prepared_rows_match_exact_five_product_rows() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let [coefficient_x, coefficient_y, coefficient_z, coefficient_w] = [2.0, -0.5, 0.25, 1.5];
     let (origin_x, origin_y) = (7.0, -5.0);
     let transform =
@@ -95,7 +96,7 @@ fn affine_origin_prepared_rows_match_exact_five_product_rows() {
     for [value_x, value_y] in [
         [11.0, 13.0],
         [origin_x.next_up(), origin_y.next_down()],
-        [2.0_f64.powi(500), -(2.0_f64.powi(499))],
+        [exact_power_of_two(500), -(exact_power_of_two(499))],
         [f64::from_bits(1), -f64::from_bits(1)],
     ] {
         let expected_x = exact_affine_origin_row([
@@ -137,6 +138,7 @@ fn affine_origin_prepared_rows_match_exact_five_product_rows() {
 }
 #[test]
 fn affine_origin_fast_filter_matches_exact_five_product_rows() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     // Captured with seed 0x9e3779b97f4a7c15 at reciprocal exponent strata
     // spanning the normal range. Keep the operands as bits for exact replay.
     const RANDOM_ROWS: [[u64; 7]; 16] = [
@@ -286,13 +288,13 @@ fn affine_origin_fast_filter_matches_exact_five_product_rows() {
         ],
     ];
     let ulp_at_one = 1.0_f64.next_up().to_bits();
-    let term = 3.0 * 2.0_f64.powi(-109);
+    let term = 3.0 * exact_power_of_two(-109);
     let above_tie_by_lost_residual = [
         1.0,
-        2.0_f64.powi(-53),
-        -(2.0_f64.powi(-107) + 2.0_f64.powi(-117)),
+        exact_power_of_two(-53),
+        -(exact_power_of_two(-107) + exact_power_of_two(-117)),
         -term,
-        -3.0 * 2.0_f64.powi(-56),
+        -3.0 * exact_power_of_two(-56),
         1.0,
         1.0,
     ];
@@ -314,17 +316,17 @@ fn affine_origin_fast_filter_matches_exact_five_product_rows() {
     ));
 
     let catastrophic_cancellation = [
-        1.0 + 2.0_f64.powi(-52),
+        1.0 + exact_power_of_two(-52),
         -1.0,
         0.0,
         0.0,
         0.0,
-        2.0_f64.powi(500),
-        2.0_f64.powi(500),
+        exact_power_of_two(500),
+        exact_power_of_two(500),
     ];
     assert_eq!(
         exact_affine_origin_row(catastrophic_cancellation).to_bits(),
-        2.0_f64.powi(448).to_bits()
+        exact_power_of_two(448).to_bits()
     );
     assert_affine_origin_row_matches_exact(catastrophic_cancellation, "cancellation");
 
@@ -332,12 +334,20 @@ fn affine_origin_fast_filter_matches_exact_five_product_rows() {
         ("exact tie", 0.0, 1.0),
         (
             "just above tie",
-            2.0_f64.powi(-106),
+            exact_power_of_two(-106),
             f64::from_bits(ulp_at_one),
         ),
-        ("just below tie", -(2.0_f64.powi(-106)), 1.0),
+        ("just below tie", -(exact_power_of_two(-106)), 1.0),
     ] {
-        let row = [1.0, 2.0_f64.powi(-53), output_origin, 0.0, 0.0, 1.0, 1.0];
+        let row = [
+            1.0,
+            exact_power_of_two(-53),
+            output_origin,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        ];
         assert_eq!(exact_affine_origin_row(row).to_bits(), expected.to_bits());
         assert_affine_origin_row_matches_exact(row, case);
     }
@@ -351,32 +361,32 @@ fn affine_origin_fast_filter_matches_exact_five_product_rows() {
     assert_affine_origin_row_matches_exact(subnormal_row, "subnormal input and result");
 
     let near_overflow = [
-        2.0_f64.powi(500),
+        exact_power_of_two(500),
         0.0,
         0.0,
         0.0,
         0.0,
-        2.0_f64.powi(500),
+        exact_power_of_two(500),
         0.0,
     ];
     assert_eq!(
         exact_affine_origin_row(near_overflow).to_bits(),
-        2.0_f64.powi(1000).to_bits()
+        exact_power_of_two(1000).to_bits()
     );
     assert_affine_origin_row_matches_exact(near_overflow, "near-overflow product");
 
     let splitter_overflow = [
-        2.0_f64.powi(1000),
+        exact_power_of_two(1000),
         0.0,
         0.0,
         0.0,
         0.0,
-        2.0_f64.powi(-900),
+        exact_power_of_two(-900),
         0.0,
     ];
     assert_eq!(
         exact_affine_origin_row(splitter_overflow).to_bits(),
-        2.0_f64.powi(100).to_bits()
+        exact_power_of_two(100).to_bits()
     );
     assert_affine_origin_row_matches_exact(
         splitter_overflow,

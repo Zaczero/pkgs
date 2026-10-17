@@ -1415,6 +1415,7 @@ mod generation_budget_tests {
     use crate::Point;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn each_row_gets_its_own_generation_budget() {
         crate::test_support::initialize_python();
         let array = PyGeometryArray::from_shapes(

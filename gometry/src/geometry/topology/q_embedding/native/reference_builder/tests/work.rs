@@ -57,13 +57,14 @@ fn orientation<W: Work>(points: &NativeReferenceRayPoints<'_>, work: &mut W) -> 
 
 #[test]
 fn native_reference_ray_axis_refuses_inside_exact_comparison() -> Result<()> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     const OPERATION: &str = "native_reference_ray_axis";
     let base = native_reference_points(vec![chart_point(
         ExactRational::from_f64(1.0),
         ExactRational::from_f64(1.0),
     )])?;
     let exact_queries = [chart_point(
-        nudge_one(2.0_f64.powi(-256))?,
+        nudge_one(exact_power_of_two(-256))?,
         ExactRational::from_f64(1.0),
     )];
     let rounded_queries = [XY::new(1.0, 1.0)];
@@ -121,16 +122,17 @@ fn native_reference_ray_axis_refuses_inside_exact_comparison() -> Result<()> {
 
 #[test]
 fn native_reference_ray_orientation_refuses_inside_exact_determinant() -> Result<()> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     const OPERATION: &str = "native_reference_ray_orientation";
     let base = native_reference_points(vec![
         chart_point(ExactRational::from_f64(1.0), ExactRational::from_f64(1.0)),
         chart_point(
-            nudge_one(2.0_f64.powi(-256))?,
-            nudge_one(2.0_f64.powi(-256))?,
+            nudge_one(exact_power_of_two(-256))?,
+            nudge_one(exact_power_of_two(-256))?,
         ),
         chart_point(
-            nudge_one(2.0_f64.powi(-255))?,
-            nudge_one(2.0_f64.powi(-256))?,
+            nudge_one(exact_power_of_two(-255))?,
+            nudge_one(exact_power_of_two(-256))?,
         ),
     ])?;
     let points = NativeReferenceRayPoints {

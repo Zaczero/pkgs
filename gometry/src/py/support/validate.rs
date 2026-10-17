@@ -226,6 +226,7 @@ mod tests {
     use super::note_array_row;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn row_note_formats_zero_and_maximum_rows() {
         Python::initialize();
         Python::attach(|py| {
@@ -244,6 +245,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn failed_add_note_returns_the_original_exception() {
         Python::initialize();
         Python::attach(|py| {

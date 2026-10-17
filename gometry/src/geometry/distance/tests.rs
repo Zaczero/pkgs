@@ -143,9 +143,10 @@ fn point_segment_distance_divides_before_unscaling_tiny_area() {
 
 #[test]
 fn continuous_hausdorff_preserves_underflowed_local_determinant() {
-    let length = 2.0_f64.powi(996);
-    let height = 2.0_f64.powi(396);
-    let offset = 2.0_f64.powi(344);
+    use crate::geometry::numerics::product::exact_power_of_two;
+    let length = exact_power_of_two(996);
+    let height = exact_power_of_two(396);
+    let offset = exact_power_of_two(344);
     let baseline = line(vec![p(0.0, 0.0), p(length, height)]);
     let graph = line(vec![
         p(0.0, 0.0),

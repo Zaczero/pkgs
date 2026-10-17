@@ -869,6 +869,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_coverage_union_keeps_ordinates_after_presplit_dissolve() -> Result<()> {
         let crs = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let first = crate::io::parse_wkt(

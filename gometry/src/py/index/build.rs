@@ -769,6 +769,7 @@ mod ownership_tests {
     /// A ring whose traversals cancel has no support; the index still holds
     /// its envelope, and exact refinement answers queries against it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn cartesian_index_keeps_rows_with_cancelled_support() {
         pyo3::Python::initialize();
         let shape = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))")
@@ -795,6 +796,7 @@ mod ownership_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn packed_index_and_source_share_the_persistent_row_arc() {
         pyo3::Python::initialize();
         let source = long_lines();
@@ -873,6 +875,7 @@ mod ownership_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn exhausted_handle_domain_rejects_insert_without_state_change() {
         let maximum = isize::MAX as usize;
         let values = PyGeometryArray::from_shapes(Vec::new(), Frame::None).unwrap();

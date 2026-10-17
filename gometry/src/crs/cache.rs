@@ -681,6 +681,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn runtime_config_changes_clear_current_thread_caches() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
@@ -719,6 +720,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn equal_runtime_config_preserves_generation_and_thread_cache_products() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
@@ -739,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn live_pipeline_survives_other_thread_runtime_invalidation() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
@@ -825,6 +828,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn held_runtime_state_survives_mutation_during_context_creation() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
@@ -874,6 +878,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn held_runtime_state_survives_mutation_during_catalog_observation() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
@@ -924,6 +929,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn factor_cache_promotes_hits_before_eviction() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
@@ -946,6 +952,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn diagnostic_pipeline_resolver_reuses_the_same_key() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
@@ -962,6 +969,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn reusable_degraded_plan_reprobes_after_each_diagnostic() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
@@ -977,6 +985,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn unequal_epochs_do_not_select_identity_plan() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = runtime_state_snapshot().unwrap();
@@ -991,6 +1000,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geodesic_cache_promotes_hits_before_eviction() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();

@@ -207,9 +207,10 @@
     }
     #[test]
     fn q_domain_keeps_both_native_neighbors_and_orders_the_true_left_site() -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let frame = GeographicFrame::crs84();
         let half = frame.longitude().half_period();
-        let ulp = 2.0_f64.powi(-45);
+        let ulp = exact_power_of_two(-45);
         let line = |start: Point, end: Point| -> Result<crate::geometry::Shape> {
             let coordinates = CoordSeq::try_from_points(&[start, end])?;
             Ok(crate::geometry::Shape::LineString(

@@ -166,6 +166,7 @@ mod minimum_clearance_computed_edge_tests {
     use crate::geometry::{CoordSeq, LineSeq, MultiPoint, Point, Shape};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_clearance_line_across_the_seam_uses_a_short_connector() {
         let points = [
             Point::new_raw_xy(179.8, 0.0),
@@ -199,6 +200,7 @@ mod minimum_clearance_computed_edge_tests {
         assert!(step.abs() < 1.0, "seam connector step is {step}");
     }
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_clearance_line_refined_support_uses_original_root_ordinates() {
         fn chart_length(
             geodesic: &geographiclib_rs::Geodesic,

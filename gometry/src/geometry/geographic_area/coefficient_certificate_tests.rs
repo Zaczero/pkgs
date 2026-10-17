@@ -1,11 +1,12 @@
 #[test]
 fn coefficient_row_enclosure_covers_exact_derivative_numerators() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     for phase in [0.0, 0.7, std::f64::consts::FRAC_PI_2] {
         for pole in [GeodeticPole::North, GeodeticPole::South] {
             let mut seeds = [0.0; MAX_AUTHALIC_HARMONICS];
             seeds[0] = 1.0;
             seeds[1] = -0.01;
-            seeds[8] = 2.0_f64.powi(-64);
+            seeds[8] = exact_power_of_two(-64);
             let density = GeographicAreaDensity::new(seeds, 9, 1.0, phase, pole);
             let mut ordinary = Vec::new();
             let mut exact = Vec::new();

@@ -516,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geometry_epoch_admission_covers_ensemble_derived_and_dynamic_frames() {
         for crs in ["EPSG:4326", "EPSG:3857", "EPSG:9000"] {
             let frame = Frame::new(Some(crs_arc_static(crs)), Some(2020.0)).unwrap();
@@ -531,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compatible_resolves_matching_frame_and_rejects_mismatch() {
         let wgs84 = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
         let same = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
@@ -563,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compatible_accepts_axis_order_aliases_and_keeps_left_label() {
         let epsg = Frame::new(Some(crs_arc_static("EPSG:4326")), None).unwrap();
         let crs84 = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
@@ -584,6 +587,7 @@ mod tests {
     /// apart because the deriving conversion differs. 3857/3395 likewise
     /// (~32.75 km in Y), and 4326/4258 differ by datum.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compatible_rejects_same_attribute_different_conversion() {
         let frame = |code: &'static str| Frame::new(Some(crs_arc_static(code)), None).unwrap();
         for (left, right) in [
@@ -606,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn frame_edit_clears_epoch_with_crs_and_guards_retags() {
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
 
@@ -639,6 +644,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn transform_frame_resolves_epoch_defaults_and_identity() {
         let source = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
         let same = GeometryTransformFrame::new(
@@ -687,6 +693,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn explicit_target_epoch_uses_the_same_frame_admission_policy() {
         let source = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
         for crs in ["EPSG:4326", "EPSG:3857", "EPSG:9000"] {

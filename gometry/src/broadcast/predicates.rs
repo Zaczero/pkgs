@@ -680,6 +680,7 @@ mod geographic_tests {
     use crate::geometry::{CoordSeq, Polygon, Ring};
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn geographic_crossing_xy_agrees_with_scalar_oracle_at_seam_and_pole() {
         crate::test_support::initialize_python();
         let shape = Shape::Polygon(Polygon::new(

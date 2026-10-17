@@ -176,8 +176,9 @@ mod tests {
 
     #[test]
     fn direction_sign_does_not_round_a_tiny_nonzero_cross_to_zero() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let tiny = f64::from_bits(1);
-        let scale = 2.0_f64.powi(-20);
+        let scale = exact_power_of_two(-20);
         let a = XY::new(0.0, 0.0);
         let b = XY::new(scale, scale);
         let c = XY::new(0.0, 0.0);
@@ -195,8 +196,9 @@ mod tests {
 
     #[test]
     fn mixed_scale_diagonal_reaches_exact_fallback() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let mu = f64::from_bits(1);
-        let length = 2.0_f64.powi(-20);
+        let length = exact_power_of_two(-20);
         let exact = Interval::exact;
         let bax = exact(length).sub(exact(0.0));
         let bay = exact(length).sub(exact(0.0));
@@ -251,9 +253,10 @@ mod tests {
 
     #[test]
     fn stored_orientation_preserves_all_underflow_ray_permutations() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let mu = f64::from_bits(1);
         let a = (1.0, -4096.0 * mu);
-        let b = (-(2.0_f64.powi(-12)), 6144.0 * mu);
+        let b = (-(exact_power_of_two(-12)), 6144.0 * mu);
         let p = (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
         for ((left, middle, right), expected) in [
             ((a, b, p), ExactSign::Positive),
@@ -272,6 +275,7 @@ mod tests {
 
     #[test]
     fn raw_product_orientation_matches_dyadics_across_binary64_range() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let tiny = f64::from_bits(1);
         let max = f64::MAX;
         let triples = [
@@ -285,7 +289,7 @@ mod tests {
             ),
             (
                 (1.0, -4096.0 * tiny),
-                (-(2.0_f64.powi(-12)), 6144.0 * tiny),
+                (-(exact_power_of_two(-12)), 6144.0 * tiny),
                 (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * tiny),
             ),
         ];

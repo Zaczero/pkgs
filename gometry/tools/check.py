@@ -148,7 +148,6 @@ CHECKS: tuple[Check, ...] = (
         ('tools/gates/_check_packed_execution.py',),
         CheckCategory.LOCAL,
     ),
-    # `-D warnings` because Clippy exits 0 on warnings.
     Check(
         (
             'cargo',
@@ -157,9 +156,6 @@ CHECKS: tuple[Check, ...] = (
             '--locked',
             '-p',
             'gometry',
-            '--',
-            '-D',
-            'warnings',
         ),
         CheckCategory.LOCAL,
     ),

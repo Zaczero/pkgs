@@ -282,6 +282,7 @@ mod tests {
 
     #[test]
     fn shared_kernel_preserves_legacy_sum_semantics() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let mut values = vec![
             0.0,
             -0.0,
@@ -291,8 +292,8 @@ mod tests {
             -f64::MIN_POSITIVE,
             f64::MAX,
             -f64::MAX,
-            2.0_f64.powi(-1022),
-            2.0_f64.powi(1023),
+            exact_power_of_two(-1022),
+            exact_power_of_two(1023),
             1.0,
             -1.0,
             1.0 + f64::EPSILON,
@@ -331,10 +332,11 @@ mod tests {
 
     #[test]
     fn negate_right_cancels_two_limb_unit_plus_half_ulp() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         // 1 - 2^-53 is a single binary64. 1 + 2^-53 is not: the sum of those
         // two one-limb expansions needs two limbs.
         let unit = [1.0];
-        let half_ulp = [2.0_f64.powi(-53)];
+        let half_ulp = [exact_power_of_two(-53)];
         let mut sum = [0.0; 2];
         let sum_len = expansion_sum_zeroelim::<false>(&unit, &half_ulp, &mut sum, true).unwrap();
         assert!(sum_len > 1);

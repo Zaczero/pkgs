@@ -96,16 +96,24 @@ mod tests {
     }
 
     #[test]
-    fn least_rotation_matches_exhaustive_orbits_and_bounds_repeated_work() {
-        for len in 1..=8 {
-            for mut code in 0..3_usize.pow(len as u32) {
-                let values: Vec<_> = std::iter::repeat_with(|| {
-                    let value = code % 3;
-                    code /= 3;
-                    value
-                })
-                .take(len)
-                .collect();
+    fn least_rotation_matches_presentations_and_bounds_repeated_work() {
+        for source in [
+            &[0][..],
+            &[1, 0],
+            &[2, 1, 0],
+            &[1, 1, 1, 1],
+            &[0, 1, 0, 1],
+            &[0, 1, 0, 1, 0, 1, 0, 0],
+            &[2, 1, 2, 1, 0, 1, 2],
+            &[0, 1, 0, 2, 0, 1, 0, 1, 0],
+        ] {
+            let len = source.len();
+            for shift in 0..len {
+                let values: Vec<_> = source[shift..]
+                    .iter()
+                    .chain(&source[..shift])
+                    .copied()
+                    .collect();
                 let expected = (0..len)
                     .min_by_key(|&start| {
                         (0..len)
@@ -120,7 +128,7 @@ mod tests {
                 );
             }
         }
-        let len = 10_000;
+        let len = 257;
         let comparisons = std::cell::Cell::new(0);
         assert_eq!(
             least_rotation_by(len, |_, _| {

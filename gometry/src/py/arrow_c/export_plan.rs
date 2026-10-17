@@ -1012,6 +1012,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn native_export_errors_keep_attached_exception_classification() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

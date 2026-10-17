@@ -252,6 +252,7 @@ fn boundary_final_writer_rejects_a_structurally_valid_shortened_line() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_boundary_dispatch_preserves_nullable_mixed_rows_and_epoch() {
     crate::test_support::initialize_python();
     Python::attach(|py| {

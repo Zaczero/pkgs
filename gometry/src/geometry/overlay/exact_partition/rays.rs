@@ -401,28 +401,35 @@ mod tests {
     }
 
     fn tied_axis_points() -> PointArena<'static> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let segments: &'static [_] = &[];
         let mut points = PointArena::with_capacity(segments, 2);
         let one = ExactDyadic::one();
-        let x_next = add_f64(1.0, 2.0_f64.powi(-256));
+        let x_next = add_f64(1.0, exact_power_of_two(-256));
         push_point(&mut points, XY::new(1.0, 0.0), one, ExactDyadic::zero());
         push_point(&mut points, XY::new(1.0, 0.0), x_next, ExactDyadic::zero());
         points
     }
 
     fn tied_orientation_points() -> PointArena<'static> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let segments: &'static [_] = &[];
         let mut points = PointArena::with_capacity(segments, 3);
         let rounded = XY::new(1.0, 1.0);
-        let y = add_f64(1.0, 2.0_f64.powi(-256));
+        let y = add_f64(1.0, exact_power_of_two(-256));
         push_point(&mut points, rounded, ExactDyadic::one(), ExactDyadic::one());
         push_point(
             &mut points,
             rounded,
-            add_f64(1.0, 2.0_f64.powi(-256)),
+            add_f64(1.0, exact_power_of_two(-256)),
             y.clone(),
         );
-        push_point(&mut points, rounded, add_f64(1.0, 2.0_f64.powi(-255)), y);
+        push_point(
+            &mut points,
+            rounded,
+            add_f64(1.0, exact_power_of_two(-255)),
+            y,
+        );
         points
     }
 
@@ -515,6 +522,7 @@ mod tests {
         reason = "the recorder assertions pin refusal before lazy crossing cache publication"
     )]
     fn native_point_arena_lazy_crossing_refuses_before_cache_publication() -> Result<()> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         const OPERATION: &str = "native_ray_lazy_crossing";
         let segments = [
             crate::geometry::Segment {
@@ -534,7 +542,7 @@ mod tests {
             let query = push_point(
                 &mut points,
                 XY::new(1.0, 1.0),
-                add_f64(1.0, 2.0_f64.powi(-256)),
+                add_f64(1.0, exact_power_of_two(-256)),
                 ExactDyadic::one(),
             );
             (points, crossing, query)

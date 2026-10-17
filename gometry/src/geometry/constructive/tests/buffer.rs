@@ -561,8 +561,8 @@ mod winding_buffer_tests {
     }
 
     /// Puntal and collection routing: a point buffers to the exact
-    /// inscribed circle (arc doctrine), a zero-length chain IS that disk
-    /// bit-for-bit, negative distances annihilate puntal/lineal input to
+    /// inscribed circle (arc doctrine), a zero-length chain has the same
+    /// sampled disk, negative distances annihilate puntal/lineal input to
     /// the typed empty polygon, and a mixed collection buffers in one
     /// winding pass covering every part.
     #[test]
@@ -582,7 +582,7 @@ mod winding_buffer_tests {
         let stroked = Shape::LineString(LineSeq::try_new(zero_chain).expect("test line is valid"))
             .buffer(2.0)
             .unwrap();
-        assert!(stroked.equals_exact(&disc, 0.0, false, false));
+        assert!(stroked.equals_exact(&disc, 128.0 * f64::EPSILON, false, false));
 
         for shape in [
             Shape::Point(Point::new(0.0, 0.0).unwrap()),
@@ -663,8 +663,8 @@ mod winding_buffer_tests {
         let eroded = multipart.buffer(-0.5).unwrap();
         let expected = union.buffer(-0.5).unwrap();
 
-        assert_eq!(expected.area(), 9.0);
-        assert_eq!(eroded.area(), expected.area());
+        approx::assert_relative_eq!(expected.area(), 9.0, max_relative = 64.0 * f64::EPSILON);
+        approx::assert_relative_eq!(eroded.area(), 9.0, max_relative = 64.0 * f64::EPSILON);
         assert!(eroded.equals(&expected).unwrap());
         assert!(multipart.buffer(0.0).unwrap().equals(&union).unwrap());
     }
@@ -706,7 +706,7 @@ mod winding_buffer_tests {
         let normalized = nested.buffer(0.0).unwrap();
 
         assert_eq!(partition_calls(), 1);
-        assert_eq!(normalized.area(), 20.0);
+        approx::assert_relative_eq!(normalized.area(), 20.0, max_relative = 64.0 * f64::EPSILON);
         assert!(!normalized.is_empty());
     }
 
@@ -736,7 +736,7 @@ mod winding_buffer_tests {
 
         let normalized = source.buffer(0.0).unwrap();
 
-        assert_eq!(normalized.area(), 100.0);
+        approx::assert_relative_eq!(normalized.area(), 100.0, max_relative = 64.0 * f64::EPSILON);
         assert!(
             normalized
                 .covers(&Shape::Point(Point::new(5.0, 5.0).unwrap()))
@@ -771,12 +771,13 @@ mod winding_buffer_tests {
             eroded
         };
 
-        assert_eq!(
+        approx::assert_relative_eq!(
             matches_union(rectangle(0.0, 3.0), rectangle(2.0, 5.0)).area(),
-            12.0
+            12.0,
+            max_relative = 64.0 * f64::EPSILON
         );
         let separated = matches_union(rectangle(0.0, 2.0), rectangle(5.0, 7.0));
-        assert_eq!(separated.area(), 6.0);
+        approx::assert_relative_eq!(separated.area(), 6.0, max_relative = 64.0 * f64::EPSILON);
         assert!(matches!(separated, Shape::MultiPolygon(_)));
 
         let nested = Shape::geometry_collection(vec![

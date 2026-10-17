@@ -184,6 +184,7 @@ fn transformed_packed_windows_keep_gathered_and_duplicate_source_pairing() {
     assert_eq!(periods, [0, 2, 2]);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn transformed_circle_reaches_the_native_publisher_with_its_forward_lift() {
     assert_eq!(publish_xy_transform_line([10.0, 370.0], [0.0, -180.0]), [
         Point::new_raw_xy(0.0, 0.0),
@@ -194,6 +195,7 @@ fn transformed_circle_reaches_the_native_publisher_with_its_forward_lift() {
     ]);
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn transformed_circle_reaches_the_native_publisher_with_its_reverse_lift() {
     assert_eq!(publish_xy_transform_line([370.0, 10.0], [-180.0, 0.0]), [
         Point::new_raw_xy(-180.0, 0.0),

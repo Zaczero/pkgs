@@ -99,7 +99,7 @@ impl GeographicAreaDensity {
             let frequency = derivative_direction * harmonic.order * (1.0 / LATITUDE_SCALE);
             *even = weighted * harmonic.sine;
             *odd = weighted * frequency * harmonic.cosine;
-            *frequency_squared = (harmonic.order * (1.0 / LATITUDE_SCALE)).powi(2);
+            *frequency_squared = frequency * frequency;
             maximum_frequency_squared = maximum_frequency_squared.max(*frequency_squared);
             phase_bound = phase_bound
                 .max(harmonic.sine.abs())
@@ -237,11 +237,12 @@ impl GeographicAreaDensity {
     }
 
     pub(super) fn area_scale(self, x_exponent: i32) -> Result<ExactDyadic> {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let scale_exponent = x_exponent
             .checked_neg()
             .and_then(|exponent| exponent.checked_add(3))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let scale = 2.0_f64.powi(scale_exponent);
+        let scale = exact_power_of_two(scale_exponent);
         ExactDyadic::from_f64(self.semi_major)
             .try_product(&ExactDyadic::from_f64(self.semi_major))?
             .try_product(&ExactDyadic::from_f64(scale))

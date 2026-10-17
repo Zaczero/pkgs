@@ -295,6 +295,7 @@ mod self_intersection_csr_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn groups_reuse_the_input_frame() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("frame");

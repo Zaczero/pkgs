@@ -12,6 +12,7 @@ use crate::geometry::{
 };
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geographic_nearest_point_columns_preserve_all_broadcasts_missing_empty_m_and_epoch() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), Some(2021.25)).unwrap();
@@ -89,6 +90,7 @@ fn geographic_nearest_point_columns_preserve_all_broadcasts_missing_empty_m_and_
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geographic_polygonize_public_destinations_preserve_group_domains_m_and_epoch() {
     use crate::py::functions::polygonize_all;
     crate::test_support::initialize_python();
@@ -167,6 +169,7 @@ fn geographic_polygonize_public_destinations_preserve_group_domains_m_and_epoch(
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
@@ -232,6 +235,7 @@ fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn binary_geographic_array_overlay_binds_after_final_array_admission() {
     crate::test_support::initialize_python();
     let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();

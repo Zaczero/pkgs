@@ -43,6 +43,7 @@ fn retained_cdt_refinement_uses_exact_sites_after_chart_rounding() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_constrained_source_chain_work_is_linear() {
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyModule};
@@ -87,6 +88,7 @@ fn public_constrained_source_chain_work_is_linear() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_refinement_quality_work_scales_with_output() {
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyModule};

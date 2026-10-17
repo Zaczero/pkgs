@@ -983,7 +983,8 @@ mod clearance_index_tests {
 
     #[test]
     fn indexed_tiny_and_huge_clearance_keep_exact_point_pairs() {
-        for spacing in [2.0_f64.powi(-700), 2.0_f64.powi(600)] {
+        use crate::geometry::numerics::product::exact_power_of_two;
+        for spacing in [exact_power_of_two(-700), exact_power_of_two(600)] {
             for count in [64_u16, 128, 256] {
                 let points: Vec<_> = (0..count)
                     .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
@@ -1016,9 +1017,10 @@ mod clearance_index_tests {
 
     #[test]
     fn indexed_near_tie_keeps_exactly_closer_segment_over_rounded_point_pair() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let mut parts = vec![
             Shape::Point(Point::new_raw_xy(0.0, 0.0)),
-            Shape::Point(Point::new_raw_xy(1.0, 2.0_f64.powi(-28))),
+            Shape::Point(Point::new_raw_xy(1.0, exact_power_of_two(-28))),
             line(&[
                 Point::new_raw_xy(-10.0, -1.0),
                 Point::new_raw_xy(10.0, -1.0),
@@ -1221,11 +1223,13 @@ mod clearance_index_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn compiled_public_tiny_clearance_uses_exact_source_selection() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let module = public_clearance_module(py);
-            let spacing = 2.0_f64.powi(-700);
+            let spacing = exact_power_of_two(-700);
             let coordinates =
                 PyList::new(py, [(0.0, 0.0), (5.0 * spacing, 0.0), (spacing, 0.0)]).unwrap();
             let shape = module
@@ -1257,11 +1261,13 @@ mod clearance_index_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn compiled_public_huge_clearance_uses_exact_source_selection() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let module = public_clearance_module(py);
-            let spacing = 2.0_f64.powi(600);
+            let spacing = exact_power_of_two(600);
             let coordinates =
                 PyList::new(py, [(0.0, 0.0), (5.0 * spacing, 0.0), (spacing, 0.0)]).unwrap();
             let shape = module
@@ -1293,11 +1299,13 @@ mod clearance_index_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn compiled_public_near_tie_uses_exact_source_selection() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let module = public_clearance_module(py);
-            let points = PyList::new(py, [(0.0, 0.0), (1.0, 2.0_f64.powi(-28))]).unwrap();
+            let points = PyList::new(py, [(0.0, 0.0), (1.0, exact_power_of_two(-28))]).unwrap();
             let multipoint = module
                 .getattr("MultiPoint")
                 .unwrap()
@@ -1352,6 +1360,7 @@ mod clearance_index_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn compiled_public_positive_clearance_skips_zero_segment_incidence() {
         crate::test_support::initialize_python();
         Python::attach(|py| {

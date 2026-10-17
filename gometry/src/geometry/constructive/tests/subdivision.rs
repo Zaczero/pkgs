@@ -71,6 +71,7 @@ mod subdivide_columns_tests {
 
     #[test]
     fn planar_segmentize_accepts_exact_representable_length_boundaries() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let line = CoordSeq::try_from_points(&[
             Point::new(0.0, 0.0).unwrap(),
             Point::new(4.0, 0.0).unwrap(),
@@ -108,7 +109,7 @@ mod subdivide_columns_tests {
         let mut adjacent_budget = ExpansionBudget::new("segmentize", "max_length");
         let exact = segmentize_points_budgeted(
             &adjacent_line,
-            2.0_f64.powi(-52),
+            exact_power_of_two(-52),
             &crate::geometry::SegmentPlacement::Planar,
             &mut adjacent_budget,
         )
@@ -119,6 +120,7 @@ mod subdivide_columns_tests {
 
     #[test]
     fn planar_segmentize_rejects_an_unrepresentable_binary64_chord() {
+        use crate::geometry::numerics::product::exact_power_of_two;
         let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
         let line = CoordSeq::try_from_points(&[
             Point::new(1.0, 0.0).unwrap(),
@@ -126,7 +128,7 @@ mod subdivide_columns_tests {
         ])
         .unwrap();
         let error = Shape::LineString(LineSeq::from_proven(line))
-            .segmentize(2.0_f64.powi(-54))
+            .segmentize(exact_power_of_two(-54))
             .unwrap_err();
 
         assert!(matches!(

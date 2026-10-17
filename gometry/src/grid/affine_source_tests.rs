@@ -265,6 +265,7 @@ fn exact_ratio_orders_the_two_stored_doubles_around_forty_over_three() {
 
 #[test]
 fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let mut backing = Vec::with_capacity(8);
     backing.extend_from_slice(&[1.0, 2.0, 4.0, 8.0]);
     let mut storage = CompactLimbs::Heap(backing);
@@ -277,9 +278,9 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
 
     let heap = ExactExpansion {
         limbs: CompactLimbs::Heap(vec![
-            2.0_f64.powi(-60),
-            2.0_f64.powi(-40),
-            2.0_f64.powi(-20),
+            exact_power_of_two(-60),
+            exact_power_of_two(-40),
+            exact_power_of_two(-20),
             1.0,
             2.0,
         ]),
@@ -297,14 +298,15 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
 
 #[test]
 fn expansion_sub_cancels_unit_plus_half_ulp_without_a_scratch_clone() {
+    use crate::geometry::numerics::product::exact_power_of_two;
     // 1 - 2^-53 is one binary64. 1 + 2^-53 is not; add then sub must recover
     // the half-ulp limb, including empty-right identity.
     let unit = ExactExpansion::from_f64(1.0).unwrap();
-    let half_ulp = ExactExpansion::from_f64(2.0_f64.powi(-53)).unwrap();
+    let half_ulp = ExactExpansion::from_f64(exact_power_of_two(-53)).unwrap();
     let sum = unit.add(&half_ulp).unwrap();
     assert!(sum.as_f64().is_none());
     let recovered = sum.sub(&unit).unwrap();
-    assert_eq!(recovered.is_exact(2.0_f64.powi(-53)), Ok(true));
+    assert_eq!(recovered.is_exact(exact_power_of_two(-53)), Ok(true));
     let unchanged = sum.sub(&ExactExpansion::zero()).unwrap();
     assert_eq!(unchanged.ordering(), sum.ordering());
     assert_eq!(unchanged.is_exact(1.0), Ok(false));

@@ -73,6 +73,7 @@ fn smooth_publication_preserves_copied_knots_and_canonicalizes_samples() {
     }
 }
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn smooth_publisher_carries_inserted_native_chord_samples_by_ellipsoidal_arclength() {
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
     let state = crate::crs::runtime_state_snapshot().unwrap();

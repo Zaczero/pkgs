@@ -677,13 +677,14 @@ fn leading_window(value: &ExactDyadic) -> Option<(u64, i64)> {
 /// Multiply by `2^shift`, rounding outward in the requested direction and
 /// saturating so containment survives overflow and underflow.
 fn scale_pow2(mut value: f64, mut shift: i64, upward: bool) -> f64 {
+    use crate::geometry::numerics::product::exact_power_of_two;
     debug_assert!(value >= 0.0);
     if value == 0.0 {
         return 0.0;
     }
     while shift != 0 {
         let step = shift.clamp(-512, 512);
-        value *= 2.0_f64.powi(step as i32);
+        value *= exact_power_of_two(step as i32);
         shift = shift.wrapping_sub(step);
         if value.is_infinite() {
             return if upward { f64::INFINITY } else { f64::MAX };
@@ -865,6 +866,7 @@ fn ratio_order_filter(
     bn: &ExactDyadic,
     bd: &ExactDyadic,
 ) -> Option<Ordering> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     if ad.is_zero() || bd.is_zero() {
         return None;
     }
@@ -877,7 +879,7 @@ fn ratio_order_filter(
     let (right, right_exponent) = approximate_ratio_components(bn, bd)?;
     let magnitude = match left_exponent.checked_sub(right_exponent)? {
         shift @ -1..=1 => {
-            let left = left * 2.0_f64.powi(shift as i32);
+            let left = left * exact_power_of_two(shift as i32);
             if left > right * (1.0 + RATIO_ORDER_TOLERANCE) {
                 Ordering::Greater
             } else if left < right * (1.0 - RATIO_ORDER_TOLERANCE) {
@@ -941,10 +943,11 @@ fn approximate_ratio_components(
 }
 
 fn scale_approximation(significand: f64, exponent: i64) -> Option<f64> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     if exponent > 1023 {
         Some(f64::MAX)
     } else if exponent >= -1022 {
-        let scaled = significand * 2.0_f64.powi(i32::try_from(exponent).ok()?);
+        let scaled = significand * exact_power_of_two(i32::try_from(exponent).ok()?);
         Some(if scaled.is_finite() { scaled } else { f64::MAX })
     } else if exponent < -1075 {
         Some(0.0)
@@ -952,7 +955,7 @@ fn scale_approximation(significand: f64, exponent: i64) -> Option<f64> {
         Some(
             significand
                 * f64::MIN_POSITIVE
-                * 2.0_f64.powi(i32::try_from(exponent.wrapping_add(1022)).ok()?),
+                * exact_power_of_two(i32::try_from(exponent.wrapping_add(1022)).ok()?),
         )
     }
 }
@@ -1049,6 +1052,7 @@ fn round_ratio_binary_with_work<W: Work>(
     denominator: &ExactDyadic,
     work: &mut W,
 ) -> Result<f64> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     let sign = numerator.sign().quotient(denominator.sign());
     let numerator = numerator.try_clone_with_work(work)?.abs();
     let denominator = denominator.try_clone_with_work(work)?.abs();
@@ -1058,7 +1062,7 @@ fn round_ratio_binary_with_work<W: Work>(
     let max = ExactDyadic::from_f64(f64::MAX).try_product_with_work(&denominator, work)?;
     if numerator.cmp_with_work(&max, work)? == Ordering::Greater {
         let overflow_midpoint = ExactDyadic::from_f64(f64::MAX)
-            .try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?
+            .try_add_with_work(ExactDyadic::from_f64(exact_power_of_two(970)), work)?
             .try_product_with_work(&denominator, work)?;
         if numerator.cmp_with_work(&overflow_midpoint, work)? == Ordering::Less {
             return Ok(if sign == ExactSign::Negative {
@@ -1240,13 +1244,14 @@ pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
     denominator: &ExactDyadic,
     work: &mut W,
 ) -> Result<f64> {
+    use crate::geometry::numerics::product::exact_power_of_two;
     if numerator.is_zero() {
         return Ok(0.0);
     }
     work.charge_into_error(1)?;
     let max = ExactDyadic::from_f64(f64::MAX);
     let overflow_midpoint =
-        max.try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?;
+        max.try_add_with_work(ExactDyadic::from_f64(exact_power_of_two(970)), work)?;
     let overflow_squared = overflow_midpoint
         .try_product_with_work(&overflow_midpoint, work)?
         .try_product_with_work(denominator, work)?;

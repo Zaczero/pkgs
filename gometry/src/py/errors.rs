@@ -630,6 +630,7 @@ mod tests {
     use crate::geometry::GeometryErrorKind;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn fixed_native_failures_keep_classification_after_annotations() {
         Python::initialize();
         Python::attach(|py| {
@@ -663,6 +664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn contextual_overflow_keeps_its_message() {
         Python::initialize();
         Python::attach(|py| {
@@ -711,6 +713,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn output_refusals_have_distinct_codes_and_preserve_attributes() {
         Python::initialize();
         Python::attach(|py| {

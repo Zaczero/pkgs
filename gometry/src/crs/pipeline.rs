@@ -532,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn operation_info_at_rejects_nonfinite_optional_output() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -568,6 +569,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn transform_lanes_indexed_rejects_mismatches_and_accepts_singleton_time() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -656,6 +658,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn spherical_tmerc_forward_scales_through_the_equatorial_acos_band() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -692,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn spherical_tmerc_zero_latitude_backside_is_positive_pi() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -705,6 +709,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn spherical_tmerc_inverse_scales_near_the_pole_and_roundtrips() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();

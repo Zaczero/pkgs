@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_polygon_windows_with_unequal_prefixes_equal_without_buffering() {
     let left_points = concat3(
         &closed_box(9.0, 9.0, 9.5, 9.5),
@@ -44,6 +45,7 @@ fn packed_polygon_windows_with_unequal_prefixes_equal_without_buffering() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_polygon_empty_windows_compare_equal() {
     let left = packed_polygons(
         CoordSeq::try_from_points(&closed_box(0.0, 0.0, 1.0, 1.0)).unwrap(),
@@ -67,6 +69,7 @@ fn packed_polygon_empty_windows_compare_equal() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn packed_polygon_window_zm_compares_optional_axes() {
     use crate::geometry::{MOrdinate, ZOrdinate};
     let ring = |z: f64, m: f64| {

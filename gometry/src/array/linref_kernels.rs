@@ -362,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn array_count_sampling_admits_source_rows_before_ellipsoid_resolution() {
         let bad_crs = "+proj=longlat +a=6378137 +f=0.1 +type=crs";
         let plan = RowInterpolatePlan::Counts(crate::I64Param::Scalar(1));
@@ -445,6 +446,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn mixed_geographic_count_sampling_resolves_one_metric_for_all_rows() {
         let array = geographic_lines(
             vec![
