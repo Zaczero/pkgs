@@ -12,16 +12,16 @@ def totp_time_window(
 
     Finite ``time`` values are floored to whole seconds. If ``time`` is omitted,
     the current system time is used. The counter is
-    ``floor((floor(time) - t0) / step_seconds)`` for a positive step.
-    Negative, nonzero steps are also accepted and use Euclidean integer
-    division. ``step_seconds`` and ``t0`` are signed 64-bit integers. Nonfinite
-    or out-of-range floating times convert to signed 64-bit seconds using
-    saturating float-to-integer conversion. The default of 30 seconds is the
-    common RFC 6238 configuration.
+    ``floor((floor(time) - t0) / step_seconds)``. ``step_seconds`` must be
+    positive, and ``t0`` is a signed 64-bit integer. Timestamps must be finite
+    and their floored seconds must fit a signed 64-bit integer. Negative
+    timestamps are supported. The default of 30 seconds is the common RFC 6238
+    configuration.
 
     Raises:
-        ValueError: If ``step_seconds`` is zero or the counter does not fit a
-            signed 64-bit integer.
+        ValueError: If ``step_seconds`` is nonpositive, ``time`` is nonfinite
+            or out of range, or the derived counter does not fit a signed
+            64-bit integer.
         TypeError: If a typed time or integer argument has an incompatible
             Python type.
         OverflowError: If ``step_seconds`` or ``t0`` is outside the signed
@@ -49,16 +49,17 @@ def totp_generate(
     If ``time_window`` is supplied, it is the signed counter used directly;
     ``step_seconds`` and ``t0`` are then unused. ``time`` and ``time_window``
     are mutually exclusive. When neither is supplied, the current system time
-    is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be nonzero
+    is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be positive
     when deriving a counter; the default is 30 seconds. Floating timestamps
-    are floored and converted to signed 64-bit seconds; origins and explicit
-    counters are signed 64-bit integers.
+    must be finite and are floored to signed 64-bit seconds; origins and
+    explicit counters are signed 64-bit integers. Negative timestamps are
+    supported.
 
     Raises:
         ValueError: If the secret is not bytes or valid Base32 text, the
             algorithm or digit count is unsupported, the time arguments
-            conflict, a derived counter uses a zero step, or the derived
-            counter is out of range.
+            conflict, a derived counter uses a nonpositive step, or a time or
+            derived counter is out of range or nonfinite.
         TypeError: If a typed option has an incompatible Python type.
         OverflowError: If ``digits`` is outside the unsigned-byte range or an
             ``i64`` time/counter option is outside its signed range.
@@ -87,10 +88,11 @@ def totp_verify(
     If ``time_window`` is supplied, it is the signed counter used directly;
     ``step_seconds`` and ``t0`` are then unused. ``time`` and ``time_window``
     are mutually exclusive. When neither is supplied, the current system time
-    is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be nonzero
+    is used with ``step_seconds`` and ``t0``. ``step_seconds`` must be positive
     when deriving a counter; the default is 30 seconds. Floating timestamps
-    are floored and converted to signed 64-bit seconds; origins and explicit
-    counters are signed 64-bit integers.
+    must be finite and are floored to signed 64-bit seconds; origins and
+    explicit counters are signed 64-bit integers. Negative timestamps are
+    supported.
 
     ``window`` allows counter drift: with ``window=1``, candidates are checked
     in this order: T, T-1, T+1. It must fit an unsigned byte. String codes use
@@ -108,8 +110,8 @@ def totp_verify(
     Raises:
         ValueError: If the secret is not bytes or valid Base32 text, the
             algorithm or digit count is unsupported, the time arguments
-            conflict, a derived counter uses a zero step, or the derived
-            counter is out of range.
+            conflict, a derived counter uses a nonpositive step, or a time or
+            derived counter is out of range or nonfinite.
         TypeError: If a typed option has an incompatible Python type. A code
             with an unsupported type returns ``False``.
         OverflowError: If ``digits`` or ``window`` is outside the unsigned-byte

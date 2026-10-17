@@ -1,3 +1,6 @@
+import math
+from collections.abc import Callable
+from functools import partial
 from typing import Literal
 
 import pytest
@@ -16,6 +19,12 @@ SECRET_SHA512_B32 = (
     'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
     'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA='
 )
+
+_TIME_OPERATIONS = [
+    pytest.param(totp_time_window, id='counter'),
+    pytest.param(partial(totp_generate, SECRET_SHA1), id='generate'),
+    pytest.param(partial(totp_verify, SECRET_SHA1, '123456'), id='verify'),
+]
 
 
 @pytest.mark.parametrize(
@@ -177,6 +186,51 @@ def test_time_accepts_float_seconds() -> None:
     )
 
 
+@pytest.mark.parametrize('operation', _TIME_OPERATIONS)
+@pytest.mark.parametrize('period', [0, -1, -30])
+def test_time_derivation_rejects_nonpositive_periods(
+    operation: Callable[..., object], period: int
+) -> None:
+    with pytest.raises(ValueError, match='step_seconds'):
+        operation(time=59, step_seconds=period)
+
+
+@pytest.mark.parametrize('operation', _TIME_OPERATIONS)
+@pytest.mark.parametrize(
+    'timestamp',
+    [
+        pytest.param(float('nan'), id='nan'),
+        pytest.param(float('inf'), id='positive-infinity'),
+        pytest.param(float('-inf'), id='negative-infinity'),
+        pytest.param(float(1 << 63), id='upper-bound'),
+        pytest.param(
+            math.nextafter(float(-(1 << 63)), -math.inf), id='below-lower-bound'
+        ),
+    ],
+)
+def test_time_derivation_rejects_nonfinite_or_out_of_range_seconds(
+    operation: Callable[..., object], timestamp: float
+) -> None:
+    with pytest.raises(ValueError, match='time'):
+        operation(time=timestamp)
+
+
+@pytest.mark.parametrize(
+    ('timestamp', 'expected'),
+    [
+        pytest.param(-0.1, -1, id='negative-fraction'),
+        pytest.param(float(-(1 << 63)), -(1 << 63), id='lower-bound'),
+        pytest.param(
+            math.nextafter(float(1 << 63), 0.0),
+            9_223_372_036_854_774_784,
+            id='largest-representable-in-range',
+        ),
+    ],
+)
+def test_time_seconds_floor_without_saturating(timestamp: float, expected: int) -> None:
+    assert totp_time_window(timestamp, step_seconds=1) == expected
+
+
 @pytest.mark.parametrize(
     ('secret_bytes', 'secret_b32', 'algorithm'),
     [
@@ -232,7 +286,7 @@ def test_secret_accepts_base32_str(
 
 
 def test_invalid_inputs() -> None:
-    with pytest.raises(ValueError, match='Invalid step_seconds: must be non-zero'):
+    with pytest.raises(ValueError, match='Invalid step_seconds: must be positive'):
         totp_time_window(0, step_seconds=0)
 
     for digits in (0, 10):

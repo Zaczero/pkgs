@@ -42,6 +42,11 @@ code = totp_generate(b'12345678901234567890', digits=8, time=59)
 print(code)  # 94287082
 ```
 
+Timestamps must be finite and fit signed 64-bit whole seconds after flooring;
+negative timestamps are supported. Deriving a counter requires a positive
+step length. An explicit `time_window` uses the supplied counter directly and
+ignores the step length and origin.
+
 Verification compares code bytes in constant time, but validation and the drift
 search can return early. The library does not store replay state or rate-limit
 attempts; enforce those in your application.
