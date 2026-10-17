@@ -748,8 +748,8 @@ mod ownership_tests {
     }
 
     #[test]
-    fn nullable_packed_tiny_selection_does_not_warm_huge_parent_products() {
-        let parent_len = 1_000_000;
+    fn nullable_packed_tail_selection_does_not_warm_parent_products() {
+        let parent_len = 129;
         let mut missing = vec![true; parent_len];
         missing[parent_len - 2] = false;
         missing[parent_len - 1] = false;

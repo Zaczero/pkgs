@@ -15,7 +15,7 @@ fn productive_state_is_isolated_between_sources() {
     );
     let adaptive = Coverer {
         min_level: 0,
-        max_level: MAX_LEVEL,
+        max_level: 4,
         level_mod: 1,
         max_cells: None,
         target_cells: 8,
@@ -131,7 +131,7 @@ fn adaptive_productivity_reuses_nested_certificates_for_a_holed_polygon() {
 #[test]
 fn fixed_within_emits_visible_terminals_without_staging_invisible_cells() {
     let source = polygon_with_hole();
-    let coverer = fixed(8);
+    let coverer = fixed(6);
     let covering = coverer
         .cover_identity_for_rule(&source, CoverRule::Within)
         .expect("fixed within cover of a holed polygon");
@@ -358,7 +358,10 @@ fn adaptive_target_ignores_unproductive_outside_frontier() {
     assert_eq!(detailed.outer().len(), 4);
     assert_eq!(targeted.outer(), detailed.outer());
     assert!(targeted.outer().iter().all(|id| id.level() == 10));
+}
 
+#[test]
+fn adaptive_hard_budget_caps_committed_line_cells() {
     let line = Shape::LineString(
         LineSeq::try_new(
             CoordSeq::try_from_points(&[

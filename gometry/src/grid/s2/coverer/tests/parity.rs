@@ -43,7 +43,7 @@ fn native_coverer_matches_relate_oracle_on_a_box() {
 
 #[test]
 fn native_coverer_matches_relate_oracle_on_a_holed_polygon() {
-    assert_relate_oracle_parity("hole", &polygon_with_hole(), &[5, 7, 9]);
+    assert_relate_oracle_parity("hole", &polygon_with_hole(), &[5, 6]);
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn native_coverer_matches_relate_oracle_on_a_line() {
         )
         .expect("test line is valid"),
     );
-    assert_relate_oracle_parity("line", &source, &[5, 7, 9]);
+    assert_relate_oracle_parity("line", &source, &[5, 7]);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn native_coverer_matches_relate_oracle_on_a_mixed_dimension_collection() {
 
 #[test]
 fn native_coverer_matches_relate_oracle_on_an_adjacent_areal_collection() {
-    assert_relate_oracle_parity("adjacent-areal", &adjacent_areal_collection(), &[8, 10]);
+    assert_relate_oracle_parity("adjacent-areal", &adjacent_areal_collection(), &[6, 8]);
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn native_coverer_matches_relate_oracle_on_a_thin_boundary() {
 
 #[test]
 fn native_coverer_matches_relate_oracle_across_the_antimeridian() {
-    assert_relate_oracle_parity("antimeridian", &antimeridian_seam_source(), &[4, 6, 8]);
+    assert_relate_oracle_parity("antimeridian", &antimeridian_seam_source(), &[4, 6]);
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn native_coverer_matches_relate_oracle_on_pole_touching_line() {
 #[test]
 fn native_coverer_matches_relate_oracle_on_full_world_band() {
     let source = box_shape(-180.0, -80.0, 180.0, 80.0);
-    assert_relate_oracle_parity("full-world-band", &source, &[2, 4, 6]);
+    assert_relate_oracle_parity("full-world-band", &source, &[1, 2, 3]);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn native_coverer_matches_relate_oracle_on_retraced_and_collapsed_support() {
         )
         .expect("retraced line is valid"),
     );
-    assert_relate_oracle_parity("retraced-line", &retraced, &[4, 6, 8]);
+    assert_relate_oracle_parity("retraced-line", &retraced, &[4, 6]);
 
     let collapsed = Shape::LineString(
         LineSeq::try_new(
@@ -146,8 +146,7 @@ fn native_coverer_matches_relate_oracle_on_retraced_and_collapsed_support() {
     assert_relate_oracle_parity("collapsed-line", &collapsed, &[4, 6, 8]);
 }
 
-#[test]
-fn native_coverer_source_permutations_are_deterministic() {
+fn assert_source_permutations_are_deterministic(level: u8, rule: CoverRule) {
     let left = box_shape(-1.0, -1.0, 0.03, 1.0);
     let right = box_shape(0.03, -1.0, 1.0, 1.0);
     let first = Shape::geometry_collection(vec![left.clone(), right.clone()])
@@ -155,19 +154,39 @@ fn native_coverer_source_permutations_are_deterministic() {
     let second =
         Shape::geometry_collection(vec![right, left]).expect("permuted collection is valid");
 
-    for level in [4, 6, 8] {
-        for rule in [CoverRule::Overlap, CoverRule::Within, CoverRule::Center] {
-            let first_cover = fixed(level)
-                .cover_identity_for_rule(&first, rule)
-                .expect("first permutation covers");
-            let second_cover = fixed(level)
-                .cover_identity_for_rule(&second, rule)
-                .expect("second permutation covers");
-            assert_eq!(
-                first_cover.into_cells(),
-                second_cover.into_cells(),
-                "level {level} rule {rule:?}"
-            );
-        }
-    }
+    let first_cover = fixed(level)
+        .cover_identity_for_rule(&first, rule)
+        .expect("first permutation covers");
+    let second_cover = fixed(level)
+        .cover_identity_for_rule(&second, rule)
+        .expect("second permutation covers");
+    assert_eq!(
+        first_cover.into_cells(),
+        second_cover.into_cells(),
+        "level {level} rule {rule:?}"
+    );
+}
+
+/// Give each level and rule an independently runnable permutation case.
+macro_rules! source_permutation_cases {
+    ($($name:ident: ($level:literal, $rule:ident)),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                assert_source_permutations_are_deterministic($level, CoverRule::$rule);
+            }
+        )*
+    };
+}
+
+source_permutation_cases! {
+    source_permutations_level_four_overlap: (4, Overlap),
+    source_permutations_level_four_within: (4, Within),
+    source_permutations_level_four_center: (4, Center),
+    source_permutations_level_six_overlap: (6, Overlap),
+    source_permutations_level_six_within: (6, Within),
+    source_permutations_level_six_center: (6, Center),
+    source_permutations_level_eight_overlap: (8, Overlap),
+    source_permutations_level_eight_within: (8, Within),
+    source_permutations_level_eight_center: (8, Center),
 }

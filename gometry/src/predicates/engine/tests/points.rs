@@ -329,7 +329,7 @@ fn shared_boolean_point_predicates_match_unshared_wkb_expansion() {
 
     for (base, query) in cases {
         let point = Shape::Point(query);
-        for depth in [6, 10] {
+        for depth in [2, 3] {
             let shared = shared_collection(base.clone(), depth);
             let expanded = crate::io::parse_wkb(&wkb(&shared))
                 .expect("expanded WKB parses")

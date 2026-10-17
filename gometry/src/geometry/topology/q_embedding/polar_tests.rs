@@ -592,36 +592,45 @@ fn t2_unchanged_exact_seam_difference_remains_source_only() -> Result<()> {
     Ok(())
 }
 
-#[test]
 #[expect(
     clippy::panic_in_result_fn,
     reason = "the test returns Result for fallible setup and uses assertions as its behavioral oracle"
 )]
-fn t2_selected_region_assembly_without_rounding_uses_native_units() -> Result<()> {
+fn assert_selected_region_assembly_uses_native_units(frame: GeographicFrame) -> Result<()> {
+    let [source, band] = t2_notched_inputs(frame)?;
+    let capture = capture_native_seal(&[source, band], OverlayOp::Intersection, frame)?;
+    assert!(!capture.rounded, "frame={frame:?}: {capture:?}");
+    assert_eq!(
+        capture.unclassified_cycles(),
+        Ok(1),
+        "frame={frame:?}: {capture:?}"
+    );
+    assert!(
+        capture.native().is_ok(),
+        "selected chart assembly was skipped for {frame:?}: {capture:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn t2_selected_region_assembly_without_rounding_uses_degrees() -> Result<()> {
+    assert_selected_region_assembly_uses_native_units(GeographicFrame::crs84())
+}
+
+#[test]
+fn t2_selected_region_assembly_without_rounding_uses_radians() -> Result<()> {
     let radians = crate::geographic::AngularFactor::try_new("radian", 1.0)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let frame = GeographicFrame::try_new(radians, radians, 0.0)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    assert_selected_region_assembly_uses_native_units(frame)
+}
+
+#[test]
+fn t2_selected_region_assembly_without_rounding_uses_grads() -> Result<()> {
     let grads = crate::geographic::AngularFactor::try_new("grad", std::f64::consts::PI / 200.0)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    let frames = [
-        GeographicFrame::crs84(),
-        GeographicFrame::try_new(radians, radians, 0.0)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?,
-        GeographicFrame::try_new(grads, grads, 0.0)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?,
-    ];
-    for frame in frames {
-        let [source, band] = t2_notched_inputs(frame)?;
-        let capture = capture_native_seal(&[source, band], OverlayOp::Intersection, frame)?;
-        assert!(!capture.rounded, "frame={frame:?}: {capture:?}");
-        assert_eq!(
-            capture.unclassified_cycles(),
-            Ok(1),
-            "frame={frame:?}: {capture:?}"
-        );
-        assert!(
-            capture.native().is_ok(),
-            "selected chart assembly was skipped for {frame:?}: {capture:?}"
-        );
-    }
-    Ok(())
+    let frame = GeographicFrame::try_new(grads, grads, 0.0)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    assert_selected_region_assembly_uses_native_units(frame)
 }

@@ -915,7 +915,6 @@ mod tests {
         ));
         let authority_plan = PreparedPlan::new(world.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
-        COVER_CELL_VISITS.with(|count| count.set(0));
         COVER_ENUMERATION_VISITS.with(|count| count.set(0));
         match cover(
             &world,
@@ -926,18 +925,16 @@ mod tests {
             RectCoverRule::Overlap,
             geohash::roots(),
             10,
-            Some(64),
+            Some(1),
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
             Err(CoverError::Budget(err)) => {
-                let visits = COVER_CELL_VISITS.with(std::cell::Cell::get);
-                eprintln!("cover visits {visits}");
                 assert_eq!(
                     COVER_ENUMERATION_VISITS.with(std::cell::Cell::get),
                     0,
                     "an over-budget cover must reject before output enumeration"
                 );
-                assert_eq!(err.limit, 64);
+                assert_eq!(err.limit, 1);
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }

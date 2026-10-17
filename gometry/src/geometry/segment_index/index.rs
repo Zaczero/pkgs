@@ -515,6 +515,9 @@ mod query_tests {
             ),
         ];
         for (chord, segments) in cases {
+            for segment in segments {
+                assert!(segments_intersect(chord, segment));
+            }
             let segments: Vec<_> = segments.into_iter().cycle().take(1025).collect();
             let index = ChordIndex::build(&segments);
             let mut retained = vec![false; segments.len()];
@@ -522,9 +525,8 @@ mod query_tests {
                 retained[entry.ordinal] = true;
                 true
             }));
-            for (ordinal, &segment) in segments.iter().enumerate() {
-                assert!(segments_intersect(chord, segment));
-                assert!(retained[ordinal], "{chord:?} against {segment:?}");
+            for (ordinal, retained) in retained.into_iter().enumerate() {
+                assert!(retained, "{chord:?} dropped source ordinal {ordinal}");
             }
         }
     }

@@ -1,5 +1,5 @@
 use super::support::{
-    box_ring, frame, line, multi_line, multi_polygon, polygon, ring, rows, shape, signature,
+    box_ring, frame, line, multi_line, multi_polygon, pole_hop, polygon, ring, shape, signature,
     signature_from_issue,
 };
 use crate::geometry::topology::q::ExactGeographicTopology;
@@ -134,11 +134,7 @@ fn quotient_polygon_self_intersections_report_canonical_q_nodes() {
         assert!(!crate::geometry::is_simple_data_in_frame(&prepared, domain).unwrap());
     }
 
-    let pole_pair = rows()
-        .into_iter()
-        .find(|row| row.name == "U1 pair A lat80")
-        .expect("the cap corpus includes the declared pole-pair excursion");
-    let pole_pair = shape(&pole_pair.rings, false);
+    let pole_pair = shape(&[pole_hop(-180.0, 80.0, 90.0)], false);
     assert_eq!(
         crate::geometry::validate_shape_in_frame(&pole_pair, domain).unwrap(),
         None

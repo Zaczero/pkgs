@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn wkb_shape_width_preflight_retains_the_logical_row() {
         let mut wide = Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 0.0));
-        for _ in 0..128 {
+        for _ in 0..60 {
             let child = wide.clone();
             wide = Shape::geometry_collection(vec![child.clone(), child])
                 .expect("collection stays within the nesting limit");

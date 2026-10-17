@@ -152,49 +152,106 @@ fn cap_latitude_envelope_is_outward_before_it_can_prune() {
     assert!(absolute.lo < rounded_sum && absolute.hi > rounded_sum);
 }
 
-#[test]
-fn generic_cap_fallback_covers_every_bilateral_pole_owner_ancestor() {
-    const POLE_OWNERS: [(u64, u64); H3_RESOLUTION_COUNT] = [
-        (0x0800_1FFF_FFFF_FFFF, 0x080F_3FFF_FFFF_FFFF),
-        (0x0810_33FF_FFFF_FFFF, 0x081F_2BFF_FFFF_FFFF),
-        (0x0820_327F_FFFF_FFFF, 0x082F_297F_FFFF_FFFF),
-        (0x0830_326F_FFFF_FFFF, 0x083F_293F_FFFF_FFFF),
-        (0x0840_3263_FFFF_FFFF, 0x084F_2939_FFFF_FFFF),
-        (0x0850_3262_3FFF_FFFF, 0x085F_2938_3FFF_FFFF),
-        (0x0860_3262_37FF_FFFF, 0x086F_2938_0FFF_FFFF),
-        (0x0870_3262_33FF_FFFF, 0x087F_2938_0EFF_FFFF),
-        (0x0880_3262_33BF_FFFF, 0x088F_2938_0E1F_FFFF),
-        (0x0890_3262_33AB_FFFF, 0x089F_2938_0E0F_FFFF),
-        (0x08A0_3262_33AB_7FFF, 0x08AF_2938_0E0D_7FFF),
-        (0x08B0_3262_33AB_0FFF, 0x08BF_2938_0E0D_0FFF),
-        (0x08C0_3262_33AB_03FF, 0x08CF_2938_0E0D_0DFF),
-        (0x08D0_3262_33AB_03BF, 0x08DF_2938_0E0D_0CFF),
-        (0x08E0_3262_33AB_039F, 0x08EF_2938_0E0D_0CC7),
-        (0x08F0_3262_33AB_0399, 0x08FF_2938_0E0D_0CC4),
-    ];
-    for (target, (north, south)) in
-        Resolution::range(Resolution::Zero, Resolution::Fifteen).zip(POLE_OWNERS)
-    {
-        let cap = CertifiedH3DescendantCap::for_target(target).unwrap();
-        for (owner, northern) in [(north, true), (south, false)] {
-            let owner = h3o::CellIndex::try_from(owner).unwrap();
-            for depth in Resolution::range(Resolution::Zero, target) {
-                let cell = owner.parent(depth).unwrap();
-                let DegreeWindowResult::Windows(CertifiedDegreeWindows {
-                    latitude,
-                    longitude: CertifiedLongitudeDegrees::Full,
-                }) = cap.descendant_windows(cell)
-                else {
-                    panic!("{target:?} {depth:?} must take the generic pole fallback");
-                };
-                assert!(if northern {
-                    latitude.hi >= 90.0
-                } else {
-                    latitude.lo <= -90.0
+fn assert_target_cap_certificate(target: Resolution, north: u64, south: u64) {
+    let raw = CapLatticeProfile::for_target(target);
+    let scale = certified_profile_scale(&raw)
+        .unwrap_or_else(|| panic!("target {target:?} needs a finite projection scale"));
+    for (index, seam) in raw.seams().iter().enumerate() {
+        for seed in seam.left().into_iter().chain(seam.right()) {
+            let certificate = certified_face_projection(&seed, raw.max_dim(), scale)
+                .unwrap_or_else(|| {
+                    panic!("target {target:?} seam {index} needs a finite face projection")
                 });
-            }
+            assert!(
+                certificate.minimum_denominator.strictly_positive(),
+                "target {target:?} seam {index} needs a positive native-C projection denominator"
+            );
+            assert!(
+                certificate.basis_norm.hi > 0.0,
+                "target {target:?} seam {index} needs a non-degenerate projection basis"
+            );
         }
     }
+    let stretch = certified_chart_stretch(&raw, scale)
+        .unwrap_or_else(|| panic!("target {target:?} needs a finite chart stretch"));
+    assert!(stretch.hi > 0.0);
+    let seam_cost = certified_seam_cost(&raw, scale)
+        .unwrap_or_else(|| panic!("target {target:?} needs a finite seam cost"));
+    assert!(seam_cost.hi > 0.0);
+    let cap = CertifiedH3DescendantCap::for_target(target)
+        .unwrap_or_else(|| panic!("target {target:?} needs a finite projection and seam cap"));
+    assert_eq!(cap.target(), target);
+    for depth in Resolution::range(Resolution::Zero, target) {
+        let ideal = certified_ideal_face_ratio(target, depth).unwrap_or_else(|| {
+            panic!("target {target:?}, depth {depth:?} needs a strict face-crossing proof")
+        });
+        assert!(ideal.hi < 1.0);
+        let radius = cap.angular_radius(depth).unwrap_or_else(|| {
+            panic!("target {target:?}, depth {depth:?} needs a sub-hemisphere cap")
+        });
+        assert!(radius.hi < HALF_PI_LO);
+    }
+    for (owner, northern) in [(north, true), (south, false)] {
+        let owner = h3o::CellIndex::try_from(owner).unwrap();
+        assert_eq!(owner.resolution(), target);
+        for depth in Resolution::range(Resolution::Zero, target) {
+            let cell = owner.parent(depth).unwrap();
+            let DegreeWindowResult::Windows(CertifiedDegreeWindows {
+                latitude,
+                longitude: CertifiedLongitudeDegrees::Full,
+            }) = cap.descendant_windows(cell)
+            else {
+                panic!("{target:?} {depth:?} must take the generic pole fallback");
+            };
+            assert!(if northern {
+                latitude.hi >= 90.0
+            } else {
+                latitude.lo <= -90.0
+            });
+        }
+    }
+    let invalid = Hex2Int::new(cap.max_dim.wrapping_mul(6).wrapping_add(2), 0);
+    assert!(
+        !certified_center_seed_is_admissible(
+            invalid,
+            cap.adjusted_resolution,
+            true,
+            cap.adjusted_resolution,
+            cap.max_dim,
+        ),
+        "an IJK point beyond the certified face domain must not enter a window certificate"
+    );
+}
+
+/// Give each target its own test while sharing its cap across all certificate checks.
+macro_rules! target_cap_cases {
+    ($($name:ident: $resolution:ident => ($north:expr, $south:expr)),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                assert_target_cap_certificate(Resolution::$resolution, $north, $south);
+            }
+        )*
+    };
+}
+
+target_cap_cases! {
+    target_zero_cap_certificate: Zero => (0x0800_1FFF_FFFF_FFFF, 0x080F_3FFF_FFFF_FFFF),
+    target_one_cap_certificate: One => (0x0810_33FF_FFFF_FFFF, 0x081F_2BFF_FFFF_FFFF),
+    target_two_cap_certificate: Two => (0x0820_327F_FFFF_FFFF, 0x082F_297F_FFFF_FFFF),
+    target_three_cap_certificate: Three => (0x0830_326F_FFFF_FFFF, 0x083F_293F_FFFF_FFFF),
+    target_four_cap_certificate: Four => (0x0840_3263_FFFF_FFFF, 0x084F_2939_FFFF_FFFF),
+    target_five_cap_certificate: Five => (0x0850_3262_3FFF_FFFF, 0x085F_2938_3FFF_FFFF),
+    target_six_cap_certificate: Six => (0x0860_3262_37FF_FFFF, 0x086F_2938_0FFF_FFFF),
+    target_seven_cap_certificate: Seven => (0x0870_3262_33FF_FFFF, 0x087F_2938_0EFF_FFFF),
+    target_eight_cap_certificate: Eight => (0x0880_3262_33BF_FFFF, 0x088F_2938_0E1F_FFFF),
+    target_nine_cap_certificate: Nine => (0x0890_3262_33AB_FFFF, 0x089F_2938_0E0F_FFFF),
+    target_ten_cap_certificate: Ten => (0x08A0_3262_33AB_7FFF, 0x08AF_2938_0E0D_7FFF),
+    target_eleven_cap_certificate: Eleven => (0x08B0_3262_33AB_0FFF, 0x08BF_2938_0E0D_0FFF),
+    target_twelve_cap_certificate: Twelve => (0x08C0_3262_33AB_03FF, 0x08CF_2938_0E0D_0DFF),
+    target_thirteen_cap_certificate: Thirteen => (0x08D0_3262_33AB_03BF, 0x08DF_2938_0E0D_0CFF),
+    target_fourteen_cap_certificate: Fourteen => (0x08E0_3262_33AB_039F, 0x08EF_2938_0E0D_0CC7),
+    target_fifteen_cap_certificate: Fifteen => (0x08F0_3262_33AB_0399, 0x08FF_2938_0E0D_0CC4),
 }
 
 #[test]
@@ -242,51 +299,6 @@ fn center_certificate_requires_the_substrate_carrier_and_target_resolution() {
 }
 
 #[test]
-fn descendant_cap_certifies_every_target_depth_below_a_hemisphere() {
-    for target in Resolution::range(Resolution::Zero, Resolution::Fifteen) {
-        let lattice = CertifiedTargetLatticeProfile::for_target(target)
-            .unwrap_or_else(|| panic!("target {target:?} needs a finite lattice profile"));
-        let scale = certified_profile_scale(lattice.raw())
-            .unwrap_or_else(|| panic!("target {target:?} needs a finite projection scale"));
-        for (index, seam) in lattice.raw().seams().iter().enumerate() {
-            for seed in seam.left().into_iter().chain(seam.right()) {
-                let certificate = certified_face_projection(&seed, lattice.raw().max_dim(), scale)
-                    .unwrap_or_else(|| {
-                        panic!("target {target:?} seam {index} needs a finite face projection")
-                    });
-                assert!(
-                    certificate.minimum_denominator.strictly_positive(),
-                    "target {target:?} seam {index} needs a positive native-C projection denominator"
-                );
-                assert!(
-                    certificate.basis_norm.hi > 0.0,
-                    "target {target:?} seam {index} needs a non-degenerate projection basis"
-                );
-            }
-        }
-        let stretch = certified_chart_stretch(lattice.raw(), scale)
-            .unwrap_or_else(|| panic!("target {target:?} needs a finite chart stretch"));
-        assert!(stretch.hi > 0.0);
-        let seam_cost = certified_seam_cost(lattice.raw(), scale)
-            .unwrap_or_else(|| panic!("target {target:?} needs a finite seam cost"));
-        assert!(seam_cost.hi > 0.0);
-        let cap = CertifiedH3DescendantCap::for_target(target)
-            .unwrap_or_else(|| panic!("target {target:?} needs a finite projection and seam cap"));
-        assert_eq!(cap.target(), target);
-        for depth in Resolution::range(Resolution::Zero, target) {
-            let ideal = certified_ideal_face_ratio(target, depth).unwrap_or_else(|| {
-                panic!("target {target:?}, depth {depth:?} needs a strict face-crossing proof")
-            });
-            assert!(ideal.hi < 1.0);
-            let radius = cap.angular_radius(depth).unwrap_or_else(|| {
-                panic!("target {target:?}, depth {depth:?} needs a sub-hemisphere cap")
-            });
-            assert!(radius.hi < HALF_PI_LO);
-        }
-    }
-}
-
-#[test]
 fn cap_radius_uses_its_certified_outer_halfwidth_not_an_arc_endpoint_pair() {
     let target = Resolution::Two;
     let cap = CertifiedH3DescendantCap::for_target(target).unwrap();
@@ -297,25 +309,6 @@ fn cap_radius_uses_its_certified_outer_halfwidth_not_an_arc_endpoint_pair() {
         windows, 122,
         "a correlated [0, R] cap radius retains every native r2 root window"
     );
-}
-
-#[test]
-fn descendant_window_certificate_rejects_unprofiled_centers() {
-    for target in Resolution::range(Resolution::Zero, Resolution::Fifteen) {
-        let cap = CertifiedH3DescendantCap::for_target(target)
-            .unwrap_or_else(|| panic!("target {target:?} has an atomic cap"));
-        let invalid = Hex2Int::new(6 * cap.max_dim + 2, 0);
-        assert!(
-            !certified_center_seed_is_admissible(
-                invalid,
-                cap.adjusted_resolution,
-                true,
-                cap.adjusted_resolution,
-                cap.max_dim,
-            ),
-            "an IJK point beyond the certified face domain must not enter a window certificate"
-        );
-    }
 }
 
 #[test]

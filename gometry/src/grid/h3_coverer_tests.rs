@@ -694,40 +694,52 @@ fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
     );
 }
 
-#[test]
-fn periodic_polar_winding_caps_retain_each_analytic_owner() {
-    // A full linear longitude winding closes through the pole named by its
-    // physical latitude. Reversing a ring changes its lift degree but not
-    // its cap, so each north/south owner must remain visible for both
-    // directions.
-    for (reverse, latitude) in [(false, 87.0), (true, 87.0), (false, -87.0), (true, -87.0)] {
-        let ring_latitude = if latitude > 0.0 { 85.0 } else { -85.0 };
-        let shape = Shape::Polygon(Polygon::new(
-            latitude_ring(ring_latitude, reverse),
-            Vec::new(),
-        ));
-        let source =
-            GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(Resolution::Two))
-                .unwrap();
-        let owner = h3o::LatLng::new(latitude, 0.0)
+fn assert_polar_winding_cap_retains_owner(reverse: bool, latitude: f64) {
+    let ring_latitude = if latitude > 0.0 { 85.0 } else { -85.0 };
+    let shape = Shape::Polygon(Polygon::new(
+        latitude_ring(ring_latitude, reverse),
+        Vec::new(),
+    ));
+    let source =
+        GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+    let owner = h3o::LatLng::new(latitude, 0.0)
+        .unwrap()
+        .to_cell(Resolution::Two);
+    let plan = H3CoverPlan::new(Resolution::Two);
+    let cap = plan.cap.as_ref().unwrap().descendant_windows(owner);
+    assert_ne!(
+        source
+            .classify_rect(&source.admit_rectangular_candidate(cap))
+            .expect("exact cap classification"),
+        RectClass::Outside
+    );
+    assert!(
+        h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
             .unwrap()
-            .to_cell(Resolution::Two);
-        let plan = H3CoverPlan::new(Resolution::Two);
-        let cap = plan.cap.as_ref().unwrap().descendant_windows(owner);
-        assert_ne!(
-            source
-                .classify_rect(&source.admit_rectangular_candidate(cap))
-                .expect("exact cap classification"),
-            RectClass::Outside
-        );
-        assert!(
-            h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
-                .unwrap()
-                .iter()
-                .any(|entry| entry.cell == owner),
-            "the cap traversal retains {owner} for the periodic {latitude} owner"
-        );
-    }
+            .iter()
+            .any(|entry| entry.cell == owner),
+        "the cap traversal retains {owner} for the periodic {latitude} owner"
+    );
+}
+
+#[test]
+fn north_forward_winding_cap_retains_analytic_owner() {
+    assert_polar_winding_cap_retains_owner(false, 87.0);
+}
+
+#[test]
+fn north_reversed_winding_cap_retains_analytic_owner() {
+    assert_polar_winding_cap_retains_owner(true, 87.0);
+}
+
+#[test]
+fn south_forward_winding_cap_retains_analytic_owner() {
+    assert_polar_winding_cap_retains_owner(false, -87.0);
+}
+
+#[test]
+fn south_reversed_winding_cap_retains_analytic_owner() {
+    assert_polar_winding_cap_retains_owner(true, -87.0);
 }
 
 #[test]
@@ -992,34 +1004,21 @@ fn global_unknown_veto_cannot_suppress_north_cap_bulk_certificates() {
 
 #[test]
 fn within_keeps_complete_target_bbox_certificates() {
-    // One rung rather than three. The 70-degree cap and the two cell ids
-    // asserted below were adjudicated together, so the fixture is kept
-    // exactly and the deeper rungs -- whose expected counts were pure
-    // characterizations -- are dropped instead. Cost grows steeply with
-    // depth: this rung is ~0.4 s unoptimized, the Four rung was ~4 s.
     let shape = Shape::Polygon(polygon(-180.0, 70.0, 180.0, 90.0));
-    for (resolution, expected) in [(Resolution::Two, 145)] {
-        let covered = h3_cover_shape(
-            &shape,
-            &H3CoverPlan::new(resolution),
-            H3TraversalRule::Within,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            covered.len(),
-            expected,
-            "polar within count at {resolution}"
+    let covered = h3_cover_shape(
+        &shape,
+        &H3CoverPlan::new(Resolution::Two),
+        H3TraversalRule::Within,
+        None,
+    )
+    .unwrap();
+    assert_eq!(covered.len(), 145, "polar within count at resolution two");
+    for raw in [0x0820_297F_FFFF_FFFF, 0x0820_B6FF_FFFF_FFFF] {
+        let cell = CellIndex::try_from(raw).unwrap();
+        assert!(
+            covered.iter().any(|entry| entry.cell == cell),
+            "missing {cell}"
         );
-        if resolution == Resolution::Two {
-            for raw in [0x0820_297F_FFFF_FFFF, 0x0820_B6FF_FFFF_FFFF] {
-                let cell = CellIndex::try_from(raw).unwrap();
-                assert!(
-                    covered.iter().any(|entry| entry.cell == cell),
-                    "missing {cell}"
-                );
-            }
-        }
     }
 }
 
@@ -1050,28 +1049,26 @@ fn within_discards_non_areal_members_before_traversal() {
         .unwrap();
         assert!(covered.is_empty());
     }
+}
 
-    // Resolution Three rather than Six: the property under test is that the
-    // non-areal member is discarded before traversal, which every resolution
-    // exercises identically, while the cost of a cover grows steeply with
-    // depth. See the resolution note in `every_depth_cap_certificate_...`.
+#[test]
+fn within_ignores_line_members_of_an_areal_collection() {
+    let line = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new(-90.0, 0.0).unwrap(),
+                Point::new(90.0, 0.0).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .expect("line coordinate sequence must contain at least two vertices"),
+    );
     let area = Shape::Polygon(polygon(-1.0, -1.0, 1.0, 1.0));
-    let area_only = h3_cover_shape(
-        &area,
-        &H3CoverPlan::new(Resolution::Three),
-        H3TraversalRule::Within,
-        None,
-    )
-    .unwrap();
+    let plan = H3CoverPlan::new(Resolution::Three);
+    let area_only = h3_cover_shape(&area, &plan, H3TraversalRule::Within, None).unwrap();
 
     let mixed = Shape::geometry_collection(vec![area, line]).expect("test collection is valid");
-    let mixed_cover = h3_cover_shape(
-        &mixed,
-        &H3CoverPlan::new(Resolution::Three),
-        H3TraversalRule::Within,
-        None,
-    )
-    .unwrap();
+    let mixed_cover = h3_cover_shape(&mixed, &plan, H3TraversalRule::Within, None).unwrap();
     assert_eq!(mixed_cover, area_only);
     assert_eq!(mixed_cover.len(), 2);
 }

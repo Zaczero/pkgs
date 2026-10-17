@@ -672,10 +672,11 @@ mod tests {
 
     #[test]
     fn shared_collection_wkb_width_fails_before_appending() {
-        let shape = doubled_collection(128);
+        // WKB width is 30 * 2^depth - 9; depth 60 first exceeds 64-bit usize.
+        let shape = doubled_collection(60);
         let mut out = vec![7, 8];
         let error = write_wkb_to_srid(&mut out, &shape, None)
-            .expect_err("depth-128 WKB cannot fit in a Vec");
+            .expect_err("the expanded WKB width overflows usize");
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)

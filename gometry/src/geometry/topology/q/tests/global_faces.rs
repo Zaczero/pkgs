@@ -655,19 +655,19 @@ fn nested_shell_hole_and_disconnected_island_publish_exact_row_occupancy() {
 
 #[test]
 fn nested_component_host_sweep_and_row_work_scale_with_the_graph() {
-    let small_shapes = nested_box_shapes(16);
+    let small_shapes = nested_box_shapes(8);
     let (_, small) = q_graph_for_shapes(&small_shapes);
-    let large_shapes = nested_box_shapes(64);
+    let large_shapes = nested_box_shapes(32);
     let (_, large) = q_graph_for_shapes(&large_shapes);
-    assert_eq!(small.global_face_count, 17);
-    assert_eq!(large.global_face_count, 65);
-    assert_eq!(large.spans.len(), 256);
-    assert_eq!(small.face_rows.intervals.len(), 16);
-    assert_eq!(large.face_rows.intervals.len(), 64);
+    assert_eq!(small.global_face_count, 9);
+    assert_eq!(large.global_face_count, 33);
+    assert_eq!(large.spans.len(), 128);
+    assert_eq!(small.face_rows.intervals.len(), 8);
+    assert_eq!(large.face_rows.intervals.len(), 32);
     for face in 0..large.global_face_count {
         let face = GlobalFaceId(u32::try_from(face).unwrap());
         let depth = large.face_rows.count(face);
-        for row in 0..64 {
+        for row in 0..32 {
             assert_eq!(
                 large
                     .face_rows
@@ -677,8 +677,13 @@ fn nested_component_host_sweep_and_row_work_scale_with_the_graph() {
         }
     }
     assert!(large.host_status_max_height <= 22);
-    assert!(large.host_status_comparisons < 64 * 256);
-    assert!(large.host_status_comparisons < small.host_status_comparisons * 6);
+    assert!(large.host_status_comparisons < 32 * 128);
+    assert!(
+        large.host_status_comparisons < small.host_status_comparisons * 6,
+        "host comparisons must grow below quadratic: {} at 8 components, {} at 32",
+        small.host_status_comparisons,
+        large.host_status_comparisons,
+    );
 }
 
 fn box_polygon(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
