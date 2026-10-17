@@ -11,6 +11,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CASES = sorted((_ROOT / 'benches' / 'cases').glob('case_*.py'))
+sys.path.insert(0, str(_ROOT / 'benches' / 'support'))
 sys.path.insert(0, str(_ROOT / 'tools'))
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
 from quality_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
@@ -35,10 +36,11 @@ def test_focused_case_validation_is_not_measurement(
         [sys.executable, str(case_path), '--validate'],
         cwd=_ROOT,
         env=environment,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload == {
         'artifact_type': 'gometry-focused-case-validation',
