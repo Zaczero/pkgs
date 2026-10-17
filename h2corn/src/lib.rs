@@ -1,3 +1,4 @@
+#![feature(cfg_sanitize)]
 // Derives the response-header variant names in `http::types`.
 #![feature(macro_metavar_expr_concat)]
 // Retained for the WebSocket masking SIMD fast path in
@@ -35,11 +36,12 @@ mod server;
 mod tls;
 mod websocket;
 
-#[cfg(not(miri))]
+// Sanitizers must observe allocation lifetimes and allocator synchronization.
+#[cfg(not(any(miri, sanitize = "address", sanitize = "thread")))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(miri)]
+#[cfg(any(miri, sanitize = "address", sanitize = "thread"))]
 use mimalloc as _;
 use pyo3::prelude::*;
 
