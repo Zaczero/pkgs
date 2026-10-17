@@ -56,7 +56,7 @@ def test_zids_n_underflow():
 
 
 def test_zids_n_too_large():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='65536'):
         zids(65537)
 
 
