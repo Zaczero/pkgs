@@ -1,5 +1,6 @@
-use geographiclib_rs::{Geodesic, InverseGeodesic as _};
+use geographiclib_rs::Geodesic;
 
+use super::ellipsoid_metric::inverse_distance_azimuths;
 use crate::crs::CrsError;
 use crate::error::Result;
 use crate::geometry::Point;
@@ -17,8 +18,8 @@ pub(crate) fn checked_geodesic_route(
 ) -> Result<GeodesicRoute> {
     crate::crs::ensure_geographic_lonlat(start.x, start.y)?;
     crate::crs::ensure_geographic_lonlat(end.x, end.y)?;
-    let (length, azimuth, reverse_azimuth, ..): (f64, f64, f64, f64, f64, f64, f64) =
-        geodesic.inverse(start.y, start.x, end.y, end.x);
+    let (length, azimuth, reverse_azimuth) =
+        inverse_distance_azimuths(geodesic, start.x, start.y, end.x, end.y);
     ensure_unique_shortest(geodesic, start, end, length, azimuth, reverse_azimuth)?;
     let (length, azimuth) =
         spherical_meridional_route(geodesic, start, end).unwrap_or((length, azimuth));

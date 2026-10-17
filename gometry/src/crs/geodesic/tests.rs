@@ -42,6 +42,61 @@ fn geodesic_point_column_distance_rejects_invalid_latitude() {
 }
 
 #[test]
+fn coincident_geodesic_points_have_zero_distance_across_inverse_grades() {
+    for geodesic in [
+        Geodesic::wgs84(),
+        Geodesic::new(6_378_137.0, 0.0),
+        Geodesic::new(6_378_137.0, -0.02),
+    ] {
+        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+        let frame = GeographicFrame::crs84();
+        for (name, first, second) in [
+            ("ordinary", p(0.0, 1.0), p(0.0, 1.0)),
+            ("signed zero", p(-0.0, 0.0), p(0.0, -0.0)),
+            ("seam", p(180.0, 1.0), p(-180.0, 1.0)),
+            ("period", p(12.5, 1.0), p(372.5, 1.0)),
+            ("north pole", p(-72.0, 90.0), p(123.0, 90.0)),
+            ("south pole", p(-72.0, -90.0), p(123.0, -90.0)),
+        ] {
+            assert_eq!(metric.segment_length(first, second).to_bits(), 0, "{name}");
+            let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
+                &geodesic, first.x, first.y, second.x, second.y,
+            );
+            assert_eq!(distance.to_bits(), 0, "{name}");
+            let sample = metric
+                .chart_point_distance_sample(first, second, 123_456.75, 0.37)
+                .unwrap();
+            assert_eq!(sample.distance.to_bits(), 0, "{name}");
+            assert_eq!(sample.derivative.to_bits(), 0, "{name}");
+            let route = super::route::checked_geodesic_route(
+                &geodesic,
+                frame.to_geodesic_point(first).unwrap(),
+                frame.to_geodesic_point(second).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(route.length.to_bits(), 0, "{name}");
+        }
+        for second in [p(12.500_001, 1.000_001), p(12.5, 1.000_001), p(12.5, -1.0)] {
+            let first = p(12.5, 1.0);
+            let length = metric.segment_length(first, second);
+            assert!(
+                length > 0.0,
+                "f={}: {first:?} to {second:?}: distance={length:?}",
+                geodesic.f,
+            );
+            let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
+                &geodesic, first.x, first.y, second.x, second.y,
+            );
+            assert!(
+                distance > 0.0,
+                "f={}: {first:?} to {second:?}: joint distance={distance:?}",
+                geodesic.f,
+            );
+        }
+    }
+}
+
+#[test]
 fn chart_point_sample_matches_backend_terminal_gradient() {
     let cases = [
         ("north_east", p(1.0, 5.0)),

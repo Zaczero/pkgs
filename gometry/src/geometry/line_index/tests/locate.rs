@@ -383,7 +383,7 @@ fn chart_bvh_locate_keeps_earliest_ordinal_when_a_later_leaf_is_visited_first() 
     let (ordinal, _) = point_chart_locate(probe, index.parts(), &metric, |_| true)
         .unwrap()
         .unwrap();
-    assert_eq!(ordinal, 0);
+    assert_eq!(ordinal, 0, "candidate visitation order: {visited:?}");
     assert_eq!(
         index
             .locate_chart_point(probe, false, &metric)

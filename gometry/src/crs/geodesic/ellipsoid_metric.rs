@@ -11,6 +11,11 @@ use crate::geometry::{
 };
 use crate::work::Work;
 
+fn same_geodetic_position(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> bool {
+    let frame = GeographicFrame::crs84();
+    frame.quotient_vertex(lon1, lat1) == frame.quotient_vertex(lon2, lat2)
+}
+
 pub(crate) fn inverse_distance(
     geodesic: &Geodesic,
     lon1: f64,
@@ -18,7 +23,11 @@ pub(crate) fn inverse_distance(
     lon2: f64,
     lat2: f64,
 ) -> f64 {
-    geodesic.inverse(lat1, lon1, lat2, lon2)
+    if same_geodetic_position(lon1, lat1, lon2, lat2) {
+        0.0
+    } else {
+        geodesic.inverse(lat1, lon1, lat2, lon2)
+    }
 }
 
 pub(crate) fn inverse_azimuths(
@@ -41,6 +50,11 @@ pub(crate) fn inverse_distance_azimuths(
 ) -> (f64, f64, f64) {
     let (distance, forward, reverse, _): (f64, f64, f64, f64) =
         geodesic.inverse(lat1, lon1, lat2, lon2);
+    let distance = if same_geodetic_position(lon1, lat1, lon2, lat2) {
+        0.0
+    } else {
+        distance
+    };
     (distance, forward, reverse)
 }
 
@@ -62,6 +76,12 @@ pub(super) fn chart_point_distance_sample(
     let target = frame
         .to_geodesic_point(target)
         .expect("geographic Hausdorff target witness was admitted");
+    if same_geodetic_position(source.x, source.y, target.x, target.y) {
+        return Ok(ChartPointDistanceSample {
+            distance: 0.0,
+            derivative: 0.0,
+        });
+    }
     let (_, distance, _, _, sin_gradient, cos_gradient, ..) = geodesic._gen_inverse(
         target.y,
         target.x,
