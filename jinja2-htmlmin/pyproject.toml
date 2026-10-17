@@ -49,6 +49,7 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/jinja2-htmlmin"
 
 [dependency-groups]
 dev = [
+  "pyperf>=2.9",
   "pytest>=9.1",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
