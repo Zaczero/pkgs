@@ -967,11 +967,11 @@ pub(crate) fn build_http_inbound_event(
             debug_assert_eq!(body_bytes, bodies.iter().map(Bytes::len).sum::<usize>());
             let body = PyBytes::new_with_writer(py, body_bytes, |writer| {
                 if let [first, second] = bodies.as_slice() {
-                    writer.write_all(first.as_ref())?;
-                    writer.write_all(second.as_ref())?;
+                    writer.write_bytes(first.as_ref())?;
+                    writer.write_bytes(second.as_ref())?;
                 } else {
                     for body in &*bodies {
-                        writer.write_all(body.as_ref())?;
+                        writer.write_bytes(body.as_ref())?;
                     }
                 }
                 Ok(())
@@ -1122,7 +1122,8 @@ fn try_parse_exact_header_list(
         let Ok(tuple) = item.cast_exact::<pyo3::types::PyTuple>() else {
             return Ok(None);
         };
-        let [name, value] = tuple.as_slice() else {
+        let mut pair = tuple.iter_borrowed();
+        let (Some(name), Some(value), None) = (pair.next(), pair.next(), pair.next()) else {
             return Ok(None);
         };
         let Ok(name) = name

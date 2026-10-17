@@ -35,15 +35,8 @@ fn hex_token(id: u64) -> String {
 ///
 /// Index with an integer for an `H3Vertex`; slice or mask for another
 /// `H3VertexArray`. The id column is exposed as read-only ``uint64`` data.
-#[pyclass(
-    name = "H3VertexArray",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    sequence,
-    weakref,
-    skip_from_py_object
-)]
+#[pyclass(name = "H3VertexArray", module = "gometry", frozen, sequence, weakref)]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 pub(crate) struct PyH3VertexArray {
     ids: Arc<[u64]>,
@@ -66,15 +59,8 @@ pub(super) struct PyH3VertexArrayIter {
 ///
 /// Index with an integer for an `H3Edge`; slice or mask for another
 /// `H3EdgeArray`. The id column is exposed as read-only ``uint64`` data.
-#[pyclass(
-    name = "H3EdgeArray",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    sequence,
-    weakref,
-    skip_from_py_object
-)]
+#[pyclass(name = "H3EdgeArray", module = "gometry", frozen, sequence, weakref)]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 pub(crate) struct PyH3EdgeArray {
     ids: Arc<[u64]>,

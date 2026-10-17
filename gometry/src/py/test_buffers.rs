@@ -37,8 +37,7 @@ use pyo3::prelude::*;
     name = "_IndirectFloat64Buffer",
     module = "gometry",
     frozen,
-    immutable_type,
-    skip_from_py_object
+    immutable_type
 )]
 pub(crate) struct IndirectFloat64Buffer {
     /// Contiguous coordinate payload (row-major for 2-D).
@@ -139,13 +138,7 @@ impl IndirectFloat64Buffer {
 ///
 /// The fixed backing allocation lets tests exercise impossible declared
 /// lengths, shapes, and strides without allocating the claimed payload.
-#[pyclass(
-    name = "_MalformedBuffer",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "_MalformedBuffer", module = "gometry", frozen, immutable_type)]
 pub(crate) struct MalformedBuffer {
     values: Box<[u64]>,
     shape: Box<[isize]>,
@@ -157,13 +150,7 @@ pub(crate) struct MalformedBuffer {
     null_data: bool,
 }
 
-#[pyclass(
-    name = "_RaisingBuffer",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "_RaisingBuffer", module = "gometry", frozen, immutable_type)]
 pub(crate) struct RaisingBuffer {
     exception: Py<PyBaseException>,
 }

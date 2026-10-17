@@ -62,12 +62,11 @@ use crate::py::vectors::Groups;
     name = "CellArray",
     module = "gometry",
     frozen,
-    immutable_type,
     sequence,
     generic,
-    weakref,
-    skip_from_py_object
+    weakref
 )]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 pub(crate) struct PyCellArray {
     storage: CellStorage,

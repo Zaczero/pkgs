@@ -21,13 +21,8 @@ use crate::{
 /// For `GeometryArray.coords`, missing rows contribute no vertices. The view is
 /// a flattened vertex stream, not a row-aligned container; use `.row_index`
 /// when you need source-row indexes.
-#[pyclass(
-    name = "Coordinates",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    sequence
-)]
+#[pyclass(name = "Coordinates", module = "gometry", frozen, sequence)]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 pub struct PyCoordinates {
     pub(crate) view: coordinates::CoordinateView,
     pub(crate) owner: Py<PyAny>,

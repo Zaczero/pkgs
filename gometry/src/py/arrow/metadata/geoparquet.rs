@@ -11,8 +11,7 @@ use crate::py::geoarrow;
     name = "_GeoParquetPhysicalLayout",
     module = "gometry",
     frozen,
-    immutable_type,
-    skip_from_py_object
+    immutable_type
 )]
 pub(crate) struct GeoParquetPhysicalLayout {
     encoding: GeometryEncoding,
@@ -492,8 +491,7 @@ fn admit_geoparquet_geometry_storage(
     name = "_GeoParquetColumnFrame",
     module = "gometry",
     frozen,
-    immutable_type,
-    skip_from_py_object
+    immutable_type
 )]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GeoParquetColumnFrame {

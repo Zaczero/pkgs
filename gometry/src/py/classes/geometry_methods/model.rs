@@ -37,8 +37,7 @@ use crate::{Point, Shape};
     frozen,
     immutable_type,
     subclass,
-    weakref,
-    skip_from_py_object
+    weakref
 )]
 #[derive(Clone, Debug)]
 pub struct PyGeometry {
@@ -92,8 +91,7 @@ macro_rules! geometry_leaf {
             module = "gometry",
             extends = PyGeometry,
             frozen,
-            immutable_type,
-            skip_from_py_object
+            immutable_type
         )]
         pub(crate) struct $ident;
     };
@@ -267,13 +265,8 @@ impl From<PyGeometry> for Typed {
 /// their immediate members. Scalar indexing and iteration materialize one
 /// typed geometry at a time via ``part_at``; slice indexing may still build a
 /// list up front.
-#[pyclass(
-    name = "GeometryParts",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    sequence
-)]
+#[pyclass(name = "GeometryParts", module = "gometry", frozen, sequence)]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 pub(crate) struct PyGeometryParts {
     geometry: PyGeometry,
 }

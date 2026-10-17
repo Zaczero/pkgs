@@ -403,13 +403,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
 /// ``report.code``/``report.detail`` provide stable machine-readable and
 /// human-readable issue data.
 /// Validation reports describe invalid geometries and their reasons.
-#[pyclass(
-    name = "ValidationReport",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "ValidationReport", module = "gometry", frozen, immutable_type)]
 #[derive(Clone, Debug)]
 pub struct PyValidationReport {
     pub geometry: PyGeometry,

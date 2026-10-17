@@ -504,12 +504,7 @@ impl PreparedIndexQuery {
 /// ``insert``/``remove``. Distances follow the indexed CRS: meters on a
 /// geographic frame, native linear units on a projected frame, raw coordinate
 /// units when CRS-free.
-#[pyclass(
-    name = "SpatialIndex",
-    module = "gometry",
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "SpatialIndex", module = "gometry", immutable_type)]
 #[derive(Debug)]
 pub(crate) struct PySpatialIndex {
     // Handles are never reused. The row owner retains the next identity even

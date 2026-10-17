@@ -7,13 +7,7 @@ use crate::py::cells::pyclass;
 /// ``cell.token``, ``cell.polygon``, ``cell.center``) and hierarchy
 /// moves (``parent``/``children``/``neighbors``). Convert via
 /// ``S2Cell(...)``, and back with ``int(cell)``.
-#[pyclass(
-    name = "S2Cell",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "S2Cell", module = "gometry", frozen, immutable_type)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PyS2Cell {
     pub(crate) cell: CellId,

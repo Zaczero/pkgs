@@ -259,12 +259,12 @@ fn classify_and_collect_stable_tuple<'py>(
     tuple: &Bound<'py, PyTuple>,
 ) -> PyResult<CollectedFancyIndex> {
     let item_count = tuple.len();
-    for (position, _) in tuple.as_slice().iter().enumerate() {
+    for position in 0..item_count {
         crate::check_python_signals(py, position)?;
     }
     let mut collector = FancyIndexCollector::new();
-    for item in tuple.as_slice() {
-        if !collector.push(py, item, item_count)? {
+    for item in tuple.iter_borrowed() {
+        if !collector.push(py, &item, item_count)? {
             return Ok(CollectedFancyIndex::Invalid);
         }
     }

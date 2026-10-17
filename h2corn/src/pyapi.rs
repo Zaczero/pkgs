@@ -43,7 +43,7 @@ const TOKIO_GLOBAL_QUEUE_INTERVAL: u32 = 31;
 ///
 /// Built while the process can still read the key files; workers reuse the
 /// same value after privilege drop and never reopen the paths.
-#[pyclass(frozen, name = "_PreparedTls", skip_from_py_object)]
+#[pyclass(frozen, name = "_PreparedTls")]
 #[derive(Clone)]
 pub(crate) struct PreparedTls(Option<TlsConfig>);
 

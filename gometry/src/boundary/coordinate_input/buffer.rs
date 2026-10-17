@@ -249,13 +249,16 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         let mut ms = (ordinate_count >= 4).then(|| Vec::with_capacity(point_count));
         if point_count > 0
             && buffer_endian::exporter_supports_direct_capture(value.py(), &buffer)
-            && let Some(cells) = buffer.as_slice(value.py())
+            && let Some(pointer) = buffer.as_slice_ptr()
         {
+            // SAFETY: the typed C-contiguous export pins admitted f64 storage,
+            // and the coordinate capture contract excludes concurrent writes.
+            let coordinates = unsafe { pointer.as_ref() };
             let swap = !buffer_endian::buffer_format_is_native_endian(buffer.format());
-            for coordinate in cells.chunks_exact(ordinate_count) {
+            for coordinate in coordinates.chunks_exact(ordinate_count) {
                 let mut ordinates = [0.0; 4];
-                for (slot, cell) in ordinates.iter_mut().zip(coordinate) {
-                    let mut ordinate = cell.get();
+                for (slot, &value) in ordinates.iter_mut().zip(coordinate) {
+                    let mut ordinate = value;
                     if swap {
                         ordinate = buffer_endian::swap_f64_endian(ordinate);
                     }

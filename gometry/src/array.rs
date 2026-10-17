@@ -57,12 +57,11 @@ use crate::{
     name = "GeometryArray",
     module = "gometry",
     frozen,
-    immutable_type,
     sequence,
     generic,
-    weakref,
-    skip_from_py_object
+    weakref
 )]
+#[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 /// An immutable, vectorized geometry column with one shared CRS/epoch frame.
 ///

@@ -9,7 +9,7 @@ use pyo3::types::PyModule;
 
 use crate::geometry::{Point, Shape};
 use crate::py::errors::{GeometryError, integer_parameter_error, parse_error};
-use crate::py::support::mark_sequence_flag;
+use crate::py::support::initialize_sequence_type;
 use crate::py::vectors::Groups;
 use crate::{
     H3_MAX_RESOLUTION, PyCoordinates, PyGeometry, PyGeometryArray, PyGeometryParts, Typed,
@@ -221,12 +221,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     tiles::register(m)?;
     crate::add_functions!(m; array::_unpickle_cell_array_v1);
     crate::add_classes!(m; PyCellArray, PyCellArrayIter);
-    mark_sequence_flag::<PyGeometryArray>(m);
-    mark_sequence_flag::<PyCellArray>(m);
-    mark_sequence_flag::<Groups>(m);
-    mark_sequence_flag::<PyGeometryParts>(m);
-    mark_sequence_flag::<PyCoordinates>(m);
-    mark_sequence_flag::<PyH3VertexArray>(m);
-    mark_sequence_flag::<PyH3EdgeArray>(m);
+    initialize_sequence_type::<PyGeometryArray>(m)?;
+    initialize_sequence_type::<PyCellArray>(m)?;
+    initialize_sequence_type::<Groups>(m)?;
+    initialize_sequence_type::<PyGeometryParts>(m)?;
+    initialize_sequence_type::<PyCoordinates>(m)?;
+    initialize_sequence_type::<PyH3VertexArray>(m)?;
+    initialize_sequence_type::<PyH3EdgeArray>(m)?;
     Ok(())
 }

@@ -219,8 +219,7 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
 
 /// Copy a C-contiguous `f64` buffer into a `Vec<f64>` in host-native order.
 ///
-/// Reads each element through [`pyo3::buffer::ReadOnlyCell`], forming a Rust
-/// slice over the exporter's storage. The direct/copy distinction is not a
+/// Reads a typed slice over the exporter's storage. The direct/copy distinction is not a
 /// synchronization protocol: both paths require the producer to remain
 /// quiescent for this finite capture. An exporter that does not support direct
 /// capture takes CPython's ordinary contiguous copy instead.
@@ -240,17 +239,18 @@ pub(crate) fn buffer_to_column_f64(
     if !exporter_supports_direct_capture(py, buffer) {
         return buffer_to_vec_f64(py, buffer, item_count);
     }
-    let Some(cells) = buffer.as_slice(py) else {
+    let Some(pointer) = buffer.as_slice_ptr() else {
         return buffer_to_vec_f64(py, buffer, item_count);
     };
+    // SAFETY: PyBuffer<f64> admits element format, size and alignment; the
+    // C-contiguous export stays pinned and quiescent for this capture.
+    let source = unsafe { pointer.as_ref() };
     let mut values = vec![0.0; item_count];
     if buffer_format_is_native_endian(buffer.format()) {
-        for (value, cell) in values.iter_mut().zip(cells.iter()) {
-            *value = cell.get();
-        }
+        values.copy_from_slice(source);
     } else {
-        for (value, cell) in values.iter_mut().zip(cells.iter()) {
-            *value = swap_f64_endian(cell.get());
+        for (value, &item) in values.iter_mut().zip(source) {
+            *value = swap_f64_endian(item);
         }
     }
     Ok(values)

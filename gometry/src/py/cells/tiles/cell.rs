@@ -30,13 +30,7 @@ use crate::py::errors::{ParseError, parse_error, tag_parse_format};
 /// with longitude west-inclusive/east-exclusive and latitude
 /// north-inclusive/south-exclusive ties. This is a representational boundary
 /// contract, not a claim of exact ideal-transcendental Web Mercator rounding.
-#[pyclass(
-    name = "Tile",
-    module = "gometry",
-    frozen,
-    immutable_type,
-    skip_from_py_object
-)]
+#[pyclass(name = "Tile", module = "gometry", frozen, immutable_type)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PyTile {
     pub(crate) cell: Tile,

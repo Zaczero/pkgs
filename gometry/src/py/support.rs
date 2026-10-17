@@ -124,52 +124,38 @@ pub(crate) use validate::{
     validate_smooth_iterations,
 };
 
-/// Restore CPython's sequence-pattern flag for immutable PyO3 classes.
-/// PyO3's `sequence` option installs sequence slots but does not include
-/// `Py_TPFLAGS_SEQUENCE` in heap type flags; ABC registration cannot add it
-/// after `immutable_type` is set.
-pub(crate) fn mark_sequence_flag<T: pyo3::PyClass>(
+/// Register sequence-pattern support before freezing the native type.
+pub(crate) fn initialize_sequence_type<T: pyo3::PyClass>(
     module: &pyo3::Bound<'_, pyo3::types::PyModule>,
-) {
-    if !T::IS_SEQUENCE {
-        return;
+) -> pyo3::PyResult<()> {
+    const {
+        assert!(T::IS_SEQUENCE);
     }
     let ty = module.py().get_type::<T>();
-    // SAFETY: the type was created by PyO3 and this one-time write runs during
-    // module assembly, before user code or a second thread can observe the
-    // supposedly-immutable type. Only the sequence flag is added. On a
-    // free-threaded build `tp_flags` is atomic; relaxed ordering is sufficient
-    // because module publication provides the synchronization boundary.
+    #[cfg(Py_3_14)]
+    {
+        pyo3::types::PySequence::register::<T>(module.py())?;
+        // SAFETY: PyO3 owns this initialized heap type; its base is immutable.
+        if unsafe { pyo3::ffi::PyType_Freeze(ty.as_type_ptr()) } < 0 {
+            return Err(pyo3::PyErr::fetch(module.py()));
+        }
+    }
+    // SAFETY: the type is not yet published. Python <3.14 cannot freeze it
+    // after ABC registration, so repair PyO3's missing sequence-pattern flag.
+    #[cfg(not(Py_3_14))]
     unsafe {
-        TypeFlags::insert(
-            &mut (*ty.as_type_ptr()).tp_flags,
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            (*ty.as_type_ptr()).tp_flags |= pyo3::ffi::Py_TPFLAGS_SEQUENCE;
+        }
+        #[cfg(Py_GIL_DISABLED)]
+        (*ty.as_type_ptr()).tp_flags.fetch_or(
             pyo3::ffi::Py_TPFLAGS_SEQUENCE,
+            core::sync::atomic::Ordering::Relaxed,
         );
     }
+    Ok(())
 }
-
-trait TypeFlags {
-    fn insert(&mut self, flags: core::ffi::c_ulong);
-}
-
-impl TypeFlags for core::ffi::c_ulong {
-    fn insert(&mut self, flags: core::ffi::c_ulong) {
-        *self |= flags;
-    }
-}
-
-macro_rules! impl_atomic_type_flags {
-    ($atomic:ty, $integer:ty) => {
-        impl TypeFlags for $atomic {
-            fn insert(&mut self, flags: core::ffi::c_ulong) {
-                self.fetch_or(flags as $integer, core::sync::atomic::Ordering::Relaxed);
-            }
-        }
-    };
-}
-
-impl_atomic_type_flags!(core::sync::atomic::AtomicU32, u32);
-impl_atomic_type_flags!(core::sync::atomic::AtomicU64, u64);
 
 /// Register a list of `#[pyclass]` types on the module in one statement.
 macro_rules! add_classes {
