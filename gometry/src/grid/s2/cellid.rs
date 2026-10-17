@@ -594,31 +594,40 @@ mod tests {
         ::s2::cellid::CellID(id.raw())
     }
 
-    /// Deterministic global lon/lat sweep + face edges, corners, poles.
+    const FACE_INTERIOR_POINTS: [(f64, f64); 6] = [
+        (-170.0, -40.0),
+        (-90.0, 20.0),
+        (0.0, -20.0),
+        (90.0, 20.0),
+        (-20.0, 80.0),
+        (30.0, -80.0),
+    ];
+
+    /// Every face, plus face edges, corners, seam neighbours, and poles.
     fn sample_points() -> Vec<(f64, f64)> {
-        let mut samples = Vec::new();
-        for lon_step in -18..=18 {
-            for lat_step in -8..=8 {
-                samples.push((f64::from(lon_step) * 10.0, f64::from(lat_step) * 10.0));
-            }
-        }
-        samples.extend([
-            (45.0, 35.264_389_682_754_654),
-            (-45.0, -35.264_389_682_754_654),
-            (0.0, 90.0),
-            (0.0, -90.0),
-            (180.0, 0.0),
-            (-180.0, 0.0),
-            (179.999_999, 52.5),
-            (-179.999_999, -52.5),
-            (13.4, 52.5),
-        ]);
-        samples
+        FACE_INTERIOR_POINTS
+            .into_iter()
+            .chain([
+                (45.0, 0.0),
+                (-135.0, 0.0),
+                (0.0, 0.0),
+                (45.0, 35.264_389_682_754_654),
+                (-45.0, -35.264_389_682_754_654),
+                (0.0, 90.0),
+                (0.0, -90.0),
+                (180.0, 0.0),
+                (-180.0, 0.0),
+                (179.999_999, 52.5),
+                (-179.999_999, -52.5),
+                (13.4, 52.5),
+            ])
+            .collect()
     }
 
     #[test]
     fn periodic_seam_and_poles_have_canonical_owners() {
-        for lat in [-45.0, 0.0, 45.0] {
+        // Keep seam ownership separate from the ±45-degree cube-face ties.
+        for lat in [-30.0, 0.0, 30.0] {
             let owner = CellId::from_lonlat(-180.0, lat);
             for lon in [180.0, 540.0, -540.0] {
                 assert_eq!(CellId::from_lonlat(lon, lat), owner);
@@ -634,14 +643,15 @@ mod tests {
         }
     }
 
-    /// Leaf encode + every-level parent match the reference crate exactly.
+    /// Share projected inputs so transcendental rounding cannot choose
+    /// different sides of a cube-face boundary in the two encoders.
     #[test]
-    fn encode_and_hierarchy_match_oracle() {
-        for (lon, lat) in sample_points() {
-            let leaf = CellId::from_lonlat(lon, lat);
+    fn encode_and_hierarchy_match_oracle_for_shared_projected_points() {
+        for (lon, lat) in FACE_INTERIOR_POINTS {
             let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
-            let oracle_leaf =
-                ::s2::cellid::CellID::from(::s2::latlng::LatLng::from_degrees(lat, lon));
+            let point = ::s2::point::Point::from(::s2::latlng::LatLng::from_degrees(lat, lon));
+            let leaf = CellId::from_point(Point3::new(point.0.x, point.0.y, point.0.z));
+            let oracle_leaf = ::s2::cellid::CellID::from(point);
             assert_eq!(leaf.raw(), oracle_leaf.0, "leaf at lon={lon} lat={lat}");
             assert!(leaf.is_leaf() && leaf.level() == MAX_LEVEL);
             for level in 0..=MAX_LEVEL {
@@ -652,6 +662,37 @@ mod tests {
                 assert_eq!(parent.face(), leaf.face());
             }
         }
+    }
+
+    #[test]
+    fn exact_cube_ties_use_canonical_face_and_leaf_coordinates() {
+        let last = i32::try_from(MAX_SIZE - 1).unwrap();
+        let middle = i32::try_from(MAX_SIZE / 2).unwrap();
+        // The Rust oracle's XYZ converter prefers X on ties. Its face/IJ
+        // encoder still supplies an independent Hilbert oracle for these
+        // canonical Z-then-Y tie owners.
+        for (point, face, i, j) in [
+            (Point3::new(1.0, 1.0, 0.0), Face::F1, 0, middle),
+            (Point3::new(1.0, 0.0, 1.0), Face::F2, 0, middle),
+            (Point3::new(0.0, 1.0, 1.0), Face::F2, middle, 0),
+            (Point3::new(1.0, 1.0, 1.0), Face::F2, 0, 0),
+            (Point3::new(-1.0, -1.0, 0.0), Face::F4, middle, 0),
+            (Point3::new(-1.0, 0.0, -1.0), Face::F5, middle, 0),
+            (Point3::new(0.0, -1.0, -1.0), Face::F5, 0, middle),
+            (Point3::new(-1.0, -1.0, -1.0), Face::F5, 0, 0),
+            (Point3::new(1.0, -1.0, 0.0), Face::F4, middle, last),
+            (Point3::new(1.0, 0.0, -1.0), Face::F5, middle, last),
+            (Point3::new(1.0, 1.0, -1.0), Face::F5, last, last),
+        ] {
+            let leaf = CellId::from_point(point);
+            let expected = ::s2::cellid::CellID::from_face_ij(face.get(), i, j);
+            assert_eq!(leaf.raw(), expected.0, "{point:?}");
+            assert_eq!(leaf.face(), face);
+        }
+        assert_eq!(
+            CellId::from_point(Point3::new(1.0, 1.0, 1.0)).raw(),
+            0x4000_0000_0000_0001
+        );
     }
 
     /// Token codec round-trips at every level and rejects junk.

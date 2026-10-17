@@ -426,15 +426,21 @@ mod tests {
                     "{id:?} lng_hi"
                 );
             }
-            // Containment: vertices and center lie inside the bound.
+            // The analytic bound encloses the true cell. Rounded atan2 and
+            // normalized coordinates can put its emitted boundary a few ulps
+            // outside, so include their evaluation error in this comparison.
+            let coordinate_error = (16.0 * f64::EPSILON).to_degrees();
             let inside = |point: crate::geometry::Point| {
-                let lat_ok = (rect.lat_lo..=rect.lat_hi).contains(&point.y);
+                let lat_ok = (rect.lat_lo - coordinate_error..=rect.lat_hi + coordinate_error)
+                    .contains(&point.y);
                 let lng_ok = if rect.is_full_lng() {
                     true
                 } else if rect.crosses_seam() {
-                    point.x >= rect.lng_lo || point.x <= rect.lng_hi
+                    point.x >= rect.lng_lo - coordinate_error
+                        || point.x <= rect.lng_hi + coordinate_error
                 } else {
-                    (rect.lng_lo..=rect.lng_hi).contains(&point.x)
+                    (rect.lng_lo - coordinate_error..=rect.lng_hi + coordinate_error)
+                        .contains(&point.x)
                 };
                 lat_ok && lng_ok
             };

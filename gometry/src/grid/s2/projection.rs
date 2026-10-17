@@ -88,20 +88,20 @@ pub(crate) fn point_to_lonlat(point: Point3) -> (f64, f64) {
 }
 
 /// The cube face containing `point` (ties resolve like canonical S2: the
-/// strictly larger magnitude wins, earlier axis on ties; +axis faces 0-2,
+/// strictly larger magnitude wins, Z then Y then X on ties; +axis faces 0-2,
 /// -axis faces 3-5).
 pub(crate) fn face(point: Point3) -> Face {
     let (ax, ay, az) = (point.x.abs(), point.y.abs(), point.z.abs());
-    let (id, value) = if ay > ax {
-        if az > ay {
-            (Face::F2, point.z)
+    let (id, value) = if ax > ay {
+        if ax > az {
+            (Face::F0, point.x)
         } else {
-            (Face::F1, point.y)
+            (Face::F2, point.z)
         }
-    } else if az > ax {
-        (Face::F2, point.z)
+    } else if ay > az {
+        (Face::F1, point.y)
     } else {
-        (Face::F0, point.x)
+        (Face::F2, point.z)
     };
     match (id, value < 0.0) {
         (Face::F0, false) => Face::F0,
@@ -200,6 +200,25 @@ pub(crate) fn siti_to_st(si: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cube_face_ties_prefer_z_then_y_like_canonical_s2() {
+        for (point, expected) in [
+            (Point3::new(1.0, 1.0, 0.0), Face::F1),
+            (Point3::new(1.0, 0.0, 1.0), Face::F2),
+            (Point3::new(0.0, 1.0, 1.0), Face::F2),
+            (Point3::new(1.0, 1.0, 1.0), Face::F2),
+            (Point3::new(-1.0, -1.0, 0.0), Face::F4),
+            (Point3::new(-1.0, 0.0, -1.0), Face::F5),
+            (Point3::new(0.0, -1.0, -1.0), Face::F5),
+            (Point3::new(-1.0, -1.0, -1.0), Face::F5),
+            (Point3::new(1.0_f64.next_up(), 1.0, 1.0), Face::F0),
+            (Point3::new(1.0, 1.0_f64.next_up(), 1.0), Face::F1),
+            (Point3::new(1.0, 1.0, 1.0_f64.next_up()), Face::F2),
+        ] {
+            assert_eq!(face(point), expected, "{point:?}");
+        }
+    }
 
     /// Internal consistency over a global sweep including cube corners and
     /// face-edge midpoints (the tie-break hot spots). Bit-exactness against
