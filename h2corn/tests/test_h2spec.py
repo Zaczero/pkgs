@@ -22,6 +22,14 @@ H2SPEC_RFC_9113_DIVERGENCES = frozenset({
 @pytest.mark.skipif(shutil.which('h2spec') is None, reason='h2spec not found in PATH')
 async def test_h2spec_conformance(tmp_path: Path) -> None:
     async def app(scope, receive, send):
+        # Keep the send window open while h2spec tests updates on an unfinished
+        # request; updates racing a finished response may be ignored.
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                return
+            if not message.get('more_body', False):
+                break
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'ok'})
 
@@ -29,6 +37,7 @@ async def test_h2spec_conformance(tmp_path: Path) -> None:
         port=0,
         http1=False,
         h2_max_inbound_frame_size=16_384,
+        lifespan='off',
     )
     async with running_server(app, config) as server:
         report = tmp_path / 'h2spec.xml'
