@@ -877,14 +877,13 @@ async fn run_serve_task(task: ServeTask) {
             },
         }
     }
-    main_shard.push(PumpEvent::Resolve {
+    main_shard.push(PumpEvent::Detach {
         fut: resolve_fut,
         payload: ResolvePayload::Simple(Box::new(move |py| {
             drop(loop_owned);
             result.into_pyresult().map(|()| py.None())
         })),
     });
-    main_shard.push(PumpEvent::Detach);
 }
 
 #[pyfunction]
@@ -1048,7 +1047,7 @@ pub(crate) fn serve_fds<'py>(
             && let Some(error) = unexpected_join_error(error)
         {
             let message = format!("server task panicked: {error}");
-            panic_shard.push(PumpEvent::Resolve {
+            panic_shard.push(PumpEvent::Detach {
                 fut: panic_future,
                 payload: ResolvePayload::Simple(Box::new(move |_| {
                     Err(PyRuntimeError::new_err(message))

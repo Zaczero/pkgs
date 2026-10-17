@@ -141,7 +141,10 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
                 err.write_unraisable(py, Some(trigger.bind(py)));
             }
         },
-        PumpEvent::Detach => shard.detach(py),
+        PumpEvent::Detach { fut, payload } => {
+            shard.detach(py);
+            RustFuture::resolve(&fut, py, payload);
+        },
         PumpEvent::StopLoop => shard.stop_loop(py),
     }
 }

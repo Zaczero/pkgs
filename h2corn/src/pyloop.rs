@@ -230,9 +230,12 @@ pub(crate) enum PumpEvent {
     /// supervisor notifications (ready, retire) whose Rust-side trigger can
     /// fire from any tokio thread, which must never attach to Python.
     CallTrigger { trigger: Py<PyAny> },
-    /// Unregister this shard's doorbell from its owning loop. Used by the
-    /// caller-owned main loop when an embedded serve completes.
-    Detach,
+    /// Unregister the main-loop doorbell before publishing the serve result.
+    /// Future callbacks can immediately release the shard or start another serve.
+    Detach {
+        fut: Py<RustFuture>,
+        payload: ResolvePayload,
+    },
     /// Unregister the doorbell and stop a dedicated secondary loop. The event
     /// is processed on that loop, never through cross-thread Python calls.
     StopLoop,

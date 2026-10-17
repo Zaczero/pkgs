@@ -13,12 +13,13 @@ import time
 import tomllib
 import warnings
 from collections.abc import Callable, Coroutine
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from h2corn import Config, Server
+from h2corn import Config, Server, _lib
 
 from tests._support import HANG_BOUND, open_fd_count
 
@@ -135,6 +136,64 @@ def test_server_startup_failure_with_eager_task_factory() -> None:
         assert server.addresses == ()
 
     _run_with_eager_task_factory(scenario)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX pump reader registration')
+def test_native_serve_completion_releases_its_event_loop_readers() -> None:
+    readers: set[int] = set()
+
+    class ReaderLoop(asyncio.SelectorEventLoop):
+        def add_reader(self, fd, callback, *args):
+            super().add_reader(fd, callback, *args)
+            readers.add(fd if isinstance(fd, int) else fd.fileno())
+
+        def remove_reader(self, fd):
+            removed = super().remove_reader(fd)
+            readers.discard(fd if isinstance(fd, int) else fd.fileno())
+            return removed
+
+    async def scenario() -> None:
+        async def app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b''})
+
+        config = Config(access_log=False, lifespan='off')
+        ready = asyncio.Event()
+        shutdown: asyncio.Future[str] = asyncio.Future()
+
+        async def stop_when_ready() -> None:
+            await ready.wait()
+            try:
+                assert readers, 'serving registered an event-loop reader'
+            finally:
+                shutdown.set_result('shutdown')
+
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.setblocking(False)
+            serving = _lib.serve_fds(
+                app,
+                [listener.fileno()],
+                config,
+                shutdown,
+                ready_trigger=ready.set,
+                prepared_tls=_lib.prepare_tls(config),
+            )
+            stopping = asyncio.create_task(stop_when_ready())
+            try:
+                async with asyncio.timeout(HANG_BOUND):
+                    await serving
+                assert readers == set(), 'serve completed before removing its reader'
+            finally:
+                if not shutdown.done():
+                    shutdown.set_result('shutdown')
+                stopping.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stopping
+
+    with asyncio.Runner(loop_factory=ReaderLoop) as runner:
+        runner.run(scenario())
 
 
 def _gil_is_disabled() -> bool:
