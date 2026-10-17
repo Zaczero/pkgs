@@ -98,9 +98,10 @@ def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, f
     batch = max(1, (1024 * 1024) // (data.itemsize * size))
     for start in range(0, _BOOTSTRAP_SAMPLES, batch):
         end = min(start + batch, _BOOTSTRAP_SAMPLES)
-        draws = rng.choice(data, size=(end - start, size))
+        # NumPy's generic overloads include types unavailable at the Python floor.
+        draws = rng.choice(data, size=(end - start, size))  # pyright: ignore[reportUnknownMemberType]
         medians[start:end] = np.median(draws, axis=1, overwrite_input=True)
-    low, high = np.quantile(medians, (0.025, 0.975))
+    low, high = np.quantile(medians, (0.025, 0.975))  # pyright: ignore[reportUnknownMemberType]
     return float(low), float(high)
 
 

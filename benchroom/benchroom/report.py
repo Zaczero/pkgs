@@ -1,5 +1,8 @@
 """Comparison figures and tables from ordinary run samples."""
 
+# Matplotlib leaves plotting keyword arguments untyped.
+# pyright: reportUnknownMemberType=false
+
 from __future__ import annotations
 
 import math
@@ -98,7 +101,7 @@ class Report:
         """Build an editable Matplotlib comparison figure with 95% intervals."""
         from matplotlib.ticker import EngFormatter
 
-        from benchroom.plot import _COLORS, _figure
+        from benchroom.plot import _COLORS, _figure  # pyright: ignore[reportPrivateUsage]
 
         colors = _COLORS[dark]
         names = dict.fromkeys(item.name for item in self.results)

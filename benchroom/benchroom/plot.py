@@ -1,17 +1,22 @@
 """Distribution and scaling plots for measured observations."""
 
+# Matplotlib leaves plotting keyword arguments and cycler parameters untyped.
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from matplotlib import cycler, rc_context
+from matplotlib import rc_context
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.rcsetup import cycler
 from matplotlib.ticker import EngFormatter, PercentFormatter
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from contextlib import AbstractContextManager
 
     from benchroom.report import Series
 
@@ -27,7 +32,7 @@ _COLORS = {
 }
 
 
-def theme(*, dark: bool = False) -> rc_context:
+def theme(*, dark: bool = False) -> AbstractContextManager[None]:
     """Use transparent surfaces and legible foregrounds on light or dark pages."""
     foreground = '#dce1ea' if dark else '#253044'
     return rc_context({

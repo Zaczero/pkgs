@@ -13,7 +13,7 @@ def test_report_exports_chart_and_matching_table(tmp_path):
     )
     output = tmp_path / 'compare.svg'
     report.save(output)
-    assert ET.parse(output).getroot().tag.endswith('svg')  # noqa: S314 - our own generated figure
+    assert ET.parse(output).getroot().tag.endswith('svg')  # ruff: ignore[suspicious-xml-element-tree-usage] - our own generated figure
     text = output.with_suffix('.md').read_text()
     assert '| short | A | — | 4 | 2 to 6 | 3 |' in text
     assert '| short | B | — | 8 | — | 1 |' in text

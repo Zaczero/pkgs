@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import statistics
 from pathlib import Path
+from typing import Any
 
-import pyperf
+import pyperf  # pyright: ignore[reportMissingTypeStubs]
 
 from benchroom.report import Series
 
@@ -17,8 +18,9 @@ def load(path: str | Path, *, name: str | None = None) -> tuple[Series, ...]:
     than mixing units. ``name`` overrides the implementation metadata, falling
     back to the file stem when neither is supplied.
     """
-    suite = pyperf.BenchmarkSuite.load(str(path))
-    result = []
+    # pyperf does not publish type information for its result objects.
+    suite: Any = pyperf.BenchmarkSuite.load(str(path))  # pyright: ignore[reportUnknownMemberType]
+    result: list[Series] = []
     for benchmark in suite:
         if benchmark.get_unit() != 'second':
             raise ValueError('pyperf timing import requires seconds')

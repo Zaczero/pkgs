@@ -1,3 +1,5 @@
+from numpy.testing import assert_array_equal
+
 from benchroom import Series
 from benchroom.plot import curves, distribution
 
@@ -9,8 +11,7 @@ def test_distribution_preserves_observations_and_ties():
         unit='seconds',
     )
     (line,) = figure.axes[0].lines
-    assert list(line.get_xdata()) == [1, 1, 1, 3]
-    assert list(line.get_ydata()) == [0, 1 / 3, 2 / 3, 1]
+    assert_array_equal(line.get_xydata(), [[1, 0], [1, 1 / 3], [1, 2 / 3], [3, 1]])
 
 
 def test_curves_order_by_measured_x_without_fitting():
@@ -21,5 +22,4 @@ def test_curves_order_by_measured_x_without_fitting():
         ylabel='milliseconds',
     )
     (line,) = figure.axes[0].lines
-    assert list(line.get_xdata()) == [10, 50, 100]
-    assert list(line.get_ydata()) == [2, 5, 8]
+    assert_array_equal(line.get_xydata(), [[10, 2], [50, 5], [100, 8]])

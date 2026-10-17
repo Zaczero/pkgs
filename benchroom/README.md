@@ -9,7 +9,7 @@ again.
 
 ## Installation
 
-Requires Python 3.10 or newer. From this repository:
+Requires Python 3.11 or newer. From this repository:
 
 ```sh
 uv pip install ./benchroom
