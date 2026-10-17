@@ -691,8 +691,7 @@ def run_controlled_process(
         result_line = line
 
     try:
-        eof: set[int] = set()
-        while len(eof) < 2 or process.poll() is None:
+        while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
@@ -700,7 +699,6 @@ def run_controlled_process(
                 descriptor = key.fd
                 data = os.read(descriptor, 65536)
                 if not data:
-                    eof.add(descriptor)
                     selector.unregister(descriptor)
                     pending = buffers[descriptor]
                     if descriptor == stdout_fd and pending:
@@ -753,9 +751,7 @@ def run_controlled_process(
                     if done is not None and ended_ns is None:
                         ended_ns = time.monotonic_ns()
                         process.stdin.close()
-            if process.poll() is not None and not selector.get_map():
-                break
-        returncode = process.wait()
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
         stdout = b''.join(stdout_lines).decode(errors='replace')
         stderr = bytes(stderr_bytes).decode(errors='replace')
         if returncode != 0:
