@@ -1054,6 +1054,78 @@ def destination_inputs_10k():
 # ---------------------------------------------------------------------------
 
 
+def index_rectangle_queries(*, packed: bool, geographic: bool):
+    """Viewport queries with varied hit counts and empty polygon-hole probes."""
+    import gometry as gm
+    import shapely
+
+    key = f'index_rectangles_{packed}_{geographic}'
+
+    def build():
+        crs = 4326 if geographic else _CRS_UTM
+        origin_x, origin_y, step = (
+            (20.0, 40.0, 0.01) if geographic else (500_000.0, 5_200_000.0, 2.0)
+        )
+        xs = origin_x + np.tile(np.arange(100), 100) * step
+        ys = origin_y + np.repeat(np.arange(100), 100) * step
+        if packed:
+            values = gm.points(np.column_stack((xs, ys)), crs=crs)
+            reference = shapely.points(xs, ys)
+        else:
+            reference = []
+            for index, (x, y) in enumerate(zip(xs, ys, strict=True)):
+                match index % 4:
+                    case 0:
+                        shape = shapely.Point(x, y)
+                    case 1:
+                        shape = shapely.LineString([
+                            (x, y),
+                            (x + 0.8 * step, y + 0.8 * step),
+                        ])
+                    case 2:
+                        shape = shapely.box(x, y, x + 0.8 * step, y + 0.8 * step)
+                    case 3:
+                        shell = shapely.box(
+                            x, y, x + 0.8 * step, y + 0.8 * step
+                        ).exterior.coords
+                        hole = shapely.box(
+                            x + 0.2 * step,
+                            y + 0.2 * step,
+                            x + 0.6 * step,
+                            y + 0.6 * step,
+                        ).exterior.coords
+                        shape = shapely.Polygon(shell, [hole])
+                reference.append(shape)
+            reference = np.asarray(reference, dtype=object)
+            values = gm.from_wkb(shapely.to_wkb(reference), crs=crs)
+        rectangles = []
+        for query in range(256):
+            if not packed and query % 4 == 0:
+                row = (query * 37 % 2500) * 4 + 3
+                x, y = xs[row], ys[row]
+                bounds = (
+                    x + 0.3 * step,
+                    y + 0.3 * step,
+                    x + 0.5 * step,
+                    y + 0.5 * step,
+                )
+            else:
+                x = origin_x + (query * 17 % 80) * step
+                y = origin_y + (query * 13 % 80) * step
+                span = (1, 4, 16)[query % 3] * step
+                bounds = (x - 0.1 * step, y - 0.1 * step, x + span, y + span)
+            rectangles.append(shapely.box(*bounds))
+        queries_sh = np.asarray(rectangles, dtype=object)
+        return {
+            'gm': values,
+            'sh': reference,
+            'queries_gm': gm.from_wkb(shapely.to_wkb(queries_sh), crs=crs),
+            'queries_sh': queries_sh,
+        }
+
+    return _cached(key, build)
+
+
 def index_query_boxes_1k():
     """1k boxes over buildings grid; widths 100/300/600/1200 m."""
 

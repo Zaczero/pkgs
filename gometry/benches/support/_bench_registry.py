@@ -192,8 +192,7 @@ def _op(
     )
 
 
-# 37 logical operations / 74 rows.  Keep domains contiguous: this is both the
-# docs order and the manifest completeness contract exercised before timing.
+# Keep domains contiguous for documentation order and manifest validation.
 _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     # --- Array construction & I/O — 7 ---
     _op(
@@ -532,7 +531,7 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         'Mercantile',
         ('batched',),
     ),
-    # --- Spatial index — 5 ---
+    # --- Spatial index ---
     _op(
         'Spatial index',
         'one-shot join within',
@@ -570,6 +569,36 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         ('SpatialIndex.nearest', 'Groups.to_pairs'),
         'gometry.index.nearest/1k_queries_10k_polygons_k1',
         'shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1',
+        'Shapely',
+        ('batched',),
+    ),
+    _op(
+        'Spatial index',
+        'exact rectangle query: packed points',
+        '256 viewports / 10k projected points / varied hit counts',
+        ('SpatialIndex.query', 'Groups.to_pairs'),
+        'gometry.index.query.intersects/256_rectangles_10k_packed_points',
+        'shapely.STRtree.query.intersects/256_rectangles_10k_packed_points',
+        'Shapely',
+        ('batched',),
+    ),
+    _op(
+        'Spatial index',
+        'exact rectangle query: mixed geometries',
+        '256 viewports / 10k projected points, lines, polygons, and holes',
+        ('SpatialIndex.query', 'Groups.to_pairs'),
+        'gometry.index.query.intersects/256_rectangles_10k_mixed',
+        'shapely.STRtree.query.intersects/256_rectangles_10k_mixed',
+        'Shapely',
+        ('batched',),
+    ),
+    _op(
+        'Spatial index',
+        'exact rectangle query: geographic geometries',
+        '256 viewports / 10k mixed EPSG:4326 geometries away from seams and poles',
+        ('SpatialIndex.query', 'Groups.to_pairs'),
+        'gometry.index.query.intersects/256_rectangles_10k_geographic_mixed',
+        'shapely.STRtree.query.intersects/256_rectangles_10k_geographic_mixed',
         'Shapely',
         ('batched',),
     ),

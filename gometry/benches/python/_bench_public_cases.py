@@ -1,4 +1,4 @@
-"""37 public PairCase builders + timed callables for RELEASE.
+"""Public PairCase builders and timed callables for the release manifest.
 
 Registers into ``PUBLIC_CASE_BUILDERS`` (keyed by gometry row name). Timed
 callables perform no validation; all checks live in compare/preconditions.
@@ -50,6 +50,7 @@ from _bench_public_fixtures import (
     index_build_probe_boxes,
     index_nearest_queries_1k,
     index_query_boxes_1k,
+    index_rectangle_queries,
     intersection_pairs_1k,
     intersects_polygon_and_points,
     geohash_encode_inputs,
@@ -1762,6 +1763,46 @@ def build_index_nearest() -> PublicCase:
     )
 
 
+def build_index_rectangle_query(*, packed: bool = False, geographic: bool = False):
+    import gometry as gm
+    import shapely
+
+    data = index_rectangle_queries(packed=packed, geographic=geographic)
+    index = gm.SpatialIndex(data['gm'])
+    tree = shapely.STRtree(data['sh'])
+
+    def gometry_call():
+        return index.query(data['queries_gm'], predicate='intersects').to_pairs()
+
+    def competitor_call():
+        pairs = tree.query(data['queries_sh'], predicate='intersects')
+        return pairs[0], pairs[1]
+
+    def precondition():
+        result = gometry_call()
+        if not packed:
+            if np.any(result[0] % 4 == 0):
+                raise OracleMismatch('rectangle queries must reject polygon holes')
+            candidates = index.candidates(data['queries_gm']).to_pairs()
+            if len(candidates[0]) <= len(result[0]):
+                raise OracleMismatch('rectangle queries must exercise exact refinement')
+
+    regime = (
+        'geographic_mixed' if geographic else 'packed_points' if packed else 'mixed'
+    )
+    suffix = f'256_rectangles_10k_{regime}'
+    _reg(f'gometry.index.query.intersects/{suffix}', gometry_call)
+    _reg(f'shapely.STRtree.query.intersects/{suffix}', competitor_call)
+    return _case(
+        gometry_call,
+        competitor_call,
+        normalized_index_pairs,
+        kind='normalized_index_pairs',
+        preconditions=(precondition,),
+        useful_work={'count': 256, 'unit': 'viewport-queries'},
+    )
+
+
 def build_index_build() -> PublicCase:
     buildings_gm = buildings_10k_gometry()
     buildings_sh = buildings_10k_shapely()
@@ -1902,6 +1943,13 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.geohash_encode/10k_precision6': build_geohash_encode,
     'gometry.index.candidates/1k_queries_10k_polygons': build_index_candidates,
     'gometry.index.nearest/1k_queries_10k_polygons_k1': build_index_nearest,
+    'gometry.index.query.intersects/256_rectangles_10k_packed_points': lambda: (
+        build_index_rectangle_query(packed=True)
+    ),
+    'gometry.index.query.intersects/256_rectangles_10k_mixed': build_index_rectangle_query,
+    'gometry.index.query.intersects/256_rectangles_10k_geographic_mixed': lambda: (
+        build_index_rectangle_query(geographic=True)
+    ),
     'gometry.index.build/10k_polygons': build_index_build,
     'gometry.from_geojson/217_countries_2_26mb': build_from_geojson,
     'gometry.chart_edge_area/217_countries': build_chart_edge_area,
