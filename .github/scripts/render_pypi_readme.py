@@ -37,8 +37,7 @@ def render(text: str, base: str) -> str:
     rendered = []
     position = 0
     for fence in CODE_FENCE.finditer(text):
-        rendered.append(rewrite(text[position : fence.start()]))
-        rendered.append(fence.group())
+        rendered.extend((rewrite(text[position : fence.start()]), fence.group()))
         position = fence.end()
     rendered.append(rewrite(text[position:]))
     return ''.join(rendered)

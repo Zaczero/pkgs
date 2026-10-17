@@ -11,8 +11,8 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
   using the newest PyPy minor uv can install that satisfies requires-python.
 * Build runners: pure → ubuntu only; rusty → native multi-arch including
   Windows ARM.
-* The generic test path adds a package ``ci`` group only to the primary stable
-  CPython cell. Gometry selects its groups directly in the shared workflow.
+* Development dependencies are installed for every cell. Packages whose native
+  tooling lacks free-threaded builds supply a compatible ``freethreaded`` group.
 
 Usage (from repo root):
 
@@ -23,19 +23,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
-import sys
+import tomllib
+import urllib.request
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from package_version import package_info
+from package_version import package_info, write_outputs
 
 VERSION_RE = re.compile(
     r"""
@@ -50,22 +50,22 @@ VERSION_RE = re.compile(
     re.VERBOSE,
 )
 
-LINUX_TEST_RUNNER = 'ubuntu-latest'
-MACOS_TEST_RUNNER = 'macos-15'
-WINDOWS_TEST_RUNNER = 'windows-latest'
+LINUX_TEST_RUNNER = 'ubuntu-26.04'
+MACOS_TEST_RUNNER = 'macos-26'
+WINDOWS_TEST_RUNNER = 'windows-2025'
 
 # Free-threaded wheels in cibuildwheel 4 start at CPython 3.14 (3.13t removed).
 MIN_FREETHREADED_MINOR = (3, 14)
 
 RUSTY_BUILD_RUNNERS = [
-    'ubuntu-latest',
-    'ubuntu-24.04-arm',
-    'windows-latest',
-    'windows-11-arm',
-    'macos-15-intel',
-    'macos-15',
+    LINUX_TEST_RUNNER,
+    'ubuntu-26.04-arm',
+    WINDOWS_TEST_RUNNER,
+    'windows-11-vs2026-arm',
+    'macos-26-intel',
+    MACOS_TEST_RUNNER,
 ]
-PURE_BUILD_RUNNERS = ['ubuntu-latest']
+PURE_BUILD_RUNNERS = [LINUX_TEST_RUNNER]
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -259,14 +259,22 @@ def versions_file_for(package: str) -> Path:
     fail(f'no .python-versions found for package {package!r}')
 
 
+@cache
+def resolve_rust_channel(channel: str) -> str:
+    if channel != 'nightly':
+        return channel
+    with urllib.request.urlopen(
+        'https://static.rust-lang.org/dist/channel-rust-nightly.toml', timeout=30
+    ) as response:
+        manifest = tomllib.loads(response.read().decode())
+    return f'nightly-{manifest["date"]}'
+
+
 def rust_toolchain_channel(package: str) -> str:
     package_file = Path(package) / 'rust-toolchain.toml'
     path = package_file if package_file.is_file() else Path('rust-toolchain.toml')
-    text = path.read_text()
-    match = re.search(r'(?m)^channel\s*=\s*"([^"]+)"\s*$', text)
-    if match is None:
-        fail(f'could not read toolchain channel from {path}')
-    return match.group(1)
+    channel = tomllib.loads(path.read_text())['toolchain']['channel']
+    return resolve_rust_channel(channel)
 
 
 def build_test_matrix(
@@ -276,16 +284,15 @@ def build_test_matrix(
     is_rusty: bool,
     freethreaded_linux: Sequence[Minor],
     pypy_selector: str | None,
-    ci_test_group: bool,
+    freethreaded_group: str,
 ) -> list[dict[str, str]]:
-    ci_sync_args = '--group ci' if ci_test_group else ''
     matrix: list[dict[str, str]] = [
         {
             'os': LINUX_TEST_RUNNER,
             'python-version': str(minor),
             'freethreaded': 'false',
             'primary': 'true' if minor == primary else 'false',
-            'uv-sync-args': ci_sync_args if minor == primary else '',
+            'dependency-group': 'dev',
         }
         for minor in stable_minors
     ]
@@ -295,9 +302,13 @@ def build_test_matrix(
             'python-version': str(primary),
             'freethreaded': 'false',
             'primary': 'false',
-            'uv-sync-args': '',
+            'dependency-group': 'dev',
         }
-        for runner in (MACOS_TEST_RUNNER, WINDOWS_TEST_RUNNER)
+        for runner in (
+            MACOS_TEST_RUNNER,
+            WINDOWS_TEST_RUNNER,
+            *(['ubuntu-26.04-arm'] if is_rusty else []),
+        )
     )
     if is_rusty:
         matrix.extend(
@@ -306,7 +317,7 @@ def build_test_matrix(
                 'python-version': minor.freethreaded_selector,
                 'freethreaded': 'true',
                 'primary': 'false',
-                'uv-sync-args': '',
+                'dependency-group': freethreaded_group,
             }
             for minor in freethreaded_linux
             if minor.as_tuple >= MIN_FREETHREADED_MINOR
@@ -317,7 +328,7 @@ def build_test_matrix(
             'python-version': pypy_selector,
             'freethreaded': 'false',
             'primary': 'false',
-            'uv-sync-args': '',
+            'dependency-group': 'dev',
         })
     return matrix
 
@@ -326,15 +337,15 @@ def resolve_matrix(
     package: str,
     *,
     catalog: Sequence[dict[str, Any]] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     info = package_info(package)
     if info['type'] == 'rust':
         return {
             **info,
-            'python-versions': '[]',
-            'test-matrix': '[]',
-            'build-runners': '[]',
-            'rust-test-runners': '["ubuntu-latest","ubuntu-24.04-arm"]',
+            'python-versions': [],
+            'test-matrix': [],
+            'build-matrix': [],
+            'rust-test-runners': [LINUX_TEST_RUNNER, 'ubuntu-26.04-arm'],
             'rust-toolchain': rust_toolchain_channel(package),
         }
     catalog_entries = list(catalog) if catalog is not None else load_uv_catalog()
@@ -345,6 +356,17 @@ def resolve_matrix(
     stable_available = available_stable_cpython_minors(
         catalog_entries, freethreaded=False
     )
+    missing = [
+        minor
+        for minor in declared
+        if satisfies_requires_python(requires_python, minor)
+        and minor not in stable_available
+    ]
+    if missing:
+        fail(
+            f'uv does not offer declared CPython versions '
+            f'{", ".join(map(str, missing))}; update uv'
+        )
     stable_minors = [
         minor
         for minor in declared
@@ -367,10 +389,14 @@ def resolve_matrix(
             catalog_entries, freethreaded=True, os_name='linux'
         )
         freethreaded_linux = [
-            minor
-            for minor in stable_minors
-            if minor in ft_linux and minor.as_tuple >= MIN_FREETHREADED_MINOR
+            minor for minor in stable_minors if minor.as_tuple >= MIN_FREETHREADED_MINOR
         ]
+        missing_ft = [minor for minor in freethreaded_linux if minor not in ft_linux]
+        if missing_ft:
+            fail(
+                f'uv does not offer declared free-threaded CPython versions '
+                f'{", ".join(minor.freethreaded_selector for minor in missing_ft)}; update uv'
+            )
 
     pypy_selector = (
         newest_pypy_selector(catalog_entries, requires_python=requires_python)
@@ -389,52 +415,35 @@ def resolve_matrix(
         is_rusty=is_rusty,
         freethreaded_linux=freethreaded_linux,
         pypy_selector=pypy_selector,
-        ci_test_group=info['ci-test-group'] == 'true',
+        freethreaded_group=info['freethreaded-group'],
     )
-    if package == 'gometry':
-        test_matrix.append({
-            'os': 'ubuntu-24.04-arm',
-            'python-version': str(primary),
-            'freethreaded': 'false',
-            'primary': 'false',
-            'uv-sync-args': '--group ci' if info['ci-test-group'] == 'true' else '',
-        })
-
-    build_runners = RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS
+    build_matrix = [
+        {'runner': runner, 'abi': abi}
+        for runner in (RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS)
+        for abi in (('optimized', 'abi3t') if is_rusty else ('optimized',))
+    ]
 
     return {
         'type': info['type'],
-        'rust-test-runners': '["ubuntu-latest"]',
+        'rust-test-runners': [LINUX_TEST_RUNNER],
         'import-name': info['import-name'],
         'is-release': info['is-release'],
         'is-rusty': info['is-rusty'],
         'pypy': info['pypy'],
+        'crate': info.get('crate', ''),
         'package': info['package'],
         'requires-python': requires_python,
-        'python-versions': json.dumps([str(m) for m in stable_minors]),
-        'test-matrix': json.dumps(test_matrix, separators=(',', ':')),
-        'build-runners': json.dumps(build_runners, separators=(',', ':')),
+        'python-versions': [str(m) for m in stable_minors],
+        'primary-python': str(primary),
+        'test-matrix': test_matrix,
+        'build-matrix': build_matrix,
         'rust-toolchain': rust_toolchain_channel(package) if is_rusty else '',
     }
 
 
-def write_outputs(outputs: dict[str, str]) -> None:
-    for key, value in outputs.items():
-        print(f'{key}={value}')
-
-    output_path = os.environ.get('GITHUB_OUTPUT')
-    if output_path is not None:
-        with Path(output_path).open('a') as file:
-            for key, value in outputs.items():
-                if '\n' in value:
-                    file.write(f'{key}<<EOF\n{value}\nEOF\n')
-                else:
-                    file.write(f'{key}={value}\n')
-
-
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('package', help='Top-level package directory name')
+    parser.add_argument('packages', nargs='*', help='Top-level package directory names')
     parser.add_argument(
         '--catalog',
         type=Path,
@@ -442,8 +451,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         help='Optional uv python list JSON (for offline tests)',
     )
     args = parser.parse_args(argv)
-    catalog = load_uv_catalog(args.catalog) if args.catalog else None
-    write_outputs(resolve_matrix(args.package, catalog=catalog))
+    catalog = load_uv_catalog(args.catalog)
+    plans = [
+        {'package': package, 'plan': resolve_matrix(package, catalog=catalog)}
+        for package in args.packages
+    ]
+    primary = max(available_stable_cpython_minors(catalog, freethreaded=False))
+    write_outputs({
+        'plans': json.dumps(plans, separators=(',', ':')),
+        'primary-python': str(primary),
+        'rust-toolchain': rust_toolchain_channel('.'),
+    })
 
 
 if __name__ == '__main__':

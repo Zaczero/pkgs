@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       PACKAGE: ${{ inputs.package }}
       VERSION: ${{ inputs.version }}
@@ -90,11 +90,10 @@ jobs:
           if ! git diff --quiet; then
             git add Cargo.lock "$PACKAGE"
             git commit -m "$PACKAGE bump to $VERSION"
-            git push origin HEAD:main
           fi
 
           git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          git push --atomic origin HEAD:main "refs/tags/$TAG"
 
       - name: Dispatch tag CI
         env:
@@ -103,11 +102,5 @@ jobs:
         run: |
           set -euo pipefail
 
-          # GITHUB_TOKEN tag pushes do not trigger push workflows.
-          curl --fail-with-body --silent --show-error \
-            --request POST \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --data "$(jq -nc --arg ref "$TAG" '{ref: $ref}')" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/dispatches"
+          # GITHUB_TOKEN pushes do not trigger push workflows.
+          gh workflow run ci.yaml --ref "$TAG"

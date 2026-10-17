@@ -17,10 +17,15 @@ concurrency:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       packages: ${{ steps.detect.outputs.packages }}
       release-package: ${{ steps.release.outputs.package }}
+      plans: ${{ steps.matrix.outputs.plans }}
+      primary-python: ${{ steps.matrix.outputs.primary-python }}
+      rust-toolchain: ${{ steps.matrix.outputs.rust-toolchain }}
+      lint-python: ${{ steps.detect.outputs.lint-python }}
+      lint-rust: ${{ steps.detect.outputs.lint-rust }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BEFORE_SHA: ${{ github.event.before }}
@@ -75,6 +80,25 @@ jobs:
             ' <<< "$changed"
           )"
           echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]] || $test_all; then
+            echo "lint-python=true" >> "$GITHUB_OUTPUT"
+            echo "lint-rust=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        if: steps.detect.outputs.packages != '[]' || steps.detect.outputs.lint-rust == 'true'
+        with:
+          enable-cache: false
+
+      - id: matrix
+        if: steps.detect.outputs.packages != '[]' || steps.detect.outputs.lint-rust == 'true'
+        env:
+          PACKAGES: ${{ steps.detect.outputs.packages }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(jq -r '.[]' <<< "$PACKAGES")
+          python3 .github/scripts/matrix.py "${packages[@]}"
 
       - id: release
         if: startsWith(github.ref, 'refs/tags/')
@@ -86,71 +110,146 @@ jobs:
           package="${tag%/*}"
           version="${tag#*/}"
           python3 .github/scripts/package_version.py check "$package" "$version"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+
+  lint-python:
+    needs: detect
+    if: needs.detect.outputs.lint-python == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          args: check --output-format github
+      - run: ruff format --check .
+
+  lint-rust:
+    needs: detect
+    if: needs.detect.outputs.lint-rust == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ needs.detect.outputs.primary-python }}
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        # zizmor: ignore[cache-poisoning] -- This lint-only job produces no published artifacts.
+        with:
+          toolchain: ${{ needs.detect.outputs.rust-toolchain }}
+          components: clippy, rustfmt
+          cache-on-failure: false
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-audit
+      - name: Audit Rust dependencies
+        run: cargo audit --deny unsound --deny yanked
+      - name: Check Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$(command -v python)"
+          export PYO3_PYTHON
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets
+          cargo test --locked --workspace --doc
+
+  test-kani:
+    needs: detect
+    if: needs.detect.outputs.lint-rust == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ needs.detect.outputs.primary-python }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        # zizmor: ignore[cache-poisoning] -- Verification produces no distribution artifacts.
+        with:
+          toolchain: ${{ needs.detect.outputs.rust-toolchain }}
+          cache-key: kani
+          cache-on-failure: false
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Kani
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+          # Keep Kani's exact rustc, but use current Cargo for workspace manifest features.
+          cp --remove-destination "$(rustup which cargo)" "$HOME/.kani/kani-0.68.0/toolchain/bin/cargo"
+
+      - name: Verify first-party Rust harnesses
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$(command -v python)"
+          export PYO3_PYTHON
+          crates="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          members = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["members"]
+          print(*(tomllib.loads((Path(member) / "Cargo.toml").read_text())["package"]["name"]
+                  for member in members), sep="\n")
+          PY
+          )"
+          mapfile -t crates <<< "$crates"
+          packages=()
+          for crate in "${crates[@]}"; do
+            packages+=(-p "$crate")
+          done
+          cargo kani "${packages[@]}" --lib --bins -Z unstable-options \
+            --harness-timeout 180 --output-format terse
 
   test:
     needs: detect
     if: needs.detect.outputs.packages != '[]'
-    permissions:
-      actions: write
-      contents: read
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJson(needs.detect.outputs.packages) }}
+        include: ${{ fromJson(needs.detect.outputs.plans) }}
     uses: ./.github/workflows/_test.yaml # zizmor: ignore[self-repository] -- actionlint does not yet accept GitHub's $/ workflow syntax
     with:
       package: ${{ matrix.package }}
+      plan: ${{ toJson(matrix.plan) }}
 
   release:
-    needs: [detect, test]
+    needs: [detect, test, lint-python, lint-rust, test-kani]
     if: >-
-      startsWith(github.ref, 'refs/tags/')
+      !cancelled()
+      && startsWith(github.ref, 'refs/tags/')
       && needs.test.result == 'success'
-    runs-on: ubuntu-latest
+      && needs.lint-python.result == 'success'
+      && needs.lint-rust.result == 'success'
+      && needs.test-kani.result == 'success'
+    runs-on: ubuntu-26.04
     environment:
       name: pypi
       url: https://pypi.org/p/${{ needs.detect.outputs.release-package }}
     permissions:
       actions: read
-      attestations: write
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.detect.outputs.release-package == 'gometry'
-        with:
-          submodules: true
-          persist-credentials: false
-
-      - name: Install gometry Rust toolchain
-        if: needs.detect.outputs.release-package == 'gometry'
-        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          toolchain: ${{ needs.test.outputs.rust-toolchain }}
-          cache: false
-
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.detect.outputs.release-package == 'gometry'
-        with:
-          name: gometry-release-distributions
-          path: dist
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.detect.outputs.release-package != 'gometry'
         with:
           pattern: dist-${{ needs.detect.outputs.release-package }}-*
           path: dist
           merge-multiple: true
 
-      - name: Verify gometry release set
-        if: needs.detect.outputs.release-package == 'gometry'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 gometry/tools/wheel_smoke.py --verify-release dist
-
       - name: Require non-empty dist
-        if: needs.detect.outputs.release-package != 'gometry'
         env:
           PACKAGE: ${{ needs.detect.outputs.release-package }}
         shell: bash
@@ -164,35 +263,7 @@ jobs:
           fi
           ls -la dist/
 
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        if: needs.detect.outputs.release-package == 'gometry'
-        with:
-          subject-path: |
-            dist/*.whl
-            dist/*.tar.gz
-
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        if: needs.detect.outputs.release-package != 'gometry'
-        with:
-          subject-path: dist/*
-
       - name: Publish distributions
-        if: needs.detect.outputs.release-package != 'gometry'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          skip-existing: true
-
-      - name: Prepare gometry distributions
-        if: needs.detect.outputs.release-package == 'gometry'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir publish
-          cp dist/*.whl dist/*.tar.gz publish/
-
-      - name: Publish gometry distributions
-        if: needs.detect.outputs.release-package == 'gometry'
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: publish
           skip-existing: true

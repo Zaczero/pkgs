@@ -9,6 +9,8 @@ Diagnostics go to stderr; metadata/TOML failures exit nonzero.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -18,16 +20,20 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_version import ci_package_sort_key, list_packages, load_toml
 
 ROOT_RUST_PATHS = frozenset({'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})
 IGNORED_PATHS = re.compile(
-    r'(?:^|/)(?:README|AGENTS|CLAUDE)\.md$'
-    r'|^[^/]+\.md$'
+    r'\.md$'
     r'|^(?:[^/]+/)?(?:docs|overrides)/'
     r'|^(?:[^/]+/)?tools/docs/'
     r'|^[^/]+/properdocs\.yml$'
+    r'|^(?:[^/]+/)?(?:bench|benches|benchmarks)/'
+    r'|^(?:[^/]+/)?benchmark\.py$'
+    r'|^tools/benchmark\.py$'
+    r'|^[^/]+/tools/(?:benchmark_report\.py|wasm\.ts|check\.py)$'
+    r'|^[^/]+/tests/(?:test_public_docs\.py|tooling/)'
+    r'|^(?:ruff\.toml|rustfmt\.toml|clippy\.toml|shell\.nix|package\.json|bun\.lock|tsconfig\.json)$'
 )
 
 
@@ -139,6 +145,23 @@ def main() -> None:
 
     for name in selected:
         print(name)
+    output = os.environ.get('GITHUB_OUTPUT')
+    if output:
+        python = any(
+            path.endswith(('.py', '.pyi', '/pyproject.toml'))
+            or path == 'ruff.toml'
+            or path.startswith('.github/workflows/')
+            for path in paths
+        )
+        rust = any(
+            path.endswith(('.rs', '/Cargo.toml'))
+            or path in ROOT_RUST_PATHS | {'clippy.toml', 'rustfmt.toml'}
+            or path.startswith(('.cargo/', '.github/workflows/'))
+            for path in paths
+        )
+        with Path(output).open('a') as stream:
+            stream.write(f'lint-python={json.dumps(python)}\n')
+            stream.write(f'lint-rust={json.dumps(rust)}\n')
 
 
 if __name__ == '__main__':

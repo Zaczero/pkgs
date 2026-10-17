@@ -1,8 +1,6 @@
 import argparse
-import json
 import os
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 from typing import Literal, Never, assert_never
@@ -47,36 +45,6 @@ def ci_package_sort_key(package: str) -> tuple[bool, bool, str]:
         not (Path(package) / 'Cargo.toml').is_file(),
         package,
     )
-
-
-def cargo_package_info(path: Path) -> dict[str, str]:
-    result = subprocess.run(
-        [
-            'cargo',
-            'metadata',
-            '--no-deps',
-            '--format-version',
-            '1',
-            '--manifest-path',
-            path.as_posix(),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        fail(f'could not read Cargo metadata from {path}:\n{result.stderr.strip()}')
-
-    manifest_path = path.resolve()
-    metadata = json.loads(result.stdout)
-    for package in metadata['packages']:
-        if Path(package['manifest_path']) == manifest_path:
-            return {
-                'name': package['name'],
-                'version': package['version'],
-            }
-
-    fail(f'Cargo metadata did not include package manifest {path}')
 
 
 def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
@@ -124,7 +92,7 @@ def package_info(package: str) -> dict[str, str]:
             'is-rusty': 'true',
             'package': package,
             'pypy': 'false',
-            'ci-test-group': 'false',
+            'freethreaded-group': 'dev',
             'requires-python': '',
             'type': 'rust',
             'version': cargo['version'],
@@ -134,7 +102,9 @@ def package_info(package: str) -> dict[str, str]:
     pyproject = load_toml(path / 'pyproject.toml')
     project = pyproject['project']
     dependency_groups = pyproject.get('dependency-groups', {})
-    ci_test_group = 'true' if 'ci' in dependency_groups else 'false'
+    freethreaded_group = (
+        'freethreaded' if 'freethreaded' in dependency_groups else 'dev'
+    )
     requires_python = project.get('requires-python', '')
     pypy = (
         'true'
@@ -146,7 +116,7 @@ def package_info(package: str) -> dict[str, str]:
     cargo_toml = path / 'Cargo.toml'
 
     if cargo_toml.is_file():
-        cargo = cargo_package_info(cargo_toml)
+        cargo = load_toml(cargo_toml)['package']
         module_name = pyproject['tool']['maturin']['module-name']
         return {
             'import-name': module_name.split('.', maxsplit=1)[0],
@@ -154,7 +124,7 @@ def package_info(package: str) -> dict[str, str]:
             'is-rusty': 'true',
             'package': package,
             'pypy': pypy,
-            'ci-test-group': ci_test_group,
+            'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
             'type': 'python-rust',
             'version': cargo['version'],
@@ -173,22 +143,24 @@ def package_info(package: str) -> dict[str, str]:
             .get('wheel', {})
             .get('packages')
         )
-        if (
+        if packages is None:
+            import_name = project['name'].replace('-', '_')
+        elif (
             not isinstance(packages, list)
             or len(packages) != 1
             or not isinstance(packages[0], str)
             or not packages[0]
         ):
             fail(f'{package}: expected exactly one Hatch wheel package')
-
-        import_name = Path(packages[0]).name
+        else:
+            import_name = Path(packages[0]).name
         return {
             'import-name': import_name,
             'is-release': is_release,
             'is-rusty': 'false',
             'package': package,
             'pypy': pypy,
-            'ci-test-group': ci_test_group,
+            'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
             'type': 'python-static',
             'version': str(project['version']),
@@ -201,7 +173,7 @@ def package_info(package: str) -> dict[str, str]:
         'is-rusty': 'false',
         'package': package,
         'pypy': pypy,
-        'ci-test-group': ci_test_group,
+        'freethreaded-group': freethreaded_group,
         'requires-python': requires_python,
         'type': 'python',
         'version': read_python_version(version_path),
