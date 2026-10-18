@@ -39,16 +39,13 @@ fn owned_batch_decoder_runs_detached() {
         },
     };
     Python::attach(|py| {
-        let attached = py.detach(move || {
-            // PyO3 0.29 has no public `Python::is_attached`; the C API
-            // check is the same observation without attaching again.
-            let detached = unsafe { ffi::PyGILState_Check() != 0 };
+        let (attached, decoded) = py.detach(move || {
+            let attached = crate::test_support::python_is_attached();
             let decoded = batch.decode();
-            (detached, decoded)
+            (attached, decoded)
         });
-        let (detached, decoded) = attached;
         let decoded = decoded.expect("owned batch decoder");
-        assert!(!detached);
+        assert!(!attached);
         assert_eq!(decoded.length, 1);
         assert_eq!(decoded.storage.len(), 1);
         assert!(matches!(

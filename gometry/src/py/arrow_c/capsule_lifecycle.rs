@@ -204,7 +204,7 @@ pub(crate) fn geometry_to_array_capsules(
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(py, plan)?;
     let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     array_capsules(py, export)
 }
@@ -232,7 +232,7 @@ pub(crate) fn array_to_array_capsules(
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(py, plan)?;
     let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     array_capsules(py, export)
 }
@@ -282,7 +282,7 @@ pub(crate) fn geometry_to_stream_capsule(
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(py, plan)?;
     let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     stream_capsule(py, export)
 }
@@ -309,7 +309,7 @@ pub(crate) fn array_to_stream_capsule(
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(py, plan)?;
     let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     stream_capsule(py, export)
 }

@@ -46,8 +46,10 @@ fn exported(geometry: &PyGeometry) -> ExportedArray {
         geometry.epoch(),
     )
     .expect("test export plan");
-    materialize_export_plan(prepare_export_plan(plan).expect("test export schema"))
-        .expect("test export")
+    Python::attach(|py| {
+        materialize_export_plan(py, prepare_export_plan(plan).expect("test export schema"))
+            .expect("test export")
+    })
 }
 
 #[expect(
@@ -69,8 +71,13 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
 
 fn exported_array(array: &PyGeometryArray) -> ExportedArray {
     let plan = plan_geometry_array(array, ArrowEncoding::Auto).expect("test array export plan");
-    materialize_export_plan(prepare_export_plan(plan).expect("test array export schema"))
+    Python::attach(|py| {
+        materialize_export_plan(
+            py,
+            prepare_export_plan(plan).expect("test array export schema"),
+        )
         .expect("test array export")
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]

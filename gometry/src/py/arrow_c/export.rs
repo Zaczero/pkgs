@@ -4,10 +4,8 @@ use crate::py::arrow_c::{ExportedArray, GometryArrowArray, SchemaNode};
 pub(crate) fn export_with_schema_node(
     schema_node: SchemaNode,
     array: GometryArrowArray,
-) -> pyo3::PyResult<ExportedArray> {
-    let schema = schema_node
-        .materialize_schema()
-        .map_err(|error| pyo3::Python::attach(|py| error.into_py_err(py)))?;
+) -> arrow_c::NativeArrowExportResult<ExportedArray> {
+    let schema = schema_node.materialize_schema()?;
     Ok(ExportedArray {
         schema,
         schema_node,

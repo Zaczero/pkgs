@@ -2,7 +2,7 @@ use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 
-use pyo3::prelude::PyResult;
+use pyo3::prelude::{PyResult, Python};
 
 use crate::PyGeometryArray;
 use crate::array::ArrayRow;
@@ -224,12 +224,16 @@ pub(crate) fn prepare_export_plan(
     Ok(PreparedArrowExportPlan { plan, schema })
 }
 
-pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult<ExportedArray> {
+pub(crate) fn materialize_export_plan(
+    py: Python<'_>,
+    plan: PreparedArrowExportPlan,
+) -> PyResult<ExportedArray> {
     let PreparedArrowExportPlan { plan, schema } = plan;
     let ArrowExportPlan {
         storage, validity, ..
     } = plan;
-    let mut export = export_with_schema_node(schema, storage.materialize()?)?;
+    let mut export = export_with_schema_node(schema, storage.materialize()?)
+        .map_err(|error| error.into_py_err(py))?;
     if let Some(validity) = validity {
         apply_exported_validity_plan(&mut export, validity.bitmap, validity.null_count)?;
     }
