@@ -320,11 +320,12 @@ fn bounds_brute_refusal_precedes_filter_and_callback() {
 
 #[test]
 fn banded_window_refusal_precedes_the_first_4096_entry_callback() {
-    let bounds = vec![Bounds::new_raw(0.0, 0.0, 1.0, 1.0); 4096];
+    let mut bounds = vec![Bounds::new_raw(0.0, 0.0, 1.0, 1.0); 4096];
+    *bounds.last_mut().unwrap() = Bounds::new_raw(2.0, 2.0, 3.0, 3.0);
     let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
-    // The funded entry, stable-sort, two extent-fold, CSR, band-row and
-    // left-row phases total 126,736 ticks before the first right window.
-    let remaining_ticks = 126_736_u128;
+    // The separated final bound forces banding. Fund preparation through
+    // the first left row, leaving the right-window charge unaffordable.
+    let remaining_ticks = 114_448_u128;
     budget.limit = u64::try_from(remaining_ticks.div_ceil(WORK_TICKS_PER_EVALUATION)).unwrap();
     budget.spent_ticks = budget.limit_ticks().wrapping_sub(remaining_ticks);
     let mut callbacks = 0;
@@ -341,11 +342,11 @@ fn banded_window_refusal_precedes_the_first_4096_entry_callback() {
         ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
             operation: "sweep_test",
             constructed: 1,
-            evaluations: 7_921
+            evaluations: 7_153
         })
     ));
     assert_eq!(callbacks, 0);
-    assert_eq!(budget.spent_ticks, 126_736);
+    assert_eq!(budget.spent_ticks, 114_448);
 }
 
 #[test]
