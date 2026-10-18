@@ -1114,6 +1114,19 @@ impl Groups {
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(groups) = other.cast::<Self>() {
             let groups = groups.get();
+            if self.rows.len() != groups.rows.len()
+                || !matches!(
+                    (&self.values, &groups.values),
+                    (GroupsValues::Int64(_), GroupsValues::Int64(_))
+                        | (GroupsValues::Geometry(_), GroupsValues::Geometry(_))
+                        | (GroupsValues::Cells(_), GroupsValues::Cells(_))
+                )
+            {
+                return false.into_py_any(py);
+            }
+            if self.rows.is_empty() {
+                return self.groups_equal(groups)?.into_py_any(py);
+            }
             return py.detach(|| self.groups_equal(groups))?.into_py_any(py);
         }
         let Ok(sequence) = other.cast::<PySequence>() else {

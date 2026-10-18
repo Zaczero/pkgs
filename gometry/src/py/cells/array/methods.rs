@@ -152,6 +152,12 @@ impl PyCellArray {
         let Ok(other) = other.extract::<PyRef<Self>>() else {
             return py.NotImplemented();
         };
+        if self.kind() != other.kind() || self.len() != other.len() {
+            return crate::broadcast::py_bool(py, false);
+        }
+        if self.len() == 0 {
+            return crate::broadcast::py_bool(py, true);
+        }
         let this = self;
         let other = &*other;
         crate::broadcast::py_bool(py, py.detach(|| this.logical_eq(other)))

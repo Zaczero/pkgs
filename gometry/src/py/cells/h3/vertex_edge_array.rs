@@ -419,12 +419,15 @@ macro_rules! h3_index_array_common {
 
             fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
                 py_bool_or_not_implemented(py, other.extract::<PyRef<Self>>().ok(), |other| {
+                    if self.len() != other.len() {
+                        return false;
+                    }
+                    if self.len() == 0 {
+                        return true;
+                    }
                     let this = self;
                     let other = &*other;
-                    py.detach(|| {
-                        this.len() == other.len()
-                            && (0..this.len()).all(|row| this.id_at(row) == other.id_at(row))
-                    })
+                    py.detach(|| (0..this.len()).all(|row| this.id_at(row) == other.id_at(row)))
                 })
             }
 
