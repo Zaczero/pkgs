@@ -1,4 +1,5 @@
 use super::*;
+use crate::grid::coverer::RectClass;
 
 #[test]
 fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
@@ -31,17 +32,15 @@ fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
 }
 
 #[test]
-fn split_working_window_cannot_prune_the_retained_seam_owner() {
-    // The exact lifted parameter for the owner probe is t=7/20. The
-    // working split follows the short seam representation. Its window
-    // alone rejects this S2 owner, while the retained affine edge still
-    // meets the owner's certified rectangle. That disagreement is
-    // precisely the hazard corroboration must keep open.
+fn split_seam_line_cover_retains_the_affine_owner() {
+    // The lifted edge passes through (180.5, 14) at t=7/10. Both the
+    // seam-split working image and retained carrier meet the frozen owner's
+    // rectangle; fixed-level traversal must retain that owner.
     let source = Shape::LineString(
         LineSeq::try_new(
             CoordSeq::try_from_points(&[
-                Point::new_raw_xy(170.0, 0.0),
-                Point::new_raw_xy(-160.0, 40.0),
+                Point::new_raw_xy(179.84375, 13.125),
+                Point::new_raw_xy(-179.21875, 14.375),
             ])
             .unwrap(),
         )
@@ -54,19 +53,23 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
         .expect("test source carrier allocates");
     let owner = CellId::from_token("7b32f3").expect("frozen S2 seam owner");
     let rect = Cell::from_id(owner).rect_bound(&Cell::from_id(owner).vertices_lonlat());
+    let bounds = super::super::classify::rect_bounds(rect);
 
     assert!(affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit));
     assert_eq!(
         affine
-            .classify_rect(
-                &affine.admit_rectangular_candidate(super::super::classify::rect_bounds(rect),)
-            )
+            .classify_rect(&affine.admit_rectangular_candidate(bounds))
             .expect("exact rectangle classification"),
         AffineRectClass::Boundary,
         "the retained raw affine edge meets the candidate enclosure"
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
+    assert_eq!(
+        ctx.rects.classify_bounds(bounds).unwrap(),
+        RectClass::Boundary,
+        "the seam-split working image meets the same owner"
+    );
     assert_eq!(classify(&ctx, owner), CellClass::Boundary);
     let covering = fixed(10)
         .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)

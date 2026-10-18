@@ -896,18 +896,19 @@ mod tests {
         assert_eq!(source.axes(), crate::geometry::CoordinateAxes::XYZ);
     }
 
-    /// A near-world polygon covered at a fine depth expands past the shared
+    /// A full-longitude polygon covered at a fine depth expands past the shared
     /// cell budget; the coverer returns the max_cells budget error before
     /// enumerating the certified output.
     #[test]
     fn cover_rejects_world_scale_fine_depth_before_flooding() {
         use crate::geometry::Ring;
+        // The explicit full turn is a world band; -179 to 179 is a seam strip.
         let shell = vec![
-            Point::new_raw_xy(-179.0, -85.0),
-            Point::new_raw_xy(179.0, -85.0),
-            Point::new_raw_xy(179.0, 85.0),
-            Point::new_raw_xy(-179.0, 85.0),
-            Point::new_raw_xy(-179.0, -85.0),
+            Point::new_raw_xy(-180.0, -85.0),
+            Point::new_raw_xy(180.0, -85.0),
+            Point::new_raw_xy(180.0, 85.0),
+            Point::new_raw_xy(-180.0, 85.0),
+            Point::new_raw_xy(-180.0, -85.0),
         ];
         let world = Shape::Polygon(Polygon::new(
             Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
