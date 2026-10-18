@@ -602,14 +602,15 @@ impl PyGeometryArray {
     /// -------
     /// tuple or None
     #[getter]
-    pub fn total_bounds(&self) -> PyResult<Option<(f64, f64, f64, f64)>> {
+    pub fn total_bounds(&self, py: Python<'_>) -> PyResult<Option<(f64, f64, f64, f64)>> {
         if let Some(bounds) = self.total_bounds_cache.get() {
             return Ok(*bounds);
         }
-        // Bounds computation can reattach to Python; keep it outside the OnceLock initializer.
-        let bounds = self.compute_total_bounds()?;
-        self.total_bounds_cache.get_or_init(|| bounds);
-        Ok(bounds)
+        Ok(py.detach(|| {
+            let bounds = self.compute_total_bounds()?;
+            self.total_bounds_cache.get_or_init(|| bounds);
+            Ok::<_, crate::error::Error>(bounds)
+        })?)
     }
     /// Per-geometry OGC type name (see `Geometry.geometry_type`), with
     /// ``None`` at missing rows.
@@ -1014,11 +1015,8 @@ impl PyGeometryArray {
         let element_bounds = self.existing_element_bounds();
         if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
             if element_bounds.is_none()
-                && let Ok(Some(bounds)) = Python::attach(|py| {
-                    self.reduce_packed_columns_detached(py, |columns| {
-                        Ok(geographic_total_bounds_from_columns(&columns, frame)?)
-                    })
-                })
+                && let Some(columns) = self.packed_columns()
+                && let Ok(bounds) = geographic_total_bounds_from_columns(&columns, frame)
             {
                 return Ok(bounds.map(Bounds::into_tuple));
             }
@@ -1075,11 +1073,9 @@ impl PyGeometryArray {
                 })
                 .map(Bounds::into_tuple));
         }
-        if let Ok(Some(Some(bounds))) = Python::attach(|py| {
-            self.reduce_packed_columns_detached(py, |columns| {
-                Ok(raw_total_bounds_from_columns(&columns))
-            })
-        }) {
+        if let Some(columns) = self.packed_columns()
+            && let Some(bounds) = raw_total_bounds_from_columns(&columns)
+        {
             return Ok(Some(bounds.into_tuple()));
         }
         // Mixed storage can retain shapes beneath missing rows. The packed
@@ -1140,8 +1136,7 @@ impl PyGeometryArray {
         {
             return closed;
         }
-        self
-            .storage()
+        self.storage()
             .const_or_shape_bool(false, |shape| Ok(shape_is_closed_in_domain(shape, domain)))
     }
 
@@ -1164,8 +1159,7 @@ impl PyGeometryArray {
         if let Some(ccw) = self.storage().lines_bool(|coords| Ok(line_is_ccw(coords))) {
             return ccw;
         }
-        self
-            .storage()
+        self.storage()
             .const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))
     }
 

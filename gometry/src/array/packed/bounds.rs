@@ -11,17 +11,15 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
-        from_shape: impl Fn(&Shape) -> Option<f64>,
+        from_shape: impl Fn(&Shape) -> Option<f64> + pyo3::marker::Ungil,
     ) -> PyResult<Py<PyAny>> {
         self.extreme_lane(
             py,
-            self.has_z(),
             |columns| match columns {
                 PackedColumns::Points(point_columns) => point_columns.coords().zs(),
                 PackedColumns::Lines(line_columns) => line_columns.coords().zs(),
                 PackedColumns::Polygons(polygon_columns) => polygon_columns.coords().zs(),
             },
-            row_ord_extremes,
             project,
             from_shape,
         )
@@ -34,76 +32,54 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
-        from_shape: impl Fn(&Shape) -> Option<f64>,
+        from_shape: impl Fn(&Shape) -> Option<f64> + pyo3::marker::Ungil,
     ) -> PyResult<Py<PyAny>> {
         self.extreme_lane(
             py,
-            self.has_m(),
             |columns| match columns {
                 PackedColumns::Points(point_columns) => point_columns.coords().ms(),
                 PackedColumns::Lines(line_columns) => line_columns.coords().ms(),
                 PackedColumns::Polygons(polygon_columns) => polygon_columns.coords().ms(),
             },
-            row_ord_extremes,
             project,
             from_shape,
         )
     }
 
     /// Shared per-row ordinate-extreme reduction behind the Z and M accessors.
-    /// When `present` and storage is packed, `ordinate` selects the contiguous
-    /// ordinate column and `row_extremes` reduces each row's window; `project`
+    /// When storage is packed, `ordinate` selects the contiguous
+    /// ordinate column and `row_ord_extremes` reduces each row's window; `project`
     /// maps a row's `(low, high)` pair to the emitted value. Otherwise
     /// `from_shape` recomputes per shape. Absent ordinate stays `None` (`nan`).
     fn extreme_lane(
         &self,
         py: Python<'_>,
-        present: bool,
         ordinate: impl for<'a> Fn(&'a PackedColumns<'_>) -> Option<&'a [f64]> + pyo3::marker::Ungil,
-        row_extremes: impl Fn(&[f64], std::ops::Range<usize>) -> Option<(f64, f64)>
-        + pyo3::marker::Ungil,
         project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
-        from_shape: impl Fn(&Shape) -> Option<f64>,
+        from_shape: impl Fn(&Shape) -> Option<f64> + pyo3::marker::Ungil,
     ) -> PyResult<Py<PyAny>> {
-        if self.is_compact_nullable() {
-            let values = self
-                .row_operation()
+        let values = py.detach(|| {
+            if !self.is_compact_nullable()
+                && let Some(columns) = self.packed_columns()
+            {
+                let Some(column) = ordinate(&columns) else {
+                    return Ok(vec![None; self.len()]);
+                };
+                return Ok(columns.collect_rows::<_, Vec<_>>(|row| {
+                    row.and_then(|row| row.vertex_window())
+                        .and_then(|window| row_ord_extremes(column, window))
+                        .map(|(low, high)| project(low, high))
+                }));
+            }
+            self.row_operation()
                 .rows_with_missing(|| None::<f64>)
                 .map(|row| match row {
                     crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                    crate::array::ArrayRow::Present(row) => row
-                        .row()
-                        .with_shape(&from_shape)
-                        .map_err(crate::PyErr::from),
+                    crate::array::ArrayRow::Present(row) => row.row().with_shape(&from_shape),
                 })
-                .collect::<pyo3::PyResult<Vec<_>>>()?;
-            return optional_float64_array(py, values);
-        }
-        if present
-            && let Some(values) = self.reduce_packed_columns_detached(py, move |columns| {
-                let column = ordinate(&columns).expect("checked ordinate presence");
-                Ok(columns.collect_rows::<_, Vec<_>>(|row| {
-                    row.and_then(|row| row.vertex_window())
-                        .and_then(|window| row_extremes(column, window))
-                        .map(|(low, high)| project(low, high))
-                }))
-            })?
-        {
-            return optional_float64_array(py, values);
-        }
-        optional_float64_array(
-            py,
-            self.storage()
-                .iter_shapes()
-                .enumerate()
-                .map(|(row, shape)| {
-                    let shape = shape.map_err(crate::PyErr::from)?;
-                    Ok((!self.is_row_missing(row))
-                        .then(|| from_shape(&shape))
-                        .flatten())
-                })
-                .collect::<pyo3::PyResult<Vec<_>>>()?,
-        )
+                .collect::<crate::error::Result<Vec<_>>>()
+        })?;
+        optional_float64_array(py, values)
     }
 
     /// Return the published per-element bounds without initializing the cache.
@@ -165,5 +141,57 @@ impl PyGeometryArray {
             }
         }
         Ok(columnar)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+
+    use super::*;
+    use crate::Frame;
+    use crate::geometry::storage::ValidityMask;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn selected_ordinate_extents_keep_missing_rows_and_duplicate_order() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let first = crate::io::parse_wkt("LINESTRING ZM (1 2 3 -7, 4 5 5 9)").unwrap();
+            let last = crate::io::parse_wkt("LINESTRING ZM (6 7 -2 4, 8 9 10 8)").unwrap();
+            for hidden in [first.clone(), Shape::empty_point()] {
+                let array = PyGeometryArray::from_shapes(
+                    vec![first.clone(), hidden, last.clone()],
+                    Frame::None,
+                )
+                .unwrap()
+                .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
+                .unwrap()
+                .gather_logical_rows(&[2, 1, 0, 2])
+                .unwrap();
+                for (output, expected) in [
+                    (array.min_z(py), [-2.0, f64::NAN, 3.0, -2.0]),
+                    (array.max_z(py), [10.0, f64::NAN, 5.0, 10.0]),
+                    (array.min_m(py), [4.0, f64::NAN, -7.0, 4.0]),
+                    (array.max_m(py), [8.0, f64::NAN, 9.0, 8.0]),
+                ] {
+                    let actual = output
+                        .unwrap()
+                        .bind(py)
+                        .call_method0("tolist")
+                        .unwrap()
+                        .extract::<Vec<f64>>()
+                        .unwrap();
+                    assert_eq!(actual.len(), expected.len());
+                    for (actual, expected) in actual.into_iter().zip(expected) {
+                        if expected.is_nan() {
+                            assert!(actual.is_nan());
+                        } else {
+                            assert_eq!(actual, expected);
+                        }
+                    }
+                }
+            }
+        });
     }
 }

@@ -362,14 +362,14 @@ pub(crate) fn try_unary_packed_array(
             // it through the detached packed kernels.
             match segmentize_metric(array, resolver, *path) {
                 Ok((placement, to_metre)) => {
-                    Some(array.segmentize_unary_packed(max_segment_length, placement, to_metre))
+                    Some(array.segmentize_unary_packed(py, max_segment_length, placement, to_metre))
                 },
                 Err(error) => Some(Err(error)),
             }
         },
         (Operation::Metric(MetricOp::Segmentize), PackedUnary::Densify { fraction, path }) => {
             match segmentize_metric(array, resolver, *path) {
-                Ok((placement, _)) => Some(array.densify_unary_packed(fraction, placement)),
+                Ok((placement, _)) => Some(array.densify_unary_packed(py, fraction, placement)),
                 Err(error) => Some(Err(error)),
             }
         },
@@ -382,7 +382,7 @@ pub(crate) fn try_unary_packed_array(
             },
         ) => array.simplify_unary_packed(tolerance, *method, *preserve_topology),
         (Operation::AffineTransform | Operation::Translate, PackedUnary::Affine { matrix }) => {
-            array.affine_transform_unary_packed(*matrix)
+            array.affine_transform_unary_packed(py, *matrix)
         },
         (
             Operation::Rotate,
@@ -390,7 +390,7 @@ pub(crate) fn try_unary_packed_array(
                 origin,
                 angle_radians,
             },
-        ) => array.rotate_unary_packed(*origin, *angle_radians),
+        ) => array.rotate_unary_packed(py, *origin, *angle_radians),
         (
             Operation::Scale,
             PackedUnary::Scale {
@@ -398,7 +398,7 @@ pub(crate) fn try_unary_packed_array(
                 xfact,
                 yfact,
             },
-        ) => array.scale_unary_packed(*origin, *xfact, *yfact),
+        ) => array.scale_unary_packed(py, *origin, *xfact, *yfact),
         (
             Operation::Skew,
             PackedUnary::Skew {
@@ -406,7 +406,7 @@ pub(crate) fn try_unary_packed_array(
                 tan_x,
                 tan_y,
             },
-        ) => array.skew_unary_packed(*origin, *tan_x, *tan_y),
+        ) => array.skew_unary_packed(py, *origin, *tan_x, *tan_y),
         (Operation::OrientPolygons, PackedUnary::OrientPolygons { ccw }) => {
             Some(array.orient_polygons_unary_packed(py, *ccw))
         },

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-
 use crate::array::{
     ArrayRow, Bound, CoordSeq, CsrOffsetColumn, Point, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, Result, Shape, curves, parse_curve_bounds, rows_err,
+    PyResult, Python, Result, Shape, curves, parse_curve_bounds,
 };
 use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
@@ -400,31 +399,28 @@ impl PyGeometryArray {
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
-        let builder = py
-            .detach(move || {
-                let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
-                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
-                    let (row, values) = match logical_row {
-                        ArrayRow::Missing { logical, value } => (logical, value),
-                        ArrayRow::Present(row) => {
-                            let logical = row.logical();
-                            let values = row
-                                .row()
-                                .try_with_shape(|shape| transform(logical, shape))
-                                .map_err(|error| (logical, error))?;
-                            (logical, values)
-                        },
-                    };
-                    builder.push_row(values).map_err(|error| (row, error))?;
-                }
-                Ok::<_, (usize, crate::error::Error)>(builder)
-            })
-            .map_err(rows_err)?;
-        Ok(Groups::from_geometry_builder(
-            frame,
-            builder,
-            self.missing().cloned(),
-        )?)
+        Ok(py.detach(move || -> crate::error::BatchResult<Groups> {
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
+            for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                let (row, values) = match logical_row {
+                    ArrayRow::Missing { logical, value } => (logical, value),
+                    ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let values = row
+                            .row()
+                            .try_with_shape(|shape| transform(logical, shape))
+                            .map_err(|error| (logical, error))?;
+                        (logical, values)
+                    },
+                };
+                builder.push_row(values).map_err(|error| (row, error))?;
+            }
+            Ok(Groups::from_geometry_builder(
+                frame,
+                builder,
+                self.missing().cloned(),
+            )?)
+        })?)
     }
 
     /// Budgeted group flattening for operations that synthesize a variable
@@ -444,33 +440,30 @@ impl PyGeometryArray {
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
-        let builder = py
-            .detach(move || {
-                let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
-                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
-                    let (row, values) = match logical_row {
-                        ArrayRow::Missing { logical, value } => (logical, value),
-                        ArrayRow::Present(row) => {
-                            let logical = row.logical();
-                            let mut budget =
-                                crate::geometry::ExpansionBudget::new(operation, parameter);
-                            let values = row
-                                .row()
-                                .try_with_shape(|shape| transform(logical, shape, &mut budget))
-                                .map_err(|error| (logical, error))?;
-                            (logical, values)
-                        },
-                    };
-                    builder.push_row(values).map_err(|error| (row, error))?;
-                }
-                Ok::<_, (usize, crate::error::Error)>(builder)
-            })
-            .map_err(rows_err)?;
-        Ok(Groups::from_geometry_builder(
-            frame,
-            builder,
-            self.missing().cloned(),
-        )?)
+        Ok(py.detach(move || -> crate::error::BatchResult<Groups> {
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
+            for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                let (row, values) = match logical_row {
+                    ArrayRow::Missing { logical, value } => (logical, value),
+                    ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let mut budget =
+                            crate::geometry::ExpansionBudget::new(operation, parameter);
+                        let values = row
+                            .row()
+                            .try_with_shape(|shape| transform(logical, shape, &mut budget))
+                            .map_err(|error| (logical, error))?;
+                        (logical, values)
+                    },
+                };
+                builder.push_row(values).map_err(|error| (row, error))?;
+            }
+            Ok(Groups::from_geometry_builder(
+                frame,
+                builder,
+                self.missing().cloned(),
+            )?)
+        })?)
     }
 
     /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`]: the
@@ -490,73 +483,71 @@ impl PyGeometryArray {
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
-        let builder = py
-            .detach(move || {
-                let mut builder = crate::CsrBuilder::<Point>::with_capacity(0, array.len());
-                let mut ring_ends = Vec::new();
-                let mut polygon_count = 0_usize;
-                for logical_row in array.row_operation().rows_with_missing(Vec::<Point>::new) {
-                    let (row, values) = match logical_row {
-                        ArrayRow::Missing { logical, .. } => {
-                            (logical, crate::geometry::PublishedTriangleVertices {
-                                points: Vec::new(),
-                                ring_ends: Vec::new(),
-                                mesh_publication: None,
-                            })
-                        },
-                        ArrayRow::Present(row) => {
-                            let logical = row.logical();
-                            let mut budget =
-                                crate::geometry::ExpansionBudget::new(operation, parameter);
-                            let values = row
-                                .row()
-                                .try_with_shape(|shape| transform(logical, shape, &mut budget))
-                                .map_err(|error| (logical, error))?;
-                            (logical, values)
-                        },
-                    };
-                    let mut previous_end = 0;
-                    if values.ring_ends.iter().any(|&end| {
-                        let invalid = end <= previous_end || end > values.points.len();
-                        previous_end = end;
-                        invalid
-                    }) || previous_end != values.points.len()
-                    {
-                        return Err((
-                            row,
-                            crate::geometry::GeometryErrorKind::Invalid(
-                                "triangle ring offsets do not match the vertex stream".into(),
-                            )
-                            .into(),
-                        ));
-                    }
-                    let base = builder.len();
-                    let row_polygon_count = values.ring_ends.len();
-                    for value in values.points {
-                        builder.values_mut().push(value);
-                    }
-                    for end in values.ring_ends {
-                        ring_ends.push(base.checked_add(end).ok_or_else(|| {
-                            (row, crate::error::ResourceError::SizeOverflow.into())
-                        })?);
-                    }
-                    polygon_count = polygon_count
-                        .checked_add(row_polygon_count)
-                        .ok_or_else(|| (row, crate::error::ResourceError::SizeOverflow.into()))?;
-                    builder
-                        .push_end(polygon_count)
-                        .map_err(|error| (row, error))?;
+        Ok(py.detach(move || -> crate::error::BatchResult<Groups> {
+            let mut builder = crate::CsrBuilder::<Point>::with_capacity(0, array.len());
+            let mut ring_ends = Vec::new();
+            let mut polygon_count = 0_usize;
+            for logical_row in array.row_operation().rows_with_missing(Vec::<Point>::new) {
+                let (row, values) = match logical_row {
+                    ArrayRow::Missing { logical, .. } => {
+                        (logical, crate::geometry::PublishedTriangleVertices {
+                            points: Vec::new(),
+                            ring_ends: Vec::new(),
+                            mesh_publication: None,
+                        })
+                    },
+                    ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let mut budget =
+                            crate::geometry::ExpansionBudget::new(operation, parameter);
+                        let values = row
+                            .row()
+                            .try_with_shape(|shape| transform(logical, shape, &mut budget))
+                            .map_err(|error| (logical, error))?;
+                        (logical, values)
+                    },
+                };
+                let mut previous_end = 0;
+                if values.ring_ends.iter().any(|&end| {
+                    let invalid = end <= previous_end || end > values.points.len();
+                    previous_end = end;
+                    invalid
+                }) || previous_end != values.points.len()
+                {
+                    return Err(crate::error::BatchError::from((
+                        row,
+                        crate::geometry::GeometryErrorKind::Invalid(
+                            "triangle ring offsets do not match the vertex stream".into(),
+                        )
+                        .into(),
+                    )));
                 }
-                Ok::<_, (usize, crate::error::Error)>((builder, ring_ends))
-            })
-            .map_err(rows_err)?;
-        let (points, ring_ends) = builder;
-        Ok(Groups::from_point_builder(
-            frame,
-            points,
-            &ring_ends,
-            self.missing().cloned(),
-        )?)
+                let base = builder.len();
+                let row_polygon_count = values.ring_ends.len();
+                for value in values.points {
+                    builder.values_mut().push(value);
+                }
+                for end in values.ring_ends {
+                    ring_ends.push(
+                        base.checked_add(end).ok_or_else(|| {
+                            (row, crate::error::ResourceError::SizeOverflow.into())
+                        })?,
+                    );
+                }
+                polygon_count = polygon_count
+                    .checked_add(row_polygon_count)
+                    .ok_or_else(|| (row, crate::error::ResourceError::SizeOverflow.into()))?;
+                builder
+                    .push_end(polygon_count)
+                    .map_err(|error| (row, error))?;
+            }
+            Ok(Groups::from_point_builder(
+                frame,
+                builder,
+                &ring_ends,
+                self.missing().cloned(),
+            )?)
+        })?)
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> Option<Result<Self>> {

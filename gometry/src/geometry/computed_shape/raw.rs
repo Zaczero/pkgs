@@ -119,20 +119,6 @@ fn publish_computed_chain_with_capture<'intent>(
     }
 }
 
-pub(crate) fn publish_raw_computed_shapes_with_context(
-    shapes: &[Shape],
-    frame: GeographicFrame,
-    operation: &'static str,
-    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
-) -> Result<Vec<Shape>> {
-    let mut budget = ExpansionBudget::new(operation, "computed edges");
-    let mut counts = ShapeCountQuery::default();
-    for shape in shapes {
-        budget.add(counts.coordinates(shape)?)?;
-    }
-    publish_raw_computed_shapes_with_budget_and_context(shapes, frame, source_context, &mut budget)
-}
-
 pub(crate) fn publish_raw_computed_shapes_with_budget_and_context(
     shapes: &[Shape],
     frame: GeographicFrame,

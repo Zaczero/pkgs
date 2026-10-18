@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use crate::array::{
     ArrayRows, Bounds, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn,
-    ElementBounds, Frame, InvalidGeometryError, LogicalRow, LogicalRows, OriginSpec, Point,
-    PolygonLevel, Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, Shape,
-    StorageLayout, TotalBoundsCache, prepared,
+    ElementBounds, Frame, LogicalRow, LogicalRows, OriginSpec, Point, PolygonLevel, Py, PyAny,
+    PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, Shape, StorageLayout,
+    TotalBoundsCache, prepared,
 };
 use crate::geometry::publication::FinishedGeometry;
 use crate::geometry::storage::kernels::packed_per_row_self_origin_affine_columns;

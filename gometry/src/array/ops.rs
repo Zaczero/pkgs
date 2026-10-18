@@ -1217,32 +1217,33 @@ impl PyGeometryArray {
         // One vertex scan per present row feeds all four direction columns;
         // empty rows degrade to an empty point per column (the geometry-lane
         // sentinel) and missing rows stay missing via the scatter machinery.
-        let present_count = self
-            .missing()
-            .map_or(self.len(), storage::ValidityMask::present_count);
-        let mut columns: [Vec<Shape>; 4] =
-            std::array::from_fn(|_| Vec::with_capacity(present_count));
-        for row in self.row_operation().present_rows() {
-            match row.row().with_shape(Shape::extremes).map_err(PyErr::from)? {
-                Some(points) => {
-                    for (column, point) in columns.iter_mut().zip(points) {
-                        column.push(Shape::Point(point));
-                    }
-                },
-                None => {
-                    for column in &mut columns {
-                        column.push(Shape::empty_point());
-                    }
-                },
+        let arrays = py.detach(|| -> crate::error::Result<Vec<Self>> {
+            let present_count = self
+                .missing()
+                .map_or(self.len(), storage::ValidityMask::present_count);
+            let mut columns: [Vec<Shape>; 4] =
+                std::array::from_fn(|_| Vec::with_capacity(present_count));
+            for row in self.row_operation().present_rows() {
+                match row.row().with_shape(Shape::extremes)? {
+                    Some(points) => {
+                        for (column, point) in columns.iter_mut().zip(points) {
+                            column.push(Shape::Point(point));
+                        }
+                    },
+                    None => {
+                        for column in &mut columns {
+                            column.push(Shape::empty_point());
+                        }
+                    },
+                }
             }
-        }
-        let arrays = columns
-            .into_iter()
-            .map(|shapes| {
-                self.scatter_present_result(Self::from_shapes(shapes, self.frame.clone())?)
-                    .map_err(PyErr::from)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+            columns
+                .into_iter()
+                .map(|shapes| {
+                    self.scatter_present_result(Self::from_shapes(shapes, self.frame.clone())?)
+                })
+                .collect()
+        })?;
         Ok(constructor.call1(PyTuple::new(py, arrays)?)?.unbind())
     }
 

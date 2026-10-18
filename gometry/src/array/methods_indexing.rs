@@ -502,7 +502,9 @@ impl PyGeometryArray {
         let stop = stop.map_or(len, clamp);
         if value.is_none() {
             if start < stop
-                && let Some(position) = (start..stop).find(|&row| self.is_row_missing(row))
+                && let Some(position) = value
+                    .py()
+                    .detach(|| (start..stop).find(|&row| self.is_row_missing(row)))
             {
                 return Ok(position);
             }
@@ -512,22 +514,30 @@ impl PyGeometryArray {
             return Err(PyValueError::new_err("value is not in array"));
         };
         if self.frame_matches(geometry) && start < stop {
-            for (row, position) in self
-                .row_operation()
-                .rows_with_missing(|| ())
-                .take(stop)
-                .skip(start)
-                .zip(start..stop)
-            {
-                let equal = match row {
-                    ArrayRow::Present(row) => row
-                        .row()
-                        .with_shape(|shape| shape == geometry.shape.shape())?,
-                    ArrayRow::Missing { .. } => false,
-                };
-                if equal {
-                    return Ok(position);
-                }
+            let position = value
+                .py()
+                .detach(|| -> crate::error::Result<Option<usize>> {
+                    for (row, position) in self
+                        .row_operation()
+                        .rows_with_missing(|| ())
+                        .take(stop)
+                        .skip(start)
+                        .zip(start..stop)
+                    {
+                        let equal = match row {
+                            ArrayRow::Present(row) => row
+                                .row()
+                                .with_shape(|shape| shape == geometry.shape.shape())?,
+                            ArrayRow::Missing { .. } => false,
+                        };
+                        if equal {
+                            return Ok(Some(position));
+                        }
+                    }
+                    Ok(None)
+                })?;
+            if let Some(position) = position {
+                return Ok(position);
             }
         }
         Err(PyValueError::new_err("geometry is not in array"))
@@ -552,8 +562,7 @@ impl PyGeometryArray {
         if value.is_none() {
             return Ok(self
                 .missing()
-                .as_ref()
-                .map_or(0, |mask| mask.iter().filter(|missing| *missing).count()));
+                .map_or(0, |mask| self.len() - mask.present_count()));
         }
         let Some(geometry) = exact_geometry(value) else {
             return Ok(0);
@@ -561,17 +570,19 @@ impl PyGeometryArray {
         if !self.frame_matches(geometry) {
             return Ok(0);
         }
-        let mut count = 0;
-        for row in self.row_operation().rows_with_missing(|| ()) {
-            if let ArrayRow::Present(row) = row
-                && row
-                    .row()
-                    .with_shape(|shape| shape == geometry.shape.shape())?
-            {
-                count += 1;
+        Ok(value.py().detach(|| -> crate::error::Result<usize> {
+            let mut count = 0;
+            for row in self.row_operation().rows_with_missing(|| ()) {
+                if let ArrayRow::Present(row) = row
+                    && row
+                        .row()
+                        .with_shape(|shape| shape == geometry.shape.shape())?
+                {
+                    count += 1;
+                }
             }
-        }
-        Ok(count)
+            Ok(count)
+        })?)
     }
 
     pub fn __and__(
@@ -610,10 +621,21 @@ impl PyGeometryArray {
         let Some(other) = exact_geometry_array(other) else {
             return Ok(py.NotImplemented());
         };
-        let mut equal = self.frame == other.frame && self.missing() == other.missing();
-        if equal && !Arc::ptr_eq(self.storage_arc(), other.storage_arc()) {
-            equal = self.len() == other.len();
-            if equal {
+        if self.frame != other.frame
+            || self.len() != other.len()
+            || self.has_missing() != other.has_missing()
+        {
+            return Ok(crate::broadcast::py_bool(py, false));
+        }
+        let same_storage = Arc::ptr_eq(self.storage_arc(), other.storage_arc());
+        if std::ptr::eq(self, other) || (same_storage && !self.has_missing()) {
+            return Ok(crate::broadcast::py_bool(py, true));
+        }
+        let equal = py.detach(|| -> crate::error::Result<bool> {
+            if self.missing() != other.missing() {
+                return Ok(false);
+            }
+            if !same_storage {
                 for (left, right) in self
                     .row_operation()
                     .rows_with_missing(|| ())
@@ -623,18 +645,16 @@ impl PyGeometryArray {
                         (ArrayRow::Missing { .. }, ArrayRow::Missing { .. }) => true,
                         (ArrayRow::Present(left), ArrayRow::Present(right)) => left
                             .row()
-                            .try_with_shape(|left| {
-                                right.row().with_shape(|right| left == right)
-                            })?,
+                            .try_with_shape(|left| right.row().with_shape(|right| left == right))?,
                         _ => false,
                     };
                     if !row_equal {
-                        equal = false;
-                        break;
+                        return Ok(false);
                     }
                 }
             }
-        }
+            Ok(true)
+        })?;
         Ok(crate::broadcast::py_bool(py, equal))
     }
 
@@ -899,42 +919,39 @@ impl PyGeometryArray {
         let Some(geom) = exact_geometry(item) else {
             return Ok(false);
         };
-        let same_frame = self.frame_matches(geom);
+        if !self.frame_matches(geom) {
+            return Ok(false);
+        }
         let expected = Arc::clone(&geom.shape);
         let array = self.clone();
-        py.detach(move || {
-            if !same_frame {
-                return Ok(false);
-            }
+        Ok(py.detach(move || -> crate::error::Result<bool> {
             for row in array.row_operation().present_rows() {
-                if row
-                    .row()
-                    .with_shape(|shape| shape == expected.shape())
-                    .map_err(PyErr::from)?
-                {
+                if row.row().with_shape(|shape| shape == expected.shape())? {
                     return Ok(true);
                 }
             }
             Ok(false)
-        })
+        })?)
     }
 
-    pub fn __hash__(&self) -> PyResult<u64> {
+    pub fn __hash__(&self, py: Python<'_>) -> PyResult<u64> {
         use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = crate::collections::python_hasher();
-        self.crs_ref().hash(&mut hasher);
-        self.epoch().map(f64::to_bits).hash(&mut hasher);
-        self.len().hash(&mut hasher);
-        for row in self.row_operation().rows_with_missing(|| ()) {
-            match row {
-                ArrayRow::Missing { .. } => true.hash(&mut hasher),
-                ArrayRow::Present(row) => {
-                    false.hash(&mut hasher);
-                    row.row().with_shape(|shape| shape.hash(&mut hasher))?;
-                },
+        Ok(py.detach(|| -> crate::error::Result<u64> {
+            let mut hasher = crate::collections::python_hasher();
+            self.crs_ref().hash(&mut hasher);
+            self.epoch().map(f64::to_bits).hash(&mut hasher);
+            self.len().hash(&mut hasher);
+            for row in self.row_operation().rows_with_missing(|| ()) {
+                match row {
+                    ArrayRow::Missing { .. } => true.hash(&mut hasher),
+                    ArrayRow::Present(row) => {
+                        false.hash(&mut hasher);
+                        row.row().with_shape(|shape| shape.hash(&mut hasher))?;
+                    },
+                }
             }
-        }
-        Ok(hasher.finish())
+            Ok(hasher.finish())
+        })?)
     }
     /// Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
     /// the stored ``f64`` ordinate columns for this array's selected rows.

@@ -9,9 +9,9 @@ use crate::py::classes::geometry_methods::{
 };
 use crate::py::support::geojson_domain_metric;
 use crate::{
-    Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, map_coordinates_callback,
-    parse_coordinate_replacement, render_shape_html, render_shape_svg, replace_shape_coordinates,
-    require_geojson_crs,
+    Arc, Bounds, Frame, PyCoordinates, PyCrs, PyTypeError, Shape, coordinates,
+    map_coordinates_callback, parse_coordinate_replacement, render_shape_html, render_shape_svg,
+    replace_shape_coordinates, require_geojson_crs,
 };
 
 #[expect(
@@ -82,7 +82,13 @@ impl PyGeometry {
     ///     The geometry's exact ``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``
     ///     coordinate layout.
     #[getter]
-    pub fn coordinate_axes(&self) -> &'static str {
+    pub fn coordinate_axes(&self, py: Python<'_>) -> &'static str {
+        if matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) {
+            return py.detach(|| self.shape.coordinate_axes());
+        }
         self.shape.coordinate_axes()
     }
     /// Topological dimension: ``0`` (point), ``1`` (curve), or ``2`` (surface).
@@ -93,7 +99,10 @@ impl PyGeometry {
     /// -------
     /// int
     #[getter]
-    pub fn topological_dimension(&self) -> u8 {
+    pub fn topological_dimension(&self, py: Python<'_>) -> u8 {
+        if matches!(self.shape.shape(), Shape::GeometryCollection(_)) {
+            return py.detach(|| self.shape.topological_dimension().code());
+        }
         self.shape.topological_dimension().code()
     }
     /// Whether the geometry carries a Z ordinate.
@@ -102,7 +111,13 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn has_z(&self) -> bool {
+    pub fn has_z(&self, py: Python<'_>) -> bool {
+        if matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) {
+            return py.detach(|| self.shape.has_z());
+        }
         self.shape.has_z()
     }
     /// Whether the geometry carries an M ordinate.
@@ -111,7 +126,13 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn has_m(&self) -> bool {
+    pub fn has_m(&self, py: Python<'_>) -> bool {
+        if matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) {
+            return py.detach(|| self.shape.has_m());
+        }
         self.shape.has_m()
     }
     /// Axis-aligned bounds ``(minx, miny, maxx, maxy)``, or ``None`` if empty.
@@ -123,19 +144,31 @@ impl PyGeometry {
     /// -------
     /// tuple or None
     #[getter]
-    pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        let raw = self.shape.bounds();
-        if let Ok(crate::geometry::TopologyDomain::Geographic(frame)) =
-            crate::geometry::topology_domain(&self.frame)
+    pub fn bounds(&self, py: Python<'_>) -> Option<(f64, f64, f64, f64)> {
+        if matches!(self.frame, Frame::None)
+            && matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..))
         {
-            return crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
-                frame,
-                self.shape.shape(),
-                raw,
-            )
-            .map(Bounds::into_tuple);
+            return self.shape.bounds().map(Bounds::into_tuple);
         }
-        raw.map(Bounds::into_tuple)
+        if matches!(self.frame, Frame::None)
+            && let Some(bounds) = self.shape.existing_bounds()
+        {
+            return Some(bounds.into_tuple());
+        }
+        py.detach(|| {
+            let raw = self.shape.bounds();
+            if let Ok(crate::geometry::TopologyDomain::Geographic(frame)) =
+                crate::geometry::topology_domain(&self.frame)
+            {
+                return crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                    frame,
+                    self.shape.shape(),
+                    raw,
+                )
+                .map(Bounds::into_tuple);
+            }
+            raw.map(Bounds::into_tuple)
+        })
     }
     /// Indexable, iterable view over this geometry's vertices.
     ///
@@ -254,8 +287,14 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_empty(&self) -> bool {
-        Python::attach(|py| unary::is_empty_scalar(py, self)).expect("is_empty is infallible")
+    pub fn is_empty(&self, py: Python<'_>) -> bool {
+        if matches!(
+            self.shape.shape(),
+            Shape::Point(_) | Shape::Empty(..) | Shape::LineString(_) | Shape::MultiPoint(_)
+        ) {
+            return self.shape.is_empty();
+        }
+        unary::is_empty_scalar(py, self).expect("is_empty is infallible")
     }
     /// Number of top-level parts: ``1`` for a single point/line/polygon,
     /// including a typed empty; the member count for a multi/collection, and
@@ -276,8 +315,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_closed(&self) -> bool {
-        Python::attach(|py| unary::is_closed_scalar(py, self)).expect("is_closed is infallible")
+    pub fn is_closed(&self, py: Python<'_>) -> bool {
+        unary::is_closed_scalar(py, self).expect("is_closed is infallible")
     }
     /// Whether the geometry is a closed, simple ``LineString`` (a ring).
     /// Geographic closure uses quotient vertex identity and simplicity uses
@@ -287,8 +326,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_ring(&self) -> PyResult<bool> {
-        Python::attach(|py| unary::is_ring_scalar(py, self))
+    pub fn is_ring(&self, py: Python<'_>) -> PyResult<bool> {
+        unary::is_ring_scalar(py, self)
     }
     /// Whether a closed ``LineString`` winds counter-clockwise.
     /// ``False`` for open lines and non-lineal geometry.
@@ -297,8 +336,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_ccw(&self) -> bool {
-        Python::attach(|py| unary::is_ccw_scalar(py, self)).expect("is_ccw is infallible")
+    pub fn is_ccw(&self, py: Python<'_>) -> bool {
+        unary::is_ccw_scalar(py, self).expect("is_ccw is infallible")
     }
     /// Whether the geometry has no self-intersections or self-tangencies.
     /// Repeated CONSECUTIVE vertices are removable redundancy, not a
@@ -316,8 +355,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_simple(&self) -> PyResult<bool> {
-        Python::attach(|py| unary::is_simple_scalar(py, self))
+    pub fn is_simple(&self, py: Python<'_>) -> PyResult<bool> {
+        unary::is_simple_scalar(py, self)
     }
     /// Whether the geometry is topologically valid in its coordinate frame.
     /// Geographic validity uses exact quotient topology, so period aliases and
@@ -335,8 +374,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_valid(&self) -> PyResult<bool> {
-        Python::attach(|py| unary::is_valid_scalar(py, self))
+    pub fn is_valid(&self, py: Python<'_>) -> PyResult<bool> {
+        unary::is_valid_scalar(py, self)
     }
     /// Whether the polygon is convex.
     ///
@@ -348,8 +387,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_convex(&self) -> PyResult<bool> {
-        Python::attach(|py| unary::is_convex_scalar(py, self))
+    pub fn is_convex(&self, py: Python<'_>) -> PyResult<bool> {
+        unary::is_convex_scalar(py, self)
     }
     /// Whether a geographic geometry crosses the antimeridian.
     ///
@@ -363,14 +402,14 @@ impl PyGeometry {
     ///     If the CRS is projected (a geographic CRS or CRS-free lon/lat is
     ///     required).
     #[getter]
-    pub fn crosses_antimeridian(&self) -> PyResult<bool> {
-        Python::attach(|py| unary::crosses_antimeridian_scalar(py, self))
+    pub fn crosses_antimeridian(&self, py: Python<'_>) -> PyResult<bool> {
+        unary::crosses_antimeridian_scalar(py, self)
     }
 
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         require_geojson_crs(self.crs_str())?;
-        if self.has_m() || self.epoch().is_some() {
+        if self.has_m(py) || self.epoch().is_some() {
             return Err(PyTypeError::new_err(crate::io::geojson_interface_error()));
         }
         let shape = std::sync::Arc::clone(&self.shape);
@@ -415,8 +454,8 @@ impl PyGeometry {
     /// --------
     /// length : Length/perimeter under the same CRS-aware metric.
     #[getter]
-    pub fn area(&self) -> PyResult<f64> {
-        Python::attach(|py| crate::area_natural_scalar(py, self))
+    pub fn area(&self, py: Python<'_>) -> PyResult<f64> {
+        crate::area_natural_scalar(py, self)
     }
     /// Length (curves) or perimeter (areal), measured for the geometry's CRS.
     ///
@@ -444,8 +483,8 @@ impl PyGeometry {
     /// --------
     /// area : Area under the same CRS-aware metric.
     #[getter]
-    pub fn length(&self) -> PyResult<f64> {
-        Python::attach(|py| crate::length_natural_scalar(py, self))
+    pub fn length(&self, py: Python<'_>) -> PyResult<f64> {
+        crate::length_natural_scalar(py, self)
     }
     /// 3D length of curves with Z, measured for the geometry's CRS.
     ///
@@ -462,16 +501,14 @@ impl PyGeometry {
     /// InvalidGeometryError
     ///     If the geometry lacks Z on every vertex.
     #[getter]
-    pub fn length_3d(&self) -> PyResult<f64> {
-        Python::attach(|py| {
-            crate::dispatch::unary_scalar(
-                py,
-                self,
-                crate::dispatch::Operation::Metric(MetricOp::Length3d),
-                None,
-                kernels::unary_length_3d,
-            )
-        })
+    pub fn length_3d(&self, py: Python<'_>) -> PyResult<f64> {
+        crate::dispatch::unary_scalar(
+            py,
+            self,
+            crate::dispatch::Operation::Metric(MetricOp::Length3d),
+            None,
+            kernels::unary_length_3d,
+        )
     }
     /// Smallest Z ordinate, or ``None`` if no vertex carries Z.
     ///
@@ -479,8 +516,18 @@ impl PyGeometry {
     /// -------
     /// float or None
     #[getter]
-    pub fn min_z(&self) -> Option<f64> {
-        self.shape.min_z()
+    pub fn min_z(&self, py: Python<'_>) -> Option<f64> {
+        if !matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) && !self.shape.has_z()
+        {
+            return None;
+        }
+        if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            return self.shape.min_z();
+        }
+        py.detach(|| self.shape.min_z())
     }
     /// Largest Z ordinate, or ``None`` if no vertex carries Z.
     ///
@@ -488,8 +535,18 @@ impl PyGeometry {
     /// -------
     /// float or None
     #[getter]
-    pub fn max_z(&self) -> Option<f64> {
-        self.shape.max_z()
+    pub fn max_z(&self, py: Python<'_>) -> Option<f64> {
+        if !matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) && !self.shape.has_z()
+        {
+            return None;
+        }
+        if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            return self.shape.max_z();
+        }
+        py.detach(|| self.shape.max_z())
     }
     /// Smallest M ordinate, or ``None`` if no vertex carries M.
     ///
@@ -497,8 +554,18 @@ impl PyGeometry {
     /// -------
     /// float or None
     #[getter]
-    pub fn min_m(&self) -> Option<f64> {
-        self.shape.min_m()
+    pub fn min_m(&self, py: Python<'_>) -> Option<f64> {
+        if !matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) && !self.shape.has_m()
+        {
+            return None;
+        }
+        if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            return self.shape.min_m();
+        }
+        py.detach(|| self.shape.min_m())
     }
     /// Largest M ordinate, or ``None`` if no vertex carries M.
     ///
@@ -506,7 +573,84 @@ impl PyGeometry {
     /// -------
     /// float or None
     #[getter]
-    pub fn max_m(&self) -> Option<f64> {
-        self.shape.max_m()
+    pub fn max_m(&self, py: Python<'_>) -> Option<f64> {
+        if !matches!(
+            self.shape.shape(),
+            Shape::Polygon(_) | Shape::GeometryCollection(_)
+        ) && !self.shape.has_m()
+        {
+            return None;
+        }
+        if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            return self.shape.max_m();
+        }
+        py.detach(|| self.shape.max_m())
+    }
+}
+
+#[cfg(test)]
+mod extent_tests {
+    use super::*;
+    use crate::crs::frame::crs_arc_static;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn ordinate_extents_preserve_absent_axes_empty_and_nested_values() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            for (wkt, expected) in [
+                ("POINT ZM (1 2 3 4)", [
+                    Some(3.0),
+                    Some(3.0),
+                    Some(4.0),
+                    Some(4.0),
+                ]),
+                ("POINT ZM EMPTY", [None; 4]),
+                ("MULTILINESTRING ((0 0, 1 1), (3 4, 5 6))", [None; 4]),
+                (
+                    "GEOMETRYCOLLECTION (POINT Z (1 2 9), LINESTRING M (3 4 -2, 5 6 7))",
+                    [Some(9.0), Some(9.0), Some(-2.0), Some(7.0)],
+                ),
+            ] {
+                let geometry = PyGeometry::with_frame(
+                    crate::io::parse_wkt(wkt).expect("valid geometry"),
+                    Frame::None,
+                );
+                assert_eq!(
+                    [
+                        geometry.min_z(py),
+                        geometry.max_z(py),
+                        geometry.min_m(py),
+                        geometry.max_m(py),
+                    ],
+                    expected,
+                    "{wkt}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn scalar_bounds_keep_cached_cartesian_and_periodic_geographic_results() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let shape = crate::io::parse_wkt("LINESTRING (179 -2, 181 4)").unwrap();
+            for (frame, expected) in [
+                (Frame::None, (179.0, -2.0, 181.0, 4.0)),
+                (
+                    Frame::Crs(crs_arc_static("EPSG:3857")),
+                    (179.0, -2.0, 181.0, 4.0),
+                ),
+                (
+                    Frame::Crs(crs_arc_static("OGC:CRS84")),
+                    (179.0, -2.0, -179.0, 4.0),
+                ),
+            ] {
+                let geometry = PyGeometry::with_frame(shape.clone(), frame);
+                assert_eq!(geometry.bounds(py), Some(expected));
+                assert_eq!(geometry.bounds(py), Some(expected));
+            }
+        });
     }
 }

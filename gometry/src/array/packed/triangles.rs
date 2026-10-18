@@ -1,7 +1,6 @@
 use super::{
-    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, Frame, GeometryArrayStorage,
-    InvalidGeometryError, PackedStorage, Point, PolygonLevel, PyGeometryArray, PyResult, RingLevel,
-    RowSelection, storage,
+    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, Frame, GeometryArrayStorage, PackedStorage,
+    Point, PolygonLevel, PyGeometryArray, RingLevel, RowSelection, storage,
 };
 
 impl PyGeometryArray {
@@ -11,43 +10,16 @@ impl PyGeometryArray {
     /// arithmetic ranges (ring `t` is `4t..4t+4`, polygon `t` is ring `t`), so
     /// the whole triangulation lands in ONE coords column with no per-triangle
     /// `Polygon`/`CoordSeq` materialization or re-pack.
-    pub(crate) fn packed_triangles(vertices: &[Point], frame: Frame) -> PyResult<Self> {
+    pub(crate) fn packed_triangles(vertices: &[Point], frame: Frame) -> crate::error::Result<Self> {
         let len = vertices.len();
         if !len.is_multiple_of(4) {
-            return Err(InvalidGeometryError::new_err(format!(
+            return Err(crate::geometry::GeometryErrorKind::message(format!(
                 "packed triangle vertex stream length must be a multiple of 4, got {len}"
             )));
         }
         storage::admit_packed_coord_count(len)?;
         let count = len / 4;
         storage::admit_packed_coord_count(count)?;
-        let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
-            .resolve_topology_ctx(&frame, &mut metric_scratch)?;
-        if let crate::geometry::TopologyDomain::Geographic(geographic) = domain {
-            let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
-            budget.add(len)?;
-            let metric_access = || {
-                metric.geographic_chart_metric()?.ok_or_else(|| {
-                    crate::crs::CrsError::invalid(
-                        "geographic triangulation requires the operation's CRS metric",
-                    )
-                })
-            };
-            let source_context =
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            let published = crate::geometry::publish_triangle_vertex_stream_budgeted(
-                vertices,
-                geographic,
-                &source_context,
-                &mut budget,
-            )?;
-            return Ok(Self::packed_triangles_with_ring_ends(
-                &published.points,
-                &published.ring_ends,
-                frame,
-            )?);
-        }
         let capacity = count
             .checked_add(1)
             .expect("an admitted triangle count is below the coordinate width");
@@ -61,7 +33,7 @@ impl PyGeometryArray {
         polygons.extend(0..=count);
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(rings, len)?;
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(polygons, count)?;
-        Ok(Self::from_storage(
+        Self::from_storage(
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: Arc::new(CoordSeq::try_from_points(vertices)?),
                 ring_offsets,
@@ -69,7 +41,7 @@ impl PyGeometryArray {
                 row_map: RowSelection::Identity,
             }),
             frame,
-        )?)
+        )
     }
 
     pub(crate) fn packed_triangles_with_ring_ends(

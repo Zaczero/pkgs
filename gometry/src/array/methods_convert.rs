@@ -52,6 +52,7 @@ impl PyGeometryArray {
     /// placement is owned; its CRS and runtime state are shared by `Arc`.
     pub(crate) fn segmentize_unary_packed(
         &self,
+        py: Python<'_>,
         max_segment_length: &F64Param,
         placement: crate::geometry::SegmentPlacementOwned,
         to_metre: f64,
@@ -59,6 +60,7 @@ impl PyGeometryArray {
         let for_columns = placement.clone();
         let for_shapes = placement;
         let result = self.subdivide_unary_packed(
+            py,
             "segmentize",
             "max_length",
             max_segment_length,
@@ -90,12 +92,14 @@ impl PyGeometryArray {
 
     pub(crate) fn densify_unary_packed(
         &self,
+        py: Python<'_>,
         fraction: &F64Param,
         placement: crate::geometry::SegmentPlacementOwned,
     ) -> PyResult<Self> {
         let for_columns = placement.clone();
         let for_shapes = placement;
         self.subdivide_unary_packed(
+            py,
             "densify",
             "fraction",
             fraction,
@@ -126,18 +130,15 @@ impl PyGeometryArray {
 
     fn subdivide_unary_packed(
         &self,
+        py: Python<'_>,
         operation: &'static str,
         parameter: &'static str,
         param: &F64Param,
         validate: impl Fn(f64) -> PyResult<()>,
         subdivide: impl Fn(&CoordSeq, f64, &mut ExpansionBudget) -> Result<CoordSeq>
-        + Clone
-        + pyo3::marker::Ungil
-        + 'static,
+        + pyo3::marker::Ungil,
         shape_fallback: impl Fn(&Shape, f64, &mut ExpansionBudget) -> Result<Shape>
-        + Clone
-        + pyo3::marker::Ungil
-        + 'static,
+        + pyo3::marker::Ungil,
     ) -> PyResult<Self> {
         param.try_validate(validate)?;
         if let Some(identity) = self.packed_points_identity() {
@@ -148,8 +149,7 @@ impl PyGeometryArray {
         // Per-element parameters keep the per-shape route.
         if !self.has_missing()
             && let Some(value) = param.as_scalar()
-            && let Some(subdivided) = Python::attach(|py| {
-                let subdivide = subdivide.clone();
+            && let Some(subdivided) = {
                 self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
                         PackedColumns::Lines(line_columns) => subdivide_line_columns(
@@ -167,59 +167,57 @@ impl PyGeometryArray {
                         PackedColumns::Points(_) => unreachable!("points identity above"),
                     }
                 })
-            })?
+            }?
         {
             return Ok(subdivided);
         }
-        Python::attach(|py| {
-            let shape_fallback = shape_fallback.clone();
-            self.map_shapes_detached_indexed_budgeted(
-                py,
-                operation,
-                parameter,
-                move |shape, row, budget| shape_fallback(shape, param.get(row), budget),
-            )
-        })
+        self.map_shapes_detached_indexed_budgeted(
+            py,
+            operation,
+            parameter,
+            move |shape, row, budget| shape_fallback(shape, param.get(row), budget),
+        )
     }
 
-    pub(crate) fn affine_transform_unary_packed(&self, matrix: [f64; 6]) -> Option<PyResult<Self>> {
-        Python::attach(|py| self.packed_affine(py, &matrix).transpose())
+    pub(crate) fn affine_transform_unary_packed(
+        &self,
+        py: Python<'_>,
+        matrix: [f64; 6],
+    ) -> Option<PyResult<Self>> {
+        self.packed_affine(py, &matrix).transpose()
     }
 
     pub(crate) fn rotate_unary_packed(
         &self,
+        py: Python<'_>,
         spec: OriginSpec,
         angle: f64,
     ) -> Option<PyResult<Self>> {
-        Python::attach(|py| {
-            let (sin, cos) = angle.sin_cos();
-            self.packed_self_origin_affine(py, spec, [cos, -sin, sin, cos])
-                .transpose()
-        })
+        let (sin, cos) = angle.sin_cos();
+        self.packed_self_origin_affine(py, spec, [cos, -sin, sin, cos])
+            .transpose()
     }
 
     pub(crate) fn scale_unary_packed(
         &self,
+        py: Python<'_>,
         spec: OriginSpec,
         xfact: f64,
         yfact: f64,
     ) -> Option<PyResult<Self>> {
-        Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, [xfact, 0.0, 0.0, yfact])
-                .transpose()
-        })
+        self.packed_self_origin_affine(py, spec, [xfact, 0.0, 0.0, yfact])
+            .transpose()
     }
 
     pub(crate) fn skew_unary_packed(
         &self,
+        py: Python<'_>,
         spec: OriginSpec,
         tan_x: f64,
         tan_y: f64,
     ) -> Option<PyResult<Self>> {
-        Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, [1.0, tan_x, tan_y, 1.0])
-                .transpose()
-        })
+        self.packed_self_origin_affine(py, spec, [1.0, tan_x, tan_y, 1.0])
+            .transpose()
     }
 
     pub(crate) fn reverse_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
@@ -323,26 +321,24 @@ impl PyGeometryArray {
 
     pub(crate) fn remove_repeated_points_unary_packed(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         tolerance: &F64Param,
     ) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        Python::attach(|py| {
-            self.map_shapes_shared_detached_indexed(py, move |shape, row| {
-                let cleaned = shape.remove_repeated_points(tolerance.get(row))?;
-                let mut counts = ShapeCountQuery::default();
-                let cleaned_count = counts.coordinates(&cleaned)?;
-                let source_count = counts.coordinates(shape)?;
-                Ok((cleaned_count != source_count).then_some(cleaned))
-            })
+        self.map_shapes_shared_detached_indexed(py, move |shape, row| {
+            let cleaned = shape.remove_repeated_points(tolerance.get(row))?;
+            let mut counts = ShapeCountQuery::default();
+            let cleaned_count = counts.coordinates(&cleaned)?;
+            let source_count = counts.coordinates(shape)?;
+            Ok((cleaned_count != source_count).then_some(cleaned))
         })
     }
 
     pub(crate) fn snap_to_grid_unary_packed(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         size: impl Into<GridSize>,
         origin: impl Into<GridOrigin>,
         repair: bool,
@@ -364,63 +360,55 @@ impl PyGeometryArray {
                     )
                 })
             };
-            return Some(Python::attach(|py| {
-                self.map_shapes_detached(py, move |shape| {
-                    shape.snap_to_grid_repaired(
-                        size.tuple(),
-                        origin.tuple(),
-                        domain,
-                        &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
-                    )
-                })
+            return Some(self.map_shapes_detached(py, move |shape| {
+                shape.snap_to_grid_repaired(
+                    size.tuple(),
+                    origin.tuple(),
+                    domain,
+                    &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                )
             }));
         }
         let GeometryArrayStorage::Packed(packed) = self.storage() else {
             return None;
         };
         let axes = packed.axes();
-        Python::attach(|py| {
-            self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
-                let (sx, sy) = size.tuple();
-                let (ox, oy) = origin.tuple();
-                point.with_xy(
-                    geometry::stable_snap_ordinate(point.x, ox, sx),
-                    geometry::stable_snap_ordinate(point.y, oy, sy),
-                )
-            })
-            .transpose()
+        self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
+            let (sx, sy) = size.tuple();
+            let (ox, oy) = origin.tuple();
+            point.with_xy(
+                geometry::stable_snap_ordinate(point.x, ox, sx),
+                geometry::stable_snap_ordinate(point.y, oy, sy),
+            )
         })
+        .transpose()
     }
 
-    pub(crate) fn force_2d_unary_packed(&self, _py: Python<'_>) -> PyResult<Self> {
+    pub(crate) fn force_2d_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         if !self.has_z() && !self.has_m() {
             return Ok(self.clone());
         }
-        Python::attach(|py| {
-            if let Some(array) = self.map_packed_points_detached(
-                py,
-                self.frame.clone(),
-                crate::CoordinateAxes::XY,
-                |point| Ok(point.force_2d()),
-            )? {
-                return Ok(array);
-            }
-            self.map_shapes_shared_detached(py, |shape| {
-                let forced = shape.force_2d()?;
-                Ok((forced != *shape).then_some(forced))
-            })
+        if let Some(array) = self.map_packed_points_detached(
+            py,
+            self.frame.clone(),
+            crate::CoordinateAxes::XY,
+            |point| Ok(point.force_2d()),
+        )? {
+            return Ok(array);
+        }
+        self.map_shapes_shared_detached(py, |shape| {
+            let forced = shape.force_2d()?;
+            Ok((forced != *shape).then_some(forced))
         })
     }
 
-    pub(crate) fn normalize_unary_packed(&self, _py: Python<'_>) -> PyResult<Self> {
+    pub(crate) fn normalize_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        Python::attach(|py| {
-            self.map_shapes_shared_detached(py, |shape| {
-                let normalized = shape.normalize()?;
-                Ok((normalized != *shape).then_some(normalized))
-            })
+        self.map_shapes_shared_detached(py, |shape| {
+            let normalized = shape.normalize()?;
+            Ok((normalized != *shape).then_some(normalized))
         })
     }
 
@@ -428,21 +416,18 @@ impl PyGeometryArray {
         self.replace_z_impl(py, Some(z), false)
     }
 
-    pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
+    pub(crate) fn quantize_unary_packed(&self, py: Python<'_>, precision: i32) -> PyResult<Self> {
         if let Some(axes) = self.storage().packed_axes()
-            && let Some(mapped) = Python::attach(|py| {
+            && let Some(mapped) =
                 self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                     Ok(point.quantize(precision))
-                })
-            })?
+                })?
         {
             return Ok(mapped);
         }
-        Python::attach(|py| {
-            self.map_shapes_shared_detached(py, move |shape| {
-                let quantized = shape.quantize(precision)?;
-                Ok((quantized != *shape).then_some(quantized))
-            })
+        self.map_shapes_shared_detached(py, move |shape| {
+            let quantized = shape.quantize(precision)?;
+            Ok((quantized != *shape).then_some(quantized))
         })
     }
 

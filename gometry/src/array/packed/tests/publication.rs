@@ -111,9 +111,24 @@ mod computed_triangle_publication_tests {
             Point::new_raw_xy(260.0, 60.0),
             Point::new_raw_xy(10.0, 20.0),
         ];
-        let array =
-            PyGeometryArray::packed_triangles(&vertices, Frame::Crs(crs_arc_static("EPSG:4326")))
-                .unwrap();
+        let domain = crate::geometry::TopologyDomain::Geographic(
+            crate::geographic::GeographicFrame::crs84(),
+        );
+        let context = crate::geometry::SourceArcContext::new(domain, None);
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+        let published = crate::geometry::publish_triangle_vertex_stream_budgeted(
+            &vertices,
+            crate::geographic::GeographicFrame::crs84(),
+            &context,
+            &mut budget,
+        )
+        .unwrap();
+        let array = PyGeometryArray::packed_triangles_with_ring_ends(
+            &published.points,
+            &published.ring_ends,
+            Frame::Crs(crs_arc_static("EPSG:4326")),
+        )
+        .unwrap();
         let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,

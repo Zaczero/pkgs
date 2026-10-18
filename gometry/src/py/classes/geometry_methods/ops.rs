@@ -20,32 +20,6 @@ use crate::{
     voronoi_flatten,
 };
 
-fn publish_triangle_shapes_for_domain(
-    shapes: Vec<Shape>,
-    domain: geometry::TopologyDomain,
-    metric: crate::dispatch::MetricCtx<'_>,
-) -> crate::error::Result<Vec<Shape>> {
-    match domain {
-        geometry::TopologyDomain::Cartesian => Ok(shapes),
-        geometry::TopologyDomain::Geographic(frame) => {
-            let metric_access = || {
-                metric.geographic_chart_metric()?.ok_or_else(|| {
-                    crate::crs::CrsError::invalid(
-                        "geographic triangulation requires the operation's CRS metric",
-                    )
-                })
-            };
-            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
-            geometry::publish_raw_computed_shapes_with_context(
-                &shapes,
-                frame,
-                "triangulate",
-                &source_context,
-            )
-        },
-    }
-}
-
 fn publish_earcut_publication_for_domain(
     publication: geometry::PreparedMeshPublication,
     domain: geometry::TopologyDomain,
@@ -68,21 +42,13 @@ fn publish_earcut_publication_for_domain(
     )
 }
 
-enum SamplePublication {
-    Geographic(geometry::PreparedSampling),
-    Cartesian(Vec<geometry::Point>),
-}
-
 impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
         shapes: impl IntoIterator<Item = Shape>,
-    ) -> PyResult<PyGeometryArray> {
+    ) -> crate::error::Result<PyGeometryArray> {
         // Shape-native sink: never stage per-part `PyGeometry` wrappers.
-        Ok(PyGeometryArray::from_shapes(
-            shapes.into_iter().collect(),
-            self.frame.clone(),
-        )?)
+        PyGeometryArray::from_shapes(shapes.into_iter().collect(), self.frame.clone())
     }
 
     pub(crate) fn to_wkt_impl(
@@ -189,9 +155,10 @@ impl PyGeometry {
     pub(crate) fn self_intersections_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let plan = self.prepared_plan();
         let domain = geometry::topology_domain(&self.frame)?;
-        let points =
-            py.detach(move || geometry::self_intersections_data_in_frame(&plan, domain))?;
-        self.parts_to_array(points.into_iter().map(Shape::Point))
+        Ok(py.detach(move || {
+            let points = geometry::self_intersections_data_in_frame(&plan, domain)?;
+            self.parts_to_array(points.into_iter().map(Shape::Point))
+        })?)
     }
 
     pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -200,7 +167,7 @@ impl PyGeometry {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-        let publication = py.detach(move || {
+        Ok(py.detach(move || {
             let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
             let publication =
                 shape.delaunay_mesh_publication_in_domain_budgeted(domain, &mut budget)?;
@@ -218,21 +185,17 @@ impl PyGeometry {
                 &source_context,
                 &mut budget,
             )?;
-            Ok::<_, crate::error::Error>(published)
-        })?;
-        if domain.is_geographic() {
-            let finished =
-                py.detach(move || geometry::finish_mesh_publication_array(publication, frame))?;
-            Ok(PyGeometryArray::from_finished(finished)?)
-        } else {
-            Ok(py.detach(|| {
+            if domain.is_geographic() {
+                let finished = geometry::finish_mesh_publication_array(published, frame)?;
+                PyGeometryArray::from_finished(finished)
+            } else {
                 PyGeometryArray::packed_triangles_with_ring_ends(
-                    &publication.points,
-                    &publication.ring_ends,
-                    self.frame.clone(),
+                    &published.points,
+                    &published.ring_ends,
+                    frame,
                 )
-            })?)
-        }
+            }
+        })?)
     }
 
     pub(crate) fn constrained_delaunay_triangles_impl(
@@ -247,81 +210,72 @@ impl PyGeometry {
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         if matches!(domain, geometry::TopologyDomain::Geographic(_)) {
             let shape = Arc::clone(&self.shape);
-            let drawing = py.detach(move || {
+            return Ok(py.detach(move || {
                 let mut budget =
                     geometry::ExpansionBudget::new("triangulate", "min_angle/max_area");
-                geometry::prepare_geographic_cdt_drawing(
+                let drawing = geometry::prepare_geographic_cdt_drawing(
                     &shape,
                     refinement,
                     domain,
                     metric,
                     &mut budget,
-                )
-            })?;
-            return Ok(geometry::publish_cdt_array(drawing, self.frame.clone())?);
+                )?;
+                geometry::publish_cdt_array(drawing, self.frame.clone())
+            })?);
         }
         // Refinement inserts Steiner vertices, so output is XY-only. The
         // source-site mesh plan supplies the same selected points and axes to
         // both the packed and per-shape publication paths.
-        if refinement.active() || (!self.shape.has_z() && !self.shape.has_m()) {
+        Ok(py.detach(|| {
+            if refinement.active() || (!self.shape.has_z() && !self.shape.has_m()) {
+                let shape = Arc::clone(&self.shape);
+                let vertices = shape.constrained_delaunay_vertices_in_domain(refinement, domain)?;
+                return if vertices.is_empty() {
+                    Ok(PyGeometryArray::from_shapes(
+                        Vec::new(),
+                        self.frame.clone(),
+                    )?)
+                } else {
+                    PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
+                };
+            }
             let shape = Arc::clone(&self.shape);
-            let vertices = py.detach(move || {
-                shape.constrained_delaunay_vertices_in_domain(refinement, domain)
-            })?;
-            return if vertices.is_empty() {
-                Ok(PyGeometryArray::from_shapes(
-                    Vec::new(),
-                    self.frame.clone(),
-                )?)
-            } else {
-                PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
-            };
-        }
-        let shape = Arc::clone(&self.shape);
-        let triangles =
-            py.detach(move || shape.constrained_delaunay_triangles_in_domain(refinement, domain))?;
-        self.parts_to_array(publish_triangle_shapes_for_domain(
-            triangles, domain, metric,
-        )?)
+            let triangles = shape.constrained_delaunay_triangles_in_domain(refinement, domain)?;
+            self.parts_to_array(triangles)
+        })?)
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
-        let packed = shape.earcut_packed_axes().is_some();
-        if packed
-            && !matches!(
-                geometry::topology_domain(&self.frame),
-                Ok(geometry::TopologyDomain::Geographic(_))
-            )
-        {
-            let vertices = py.detach(move || shape.polygon_triangle_vertices())?;
-            return if vertices.is_empty() {
-                Ok(PyGeometryArray::from_shapes(
-                    Vec::new(),
-                    self.frame.clone(),
-                )?)
-            } else {
-                PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
-            };
-        }
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let topology = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch);
         let (domain, metric) = match topology {
             Ok(topology) => topology,
             Err(error) => {
-                py.detach(move || shape.polygon_triangles())?;
+                py.detach(move || {
+                    if shape.earcut_packed_axes().is_some() {
+                        shape.polygon_triangle_vertices().map(|_| ())
+                    } else {
+                        shape.polygon_triangles().map(|_| ())
+                    }
+                })?;
                 return Err(error);
             },
         };
-        match domain {
+        Ok(py.detach(move || match domain {
             geometry::TopologyDomain::Cartesian => {
-                let triangles = py.detach(move || shape.polygon_triangles())?;
-                self.parts_to_array(triangles)
+                if shape.earcut_packed_axes().is_some() {
+                    let vertices = shape.polygon_triangle_vertices()?;
+                    PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
+                } else {
+                    let triangles = shape.polygon_triangles()?;
+                    self.parts_to_array(triangles)
+                }
             },
             geometry::TopologyDomain::Geographic(_) => {
                 let frame = self.frame.clone();
-                let finished = py.detach(move || {
+                {
                     let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
                     let publication = shape.earcut_mesh_publication_budgeted(&mut budget)?;
                     let published = publish_earcut_publication_for_domain(
@@ -330,11 +284,11 @@ impl PyGeometry {
                         metric,
                         &mut budget,
                     )?;
-                    geometry::finish_mesh_publication_array(published, frame)
-                })?;
-                Ok(PyGeometryArray::from_finished(finished)?)
+                    let finished = geometry::finish_mesh_publication_array(published, frame)?;
+                    PyGeometryArray::from_finished(finished)
+                }
             },
-        }
+        })?)
     }
 
     pub(crate) fn sample_points_impl(
@@ -355,28 +309,20 @@ impl PyGeometry {
         // `arr[0].sample_points(n, seed=s)` agree. Using the raw seed here made
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
-        let output = py.detach(move || -> crate::error::Result<SamplePublication> {
+        Ok(py.detach(move || {
             let prepared = shape.sample_point_receipts_in_domain(
                 count,
                 crate::geometry::row_sample_seed(seed, 0),
                 0,
                 domain,
             )?;
-            Ok(if domain.is_geographic() {
-                SamplePublication::Geographic(prepared)
+            if domain.is_geographic() {
+                geometry::publish_sampling_array(prepared, self.frame.clone())
             } else {
-                SamplePublication::Cartesian(prepared.into_points())
-            })
-        })?;
-        match output {
-            SamplePublication::Geographic(prepared) => Ok(geometry::publish_sampling_array(
-                prepared,
-                self.frame.clone(),
-            )?),
-            SamplePublication::Cartesian(points) => {
+                let points = prepared.into_points();
                 self.parts_to_array(points.into_iter().map(Shape::Point))
-            },
-        }
+            }
+        })?)
     }
 
     pub(crate) fn voronoi_cells_impl(
@@ -442,21 +388,24 @@ impl PyGeometry {
         } else {
             None
         };
-        let shapes = match source_context {
-            Some((domain, metric)) => py.detach(move || {
-                let metric_access = || {
-                    metric.geographic_chart_metric()?.ok_or_else(|| {
+        Ok(py.detach(move || {
+            let shapes = match source_context {
+                Some((domain, metric)) => {
+                    let metric_access = || {
+                        metric.geographic_chart_metric()?.ok_or_else(|| {
                         crate::crs::CrsError::invalid(
                             "geographic split source ordinates require the operation's CRS metric",
                         )
                     })
-                };
-                let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-                shape.split_at_points_with_source_arcs(&splitters, tolerance, &context)
-            })?,
-            None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
-        };
-        Ok(publish_split_parts_array(shapes, frame)?)
+                    };
+                    let context =
+                        crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+                    shape.split_at_points_with_source_arcs(&splitters, tolerance, &context)
+                }?,
+                None => shape.split_at_points(&splitters, tolerance)?,
+            };
+            publish_split_parts_array(shapes, frame)
+        })?)
     }
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -489,7 +438,7 @@ impl PyGeometry {
             drop(metric_scratch);
             return Ok(array);
         }
-        let polygons = py.detach(move || {
+        Ok(py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
                     crate::crs::CrsError::invalid(
@@ -498,9 +447,10 @@ impl PyGeometry {
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.polygonize_with_publication_frame(false, &context, output_frame)
-        })?;
-        self.parts_to_array(polygons)
+            let polygons =
+                shape.polygonize_with_publication_frame(false, &context, output_frame)?;
+            self.parts_to_array(polygons)
+        })?)
     }
 
     pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Typed> {
@@ -549,7 +499,12 @@ impl PyGeometry {
         // An extent accessor describes what is THERE: `None` on an empty
         // scalar, exactly like `bounds` and `min_z`, matching the array form's
         // per-row degradation.
-        let Some(points) = self.shape.extremes() else {
+        let points = if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            self.shape.extremes()
+        } else {
+            py.detach(|| self.shape.extremes())
+        };
+        let Some(points) = points else {
             return Ok(None);
         };
         let make = |point| Typed(Self::with_frame(Shape::Point(point), self.frame.clone()));
@@ -573,7 +528,7 @@ impl PyGeometry {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-        let parts = py.detach(move || {
+        Ok(py.detach(move || {
             let metric_access = || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {
                     crate::crs::CrsError::invalid(
@@ -581,12 +536,12 @@ impl PyGeometry {
                     )
                 })
             };
-            shape.subdivide_with_context(
+            let parts = shape.subdivide_with_context(
                 max_vertices,
                 false,
                 &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
-            )
-        })?;
-        self.parts_to_array(parts)
+            )?;
+            self.parts_to_array(parts)
+        })?)
     }
 }
