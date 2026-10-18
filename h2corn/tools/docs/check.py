@@ -17,13 +17,6 @@ EXAMPLES = ROOT / 'examples'
 sys.path.insert(0, str(ROOT))
 
 
-def _site_text() -> str:
-    pages = sorted(SITE.rglob('*.html'))
-    if not pages:
-        raise RuntimeError(f'no rendered HTML pages found below {SITE}')
-    return '\n'.join(path.read_text(encoding='utf-8') for path in pages)
-
-
 class _Anchors(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -90,25 +83,23 @@ class _BenchmarkContent(HTMLParser):
             self.events.append(('table-end', ''))
 
 
-def check_rendered_anchors() -> None:
+def check_rendered_anchors(rendered: dict[str, _Anchors] | None = None) -> None:
     """Resolve every local fragment against the rendered HTML IDs.
 
     The generic link checker treats dots in Python API IDs as CSS class
     separators. Those dots are intentional stable API anchors, so resolve the
     rendered HTML directly instead of weakening the public anchors.
     """
+    rendered = _rendered_site() if rendered is None else rendered
     missing: list[str] = []
-    for page in sorted(SITE.rglob('*.html')):
-        parser = _Anchors()
-        parser.feed(page.read_text(encoding='utf-8'))
-        parser.close()
+    for relative, parser in tuple(rendered.items()):
+        page = SITE / relative
         duplicates = sorted(
             identifier for identifier, count in Counter(parser.ids).items() if count > 1
         )
         if duplicates:
             missing.append(f'{page}: duplicate rendered IDs: {duplicates}')
-        relative = page.relative_to(SITE)
-        base_url = f'https://h2corn.invalid/{relative.parent.as_posix()}/'
+        base_url = f'https://h2corn.invalid/{Path(relative).parent.as_posix()}/'
         for href in parser.hrefs:
             resolved = urljoin(base_url, href)
             target_url = urlparse(resolved)
@@ -122,9 +113,13 @@ def check_rendered_anchors() -> None:
             if not target.exists():
                 missing.append(f'{page}: {href} (target is missing)')
                 continue
-            target_parser = _Anchors()
-            target_parser.feed(target.read_text(encoding='utf-8'))
-            target_parser.close()
+            target_relative = target.relative_to(SITE).as_posix()
+            target_parser = rendered.get(target_relative)
+            if target_parser is None:
+                target_parser = _Anchors()
+                target_parser.feed(target.read_text(encoding='utf-8'))
+                target_parser.close()
+                rendered[target_relative] = target_parser
             fragment = unquote(target_url.fragment)
             if fragment not in target_parser.ids:
                 missing.append(f'{page}: {href} (fragment is missing)')
@@ -141,11 +136,12 @@ def _rendered_site() -> dict[str, _Anchors]:
         parser.feed(path.read_text(encoding='utf-8'))
         parser.close()
         rendered[path.relative_to(SITE).as_posix()] = parser
+    if not rendered:
+        raise RuntimeError(f'no rendered HTML pages found below {SITE}')
     return rendered
 
 
 def check_configuration(
-    _site_text: str | None = None,
     rendered: dict[str, _Anchors] | None = None,
 ) -> None:
     """Check exact option and command-control entries in rendered Config docs."""
@@ -219,7 +215,6 @@ def check_configuration(
 
 
 def check_api(
-    _site_text: str | None = None,
     rendered: dict[str, _Anchors] | None = None,
 ) -> None:
     """Check exact canonical anchors for exports and TypedDict fields."""
@@ -385,10 +380,10 @@ def check_proxy_syntax() -> bool:
 
 
 def main() -> int:
-    site_text = _site_text()
-    check_rendered_anchors()
-    check_configuration(site_text)
-    check_api(site_text)
+    rendered = _rendered_site()
+    check_rendered_anchors(rendered)
+    check_configuration(rendered)
+    check_api(rendered)
     check_benchmark_results()
     check_examples()
     caddy_validated = check_proxy_syntax()
