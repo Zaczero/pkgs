@@ -984,6 +984,33 @@ def _verify_native_debug_sections(payload: bytes, artifact: Path) -> None:
         )
 
 
+def _record_digest(payload: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+    return 'sha256=' + encoded.rstrip(b'=').decode('ascii')
+
+
+def _record_bytes(
+    members: dict[str, bytes],
+    *,
+    rows: list[tuple[str, str, str]] | None = None,
+) -> bytes:
+    if rows is None:
+        rows = [
+            (name, _record_digest(payload), str(len(payload)))
+            for name, payload in sorted(members.items())
+            if not name.endswith(('/RECORD.jws', '/RECORD.p7s'))
+            and not name.endswith('/RECORD')
+        ]
+        record_name = next(
+            name for name in members if name.endswith('.dist-info/RECORD')
+        )
+        rows.append((record_name, '', ''))
+    stream = io.StringIO(newline='')
+    writer = csv.writer(stream, lineterminator='\n')
+    writer.writerows(rows)
+    return stream.getvalue().encode('utf-8')
+
+
 def _record_hash(algorithm: str, encoded: str, member: str) -> Any:
     algorithms = {
         'sha256',
