@@ -114,6 +114,10 @@ pub(crate) struct TlsConfig {
     pub server_certificate: Arc<str>,
 }
 
+// Safety: TLS construction installs native Rust providers and verifiers only;
+// rustls's erased provider traits retain no attached Python references.
+unsafe impl pyo3::marker::Ungil for TlsConfig {}
+
 /// Server-initiated WebSocket keepalive. Absent entirely when pings are off
 /// (`websocket_ping_interval == 0`); the configured timeout is irrelevant in
 /// that state and is not retained.

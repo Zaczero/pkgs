@@ -54,17 +54,17 @@ pub(crate) use predicates::{
 /// operand pair-set under the GIL (arrays are uniform-frame by construction),
 /// then applies `op` per pair inside `py.detach` — rows stream allocation-free
 /// off a clone of the storage `Arc`. Infallible callers return `Ok`; metric
-/// errors flow through `GeometryErrorKind` (converted to `PyErr` after the GIL is
-/// reacquired, since `PyErr` is not `Send`).
+/// errors flow through `GeometryErrorKind` and become Python exceptions after
+/// reattachment.
 pub(crate) fn broadcast2<R>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    op: impl Fn(&PreparedPlan, &PreparedPlan) -> Result<R> + Send + Sync,
+    op: impl Fn(&PreparedPlan, &PreparedPlan) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + BulkElement,
+    R: BulkElement,
 {
     crate::dispatch::dispatch_broadcast2(py, left, right, op_name, op)
 }
@@ -80,8 +80,7 @@ pub(crate) fn broadcast2_geometry<K>(
 ) -> PyResult<Py<PyAny>>
 where
     K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::CachelessRowContext<'_>) -> Result<Shape>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     crate::dispatch::dispatch_binary_geometry(
         py,
@@ -138,7 +137,7 @@ pub(crate) fn mask_missing<T: Copy>(
 
 pub(crate) fn detach_collect_f64(
     py: Python<'_>,
-    f: impl FnOnce() -> Result<Vec<f64>, (usize, crate::error::Error)> + Send,
+    f: impl FnOnce() -> Result<Vec<f64>, (usize, crate::error::Error)> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     float64_array(py, py.detach(f).map_err(rows_err)?)
 }
@@ -209,10 +208,10 @@ pub(crate) fn array_binary_values_indexed<R>(
     left: &PyGeometryArray,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    op: impl Fn(&Shape, &Shape, usize) -> Result<R> + Send + Sync,
+    op: impl Fn(&Shape, &Shape, usize) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Vec<R>>
 where
-    R: Send + BulkElement,
+    R: BulkElement,
 {
     crate::dispatch::dispatch_binary_array_left(
         py,

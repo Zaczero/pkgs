@@ -107,7 +107,7 @@ impl HttpSendPhase {
 
 /// Run once when the request finishes. Opaque so this layer stays free of
 /// Python types; the bridge registers one that resolves an awaitable.
-type FinishedWaiter = Box<dyn FnOnce() + Send>;
+type FinishedWaiter = Box<dyn FnOnce() + Send + pyo3::marker::Ungil>;
 
 struct HttpSendControl {
     mode: HttpSendMode,
@@ -252,7 +252,10 @@ impl HttpSendState {
     /// body* is a different event and does not belong here: a bodyless GET
     /// whose application calls `receive()` a second time is watching for the
     /// peer to leave, and answering immediately told it the peer had.
-    pub(crate) fn on_request_finished(&self, waiter: impl FnOnce() + Send + 'static) {
+    pub(crate) fn on_request_finished(
+        &self,
+        waiter: impl FnOnce() + Send + pyo3::marker::Ungil + 'static,
+    ) {
         let mut inner = self.shared.lock();
         if matches!(inner.state.mode, HttpSendMode::Closed) {
             drop(inner);

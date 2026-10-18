@@ -389,7 +389,7 @@ impl PyGeometryArray {
     pub(crate) fn flat_map_shapes_groups(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape) -> Result<Vec<Shape>> + Send + Sync,
+        transform: impl Fn(&Shape) -> Result<Vec<Shape>> + pyo3::marker::Ungil,
     ) -> PyResult<Groups> {
         self.flat_map_shapes_groups_indexed(py, move |_, shape| transform(shape))
     }
@@ -397,7 +397,7 @@ impl PyGeometryArray {
     pub(crate) fn flat_map_shapes_groups_indexed(
         &self,
         py: Python<'_>,
-        transform: impl Fn(usize, &Shape) -> Result<Vec<Shape>> + Send + Sync,
+        transform: impl Fn(usize, &Shape) -> Result<Vec<Shape>> + pyo3::marker::Ungil,
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
@@ -437,7 +437,7 @@ impl PyGeometryArray {
             &Shape,
             &mut crate::geometry::ExpansionBudget,
         ) -> Result<Vec<Shape>>
-        + Send,
+        + pyo3::marker::Ungil,
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
@@ -479,7 +479,7 @@ impl PyGeometryArray {
             &Shape,
             &mut crate::geometry::ExpansionBudget,
         ) -> Result<crate::geometry::PublishedTriangleVertices>
-        + Send,
+        + pyo3::marker::Ungil,
     ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();

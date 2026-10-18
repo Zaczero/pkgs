@@ -20,7 +20,8 @@ use tokio::task::AbortHandle;
 use crate::pyloop::Shard;
 
 /// Builds a future's result under the GIL on the loop thread.
-pub(super) type Convert = Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send>;
+pub(super) type Convert =
+    Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send + pyo3::marker::Ungil>;
 
 /// Work delivered to the pump to resolve a pending [`RustFuture`].
 pub(crate) enum ResolvePayload {
@@ -34,7 +35,7 @@ pub(crate) enum ResolvePayload {
 }
 
 /// Exclusive either-convert-or-requeue ownership of a consumed event.
-pub(crate) trait ResolveOp {
+pub(crate) trait ResolveOp: pyo3::marker::Ungil {
     /// Build the Python result under the GIL (e.g. the `http.request` dict).
     fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>>;
     /// Give the event back to its source after a cancellation race.

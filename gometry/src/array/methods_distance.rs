@@ -177,15 +177,14 @@ fn packed_point_unary<L, P>(
     mut polygon_point: P,
 ) -> PyResult<Option<PyGeometryArray>>
 where
-    L: Fn(&CoordSeq, &[f64], &[f64], std::ops::Range<usize>) -> Result<Point> + Send + Sync,
+    L: Fn(&CoordSeq, &[f64], &[f64], std::ops::Range<usize>) -> Result<Point> + pyo3::marker::Ungil,
     P: FnMut(
             &[f64],
             &[f64],
             PackedRow<'_>,
             &mut Vec<f64>,
         ) -> Result<(Point, Option<crate::geometry::Bounds>)>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let has_missing = array.has_missing();
     let element_bounds = array.existing_element_bounds();

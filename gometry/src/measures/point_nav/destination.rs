@@ -185,7 +185,7 @@ fn destination_row_at(
     }
 }
 
-trait PointUnaryGeometryKernel: Copy + Send + Sync {
+trait PointUnaryGeometryKernel: Copy + Send + Sync + pyo3::marker::Ungil {
     fn parameters(&self) -> (&[f64], &[f64]);
 
     fn first_row(&self) -> DestinationRow {
@@ -651,7 +651,11 @@ fn point_unary_geometry(
     geom: &Bound<'_, PyAny>,
     setup: impl Fn(Option<&str>) -> PyResult<crs::MetricModel> + Copy + Send + Sync,
     point_op: impl PointUnaryGeometryKernel,
-    fallback: impl Fn(&PyGeometry, DestinationRow) -> PyResult<Shape> + Copy + Send + Sync,
+    fallback: impl Fn(&PyGeometry, DestinationRow) -> PyResult<Shape>
+    + Copy
+    + Send
+    + Sync
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
     match classify_input(geom) {

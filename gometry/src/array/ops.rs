@@ -70,7 +70,7 @@ fn split_array_groups(
     lines: &PyGeometryArray,
     frame: Frame,
     missing: Option<ValidityMask>,
-    mut split: impl FnMut(&Shape) -> Result<Vec<Shape>> + Send,
+    mut split: impl FnMut(&Shape) -> Result<Vec<Shape>> + Send + pyo3::marker::Ungil,
 ) -> PyResult<Groups> {
     let array = lines.clone();
     let builder = py
@@ -201,7 +201,8 @@ fn geographic_mesh_groups_budgeted(
         &Shape,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<crate::geometry::PublishedTriangleVertices>
-    + Send,
+    + Send
+    + pyo3::marker::Ungil,
 ) -> PyResult<Groups> {
     let source = array.clone();
     let frame = array.frame.clone();

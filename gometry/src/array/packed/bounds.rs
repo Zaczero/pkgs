@@ -10,7 +10,7 @@ impl PyGeometryArray {
     pub(crate) fn z_extreme_lane(
         &self,
         py: Python<'_>,
-        project: impl Fn(f64, f64) -> f64 + Send,
+        project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
         from_shape: impl Fn(&Shape) -> Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.extreme_lane(
@@ -33,7 +33,7 @@ impl PyGeometryArray {
     pub(crate) fn m_extreme_lane(
         &self,
         py: Python<'_>,
-        project: impl Fn(f64, f64) -> f64 + Send,
+        project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
         from_shape: impl Fn(&Shape) -> Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.extreme_lane(
@@ -59,9 +59,10 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         present: bool,
-        ordinate: impl for<'a> Fn(&'a PackedColumns<'_>) -> Option<&'a [f64]> + Send,
-        row_extremes: impl Fn(&[f64], std::ops::Range<usize>) -> Option<(f64, f64)> + Send,
-        project: impl Fn(f64, f64) -> f64 + Send,
+        ordinate: impl for<'a> Fn(&'a PackedColumns<'_>) -> Option<&'a [f64]> + pyo3::marker::Ungil,
+        row_extremes: impl Fn(&[f64], std::ops::Range<usize>) -> Option<(f64, f64)>
+        + pyo3::marker::Ungil,
+        project: impl Fn(f64, f64) -> f64 + pyo3::marker::Ungil,
         from_shape: impl Fn(&Shape) -> Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         if self.is_compact_nullable() {

@@ -181,7 +181,9 @@ pub(crate) fn grid_cover_dispatch<'py>(
     geom: &Bound<'py, PyAny>,
     kind: GridKind,
     max_cells: Option<usize>,
-    build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError> + Send,
+    build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError>
+    + Send
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(geom) {
         let geometry = geometry.clone();

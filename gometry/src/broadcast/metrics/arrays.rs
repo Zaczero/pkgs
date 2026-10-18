@@ -180,9 +180,9 @@ fn array_pair_metric<'a, T, P, C, F, Q>(
     pair: F,
 ) -> PyResult<Vec<T>>
 where
-    T: Copy + Send + 'static,
-    P: Fn(Point, Point) -> crate::error::Result<T> + Send,
-    C: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Send,
+    T: Copy + pyo3::marker::Ungil + 'static,
+    P: Fn(Point, Point) -> crate::error::Result<T> + pyo3::marker::Ungil,
+    C: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + pyo3::marker::Ungil,
     Q: FnMut(
             &mut crate::geometry::RowMetricPair<'a>,
             storage::ShapeRow<'a>,
@@ -190,7 +190,7 @@ where
             Option<Bounds>,
             Option<Bounds>,
         ) -> crate::error::Result<Option<T>>
-        + Send,
+        + pyo3::marker::Ungil,
     F: Fn(
             usize,
             &PreparedPlan,
@@ -198,8 +198,7 @@ where
             &mut ArrayRowOperation<'_>,
             &mut ArrayRowOperation<'_>,
         ) -> crate::error::Result<T>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let missing = missing::union_many([array.missing(), right.missing()]);
     if !array.is_compact_nullable()

@@ -2,6 +2,8 @@
 //! any storage, mask-aware, with detached (GIL-free) variants. Child
 //! module of [`super`] (`packed_ops`).
 
+use pyo3::marker::Ungil;
+
 use crate::array::packed_ops::{
     PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
@@ -110,7 +112,7 @@ impl PyGeometryArray {
     pub fn map_shapes_detached(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape) -> Result<Shape> + Send + Sync,
+        transform: impl Fn(&Shape) -> Result<Shape> + Ungil,
     ) -> PyResult<Self> {
         self.map_shapes_detached_indexed(py, move |shape, _| transform(shape))
     }
@@ -124,7 +126,7 @@ impl PyGeometryArray {
     pub fn map_shapes_detached_indexed(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape, usize) -> Result<Shape> + Send + Sync,
+        transform: impl Fn(&Shape, usize) -> Result<Shape> + Ungil,
     ) -> PyResult<Self> {
         let array = self.clone();
         let shapes = py
@@ -148,7 +150,7 @@ impl PyGeometryArray {
         operation: &'static str,
         parameter: &'static str,
         mut transform: impl FnMut(&Shape, usize, &mut crate::geometry::ExpansionBudget) -> Result<Shape>
-        + Send,
+        + Ungil,
     ) -> PyResult<Self> {
         let array = self.clone();
         let shapes = py
@@ -211,7 +213,7 @@ impl PyGeometryArray {
     pub fn map_shapes_shared_detached(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape) -> Result<Option<Shape>> + Send + Sync,
+        transform: impl Fn(&Shape) -> Result<Option<Shape>> + Ungil,
     ) -> PyResult<Self> {
         self.map_shapes_shared_detached_indexed(py, move |shape, _| transform(shape))
     }
@@ -225,7 +227,7 @@ impl PyGeometryArray {
     pub fn map_shapes_shared_detached_indexed(
         &self,
         py: Python<'_>,
-        transform: impl Fn(&Shape, usize) -> Result<Option<Shape>> + Send + Sync,
+        transform: impl Fn(&Shape, usize) -> Result<Option<Shape>> + Ungil,
     ) -> PyResult<Self> {
         match self.storage() {
             GeometryArrayStorage::Mixed(shapes) => {

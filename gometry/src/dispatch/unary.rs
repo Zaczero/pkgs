@@ -24,7 +24,7 @@ fn execute_unary_scalar<R: BulkElement>(
     geometry: &PyGeometry,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> Result<R> {
     let ctx = CachelessRowContext {
         frame: &geometry.frame,
@@ -42,7 +42,7 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
     let mut metric_scratch =
@@ -92,7 +92,7 @@ pub(crate) fn unary_array<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_f64(py, array, op, unit) {
@@ -212,8 +212,7 @@ fn execute_unary_rows<T: BulkElement>(
     metric: MetricCtx<'_>,
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
 ) -> std::result::Result<Vec<T>, (usize, crate::error::Error)> {
     py.detach(move || {
         let mut rows = array.row_operation();
@@ -253,8 +252,7 @@ fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
     metric: MetricCtx<'_>,
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
 ) -> std::result::Result<PublicationRows, (usize, crate::error::Error)> {
     py.detach(move || {
         let mut rows = array.row_operation();
@@ -295,8 +293,7 @@ fn run_unary_shape_rows<R: Into<GeometryOutput>>(
     resolver: super::metric::MetricResolver,
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
     let rows = match resolver {
@@ -334,8 +331,7 @@ fn run_unary_rows<T: BulkElement>(
     resolver: super::metric::MetricResolver,
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
 ) -> PyResult<(Vec<T>, Frame)> {
     match resolver {
         MetricResolver::None => {
@@ -372,7 +368,7 @@ pub(crate) fn unary_scalar_shape(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<Typed> {
     if op == Operation::SplitAntimeridian {
         return unary_scalar_split_antimeridian(py, geometry);
@@ -482,7 +478,7 @@ pub(crate) fn unary_array_shapes<R: Into<GeometryOutput>>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     if op == Operation::SplitAntimeridian {
         return unary_array_split_antimeridian(py, array);
@@ -500,12 +496,12 @@ pub(crate) fn unary_array_shapes<R: Into<GeometryOutput>>(
     )
 }
 
-fn execute_scalar_linref<R: Send>(
+fn execute_scalar_linref<R: pyo3::marker::Ungil>(
     py: Python<'_>,
     geometry: &PyGeometry,
     op: Operation,
     resolver: super::metric::MetricResolver,
-    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<R> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<R> {
     let frame = &geometry.frame;
     let mut scratch = MetricScratch::default();
@@ -544,7 +540,7 @@ pub(crate) fn unary_scalar_linref_shape(
     geometry: &PyGeometry,
     op: Operation,
     resolver: super::metric::MetricResolver,
-    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
     let shape = execute_scalar_linref(py, geometry, op, resolver, kernel)?;
@@ -560,7 +556,7 @@ pub(crate) fn unary_scalar_linref_column(
     op: Operation,
     resolver: super::metric::MetricResolver,
     stations: Vec<f64>,
-    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>, f64) -> Result<Shape> + Send,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>, f64) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let frame = geometry.frame.clone();
     let shapes = execute_scalar_linref(py, geometry, op, resolver, move |plan, row| {
@@ -576,7 +572,7 @@ pub(crate) fn unary_array_linref_shapes(
     py: Python<'_>,
     array: &PyGeometryArray,
     packed: &PackedLinearReference,
-    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     if let Some(result) = try_packed_linear_reference(py, array, packed) {
         return result;
@@ -592,7 +588,7 @@ pub(crate) fn unary_array_linref_with_model(
     py: Python<'_>,
     array: &PyGeometryArray,
     model: &crate::crs::MetricModel,
-    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
     let array = array.clone();
@@ -653,7 +649,7 @@ pub(crate) fn unary_array_shapes_budgeted(
         &CachelessRowContext<'_>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Shape>
-    + Send,
+    + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let resolver = op.resolver_with_unit(unit);
     let frame = array.frame.clone();
@@ -723,7 +719,7 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
     let Some(input) = classify_input(value) else {

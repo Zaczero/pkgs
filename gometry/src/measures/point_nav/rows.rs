@@ -161,7 +161,7 @@ pub(super) fn uniform_point_axes_dispatch(
     uniform_point_axes::<false>(points, len, None)
 }
 
-pub(super) trait PointBinaryF64Kernel: Copy + Send + Sync {
+pub(super) trait PointBinaryF64Kernel: Copy + Send + Sync + pyo3::marker::Ungil {
     fn eval_planar(self, to_metre: f64, left: Point, right: Point) -> PyResult<f64>;
     fn eval_geodesic(
         self,
@@ -282,7 +282,9 @@ pub(super) fn distance_rows(
         })
 }
 
-pub(super) trait PointBinaryGeometryKernel: Copy + Send + Sync {
+pub(super) trait PointBinaryGeometryKernel:
+    Copy + Send + Sync + pyo3::marker::Ungil
+{
     fn distances(&self) -> &[f64];
 
     fn eval_planar(

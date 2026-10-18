@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use pyo3::marker::Ungil;
 use pyo3::prelude::{PyErr, PyResult, Python};
 
 use crate::array::{ComputedCaches, Frame, PyGeometryArray, StorageLayout};
@@ -46,10 +47,10 @@ impl PyGeometryArray {
     pub(crate) fn reduce_packed_columns_detached<R>(
         &self,
         py: Python<'_>,
-        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<R> + Send,
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<R> + Ungil,
     ) -> PyResult<Option<R>>
     where
-        R: Send,
+        R: Ungil,
     {
         let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
@@ -64,7 +65,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         output_frame: Frame,
-        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<PackedColumnOutput> + Send,
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<PackedColumnOutput> + Ungil,
     ) -> PyResult<Option<Self>> {
         let output = self
             .reduce_packed_columns_detached(py, kernel)?
@@ -81,7 +82,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         output_frame: Frame,
         kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<Option<PackedColumnOutput>>
-        + Send,
+        + Ungil,
     ) -> PyResult<Option<Self>> {
         let Some(output) = self.reduce_packed_columns_detached(py, kernel)? else {
             return Ok(None);
@@ -100,7 +101,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         output_frame: Frame,
         output_axes: crate::geometry::CoordinateAxes,
-        map: impl Fn(crate::geometry::Point) -> crate::error::Result<crate::geometry::Point> + Send,
+        map: impl Fn(crate::geometry::Point) -> crate::error::Result<crate::geometry::Point> + Ungil,
     ) -> PyResult<Option<Self>> {
         let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
@@ -168,10 +169,10 @@ impl PyGeometryArray {
         left: &Self,
         right: &Self,
         kernel: impl for<'a, 'b> FnOnce(PackedColumns<'a>, PackedColumns<'b>) -> PackedColumnResult<R>
-        + Send,
+        + Ungil,
     ) -> PyResult<Option<R>>
     where
-        R: Send,
+        R: Ungil,
     {
         let Some(left_columns) = left.rows.packed_columns() else {
             return Ok(None);
@@ -189,10 +190,10 @@ impl PyGeometryArray {
     pub(crate) fn reduce_packed_points_detached<R>(
         &self,
         py: Python<'_>,
-        kernel: impl FnOnce(PointColumns<'_>) -> PackedColumnResult<R> + Send,
+        kernel: impl FnOnce(PointColumns<'_>) -> PackedColumnResult<R> + Ungil,
     ) -> PyResult<Option<R>>
     where
-        R: Send,
+        R: Ungil,
     {
         let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() else {
             return Ok(None);
@@ -214,10 +215,10 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         right: &Self,
-        kernel: impl FnOnce(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Send,
+        kernel: impl FnOnce(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Ungil,
     ) -> PyResult<Option<Vec<T>>>
     where
-        T: Send,
+        T: Ungil,
     {
         let (
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }),

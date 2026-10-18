@@ -141,8 +141,7 @@ where
             &CachelessRowContext<'ctx>,
             &mut ArrayRowOperation<'row>,
         ) -> Result<R>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let array = array.clone();
     py.detach(move || {
@@ -185,8 +184,7 @@ where
             &mut ArrayRowOperation<'left>,
             &mut ArrayRowOperation<'right>,
         ) -> Result<R>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let left_array = left.clone();
     let right_array = right.clone();
@@ -240,8 +238,7 @@ where
             &CachelessRowContext<'ctx>,
             &mut ArrayRowOperation<'row>,
         ) -> Result<R>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let array = array.clone();
     let output_frame = frame.clone();
@@ -291,8 +288,7 @@ where
             &mut ArrayRowOperation<'left>,
             &mut ArrayRowOperation<'right>,
         ) -> Result<R>
-        + Send
-        + Sync,
+        + pyo3::marker::Ungil,
 {
     let left_array = left.clone();
     let right_array = right.clone();
@@ -356,7 +352,8 @@ fn run_binary_fixed_array_rows<R, K>(
 ) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+        + pyo3::marker::Ungil,
 {
     let values =
         run_binary_fixed_array_values(py, array, fixed, side, frame, domain, metric, kernel)?;
@@ -375,7 +372,8 @@ fn run_binary_fixed_array_values<R, K>(
 ) -> Result<Vec<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+        + pyo3::marker::Ungil,
 {
     let fixed_plan = fixed.prepared_plan();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
@@ -408,7 +406,8 @@ fn run_binary_array_array_rows<R, K>(
 ) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+        + pyo3::marker::Ungil,
 {
     let values = run_binary_array_array_values(py, left, right, frame, domain, metric, kernel)?;
     Ok(FramedRows::paired_arrays(values, left, right, frame))
@@ -425,7 +424,8 @@ fn run_binary_array_array_values<R, K>(
 ) -> Result<Vec<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+        + pyo3::marker::Ungil,
 {
     // Prepared handles; frame caches derived from MetricCtx.
     run_paired_rows(
@@ -455,7 +455,8 @@ pub(crate) fn dispatch_binary<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -470,7 +471,8 @@ pub(crate) fn dispatch_binary_admitted<R>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -532,7 +534,8 @@ fn dispatch_binary_array_admitted<R>(
     other: GeometryInput<'_>,
     side: ArrayOperandSide,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -572,8 +575,9 @@ pub(crate) fn dispatch_typed_metric_binary<R>(
     admission: &BinaryAdmission<'_>,
     op: MetricOp,
     resolver: super::metric::MetricResolver,
-    planar: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> Result<R> + Send + Sync,
-    geodesic: impl Fn(&PreparedPlan, &PreparedPlan, &GeodesicBinaryRow<'_>) -> Result<R> + Send + Sync,
+    planar: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> Result<R> + pyo3::marker::Ungil,
+    geodesic: impl Fn(&PreparedPlan, &PreparedPlan, &GeodesicBinaryRow<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -779,14 +783,15 @@ fn binary_frame(
     Ok((frame, domain))
 }
 
-fn run_binary_scalar_scalar<R: Send>(
+fn run_binary_scalar_scalar<R: pyo3::marker::Ungil>(
     py: Python<'_>,
     left: &PyGeometry,
     right: &PyGeometry,
     frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> Result<R> {
     let ctx = CachelessRowContext {
         frame,
@@ -807,7 +812,8 @@ pub(crate) fn dispatch_binary_array_left<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Vec<R>>
 where
     R: BulkElement,
@@ -960,7 +966,8 @@ pub(crate) fn dispatch_binary_geometry<R: Into<GeometryOutput>>(
     op_name: &str,
     resolver: MetricResolver,
     split_geographic_inputs: bool,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let left = crate::normalize_geometry_batch(py, left)?;
     let right = crate::normalize_geometry_batch(py, right)?;
@@ -979,7 +986,8 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
     admission: &BinaryAdmission<'_>,
     resolver: MetricResolver,
     split_geographic_inputs: bool,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
 
@@ -1101,7 +1109,8 @@ fn geometry_kernel_over_array_admitted<R: Into<GeometryOutput>, K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+        + pyo3::marker::Ungil,
 {
     use GeometryInput::{Many, One};
     let frame = &left.frame;
@@ -1186,7 +1195,8 @@ fn geometry_kernel_over_array<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+        + pyo3::marker::Ungil,
 {
     let admission = admit_binary_inputs(GeometryInput::Many(left), right, op_name)?;
     let mut scratch = MetricScratch::default();

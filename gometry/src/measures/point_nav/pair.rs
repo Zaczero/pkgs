@@ -484,7 +484,7 @@ struct PointBinaryGeometryRowsSink<'py, 'plan, 'input, K, F> {
 impl<K, F> PointPairRowsSink for PointBinaryGeometryRowsSink<'_, '_, '_, K, F>
 where
     K: PointBinaryGeometryKernel,
-    F: Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape> + Copy + Send + Sync,
+    F: Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape> + Copy + pyo3::marker::Ungil,
 {
     type Value = Py<PyAny>;
 
@@ -546,7 +546,11 @@ fn point_binary_f64(
     operation: MetricOp,
     setup: impl Fn(Option<&str>) -> PyResult<crs::MetricModel> + Copy + Send + Sync,
     point_op: impl PointBinaryF64Kernel,
-    fallback: impl Fn(&PyGeometry, &PyGeometry) -> PyResult<f64> + Copy + Send + Sync,
+    fallback: impl Fn(&PyGeometry, &PyGeometry) -> PyResult<f64>
+    + Copy
+    + Send
+    + Sync
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let plan = PointBinaryPlan::new(left, right, operation)?;
     point_binary_numeric_sink(py, &plan, setup, point_op, fallback)
@@ -557,7 +561,7 @@ fn point_binary_numeric_sink(
     plan: &PointBinaryPlan<'_>,
     setup: impl Fn(Option<&str>) -> PyResult<crs::MetricModel> + Copy + Send + Sync,
     point_op: impl PointBinaryF64Kernel,
-    fallback: impl Fn(&PyGeometry, &PyGeometry) -> PyResult<f64> + Copy + Send + Sync,
+    fallback: impl Fn(&PyGeometry, &PyGeometry) -> PyResult<f64> + Copy + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let len = match plan.execution {
         PointBinaryExecution::Scalar { left, right } => {
@@ -607,7 +611,9 @@ fn point_binary_geometry_sink(
     plan: &PointBinaryPlan<'_>,
     setup: impl Fn(Option<&str>) -> PyResult<crs::MetricModel> + Copy + Send + Sync,
     point_op: impl PointBinaryGeometryKernel,
-    fallback: impl Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape> + Copy + Send + Sync,
+    fallback: impl Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape>
+    + Copy
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let len = match plan.execution {
         PointBinaryExecution::Scalar { left, right } => {
@@ -658,7 +664,9 @@ fn point_binary_geometry_fallback(
     plan: &PointBinaryPlan<'_>,
     len: usize,
     kernel: impl PointBinaryGeometryKernel,
-    fallback: impl Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape> + Copy + Send + Sync,
+    fallback: impl Fn(&PyGeometry, &PyGeometry, DistanceRow) -> PyResult<Shape>
+    + Copy
+    + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let rows = plan.owned_rows();
     let missing = plan.missing.clone();

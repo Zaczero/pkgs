@@ -313,8 +313,8 @@ impl<'py> PyConfig<'py> {
         let cert_reqs = self.cert_reqs()?;
         self.0
             .py()
-            .detach(|| build_tls_config(material, cert_reqs, http1))
-            .map_err(Into::into)
+            .detach(|| build_tls_config(material, cert_reqs, http1).map_err(H2CornError::from))
+            .map_err(into_pyerr)
     }
 
     fn server_config(&self, tls: Option<TlsConfig>) -> PyResult<ServerConfig> {

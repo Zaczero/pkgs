@@ -456,9 +456,6 @@ pub(in crate::geometry) enum SourceArcRequest<'a> {
     },
 }
 
-pub(crate) type ParallelSourceArcMetricAccess<'a> =
-    dyn Fn() -> crate::error::Result<&'a crate::crs::GeodesicMetric> + Sync + 'a;
-
 /// Derived chart geometry for one original root. The owner supplies the keyed
 /// slot; exact-request fractions remain beside their `(root, parameter)` rows.
 #[derive(Clone, Copy, Default)]

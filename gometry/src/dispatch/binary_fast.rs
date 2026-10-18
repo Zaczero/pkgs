@@ -125,10 +125,10 @@ pub(crate) fn dispatch_broadcast2<R>(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    op: impl Fn(&PreparedPlan, &PreparedPlan) -> crate::error::Result<R> + Send + Sync,
+    op: impl Fn(&PreparedPlan, &PreparedPlan) -> crate::error::Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + crate::broadcast::BulkElement,
+    R: crate::broadcast::BulkElement,
 {
     dispatch_binary(
         py,
@@ -148,16 +148,14 @@ fn dispatch_metric_binary<R>(
     unit: Option<DistanceUnit>,
     planar_kernel: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> crate::error::Result<R>
     + Copy
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
     geodesic_kernel: impl Fn(
         &PreparedPlan,
         &PreparedPlan,
         &GeodesicBinaryRow<'_>,
     ) -> crate::error::Result<R>
     + Copy
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
     array_lane: impl for<'a> Fn(
         Python<'_>,
         &'a crate::PyGeometryArray,
@@ -168,7 +166,7 @@ fn dispatch_metric_binary<R>(
     ) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + crate::broadcast::BulkElement,
+    R: crate::broadcast::BulkElement,
 {
     let left = crate::normalize_geometry_batch(py, left)?;
     let right = crate::normalize_geometry_batch(py, right)?;
@@ -191,16 +189,14 @@ fn dispatch_metric_binary_admitted<R>(
     unit: Option<DistanceUnit>,
     planar_kernel: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> crate::error::Result<R>
     + Copy
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
     geodesic_kernel: impl Fn(
         &PreparedPlan,
         &PreparedPlan,
         &GeodesicBinaryRow<'_>,
     ) -> crate::error::Result<R>
     + Copy
-    + Send
-    + Sync,
+    + pyo3::marker::Ungil,
     array_lane: impl for<'a> Fn(
         Python<'_>,
         &'a crate::PyGeometryArray,
@@ -211,7 +207,7 @@ fn dispatch_metric_binary_admitted<R>(
     ) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>>
 where
-    R: Send + crate::broadcast::BulkElement,
+    R: crate::broadcast::BulkElement,
 {
     let operation = Operation::Metric(op);
     let has_missing = matches!(&admission.left, GeometryInput::Many(array) if array.has_missing())

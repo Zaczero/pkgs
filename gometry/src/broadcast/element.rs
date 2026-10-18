@@ -11,7 +11,7 @@ use crate::{PyGeometry, PyGeometryArray, Typed};
 /// The bulk return form of a dispatch element. Numeric and boolean lanes land
 /// in fixed-width NumPy arrays; text stays a Python list; geometries become a
 /// `GeometryArray`; grid cells become a `CellArray`.
-pub(crate) trait BulkElement: Sized + Send {
+pub(crate) trait BulkElement: Sized + pyo3::marker::Ungil {
     /// Scalar lane: one element to its natural Python container.
     fn into_py(self, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>>;
 

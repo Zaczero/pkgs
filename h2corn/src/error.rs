@@ -16,6 +16,10 @@ use crate::websocket::{WebSocketCloseCode, close_code};
 #[error(transparent)]
 pub(crate) struct H2CornError(Box<ErrorKind>);
 
+// Safety: error payloads own native data or PyErr, never attached Python borrows.
+// The I/O and task-panic variants erase their native payload types.
+unsafe impl pyo3::marker::Ungil for H2CornError {}
+
 #[derive(Debug, Error)]
 pub(crate) enum ErrorKind {
     #[error(transparent)]

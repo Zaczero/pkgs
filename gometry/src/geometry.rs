@@ -165,9 +165,9 @@ mod ordinates;
 #[cfg(test)]
 pub(crate) use ordinates::source_ordinate_values_at_fraction;
 pub(crate) use ordinates::{
-    NodeOrdinates, ParallelSourceArcMetricAccess, RootMetricState, SourceArcCapture,
-    SourceArcContext, SourceArcMetricAccess, computed_native_sample_ordinates,
-    interpolate_source_projection, resolve_source_root, source_arc_ordinates_eligible,
+    NodeOrdinates, RootMetricState, SourceArcCapture, SourceArcContext, SourceArcMetricAccess,
+    computed_native_sample_ordinates, interpolate_source_projection, resolve_source_root,
+    source_arc_ordinates_eligible,
 };
 #[cfg(test)]
 pub(crate) use ordinates::{

@@ -272,8 +272,8 @@ pub(crate) fn dispatch_grid_cell_array<'py, C, D>(
     kind: GridKind,
     class_name: &str,
     depth_kw: &str,
-    validate_depth: impl Fn(i64) -> PyResult<D> + Send,
-    from_xy: impl Fn(f64, f64, D) -> PyResult<C> + Send,
+    validate_depth: impl Fn(i64) -> PyResult<D> + Send + pyo3::marker::Ungil,
+    from_xy: impl Fn(f64, f64, D) -> PyResult<C> + pyo3::marker::Ungil,
 ) -> PyResult<PyCellArray>
 where
     C: CellArrayId + Send,

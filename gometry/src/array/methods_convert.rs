@@ -7,7 +7,7 @@ use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, Polyg
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, reverse_coord_windows,
 };
-use crate::geometry::{ExpansionBudget, ParallelSourceArcMetricAccess, ShapeCountQuery};
+use crate::geometry::{ExpansionBudget, ShapeCountQuery};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -132,11 +132,11 @@ impl PyGeometryArray {
         validate: impl Fn(f64) -> PyResult<()>,
         subdivide: impl Fn(&CoordSeq, f64, &mut ExpansionBudget) -> Result<CoordSeq>
         + Clone
-        + Send
+        + pyo3::marker::Ungil
         + 'static,
         shape_fallback: impl Fn(&Shape, f64, &mut ExpansionBudget) -> Result<Shape>
         + Clone
-        + Send
+        + pyo3::marker::Ungil
         + 'static,
     ) -> PyResult<Self> {
         param.try_validate(validate)?;
@@ -457,12 +457,12 @@ impl PyGeometryArray {
         self.map_shapes_detached(py, move |shape| shape.clip_by_rect(rect, false))
     }
 
-    pub(crate) fn clip_by_rect_unary_packed_geographic(
+    pub(crate) fn clip_by_rect_unary_packed_geographic<'a>(
         &self,
         py: Python<'_>,
         rect: Bounds,
         frame: crate::geographic::GeographicFrame,
-        metric_access: &ParallelSourceArcMetricAccess<'_>,
+        metric_access: &(impl Fn() -> Result<&'a crate::crs::GeodesicMetric> + pyo3::marker::Ungil),
     ) -> PyResult<Self> {
         let output_frame = self.frame.clone();
         self.map_shapes_detached(py, move |shape| {

@@ -279,7 +279,7 @@ fn topology_scalar_array<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + pyo3::marker::Ungil,
 {
     let output_missing = array.missing().cloned();
     let scalar_plan = scalar.prepared_plan();
@@ -335,7 +335,7 @@ fn topology_array_pair<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + pyo3::marker::Ungil,
 {
     let missing = missing::union_many([left.missing(), right.missing()]);
     let output_missing = missing;
@@ -384,7 +384,7 @@ fn topology_broadcast<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + pyo3::marker::Ungil,
 {
     let left = crate::normalize_geometry_batch(py, left)?;
     let right = crate::normalize_geometry_batch(py, right)?;

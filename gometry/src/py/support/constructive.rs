@@ -121,7 +121,7 @@ pub(crate) fn owned_voronoi_boundary(
 /// Run one Voronoi kernel over every input shape outside the interpreter
 /// lock, one budget for the whole call. The boundary and shapes are fully
 /// admitted Rust values by then; Python objects exist only after reattachment.
-fn voronoi_outputs<T: Send, U: Send>(
+fn voronoi_outputs<T: Send, U: Send + pyo3::marker::Ungil>(
     py: Python<'_>,
     shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
     frame: &Frame,
@@ -141,7 +141,7 @@ fn voronoi_outputs<T: Send, U: Send>(
         &OwnedVoronoiBoundary,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<U>
-    + Send,
+    + pyo3::marker::Ungil,
 ) -> PyResult<Vec<U>> {
     let boundary = owned_voronoi_boundary(py, clip, frame, operation)?;
     let shapes = shapes.collect::<Vec<_>>();

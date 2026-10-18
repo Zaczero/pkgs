@@ -139,7 +139,7 @@ fn code_lonlat_broadcast(
     code: &Bound<'_, PyAny>,
     reference: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    operation: impl Fn(&str, f64, f64) -> PyResult<String> + Send + Sync,
+    operation: impl Fn(&str, f64, f64) -> PyResult<String> + Send + Sync + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 

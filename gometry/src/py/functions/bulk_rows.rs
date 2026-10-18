@@ -96,9 +96,9 @@ pub(crate) fn stream_bulk_owned<'py, T, Own, Parse>(
     parse_row: Parse,
 ) -> PyResult<PyGeometryArray>
 where
-    T: Send,
+    T: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + Send + Sync,
+    Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + pyo3::marker::Ungil,
 {
     let py = values.py();
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();
@@ -336,10 +336,10 @@ fn process_owned_chunks<'py, T, S, Own, Parse>(
     parse_chunk: Parse,
 ) -> PyResult<S>
 where
-    T: Send,
-    S: Send,
+    T: pyo3::marker::Ungil,
+    S: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(S, Vec<(usize, T)>) -> std::result::Result<S, BatchError> + Send + Sync,
+    Parse: Fn(S, Vec<(usize, T)>) -> std::result::Result<S, BatchError> + pyo3::marker::Ungil,
 {
     let mut iter = iter;
     let mut first_row = 0;
@@ -449,9 +449,9 @@ pub(crate) fn batch_bulk_srid<'py, T, Own, Parse>(
     parse_row: Parse,
 ) -> PyResult<PyGeometryArray>
 where
-    T: Send,
+    T: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(T) -> crate::error::Result<Option<StreamedSridRow>> + Send + Sync,
+    Parse: Fn(T) -> crate::error::Result<Option<StreamedSridRow>> + pyo3::marker::Ungil,
 {
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let state = SridBulkState {
@@ -478,9 +478,9 @@ pub(crate) fn batch_bulk<'py, T, Own, Parse>(
     parse_row: Parse,
 ) -> PyResult<PyGeometryArray>
 where
-    T: Send,
+    T: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + Send + Sync,
+    Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + pyo3::marker::Ungil,
 {
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let state = BulkState {
@@ -521,9 +521,9 @@ pub(crate) fn stream_bulk_srid<'py, T, Own, Parse>(
     parse_row: Parse,
 ) -> PyResult<PyGeometryArray>
 where
-    T: Send,
+    T: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(T) -> crate::error::Result<StreamedSridRow> + Send + Sync,
+    Parse: Fn(T) -> crate::error::Result<StreamedSridRow> + pyo3::marker::Ungil,
 {
     let mut own_row = own_row;
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();

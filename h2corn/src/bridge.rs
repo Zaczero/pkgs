@@ -772,8 +772,8 @@ impl ReadyNone {
 
 /// Protocol-specific event pull. The cancel-race requeue invariant lives in
 /// [`Requeueable`], not in implementations of this trait.
-pub(crate) trait EventSource: Send + 'static {
-    type Event: Send + 'static;
+pub(crate) trait EventSource: Send + pyo3::marker::Ungil + 'static {
+    type Event: Send + pyo3::marker::Ungil + 'static;
 
     fn pull(&mut self) -> impl future::Future<Output = Self::Event> + Send + '_;
 

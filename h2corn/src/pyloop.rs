@@ -58,8 +58,9 @@ struct TokioRuntime {
     runtime: Runtime,
 }
 
-pub(crate) type BuildAwaitable =
-    Box<dyn for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send>;
+pub(crate) type BuildAwaitable = Box<
+    dyn for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send + pyo3::marker::Ungil,
+>;
 
 pub(crate) enum UnraisableError {
     Python(PyErr),
@@ -603,6 +604,10 @@ pub(crate) struct ShardThread {
     join: Option<JoinHandle<()>>,
 }
 
+// Safety: the spawned thread owns its captures and returns only (). Its join
+// handle erases the owned panic payload; the shard remains compiler-checked.
+unsafe impl pyo3::marker::Ungil for ShardThread where Shard: pyo3::marker::Ungil {}
+
 impl ShardThread {
     pub(crate) const fn shard(&self) -> &Shard {
         self.shard.as_ref().expect("live shard thread has a handle")
@@ -749,7 +754,10 @@ pub(crate) fn runtime() -> &'static Runtime {
 /// Construct and await a lifecycle operation on its owning Python loop.
 pub(crate) fn call_awaitable<B>(shard: Shard, build: B) -> SlotFuture<PyResult<Py<PyAny>>>
 where
-    B: for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send + 'static,
+    B: for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>>
+        + Send
+        + pyo3::marker::Ungil
+        + 'static,
 {
     let slot = TaskSlot::new();
     shard.push(PumpEvent::CallAwaitable {
