@@ -238,6 +238,7 @@ def _source_root(tmp_path: Path) -> Path:
     (root / 'native' / 'build.c').write_text(
         'int value(void) { return 1; }\n', encoding='utf-8'
     )
+    (root / 'native' / 'source_roots.txt').write_text('', encoding='utf-8')
     return root
 
 
@@ -251,9 +252,8 @@ def _quality_settings_root(tmp_path: Path) -> Path:
         root / 'Cargo.toml': '[package]\nname = "gometry"\n',
         root / 'pyproject.toml': '[project]\nname = "gometry"\n',
         root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz': (
-            'fixture archive'
-        ),
+        workspace / 'vendor' / 'proj' / 'proj-9.9.0.tar.gz': 'fixture archive',
+        root / 'native' / 'source_roots.txt': '',
         root / 'README.md': 'readme\n',
         root / 'LICENSE-APACHE.md': 'apache license\n',
         root / 'LICENSE-MIT.md': 'mit license\n',
@@ -280,8 +280,8 @@ def _producer_git_fixture(
             'gometry/python/gometry/__pycache__/\n'
         ),
         '.gitmodules': (
-            '[submodule "libtiff"]\n'
-            '\tpath = gometry/native/libtiff-sys/libtiff\n'
+            '[submodule "vendor/libtiff/source"]\n'
+            '\tpath = vendor/libtiff/source\n'
             '\turl = https://example.invalid/libtiff.git\n'
         ),
         'Cargo.toml': '[workspace]\nmembers = ["gometry"]\n',
@@ -291,15 +291,18 @@ def _producer_git_fixture(
         'gometry/Cargo.toml': '[package]\nname = "gometry"\n',
         'gometry/pyproject.toml': '[project]\nname = "gometry"\n',
         'gometry/rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz': 'proj fixture',
         'gometry/build.rs': 'fn main() {}\n',
         'gometry/src/lib.rs': 'pub fn value() {}\n',
+        'gometry/native/source_roots.txt': (
+            'cargo vendor/fixture-crate\nroot patches/fixture\nroot vendor/proj\n'
+        ),
         'gometry/native/fixture/Cargo.toml': '[package]\nname = "fixture"\n',
         'gometry/native/fixture/src/lib.rs': 'pub fn value() {}\n',
         'gometry/native-licenses.toml': '[[licenses]]\n',
-        'gometry/native/notices/nlohmann-json-license.md': 'notice\n',
-        'gometry/native/libtiff-sys/notices/libtiff-license.md': 'license\n',
-        'gometry/native/libtiff-sys/notices/libtiff-lzw-license.md': 'license\n',
+        'vendor/fixture-crate/Cargo.toml': '[package]\nname = "fixture-crate"\n',
+        'vendor/fixture-crate/src/lib.rs': 'pub fn value() {}\n',
+        'vendor/proj/proj-9.9.0.tar.gz': 'proj fixture',
+        'patches/fixture/apply.rs': 'fn apply() {}\n',
         'gometry/README.md': 'source readme\n',
         '.github/scripts/render_pypi_readme.py': 'print("readme")\n',
         '.github/scripts/gen_licenses.py': 'print("licenses")\n',
@@ -321,7 +324,7 @@ def _producer_git_fixture(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding='utf-8')
 
-    libtiff = root / 'native' / 'libtiff-sys' / 'libtiff'
+    libtiff = repo / 'vendor' / 'libtiff' / 'source'
     libtiff.mkdir(parents=True)
     subprocess.run(['git', 'init', '-q'], cwd=repo, check=True)
     subprocess.run(
@@ -372,7 +375,7 @@ def _producer_git_fixture(
             '--cacheinfo',
             '160000',
             libtiff_commit,
-            'gometry/native/libtiff-sys/libtiff',
+            'vendor/libtiff/source',
         ],
         cwd=repo,
         check=True,
@@ -393,6 +396,39 @@ def _producer_git_fixture(
     ).stdout.strip()
     monkeypatch.setattr(source_artifact, 'LIBTIFF_COMMIT', libtiff_commit)
     return repo, root, commit
+
+
+def test_root_source_inputs_are_added_without_copying_cargo_path_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, root, _ = _producer_git_fixture(tmp_path, monkeypatch)
+    sdist = tmp_path / 'gometry-1.0.0.tar.gz'
+    archive_root = 'gometry-1.0.0'
+    cargo_member = f'{archive_root}/vendor/fixture-crate/src/lib.rs'
+    with tarfile.open(sdist, 'w:gz') as archive:
+        member = tarfile.TarInfo(cargo_member)
+        payload = b'pub fn value() {}\n'
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    source_artifact._include_root_sdist_files(sdist, root)
+
+    with tarfile.open(sdist) as archive:
+        names = archive.getnames()
+        assert len(names) == len(set(names))
+        assert names.count(cargo_member) == 1
+        for relative in (
+            'vendor/proj/proj-9.9.0.tar.gz',
+            'patches/fixture/apply.rs',
+        ):
+            name = f'{archive_root}/{relative}'
+            assert names.count(name) == 1
+            source = root.parent / relative
+            member = archive.getmember(name)
+            assert member.mode == (source.stat().st_mode & 0o777)
+            stream = archive.extractfile(member)
+            assert stream is not None and stream.read() == source.read_bytes()
 
 
 def test_sdist_python_member_identity_uses_maturin_package_root(
@@ -610,7 +646,8 @@ def test_producer_commit_binding_uses_captured_finite_input_projection(
         '.github/scripts/gen_licenses.py',
         '.github/scripts/about.hbs',
         'gometry/native-licenses.toml',
-        'gometry/native/notices/nlohmann-json-license.md',
+        'vendor/proj/proj-9.9.0.tar.gz',
+        'patches/fixture/apply.rs',
         'gometry/tools/source_artifact.py',
     ):
         path = repo / relative
@@ -1575,9 +1612,8 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         root / 'Cargo.toml': ('[package]\nname = "gometry"\nversion = "1.0.0"\n'),
         root / 'pyproject.toml': '[project]\nname = "gometry"\n',
         root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
-        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz': (
-            'fixture archive'
-        ),
+        root / 'native' / 'source_roots.txt': '',
+        workspace / 'vendor' / 'proj' / 'proj-9.9.0.tar.gz': 'fixture archive',
     }
     for path, contents in fixed_inputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)

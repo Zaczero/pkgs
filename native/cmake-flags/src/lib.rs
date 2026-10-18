@@ -1,4 +1,4 @@
-//! Compiler flags shared by gometry's CMake-built native dependencies.
+//! Compiler flags shared by the workspace's CMake-built native dependencies.
 
 use std::env;
 use std::error::Error;
@@ -10,7 +10,7 @@ use std::error::Error;
 /// and debug paths just as Rust objects do, so with the same mapping the
 /// archives two checkouts produce are identical, and the compiler cache can
 /// share them.
-pub(crate) fn configure_path_remapping(config: &mut cmake::Config) {
+pub fn configure_path_remapping(config: &mut cmake::Config) {
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         return;
     }
@@ -22,7 +22,7 @@ pub(crate) fn configure_path_remapping(config: &mut cmake::Config) {
 }
 
 /// Reconfigure from the current compiler and native build inputs.
-pub(crate) fn configure_fresh_build(config: &mut cmake::Config) {
+pub fn configure_fresh_build(config: &mut cmake::Config) {
     let target = env::var("TARGET").expect("Cargo provides TARGET to build scripts");
     let host = env::var("HOST").expect("Cargo provides HOST to build scripts");
     let build_kind = if host == target { "HOST" } else { "TARGET" };
@@ -93,7 +93,7 @@ fn watch_target_env(variable: &str, target: &str, suffix: &str, build_kind: &str
     println!("cargo:rerun-if-env-changed={variable}");
 }
 
-pub(crate) fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
+pub fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
     let flag = format!("-ffile-prefix-map={mapping}");
     config.cflag(&flag).cxxflag(&flag);
 }
@@ -101,9 +101,7 @@ pub(crate) fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std:
 /// Apply the release flags the workspace declares through
 /// `GOMETRY_RELEASE_CFLAGS` and `GOMETRY_RELEASE_CXXFLAGS`, unless the caller
 /// set the ambient variables cmake-rs reads itself.
-pub(crate) fn configure_release_native_flags(
-    config: &mut cmake::Config,
-) -> Result<(), Box<dyn Error>> {
+pub fn configure_release_native_flags(config: &mut cmake::Config) -> Result<(), Box<dyn Error>> {
     if let Some(flags) = release_native_flags("CFLAGS")?
         && env::var_os("CFLAGS").is_none()
         && !flags.is_empty()

@@ -1,0 +1,10 @@
+# `cargo` roots are included through Maturin's path-dependency traversal.
+# `root` roots are copied into the standalone sdist by source_artifact.py.
+cargo native/cmake-flags
+cargo native/libtiff-sys
+cargo vendor/h3o
+cargo vendor/proj-sys
+root patches/proj
+root vendor/libtiff
+root vendor/nlohmann-json
+root vendor/proj

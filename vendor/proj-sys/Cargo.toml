@@ -53,7 +53,7 @@ version = "0.38.2"
 version = "1.0.6"
 
 [dependencies.gometry-libtiff-sys]
-path = "../libtiff-sys"
+path = "../../native/libtiff-sys"
 optional = true
 
 [build-dependencies.bindgen]
@@ -71,6 +71,9 @@ version = "0.3.25"
 
 [build-dependencies.tar]
 version = "0.4.40"
+
+[build-dependencies.cmake-flags]
+path = "../../native/cmake-flags"
 
 # gometry-libtiff-sys is consumed through its `links` build metadata
 # (DEP_TIFF_INCLUDE / DEP_TIFF_LIBRARY in build.rs), which cargo's unused

@@ -11,6 +11,7 @@ readme = "README.md"
 homepage = "https://docs.rs/h3o"
 repository = "https://github.com/HydroniumLabs/h3o"
 license = "BSD-3-Clause"
+include = ["/**", "/GOMETRY_DIVERGENCE.md"]
 keywords = ["geography", "geospatial", "gis", "h3", "spatial-index"]
 categories = ["science::geo", "no-std"]
 

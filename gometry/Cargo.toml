@@ -14,18 +14,13 @@ include = [
   "/README.md",
   "/LICENSE-*",
   "/rust-toolchain.toml",
-  "/native/notices/nlohmann-json-license.md",
   "/native/*.rs",
-  "/native/proj-sys/**",
-  "/native/libtiff-sys/**",
-  "/native/h3o/**",
+  "/native/source_roots.txt",
 ]
 
 [lib]
 crate-type = ["cdylib"]
 name = "gometry"
-
-
 
 [dependencies]
 ahash = { version = "0.8.12", default-features = false, features = [
@@ -38,9 +33,9 @@ geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
 getrandom = { version = "0.4.3", default-features = false, features = ["std"] }
-# Vendored from HydroniumLabs/h3o at fa1557fd1edd56f64e4da95b2fd294609ce2353e.
-# GOMETRY_DIVERGENCE.md records its raw-carrier API and local safe-traversal fix.
-h3o = { path = "native/h3o", default-features = false, features = [
+# Root-vendored from HydroniumLabs/h3o; vendor/h3o/GOMETRY_DIVERGENCE.md records
+# local carriers and correctness fixes.
+h3o = { path = "../vendor/h3o", default-features = false, features = [
   "std"
 ] }
 lexical-core = { version = "1.0.6", default-features = false, features = [
@@ -50,7 +45,7 @@ libc = { workspace = true, default-features = false }
 libm = { workspace = true, default-features = false }
 mimalloc.workspace = true
 numpy = { version = "0.30.0", default-features = false }
-proj-sys = { path = "native/proj-sys", default-features = false, features = [
+proj-sys = { path = "../vendor/proj-sys", default-features = false, features = [
   "bundled_proj",
   "tiff",
 ] }

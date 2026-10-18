@@ -399,9 +399,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$PACKAGE/.cargo"
-          cp .cargo/config.toml "$PACKAGE/.cargo/config.toml"
-          uv build --project "$PACKAGE" --sdist --out-dir "$GITHUB_WORKSPACE/dist"
+          if [ "$PACKAGE" = gometry ]; then
+            staging="$RUNNER_TEMP/gometry-sdist"
+            uv run --project "$PACKAGE" --no-sync --with maturin==1.15.0 \
+              python "$PACKAGE/tools/wheel_smoke.py" --stage-sdist "$staging"
+            cp "$staging"/gometry-*.tar.gz "$GITHUB_WORKSPACE/dist/"
+          else
+            uv build --project "$PACKAGE" --sdist --out-dir "$GITHUB_WORKSPACE/dist"
+          fi
 
       - name: Build Python distributions
         if: fromJson(inputs.plan).crate == ''

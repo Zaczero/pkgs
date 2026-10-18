@@ -118,7 +118,7 @@ def _smoke_grid(
         if not path.is_file():
             raise AssertionError(f'{SMOKE_GRID_ENV} does not name a file: {path}')
         return path
-    archive_path = ROOT / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz'
+    archive_path = ROOT.parent / 'vendor' / 'proj' / 'proj-9.9.0.tar.gz'
     member_name = 'proj-9.9.0/data/tests/test_vgrid_pixelispoint.tif'
     destination.mkdir(parents=True, exist_ok=True)
     path = destination / Path(member_name).name
@@ -128,7 +128,7 @@ def _smoke_grid(
             root = (
                 f'gometry-{sdist.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
             )
-            sdist_member = f'{root}/gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz'
+            sdist_member = f'{root}/vendor/proj/proj-9.9.0.tar.gz'
             with tarfile.open(sdist) as source:
                 stream = source.extractfile(sdist_member)
                 if stream is None:

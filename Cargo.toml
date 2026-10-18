@@ -203,7 +203,7 @@ debug = false
 # gometry's CMake-built native dependencies are workspace members, so the wildcard
 # above does not reach them: give them the same optimized, debug-free settings,
 # which also makes their CMake builds Release-type. `trim-paths` hands Cargo's path
-# remap to their build scripts, and `gometry/native/cmake_flags.rs` forwards it to
+# remap to their build scripts, and `native/cmake-flags` forwards it to
 # the C and C++ objects, so every checkout compiles identical objects and the
 # compiler cache shares them. gometry's own Rust keeps checkout paths.
 [profile.dev.package.proj-sys]

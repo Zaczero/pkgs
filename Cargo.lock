@@ -430,6 +430,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake-flags"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1004,6 +1011,7 @@ name = "gometry-libtiff-sys"
 version = "0.1.0"
 dependencies = [
  "cmake",
+ "cmake-flags",
  "libz-sys",
 ]
 
@@ -1820,6 +1828,7 @@ version = "0.27.0"
 dependencies = [
  "bindgen",
  "cmake",
+ "cmake-flags",
  "flate2",
  "gometry-libtiff-sys",
  "libsqlite3-sys",

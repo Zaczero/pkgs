@@ -1,0 +1,15 @@
+[package]
+name = "cmake-flags"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Shared CMake configuration for workspace native dependencies"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/Zaczero/pkgs/tree/main/native/cmake-flags"
+include = ["/Cargo.toml", "/src/**"]
+
+[dependencies]
+cmake = "0.1"
+
+[lints]
+workspace = true

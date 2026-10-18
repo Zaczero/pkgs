@@ -46,6 +46,7 @@ from _artifact_common import (
 from artifact_content import (
     _source_input_records,
     content_leaks,
+    has_hidden_component,
     inspect_libtiff_sdist_members,
     is_hidden_native_path,
     is_python_package_member,
@@ -53,6 +54,7 @@ from artifact_content import (
     libtiff_source_members,
     python_member_hashes,
     source_input_digests,
+    source_root_entries,
     verify_native_notice_texts,
 )
 
@@ -60,7 +62,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 SOURCE_MANIFEST_NAME = 'gometry-source-manifest.json'
 SOURCE_MANIFEST_SCHEMA = 1
-_LIBTIFF_GITLINK = 'gometry/native/libtiff-sys/libtiff'
+_LIBTIFF_GITLINK = 'vendor/libtiff/source'
 _PRODUCER_FIXED_INPUTS = frozenset({
     '.gitignore',
     '.gitmodules',
@@ -75,18 +77,23 @@ _PRODUCER_FIXED_INPUTS = frozenset({
     *(f'gometry/{member}' for member in SOURCE_TOOL_MEMBERS),
 })
 _PRODUCER_SNAPSHOT_INPUTS = _PRODUCER_FIXED_INPUTS
-_PRODUCER_PATHSPECS = tuple(
-    sorted({
-        'gometry/build.rs',
-        'gometry/src',
-        'gometry/native',
-        'gometry/python/gometry',
-        *_PRODUCER_FIXED_INPUTS,
-    })
-)
 
 
-def _is_producer_input_path(relative: str) -> bool:
+def _producer_pathspecs(root: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted({
+            'gometry/build.rs',
+            'gometry/src',
+            'gometry/native',
+            'gometry/python/gometry',
+            _LIBTIFF_GITLINK,
+            *(relative for _, relative, _ in source_root_entries(root)),
+            *_PRODUCER_FIXED_INPUTS,
+        })
+    )
+
+
+def _is_producer_input_path(relative: str, root: Path = ROOT) -> bool:
     if relative in _PRODUCER_FIXED_INPUTS or relative in {
         'gometry/build.rs',
         _LIBTIFF_GITLINK,
@@ -95,9 +102,10 @@ def _is_producer_input_path(relative: str) -> bool:
     if relative.startswith('gometry/src/'):
         return PurePosixPath(relative).name != 'Cargo.toml'
     if relative.startswith('gometry/native/'):
-        return not relative.startswith(
-            f'{_LIBTIFF_GITLINK}/'
-        ) and not is_hidden_native_path(relative)
+        return not is_hidden_native_path(relative)
+    for _, source_root, _ in source_root_entries(root):
+        if relative == source_root or relative.startswith(f'{source_root}/'):
+            return not has_hidden_component(relative)
     package_prefix = 'gometry/python/gometry/'
     return relative.startswith(package_prefix) and is_python_package_member(
         relative.removeprefix(package_prefix)
@@ -112,14 +120,17 @@ def _producer_input_paths(root: Path) -> dict[str, Path]:
         for _, path in (*source_files, *native_files)
         if not path.relative_to(repo).as_posix().startswith(f'{_LIBTIFF_GITLINK}/')
     }
-    for path in (root / 'native').rglob('Cargo.toml'):
-        relative = path.relative_to(repo).as_posix()
-        if (
-            not relative.startswith(f'{_LIBTIFF_GITLINK}/')
-            and not is_hidden_native_path(relative)
-            and path.is_file()
-        ):
-            files[relative] = path
+    manifests = [root / 'native']
+    manifests.extend(path for _, _, path in source_root_entries(root))
+    for manifest_root in manifests:
+        for path in manifest_root.rglob('Cargo.toml'):
+            relative = path.relative_to(repo).as_posix()
+            if (
+                not relative.startswith(f'{_LIBTIFF_GITLINK}/')
+                and not has_hidden_component(relative)
+                and path.is_file()
+            ):
+                files[relative] = path
     package_dir = root / 'python' / 'gometry'
     if not package_dir.is_dir():
         raise AssertionError(f'Python package directory is missing: {package_dir}')
@@ -137,11 +148,14 @@ def _producer_input_paths(root: Path) -> dict[str, Path]:
 
 def _producer_input_snapshot(root: Path) -> dict[str, str]:
     files = _producer_input_paths(root)
+    source_manifests = {
+        f'{path}/Cargo.toml' for _, path, _ in source_root_entries(root)
+    }
     snapshot = {}
     for relative, path in files.items():
-        if relative not in _PRODUCER_SNAPSHOT_INPUTS and not (
-            relative.startswith('gometry/native/')
-            and PurePosixPath(relative).name == 'Cargo.toml'
+        if (
+            relative not in _PRODUCER_SNAPSHOT_INPUTS
+            and relative not in source_manifests
         ):
             continue
         metadata = path.lstat()
@@ -220,7 +234,15 @@ def _producer_commit_is_bound(
         return False
     captured_paths = _git_paths(
         root,
-        ['ls-tree', '-r', '--name-only', '-z', commit, '--', *_PRODUCER_PATHSPECS],
+        [
+            'ls-tree',
+            '-r',
+            '--name-only',
+            '-z',
+            commit,
+            '--',
+            *_producer_pathspecs(root),
+        ],
     )
     staged_paths = _git_paths(
         root,
@@ -234,7 +256,7 @@ def _producer_commit_is_bound(
             '--ignore-submodules=none',
             commit,
             '--',
-            *_PRODUCER_PATHSPECS,
+            *_producer_pathspecs(root),
         ],
     )
     worktree_paths = _git_paths(
@@ -248,13 +270,15 @@ def _producer_commit_is_bound(
             '--ignore-submodules=none',
             commit,
             '--',
-            *_PRODUCER_PATHSPECS,
+            *_producer_pathspecs(root),
         ],
     )
     if captured_paths is None or staged_paths is None or worktree_paths is None:
         return False
     changed_paths = staged_paths | worktree_paths
-    captured_inputs = {path for path in captured_paths if _is_producer_input_path(path)}
+    captured_inputs = {
+        path for path in captured_paths if _is_producer_input_path(path, root)
+    }
     captured_inputs.add(_LIBTIFF_GITLINK)
     try:
         current_files = _producer_input_paths(root)
@@ -264,7 +288,7 @@ def _producer_commit_is_bound(
     if not current_inputs <= captured_inputs:
         return False
     return not any(
-        _is_producer_input_path(path)
+        _is_producer_input_path(path, root)
         and not (exclude_readme and path == 'gometry/README.md')
         for path in changed_paths
     )
@@ -306,6 +330,83 @@ def _run_maturin_sdist(out_dir: Path, *, cwd: Path = ROOT) -> None:
         cwd=cwd,
         env=_source_build_env(),
     )
+
+
+def _root_sdist_files(root: Path) -> dict[str, Path]:
+    repo = root.parent.resolve()
+    files: dict[str, Path] = {}
+    for kind, _, source_root in source_root_entries(root):
+        if kind != 'root':
+            continue
+        candidates = (
+            [source_root] if source_root.is_file() else sorted(source_root.rglob('*'))
+        )
+        for path in candidates:
+            if not path.is_file():
+                continue
+            member = path.relative_to(repo).as_posix()
+            if has_hidden_component(member):
+                continue
+            files[member] = path
+    return dict(sorted(files.items()))
+
+
+def _include_root_sdist_files(sdist: Path, root: Path = ROOT) -> None:
+    """Add root-owned non-Cargo inputs that Maturin cannot include from a parent path."""
+    extras = _root_sdist_files(root)
+    if not extras:
+        return
+    archive_root = (
+        f'gometry-{sdist.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
+    )
+    additions = {
+        f'{archive_root}/{relative}': path for relative, path in extras.items()
+    }
+    source_date_epoch = os.environ.get('SOURCE_DATE_EPOCH')
+    if source_date_epoch is not None and not source_date_epoch.isdecimal():
+        raise AssertionError(f'invalid SOURCE_DATE_EPOCH: {source_date_epoch!r}')
+    archive_mode = stat.S_IMODE(sdist.stat().st_mode)
+    with tarfile.open(sdist, 'r:gz') as source:
+        members = source.getmembers()
+        names = {member.name for member in members}
+        duplicates = names & additions.keys()
+        if duplicates:
+            raise AssertionError(
+                f'Maturin already included root-owned sdist inputs: {sorted(duplicates)[:20]}'
+            )
+        with tempfile.NamedTemporaryFile(
+            prefix=f'.{sdist.name}.',
+            suffix='.tmp',
+            dir=sdist.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        try:
+            with tarfile.open(
+                temporary_path, 'w:gz', format=tarfile.PAX_FORMAT
+            ) as output:
+                for member in members:
+                    stream = source.extractfile(member) if member.isfile() else None
+                    if member.isfile() and stream is None:
+                        raise AssertionError(
+                            f'could not read staged sdist member {member.name}'
+                        )
+                    output.addfile(member, stream)
+                for name, path in additions.items():
+                    member = output.gettarinfo(str(path), arcname=name)
+                    if source_date_epoch is not None:
+                        member.mtime = int(source_date_epoch)
+                    member.uid = 0
+                    member.gid = 0
+                    member.uname = ''
+                    member.gname = ''
+                    with path.open('rb') as stream:
+                        output.addfile(member, stream)
+            os.chmod(temporary_path, archive_mode)
+            os.replace(temporary_path, sdist)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
 
 
 def _prepare_source_outputs(root: Path = ROOT) -> dict[str, str]:
@@ -404,15 +505,16 @@ def _capture_git_head(root: Path = ROOT) -> str | None:
     return commit if re.fullmatch(r'[0-9a-f]{40,64}', commit) else None
 
 
-def _build_input_snapshot(snapshot: Mapping[str, str]) -> dict[str, str]:
+def _build_input_snapshot(
+    snapshot: Mapping[str, str], root: Path = ROOT
+) -> dict[str, str]:
+    source_manifests = {
+        f'{relative}/Cargo.toml' for _, relative, _ in source_root_entries(root)
+    }
     return {
         path: digest
         for path, digest in snapshot.items()
-        if path in RELEASE_BUILD_INPUTS
-        or (
-            path.startswith('gometry/native/')
-            and PurePosixPath(path).name == 'Cargo.toml'
-        )
+        if path in RELEASE_BUILD_INPUTS or path in source_manifests
     }
 
 
@@ -443,6 +545,7 @@ def stage_sdist(out_dir: Path) -> Path:
             staging = Path(temporary)
             _run_maturin_sdist(staging)
             sdist = _single_sdist(staging, label='staged')
+            _include_root_sdist_files(sdist)
             inspect_sdist(sdist, expected_libtiff=libtiff_source_members())
             with tarfile.open(sdist) as archive:
                 extracted = staging / 'extracted'
@@ -517,10 +620,10 @@ def stage_sdist(out_dir: Path) -> Path:
 
 
 def verify_libtiff_checkout() -> None:
-    """Reject an uninitialized or altered source before maturin can omit it."""
+    """Reject an uninitialized or altered source before staging the sdist."""
     cmake = LIBTIFF / 'CMakeLists.txt'
     version = LIBTIFF / 'VERSION'
-    hint = 'git submodule update --init gometry/native/libtiff-sys/libtiff'
+    hint = 'git submodule update --init vendor/libtiff/source'
     if not cmake.is_file() or not version.is_file():
         raise AssertionError(f'libtiff submodule is not initialized; run `{hint}`')
     if version.read_text().strip() != LIBTIFF_VERSION:
@@ -571,7 +674,7 @@ def verify_libtiff_checkout() -> None:
     license_text = (LIBTIFF / 'LICENSE.md').read_bytes()
     first_start = license_text.index(b'Copyright')
     first_end = license_text.index(b'# Lempel-Ziv')
-    notices = ROOT / 'native' / 'libtiff-sys' / 'notices'
+    notices = ROOT.parent / 'vendor' / 'libtiff' / 'notices'
     if (notices / 'libtiff-license.md').read_bytes() != license_text[
         first_start:first_end
     ]:
@@ -617,6 +720,7 @@ def inspect_sdist(
         f'{root}/pyproject.toml',
         f'{root}/rust-toolchain.toml',
         f'{root}/gometry/rust-toolchain.toml',
+        f'{root}/gometry/native/source_roots.txt',
         f'{root}/tools/wheel_smoke.py',
         f'{root}/tools/_artifact_common.py',
         f'{root}/tools/artifact_content.py',
@@ -624,8 +728,19 @@ def inspect_sdist(
         f'{root}/tools/runtime_artifact.py',
         f'{root}/tools/quality_runtime.py',
         f'{root}/tools/release_artifact.py',
-        f'{root}/gometry/native/libtiff-sys/libtiff/CMakeLists.txt',
-        f'{root}/gometry/native/libtiff-sys/libtiff/libtiff/tif_lzw.c',
+        f'{root}/native/cmake-flags/src/lib.rs',
+        f'{root}/vendor/h3o/GOMETRY_DIVERGENCE.md',
+        f'{root}/vendor/libtiff/libtiff.pin',
+        f'{root}/vendor/libtiff/notices/libtiff-license.md',
+        f'{root}/vendor/libtiff/notices/libtiff-lzw-license.md',
+        f'{root}/vendor/libtiff/source/CMakeLists.txt',
+        f'{root}/vendor/libtiff/source/libtiff/tif_lzw.c',
+        f'{root}/vendor/nlohmann-json/notices/nlohmann-json-license.md',
+        f'{root}/vendor/proj/proj-9.9.0.tar.gz',
+        f'{root}/patches/proj/apply.rs',
+        f'{root}/patches/proj/9.9.0/aea.cpp',
+        f'{root}/patches/proj/9.9.0/merc.cpp',
+        f'{root}/patches/proj/9.9.0/gometry_proj_context.cpp',
     }
     if missing := sorted(required - set(names)):
         raise AssertionError(f'sdist missing root release files: {missing}')
@@ -642,7 +757,7 @@ def inspect_sdist(
             f'{filename_version!r} != {metadata_version!r}'
         )
     pyproject = text_members[f'{root}/pyproject.toml']
-    if 'patch.crates-io' in pyproject or 'vendor/' in pyproject:
+    if 'patch.crates-io' in pyproject:
         raise AssertionError('sdist still configures vendored Cargo sources')
     forbidden_configs = (
         'target.x86_64-',
@@ -836,14 +951,16 @@ def required_source_records(
     if not isinstance(packages, list):
         raise TypeError('cargo metadata has no packages array')
     expected = (
-        ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',)),
-        # H3 and PROJ are path packages in the standalone sdist; their exact
-        # manifest paths and selected features attest the bundled sources.
-        ('h3o', '0.11.0', None, ('std',)),
-        ('proj-sys', '0.27.0', None, ('bundled_proj', 'tiff')),
+        ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',), None),
+        # These path packages and their selected features attest the bundled
+        # Rust sources; source_roots.txt owns the remaining native inputs.
+        ('h3o', '0.11.0', None, ('std',), 'vendor/h3o'),
+        ('proj-sys', '0.27.0', None, ('bundled_proj', 'tiff'), 'vendor/proj-sys'),
+        ('gometry-libtiff-sys', '0.1.0', None, (), 'native/libtiff-sys'),
+        ('cmake-flags', '0.1.0', None, (), 'native/cmake-flags'),
     )
     records: list[dict[str, Any]] = []
-    for name, version, source, features in expected:
+    for name, version, source, features, relative_manifest in expected:
         matches = [
             package
             for package in packages
@@ -858,15 +975,15 @@ def required_source_records(
                 f'from {source!r}; found {len(matches)}'
             )
         package = matches[0]
-        if source is None and root is not None:
+        if relative_manifest is not None and root is not None:
             manifest_path = package.get('manifest_path')
-            expected_manifest = root / 'gometry' / 'native' / name / 'Cargo.toml'
+            expected_manifest = root / relative_manifest / 'Cargo.toml'
             if (
                 not isinstance(manifest_path, str)
                 or Path(manifest_path).resolve() != expected_manifest.resolve()
             ):
                 raise AssertionError(
-                    f'{name} did not resolve from the bundled source path'
+                    f'{name} did not resolve from its bundled source path'
                 )
         package_id = package.get('id')
         if not isinstance(package_id, str):
@@ -931,7 +1048,7 @@ def required_source_records(
                 )
             if root is not None:
                 h3o_path = h3o_edges[0].get('path')
-                expected_h3o = (root / 'gometry' / 'native' / 'h3o').resolve()
+                expected_h3o = (root / 'vendor' / 'h3o').resolve()
                 if (
                     not isinstance(h3o_path, str)
                     or Path(h3o_path).resolve() != expected_h3o

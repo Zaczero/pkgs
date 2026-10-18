@@ -303,22 +303,37 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     package = tmp_path / 'gometry'
     (package / 'src').mkdir(parents=True)
     (package / 'native' / 'visible').mkdir(parents=True)
+    (tmp_path / 'native' / 'fixture').mkdir(parents=True)
+    (tmp_path / 'vendor' / 'fixture').mkdir(parents=True)
+    (tmp_path / 'patches' / 'fixture').mkdir(parents=True)
     (package / 'Cargo.toml').write_text('[package]\nname = "gometry"\n')
     (package / 'build.rs').write_text('fn main() {}\n')
     (package / 'src' / 'lib.rs').write_text('')
+    (package / 'native' / 'source_roots.txt').write_text(
+        'cargo native/fixture\nroot patches/fixture\nroot vendor/fixture\n'
+    )
     (package / 'native' / 'visible' / 'input.c').write_text('')
+    (tmp_path / 'native' / 'fixture' / 'Cargo.toml').write_text(
+        '[package]\nname = "fixture"\n'
+    )
+    (tmp_path / 'native' / 'fixture' / 'lib.rs').write_text('pub fn value() {}\n')
+    (tmp_path / 'vendor' / 'fixture' / 'input.rs').write_text('pub fn value() {}\n')
+    (tmp_path / 'patches' / 'fixture' / 'apply.cpp').write_text('int value() {}\n')
     for relative in (
         'native/.git',
         'native/libtiff/.clang-format',
         'native/libtiff/doc/_static/.gitignore',
+        'vendor/fixture/.git',
     ):
-        path = package / relative
+        path = (package if relative.startswith('native/') else tmp_path) / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('metadata\n')
 
     files, native = artifact_content._source_input_records(package)
     assert any(name == 'gometry/native/visible/input.c' for name, _ in native)
-    assert not any(artifact_content.is_hidden_native_path(name) for name, _ in files)
+    assert any(name == 'vendor/fixture/input.rs' for name, _ in native)
+    assert any(name == 'patches/fixture/apply.cpp' for name, _ in native)
+    assert not any(artifact_content.has_hidden_component(name) for name, _ in files)
     before = artifact_content.source_input_digests(package)
     (package / 'native' / '.git').write_text('changed metadata\n')
     (package / 'Cargo.toml').write_text(
@@ -334,6 +349,15 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     assert changed['source_inputs_sha256'] != before['source_inputs_sha256']
     assert (
         changed['native_source_inputs_sha256'] != before['native_source_inputs_sha256']
+    )
+    (tmp_path / 'patches' / 'fixture' / 'apply.cpp').write_text(
+        'int changed() { return 1; }\n'
+    )
+    root_changed = artifact_content.source_input_digests(package)
+    assert root_changed['source_inputs_sha256'] != changed['source_inputs_sha256']
+    assert (
+        root_changed['native_source_inputs_sha256']
+        != changed['native_source_inputs_sha256']
     )
 
 

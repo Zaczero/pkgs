@@ -573,6 +573,7 @@ def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
         raise SystemExit(
             f'{package}: native-licenses.toml component must be a non-empty array'
         )
+    repository_root = ROOT.resolve()
     with CONFIG.open('rb') as stream:
         accepted = frozenset(tomllib.load(stream)['accepted'])
     entries: list[tuple[dict, str]] = []
@@ -612,11 +613,10 @@ def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
             if not isinstance(archive, str) or not isinstance(notice, str):
                 raise _native_error(package, name, 'archive and notice must be strings')
             try:
-                archive_path = (ROOT / package / archive).resolve()
-                package_root = (ROOT / package).resolve()
-                if package_root not in archive_path.parents:
+                archive_path = (ROOT / archive).resolve()
+                if repository_root not in archive_path.parents:
                     raise _native_error(
-                        package, name, 'archive must be relative to package root'
+                        package, name, 'archive must be relative to repository root'
                     )
                 _validate_native_digest(
                     package,
@@ -637,11 +637,10 @@ def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
                 raise _native_error(
                     package, name, 'notice-file must be a non-empty string'
                 )
-            package_root = (ROOT / package).resolve()
-            notice_path = (package_root / notice_file).resolve()
-            if package_root not in notice_path.parents:
+            notice_path = (ROOT / notice_file).resolve()
+            if repository_root not in notice_path.parents:
                 raise _native_error(
-                    package, name, 'notice-file must be relative to package root'
+                    package, name, 'notice-file must be relative to repository root'
                 )
             try:
                 text = notice_path.read_text(encoding='utf-8')

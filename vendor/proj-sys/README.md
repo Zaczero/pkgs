@@ -6,11 +6,11 @@ statically linked vendored libtiff and zlib.
 
 The libtiff source is the full upstream `v4.7.2` tree at commit
 `d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d`, recorded in
-`../libtiff-sys/libtiff.pin`. Initialize it before building from a fresh
+`../libtiff/libtiff.pin`. Initialize it before building from a fresh
 checkout:
 
 ```sh
-git submodule update --init gometry/native/libtiff-sys/libtiff
+git submodule update --init vendor/libtiff/source
 ```
 
 The bundled build verifies the pinned PROJ 9.9.0 archive and applies the

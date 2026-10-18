@@ -163,9 +163,57 @@ def _source_input_records(
         root / 'native',
         'gometry/native',
         native_files,
-        skip_hidden_native=True,
+        skip_hidden=True,
     )
+    for _, relative, source_root in source_root_entries(root):
+        _collect_source_files(
+            source_root,
+            relative,
+            native_files,
+            skip_hidden=True,
+        )
     return [*fixed, *source_files, *native_files], native_files
+
+
+def source_root_entries(root: Path) -> list[tuple[str, str, Path]]:
+    """Read the single source/include list shared with the Rust build script."""
+    repo = root.parent.resolve()
+    manifest = root / 'native' / 'source_roots.txt'
+    try:
+        lines = manifest.read_text(encoding='utf-8').splitlines()
+    except OSError as error:
+        raise AssertionError(
+            f'cannot read source-root manifest {manifest}: {error}'
+        ) from error
+    entries = []
+    for number, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        fields = line.split()
+        if len(fields) != 2 or fields[0] not in {'cargo', 'root'}:
+            raise AssertionError(
+                f'invalid source-root entry at {manifest}:{number}: {raw!r}'
+            )
+        kind, relative = fields
+        path = PurePosixPath(relative)
+        if path.is_absolute() or '..' in path.parts:
+            raise AssertionError(
+                f'source-root path escapes the repository at {manifest}:{number}: {relative!r}'
+            )
+        source_root = repo.joinpath(*path.parts)
+        try:
+            resolved = source_root.resolve(strict=True)
+        except OSError as error:
+            raise AssertionError(
+                f'source root is missing at {manifest}:{number}: {source_root}'
+            ) from error
+        if not resolved.is_relative_to(repo) or not resolved.is_dir():
+            raise AssertionError(
+                f'source root is not a repository directory at {manifest}:{number}: {source_root}'
+            )
+        entries.append((kind, relative, source_root))
+    return entries
 
 
 def _collect_source_files(
@@ -173,7 +221,7 @@ def _collect_source_files(
     logical_root: str,
     files: list[tuple[str, Path]],
     *,
-    skip_hidden_native: bool = False,
+    skip_hidden: bool = False,
 ) -> None:
     try:
         entries = sorted(root.iterdir(), key=lambda path: path.name)
@@ -182,17 +230,17 @@ def _collect_source_files(
             f'cannot read build input directory {root}: {error}'
         ) from error
     for path in entries:
-        if path.name == 'Cargo.toml':
+        if path.name in {'Cargo.toml', 'Cargo.toml.orig'}:
             continue
         logical = f'{logical_root}/{path.name}'
-        if skip_hidden_native and is_hidden_native_path(logical):
+        if skip_hidden and has_hidden_component(logical):
             continue
         if path.is_dir():
             _collect_source_files(
                 path,
                 logical,
                 files,
-                skip_hidden_native=skip_hidden_native,
+                skip_hidden=skip_hidden,
             )
         elif path.is_file():
             files.append((logical, path))
@@ -273,7 +321,7 @@ def inspect_libtiff_sdist_members(
     expected: set[str] | None = None,
 ) -> None:
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
-    prefix = f'{root}/gometry/native/libtiff-sys/libtiff/'
+    prefix = f'{root}/vendor/libtiff/source/'
     members = [
         name.removeprefix(prefix)
         for name in names

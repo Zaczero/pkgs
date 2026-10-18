@@ -37,8 +37,8 @@ ROOT = next(
 MONOREPO = ROOT.parent
 LICENSE_SCRIPT = MONOREPO / '.github' / 'scripts' / 'gen_licenses.py'
 README_SCRIPT = MONOREPO / '.github' / 'scripts' / 'render_pypi_readme.py'
-LIBTIFF = ROOT / 'native' / 'libtiff-sys' / 'libtiff'
-LIBTIFF_PIN = ROOT / 'native' / 'libtiff-sys' / 'libtiff.pin'
+LIBTIFF = ROOT.parent / 'vendor' / 'libtiff' / 'source'
+LIBTIFF_PIN = ROOT.parent / 'vendor' / 'libtiff' / 'libtiff.pin'
 LIBTIFF_COMMIT = 'd01a94be176f5f6a87f7ee1c0b32e65416aa2b4d'
 LIBTIFF_VERSION = '4.7.2'
 REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
@@ -54,7 +54,8 @@ RELEASE_BUILD_INPUTS = (
     'gometry/Cargo.toml',
     'gometry/pyproject.toml',
     'gometry/rust-toolchain.toml',
-    'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz',
+    'gometry/native/source_roots.txt',
+    'vendor/proj/proj-9.9.0.tar.gz',
 )
 ABSOLUTE_BUILD_PATH = re.compile(
     r'(?i)(?:/home/[^/\s]+/|/Users/[^/\s]+/|/nix/store/|/tmp/|'

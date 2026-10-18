@@ -12,6 +12,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 _ROOT = Path(__file__).resolve().parents[2]
+_MERMAID_PATH = 'assets/javascripts/mermaid-11.17.0.min.js'
 
 _PYTHON_FENCE = re.compile(
     r'^(?P<indent>[ \t]*)(?P<fence>`{3,})python(?P<options>[^\n]*)\n'
@@ -79,6 +80,21 @@ def on_page_content(html, *, config, **_kwargs):
         ).rstrip()
         block.wrap(wrapper)
     return str(soup)
+
+
+def on_files(files, *, config, **_kwargs):
+    if _MERMAID_PATH in config.extra_javascript:
+        from mkdocs.structure.files import File
+
+        files.append(
+            File(
+                path=_MERMAID_PATH,
+                src_dir=str(_ROOT / 'vendor' / 'mermaid'),
+                dest_dir=config.site_dir,
+                use_directory_urls=config.use_directory_urls,
+            )
+        )
+    return files
 
 
 def on_post_build(config, **_kwargs):

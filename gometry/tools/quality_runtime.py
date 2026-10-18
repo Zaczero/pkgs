@@ -80,9 +80,10 @@ def _quality_fixed_input_paths(root: Path) -> tuple[tuple[str, Path], ...]:
         ('gometry/Cargo.toml', root / 'Cargo.toml'),
         ('gometry/pyproject.toml', root / 'pyproject.toml'),
         ('gometry/rust-toolchain.toml', root / 'rust-toolchain.toml'),
+        ('gometry/native/source_roots.txt', root / 'native' / 'source_roots.txt'),
         (
-            'gometry/native/proj-sys/PROJSRC/proj-9.9.0.tar.gz',
-            root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.9.0.tar.gz',
+            'vendor/proj/proj-9.9.0.tar.gz',
+            root.parent / 'vendor' / 'proj' / 'proj-9.9.0.tar.gz',
         ),
         ('gometry/README.md', root / 'README.md'),
         ('gometry/LICENSE-APACHE.md', root / 'LICENSE-APACHE.md'),

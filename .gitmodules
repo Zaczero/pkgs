@@ -1,3 +1,3 @@
-[submodule "gometry/native/libtiff-sys/libtiff"]
-	path = gometry/native/libtiff-sys/libtiff
+[submodule "vendor/libtiff/source"]
+	path = vendor/libtiff/source
 	url = https://gitlab.com/libtiff/libtiff.git

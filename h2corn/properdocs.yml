@@ -65,8 +65,7 @@ extra_css:
 # library from unpkg.com unless a global `mermaid` already exists. Serving a
 # pinned copy keeps readers off a third-party CDN, keeps the site working
 # offline, and stops an upstream 11.x release from re-laying-out the diagrams.
-# Not under assets/vendor/: the repository ignores `vendor/`, so a copy there
-# would never be committed and every published build would fall back to the CDN.
+# The docs hook copies the shared source under vendor/ into this site path.
 extra_javascript: &javascript_assets
   - assets/javascripts/mermaid-11.17.0.min.js
   - assets/shared/accessibility.js

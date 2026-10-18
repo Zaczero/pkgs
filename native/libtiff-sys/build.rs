@@ -1,22 +1,25 @@
-#[path = "../cmake_flags.rs"]
-mod cmake_flags;
-
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
 const LIBTIFF_VERSION: &str = "4.7.2";
-const LIBTIFF_PATH: &str = "libtiff";
 const LIBTIFF_COMMIT: &str = "d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d";
 
 type BuildResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn main() -> BuildResult {
-    println!("cargo:rerun-if-changed=libtiff");
-    println!("cargo:rerun-if-changed=libtiff.pin");
+    let workspace_root = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo provides CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .canonicalize()?;
+    let libtiff = workspace_root.join("vendor/libtiff/source");
+    let pin = workspace_root.join("vendor/libtiff/libtiff.pin");
+    println!("cargo:rerun-if-changed={}", libtiff.display());
+    println!("cargo:rerun-if-changed={}", pin.display());
 
-    verify_pinned_source(Path::new(LIBTIFF_PATH))?;
+    verify_pinned_source(&libtiff, &pin)?;
     let zlib_root = PathBuf::from(
         env::var_os("DEP_Z_ROOT").ok_or("libz-sys must provide its bundled zlib root")?,
     );
@@ -25,7 +28,7 @@ fn main() -> BuildResult {
     } else {
         zlib_root.join("lib/libz.a")
     };
-    let mut config = cmake::Config::new("libtiff");
+    let mut config = cmake::Config::new(&libtiff);
     cmake_flags::configure_fresh_build(&mut config);
     config
         .profile("Release")
@@ -74,10 +77,10 @@ fn main() -> BuildResult {
     Ok(())
 }
 
-fn verify_pinned_source(source: &Path) -> BuildResult {
+fn verify_pinned_source(source: &Path, pin_path: &Path) -> BuildResult {
     let cmake = source.join("CMakeLists.txt");
     let version = source.join("VERSION");
-    let hint = "run `git submodule update --init gometry/native/libtiff-sys/libtiff`";
+    let hint = "run `git submodule update --init vendor/libtiff/source`";
     if !cmake.is_file() || !version.is_file() {
         return Err(format!(
             "libtiff source is not initialized (missing CMakeLists.txt or VERSION); {hint}"
@@ -87,7 +90,7 @@ fn verify_pinned_source(source: &Path) -> BuildResult {
     let expected_pin = format!(
         "url = https://gitlab.com/libtiff/libtiff.git\ncommit = {LIBTIFF_COMMIT}\ntag = v{LIBTIFF_VERSION}\nversion = {LIBTIFF_VERSION}\n"
     );
-    let pin = fs::read_to_string("libtiff.pin")
+    let pin = fs::read_to_string(pin_path)
         .map_err(|error| format!("cannot read libtiff.pin: {error}"))?;
     if pin != expected_pin {
         return Err("libtiff.pin does not describe the pinned libtiff source".into());
@@ -113,7 +116,8 @@ fn verify_pinned_source(source: &Path) -> BuildResult {
     }
     let git = |args: &[&str]| {
         Command::new("git")
-            .args(["-C", LIBTIFF_PATH])
+            .arg("-C")
+            .arg(source)
             .args(args)
             .output()
             .map_err(|error| format!("cannot inspect libtiff submodule: {error}"))

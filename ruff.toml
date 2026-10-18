@@ -1,12 +1,11 @@
 target-version = "py311"
 preview = true
 
-# libtiff is an upstream submodule checked out under gometry/native, so its build
-# and documentation scripts are another project's source: holding them to our
-# style makes every upstream sync a conflict over whitespace. `extend-exclude`
-# rather than `exclude`, which would replace ruff's own defaults instead of
-# adding to them.
-extend-exclude = ["gometry/native/libtiff-sys/libtiff/**"]
+# libtiff is an upstream submodule, so its build and documentation scripts are
+# another project's source: holding them to our style makes every upstream sync
+# a conflict over whitespace. `extend-exclude` rather than `exclude`, which
+# would replace ruff's own defaults instead of adding to them.
+extend-exclude = ["vendor/libtiff/source/**"]
 
 [per-file-target-version]
 ".github/scripts/**" = "py311"

@@ -457,8 +457,6 @@ Cargo.lock
 .uv-cache/
 repomix-output.xml
 uv.lock
-vendor/
-
 # Free-threaded / variant venvs (uv creates .venv-t etc.; plain .venv is above)
 .venv*/
 **/.venv*/

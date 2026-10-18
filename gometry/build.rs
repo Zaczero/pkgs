@@ -54,6 +54,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=native");
+    println!("cargo:rerun-if-changed=native/source_roots.txt");
     for variable in RELEASE_ENV_VARS {
         println!("cargo:rerun-if-env-changed={variable}");
     }
@@ -204,9 +205,66 @@ fn source_input_digests(manifest_dir: &Path) -> std::io::Result<(String, String)
         &mut native_files,
         true,
     )?;
+    for (logical_root, source_root) in source_roots(manifest_dir)? {
+        println!("cargo:rerun-if-changed={}", source_root.display());
+        collect_files(&source_root, &logical_root, &mut native_files, true)?;
+    }
     files.extend(source_files);
     files.extend(native_files.clone());
     Ok((digest_files(&files)?, digest_files(&native_files)?))
+}
+
+fn source_roots(manifest_dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
+    let workspace_root = manifest_dir
+        .parent()
+        .ok_or_else(|| std::io::Error::other("gometry manifest has no workspace parent"))?;
+    let manifest = manifest_dir.join("native/source_roots.txt");
+    let contents = fs::read_to_string(&manifest)?;
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            Some(line)
+        })
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            let kind = fields.next();
+            let relative = fields.next();
+            if fields.next().is_some() {
+                return Err(std::io::Error::other(format!(
+                    "invalid source root in {}: {line:?}",
+                    manifest.display()
+                )));
+            }
+            let (Some(kind), Some(relative)) = (kind, relative) else {
+                return Err(std::io::Error::other(format!(
+                    "invalid source root in {}: {line:?}",
+                    manifest.display()
+                )));
+            };
+            if !matches!(kind, "cargo" | "root") || relative.is_empty() {
+                return Err(std::io::Error::other(format!(
+                    "invalid source root in {}: {line:?}",
+                    manifest.display()
+                )));
+            }
+            let relative_path = Path::new(relative);
+            if relative_path.is_absolute()
+                || relative_path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+            {
+                return Err(std::io::Error::other(format!(
+                    "source root escapes the workspace in {}: {relative:?}",
+                    manifest.display()
+                )));
+            }
+            Ok((relative.to_owned(), workspace_root.join(relative)))
+        })
+        .collect()
 }
 
 fn digest_files(files: &[(String, PathBuf)]) -> std::io::Result<String> {
@@ -232,7 +290,7 @@ fn collect_files(
     root: &Path,
     logical_root: &str,
     files: &mut Vec<(String, PathBuf)>,
-    skip_hidden_native: bool,
+    skip_hidden: bool,
 ) -> std::io::Result<()> {
     let mut entries = fs::read_dir(root)
         .map_err(|error| {
@@ -259,20 +317,22 @@ fn collect_files(
     entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
-        if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+        if path
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.toml.orig")
+        {
             continue;
         }
         let logical = format!("{logical_root}/{}", entry.file_name().to_string_lossy());
-        if skip_hidden_native
+        if skip_hidden
             && logical
                 .split('/')
-                .skip(2)
                 .any(|component| component.starts_with('.'))
         {
             continue;
         }
         if path.is_dir() {
-            collect_files(&path, &logical, files, skip_hidden_native)?;
+            collect_files(&path, &logical, files, skip_hidden)?;
         } else if path.is_file() {
             files.push((logical, path));
         }
