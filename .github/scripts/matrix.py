@@ -65,10 +65,6 @@ FREETHREADED_TEST_EXCLUSIONS = {
         'build fails on CPython 3.15t; restore this cell when a compatible '
         'release is available.'
     ),
-    'starlette-compress': (
-        'The Brotli C extension re-enables the GIL on CPython 3.15t; restore '
-        'this cell when a GIL-safe Brotli dependency is available.'
-    ),
 }
 
 NATIVE_BUILD_RUNNERS = [

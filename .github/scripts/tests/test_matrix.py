@@ -137,6 +137,7 @@ def test_native_plan_keeps_every_free_threaded_abi_boundary() -> None:
 @pytest.mark.parametrize(
     'package',
     [
+        'starlette-compress',
         'httpx-secure',
         'jinja2-htmlmin',
         'sizestr',
