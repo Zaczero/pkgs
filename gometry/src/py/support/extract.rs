@@ -2,7 +2,7 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::PyBytes;
 
 use crate::boundary::FloatInput;
-use crate::geometry::storage::ValidityMask;
+use crate::geometry::storage::ValidityBuilder;
 use crate::geometry::{MOrdinate, Point, Shape, ZOrdinate};
 use crate::py::errors;
 use crate::py::errors::GeometryError;
@@ -141,22 +141,22 @@ pub(crate) fn normalize_geometry_batch<'py>(
         }
     }
 
-    let fallback = rows.iter().flatten().next().map_or_else(
-        || Shape::Point(Point::new(0.0, 0.0).expect("zero coordinates are finite")),
-        |geometry| geometry.shape.shape().clone(),
-    );
-    let mut missing = Vec::with_capacity(rows.len());
-    let mut shapes = Vec::with_capacity(rows.len());
-    for geometry in rows {
-        missing.push(geometry.is_none());
-        shapes.push(geometry.map_or_else(
-            || fallback.clone(),
-            |geometry| geometry.shape.shape().clone(),
-        ));
-    }
-    let row_count = shapes.len();
-    let array = PyGeometryArray::from_shapes(shapes, frame)?
-        .with_missing_mask(ValidityMask::from_vec(row_count, missing))?;
+    let array = py.detach(|| {
+        let mut shapes = Vec::with_capacity(rows.iter().flatten().count());
+        let mut validity = ValidityBuilder::with_capacity(rows.len());
+        for geometry in rows {
+            validity.push(geometry.is_some());
+            if let Some(geometry) = geometry {
+                shapes.push(geometry.shape.shape().clone());
+            }
+        }
+        let present = PyGeometryArray::from_shapes(shapes, frame)?;
+        if let Some(mask) = validity.finish() {
+            PyGeometryArray::scatter_present_rows(&present, mask)
+        } else {
+            Ok(present)
+        }
+    })?;
     Ok(Py::new(py, array)?.into_any().bind(py).clone())
 }
 

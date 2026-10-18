@@ -86,6 +86,57 @@ def test_similarity_and_shortest_line_normalize_nullable_iterable_operands() -> 
 
 
 @pytest.mark.parametrize(
+    'wkt',
+    [
+        'LINESTRING (0 0, 2 1)',
+        'LINESTRING Z (0 0 3, 2 1 5)',
+        'LINESTRING M (0 0 7, 2 1 9)',
+        'LINESTRING ZM (0 0 3 7, 2 1 5 9)',
+        'POLYGON ((0 0, 2 0, 2 2, 0 0))',
+        'GEOMETRYCOLLECTION (POINT (0 0), LINESTRING (1 0, 2 1))',
+    ],
+)
+def test_nullable_iterable_matches_native_array_with_leading_missing(wkt: str) -> None:
+    values = [None, gm.from_wkt(wkt), None]
+    reference = gm.Point(3.0, 4.0)
+    array = gm.GeometryArray(values)
+
+    np.testing.assert_allclose(
+        gm.distance(iter(values), reference),
+        gm.distance(array, reference),
+        equal_nan=True,
+    )
+    assert (
+        gm.shortest_line(iter(values), reference).to_wkt()
+        == gm.shortest_line(array, reference).to_wkt()
+    )
+
+
+def test_nullable_iterable_all_missing_keeps_logical_rows() -> None:
+    reference = gm.Point(3.0, 4.0)
+    np.testing.assert_allclose(
+        gm.distance(iter([None, None, None]), reference),
+        [np.nan, np.nan, np.nan],
+        equal_nan=True,
+    )
+    assert gm.shortest_line(iter([None, None, None]), reference).to_wkt() == [
+        None,
+        None,
+        None,
+    ]
+
+
+def test_iterable_type_error_precedes_earlier_frame_mismatch() -> None:
+    values = [
+        gm.Point(0.0, 0.0, crs=4326),
+        gm.Point(0.0, 0.0, crs=3857),
+        object(),
+    ]
+    with pytest.raises(TypeError, match='iterable rows must be Geometry or None'):
+        gm.shortest_line(iter(values), gm.Point(3.0, 4.0))
+
+
+@pytest.mark.parametrize(
     'operation',
     [
         pytest.param(gm.hausdorff_distance, id='hausdorff'),
