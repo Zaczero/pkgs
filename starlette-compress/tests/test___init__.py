@@ -4,6 +4,7 @@ import asyncio
 import copy
 import random
 import sys
+import sysconfig
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
     TestClientFactory = Callable[[ASGIApp], TestClient]
 else:
     TestClientFactory = Callable[..., TestClient]
+
+
+def test_brotli_import_preserves_free_threaded_execution():
+    if not sysconfig.get_config_var('Py_GIL_DISABLED'):
+        pytest.skip('requires free-threaded CPython')
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError('the app is not called during middleware construction')
+
+    CompressMiddleware(app)
+
+    assert sys._is_gil_enabled() is False  # type: ignore[attr-defined]
 
 
 def test_compress_responses(test_client_factory: TestClientFactory):
@@ -113,17 +126,17 @@ def test_compress_ignored_for_small_responses(test_client_factory: TestClientFac
 def test_compress_streaming_response(
     test_client_factory: TestClientFactory, chunk_size: int
 ):
-    random.seed(42)
     chunk_count = 70
+    randomizer = random.Random(42)
+    chunks = tuple(randomizer.randbytes(chunk_size) for _ in range(chunk_count))
+    expected = b''.join(chunks)
 
     def homepage(request: Request) -> StreamingResponse:
-        async def generator(count: int):
-            for _ in range(count):
-                # enough entropy is required for successful chunks
-                yield random.getrandbits(8 * chunk_size).to_bytes(chunk_size, 'big')
+        async def generator():
+            for chunk in chunks:
+                yield chunk
 
-        streaming = generator(chunk_count)
-        return StreamingResponse(streaming, media_type='text/plain')
+        return StreamingResponse(generator(), media_type='text/plain')
 
     app = Starlette(
         routes=[Route('/', endpoint=homepage)],
@@ -136,13 +149,10 @@ def test_compress_streaming_response(
         response = client.get('/', headers={'accept-encoding': encoding})
         assert response.status_code == 200
 
-        try:
-            assert len(response.content) == chunk_count * chunk_size
-        except AssertionError:
-            if encoding != 'zstd':
-                raise
-
-            assert len(_decompress_zstd(response.content)) == chunk_count * chunk_size
+        response_body = response.content
+        if encoding == 'zstd' and response_body != expected:
+            response_body = _decompress_zstd(response_body)
+        assert response_body == expected
 
         assert response.headers['Content-Encoding'] == encoding
         assert 'Content-Length' not in response.headers
@@ -429,18 +439,7 @@ def _make_incremental_decompressor(encoding: str):
         return feed
 
     if encoding == 'br':
-        from platform import python_implementation
-
-        if python_implementation() == 'CPython':
-            try:
-                import brotli
-            except ModuleNotFoundError:
-                import brotlicffi as brotli
-        else:
-            try:
-                import brotlicffi as brotli
-            except ModuleNotFoundError:
-                import brotli
+        import brotlicffi as brotli
 
         dec = brotli.Decompressor()
 
@@ -754,18 +753,7 @@ def test_sse_oneshot_under_pathsend_capable_scope(encoding: str):
 
         assert gzip.decompress(bodies[0]['body']) == payload
     elif encoding == 'br':
-        from platform import python_implementation
-
-        if python_implementation() == 'CPython':
-            try:
-                import brotli
-            except ModuleNotFoundError:
-                import brotlicffi as brotli
-        else:
-            try:
-                import brotlicffi as brotli
-            except ModuleNotFoundError:
-                import brotli
+        import brotlicffi as brotli
 
         assert brotli.decompress(bodies[0]['body']) == payload
     elif sys.version_info >= (3, 14):

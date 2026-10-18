@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import sys
+import sysconfig
 
 from starlette_compress._responder import CompressionResponder
 
 TYPE_CHECKING = False
 
-if sys.implementation.name == 'cpython' and not TYPE_CHECKING:
-    try:
-        import brotli
-    except ModuleNotFoundError:
-        import brotlicffi as brotli
+_FREE_THREADED = bool(sysconfig.get_config_var('Py_GIL_DISABLED'))
+
+# The current PyPI brotli release lacks free-threaded module support.
+if _FREE_THREADED:
+    import brotlicffi as brotli
 else:
-    try:
-        import brotlicffi as brotli
-    except ModuleNotFoundError:
-        import brotli
+    import brotli
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -31,6 +28,19 @@ class _BrotliStreamEncoder:
 
     def feed(self, data: bytes, flush: bool) -> Iterable[bytes]:
         out = self._compressor.process(data)
+        if _FREE_THREADED:
+            # Drain CFFI's fixed-size output buffer before the next input call.
+            chunks = [out] if out else []
+            while True:
+                out = self._compressor.process(b'')
+                if not out:
+                    break
+                chunks.append(out)
+            if flush:
+                out = self._compressor.flush()
+                if out:
+                    chunks.append(out)
+            return tuple(chunks)
         if flush:
             out += self._compressor.flush()
         return (out,) if out else ()

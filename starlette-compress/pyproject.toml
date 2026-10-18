@@ -42,9 +42,10 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
+# Free-threaded CPython starts in 3.13. Its ABI has no supported marker yet.
 dependencies = [
   "brotli>=1; platform_python_implementation == 'CPython'",
-  "brotlicffi>=1; platform_python_implementation != 'CPython'",
+  "brotlicffi>=1; platform_python_implementation == 'CPython' and python_version >= '3.13'",
   "starlette",
   "zstandard>=0.15; python_version<'3.14'",
 ]

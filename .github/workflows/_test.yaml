@@ -249,7 +249,15 @@ jobs:
             export MATURIN_PEP517_ARGS="--profile dev"
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
-          uv sync --no-default-groups --group "$DEPENDENCY_GROUP"
+          # PyPI brotli 1.2.0 re-enables the GIL when imported; HTTPX2's test
+          # client imports it whenever installed. Drop this once a brotli
+          # release declares free-threading support.
+          if [[ "$PACKAGE" == starlette-compress && "$FREETHREADED" == true ]]; then
+            uv sync --no-default-groups --group "$DEPENDENCY_GROUP" \
+              --no-install-package brotli
+          else
+            uv sync --no-default-groups --group "$DEPENDENCY_GROUP"
+          fi
           uv run --no-sync python - "$IMPORT_NAME" <<'PY'
           import importlib
           import sys
@@ -258,8 +266,11 @@ jobs:
           if sysconfig.get_config_var("Py_GIL_DISABLED"):
               assert not sys._is_gil_enabled()
           PY
-          uv run --no-sync python -m pytest tests \
-            --ignore=tests/tooling --ignore=tests/test_public_docs.py
+          pytest_args=(tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
+          if [[ "$FREETHREADED" == true ]]; then
+            pytest_args+=(-n 0)
+          fi
+          uv run --no-sync python -m pytest "${pytest_args[@]}"
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: fromJson(inputs.plan).crate != '' && matrix.primary
