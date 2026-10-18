@@ -12,6 +12,7 @@ from jinja2 import (
     FileSystemLoader,
     ModuleLoader,
     PrefixLoader,
+    TemplateSyntaxError,
 )
 
 import jinja2_htmlmin
@@ -128,6 +129,26 @@ def test_multiline_jinja_syntax_is_preserved():
     )
 
     assert rendered == '<p>content</p><b>yes</b>'
+
+
+@pytest.mark.parametrize(
+    'source',
+    [
+        pytest.param('<p>kept</p>{{ value', id='unfinished-variable'),
+        pytest.param('<p>kept</p>{% if value', id='unfinished-block'),
+        pytest.param('<p>kept</p>{{', id='empty-variable'),
+        pytest.param('<p>kept</p>{%', id='empty-block'),
+    ],
+)
+def test_unfinished_jinja_tags_reach_the_parser(source):
+    loader = minify_loader(DictLoader({'broken.html': source}))
+    environment = Environment(loader=loader, autoescape=True)
+
+    with pytest.raises(TemplateSyntaxError) as caught:
+        environment.get_template('broken.html')
+
+    assert caught.value.name == 'broken.html'
+    assert caught.value.lineno == 1
 
 
 def test_delimiter_text_inside_jinja_strings_is_preserved():

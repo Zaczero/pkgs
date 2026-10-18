@@ -109,6 +109,9 @@ def _protect_jinja_syntax(
         else:
             raise RuntimeError(f'unexpected Jinja token outside tag: {token}')
 
+    if parts is not None:
+        out.append(add_placeholder(''.join(parts)))
+
     return ''.join(out), lookup, placeholder_prefix
 
 
