@@ -240,11 +240,12 @@ jobs:
         env:
           DEPENDENCY_GROUP: ${{ matrix.dependency-group }}
           FREETHREADED: ${{ matrix.freethreaded }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          if [ "$FREETHREADED" = true ]; then
+          if [[ "$FREETHREADED" == true || "$PYTHON_VERSION" == pypy* ]]; then
             export MATURIN_PEP517_ARGS="--profile dev"
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi

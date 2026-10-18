@@ -7,8 +7,8 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
 * macOS and Windows test the newest supported stable minor only (GIL).
 * Free-threaded pytest: native packages, every shippable ABI on Linux and
   the newest supported minor on macOS and Windows.
-* PyPy pytest: one Linux cell when the package advertises PyPy (classifier),
-  using the newest PyPy minor uv can install that satisfies requires-python.
+* PyPy pytest: one Linux cell per package, using the newest stable minor uv
+  offers that satisfies requires-python.
 * Build runners: pure Python → ubuntu only; native → multi-arch including
   Windows ARM.
 * Development dependencies are installed for every cell. Packages whose native
@@ -227,14 +227,18 @@ def newest_pypy_selector(
     catalog: Sequence[dict[str, Any]],
     *,
     requires_python: str,
-    os_name: str = 'linux',
 ) -> str | None:
-    """Newest PyPy minor uv offers on *os_name* that satisfies requires-python."""
+    """Newest stable Linux x86-64 PyPy satisfying requires-python."""
     candidates: list[tuple[Minor, str]] = []
     for entry in catalog:
         if entry.get('implementation') != 'pypy':
             continue
-        if entry.get('os') != os_name:
+        if (
+            entry.get('os') != 'linux'
+            or entry.get('arch') != 'x86_64'
+            or entry.get('libc') != 'gnu'
+            or not is_default_variant(entry)
+        ):
             continue
         if not isinstance(entry.get('version'), str):
             continue
@@ -242,10 +246,14 @@ def newest_pypy_selector(
         if parsed is None or parsed.is_prerelease:
             continue
         minor = parsed.as_minor
-        if not satisfies_requires_python(requires_python, minor):
-            continue
-        # uv / setup-uv accept pypy3.N selectors.
-        candidates.append((minor, f'pypy3.{minor.minor}'))
+        candidates.append((minor, f'pypy{minor.major}.{minor.minor}'))
+    if not candidates:
+        fail('uv does not offer stable PyPy on Linux x86-64; update uv')
+    candidates = [
+        candidate
+        for candidate in candidates
+        if satisfies_requires_python(requires_python, candidate[0])
+    ]
     if not candidates:
         return None
     candidates.sort()
@@ -392,7 +400,6 @@ def resolve_matrix(
     primary = max(stable_minors)
 
     has_rust = bool(info.get('crate'))
-    pypy = info['pypy']
 
     freethreaded_linux: list[Minor] = []
     if has_rust:
@@ -418,16 +425,9 @@ def resolve_matrix(
                         f'{primary.freethreaded_selector} on {os_name}; update uv'
                     )
 
-    pypy_selector = (
-        newest_pypy_selector(catalog_entries, requires_python=requires_python)
-        if pypy
-        else None
+    pypy_selector = newest_pypy_selector(
+        catalog_entries, requires_python=requires_python
     )
-    if pypy and pypy_selector is None:
-        fail(
-            f'package {package!r} advertises PyPy but no matching PyPy download '
-            f'was found for requires-python={requires_python!r}'
-        )
 
     test_matrix = build_test_matrix(
         stable_minors=stable_minors,
