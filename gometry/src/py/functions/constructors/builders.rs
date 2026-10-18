@@ -30,11 +30,7 @@ mod tests;
 
 pub(super) use array::build_geometry_array;
 pub(crate) use array::build_geometry_collection;
-use data::{GeometryArrayItem, polygon_from_coordinates_item};
-pub(super) use data::{
-    line_string_from_data_item, multi_line_string_from_data_item, multi_point_from_data_item,
-    multi_polygon_from_data_item, polygon_from_data_item,
-};
+use data::polygon_from_coordinates_item;
 use frame::{geometry_with_crs_epoch, geometry_with_frame};
 pub(crate) use multipart::{build_multi_line_string, build_multi_point, build_multi_polygon};
 use multipart::{

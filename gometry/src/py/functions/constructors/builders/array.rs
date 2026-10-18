@@ -1,12 +1,21 @@
 use super::*;
+use crate::boundary::reserve::PYTHON_SIGNAL_STRIDE;
 
-pub(in crate::py::functions::constructors) fn build_geometry_array<'py>(
-    values: &Bound<'py, PyAny>,
+pub(in crate::py::functions::constructors) fn build_geometry_array(
+    values: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
-    structure: crate::CoordSeqStructure,
-    item: impl Fn(GeometryArrayItem<'py>) -> PyResult<(Shape, Frame)>,
+    kind: GeometryKind,
 ) -> PyResult<PyGeometryArray> {
+    let structure = match kind {
+        GeometryKind::LineString | GeometryKind::MultiPoint => crate::CoordSeqStructure::Sequence,
+        GeometryKind::Polygon => crate::CoordSeqStructure::Polygon,
+        GeometryKind::MultiLineString => crate::CoordSeqStructure::MultiLineString,
+        GeometryKind::MultiPolygon => crate::CoordSeqStructure::MultiPolygon,
+        GeometryKind::Point | GeometryKind::GeometryCollection => {
+            unreachable!("coordinate-array factories construct sequences or polygons")
+        },
+    };
     numpy::reject_masked_array(values)?;
     // Admit CRS and iterator acquisition before consulting the source's exact
     // length. The count sizes storage only; iteration remains authoritative.
@@ -29,14 +38,28 @@ pub(in crate::py::functions::constructors) fn build_geometry_array<'py>(
         let &[row_count, ..] = buffer.shape.as_slice() else {
             unreachable!("a geometry-array buffer has an outer row dimension");
         };
-        for row in 0..row_count {
-            if row != 0 || !first_signal_checked {
-                crate::check_python_signals(values.py(), row)?;
-            }
-            let (shape, _) = item(GeometryArrayItem::Buffer(buffer.row(row)?))?;
-            rows.try_push(shape)?;
+        if row_count == 0 {
+            return Ok(rows.finish(frame)?);
         }
-        return Ok(rows.finish(frame)?);
+        return Ok(values
+            .py()
+            .detach(|| -> PyResult<crate::error::Result<_>> {
+                for row in 0..row_count {
+                    if row.is_multiple_of(PYTHON_SIGNAL_STRIDE)
+                        && (row != 0 || !first_signal_checked)
+                    {
+                        pyo3::Python::attach(|py| crate::check_python_signals(py, row))?;
+                    }
+                    if let Err(error) = buffer
+                        .row(row)
+                        .and_then(|buffer| data::geometry_from_buffer(buffer, kind))
+                        .and_then(|shape| rows.try_push(shape))
+                    {
+                        return Ok(Err(error));
+                    }
+                }
+                Ok(rows.finish(frame))
+            })??);
     }
 
     let mut row_frames: Option<Vec<Frame>> = None;
@@ -56,11 +79,11 @@ pub(in crate::py::functions::constructors) fn build_geometry_array<'py>(
         } else {
             None
         };
-        let data_item = buffer.map_or_else(
-            || GeometryArrayItem::Python(item_value),
-            GeometryArrayItem::Buffer,
-        );
-        let (shape, row_frame) = item(data_item)?;
+        let (shape, row_frame) = if let Some(buffer) = buffer {
+            (data::geometry_from_buffer(buffer, kind)?, Frame::None)
+        } else {
+            data::geometry_from_data_item(&item_value, kind)?
+        };
         if let Some(frames) = &mut row_frames {
             frames.push(row_frame);
         } else if !matches!(row_frame, Frame::None) {
@@ -72,19 +95,24 @@ pub(in crate::py::functions::constructors) fn build_geometry_array<'py>(
         rows.try_push(shape)?;
         row_count = row_count.wrapping_add(1);
     }
-    let frame = if let Some(mut frames) = row_frames {
-        metadata::resolve_frame_rows(
-            &mut frames,
-            crate::FrameAdoption {
-                crs: frame.crs_owned(),
-                epoch: frame.epoch(),
-            },
-            "GeometryArray",
-        )?
-    } else {
-        frame
-    };
-    Ok(rows.finish(frame)?)
+    if row_count == 0 {
+        return Ok(rows.finish(frame)?);
+    }
+    Ok(values.py().detach(|| -> crate::error::Result<_> {
+        let frame = if let Some(mut frames) = row_frames {
+            metadata::resolve_frame_rows(
+                &mut frames,
+                crate::FrameAdoption {
+                    crs: frame.crs_owned(),
+                    epoch: frame.epoch(),
+                },
+                "GeometryArray",
+            )?
+        } else {
+            frame
+        };
+        rows.finish(frame)
+    })?)
 }
 
 /// Build a ``GeometryCollection`` from a sequence of geometries.
@@ -117,26 +145,35 @@ pub(crate) fn build_geometry_collection(
     })?;
     let explicit_crs = parse_crs(crs)?;
     let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
-    let frame = metadata::resolve_geometry_frames(
-        &mut members,
-        FrameAdoption {
-            crs: explicit_crs,
-            epoch: explicit_epoch,
-        },
-        "GeometryCollection",
-    )?;
-    let items = members
-        .into_iter()
-        .map(
-            |geometry| match std::sync::Arc::try_unwrap(geometry.shape) {
-                Ok(data) => data.into_shape(),
-                Err(shared) => shared.shape().clone(),
+    if members.is_empty() {
+        return Ok(PyGeometry::new_with_crs_epoch(
+            empty_geometry_collection(),
+            explicit_crs,
+            explicit_epoch,
+        )?);
+    }
+    Ok(geometries.py().detach(|| -> crate::error::Result<_> {
+        let frame = metadata::resolve_geometry_frames(
+            &mut members,
+            FrameAdoption {
+                crs: explicit_crs,
+                epoch: explicit_epoch,
             },
+            "GeometryCollection",
+        )?;
+        let items = members
+            .into_iter()
+            .map(
+                |geometry| match std::sync::Arc::try_unwrap(geometry.shape) {
+                    Ok(data) => data.into_shape(),
+                    Err(shared) => shared.shape().clone(),
+                },
+            )
+            .collect();
+        PyGeometry::new_with_crs_epoch(
+            Shape::geometry_collection(items)?,
+            frame.crs_owned(),
+            frame.epoch(),
         )
-        .collect();
-    Ok(PyGeometry::new_with_crs_epoch(
-        Shape::geometry_collection(items)?,
-        frame.crs_owned(),
-        frame.epoch(),
-    )?)
+    })?)
 }

@@ -319,24 +319,34 @@ pub(crate) fn build_polygon(
             epoch,
         );
     }
-    let shell = Ring::closed_coordseq(shell_coords)?;
+    let close_shell = Ring::closure_requires_append(&shell_coords)?;
     // Rings must share one axes layout at construction (same rule as WKT/WKB
     // writers via `require_serializable_axes`) — never admit mixed XY/XYZ that
     // would invent Z/M on serialize. Promote with force_3d/with_coordinates(m=...) first.
     let holes = match holes {
         Some(value) => crate::collect_py_iter(value, |item| {
-            Ok(Ring::closed_coordseq(coordinate_vertices(
-                Some(&item),
-                None,
-                None,
-                None,
-                None,
-            )?)?)
+            let coordinates = coordinate_vertices(Some(&item), None, None, None, None)?;
+            Ring::closure_requires_append(&coordinates)?;
+            Ok(coordinates)
         })?,
         None => Vec::new(),
     };
-    let shape = Shape::Polygon(Polygon::new(shell, holes));
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    let attached = !close_shell && holes.is_empty();
+    let finish = || -> crate::error::Result<_> {
+        let shell = Ring::closed_coordseq(shell_coords)?;
+        let holes = holes
+            .into_iter()
+            .map(Ring::closed_coordseq)
+            .collect::<crate::error::Result<Vec<_>>>()?;
+        let shape = Shape::Polygon(Polygon::new(shell, holes));
+        crate::io::require_serializable_axes(&shape)?;
+        Ok(shape)
+    };
+    let shape = if attached {
+        finish()?
+    } else {
+        pyo3::Python::attach(|py| py.detach(finish))?
+    };
     geometry_with_crs_epoch(shape, crs, epoch)
 }
 

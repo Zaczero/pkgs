@@ -8,9 +8,7 @@ use crate::py::functions::constructors::{
     PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
     broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array,
     coordinate_column_values_from_buffer, coordinate_epoch_option, finite_coordinate_required,
-    line_string_from_data_item, multi_line_string_from_data_item, multi_point_from_data_item,
-    multi_polygon_from_data_item, optional_coordinate_column_values_from_buffer, parse_crs,
-    parse_crs_epoch, polygon_from_data_item, pyfunction,
+    optional_coordinate_column_values_from_buffer, parse_crs, parse_crs_epoch, pyfunction,
 };
 use crate::py::numpy;
 
@@ -580,13 +578,7 @@ pub(super) fn line_strings(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(
-        values,
-        crs,
-        epoch,
-        crate::CoordSeqStructure::Sequence,
-        line_string_from_data_item,
-    )
+    build_geometry_array(values, crs, epoch, GeometryKind::LineString)
 }
 
 /// Create a ``GeometryArray`` of polygons from raw coordinates or Polygons.
@@ -634,13 +626,7 @@ pub(super) fn polygons(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(
-        values,
-        crs,
-        epoch,
-        crate::CoordSeqStructure::Polygon,
-        polygon_from_data_item,
-    )
+    build_geometry_array(values, crs, epoch, GeometryKind::Polygon)
 }
 
 /// Create a ``GeometryArray`` of multipoints from per-row inputs.
@@ -688,13 +674,7 @@ pub(super) fn multi_points(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(
-        values,
-        crs,
-        epoch,
-        crate::CoordSeqStructure::Sequence,
-        multi_point_from_data_item,
-    )
+    build_geometry_array(values, crs, epoch, GeometryKind::MultiPoint)
 }
 
 /// Create a ``GeometryArray`` of multilinestrings from per-row inputs.
@@ -742,13 +722,7 @@ pub(super) fn multi_line_strings(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(
-        values,
-        crs,
-        epoch,
-        crate::CoordSeqStructure::MultiLineString,
-        multi_line_string_from_data_item,
-    )
+    build_geometry_array(values, crs, epoch, GeometryKind::MultiLineString)
 }
 
 /// Create a ``GeometryArray`` of multipolygons from per-row inputs.
@@ -796,11 +770,5 @@ pub(super) fn multi_polygons(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(
-        values,
-        crs,
-        epoch,
-        crate::CoordSeqStructure::MultiPolygon,
-        multi_polygon_from_data_item,
-    )
+    build_geometry_array(values, crs, epoch, GeometryKind::MultiPolygon)
 }

@@ -1,14 +1,75 @@
 use super::*;
 
-pub(super) fn multipart_members(
+pub(super) enum MultipartKind {
+    Point,
+    LineString,
+    Polygon,
+}
+
+impl MultipartKind {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Point => "MultiPoint",
+            Self::LineString => "MultiLineString",
+            Self::Polygon => "MultiPolygon",
+        }
+    }
+}
+
+pub(super) enum MultipartParts {
+    Ready(Shape, Frame),
+    Members {
+        kind: MultipartKind,
+        members: Vec<Shape>,
+        frames: Vec<Frame>,
+        explicit: FrameAdoption,
+    },
+}
+
+impl MultipartParts {
+    pub(super) fn finish(self) -> crate::error::Result<(Shape, Frame)> {
+        let (kind, members, mut frames, explicit) = match self {
+            Self::Ready(shape, frame) => return Ok((shape, frame)),
+            Self::Members {
+                kind,
+                members,
+                frames,
+                explicit,
+            } => (kind, members, frames, explicit),
+        };
+        let frame = metadata::resolve_frame_rows(&mut frames, explicit, kind.name())?;
+        let shape = match kind {
+            MultipartKind::Point => finish_multi_point(members)?,
+            MultipartKind::LineString => finish_multi_line_string(members)?,
+            MultipartKind::Polygon => finish_multi_polygon(members)?,
+        };
+        Ok((shape, frame))
+    }
+
+    fn publish(self, py: pyo3::Python<'_>) -> PyResult<PyGeometry> {
+        let attached = match &self {
+            Self::Ready(..) => true,
+            Self::Members { members, .. } => members.is_empty(),
+        };
+        let (shape, frame) = if attached {
+            self.finish()?
+        } else {
+            py.detach(|| self.finish())?
+        };
+        Ok(PyGeometry::with_frame(shape, frame))
+    }
+}
+
+fn multipart_members(
     values: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
-    context: &str,
+    kind: MultipartKind,
     expected: &str,
     exact: impl Fn(&Shape) -> Option<Shape>,
     raw: impl Fn(&Bound<'_, PyAny>) -> PyResult<Shape>,
-) -> PyResult<(Vec<Shape>, Frame)> {
+) -> PyResult<MultipartParts> {
+    let context = kind.name();
     numpy::reject_masked_array(values)?;
     // Materialize every member before frame reconciliation so a later member
     // error keeps precedence over a frame conflict.
@@ -34,14 +95,21 @@ pub(super) fn multipart_members(
         crs: parse_crs(crs)?,
         epoch: coordinate_epoch_option("epoch", epoch)?,
     };
-    let frame = metadata::resolve_frame_rows(&mut frames, explicit, context)?;
-    Ok((members, frame))
+    Ok(MultipartParts::Members {
+        kind,
+        members,
+        frames,
+        explicit,
+    })
 }
 
-fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<CoordinateAxes> {
+fn homogeneous_multipart_axes(
+    members: &[Shape],
+    kind: &str,
+) -> crate::error::Result<CoordinateAxes> {
     let axes = members.first().map_or(CoordinateAxes::XY, Shape::axes);
     if members.iter().any(|member| member.axes() != axes) {
-        return Err(InvalidGeometryError::new_err(format!(
+        return Err(crate::geometry::GeometryErrorKind::message(format!(
             "{kind} members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)"
         )));
     }
@@ -58,8 +126,8 @@ pub(crate) fn build_multi_point(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
-    let (shape, frame) = build_multi_point_parts(coordinates, x, y, z, m, crs, epoch)?;
-    Ok(PyGeometry::with_frame(shape, frame))
+    let parts = build_multi_point_parts(coordinates, x, y, z, m, crs, epoch)?;
+    pyo3::Python::attach(|py| parts.publish(py))
 }
 
 pub(super) fn build_multi_point_parts(
@@ -70,17 +138,20 @@ pub(super) fn build_multi_point_parts(
     m: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(Shape, Frame)> {
+) -> PyResult<MultipartParts> {
     if let Some(coordinates) = coordinates {
         numpy::reject_masked_array(coordinates)?;
     }
     // No coordinates → `MULTIPOINT EMPTY` (Shapely-compatible `MultiPoint()`).
     if coordinates.is_none() && x.is_none() && y.is_none() && z.is_none() && m.is_none() {
-        return Ok((empty_multi_point(), parse_crs_epoch(crs, epoch)?));
+        return Ok(MultipartParts::Ready(
+            empty_multi_point(),
+            parse_crs_epoch(crs, epoch)?,
+        ));
     }
     if x.is_some() || y.is_some() || z.is_some() || m.is_some() {
         let points = coordinate_vertices(coordinates, x, y, z, m)?;
-        return Ok((
+        return Ok(MultipartParts::Ready(
             Shape::multi_point(points.axes(), points),
             parse_crs_epoch(crs, epoch)?,
         ));
@@ -94,16 +165,16 @@ pub(super) fn build_multi_point_parts(
         crate::CoordSeqBufferMode::Geometry(crate::CoordSeqStructure::Sequence),
     )? {
         let seq = buffer.coordinates;
-        return Ok((
+        return Ok(MultipartParts::Ready(
             Shape::multi_point(seq.axes(), seq),
             parse_crs_epoch(crs, epoch)?,
         ));
     }
-    let (members, frame) = multipart_members(
+    multipart_members(
         coordinates,
         crs,
         epoch,
-        "MultiPoint",
+        MultipartKind::Point,
         "Point or coordinate",
         |shape| match shape {
             Shape::Point(point) => Some(Shape::Point(*point)),
@@ -122,14 +193,17 @@ pub(super) fn build_multi_point_parts(
                 Shape::Point,
             ))
         },
-    )?;
+    )
+}
+
+fn finish_multi_point(members: Vec<Shape>) -> crate::error::Result<Shape> {
     if members.is_empty() {
-        return Ok((empty_multi_point(), frame));
+        return Ok(empty_multi_point());
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
     if members.iter().all(|shape| matches!(shape, Shape::Point(_))) {
         let coordinates = dense_multi_point_coordinates(members, axes)?;
-        return Ok((Shape::multi_point(axes, coordinates), frame));
+        return Ok(Shape::multi_point(axes, coordinates));
     }
     let mut point_members = Vec::with_capacity(members.len());
     for shape in members {
@@ -145,19 +219,13 @@ pub(super) fn build_multi_point_parts(
             | Shape::Empty(..) => unreachable!("multipart member type checked above"),
         });
     }
-    if point_members.is_empty() {
-        return Ok((empty_multi_point(), frame));
-    }
-    Ok((
-        Shape::MultiPoint(MultiPoint::try_new(axes, point_members).map_err(PyErr::from)?),
-        frame,
-    ))
+    Ok(Shape::MultiPoint(MultiPoint::try_new(axes, point_members)?))
 }
 
 pub(super) fn dense_multi_point_coordinates(
     members: Vec<Shape>,
     axes: CoordinateAxes,
-) -> PyResult<CoordSeq> {
+) -> crate::error::Result<CoordSeq> {
     let mut coordinates = CoordSeqBuilder::with_capacity(axes, members.len());
     for member in members {
         let Shape::Point(point) = member else {
@@ -165,7 +233,7 @@ pub(super) fn dense_multi_point_coordinates(
         };
         coordinates.push(point);
     }
-    coordinates.finish().map_err(PyErr::from)
+    coordinates.finish()
 }
 
 /// Build a ``MultiLineString`` from a sequence of line coordinate sequences.
@@ -174,24 +242,27 @@ pub(crate) fn build_multi_line_string(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
-    let (shape, frame) = build_multi_line_string_parts(lines, crs, epoch)?;
-    Ok(PyGeometry::with_frame(shape, frame))
+    let parts = build_multi_line_string_parts(lines, crs, epoch)?;
+    pyo3::Python::attach(|py| parts.publish(py))
 }
 
 pub(super) fn build_multi_line_string_parts(
     lines: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(Shape, Frame)> {
+) -> PyResult<MultipartParts> {
     // No members → `MULTILINESTRING EMPTY` (Shapely-compatible `MultiLineString()`).
     let Some(lines) = lines else {
-        return Ok((empty_multi_line_string(), parse_crs_epoch(crs, epoch)?));
+        return Ok(MultipartParts::Ready(
+            empty_multi_line_string(),
+            parse_crs_epoch(crs, epoch)?,
+        ));
     };
-    let (members, frame) = multipart_members(
+    multipart_members(
         lines,
         crs,
         epoch,
-        "MultiLineString",
+        MultipartKind::LineString,
         "LineString or coordinate sequence",
         |shape| match shape {
             Shape::LineString(line) => Some(Shape::LineString(line.clone())),
@@ -224,9 +295,12 @@ pub(super) fn build_multi_line_string_parts(
                 ))
             }
         },
-    )?;
+    )
+}
+
+fn finish_multi_line_string(members: Vec<Shape>) -> crate::error::Result<Shape> {
     if members.is_empty() {
-        return Ok((empty_multi_line_string(), frame));
+        return Ok(empty_multi_line_string());
     }
     let axes = homogeneous_multipart_axes(&members, "MultiLineString")?;
     if members
@@ -241,8 +315,8 @@ pub(super) fn build_multi_line_string_parts(
             lines.push(line);
         }
         let shape = Shape::multi_line_string(axes, lines);
-        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok((shape, frame));
+        crate::io::require_serializable_axes(&shape)?;
+        return Ok(shape);
     }
     let member_count = members.len();
     let mut line_members = Vec::with_capacity(member_count);
@@ -259,13 +333,12 @@ pub(super) fn build_multi_line_string_parts(
             | Shape::Empty(..) => unreachable!("multipart member type checked above"),
         });
     }
-    let shape =
-        Shape::MultiLineString(MultiLineString::try_new(axes, line_members).map_err(PyErr::from)?);
+    let shape = Shape::MultiLineString(MultiLineString::try_new(axes, line_members)?);
     // Match writers (`require_serializable_axes`): reject heterogeneous XY/XYZ
     // members at construction rather than admit a shape that cannot serialize
     // without inventing Z/M.
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok((shape, frame))
+    crate::io::require_serializable_axes(&shape)?;
+    Ok(shape)
 }
 
 /// Build a ``MultiPolygon`` from a sequence of polygons.
@@ -274,24 +347,27 @@ pub(crate) fn build_multi_polygon(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
-    let (shape, frame) = build_multi_polygon_parts(polygons, crs, epoch)?;
-    Ok(PyGeometry::with_frame(shape, frame))
+    let parts = build_multi_polygon_parts(polygons, crs, epoch)?;
+    pyo3::Python::attach(|py| parts.publish(py))
 }
 
 pub(super) fn build_multi_polygon_parts(
     polygons: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(Shape, Frame)> {
+) -> PyResult<MultipartParts> {
     // No members → `MULTIPOLYGON EMPTY` (Shapely-compatible `MultiPolygon()`).
     let Some(polygons) = polygons else {
-        return Ok((empty_multi_polygon(), parse_crs_epoch(crs, epoch)?));
+        return Ok(MultipartParts::Ready(
+            empty_multi_polygon(),
+            parse_crs_epoch(crs, epoch)?,
+        ));
     };
-    let (members, frame) = multipart_members(
+    multipart_members(
         polygons,
         crs,
         epoch,
-        "MultiPolygon",
+        MultipartKind::Polygon,
         "Polygon or polygon coordinates",
         |shape| match shape {
             Shape::Polygon(polygon) => Some(Shape::Polygon(polygon.clone())),
@@ -305,9 +381,12 @@ pub(super) fn build_multi_polygon_parts(
             | Shape::Empty(..) => None,
         },
         polygon_from_coordinates_item,
-    )?;
+    )
+}
+
+fn finish_multi_polygon(members: Vec<Shape>) -> crate::error::Result<Shape> {
     if members.is_empty() {
-        return Ok((empty_multi_polygon(), frame));
+        return Ok(empty_multi_polygon());
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPolygon")?;
     if members
@@ -322,8 +401,8 @@ pub(super) fn build_multi_polygon_parts(
             polygons.push(polygon);
         }
         let shape = Shape::multi_polygon(axes, polygons);
-        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok((shape, frame));
+        crate::io::require_serializable_axes(&shape)?;
+        return Ok(shape);
     }
     let member_count = members.len();
     let mut polygon_members = Vec::with_capacity(member_count);
@@ -340,8 +419,7 @@ pub(super) fn build_multi_polygon_parts(
             | Shape::Empty(..) => unreachable!("multipart member type checked above"),
         });
     }
-    let shape =
-        Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok((shape, frame))
+    let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members)?);
+    crate::io::require_serializable_axes(&shape)?;
+    Ok(shape)
 }

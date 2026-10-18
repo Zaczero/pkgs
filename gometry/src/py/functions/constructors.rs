@@ -18,11 +18,7 @@ use crate::{
 mod builders;
 mod pyfuncs;
 
-use builders::{
-    build_box_shape, build_geometry_array, line_string_from_data_item,
-    multi_line_string_from_data_item, multi_point_from_data_item, multi_polygon_from_data_item,
-    polygon_from_data_item,
-};
+use builders::{build_box_shape, build_geometry_array};
 pub(crate) use builders::{
     build_geometry_collection, build_line_string, build_multi_line_string, build_multi_point,
     build_multi_polygon, build_point, build_polygon,

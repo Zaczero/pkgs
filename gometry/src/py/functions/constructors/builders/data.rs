@@ -1,95 +1,36 @@
 use super::*;
 
-/// A `LineString` array member from raw coordinates.
-pub(in crate::py::functions::constructors) enum GeometryArrayItem<'py> {
-    Python(Bound<'py, PyAny>),
-    Buffer(crate::CoordSeqBuffer),
-}
-
-pub(in crate::py::functions::constructors) fn line_string_from_data_item(
-    item: GeometryArrayItem<'_>,
-) -> PyResult<(Shape, Frame)> {
-    match item {
-        GeometryArrayItem::Buffer(buffer) => Ok((
-            line_string_from_coordinates(buffer.coordinates)?,
-            Frame::None,
-        )),
-        GeometryArrayItem::Python(item) => geometry_from_data_item(
-            &item,
-            "LineString",
-            |shape| {
-                matches!(
-                    shape,
-                    Shape::LineString(_) | Shape::Empty(GeometryKind::LineString, _)
-                )
-            },
-            |item| {
-                let vertices = coordinate_vertices(Some(item), None, None, None, None)?;
-                Ok((line_string_from_coordinates(vertices)?, Frame::None))
-            },
-        ),
+pub(super) fn geometry_from_buffer(
+    buffer: crate::CoordSeqBuffer,
+    kind: GeometryKind,
+) -> crate::error::Result<Shape> {
+    match kind {
+        GeometryKind::LineString => line_string_from_coordinates(buffer.coordinates),
+        GeometryKind::MultiPoint => {
+            let points = buffer.coordinates;
+            Ok(Shape::multi_point(points.axes(), points))
+        },
+        GeometryKind::Polygon => polygon_shape_from_buffer(buffer, PolygonBufferContext::Polygon),
+        GeometryKind::MultiLineString => multi_line_string_from_buffer(&buffer),
+        GeometryKind::MultiPolygon => multi_polygon_from_buffer(&buffer),
+        GeometryKind::Point | GeometryKind::GeometryCollection => {
+            unreachable!("coordinate-array factories construct sequences or polygons")
+        },
     }
 }
 
-fn line_string_from_coordinates(vertices: CoordSeq) -> PyResult<Shape> {
+fn line_string_from_coordinates(vertices: CoordSeq) -> crate::error::Result<Shape> {
     if vertices.is_empty() {
         Ok(Shape::typed_empty(
             GeometryKind::LineString,
             vertices.axes(),
         ))
     } else {
-        Ok(Shape::LineString(
-            LineSeq::try_new(vertices).map_err(PyErr::from)?,
-        ))
+        Ok(Shape::LineString(LineSeq::try_new(vertices)?))
     }
 }
 
-/// A `MultiPoint` array member from raw coordinates.
-pub(in crate::py::functions::constructors) fn multi_point_from_data_item(
-    item: GeometryArrayItem<'_>,
-) -> PyResult<(Shape, Frame)> {
-    match item {
-        GeometryArrayItem::Buffer(buffer) => {
-            let points = buffer.coordinates;
-            Ok((Shape::multi_point(points.axes(), points), Frame::None))
-        },
-        GeometryArrayItem::Python(item) => geometry_from_data_item(
-            &item,
-            "MultiPoint",
-            |shape| {
-                matches!(
-                    shape,
-                    Shape::MultiPoint(_) | Shape::Empty(GeometryKind::MultiPoint, _)
-                )
-            },
-            |item| build_multi_point_parts(Some(item), None, None, None, None, None, None),
-        ),
-    }
-}
-
-/// A `MultiLineString` array member from raw line coordinate sequences.
-pub(in crate::py::functions::constructors) fn multi_line_string_from_data_item(
-    item: GeometryArrayItem<'_>,
-) -> PyResult<(Shape, Frame)> {
-    match item {
-        GeometryArrayItem::Buffer(buffer) => {
-            Ok((multi_line_string_from_buffer(&buffer)?, Frame::None))
-        },
-        GeometryArrayItem::Python(item) => geometry_from_data_item(
-            &item,
-            "MultiLineString",
-            |shape| {
-                matches!(
-                    shape,
-                    Shape::MultiLineString(_) | Shape::Empty(GeometryKind::MultiLineString, _)
-                )
-            },
-            |item| build_multi_line_string_parts(Some(item), None, None),
-        ),
-    }
-}
-
-fn multi_line_string_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Shape> {
+fn multi_line_string_from_buffer(buffer: &crate::CoordSeqBuffer) -> crate::error::Result<Shape> {
     let [line_count, _] = buffer.shape.as_slice() else {
         unreachable!("MultiLineString buffers have line and coordinate dimensions");
     };
@@ -112,12 +53,14 @@ fn multi_line_string_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Sha
                 || point.m().is_some_and(|value| !value.is_finite())
         })
     }) {
-        return Err(InvalidGeometryError::new_err("coordinates must be finite"));
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "coordinates must be finite",
+        ));
     }
     multi_line_string_from_sequences(lines)
 }
 
-fn multi_line_string_from_sequences(lines: Vec<CoordSeq>) -> PyResult<Shape> {
+fn multi_line_string_from_sequences(lines: Vec<CoordSeq>) -> crate::error::Result<Shape> {
     if lines.is_empty() {
         return Ok(Shape::typed_empty(
             GeometryKind::MultiLineString,
@@ -133,46 +76,26 @@ fn multi_line_string_from_sequences(lines: Vec<CoordSeq>) -> PyResult<Shape> {
             } else {
                 let line_axes = line.axes();
                 if axes.is_some_and(|expected| expected != line_axes) {
-                    return Err(InvalidGeometryError::new_err(
+                    return Err(crate::geometry::GeometryErrorKind::message(
                         "MultiLineString members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)",
                     ));
                 }
                 axes = Some(line_axes);
                 Ok(MultiMember::Value(
-                    LineSeq::try_new(line).map_err(PyErr::from)?,
+                    LineSeq::try_new(line)?,
                 ))
             }
         })
-        .collect::<PyResult<Vec<_>>>()?;
-    let shape = Shape::MultiLineString(
-        MultiLineString::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
-            .map_err(PyErr::from)?,
-    );
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    let shape = Shape::MultiLineString(MultiLineString::try_new(
+        axes.unwrap_or(CoordinateAxes::XY),
+        members,
+    )?);
+    crate::io::require_serializable_axes(&shape)?;
     Ok(shape)
 }
 
-/// A `MultiPolygon` array member from raw polygon coordinate sequences.
-pub(in crate::py::functions::constructors) fn multi_polygon_from_data_item(
-    item: GeometryArrayItem<'_>,
-) -> PyResult<(Shape, Frame)> {
-    match item {
-        GeometryArrayItem::Buffer(buffer) => Ok((multi_polygon_from_buffer(&buffer)?, Frame::None)),
-        GeometryArrayItem::Python(item) => geometry_from_data_item(
-            &item,
-            "MultiPolygon",
-            |shape| {
-                matches!(
-                    shape,
-                    Shape::MultiPolygon(_) | Shape::Empty(GeometryKind::MultiPolygon, _)
-                )
-            },
-            |item| build_multi_polygon_parts(Some(item), None, None),
-        ),
-    }
-}
-
-fn multi_polygon_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Shape> {
+fn multi_polygon_from_buffer(buffer: &crate::CoordSeqBuffer) -> crate::error::Result<Shape> {
     let [polygon_count, _, _] = buffer.shape.as_slice() else {
         unreachable!("MultiPolygon buffers have polygon, ring, and coordinate dimensions");
     };
@@ -194,7 +117,7 @@ fn multi_polygon_from_buffer(buffer: &crate::CoordSeqBuffer) -> PyResult<Shape> 
     multi_polygon_from_polygons(polygons)
 }
 
-fn multi_polygon_from_polygons(polygons: Vec<Polygon>) -> PyResult<Shape> {
+fn multi_polygon_from_polygons(polygons: Vec<Polygon>) -> crate::error::Result<Shape> {
     if polygons.is_empty() {
         return Ok(Shape::typed_empty(
             GeometryKind::MultiPolygon,
@@ -210,48 +133,25 @@ fn multi_polygon_from_polygons(polygons: Vec<Polygon>) -> PyResult<Shape> {
                 crate::geometry::GeometryErrorKind::CoordinateAxesMismatch { .. }
             )
         ) {
-            InvalidGeometryError::new_err(
+            crate::geometry::GeometryErrorKind::message(
                 "MultiPolygon members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)",
             )
         } else {
-            PyErr::from(error)
+            error
         }
     })?);
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    crate::io::require_serializable_axes(&shape)?;
     Ok(shape)
 }
 
-pub(in crate::py::functions::constructors) fn polygon_from_data_item(
-    item: GeometryArrayItem<'_>,
-) -> PyResult<(Shape, Frame)> {
-    match item {
-        GeometryArrayItem::Buffer(buffer) => Ok((
-            polygon_shape_from_buffer(buffer, PolygonBufferContext::Polygon)?,
-            Frame::None,
-        )),
-        GeometryArrayItem::Python(item) => geometry_from_data_item(
-            &item,
-            "Polygon",
-            |shape| {
-                matches!(
-                    shape,
-                    Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _)
-                )
-            },
-            |item| Ok((polygon_from_coordinates_item(item)?, Frame::None)),
-        ),
-    }
-}
-
-fn geometry_from_data_item(
+pub(super) fn geometry_from_data_item(
     item: &Bound<'_, PyAny>,
-    expected: &'static str,
-    matches_kind: impl FnOnce(&Shape) -> bool,
-    build: impl FnOnce(&Bound<'_, PyAny>) -> PyResult<(Shape, Frame)>,
+    kind: GeometryKind,
 ) -> PyResult<(Shape, Frame)> {
     if let Some(geometry) = exact_geometry(item) {
         let shape = geometry.shape.shape();
-        if !matches_kind(shape) {
+        if GeometryKind::of(shape) != kind {
+            let expected = kind.geometry_type();
             return Err(geometry_type_err(format!(
                 "{expected} array factories require {expected} rows, got {}",
                 shape.geometry_type()
@@ -259,7 +159,28 @@ fn geometry_from_data_item(
         }
         return Ok((shape.clone(), geometry.frame.clone()));
     }
-    build(item)
+    match kind {
+        GeometryKind::LineString => Ok((
+            line_string_from_coordinates(coordinate_vertices(Some(item), None, None, None, None)?)?,
+            Frame::None,
+        )),
+        GeometryKind::Polygon => Ok((polygon_from_coordinates_item(item)?, Frame::None)),
+        GeometryKind::MultiPoint => {
+            Ok(
+                build_multi_point_parts(Some(item), None, None, None, None, None, None)?
+                    .finish()?,
+            )
+        },
+        GeometryKind::MultiLineString => {
+            Ok(build_multi_line_string_parts(Some(item), None, None)?.finish()?)
+        },
+        GeometryKind::MultiPolygon => {
+            Ok(build_multi_polygon_parts(Some(item), None, None)?.finish()?)
+        },
+        GeometryKind::Point | GeometryKind::GeometryCollection => {
+            unreachable!("coordinate-array factory kind")
+        },
+    }
 }
 
 pub(super) fn polygon_from_coordinates_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
@@ -269,7 +190,10 @@ pub(super) fn polygon_from_coordinates_item(item: &Bound<'_, PyAny>) -> PyResult
         None,
         crate::CoordSeqBufferMode::Geometry(crate::CoordSeqStructure::Polygon),
     )? {
-        return polygon_shape_from_buffer(buffer, PolygonBufferContext::Polygon);
+        return Ok(polygon_shape_from_buffer(
+            buffer,
+            PolygonBufferContext::Polygon,
+        )?);
     }
     // Materialize once, then classify. Speculative `extract_points` on the
     // parent would consume the first ring of a one-shot iterator and leave
@@ -289,17 +213,17 @@ enum PolygonBufferContext {
 fn polygon_shape_from_buffer(
     buffer: crate::CoordSeqBuffer,
     context: PolygonBufferContext,
-) -> PyResult<Shape> {
+) -> crate::error::Result<Shape> {
     let shape =
         polygon_from_buffer(buffer, context)?.map_or_else(Shape::empty_polygon, Shape::Polygon);
-    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    crate::io::require_serializable_axes(&shape)?;
     Ok(shape)
 }
 
 fn polygon_from_buffer(
     buffer: crate::CoordSeqBuffer,
     context: PolygonBufferContext,
-) -> PyResult<Option<Polygon>> {
+) -> crate::error::Result<Option<Polygon>> {
     match buffer.shape.as_slice() {
         [_] => {
             if buffer.coordinates.is_empty() {
@@ -312,9 +236,11 @@ fn polygon_from_buffer(
             if *ring_count == 0 {
                 return match context {
                     PolygonBufferContext::Polygon => Ok(None),
-                    PolygonBufferContext::MultiPolygon => Err(InvalidGeometryError::new_err(
-                        "multi_polygon member requires a shell",
-                    )),
+                    PolygonBufferContext::MultiPolygon => {
+                        Err(crate::geometry::GeometryErrorKind::message(
+                            "multi_polygon member requires a shell",
+                        ))
+                    },
                 };
             }
             let mut shell = None;
@@ -347,7 +273,7 @@ fn append_buffer_ring(
     context: PolygonBufferContext,
     shell: &mut Option<Ring>,
     holes: &mut Vec<Ring>,
-) -> PyResult<()> {
+) -> crate::error::Result<()> {
     let coordinates = buffer.row(ring_index)?.coordinates;
     let ring = ring_from_buffer_coordinates(coordinates, context)?;
     if ring_index == 0 {
@@ -361,18 +287,22 @@ fn append_buffer_ring(
 fn ring_from_buffer_coordinates(
     coordinates: CoordSeq,
     context: PolygonBufferContext,
-) -> PyResult<Ring> {
+) -> crate::error::Result<Ring> {
     match context {
         PolygonBufferContext::Polygon => {
             for point in coordinates.points() {
                 if !point.x.is_finite() {
-                    return Err(InvalidGeometryError::new_err("x must be finite"));
+                    return Err(crate::geometry::GeometryErrorKind::message(
+                        "x must be finite",
+                    ));
                 }
                 if !point.y.is_finite()
                     || point.z().is_some_and(|value| !value.is_finite())
                     || point.m().is_some_and(|value| !value.is_finite())
                 {
-                    return Err(InvalidGeometryError::new_err("coordinate must be finite"));
+                    return Err(crate::geometry::GeometryErrorKind::message(
+                        "coordinate must be finite",
+                    ));
                 }
             }
         },
@@ -383,11 +313,13 @@ fn ring_from_buffer_coordinates(
                     || point.z().is_some_and(|value| !value.is_finite())
                     || point.m().is_some_and(|value| !value.is_finite())
             }) {
-                return Err(InvalidGeometryError::new_err("coordinates must be finite"));
+                return Err(crate::geometry::GeometryErrorKind::message(
+                    "coordinates must be finite",
+                ));
             }
         },
     }
-    Ring::closed_coordseq(coordinates).map_err(PyErr::from)
+    Ring::closed_coordseq(coordinates)
 }
 
 enum PolygonMember<'py> {
@@ -507,9 +439,10 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
 
 fn polygon_ring_from_member(member: PolygonMember<'_>) -> PyResult<Ring> {
     match member {
-        PolygonMember::Buffer(coordinates) => {
-            ring_from_buffer_coordinates(coordinates, PolygonBufferContext::Polygon)
-        },
+        PolygonMember::Buffer(coordinates) => Ok(ring_from_buffer_coordinates(
+            coordinates,
+            PolygonBufferContext::Polygon,
+        )?),
         PolygonMember::Nested(coordinates) => {
             Ring::closed(points_from_coordinate_members(&coordinates)?).map_err(PyErr::from)
         },
