@@ -5,8 +5,9 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
 
 * Linux tests every supported stable CPython minor (GIL).
 * macOS and Windows test the newest supported stable minor only (GIL).
-* Free-threaded pytest: native packages, every shippable ABI on Linux and
-  the newest supported minor on macOS and Windows.
+* Free-threaded pytest: the newest supported minor on Linux for every Python
+  package; native packages test every shippable ABI on Linux and the newest
+  supported minor on macOS and Windows.
 * Build runners: pure Python → ubuntu only; native → multi-arch including
   Windows ARM.
 * Development dependencies are installed for every cell. Packages whose native
@@ -280,29 +281,28 @@ def build_test_matrix(
             *(['ubuntu-26.04-arm'] if has_rust else []),
         )
     )
-    if has_rust:
+    matrix.extend(
+        {
+            'os': LINUX_TEST_RUNNER,
+            'python-version': minor.freethreaded_selector,
+            'freethreaded': True,
+            'primary': False,
+            'dependency-group': freethreaded_group,
+        }
+        for minor in freethreaded_linux
+        if minor.as_tuple >= MIN_FREETHREADED_MINOR
+    )
+    if has_rust and primary in freethreaded_linux:
         matrix.extend(
             {
-                'os': LINUX_TEST_RUNNER,
-                'python-version': minor.freethreaded_selector,
+                'os': runner,
+                'python-version': primary.freethreaded_selector,
                 'freethreaded': True,
                 'primary': False,
                 'dependency-group': freethreaded_group,
             }
-            for minor in freethreaded_linux
-            if minor.as_tuple >= MIN_FREETHREADED_MINOR
+            for runner in OTHER_TEST_RUNNERS.values()
         )
-        if primary in freethreaded_linux:
-            matrix.extend(
-                {
-                    'os': runner,
-                    'python-version': primary.freethreaded_selector,
-                    'freethreaded': True,
-                    'primary': False,
-                    'dependency-group': freethreaded_group,
-                }
-                for runner in OTHER_TEST_RUNNERS.values()
-            )
     return matrix
 
 
@@ -353,29 +353,32 @@ def resolve_matrix(
 
     has_rust = bool(info.get('crate'))
 
-    freethreaded_linux: list[Minor] = []
+    ft_linux = available_stable_cpython_minors(
+        catalog_entries, freethreaded=True, os_name='linux'
+    )
     if has_rust:
-        ft_linux = available_stable_cpython_minors(
-            catalog_entries, freethreaded=True, os_name='linux'
-        )
         freethreaded_linux = [
             minor for minor in stable_minors if minor.as_tuple >= MIN_FREETHREADED_MINOR
         ]
-        missing_ft = [minor for minor in freethreaded_linux if minor not in ft_linux]
-        if missing_ft:
-            fail(
-                f'uv does not offer declared free-threaded CPython versions '
-                f'{", ".join(minor.freethreaded_selector for minor in missing_ft)}; update uv'
-            )
-        if primary in freethreaded_linux:
-            for os_name in OTHER_TEST_RUNNERS:
-                if primary not in available_stable_cpython_minors(
-                    catalog_entries, freethreaded=True, os_name=os_name
-                ):
-                    fail(
-                        f'uv does not offer declared free-threaded CPython '
-                        f'{primary.freethreaded_selector} on {os_name}; update uv'
-                    )
+    else:
+        freethreaded_linux = (
+            [primary] if primary.as_tuple >= MIN_FREETHREADED_MINOR else []
+        )
+    missing_ft = [minor for minor in freethreaded_linux if minor not in ft_linux]
+    if missing_ft:
+        fail(
+            f'uv does not offer declared free-threaded CPython versions '
+            f'{", ".join(minor.freethreaded_selector for minor in missing_ft)}; update uv'
+        )
+    if has_rust and primary in freethreaded_linux:
+        for os_name in OTHER_TEST_RUNNERS:
+            if primary not in available_stable_cpython_minors(
+                catalog_entries, freethreaded=True, os_name=os_name
+            ):
+                fail(
+                    f'uv does not offer declared free-threaded CPython '
+                    f'{primary.freethreaded_selector} on {os_name}; update uv'
+                )
 
     test_matrix = build_test_matrix(
         stable_minors=stable_minors,
