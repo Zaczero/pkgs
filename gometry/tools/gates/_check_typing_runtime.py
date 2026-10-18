@@ -95,7 +95,7 @@ def _check_optional_adapter_hints(errors: list[str]) -> None:
     import pandas as pd
     import polars as pl
     import pyarrow as pa
-    from pandas._typing import ListLike
+    from pandas.api.typing.aliases import ListLike
 
     interop_globals: dict[str, typing.Any] = {
         'pd': pd,
@@ -105,13 +105,13 @@ def _check_optional_adapter_hints(errors: list[str]) -> None:
         'Map': lonboard.Map,
         '_ArrowArray': pa.Array | pa.ChunkedArray,
         'ListLike': ListLike,
-        # pandas._typing.ListLike retains these names as unresolved ForwardRefs.
+        # The public pandas alias retains these names as unresolved ForwardRefs.
         'ExtensionArray': pd.api.extensions.ExtensionArray,
         'Index': pd.Index,
         'Series': pd.Series,
     }
     resolved_list_like = _check_get_type_alias(
-        'pandas._typing.ListLike', ListLike, errors, interop_globals
+        'pandas.api.typing.aliases.ListLike', ListLike, errors, interop_globals
     )
     if resolved_list_like is None:
         resolved_list_like = ListLike

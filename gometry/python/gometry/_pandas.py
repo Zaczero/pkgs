@@ -50,7 +50,7 @@ def _pandas() -> Any:
 if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
-    from pandas._typing import ListLike
+    from pandas.api.typing.aliases import ListLike
 
     _ArrowArray: TypeAlias = pa.Array | pa.ChunkedArray
 
