@@ -151,6 +151,32 @@ def test_unfinished_jinja_tags_reach_the_parser(source):
     assert caught.value.lineno == 1
 
 
+def test_unfinished_custom_delimiter_preserves_filesystem_error_context(tmp_path):
+    template = tmp_path / 'broken.html'
+    template.write_text('heading\n[[ value')
+    plain = Environment(
+        loader=FileSystemLoader(tmp_path),
+        variable_start_string='[[',
+        variable_end_string=']]',
+        autoescape=True,
+    )
+    wrapped = Environment(
+        loader=minify_loader(FileSystemLoader(tmp_path)),
+        variable_start_string='[[',
+        variable_end_string=']]',
+        autoescape=True,
+    )
+
+    with pytest.raises(TemplateSyntaxError) as expected:
+        plain.get_template('broken.html')
+    with pytest.raises(TemplateSyntaxError) as caught:
+        wrapped.get_template('broken.html')
+
+    assert caught.value.message == expected.value.message
+    assert caught.value.name == expected.value.name == 'broken.html'
+    assert caught.value.filename == expected.value.filename == str(template)
+
+
 def test_delimiter_text_inside_jinja_strings_is_preserved():
     rendered = render_template(
         '<p>{{ "a }} b"|length }}</p>'
