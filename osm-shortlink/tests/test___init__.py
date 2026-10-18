@@ -37,7 +37,7 @@ def test_encode_supports_max_zoom_without_panicking():
 def test_encode_rejects_unsupported_zoom():
     with pytest.raises(
         ValueError,
-        match='Invalid zoom: must be between 0 and 22, got 23',
+        match='zoom must be between 0 and 22, got 23',
     ):
         shortlink_encode(0, 0, 23)
 
@@ -123,7 +123,7 @@ def test_encode_rejects_nonfinite_coordinates(lon, lat, coordinate):
 
 
 def test_zoom_error_precedes_nonfinite_coordinate_error():
-    with pytest.raises(ValueError, match='Invalid zoom'):
+    with pytest.raises(ValueError, match='zoom must be'):
         shortlink_encode(float('nan'), 0.0, 23)
 
 
@@ -136,7 +136,7 @@ def test_zoom_error_precedes_nonfinite_coordinate_error():
     ],
 )
 def test_decode_rejects_malformed_input(input):
-    with pytest.raises(ValueError, match='Invalid shortlink'):
+    with pytest.raises(ValueError, match='shortlink is too'):
         shortlink_decode(input)
 
 
