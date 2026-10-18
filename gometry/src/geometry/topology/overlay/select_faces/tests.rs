@@ -222,91 +222,93 @@ fn candidate_subgraph_rebuilds_cut_ports_on_a_full_longitude_band() -> Result<()
     Ok(())
 }
 
-#[test]
-fn b3_island_ar_uy_source_arcs_symdiff_wkb_is_identical_across_all_orders() -> Result<()> {
+#[rstest::rstest]
+#[case::island_argentina_uruguay([0, 1, 2])]
+#[case::island_uruguay_argentina([0, 2, 1])]
+#[case::argentina_island_uruguay([1, 0, 2])]
+#[case::argentina_uruguay_island([1, 2, 0])]
+#[case::uruguay_island_argentina([2, 0, 1])]
+#[case::uruguay_argentina_island([2, 1, 0])]
+fn b3_island_ar_uy_source_arcs_symdiff_wkb_is_identical_across_all_orders(
+    #[case] order: [usize; 3],
+) -> Result<()> {
     let shapes = b3_border_repair_shapes();
-    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
-        2, 1, 0,
-    ]];
-    let mut expected = None;
-    for order in orders {
-        let operands = order.map(|index| shapes[index].clone());
-        let topology = test_topology(&operands);
-        let result = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
-            &topology,
-            OverlayOp::SymmetricDifference,
-            CoordinateAxes::XY,
-            false,
-            None,
-        )?;
-        let bytes = crate::io::to_wkb(&result, None, false)?;
-        if let Some(first) = &expected {
-            assert_eq!(
-                &bytes, first,
-                "island/AR/UY source-arc symmetric difference WKB differs in order {order:?}"
-            );
-        } else {
-            expected = Some(bytes);
-        }
-    }
+    let operands = order.map(|index| shapes[index].clone());
+    let topology = test_topology(&operands);
+    let result = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+        &topology,
+        OverlayOp::SymmetricDifference,
+        CoordinateAxes::XY,
+        false,
+        None,
+    )?;
+    assert_b3_source_arc_symdiff_wkb(&result)?;
     Ok(())
 }
 
-#[test]
-fn b3_island_ar_uy_source_arcs_symdiff_is_valid_and_identical_in_all_orders() -> Result<()> {
+#[rstest::rstest]
+#[case::island_argentina_uruguay([0, 1, 2])]
+#[case::island_uruguay_argentina([0, 2, 1])]
+#[case::argentina_island_uruguay([1, 0, 2])]
+#[case::argentina_uruguay_island([1, 2, 0])]
+#[case::uruguay_island_argentina([2, 0, 1])]
+#[case::uruguay_argentina_island([2, 1, 0])]
+fn b3_island_ar_uy_source_arcs_symdiff_is_valid_and_identical_in_all_orders(
+    #[case] order: [usize; 3],
+) -> Result<()> {
     let shapes = b3_border_repair_shapes();
     assert_eq!(shapes.len(), 3);
-    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
-        2, 1, 0,
-    ]];
-    let mut expected = None;
-    for order in orders {
-        let operands = order.map(|index| shapes[index].clone());
-        let topology = test_topology(&operands);
-        let plan = build_q_plan(&topology, OverlayOp::SymmetricDifference)?;
-        let source_points = source_point_coordinates(&topology)?;
-        let nearest = QCoordinates::build(&topology)?;
-        let nearest_nodes = nearest.node.clone();
-        let mut live_node_keys = plan.live_node_keys(&topology, &nearest, &source_points)?;
-        let identity_conflicts = node_injectivity_collisions(&mut live_node_keys)?;
-        let embedding = resolve_q_embedding_xy(
-            &topology,
-            &plan,
-            &source_points,
-            &nearest,
-            OverlayOp::SymmetricDifference.name(),
-        )?;
-        let certificate_path = embedding.choice;
-        let moved_nodes = nearest_nodes
-            .iter()
-            .zip(&embedding.coordinates.node)
-            .enumerate()
-            .filter_map(|(index, (before, after))| (before != after).then_some(index))
-            .collect::<Vec<_>>();
-        let result = publish_q_overlay(embedding)?;
-        let issue = crate::geometry::validate_shape_in_frame(
-            &result,
-            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
-        )?;
-        if let Some(issue) = issue {
-            return Err(GeometryErrorKind::Invalid(
-                format!(
-                    "island/AR/UY source-arc symmetric difference is invalid in operand order {order:?}: {issue:?}; certificate={certificate_path:?}, identity_conflicts={identity_conflicts:?}, moved_nodes={moved_nodes:?}"
-                )
-                .into(),
+    let operands = order.map(|index| shapes[index].clone());
+    let topology = test_topology(&operands);
+    let plan = build_q_plan(&topology, OverlayOp::SymmetricDifference)?;
+    let source_points = source_point_coordinates(&topology)?;
+    let nearest = QCoordinates::build(&topology)?;
+    let nearest_nodes = nearest.node.clone();
+    let mut live_node_keys = plan.live_node_keys(&topology, &nearest, &source_points)?;
+    let identity_conflicts = node_injectivity_collisions(&mut live_node_keys)?;
+    let embedding = resolve_q_embedding_xy(
+        &topology,
+        &plan,
+        &source_points,
+        &nearest,
+        OverlayOp::SymmetricDifference.name(),
+    )?;
+    let certificate_path = embedding.choice;
+    let moved_nodes = nearest_nodes
+        .iter()
+        .zip(&embedding.coordinates.node)
+        .enumerate()
+        .filter_map(|(index, (before, after))| (before != after).then_some(index))
+        .collect::<Vec<_>>();
+    let result = publish_q_overlay(embedding)?;
+    let issue = crate::geometry::validate_shape_in_frame(
+        &result,
+        crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+    )?;
+    if let Some(issue) = issue {
+        return Err(GeometryErrorKind::Invalid(
+            format!(
+                "island/AR/UY source-arc symmetric difference is invalid in operand order {order:?}: {issue:?}; certificate={certificate_path:?}, identity_conflicts={identity_conflicts:?}, moved_nodes={moved_nodes:?}"
             )
+            .into(),
+        )
             .into());
-        }
-        let bytes = crate::io::to_wkb(&result, None, false)?;
-        if let Some(first) = &expected {
-            assert_eq!(
-                &bytes, first,
-                "island/AR/UY source-arc symmetric difference must be byte-identical in every order"
-            );
-        } else {
-            expected = Some(bytes);
-        }
     }
+    assert_b3_source_arc_symdiff_wkb(&result)?;
+    Ok(())
+}
+
+fn assert_b3_source_arc_symdiff_wkb(result: &Shape) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+
+    assert_eq!(
+        crate::digest_encoding::hex_lower(&Sha256::digest(
+            crate::io::to_wkb(result, None, false,)?
+        ))
+        .to_string(),
+        "7fa0e8c0bced1860ad73958a0fdc1418c21756028963c85943320ae17de35c21",
+        "island/AR/UY source-arc symmetric difference must be byte-identical in every order"
+    );
     Ok(())
 }
 
