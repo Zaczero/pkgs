@@ -91,9 +91,13 @@ def test_index_queries_and_joins_normalize_nullable_iterable_rows() -> None:
 def test_geographic_index_windows_reject_invalid_query_coordinates(predicate):
     index = gm.SpatialIndex([gm.LineString([(0, 0), (1, 0)], crs=4326)])
     query = gm.Point(0, 91, crs=4326)
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 91'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 91\)'
+    ):
         index.query(query, predicate=predicate)
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 91'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 91\)'
+    ):
         index.query(gm.GeometryArray([query]), predicate=predicate)
 
 
@@ -1805,7 +1809,7 @@ def test_geodesic_index_paths_raise_the_same_domain_errors_as_scalars() -> None:
         idx.nearest(bad_query)
     with pytest.raises(
         gm.InvalidGeometryError,
-        match=r'latitude 95 is outside the physical axis limits',
+        match=r'invalid longitude/latitude \(0, 95\)',
     ):
         gm.SpatialIndex([gm.Point(0.0, 95.0, crs=4326)])
 
@@ -1883,13 +1887,21 @@ def test_empty_index_answers_every_method_gracefully() -> None:
 def test_unframed_empty_index_validates_geographic_query_coordinates() -> None:
     idx = gm.SpatialIndex()
     invalid = gm.Point(0, 95, crs=4326)
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
         idx.query(invalid, predicate='crosses')
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
         idx.candidates(invalid)
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
         idx.nearest(invalid)
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
         idx.join(invalid)
 
     queries = gm.GeometryArray([
@@ -1897,19 +1909,27 @@ def test_unframed_empty_index_validates_geographic_query_coordinates() -> None:
         None,
         invalid,
     ])
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.query(queries, predicate='crosses')
     assert error.value.__notes__ == ['while processing array element 2']
 
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.candidates(queries)
     assert error.value.__notes__ == ['while processing array element 2']
 
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.nearest(queries)
     assert error.value.__notes__ == ['while processing array element 2']
 
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.join(queries)
     assert error.value.__notes__ == ['while processing array element 2']
 
@@ -1918,11 +1938,15 @@ def test_unframed_empty_index_validates_geographic_query_coordinates() -> None:
         None,
         gm.LineString([(0, 95), (1, 95)], crs=4326),
     ])
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.join(line_queries)
     assert error.value.__notes__ == ['while processing array element 2']
 
-    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ) as error:
         idx.join(line_queries, predicate='dwithin', distance=1.0)
     assert error.value.__notes__ == ['while processing array element 2']
 

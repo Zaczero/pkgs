@@ -417,9 +417,10 @@ def test_rounded_source_midpoint_is_an_unrepresentable_output() -> None:
     polygon = gm.Polygon([(1.0, 0.0), (next_x, 1.0), (1.0, 0.5)])
     before = polygon.to_wkt()
 
-    with pytest.raises(GeometryError) as raised:
+    with pytest.raises(OverflowError) as raised:
         polygon.triangulate(method='constrained', max_area=1.0e-20)
 
+    assert raised.value.code == 'output_unrepresentable'
     assert raised.value.operation == 'triangulate'
     assert polygon.to_wkt() == before
 

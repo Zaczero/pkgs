@@ -286,8 +286,14 @@ def test_frechet_densify_refuses_an_unreachable_dp() -> None:
         6.708203932499369, rel=1e-9
     )
 
-    with pytest.raises(gm.GeometryError, match=r'densify'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         gm.frechet_distance(left, right, densify=1e-5)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'frechet_distance',
+        'densify',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:

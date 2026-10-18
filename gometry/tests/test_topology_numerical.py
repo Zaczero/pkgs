@@ -156,9 +156,10 @@ def test_segmentize_budget_charges_realized_output() -> None:
     # Only the inserted vertices count against the generated-output budget.
     pts = [(float(i), float(i % 2)) for i in range(204)]
     ls = gm.LineString(pts)
-    with pytest.raises(gm.GeometryError) as ei:
+    with pytest.raises(gm.ResourceLimitError) as ei:
         ls.segmentize(1e-5)
-    assert type(ei.value) is gm.GeometryError
+    assert type(ei.value) is gm.ResourceLimitError
+    assert ei.value.code == 'output_limit'
     assert ei.value.operation == 'segmentize'
     assert ei.value.parameter == 'max_length'
     assert ei.value.produced == 203 * (math.ceil(math.sqrt(2) / 1e-5) - 1)

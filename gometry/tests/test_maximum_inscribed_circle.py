@@ -157,7 +157,7 @@ def test_maximum_inscribed_circle_reports_unrepresentable_tight_translated_accur
         math.nextafter(1e300, math.inf),
         2e-300,
     )
-    with pytest.raises(gm.GeometryError):
+    with pytest.raises(OverflowError):
         source.maximum_inscribed_radius(tolerance=1e-301)
     assert source.maximum_inscribed_radius(tolerance=1e-300) == 0.0
     point = source.maximum_inscribed_circle(tolerance=1e-300)

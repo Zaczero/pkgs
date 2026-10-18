@@ -223,8 +223,15 @@ def test_segmentize_bounds_each_row_on_every_storage_lane(
     `heterogeneous` forces mixed storage.
     """
     values = gm.GeometryArray([gm.LineString([(0.0, 0.0), (1.0, 0.0)]), *tail])
-    with pytest.raises(ValueError, match=r'16,000,000|16000000|generated'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         values.segmentize(1.0 / 16_000_002.0)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'segmentize',
+        'max_length',
+    )
+    assert error.value.produced > error.value.limit
+    assert error.value.__notes__ == ['while processing array element 0']
 
 
 def _arc_heavy_line() -> gm.Geometry:
@@ -250,14 +257,26 @@ def test_rounded_stroke_cap_rejects_before_materializing_its_arc_walk() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
     # q=8M has no joins; the two pi caps alone already exceed the limit in the
     # open shared walk, so it rejects before any 32M-coordinate allocation.
-    with pytest.raises(ValueError, match=r'16000000|generated'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         line.buffer(1.0, join_style='round', quadrant_segments=8_000_000)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'buffer',
+        'quadrant_segments',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_point_buffer_counts_its_closing_coordinate_before_circle_allocation() -> None:
     """The exact 16M open circle still exceeds the realized closed polygon limit."""
-    with pytest.raises(ValueError, match=r'16000000|generated'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         gm.Point(0.0, 0.0).buffer(1.0, quadrant_segments=4_000_000)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'buffer',
+        'quadrant_segments',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_deep_single_member_collection_buffer_reaches_the_real_member_once() -> None:
