@@ -247,21 +247,30 @@ mod tests {
             0xFFFE
         );
         assert!(words.next().is_none());
-        // Exhausting the 16-bit input domain gives equal accepted counts per
-        // output, including non-power-of-two ranges.
-        for max_start in [1_u16, 2, 0x8000, 0xFFFE] {
-            let range = u32::from(max_start) + 1;
-            let threshold = 0x0001_0000 % range;
-            let mut counts = vec![0_u32; range as usize];
-            for word in 0..=u16::MAX {
-                let product = u32::from(word) * range;
-                if product & 0xFFFF >= threshold {
-                    let result = random_start_seq(max_start, &mut || word);
-                    *counts.get_mut(usize::from(result)).expect("bounded") += 1;
-                }
+    }
+
+    #[rstest::rstest]
+    #[case::two_values(1)]
+    #[case::three_values(2)]
+    #[case::half_domain_plus_one(0x8000)]
+    #[case::all_but_one(0xFFFE)]
+    fn bounded_random_starts_are_uniform_across_the_input_domain(#[case] max_start: u16) {
+        let range = u32::from(max_start) + 1;
+        let threshold = 0x0001_0000_u32.wrapping_rem(range);
+        let mut counts = vec![0_u32; range as usize];
+        for word in 0..=u16::MAX {
+            let product = u32::from(word).wrapping_mul(range);
+            if product & 0xFFFF >= threshold {
+                let result = random_start_seq(max_start, &mut || word);
+                let count = counts.get_mut(usize::from(result)).expect("bounded");
+                *count = count.wrapping_add(1);
             }
-            assert!(counts.iter().all(|count| *count == 0x0001_0000 / range));
         }
+        assert!(
+            counts
+                .iter()
+                .all(|count| *count == 0x0001_0000_u32.wrapping_div(range))
+        );
     }
 
     #[test]
