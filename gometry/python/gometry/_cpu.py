@@ -78,8 +78,11 @@ def _linux_cpu_features() -> tuple[frozenset[str], None] | None:
 
 
 def _macos_cpu_features() -> tuple[frozenset[str], None] | None:
-    library = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
-    query = library.sysctlbyname
+    try:
+        library = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+        query = library.sysctlbyname
+    except (OSError, AttributeError):
+        return None
     query.argtypes = (
         ctypes.c_char_p,
         ctypes.c_void_p,
@@ -96,15 +99,21 @@ def _macos_cpu_features() -> tuple[frozenset[str], None] | None:
         value = ctypes.create_string_buffer(size.value)
         if query(name, value, ctypes.byref(size), None, 0) != 0:
             return None
-        values.append(value.value.decode('ascii').lower().split())
+        try:
+            values.append(value.value.decode('ascii').lower().split())
+        except UnicodeError:
+            return None
     return frozenset(token for value in values for token in value), None
 
 
 if sys.platform == 'win32':
 
-    def _windows_cpu_features() -> tuple[frozenset[str], frozenset[str]]:
-        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        is_processor_feature_present = kernel32.IsProcessorFeaturePresent
+    def _windows_cpu_features() -> tuple[frozenset[str], frozenset[str]] | None:
+        try:
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            is_processor_feature_present = kernel32.IsProcessorFeaturePresent
+        except (OSError, AttributeError):
+            return None
         is_processor_feature_present.argtypes = (ctypes.c_uint32,)
         is_processor_feature_present.restype = ctypes.c_int
         available = frozenset(
@@ -119,17 +128,18 @@ if sys.platform == 'win32':
 def ensure_supported_cpu() -> None:
     """Reject a detectable x86_64 CPU that lacks the wheel's v2 baseline."""
     try:
-        if platform.machine().lower() not in {'amd64', 'x86_64'}:
-            return
-        if sys.platform == 'linux':
-            evidence = _linux_cpu_features()
-        elif sys.platform == 'darwin':
-            evidence = _macos_cpu_features()
-        elif sys.platform == 'win32':
-            evidence = _windows_cpu_features()
-        else:
-            return
-    except Exception:
+        machine = platform.machine().lower()
+    except (OSError, UnicodeError):
+        return
+    if machine not in {'amd64', 'x86_64'}:
+        return
+    if sys.platform == 'linux':
+        evidence = _linux_cpu_features()
+    elif sys.platform == 'darwin':
+        evidence = _macos_cpu_features()
+    elif sys.platform == 'win32':
+        evidence = _windows_cpu_features()
+    else:
         return
     if evidence is None:
         return
