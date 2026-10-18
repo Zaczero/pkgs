@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Route changed paths to monorepo packages that need testing.
 
-Reads paths on stdin. Documentation-only paths are skipped, then the remaining
-paths are mapped to sorted unique package names on stdout (ci.yaml pipes them
-to jq).
+Reads paths on stdin and emits a JSON package selection with native-input impact.
+Documentation-only paths are validated locally.
 Diagnostics go to stderr; metadata/TOML failures exit nonzero.
 """
 
@@ -47,7 +46,7 @@ def filter_changed_paths(paths: Iterable[str]) -> list[str]:
     return filtered
 
 
-def discover_rusty_packages(test_packages: Iterable[str]) -> set[str]:
+def discover_native_packages(test_packages: Iterable[str]) -> set[str]:
     return {name for name in test_packages if (Path(name) / 'Cargo.toml').is_file()}
 
 
@@ -89,13 +88,14 @@ def route_paths(
     paths: Sequence[str],
     *,
     test_packages: set[str] | None = None,
-    rusty_packages: set[str] | None = None,
+    native_packages: set[str] | None = None,
     reverse_consumers: Mapping[str, set[str]] | None = None,
+    native_only: bool = False,
 ) -> list[str]:
     """Select packages impacted by raw changed paths.
 
     Rules (exact root-Cargo match; package-local Cargo is not root):
-    - Root Cargo.toml / Cargo.lock / rust-toolchain.toml / .cargo/** → all rusty
+    - Root Cargo.toml / Cargo.lock / rust-toolchain.toml / .cargo/** → all native
     - Root .python-versions → all test packages
     - <pkg>/… → that package + reverse uv.sources consumers
     - Anything else (shared dirs, unknown root files, .github/**) → all test packages
@@ -106,10 +106,10 @@ def route_paths(
     else:
         packages = set(test_packages)
 
-    if rusty_packages is None:
-        rusty = discover_rusty_packages(packages)
+    if native_packages is None:
+        native = discover_native_packages(packages)
     else:
-        rusty = set(rusty_packages)
+        native = set(native_packages)
 
     if reverse_consumers is None:
         reverse = reverse_uv_consumers(sorted(packages))
@@ -118,18 +118,34 @@ def route_paths(
 
     selected: set[str] = set()
     for path in filter_changed_paths(paths):
+        parts = Path(path).parts
+        if (
+            native_only
+            and len(parts) >= 3
+            and parts[0] in native
+            and parts[1] in {'python', 'tests'}
+            and Path(path).suffix in {'.py', '.pyi'}
+        ):
+            continue
         if path in ROOT_RUST_PATHS or path == '.cargo' or path.startswith('.cargo/'):
-            selected.update(rusty)
+            selected.update(native)
         elif path == '.python-versions':
             selected.update(packages)
         else:
             package = path.partition('/')[0]
             if package in packages:
                 selected.add(package)
-                selected.update(reverse.get(package, ()))
             else:
                 selected.update(packages)
 
+    pending = list(selected)
+    while pending:
+        for consumer in reverse.get(pending.pop(), ()):
+            if consumer not in selected:
+                selected.add(consumer)
+                pending.append(consumer)
+    if native_only:
+        selected.intersection_update(native)
     return sorted(selected, key=ci_package_sort_key)
 
 
@@ -143,8 +159,12 @@ def main() -> None:
         print(f'route_packages failed: {error}', file=sys.stderr)
         raise SystemExit(1) from error
 
-    for name in selected:
-        print(name)
+    native = set(route_paths(paths, native_only=True))
+    print(
+        json.dumps([
+            {'package': name, 'native-changed': name in native} for name in selected
+        ])
+    )
     output = os.environ.get('GITHUB_OUTPUT')
     if output:
         python = any(

@@ -288,7 +288,7 @@ def _pyproject(package: str) -> dict:
         return tomllib.load(stream)
 
 
-def _is_rusty(package: str) -> bool:
+def _has_rust(package: str) -> bool:
     return (ROOT / package / 'Cargo.toml').exists()
 
 
@@ -699,7 +699,7 @@ def _native_section(package: str) -> str:
 def _fresh_files(package: str) -> dict[str, str]:
     """Name → content of every license file this package must generate."""
     files = _render_own(package)
-    if _is_rusty(package):
+    if _has_rust(package):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / THIRD_PARTY_NAME
             _generate_third_party(package, out)

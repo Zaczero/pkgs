@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-26.04
 
     outputs:
-      packages: ${{ steps.detect.outputs.packages }}
       release-package: ${{ steps.release.outputs.package }}
       plans: ${{ steps.matrix.outputs.plans }}
       primary-python: ${{ steps.matrix.outputs.primary-python }}
@@ -47,6 +46,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="${GITHUB_REF#refs/tags/}"
             changed="${tag%/*}"
+            test_all=true
           else
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               test_all=true
@@ -65,7 +65,7 @@ jobs:
               test_all=true
               changed=""
             elif ! $test_all; then
-              changed="$(
+              selection="$(
                 git diff --name-only "$base" HEAD |
                   python3 .github/scripts/route_packages.py
               )"
@@ -76,32 +76,28 @@ jobs:
             fi
           fi
 
-          packages="$(
-            jq -R -s -c '
-              split("\n")
-              | map(select(length > 0))
-            ' <<< "$changed"
-          )"
-          echo "packages=$packages" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/* ]] || $test_all; then
+          if $test_all; then
+            selection="$(jq -R -s -c '
+              split("\n") | map(select(length > 0) | {package: ., "native-changed": true})
+            ' <<< "$changed")"
             echo "lint-python=true" >> "$GITHUB_OUTPUT"
             echo "lint-rust=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "selection=$selection" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        if: steps.detect.outputs.packages != '[]' || steps.detect.outputs.lint-rust == 'true'
+        if: steps.detect.outputs.selection != '[]' || steps.detect.outputs.lint-rust == 'true'
         with:
           enable-cache: false
 
       - id: matrix
-        if: steps.detect.outputs.packages != '[]' || steps.detect.outputs.lint-rust == 'true'
+        if: steps.detect.outputs.selection != '[]' || steps.detect.outputs.lint-rust == 'true'
         env:
-          PACKAGES: ${{ steps.detect.outputs.packages }}
+          SELECTION: ${{ steps.detect.outputs.selection }}
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t packages < <(jq -r '.[]' <<< "$PACKAGES")
-          python3 .github/scripts/matrix.py "${packages[@]}"
+          python3 .github/scripts/matrix.py <<< "$SELECTION"
 
       - id: release
         if: startsWith(github.ref, 'refs/tags/')
@@ -179,6 +175,9 @@ jobs:
 
     runs-on: ubuntu-26.04
 
+    env:
+      KANI_VERSION: "0.68.0"
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +192,8 @@ jobs:
         # zizmor: ignore[cache-poisoning] -- Verification produces no distribution artifacts.
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
-          cache-key: kani
+          cache-key: kani-${{ env.KANI_VERSION }}
+          cache-directories: ~/.kani
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -201,10 +201,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo install --locked kani-verifier --version 0.68.0
+          cargo install --locked kani-verifier --version "$KANI_VERSION"
           cargo kani setup
           # Keep Kani's exact rustc, but use current Cargo for workspace manifest features.
-          cp --remove-destination "$(rustup which cargo)" "$HOME/.kani/kani-0.68.0/toolchain/bin/cargo"
+          cp --remove-destination "$(rustup which cargo)" "$HOME/.kani/kani-$KANI_VERSION/toolchain/bin/cargo"
 
       - name: Verify first-party Rust harnesses
         shell: bash
@@ -231,7 +231,7 @@ jobs:
 
   test:
     needs: detect
-    if: needs.detect.outputs.packages != '[]'
+    if: needs.detect.outputs.plans != '' && needs.detect.outputs.plans != '[]'
 
     strategy:
       fail-fast: false
@@ -242,6 +242,7 @@ jobs:
     with:
       package: ${{ matrix.package }}
       plan: ${{ toJson(matrix.plan) }}
+      native-changed: ${{ matrix.native-changed }}
 
   release:
     needs: [detect, test, lint-python, lint-rust, test-kani]

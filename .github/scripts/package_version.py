@@ -2,8 +2,9 @@ import argparse
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Never, assert_never
+from typing import Any, Literal, Never, assert_never
 
 VERSION_RE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+\Z')
 
@@ -82,21 +83,20 @@ def require_release_package(package: str) -> None:
         fail(f'{package!r} is not a release package')
 
 
-def package_info(package: str) -> dict[str, str]:
+def package_info(package: str) -> dict[str, Any]:
     path = package_path(package)
     if not (path / 'pyproject.toml').is_file():
         cargo = load_toml(path / 'Cargo.toml')['package']
         return {
             'import-name': '',
-            'is-release': 'false',
-            'is-rusty': 'true',
+            'publishable': False,
             'package': package,
-            'pypy': 'false',
+            'pypy': False,
             'freethreaded-group': 'dev',
             'requires-python': '',
             'type': 'rust',
             'version': cargo['version'],
-            'version_path': (path / 'Cargo.toml').as_posix(),
+            'version-path': (path / 'Cargo.toml').as_posix(),
             'crate': cargo['name'],
         }
     pyproject = load_toml(path / 'pyproject.toml')
@@ -106,13 +106,10 @@ def package_info(package: str) -> dict[str, str]:
         'freethreaded' if 'freethreaded' in dependency_groups else 'dev'
     )
     requires_python = project.get('requires-python', '')
-    pypy = (
-        'true'
-        if 'Programming Language :: Python :: Implementation :: PyPy'
-        in project.get('classifiers', [])
-        else 'false'
+    pypy = 'Programming Language :: Python :: Implementation :: PyPy' in project.get(
+        'classifiers', []
     )
-    is_release = 'true' if package in list_packages('release') else 'false'
+    publishable = package in list_packages('release')
     cargo_toml = path / 'Cargo.toml'
 
     if cargo_toml.is_file():
@@ -120,15 +117,14 @@ def package_info(package: str) -> dict[str, str]:
         module_name = pyproject['tool']['maturin']['module-name']
         return {
             'import-name': module_name.split('.', maxsplit=1)[0],
-            'is-release': is_release,
-            'is-rusty': 'true',
+            'publishable': publishable,
             'package': package,
             'pypy': pypy,
             'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
             'type': 'python-rust',
             'version': cargo['version'],
-            'version_path': cargo_toml.as_posix(),
+            'version-path': cargo_toml.as_posix(),
             'crate': cargo['name'],
         }
 
@@ -156,28 +152,26 @@ def package_info(package: str) -> dict[str, str]:
             import_name = Path(packages[0]).name
         return {
             'import-name': import_name,
-            'is-release': is_release,
-            'is-rusty': 'false',
+            'publishable': publishable,
             'package': package,
             'pypy': pypy,
             'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
-            'type': 'python-static',
+            'type': 'python',
             'version': str(project['version']),
         }
 
     version_path = path / pyproject['tool']['hatch']['version']['path']
     return {
         'import-name': version_path.relative_to(path).parts[0],
-        'is-release': is_release,
-        'is-rusty': 'false',
+        'publishable': publishable,
         'package': package,
         'pypy': pypy,
         'freethreaded-group': freethreaded_group,
         'requires-python': requires_python,
         'type': 'python',
         'version': read_python_version(version_path),
-        'version_path': version_path.as_posix(),
+        'version-path': version_path.as_posix(),
     }
 
 
@@ -209,7 +203,11 @@ def set_python_version(path: Path, version: str) -> None:
     path.write_text(text)
 
 
-def write_outputs(outputs: dict[str, str]) -> None:
+def write_outputs(outputs: Mapping[str, object]) -> None:
+    outputs = {
+        key: str(value).lower() if isinstance(value, bool) else value
+        for key, value in outputs.items()
+    }
     for key, value in outputs.items():
         print(f'{key}={value}')
 
@@ -235,9 +233,9 @@ def command_set(args: argparse.Namespace) -> None:
     info = package_info(args.package)
 
     if info['type'] == 'python-rust':
-        set_rust_version(Path(info['version_path']), args.version)
+        set_rust_version(Path(info['version-path']), args.version)
     else:
-        set_python_version(Path(info['version_path']), args.version)
+        set_python_version(Path(info['version-path']), args.version)
 
     info = package_info(args.package)
     if info['version'] != args.version:

@@ -5,18 +5,19 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
 
 * Linux tests every supported stable CPython minor (GIL).
 * macOS and Windows test the newest supported stable minor only (GIL).
-* Free-threaded pytest: rusty packages only, Linux only, shippable ABIs
-  (CPython 3.14t+) — matches cibuildwheel 4 free-threaded wheel set.
+* Free-threaded pytest: native packages, every shippable ABI on Linux and
+  the newest supported minor on macOS and Windows.
 * PyPy pytest: one Linux cell when the package advertises PyPy (classifier),
   using the newest PyPy minor uv can install that satisfies requires-python.
-* Build runners: pure → ubuntu only; rusty → native multi-arch including
+* Build runners: pure Python → ubuntu only; native → multi-arch including
   Windows ARM.
 * Development dependencies are installed for every cell. Packages whose native
   tooling lacks free-threaded builds supply a compatible ``freethreaded`` group.
 
 Usage (from repo root):
 
-    python3 .github/scripts/matrix.py <package>
+    python3 .github/scripts/route_packages.py < changed-paths.txt |
+        python3 .github/scripts/matrix.py
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import tomllib
 import urllib.request
 from dataclasses import dataclass
@@ -53,11 +55,12 @@ VERSION_RE = re.compile(
 LINUX_TEST_RUNNER = 'ubuntu-26.04'
 MACOS_TEST_RUNNER = 'macos-26'
 WINDOWS_TEST_RUNNER = 'windows-2025'
+OTHER_TEST_RUNNERS = {'macos': MACOS_TEST_RUNNER, 'windows': WINDOWS_TEST_RUNNER}
 
 # Free-threaded wheels in cibuildwheel 4 start at CPython 3.14 (3.13t removed).
 MIN_FREETHREADED_MINOR = (3, 14)
 
-RUSTY_BUILD_RUNNERS = [
+NATIVE_BUILD_RUNNERS = [
     LINUX_TEST_RUNNER,
     'ubuntu-26.04-arm',
     WINDOWS_TEST_RUNNER,
@@ -281,17 +284,17 @@ def build_test_matrix(
     *,
     stable_minors: Sequence[Minor],
     primary: Minor,
-    is_rusty: bool,
+    has_rust: bool,
     freethreaded_linux: Sequence[Minor],
     pypy_selector: str | None,
     freethreaded_group: str,
-) -> list[dict[str, str]]:
-    matrix: list[dict[str, str]] = [
+) -> list[dict[str, str | bool]]:
+    matrix: list[dict[str, str | bool]] = [
         {
             'os': LINUX_TEST_RUNNER,
             'python-version': str(minor),
-            'freethreaded': 'false',
-            'primary': 'true' if minor == primary else 'false',
+            'freethreaded': False,
+            'primary': minor == primary,
             'dependency-group': 'dev',
         }
         for minor in stable_minors
@@ -300,34 +303,44 @@ def build_test_matrix(
         {
             'os': runner,
             'python-version': str(primary),
-            'freethreaded': 'false',
-            'primary': 'false',
+            'freethreaded': False,
+            'primary': False,
             'dependency-group': 'dev',
         }
         for runner in (
-            MACOS_TEST_RUNNER,
-            WINDOWS_TEST_RUNNER,
-            *(['ubuntu-26.04-arm'] if is_rusty else []),
+            *OTHER_TEST_RUNNERS.values(),
+            *(['ubuntu-26.04-arm'] if has_rust else []),
         )
     )
-    if is_rusty:
+    if has_rust:
         matrix.extend(
             {
                 'os': LINUX_TEST_RUNNER,
                 'python-version': minor.freethreaded_selector,
-                'freethreaded': 'true',
-                'primary': 'false',
+                'freethreaded': True,
+                'primary': False,
                 'dependency-group': freethreaded_group,
             }
             for minor in freethreaded_linux
             if minor.as_tuple >= MIN_FREETHREADED_MINOR
         )
+        if primary in freethreaded_linux:
+            matrix.extend(
+                {
+                    'os': runner,
+                    'python-version': primary.freethreaded_selector,
+                    'freethreaded': True,
+                    'primary': False,
+                    'dependency-group': freethreaded_group,
+                }
+                for runner in OTHER_TEST_RUNNERS.values()
+            )
     if pypy_selector is not None:
         matrix.append({
             'os': LINUX_TEST_RUNNER,
             'python-version': pypy_selector,
-            'freethreaded': 'false',
-            'primary': 'false',
+            'freethreaded': False,
+            'primary': False,
             'dependency-group': 'dev',
         })
     return matrix
@@ -341,10 +354,8 @@ def resolve_matrix(
     info = package_info(package)
     if info['type'] == 'rust':
         return {
-            **info,
-            'python-versions': [],
-            'test-matrix': [],
-            'build-matrix': [],
+            'type': 'rust',
+            'crate': info['crate'],
             'rust-test-runners': [LINUX_TEST_RUNNER, 'ubuntu-26.04-arm'],
             'rust-toolchain': rust_toolchain_channel(package),
         }
@@ -380,11 +391,11 @@ def resolve_matrix(
         )
     primary = max(stable_minors)
 
-    is_rusty = info['is-rusty'] == 'true'
-    pypy = info['pypy'] == 'true'
+    has_rust = bool(info.get('crate'))
+    pypy = info['pypy']
 
     freethreaded_linux: list[Minor] = []
-    if is_rusty:
+    if has_rust:
         ft_linux = available_stable_cpython_minors(
             catalog_entries, freethreaded=True, os_name='linux'
         )
@@ -397,6 +408,15 @@ def resolve_matrix(
                 f'uv does not offer declared free-threaded CPython versions '
                 f'{", ".join(minor.freethreaded_selector for minor in missing_ft)}; update uv'
             )
+        if primary in freethreaded_linux:
+            for os_name in OTHER_TEST_RUNNERS:
+                if primary not in available_stable_cpython_minors(
+                    catalog_entries, freethreaded=True, os_name=os_name
+                ):
+                    fail(
+                        f'uv does not offer declared free-threaded CPython '
+                        f'{primary.freethreaded_selector} on {os_name}; update uv'
+                    )
 
     pypy_selector = (
         newest_pypy_selector(catalog_entries, requires_python=requires_python)
@@ -412,38 +432,33 @@ def resolve_matrix(
     test_matrix = build_test_matrix(
         stable_minors=stable_minors,
         primary=primary,
-        is_rusty=is_rusty,
+        has_rust=has_rust,
         freethreaded_linux=freethreaded_linux,
         pypy_selector=pypy_selector,
         freethreaded_group=info['freethreaded-group'],
     )
     build_matrix = [
         {'runner': runner, 'abi': abi}
-        for runner in (RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS)
-        for abi in (('optimized', 'abi3t') if is_rusty else ('optimized',))
+        for runner in (NATIVE_BUILD_RUNNERS if has_rust else PURE_BUILD_RUNNERS)
+        for abi in (('optimized', 'abi3t') if has_rust else ('optimized',))
     ]
 
     return {
         'type': info['type'],
-        'rust-test-runners': [LINUX_TEST_RUNNER],
         'import-name': info['import-name'],
-        'is-release': info['is-release'],
-        'is-rusty': info['is-rusty'],
+        'publishable': info['publishable'],
         'pypy': info['pypy'],
         'crate': info.get('crate', ''),
-        'package': info['package'],
-        'requires-python': requires_python,
         'python-versions': [str(m) for m in stable_minors],
         'primary-python': str(primary),
         'test-matrix': test_matrix,
         'build-matrix': build_matrix,
-        'rust-toolchain': rust_toolchain_channel(package) if is_rusty else '',
+        'rust-toolchain': rust_toolchain_channel(package) if has_rust else '',
     }
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('packages', nargs='*', help='Top-level package directory names')
     parser.add_argument(
         '--catalog',
         type=Path,
@@ -451,10 +466,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         help='Optional uv python list JSON (for offline tests)',
     )
     args = parser.parse_args(argv)
+    selection = json.load(sys.stdin)
     catalog = load_uv_catalog(args.catalog)
     plans = [
-        {'package': package, 'plan': resolve_matrix(package, catalog=catalog)}
-        for package in args.packages
+        {**item, 'plan': resolve_matrix(item['package'], catalog=catalog)}
+        for item in selection
     ]
     primary = max(available_stable_cpython_minors(catalog, freethreaded=False))
     write_outputs({
