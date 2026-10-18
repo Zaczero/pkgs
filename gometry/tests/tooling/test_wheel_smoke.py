@@ -130,6 +130,33 @@ def test_sanitizer_wheel_rejects_a_different_native_abi_or_platform(tag: str) ->
         )
 
 
+def test_smoke_rejects_an_extension_member_with_an_unknown_suffix() -> None:
+    with pytest.raises(AssertionError, match='not importable by this interpreter'):
+        release_artifact._smoke_extension_member(
+            {'gometry/_lib.unknown.so': b'extension'},
+        )
+
+
+def test_smoke_rejects_tags_for_a_different_interpreter_abi() -> None:
+    from packaging.tags import sys_tags
+
+    current = next(iter(sys_tags()))
+    incompatible = f'{current.interpreter}-unsupportedabi-{current.platform}'
+    wheel = Path(
+        f'gometry-1.0-{current.interpreter}-unsupportedabi-{current.platform}.whl'
+    )
+    with pytest.raises(AssertionError, match='do not match this interpreter'):
+        release_artifact._check_smoke_wheel_tags(wheel, [incompatible])
+
+
+def test_smoke_admits_the_regular_stable_abi_suffix() -> None:
+    from importlib.machinery import EXTENSION_SUFFIXES
+
+    assert '.abi3.so' in EXTENSION_SUFFIXES
+    member = 'gometry/_lib.abi3.so'
+    assert release_artifact._smoke_extension_member({member: b'extension'}) == member
+
+
 def _wheel(
     tmp_path: Path,
     *,

@@ -118,7 +118,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f'artifact inspection OK: {path.name}')
         elif args.smoke_wheel:
             wheel = args.smoke_wheel.resolve()
-            inspect_wheel(wheel)
             smoke_install(wheel, expected_source_manifest=args.expected_source_manifest)
             print(f'wheel smoke OK: {wheel.name}')
         elif args.smoke_sdist:

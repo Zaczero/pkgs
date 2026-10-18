@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
@@ -12,7 +13,8 @@ import tempfile
 import textwrap
 import venv
 from collections.abc import Mapping
-from pathlib import Path
+from importlib.machinery import EXTENSION_SUFFIXES
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from _artifact_common import (
@@ -148,8 +150,61 @@ def _smoke_grid(
     return path
 
 
+def _smoke_extension_member(
+    extension_members: Mapping[str, bytes],
+) -> str:
+    if len(extension_members) != 1:
+        raise AssertionError(
+            f'wheel must contain one Gometry extension: {sorted(extension_members)}'
+        )
+    member = next(iter(extension_members))
+    path = PurePosixPath(member)
+    if path.parent != PurePosixPath('gometry') or not any(
+        path.name == f'_lib{suffix}' for suffix in EXTENSION_SUFFIXES
+    ):
+        raise AssertionError(
+            f'wheel extension member is not importable by this interpreter: {member}'
+        )
+    return member
+
+
+def _check_smoke_wheel_tags(wheel: Path, tags: list[str]) -> None:
+    from packaging.tags import parse_tag, sys_tags
+    from packaging.utils import parse_wheel_filename
+
+    try:
+        filename_tags = parse_wheel_filename(wheel.name)[3]
+        wheel_tags = set().union(*(parse_tag(tag) for tag in tags))
+    except ValueError as error:
+        raise AssertionError(
+            f'wheel has invalid compatibility tags: {wheel}'
+        ) from error
+    if wheel_tags != filename_tags:
+        raise AssertionError('wheel filename and WHEEL compatibility tags differ')
+    if not wheel_tags.intersection(sys_tags()):
+        raise AssertionError(
+            f'wheel compatibility tags do not match this interpreter: {tags}'
+        )
+
+
+def _installed_smoke_extension_member() -> str:
+    distribution = importlib.metadata.distribution('gometry')
+    if distribution.files is None:
+        raise AssertionError('installed gometry distribution lacks a file inventory')
+    extensions = {
+        PurePosixPath(str(member)).as_posix(): b''
+        for member in distribution.files
+        if PurePosixPath(str(member)).parent == PurePosixPath('gometry')
+        and PurePosixPath(str(member)).name.startswith('_lib')
+        and PurePosixPath(str(member)).suffix.lower() in {'.so', '.pyd', '.dylib'}
+    }
+    return _smoke_extension_member(extensions)
+
+
 def _smoke_environment(
     *,
+    extension_member: str,
+    extension_sha256: str,
     expected_source_manifest: Path | None = None,
 ) -> dict[str, str]:
     if expected_source_manifest is not None:
@@ -174,6 +229,8 @@ def _smoke_environment(
         SMOKE_EXPECTED_TARGET_ENV: policy['target'],
         SMOKE_EXPECTED_ARCHITECTURE_ENV: policy['raw_target_arch'],
         SMOKE_EXPECTED_HOST_ARCH_ENV: policy['architecture'],
+        'GOMETRY_SMOKE_EXPECTED_EXTENSION_MEMBER': extension_member,
+        'GOMETRY_SMOKE_EXPECTED_EXTENSION_SHA256': extension_sha256,
         'GOMETRY_SMOKE_CPU_FEATURES': json.dumps(
             {
                 'v2': sorted(X86_64_V2_TARGET_FEATURES),
@@ -193,7 +250,13 @@ def smoke_installed(*, expected_source_manifest: Path | None = None) -> None:
             Path(tmp) / 'grid',
             expected_source_manifest=expected_source_manifest,
         )
-        env = _smoke_environment(expected_source_manifest=expected_source_manifest)
+        member = _installed_smoke_extension_member()
+        extension = Path(importlib.metadata.distribution('gometry').locate_file(member))
+        env = _smoke_environment(
+            extension_member=member,
+            extension_sha256=sha256_file(extension),
+            expected_source_manifest=expected_source_manifest,
+        )
         env[SMOKE_GRID_ENV] = str(grid)
         names = {
             SMOKE_GRID_ENV,
@@ -203,6 +266,8 @@ def smoke_installed(*, expected_source_manifest: Path | None = None) -> None:
             SMOKE_EXPECTED_TARGET_ENV,
             SMOKE_EXPECTED_ARCHITECTURE_ENV,
             SMOKE_EXPECTED_HOST_ARCH_ENV,
+            'GOMETRY_SMOKE_EXPECTED_EXTENSION_MEMBER',
+            'GOMETRY_SMOKE_EXPECTED_EXTENSION_SHA256',
             'GOMETRY_SMOKE_CPU_FEATURES',
         }
         previous = {name: os.environ.get(name) for name in names}
@@ -501,11 +566,13 @@ def match_benchmark_receipt(
 
 
 SMOKE = r"""
+import hashlib
 import importlib.metadata
+import importlib.machinery
 import json
 import os
 import platform
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 import sysconfig
 
@@ -519,6 +586,23 @@ assert metadata['Name'].lower() == 'gometry'
 assert gm.__version__ == distribution_version
 assert distribution_version and distribution_version[0].isdigit()
 assert distribution_version == os.environ['GOMETRY_SMOKE_EXPECTED_VERSION']
+expected_extension_member = os.environ['GOMETRY_SMOKE_EXPECTED_EXTENSION_MEMBER']
+member_path = PurePosixPath(expected_extension_member)
+assert member_path.parent == PurePosixPath('gometry')
+assert any(
+    member_path.name == f'_lib{suffix}'
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+), expected_extension_member
+distribution = importlib.metadata.distribution('gometry')
+distribution_files = distribution.files
+assert distribution_files is not None
+members = {PurePosixPath(str(member)).as_posix() for member in distribution_files}
+assert expected_extension_member in members, expected_extension_member
+extension_path = Path(lib.__file__).resolve()
+assert extension_path == Path(distribution.locate_file(expected_extension_member)).resolve()
+assert hashlib.sha256(extension_path.read_bytes()).hexdigest() == os.environ[
+    'GOMETRY_SMOKE_EXPECTED_EXTENSION_SHA256'
+]
 
 build_info = getattr(lib, '__build_info__', None)
 assert isinstance(build_info, dict)
@@ -568,9 +652,6 @@ machine_architecture = (
     'arm64' if machine in {'aarch64', 'arm64'} else machine
 )
 assert machine_architecture == os.environ['GOMETRY_SMOKE_EXPECTED_HOST_ARCHITECTURE']
-extension_suffix = sysconfig.get_config_var('EXT_SUFFIX')
-assert isinstance(extension_suffix, str) and extension_suffix
-assert str(Path(lib.__file__)).endswith(extension_suffix)
 
 if sysconfig.get_config_var('Py_GIL_DISABLED'):
     assert not sys._is_gil_enabled(), 'gometry re-enabled the GIL'
@@ -626,6 +707,10 @@ assert bounds.flags.writeable is False
 
 
 def smoke_install(wheel: Path, *, expected_source_manifest: Path | None = None) -> None:
+    inspection = inspect_wheel(wheel)
+    _check_smoke_wheel_tags(wheel, inspection['tags'])
+    extension_member = _smoke_extension_member(inspection['extension_members'])
+    extension_sha256 = _sha256_bytes(inspection['extension_members'][extension_member])
     with tempfile.TemporaryDirectory(prefix='gometry-wheel-smoke-') as tmp:
         temporary = Path(tmp)
         venv_dir = temporary / 'venv'
@@ -635,7 +720,11 @@ def smoke_install(wheel: Path, *, expected_source_manifest: Path | None = None) 
         neutral = temporary / 'neutral'
         neutral.mkdir()
         grid = _smoke_grid(temporary / 'grid')
-        env = _smoke_environment(expected_source_manifest=expected_source_manifest)
+        env = _smoke_environment(
+            extension_member=extension_member,
+            extension_sha256=extension_sha256,
+            expected_source_manifest=expected_source_manifest,
+        )
         env.pop('PYTHONPATH', None)
         env.pop('PYTHONHOME', None)
         env[SMOKE_GRID_ENV] = str(grid)
