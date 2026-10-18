@@ -928,6 +928,38 @@ def test_structural_rejects_export_rot(tmp_path, pristine_stub, exports, expect)
     assert any(expect in e for e in errors), errors
 
 
+def test_structural_accepts_exports_defined_in_every_try_branch(tmp_path):
+    stub = """\
+__all__ = [
+    'from_try',
+    'from_handler',
+    'from_else',
+    'from_finally',
+    'from_star_handler',
+]
+
+try:
+    def from_try() -> None: ...
+except ImportError:
+    def from_handler() -> None: ...
+else:
+    def from_else() -> None: ...
+finally:
+    def from_finally() -> None: ...
+
+try:
+    pass
+except* ValueError:
+    def from_star_handler() -> None: ...
+"""
+
+    errors = structural(make_config(tmp_path, stub_text=stub))
+
+    assert not any(
+        'is exported but the stub never defines it' in error for error in errors
+    ), errors
+
+
 @pytest.mark.usefixtures('mypy_provider')
 def test_validity_rejects_a_shadowed_overload_whatever_the_config(
     tmp_path, pristine_stub

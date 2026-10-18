@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 
+from pyo3stubs.ast_util import passive_class_member
 from pyo3stubs.report import Findings
 
 if TYPE_CHECKING:
@@ -33,26 +34,26 @@ def _callables(owner: object) -> dict[str, Callable[..., object]]:
     for name in dir(owner):
         if name.startswith('_'):
             continue
-        try:
-            static = inspect.getattr_static(owner, name)
-        except AttributeError:
-            # PEP 562 lazy exports (``__getattr__``) are visible in ``dir`` but
-            # not in the module dict until accessed — skip them here.
-            continue
-        if inspect.isclass(static) or isinstance(static, property):
-            continue
-        member = getattr(owner, name)
-        if callable(member):
+        if inspect.isclass(owner):
+            member = passive_class_member(owner, name)
+        else:
+            try:
+                member = inspect.getattr_static(owner, name)
+            except AttributeError:
+                # PEP 562 lazy exports (``__getattr__``) are visible in ``dir``
+                # but not in the module dict until accessed — skip them here.
+                continue
+        if callable(member) and not inspect.isclass(member):
             members[name] = member
     return members
 
 
-def _blocks(func: Callable[..., object]) -> Blocks | None:
-    """Split a signature into (data-input count, option block)."""
+def _blocks(func: Callable[..., object]) -> Blocks | str:
+    """Split a signature into (data inputs, option block) or a failure reason."""
     try:
         parameters = list(inspect.signature(func).parameters.values())
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        return f'{type(exc).__name__}: {exc}'
     if parameters and parameters[0].name == 'self':
         parameters = parameters[1:]
     data = 0
@@ -79,13 +80,21 @@ def collect_errors(cfg: StubConfig) -> Findings:
     if conf is None:
         return Findings()
     shared: dict[str, list[tuple[str, Blocks]]] = {}
+    present: dict[str, list[str]] = {}
+    errors: list[str] = []
     for label, owner in conf.targets:
         for name, func in _callables(owner).items():
+            present.setdefault(name, []).append(label)
             blocks = _blocks(func)
-            if blocks is not None:
+            if isinstance(blocks, str):
+                errors.append(
+                    f'{label}.{name}: inspect.signature failed '
+                    f'({blocks}); expose a valid __signature__ or remove '
+                    'this callable from the configured surface comparison'
+                )
+            else:
                 shared.setdefault(name, []).append((label, blocks))
 
-    errors: list[str] = []
     for name, variants in sorted(shared.items()):
         if len(variants) < 2 or name in conf.known_divergences:
             continue
@@ -102,7 +111,17 @@ def collect_errors(cfg: StubConfig) -> Findings:
         f'{name}: registered divergence no longer exists on two surfaces '
         '— drop the known_divergences entry'
         for name in sorted(conf.known_divergences)
-        if len(shared.get(name, [])) < 2
+        if len(present.get(name, [])) < 2
+    )
+    errors.extend(
+        f'{name}: registered divergence now agrees across surfaces '
+        '— drop the known_divergences entry'
+        for name in sorted(conf.known_divergences)
+        if len(present.get(name, [])) >= 2
+        and len(shared.get(name, [])) == len(present[name])
+        and all(
+            options == shared[name][0][1][1] for _, (_, options) in shared[name][1:]
+        )
     )
     compared = sum(1 for variants in shared.values() if len(variants) >= 2)
     return Findings(errors, examined=compared)

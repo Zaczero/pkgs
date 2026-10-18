@@ -378,10 +378,11 @@ def _module_bindings(body: list[ast.stmt]) -> set[str]:
             names.add(stmt.name.id)  # type: ignore[attr-defined]
         elif isinstance(stmt, ast.If):
             names |= _module_bindings(stmt.body) | _module_bindings(stmt.orelse)
-        elif isinstance(stmt, ast.Try):
+        elif isinstance(stmt, (ast.Try, ast.TryStar)):
             names |= _module_bindings(stmt.body)
             for handler in stmt.handlers:
                 names |= _module_bindings(handler.body)
+            names |= _module_bindings(stmt.orelse) | _module_bindings(stmt.finalbody)
     return names
 
 
