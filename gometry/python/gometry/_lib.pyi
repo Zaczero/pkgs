@@ -21475,7 +21475,8 @@ def from_arrow(
         exhaustion is process-fatal and is not translated into a Python error.
     OverflowError
         If a nonnegative Arrow buffer byte span cannot fit ``usize`` or the
-        maximum size of a Rust slice.
+        maximum size of a Rust slice, or accumulated row counts overflow
+        ``usize``.
 
     See Also
     --------

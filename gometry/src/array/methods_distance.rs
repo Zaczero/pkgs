@@ -414,7 +414,8 @@ impl PyGeometryArray {
                     shape.bounds(),
                 )
                 .map_err(crate::error::Error::from)?
-                .into_shape(frame)});
+                .into_shape(frame)
+            });
         }
         if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
