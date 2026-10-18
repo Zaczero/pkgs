@@ -13,8 +13,9 @@ use crate::bridge::{
     build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
 };
 use crate::buffered_events::BufferedState;
-use crate::error::{AsgiError, IntoPyResult as _, WebSocketFrameKind, into_pyerr};
+use crate::error::{AsgiError, WebSocketFrameKind};
 use crate::http::types::BytesStr;
+use crate::pyapi::errors::{IntoPyResult as _, into_pyerr};
 use crate::pyloop::Shard;
 use crate::websocket::{
     RequestedSubprotocols, WebSocketCloseCode, close_code, validate_accepted_subprotocol,

@@ -1,5 +1,7 @@
 //! Python FFI entry: config extraction, serve_fds, and related helpers.
 
+pub(crate) mod errors;
+
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,13 +20,12 @@ use crate::config::{
     BindTarget, ClientCertMode, ConfiguredResponseHeader, ForwardedFields, Http1Config,
     Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
 };
-use crate::error::{
-    ConfigError, H2CornError, IntoPyResult as _, into_pyerr, unexpected_join_error,
-};
+use crate::error::{ConfigError, H2CornError, unexpected_join_error};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
 use crate::log::emit_banner as emit_access_banner;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
+use crate::pyapi::errors::{IntoPyResult as _, into_pyerr};
 use crate::pyloop::{
     PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
     SlotFuture, call_awaitable, init_runtime, new_rust_future, release_app,

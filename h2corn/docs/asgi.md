@@ -85,7 +85,7 @@ namespace and to every other request.
 | Exception | Raised for |
 | --------- | ---------- |
 | `TypeError` | A field of the wrong Python type. |
-| `ValueError` | A malformed value: a missing required field, an invalid response header or trailer field, a non-final or non-three-digit status, an invalid WebSocket close value, an empty accepted subprotocol, or a `websocket.send` setting neither or both payload fields. |
+| `ValueError` | A malformed value: an unsupported message type, a missing required field, an invalid response header or trailer field, a non-final or non-three-digit status, an invalid WebSocket close value, an empty accepted subprotocol, or a `websocket.send` setting neither or both payload fields. |
 | `RuntimeError` | An invalid message sequence — a body before `http.response.start`, `http.response.pathsend` mixed with a body, trailers at the wrong point, an unexpected WebSocket event. Also a handshake that timed out, a compression failure, or an application that ended before completing its response. |
 | `OSError` | `send()` called after the stream has closed. |
 

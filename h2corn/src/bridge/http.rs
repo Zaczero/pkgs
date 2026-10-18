@@ -12,8 +12,9 @@ use crate::bridge::{
     EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
     parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
-use crate::error::{AsgiError, into_pyerr};
+use crate::error::AsgiError;
 use crate::http::app::{HttpSendDisposition, HttpSendState};
+use crate::pyapi::errors::into_pyerr;
 use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future};
 use crate::runtime::StreamInput;
 

@@ -10,7 +10,8 @@ use pyo3::exceptions::asyncio::CancelledError;
 use pyo3::prelude::*;
 
 use crate::app_call::AppCallArgs;
-use crate::error::{H2CornError, SendAfterCloseError, into_pyerr};
+use crate::error::H2CornError;
+use crate::pyapi::errors::{SendAfterCloseError, into_pyerr};
 use crate::pyloop::{PumpEvent, RustFuture, Shard, ShardHandle, TaskSlot, UnraisableError};
 use crate::runtime::RequestTaskGuard;
 

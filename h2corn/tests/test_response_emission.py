@@ -167,6 +167,28 @@ async def _send_h2_pair(
 
 
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])
+async def test_unsupported_message_type_allows_caught_response_fallback(
+    protocol: str,
+) -> None:
+    caught = []
+
+    async def app(scope, receive, send):
+        try:
+            await send({'type': 'http.response.unknown'})
+        except ValueError as error:
+            caught.append(str(error))
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'fallback'})
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, body = await _response(protocol, server_port(server))
+
+    assert len(caught) == 1
+    assert 'http.response.unknown' in caught[0]
+    assert (status, body) == (200, b'fallback')
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
 async def test_informational_start_is_rejected_and_caught_fallback_is_complete(
     protocol: str,
 ) -> None:

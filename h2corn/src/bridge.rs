@@ -37,7 +37,7 @@ pub(crate) use crate::bridge::websocket::{
 };
 use crate::error::{
     AsgiChannel, AsgiContainer, AsgiError, ErrorExt as _, H2CornError, HttpResponseError,
-    WebSocketError, into_pyerr,
+    WebSocketError,
 };
 use crate::http::app::HttpSendWaiter;
 use crate::http::header::{
@@ -50,6 +50,7 @@ use crate::http::types::{
     BytesStr, EarlyHintLinks, FinalResponseStatus, HttpStatusCode, ResponseHeaderName,
     ResponseHeaderValue, ResponseHeaders, ResponseTrailers,
 };
+use crate::pyapi::errors::into_pyerr;
 use crate::pyloop::{
     PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, observe_waiter, runtime,
 };
