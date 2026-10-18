@@ -4,7 +4,7 @@
 
 `LRUCache` is a bounded mutable mapping for Python applications that need
 least-recently-used eviction without wrapping a function. It supports CPython 3.11
-and newer, including free-threaded builds, and PyPy 3.11.
+and newer, including free-threaded builds.
 
 ## Installation
 
