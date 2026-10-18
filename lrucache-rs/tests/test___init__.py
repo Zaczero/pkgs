@@ -5,11 +5,16 @@ import pytest
 from lrucache_rs import LRUCache
 
 
-def test_invalid_maxsize():
-    with pytest.raises(OverflowError):
-        LRUCache(-1)
+@pytest.mark.parametrize('maxsize', [0, -1, -(2**200)])
+def test_nonpositive_maxsize(maxsize):
     with pytest.raises(ValueError, match='maxsize must be a positive integer'):
-        LRUCache(0)
+        LRUCache(maxsize)
+
+
+@pytest.mark.parametrize('maxsize', [2**32 - 1, 2**200])
+def test_unrepresentable_maxsize(maxsize):
+    with pytest.raises(ValueError, match='maxsize must be at most'):
+        LRUCache(maxsize)
 
 
 def test_maxsize_attribute():

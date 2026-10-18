@@ -3,6 +3,7 @@
 use std::num::NonZeroUsize;
 
 use parking_lot::Mutex;
+use pyo3::exceptions::PyValueError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt as _;
@@ -10,6 +11,12 @@ use pyo3::types::{PyInt, PyList};
 
 use crate::errors::CacheError;
 use crate::store::Store;
+
+impl From<CacheError> for PyErr {
+    fn from(error: CacheError) -> Self {
+        PyValueError::new_err(error.to_string())
+    }
+}
 
 /// Native storage for the public Python-owned LRU mapping.
 #[pyclass(frozen, subclass, mapping, module = "lrucache_rs._lib", name = "Cache")]
@@ -74,6 +81,13 @@ fn failed(request: &Bound<'_, PyAny>) -> PyResult<bool> {
 }
 
 impl LRUCache {
+    fn snapshot_indices(&self, py: Python<'_>) -> (u64, Vec<u32>) {
+        py.detach(|| {
+            let guard = self.inner.lock();
+            (guard.revision(), guard.indices())
+        })
+    }
+
     fn references<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyList>> {
         slf.getattr("_references")?.cast_into().map_err(Into::into)
     }
@@ -217,14 +231,16 @@ impl LRUCache {
     /// -------
     /// Cache
     ///     Initialized native metadata for the public Python mapping.
-    fn new(maxsize: usize) -> PyResult<Self> {
-        let maxsize = NonZeroUsize::new(maxsize)
-            .ok_or_else(|| CacheError::MaxsizeMustBePositive.into_pyerr())?;
-        if maxsize.get() > crate::store::MAX_CAPACITY {
-            return Err(CacheError::MaxsizeTooLarge.into_pyerr());
+    fn new(py: Python<'_>, maxsize: &Bound<'_, PyInt>) -> PyResult<Self> {
+        if maxsize.le(0)? {
+            return Err(CacheError::MaxsizeMustBePositive.into());
         }
+        if maxsize.gt(crate::store::MAX_CAPACITY)? {
+            return Err(CacheError::MaxsizeTooLarge.into());
+        }
+        let maxsize = NonZeroUsize::new(maxsize.extract()?).expect("positive capacity");
         Ok(Self {
-            inner: Mutex::new(Store::new(maxsize)),
+            inner: Mutex::new(py.detach(|| Store::new(maxsize))),
             maxsize,
         })
     }
@@ -288,10 +304,7 @@ impl LRUCache {
         let py = slf.py();
         let none = py.None();
         loop {
-            let (revision, indices) = {
-                let guard = slf.get().inner.lock_py_attached(py);
-                (guard.revision(), guard.indices())
-            };
+            let (revision, indices) = slf.get().snapshot_indices(py);
             let retired = indices
                 .into_iter()
                 .map(|slot| Position::new(py, slot).read(&references))
@@ -338,10 +351,7 @@ impl LRUCache {
     fn snapshot_entries(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         loop {
-            let (revision, indices) = {
-                let guard = slf.get().inner.lock_py_attached(py);
-                (guard.revision(), guard.indices())
-            };
+            let (revision, indices) = slf.get().snapshot_indices(py);
             // Only integer indices enter a native-created container. The
             // recursive entry graph stays in a Python-created snapshot list.
             let entries = slf.call_method1("_capture", (indices,))?.unbind();

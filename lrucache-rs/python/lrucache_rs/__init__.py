@@ -37,6 +37,9 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
     atomic transaction. Key equality and object finalizers may reenter the
     cache. Equality that continually changes membership may prevent a lookup
     from stabilizing.
+
+    Invalid capacities raise ValueError. Values without Python's integer
+    index protocol raise TypeError.
     """
 
     __slots__ = ('_references',)

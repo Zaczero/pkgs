@@ -35,7 +35,9 @@ content equality with other mappings. It is mutable and unhashable.
 See the [public class reference](python/lrucache_rs/__init__.py) for types and
 method documentation.
 
-`maxsize` must be positive, and keys must be hashable.
+`maxsize` must be a positive integer within the native index range, and keys
+must be hashable. Invalid capacities raise `ValueError`; values that do not
+support Python's integer index protocol raise `TypeError`.
 
 ### Recency and views
 
