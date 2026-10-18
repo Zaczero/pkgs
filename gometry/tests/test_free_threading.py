@@ -1,13 +1,12 @@
-"""Concurrent stress test for free-threaded CPython support.
+"""Concurrent smoke test for gometry's threaded entry points.
 
-On a free-threaded build (``sys._is_gil_enabled()`` is ``False``), threads
-exercise gometry kernels in parallel on shared inputs. On a GIL build the same
-work still runs as a serialized smoke test (no deadlock or corruption).
+Threads exercise gometry kernels in parallel on shared inputs. On a GIL build
+the same work runs as a serialized smoke test; on a free-threaded build it also
+covers concurrent access.
 """
 
 from __future__ import annotations
 
-import sys
 import threading
 from typing import Any
 
@@ -16,13 +15,6 @@ import pytest
 
 _THREAD_COUNT = 8
 _BARRIER_TIMEOUT = 120.0
-
-
-def _gil_enabled() -> bool | None:
-    probe = getattr(sys, '_is_gil_enabled', None)
-    if probe is None:
-        return None
-    return bool(probe())
 
 
 def _shared_fixtures() -> dict[str, Any]:
@@ -129,15 +121,6 @@ def test_free_threading_stress() -> None:
         assert not thread.is_alive(), f'{thread.name} did not finish'
     if errors:
         pytest.fail('\n'.join(errors))
-
-    gil = _gil_enabled()
-    if gil is None:
-        pytest.skip('sys._is_gil_enabled unavailable on this interpreter')
-    # Threads completed without errors above (errors → pytest.fail). On a
-    # free-threaded build this exercised real parallel shared-state access; on a
-    # GIL build it is still a correctness smoke of the same entry points.
-    assert not errors
-    assert gil in (True, False)
 
 
 def test_geometry_is_sendable() -> None:

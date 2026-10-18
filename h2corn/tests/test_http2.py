@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, PlainTextResponse
 
 from tests._support import (
+    gil_is_disabled,
     h2_request,
     h2_request_details,
     open_h2_connection,
@@ -28,11 +29,6 @@ from tests._support import (
 pytestmark = pytest.mark.asyncio
 
 H2_OUTBOUND_RESPONSE_BYTE_CAPACITY = 2 * 1024 * 1024
-
-
-def _gil_is_disabled() -> bool:
-    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
-    return callable(is_gil_enabled) and not is_gil_enabled()
 
 
 async def h2_request_with_headers(
@@ -377,7 +373,7 @@ async def test_fastapi_lifespan_state_is_visible_to_requests() -> None:
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_each_debug_loop_has_transactional_lifespan_and_isolated_state(
@@ -432,7 +428,7 @@ async def test_each_debug_loop_has_transactional_lifespan_and_isolated_state(
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_secondary_lifespan_startups_run_concurrently() -> None:
@@ -471,7 +467,7 @@ async def test_secondary_lifespan_startups_run_concurrently() -> None:
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
@@ -525,7 +521,7 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> None:
@@ -629,7 +625,7 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
@@ -712,7 +708,7 @@ async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
 
 
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_uvloop_secondary_factory_mismatch_fails_transactionally(

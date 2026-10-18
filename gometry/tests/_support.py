@@ -40,6 +40,12 @@ TOOL_IMPORT_DIRS = (
 )
 
 
+def gil_is_disabled() -> bool:
+    """Return whether this CPython process is currently running without the GIL."""
+    probe = getattr(sys, '_is_gil_enabled', None)
+    return callable(probe) and not probe()
+
+
 def h3_oracle() -> Any:
     if sysconfig.get_config_var('Py_GIL_DISABLED'):
         pytest.skip(

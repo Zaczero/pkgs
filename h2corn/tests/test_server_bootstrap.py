@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from h2corn import Config, Server, _lib
 
-from tests._support import HANG_BOUND, open_fd_count
+from tests._support import HANG_BOUND, gil_is_disabled, open_fd_count
 
 if TYPE_CHECKING:
     from h2corn._socket import ListenerLease
@@ -150,7 +150,7 @@ print('banner drained')
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 @pytest.mark.parametrize('fail_startup', [False, True])
@@ -346,11 +346,6 @@ def test_native_serve_completion_releases_its_event_loop_readers() -> None:
 
     with asyncio.Runner(loop_factory=ReaderLoop) as runner:
         runner.run(scenario())
-
-
-def _gil_is_disabled() -> bool:
-    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
-    return callable(is_gil_enabled) and not is_gil_enabled()
 
 
 def test_event_loop_factory_selection_is_explicit() -> None:
@@ -2501,7 +2496,7 @@ async def test_shutdown_during_claimed_starting_generation() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_shutdown_publishes_before_its_lifecycle_loop_can_close(
@@ -2705,7 +2700,7 @@ async def test_claimed_generation_preflight_settles_waiters(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 async def test_duplicate_serve_does_not_settle_active_generation() -> None:
@@ -2744,7 +2739,7 @@ async def test_duplicate_serve_does_not_settle_active_generation() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 @pytest.mark.parametrize(
@@ -2824,7 +2819,7 @@ async def test_pre_native_exit_releases_created_listener(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not _gil_is_disabled(),
+    not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
 @_posix_fd_bind

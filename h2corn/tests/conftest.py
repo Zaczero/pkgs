@@ -13,11 +13,19 @@ guard) working on whichever loop a deployment picks.
 import asyncio
 import shutil
 import sys
+import sysconfig
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 import pytest
+
+from tests._support import gil_is_disabled
+
+_FREE_THREADED_BUILD = bool(sysconfig.get_config_var('Py_GIL_DISABLED'))
+
+if _FREE_THREADED_BUILD and not gil_is_disabled():
+    raise SystemExit('h2corn tests require the free-threaded interpreter GIL off')
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -98,3 +106,13 @@ def pytest_asyncio_loop_factories(
     except ModuleNotFoundError:
         return factories
     return {**factories, 'uvloop': uvloop.new_event_loop}
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if _FREE_THREADED_BUILD and not gil_is_disabled():
+        print(
+            'h2corn tests enabled the GIL in the free-threaded interpreter',
+            file=sys.stderr,
+        )
+        if exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED

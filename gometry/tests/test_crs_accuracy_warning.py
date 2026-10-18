@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import queue
 import shutil
-import sys
 import threading
 import time
 import traceback
@@ -14,6 +13,8 @@ from typing import TYPE_CHECKING
 import gometry as gm
 import numpy as np
 import pytest
+
+from tests._support import gil_is_disabled
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -468,11 +469,11 @@ def _run_free_threaded_workers(
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not gil_is_disabled(),
     reason='requires free-threaded CPython',
 )
 def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
-    assert sys._is_gil_enabled() is False
+    assert gil_is_disabled()
     messages: list[str | None] = [None] * _FREE_THREADED_WORKER_COUNT
 
     def worker(index: int, barrier: threading.Barrier) -> None:
@@ -496,11 +497,11 @@ def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
 
 
 @pytest.mark.skipif(
-    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    not gil_is_disabled(),
     reason='requires free-threaded CPython',
 )
 def test_free_threaded_internal_grid_diagnostics_stay_owned() -> None:
-    assert sys._is_gil_enabled() is False
+    assert gil_is_disabled()
     warning_counts: list[int | None] = [None] * _FREE_THREADED_WORKER_COUNT
 
     def worker(index: int, barrier: threading.Barrier) -> None:

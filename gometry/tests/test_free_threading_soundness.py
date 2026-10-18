@@ -25,23 +25,15 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import gil_is_disabled
+
 _BARRIER_TIMEOUT = 30.0
 _JOIN_TIMEOUT = 60.0
 _STRESS_SECONDS = 0.35
 
 
-def _gil_enabled() -> bool | None:
-    probe = getattr(sys, '_is_gil_enabled', None)
-    if probe is None:
-        return None
-    return bool(probe())
-
-
 def _require_free_threading() -> None:
-    gil = _gil_enabled()
-    if gil is None:
-        pytest.skip('sys._is_gil_enabled unavailable on this interpreter')
-    if gil is True:
+    if not gil_is_disabled():
         pytest.skip(
             'free-threading soundness stress requires CPython with the GIL disabled '
             '(e.g. 3.14t); this build has the GIL enabled'

@@ -7,20 +7,14 @@ from __future__ import annotations
 
 import gc
 import struct
-import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import gometry as gm
 import pytest
 
+from tests._support import gil_is_disabled
+
 pa = pytest.importorskip('pyarrow')
-
-
-def _gil_enabled() -> bool | None:
-    probe = getattr(sys, '_is_gil_enabled', None)
-    if probe is None:
-        return None
-    return bool(probe())
 
 
 def test_b2_crs_engine_metadata_stable_under_concurrent_calls() -> None:
@@ -35,7 +29,7 @@ def test_b2_crs_engine_metadata_stable_under_concurrent_calls() -> None:
     expected_search = baseline['search_path']
     assert isinstance(expected_version, str) and expected_version
     workers = 16
-    iterations = 500 if _gil_enabled() is False else 100
+    iterations = 500 if gil_is_disabled() else 100
 
     def worker(_: int) -> list[tuple[object, object]]:
         failures: list[tuple[object, object]] = []

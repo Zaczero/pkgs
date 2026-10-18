@@ -25,11 +25,6 @@ pytestmark = pytest.mark.asyncio
 SERVER_MAX_FRAME_SIZE = 64 * 1024
 
 
-def _gil_is_disabled() -> bool:
-    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
-    return callable(is_gil_enabled) and not is_gil_enabled()
-
-
 def _decode_h2_settings_payload(payload: bytes) -> dict[int, int]:
     if len(payload) % 6 != 0:
         raise ValueError('SETTINGS payload must be a sequence of 6-byte pairs')

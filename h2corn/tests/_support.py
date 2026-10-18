@@ -14,6 +14,12 @@ from h2corn import Config, Server
 from h2corn._config import TcpBindSpec, parse_bind_spec
 
 
+def gil_is_disabled() -> bool:
+    """Return whether this CPython process is currently running without the GIL."""
+    is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
+    return callable(is_gil_enabled) and not is_gil_enabled()
+
+
 def open_fd_count() -> int:
     """Count this process's descriptors or handles."""
     if sys.platform == 'win32':
