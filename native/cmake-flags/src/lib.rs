@@ -93,7 +93,7 @@ fn watch_target_env(variable: &str, target: &str, suffix: &str, build_kind: &str
     println!("cargo:rerun-if-env-changed={variable}");
 }
 
-pub fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
+pub fn add_file_prefix_map<M: std::fmt::Display>(config: &mut cmake::Config, mapping: M) {
     let flag = format!("-ffile-prefix-map={mapping}");
     config.cflag(&flag).cxxflag(&flag);
 }
