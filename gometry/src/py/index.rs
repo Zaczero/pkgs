@@ -780,6 +780,7 @@ impl<'data> ResolvedIndexRow<'_, 'data> {
                 operation,
                 logical,
                 row,
+                ..
             } => operation.prepared_at(*logical, *row),
             IndexRowSource::Boxed(geometry) => {
                 Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
@@ -880,13 +881,6 @@ impl<'a> IndexRowOperation<'a> {
         Ok(self.resolve(handle)?.row())
     }
 
-    pub(crate) fn prepared(
-        &mut self,
-        handle: usize,
-    ) -> crate::error::Result<crate::array::PreparedRow<'a>> {
-        self.resolve(handle)?.prepared()
-    }
-
     pub(crate) fn geometry(
         &mut self,
         handle: usize,
@@ -923,13 +917,6 @@ impl<'a> IndexRowOperation<'a> {
                 ))
             },
         }
-    }
-
-    pub(crate) fn frame_cache(
-        &mut self,
-        handle: usize,
-    ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
-        Ok(self.resolve(handle)?.frame_cache())
     }
 }
 

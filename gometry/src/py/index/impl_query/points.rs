@@ -1,15 +1,13 @@
 use super::{
     Arc, BatchResult, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GeodesicPruner,
-    IndexPredicate, PointRows, PreparedIndexQuery, PreparedPlan, PyGeometryArray, PySpatialIndex,
-    RowMatches, Shape, ShapeData, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar,
-    retain_row,
+    IndexPredicate, PointRows, PreparedIndexQuery, PyGeometryArray, PySpatialIndex, RowMatches,
+    Shape, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
 
 impl PySpatialIndex {
-    /// Column-direct engine for packed point query arrays: one frame check and
-    /// one metric/spec resolution for the whole column, then per-point
-    /// envelope lookups refined with the shared relation matrix — no per-row
-    /// `PyGeometry` materialization. `predicate=None` returns candidates only.
+    /// Column-direct engine for packed point query arrays. Exact topology and
+    /// dwithin use dedicated refinement runners; candidate-only queries stop
+    /// after envelope collection without per-row `PyGeometry` materialization.
     pub(crate) fn point_rows_matches(
         &self,
         array: &PyGeometryArray,
@@ -83,20 +81,20 @@ impl PySpatialIndex {
                 ),
             };
         }
-        let spec = match predicate {
-            Some(IndexPredicate::Topological(predicate)) => Some(predicate.spec()),
-            Some(IndexPredicate::Dwithin) | None => None,
+        let (candidate_distance, model) = match &plan {
+            PreparedIndexQuery::Candidates { .. } => (None, None),
+            PreparedIndexQuery::CandidatesDwithin {
+                distance, metric, ..
+            } => (Some(*distance), Some(metric)),
+            PreparedIndexQuery::Topological { .. } | PreparedIndexQuery::Dwithin { .. } => {
+                unreachable!("exact predicates use their dedicated point-row runners")
+            },
         };
-        let model = match &plan {
-            PreparedIndexQuery::CandidatesDwithin { metric, .. }
-            | PreparedIndexQuery::Dwithin { metric, .. } => Some(metric),
-            PreparedIndexQuery::Candidates { .. } | PreparedIndexQuery::Topological { .. } => None,
-        };
-        let coordinate_distance =
-            distance.and_then(|distance| model.and_then(|m| m.coordinate_radius(distance.get())));
+        let coordinate_distance = candidate_distance
+            .and_then(|distance| model.and_then(|metric| metric.coordinate_radius(distance.get())));
         // Geodesic dwithin over an all-point index: the sound per-point
         // candidate window replaces the global scan.
-        let (geodesic_crs, geodesic_state) = match (model, distance) {
+        let (geodesic_crs, geodesic_state) = match (model, candidate_distance) {
             (Some(crs::MetricModel::Geodesic { crs, frame, state }), Some(_))
                 if self.non_prunable_live == 0 && coordinate_distance.is_none() =>
             {
@@ -108,15 +106,9 @@ impl PySpatialIndex {
             },
             _ => (None, None),
         };
-        // CSR-direct: every row appends into one flat ids buffer; candidate
-        // collection orders the window and refinement compacts it in place —
-        // no per-point `Vec`.
+        // CSR-direct candidate collection appends, orders and deduplicates
+        // each row in one flat ids buffer — no per-point `Vec`.
         let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
-        // Point queries never cross; geographic rows are refined by the
-        // quotient-aware matrix path below.
-        let domain = self.domain()?;
-        let mut query_rows = array.row_operation();
-        let mut index_products = self.rows.operation();
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
                 let end = builder.len();
@@ -128,9 +120,8 @@ impl PySpatialIndex {
                 Some(Bounds::from_point(point)),
                 Some(row),
             )?;
-            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
-            match (coordinate_distance, distance) {
+            match (coordinate_distance, candidate_distance) {
                 (Some(radius), _) => {
                     if radius == f64::INFINITY {
                         self.append_live_handles(builder.values_mut());
@@ -167,26 +158,6 @@ impl PySpatialIndex {
                 },
             }
             self.finish_candidates(builder.values_mut(), row_start);
-            let ids = builder.values_mut();
-            match (&spec, model, predicate) {
-                (Some(spec), ..) => {
-                    let query_cache = query_rows.frame_cache(row);
-                    super::refine::retain_topological(
-                        &query,
-                        Some(&query_cache),
-                        spec,
-                        domain,
-                        &mut index_products,
-                        ids,
-                        row_start,
-                    )?;
-                },
-                (None, Some(_), Some(IndexPredicate::Dwithin)) => {
-                    unreachable!("exact dwithin selects a typed point-row runner")
-                },
-                // Candidates-only: the envelope answer is the result.
-                _ => {},
-            }
             let end = builder.len();
             builder.push_end(end)?;
         }
