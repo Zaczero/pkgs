@@ -1,7 +1,21 @@
 """pyo3stubs gates for lrucache_rs (one test per gate)."""
 
+import sysconfig
+
 import pytest
 
-gate_test = pytest.importorskip('pyo3stubs.testing').gate_test
+if sysconfig.get_config_var('Py_GIL_DISABLED'):
 
-test_pyo3stubs_gate = gate_test('tools/stubconfig.py')
+    @pytest.mark.skip(
+        reason=(
+            'pyo3stubs gates require the tree-sitter native parser, which has '
+            'no free-threaded CPython build'
+        )
+    )
+    def test_pyo3stubs_gate() -> None:
+        pass
+
+else:
+    from pyo3stubs.testing import gate_test
+
+    test_pyo3stubs_gate = gate_test('tools/stubconfig.py')
