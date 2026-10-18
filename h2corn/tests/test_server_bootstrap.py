@@ -1933,6 +1933,8 @@ def test_adopting_a_descriptor_that_is_not_a_listener_is_refused() -> None:
             _socket._build_sockets(Config(bind=(f'fd://{connected.fileno()}',)))
         # Still ours, still usable: the refusal did not consume it.
         assert connected.fileno() >= 0
+        # Inspect the shared descriptor flag, not the wrapper's cached mode.
+        assert not os.get_blocking(connected.fileno())
         connected.listen(1)
 
 
