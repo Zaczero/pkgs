@@ -62,15 +62,10 @@ impl PySpatialIndex {
             candidates.retain(|&j| j > i);
             if !candidates.is_empty() {
                 let query = source.prepared()?;
-                let query_cache = if matches!(domain, TopologyDomain::Geographic(_))
+                let query_cache = (matches!(domain, TopologyDomain::Geographic(_))
                     && (spec.is_some()
-                        || matches!(resolved, Some(crs::ResolvedMetric::Geodesic(_))))
-                {
-                    Some(source.frame_cache())
-                } else {
-                    None
-                };
-                drop(source);
+                        || matches!(resolved, Some(crs::ResolvedMetric::Geodesic(_)))))
+                .then(|| source.frame_cache());
                 match (spec, resolved) {
                     (Some(spec), _) => {
                         super::refine::retain_topological(
@@ -114,8 +109,6 @@ impl PySpatialIndex {
                     },
                     (None, None) => unreachable!("dwithin self-join resolves its metric once"),
                 }
-            } else {
-                drop(source);
             }
             super::super::free_functions::append_join_matches(
                 &mut left,

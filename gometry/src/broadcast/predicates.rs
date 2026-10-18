@@ -82,7 +82,7 @@ pub(crate) fn predicate_scalar_vs_array(
                 scalar_is_left,
                 Some(&array),
                 domain,
-                &scalar_cache,
+                scalar_cache,
             )
         })
         .map_err(super::rows_err)?,
@@ -307,7 +307,7 @@ where
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::try_for_domain(
                             &scalar_plan,
-                            &scalar_cache,
+                            scalar_cache,
                             &element_plan,
                             &element_cache,
                             domain,
@@ -317,7 +317,7 @@ where
                             &element_plan,
                             &element_cache,
                             &scalar_plan,
-                            &scalar_cache,
+                            scalar_cache,
                             domain,
                         )
                     }?;
