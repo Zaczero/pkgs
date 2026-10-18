@@ -91,7 +91,6 @@ def package_info(package: str) -> dict[str, Any]:
             'import-name': '',
             'publishable': False,
             'package': package,
-            'pypy': False,
             'freethreaded-group': 'dev',
             'requires-python': '',
             'type': 'rust',
@@ -106,9 +105,6 @@ def package_info(package: str) -> dict[str, Any]:
         'freethreaded' if 'freethreaded' in dependency_groups else 'dev'
     )
     requires_python = project.get('requires-python', '')
-    pypy = 'Programming Language :: Python :: Implementation :: PyPy' in project.get(
-        'classifiers', []
-    )
     publishable = package in list_packages('release')
     cargo_toml = path / 'Cargo.toml'
 
@@ -119,7 +115,6 @@ def package_info(package: str) -> dict[str, Any]:
             'import-name': module_name.split('.', maxsplit=1)[0],
             'publishable': publishable,
             'package': package,
-            'pypy': pypy,
             'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
             'type': 'python-rust',
@@ -154,7 +149,6 @@ def package_info(package: str) -> dict[str, Any]:
             'import-name': import_name,
             'publishable': publishable,
             'package': package,
-            'pypy': pypy,
             'freethreaded-group': freethreaded_group,
             'requires-python': requires_python,
             'type': 'python',
@@ -166,7 +160,6 @@ def package_info(package: str) -> dict[str, Any]:
         'import-name': version_path.relative_to(path).parts[0],
         'publishable': publishable,
         'package': package,
-        'pypy': pypy,
         'freethreaded-group': freethreaded_group,
         'requires-python': requires_python,
         'type': 'python',

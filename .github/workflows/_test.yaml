@@ -240,12 +240,11 @@ jobs:
         env:
           DEPENDENCY_GROUP: ${{ matrix.dependency-group }}
           FREETHREADED: ${{ matrix.freethreaded }}
-          PYTHON_VERSION: ${{ matrix.python-version }}
         shell: bash
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          if [[ "$FREETHREADED" == true || "$PYTHON_VERSION" == pypy* ]]; then
+          if [[ "$FREETHREADED" == true ]]; then
             export MATURIN_PEP517_ARGS="--profile dev"
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
@@ -380,7 +379,6 @@ jobs:
           CIBW_BUILD: ${{ matrix.abi == 'abi3t' && 'cp315t-*' || '*' }}
           CIBW_BUILD_FRONTEND: build[uv]
           CIBW_INHERIT: "test-command; environment-linux; environment-macos"
-          CIBW_ENABLE: ${{ fromJson(inputs.plan).pypy && 'pypy' || '' }}
           CIBW_BEFORE_ALL_LINUX: >-
             curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
             sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path

@@ -259,10 +259,7 @@ def compression_cases(_scratch: Path) -> dict:
             if encoding == 'gzip':
                 decoded = gzip.decompress(encoded)
             elif encoding == 'br':
-                if sys.implementation.name == 'cpython':
-                    import brotli
-                else:
-                    import brotlicffi as brotli
+                import brotli
 
                 decoded = brotli.decompress(encoded)
             elif encoding == 'zstd':

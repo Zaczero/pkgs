@@ -7,8 +7,6 @@ Policy (internal monorepo defaults — keep cost proportional to risk):
 * macOS and Windows test the newest supported stable minor only (GIL).
 * Free-threaded pytest: native packages, every shippable ABI on Linux and
   the newest supported minor on macOS and Windows.
-* PyPy pytest: one Linux cell per package, using the newest stable minor uv
-  offers that satisfies requires-python.
 * Build runners: pure Python → ubuntu only; native → multi-arch including
   Windows ARM.
 * Development dependencies are installed for every cell. Packages whose native
@@ -223,43 +221,6 @@ def available_stable_cpython_minors(
     return minors
 
 
-def newest_pypy_selector(
-    catalog: Sequence[dict[str, Any]],
-    *,
-    requires_python: str,
-) -> str | None:
-    """Newest stable Linux x86-64 PyPy satisfying requires-python."""
-    candidates: list[tuple[Minor, str]] = []
-    for entry in catalog:
-        if entry.get('implementation') != 'pypy':
-            continue
-        if (
-            entry.get('os') != 'linux'
-            or entry.get('arch') != 'x86_64'
-            or entry.get('libc') != 'gnu'
-            or not is_default_variant(entry)
-        ):
-            continue
-        if not isinstance(entry.get('version'), str):
-            continue
-        parsed = parse_version(str(entry['version']))
-        if parsed is None or parsed.is_prerelease:
-            continue
-        minor = parsed.as_minor
-        candidates.append((minor, f'pypy{minor.major}.{minor.minor}'))
-    if not candidates:
-        fail('uv does not offer stable PyPy on Linux x86-64; update uv')
-    candidates = [
-        candidate
-        for candidate in candidates
-        if satisfies_requires_python(requires_python, candidate[0])
-    ]
-    if not candidates:
-        return None
-    candidates.sort()
-    return candidates[-1][1]
-
-
 def versions_file_for(package: str) -> Path:
     package_file = Path(package) / '.python-versions'
     if package_file.is_file():
@@ -294,7 +255,6 @@ def build_test_matrix(
     primary: Minor,
     has_rust: bool,
     freethreaded_linux: Sequence[Minor],
-    pypy_selector: str | None,
     freethreaded_group: str,
 ) -> list[dict[str, str | bool]]:
     matrix: list[dict[str, str | bool]] = [
@@ -343,14 +303,6 @@ def build_test_matrix(
                 }
                 for runner in OTHER_TEST_RUNNERS.values()
             )
-    if pypy_selector is not None:
-        matrix.append({
-            'os': LINUX_TEST_RUNNER,
-            'python-version': pypy_selector,
-            'freethreaded': False,
-            'primary': False,
-            'dependency-group': 'dev',
-        })
     return matrix
 
 
@@ -425,16 +377,11 @@ def resolve_matrix(
                         f'{primary.freethreaded_selector} on {os_name}; update uv'
                     )
 
-    pypy_selector = newest_pypy_selector(
-        catalog_entries, requires_python=requires_python
-    )
-
     test_matrix = build_test_matrix(
         stable_minors=stable_minors,
         primary=primary,
         has_rust=has_rust,
         freethreaded_linux=freethreaded_linux,
-        pypy_selector=pypy_selector,
         freethreaded_group=info['freethreaded-group'],
     )
     build_matrix = [
@@ -447,7 +394,6 @@ def resolve_matrix(
         'type': info['type'],
         'import-name': info['import-name'],
         'publishable': info['publishable'],
-        'pypy': info['pypy'],
         'crate': info.get('crate', ''),
         'python-versions': [str(m) for m in stable_minors],
         'primary-python': str(primary),
