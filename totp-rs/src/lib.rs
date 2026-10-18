@@ -112,19 +112,32 @@ fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
     (seen_digits == digits.count).then_some(value)
 }
 
-fn parse_code_py(code: &Bound<'_, PyAny>, digits: Digits) -> PyResult<Option<u32>> {
-    if let Ok(value) = code.cast::<PyString>() {
-        if let Ok(s) = value.to_str() {
-            return Ok(code.py().detach(|| parse_code_str(s, digits)));
+enum Code<'a> {
+    Text(&'a str),
+    Parsed(Option<u32>),
+}
+
+impl Code<'_> {
+    fn parse(self, digits: Digits) -> Option<u32> {
+        match self {
+            Self::Text(text) => parse_code_str(text, digits),
+            Self::Parsed(value) => value,
         }
-        return Ok(None);
+    }
+}
+
+fn parse_code_py<'a>(code: &'a Bound<'_, PyAny>, digits: Digits) -> PyResult<Code<'a>> {
+    if let Ok(value) = code.cast::<PyString>() {
+        return Ok(value.to_str().map_or(Code::Parsed(None), Code::Text));
     }
 
     if let Ok(value) = code.cast::<PyInt>() {
-        let Ok(value) = value.extract::<u32>() else {
-            return Ok(None);
-        };
-        return Ok((value < digits.modulus.get()).then_some(value));
+        return Ok(Code::Parsed(
+            value
+                .extract::<u32>()
+                .ok()
+                .filter(|&value| value < digits.modulus.get()),
+        ));
     }
 
     Err(PyTypeError::new_err("code must be a string or an integer"))
@@ -188,7 +201,7 @@ fn totp_verify(
     let code = parse_code_py(code, digits)?;
     py.detach(|| {
         let secret = secret.decode()?;
-        Ok::<_, TotpError>(code.is_some_and(|code| {
+        Ok::<_, TotpError>(code.parse(digits).is_some_and(|code| {
             verify(
                 secret.as_ref(),
                 counter,
