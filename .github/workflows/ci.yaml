@@ -174,7 +174,20 @@ jobs:
           set -euo pipefail
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
-          cargo fmt --all -- --check
+          cargo metadata --locked --format-version 1 | python -c '
+          import json
+          import subprocess
+          import sys
+
+          metadata = json.load(sys.stdin)
+          packages = {
+              package["id"]: package["name"] for package in metadata["packages"]
+          }
+          command = ["cargo", "fmt", "--check"]
+          for package_id in metadata["workspace_members"]:
+              command.extend(["--package", packages[package_id]])
+          raise SystemExit(subprocess.run(command, check=False).returncode)
+          '
           cargo clippy --locked --workspace --all-targets
           cargo test --locked --workspace --doc
 
