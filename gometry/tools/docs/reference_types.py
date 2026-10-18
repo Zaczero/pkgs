@@ -239,8 +239,7 @@ def _is_typevar_call(expression: ast.expr | None, module: _Module) -> bool:
     ) or _last_name(expression.func) in {'_DefaultTypeVar', *_TYPEVAR_FACTORIES}
 
 
-def _leading_comments(path: Path, node: ast.AST) -> str | None:
-    lines = path.read_text(encoding='utf-8').splitlines()
+def _leading_comments(lines: list[str], node: ast.AST) -> str | None:
     index = getattr(node, 'lineno', 1) - 2
     comments = []
     while index >= 0:
@@ -318,6 +317,7 @@ def _add_declaration(
     node: ast.AST,
     expression: ast.expr | None,
     following_docstrings: dict[ast.AST, str],
+    lines: list[str],
 ) -> None:
     if isinstance(node, ast.ClassDef):
         prose = ast.get_docstring(node)
@@ -326,7 +326,7 @@ def _add_declaration(
             '\n\n'.join(
                 item
                 for item in (
-                    _leading_comments(module.path, node),
+                    _leading_comments(lines, node),
                     following_docstrings.get(node),
                 )
                 if item
@@ -348,6 +348,7 @@ def _add_declaration(
 
 def _index_declarations(module: _Module) -> None:
     following_docstrings = _following_docstrings(module)
+    lines = module.path.read_text(encoding='utf-8').splitlines()
     for statement in _module_statements(module.tree.body):
         if isinstance(statement, ast.ClassDef):
             _add_declaration(
@@ -357,6 +358,7 @@ def _index_declarations(module: _Module) -> None:
                 statement,
                 None,
                 following_docstrings,
+                lines,
             )
         elif isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target, ast.Name
@@ -369,6 +371,7 @@ def _index_declarations(module: _Module) -> None:
                     statement,
                     statement.value,
                     following_docstrings,
+                    lines,
                 )
         elif isinstance(statement, ast.Assign):
             names = [
@@ -385,6 +388,7 @@ def _index_declarations(module: _Module) -> None:
                         statement,
                         statement.value,
                         following_docstrings,
+                        lines,
                     )
         elif isinstance(statement, ast.TypeAlias):
             name = _dotted_name(statement.name)
@@ -396,6 +400,7 @@ def _index_declarations(module: _Module) -> None:
                     statement,
                     statement.value,
                     following_docstrings,
+                    lines,
                 )
     for name, declaration in tuple(module.declarations.items()):
         if isinstance(declaration.node, ast.ClassDef):
