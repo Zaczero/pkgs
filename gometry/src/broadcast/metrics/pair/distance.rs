@@ -237,46 +237,44 @@ mod dwithin_parity_tests {
         points_dwithin(a, b, limit)
     }
 
-    #[test]
-    fn planar_dwithin_scalar_packed_and_shape_data_agree() {
-        for [(ax, ay), (bx, by)] in [
-            [(0.0, 0.0), (0.0, 0.0)],
-            [(3.0, -1.0), (3.0, -1.0)],
-            [(0.0, 0.0), (3.0, 4.0)],
-            [(3.0, 4.0), (0.0, 0.0)],
-            [(-3.0, -4.0), (0.0, 0.0)],
-            [(-3.0, 1.0), (4.0, -1.0)],
-            [(1.0, -3.0), (1.0, 4.0)],
-            [(1.0, -3.0), (4.0, -3.0)],
-            [(-1e6, -1e6), (1e6, 1e6)],
-            [(1e6, 1e6), (1e6 + 3.0, 1e6 + 4.0)],
+    #[rstest::rstest]
+    #[case::origin_coincident([(0.0, 0.0), (0.0, 0.0)])]
+    #[case::translated_coincident([(3.0, -1.0), (3.0, -1.0)])]
+    #[case::positive_diagonal([(0.0, 0.0), (3.0, 4.0)])]
+    #[case::positive_diagonal_reversed([(3.0, 4.0), (0.0, 0.0)])]
+    #[case::negative_diagonal([(-3.0, -4.0), (0.0, 0.0)])]
+    #[case::mixed_diagonal([(-3.0, 1.0), (4.0, -1.0)])]
+    #[case::vertical([(1.0, -3.0), (1.0, 4.0)])]
+    #[case::horizontal([(1.0, -3.0), (4.0, -3.0)])]
+    #[case::wide_extent([(-1e6, -1e6), (1e6, 1e6)])]
+    #[case::translated_diagonal([(1e6, 1e6), (1e6 + 3.0, 1e6 + 4.0)])]
+    fn planar_dwithin_scalar_packed_and_shape_data_agree(#[case] coordinates: [(f64, f64); 2]) {
+        let [(ax, ay), (bx, by)] = coordinates;
+        let (a, b) = (point(ax, ay), point(bx, by));
+        let first = PreparedPlan::new(ShapeData::new(Shape::Point(a)));
+        let second = PreparedPlan::new(ShapeData::new(Shape::Point(b)));
+        let dist = point_distance(a, b);
+        for limit in [
+            0.0,
+            f64::MIN_POSITIVE,
+            dist * 0.5,
+            dist,
+            dist.next_down(),
+            dist.next_up(),
+            dist * 2.0,
+            f64::INFINITY,
         ] {
-            let (a, b) = (point(ax, ay), point(bx, by));
-            let first = PreparedPlan::new(ShapeData::new(Shape::Point(a)));
-            let second = PreparedPlan::new(ShapeData::new(Shape::Point(b)));
-            let dist = point_distance(a, b);
-            for limit in [
-                0.0,
-                f64::MIN_POSITIVE,
-                dist * 0.5,
-                dist,
-                dist.next_down(),
-                dist.next_up(),
-                dist * 2.0,
-                f64::INFINITY,
-            ] {
-                let scalar = scalar_point_dwithin(a, b, limit);
-                let packed = packed_planar_dwithin(a, b, limit);
-                let data = first.dwithin(&second, limit).unwrap();
-                assert_eq!(
-                    scalar, packed,
-                    "scalar vs packed at ({ax},{ay})-({bx},{by}) limit={limit}"
-                );
-                assert_eq!(
-                    scalar, data,
-                    "scalar vs ShapeData at ({ax},{ay})-({bx},{by}) limit={limit}"
-                );
-            }
+            let scalar = scalar_point_dwithin(a, b, limit);
+            let packed = packed_planar_dwithin(a, b, limit);
+            let data = first.dwithin(&second, limit).unwrap();
+            assert_eq!(
+                scalar, packed,
+                "scalar vs packed at ({ax},{ay})-({bx},{by}) limit={limit}"
+            );
+            assert_eq!(
+                scalar, data,
+                "scalar vs ShapeData at ({ax},{ay})-({bx},{by}) limit={limit}"
+            );
         }
     }
 }

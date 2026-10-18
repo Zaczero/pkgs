@@ -315,36 +315,36 @@ fn chart_split_axis(bounds: ChartBox) -> usize {
 mod tests {
     use super::balanced_leaf_count;
 
-    #[test]
-    fn balanced_leaf_count_matches_split_boundaries() {
-        for (segment_count, expected_leaves) in [
-            (1, 1),
-            (8, 1),
-            (9, 2),
-            (16, 2),
-            (17, 3),
-            (18, 4),
-            (23, 4),
-            (32, 4),
-            (33, 5),
-            (34, 6),
-            (35, 7),
-            (36, 8),
-            (64, 8),
-            (65, 9),
-            (71, 15),
-            (72, 16),
-            (95, 16),
-            (128, 16),
-            (129, 17),
-            (144, 32),
-            (256, 32),
-            (257, 33),
-            (512, 64),
-            (513, 65),
-        ] {
-            let leaves = balanced_leaf_count(segment_count);
-            assert_eq!(leaves, expected_leaves, "segments={segment_count}");
-        }
+    #[rstest::rstest]
+    #[case::segment_count_1(1, 1)]
+    #[case::segment_count_8(8, 1)]
+    #[case::segment_count_9(9, 2)]
+    #[case::segment_count_16(16, 2)]
+    #[case::segment_count_17(17, 3)]
+    #[case::segment_count_18(18, 4)]
+    #[case::segment_count_23(23, 4)]
+    #[case::segment_count_32(32, 4)]
+    #[case::segment_count_33(33, 5)]
+    #[case::segment_count_34(34, 6)]
+    #[case::segment_count_35(35, 7)]
+    #[case::segment_count_36(36, 8)]
+    #[case::segment_count_64(64, 8)]
+    #[case::segment_count_65(65, 9)]
+    #[case::segment_count_71(71, 15)]
+    #[case::segment_count_72(72, 16)]
+    #[case::segment_count_95(95, 16)]
+    #[case::segment_count_128(128, 16)]
+    #[case::segment_count_129(129, 17)]
+    #[case::segment_count_144(144, 32)]
+    #[case::segment_count_256(256, 32)]
+    #[case::segment_count_257(257, 33)]
+    #[case::segment_count_512(512, 64)]
+    #[case::segment_count_513(513, 65)]
+    fn balanced_leaf_count_matches_split_boundaries(
+        #[case] segment_count: usize,
+        #[case] expected_leaves: usize,
+    ) {
+        let leaves = balanced_leaf_count(segment_count);
+        assert_eq!(leaves, expected_leaves, "segments={segment_count}");
     }
 }

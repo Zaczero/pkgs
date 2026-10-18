@@ -26,19 +26,21 @@ fn shared_segment_part_keeps_tiny_overlap_on_huge_coordinates() {
 /// segments the products underflow to `0.0`, which wrongly reported two
 /// IDENTICAL segments as opposite-direction. Every scale must classify identical
 /// segments as same-direction.
-#[test]
-fn shared_segment_part_tiny_identical_segments_stay_same_direction() {
-    for length in [1.0, 1.0e-160, 1.0e-162, 1.0e-170] {
-        let segment = Segment {
-            start: XY::new(0.0, 0.0),
-            end: XY::new(length, 0.0),
-        };
-        let span = shared_segment_part(segment, segment).expect("positive-length shared run");
-        assert!(
-            span.same_direction,
-            "length {length:e} misclassified as opposite"
-        );
-    }
+#[rstest::rstest]
+#[case::length_1_0(1.0)]
+#[case::length_1_0e_160(1.0e-160)]
+#[case::length_1_0e_162(1.0e-162)]
+#[case::length_1_0e_170(1.0e-170)]
+fn shared_segment_part_tiny_identical_segments_stay_same_direction(#[case] length: f64) {
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(length, 0.0),
+    };
+    let span = shared_segment_part(segment, segment).expect("positive-length shared run");
+    assert!(
+        span.same_direction,
+        "length {length:e} misclassified as opposite"
+    );
 }
 
 /// Collinear segments meeting at exactly one endpoint are a point touch,
@@ -87,36 +89,38 @@ fn segment_cross_point_is_the_correctly_rounded_crossing() {
 
 /// An axis-aligned operand pins its own ordinate exactly, so the crossing of a
 /// diagonal with a vertical edge is representable on both axes.
-#[test]
-fn segment_cross_point_meets_an_axis_aligned_edge_exactly() {
+#[rstest::rstest]
+#[case::vertical(
+    "vertical",
+    Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(0.0, 4.0),
+    },
+    XY::new(0.0, 1.0)
+)]
+#[case::horizontal(
+    "horizontal",
+    Segment {
+        start: XY::new(-4.0, 0.0),
+        end: XY::new(4.0, 0.0),
+    },
+    XY::new(1.0, 0.0)
+)]
+fn segment_cross_point_meets_an_axis_aligned_edge_exactly(
+    #[case] name: &'static str,
+    #[case] edge: Segment,
+    #[case] expected: XY,
+) {
     let diagonal = Segment {
         start: XY::new(-1.0, 2.0),
         end: XY::new(2.0, -1.0),
     };
-    for (name, edge, expected) in [
-        (
-            "vertical",
-            Segment {
-                start: XY::new(0.0, 0.0),
-                end: XY::new(0.0, 4.0),
-            },
-            XY::new(0.0, 1.0),
-        ),
-        (
-            "horizontal",
-            Segment {
-                start: XY::new(-4.0, 0.0),
-                end: XY::new(4.0, 0.0),
-            },
-            XY::new(1.0, 0.0),
-        ),
-    ] {
-        let point = segment_cross_point(diagonal, edge)
-            .unwrap()
-            .expect("certified crossing");
-        assert_eq!(point.x.to_bits(), expected.x.to_bits(), "{name}: x");
-        assert_eq!(point.y.to_bits(), expected.y.to_bits(), "{name}: y");
-    }
+
+    let point = segment_cross_point(diagonal, edge)
+        .unwrap()
+        .expect("certified crossing");
+    assert_eq!(point.x.to_bits(), expected.x.to_bits(), "{name}: x");
+    assert_eq!(point.y.to_bits(), expected.y.to_bits(), "{name}: y");
 }
 
 /// A near-parallel crossing that the robust predicate finds is placed, and

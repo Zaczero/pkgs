@@ -65,14 +65,15 @@ mod tests {
     use super::*;
     use crate::geographic::GeographicFrame;
 
-    #[test]
-    fn shortcuts_cannot_erase_a_complete_parallel_turn() {
+    #[rstest::rstest]
+    #[case::xs_180_0_60_0_60_0_180_0([-180.0, -60.0, 60.0, -180.0])]
+    #[case::xs_180_0_60_0_60_0_180_0_32c40121([-180.0, 60.0, -60.0, -180.0])]
+    fn shortcuts_cannot_erase_a_complete_parallel_turn(#[case] xs: [f64; 4]) {
         let axis = GeographicFrame::crs84().longitude();
-        for xs in [[-180.0, -60.0, 60.0, -180.0], [-180.0, 60.0, -60.0, -180.0]] {
-            let guard = ChartSpanGuard::new(&xs, axis);
-            assert!(guard.rejects_span(0, 3));
-            assert!(!guard.rejects_span(1, 2));
-        }
+
+        let guard = ChartSpanGuard::new(&xs, axis);
+        assert!(guard.rejects_span(0, 3));
+        assert!(!guard.rejects_span(1, 2));
     }
 
     #[test]

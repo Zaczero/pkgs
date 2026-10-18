@@ -505,49 +505,37 @@ fn triangles_have_disjoint_interiors(left: &[Point; 3], right: &[Point; 3]) -> b
     triangle_separates_interiors_from(left, right) || triangle_separates_interiors_from(right, left)
 }
 
-#[test]
-fn exact_triangle_oracle_matches_overlay_for_overlap_contact_and_disjoint_pairs() {
+#[rstest::rstest]
+#[case::positive_area_overlap("positive-area overlap", [xy(0.5, 0.5), xy(2.5, 0.5), xy(0.5, 2.5)], false)]
+#[case::shared_edge("shared edge", [xy(2.0, 0.0), xy(4.0, 0.0), xy(0.0, 2.0)], true)]
+#[case::shared_corner("shared corner", [xy(2.0, 0.0), xy(3.0, -1.0), xy(3.0, 1.0)], true)]
+#[case::disjoint("disjoint", [xy(3.0, 0.0), xy(4.0, 0.0), xy(3.0, 1.0)], true)]
+fn exact_triangle_oracle_matches_overlay_for_overlap_contact_and_disjoint_pairs(
+    #[case] case: &'static str,
+    #[case] right_corners: [Point; 3],
+    #[case] interiors_are_disjoint: bool,
+) {
     let left_corners = [xy(0.0, 0.0), xy(2.0, 0.0), xy(0.0, 2.0)];
     let left = triangle_shape(&left_corners);
-    let cases = [
-        (
-            "positive-area overlap",
-            [xy(0.5, 0.5), xy(2.5, 0.5), xy(0.5, 2.5)],
-            false,
-        ),
-        (
-            "shared edge",
-            [xy(2.0, 0.0), xy(4.0, 0.0), xy(0.0, 2.0)],
-            true,
-        ),
-        (
-            "shared corner",
-            [xy(2.0, 0.0), xy(3.0, -1.0), xy(3.0, 1.0)],
-            true,
-        ),
-        ("disjoint", [xy(3.0, 0.0), xy(4.0, 0.0), xy(3.0, 1.0)], true),
-    ];
 
-    for (case, right_corners, interiors_are_disjoint) in cases {
-        let right = triangle_shape(&right_corners);
-        assert_eq!(
-            triangles_have_disjoint_interiors(&left_corners, &right_corners),
-            interiors_are_disjoint,
-            "{case}: exact half-plane classification"
-        );
+    let right = triangle_shape(&right_corners);
+    assert_eq!(
+        triangles_have_disjoint_interiors(&left_corners, &right_corners),
+        interiors_are_disjoint,
+        "{case}: exact half-plane classification"
+    );
 
-        let intersection = left.intersection(&right, Strictness::Strict).expect(case);
-        assert_eq!(
-            intersection.area() > 0.0,
-            !interiors_are_disjoint,
-            "{case}: intersection area"
-        );
-        assert_eq!(
-            left.overlaps(&right).expect(case),
-            !interiors_are_disjoint,
-            "{case}: overlaps predicate"
-        );
-    }
+    let intersection = left.intersection(&right, Strictness::Strict).expect(case);
+    assert_eq!(
+        intersection.area() > 0.0,
+        !interiors_are_disjoint,
+        "{case}: intersection area"
+    );
+    assert_eq!(
+        left.overlaps(&right).expect(case),
+        !interiors_are_disjoint,
+        "{case}: overlaps predicate"
+    );
 }
 
 #[test]
@@ -1113,29 +1101,30 @@ fn earcut_rejects_nested_holes_via_containment_index() {
     ));
 }
 
-#[test]
-fn earcut_grid_holes_preserve_euler_triangle_count() {
-    for hole_count in [1_usize, 4, 9] {
-        let poly = square_shell_with_grid_holes(hole_count);
-        let expected_count = polygon_vertices(&poly)
-            .len()
-            .wrapping_add(poly.holes.len().wrapping_mul(2))
-            .wrapping_sub(2);
-        let source = Shape::Polygon(poly);
-        let triangles = source
-            .polygon_triangles()
-            .expect("many-hole polygon triangulates");
-        assert_eq!(triangles.len(), expected_count, "{hole_count} grid holes");
-    }
+#[rstest::rstest]
+#[case::hole_count_1_usize(1_usize)]
+#[case::hole_count_4(4)]
+#[case::hole_count_9(9)]
+fn earcut_grid_holes_preserve_euler_triangle_count(#[case] hole_count: usize) {
+    let poly = square_shell_with_grid_holes(hole_count);
+    let expected_count = polygon_vertices(&poly)
+        .len()
+        .wrapping_add(poly.holes.len().wrapping_mul(2))
+        .wrapping_sub(2);
+    let source = Shape::Polygon(poly);
+    let triangles = source
+        .polygon_triangles()
+        .expect("many-hole polygon triangulates");
+    assert_eq!(triangles.len(), expected_count, "{hole_count} grid holes");
 }
 
-#[test]
-fn earcut_offset_holes_bridge_across_candidate_index_admission() {
-    for shell_vertices in [64, 65] {
-        let source = Shape::Polygon(square_shell_with_offset_holes(shell_vertices));
-        let triangles = source
-            .polygon_triangles()
-            .expect("holed polygon triangulates");
-        assert_eq!(triangles.len(), shell_vertices + 16);
-    }
+#[rstest::rstest]
+#[case::shell_vertices_64(64)]
+#[case::shell_vertices_65(65)]
+fn earcut_offset_holes_bridge_across_candidate_index_admission(#[case] shell_vertices: usize) {
+    let source = Shape::Polygon(square_shell_with_offset_holes(shell_vertices));
+    let triangles = source
+        .polygon_triangles()
+        .expect("holed polygon triangulates");
+    assert_eq!(triangles.len(), shell_vertices.wrapping_add(16));
 }

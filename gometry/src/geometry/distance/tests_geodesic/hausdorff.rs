@@ -152,43 +152,44 @@ fn geographic_hausdorff_closes_an_exact_polar_parallel_family() -> Result<()> {
     })?;
     Ok(())
 }
-#[test]
-fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames() {
+#[rstest::rstest]
+#[case::grad("grad", "grad", std::f64::consts::PI / 200.0)]
+#[case::radian("radian", "radian", 1.0)]
+fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames(
+    #[case] name: &'static str,
+    #[case] unit_name: &'static str,
+    #[case] radians_per_unit: f64,
+) {
     let geodesic = Geodesic::wgs84();
     let expected = 569_423.751_409_724;
-    for (name, unit_name, radians_per_unit) in [
-        ("grad", "grad", std::f64::consts::PI / 200.0),
-        ("radian", "radian", 1.0),
-    ] {
-        let unit = AngularFactor::try_new(unit_name, radians_per_unit)
-            .expect("angular frame unit is valid");
-        let frame = GeographicFrame::try_new(unit, unit, 0.0).expect("native frame is valid");
-        let to_native = (std::f64::consts::PI / 180.0) / radians_per_unit;
-        let source = line(vec![
-            p(0.0, 85.0 * to_native),
-            p(179.0 * to_native, 85.0 * to_native),
-        ]);
-        let target = Shape::Point(p(10.0 * to_native, 89.9 * to_native));
-        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
 
-        chart_hausdorff_counters::reset();
-        let witness = directed_chart_hausdorff(&source, &target, &metric);
-        let evaluations = chart_hausdorff_counters::source_evaluations();
-        assert!(
-            (witness.distance - expected).abs() <= 0.01,
-            "{name}: chart-edge plateau was {}; expected {expected}",
-            witness.distance,
-        );
-        assert!(
-            (metric.segment_length(witness.source, witness.target) - witness.distance).abs()
-                <= 1.0e-7,
-            "{name}: chart-edge witness does not attain the reported distance",
-        );
-        assert!(
-            evaluations <= 100,
-            "{name}: {evaluations} source evaluations"
-        );
-    }
+    let unit =
+        AngularFactor::try_new(unit_name, radians_per_unit).expect("angular frame unit is valid");
+    let frame = GeographicFrame::try_new(unit, unit, 0.0).expect("native frame is valid");
+    let to_native = (std::f64::consts::PI / 180.0) / radians_per_unit;
+    let source = line(vec![
+        p(0.0, 85.0 * to_native),
+        p(179.0 * to_native, 85.0 * to_native),
+    ]);
+    let target = Shape::Point(p(10.0 * to_native, 89.9 * to_native));
+    let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+
+    chart_hausdorff_counters::reset();
+    let witness = directed_chart_hausdorff(&source, &target, &metric);
+    let evaluations = chart_hausdorff_counters::source_evaluations();
+    assert!(
+        (witness.distance - expected).abs() <= 0.01,
+        "{name}: chart-edge plateau was {}; expected {expected}",
+        witness.distance,
+    );
+    assert!(
+        (metric.segment_length(witness.source, witness.target) - witness.distance).abs() <= 1.0e-7,
+        "{name}: chart-edge witness does not attain the reported distance",
+    );
+    assert!(
+        evaluations <= 100,
+        "{name}: {evaluations} source evaluations"
+    );
 }
 #[test]
 #[expect(
@@ -284,50 +285,49 @@ fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
         );
     }
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-fn public_parallel_hausdorff_perturbations_have_bounded_work() {
-    let cases = [
-        ("exact", [10.0, 12.5]),
-        ("one ULP", [10.0_f64.next_up(), 12.5_f64.next_up()]),
-        ("1e-9 degree", [10.0 + 1.0e-9, 12.5 + 1.0e-9]),
-        ("1e-6 degree", [10.0 + 1.0e-6, 12.5 + 1.0e-6]),
-        ("different endpoint offsets", [
-            10.0_f64.next_up(),
-            12.5 + 1.0e-9,
-        ]),
-        ("reversed target", [12.5 + 1.0e-9, 10.0 + 1.0e-9]),
-    ];
+#[case::exact("exact", [10.0, 12.5])]
+#[case::one_ulp("one ULP", [10.0_f64.next_up(), 12.5_f64.next_up()])]
+#[case::name_1e_9_degree("1e-9 degree", [10.0 + 1.0e-9, 12.5 + 1.0e-9])]
+#[case::name_1e_6_degree("1e-6 degree", [10.0 + 1.0e-6, 12.5 + 1.0e-6])]
+#[case::different_endpoint_offsets("different endpoint offsets", [
+    10.0_f64.next_up(),
+    12.5 + 1.0e-9,
+])]
+#[case::reversed_target("reversed target", [12.5 + 1.0e-9, 10.0 + 1.0e-9])]
+fn public_parallel_hausdorff_perturbations_have_bounded_work(
+    #[case] name: &'static str,
+    #[case] target_longitudes: [f64; 2],
+) {
     let expected: f64 = Geodesic::wgs84().inverse(60.0, 0.0, 60.01, 0.0);
 
-    for (name, target_longitudes) in cases {
-        let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
-        let target = line(vec![
-            p(target_longitudes[0], 60.01),
-            p(target_longitudes[1], 60.01),
-        ]);
-        let work = public_hausdorff_work("EPSG:4326", source, target, 64, 2_048);
-        assert!(
-            work.source_evaluations <= 64,
-            "{name}: {} source parameters",
-            work.source_evaluations
-        );
-        assert!(
-            work.moving_evaluations <= 256,
-            "{name}: {} moving correspondences",
-            work.moving_evaluations
-        );
-        assert!(
-            work.point_edge_samples <= 2_048,
-            "{name}: {} point-edge samples",
-            work.point_edge_samples
-        );
-        assert!(
-            (work.distance - expected).abs() <= 0.01,
-            "{name}: {} vs {expected}",
-            work.distance
-        );
-    }
+    let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
+    let target = line(vec![
+        p(target_longitudes[0], 60.01),
+        p(target_longitudes[1], 60.01),
+    ]);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 2_048);
+    assert!(
+        work.source_evaluations <= 64,
+        "{name}: {} source parameters",
+        work.source_evaluations
+    );
+    assert!(
+        work.moving_evaluations <= 256,
+        "{name}: {} moving correspondences",
+        work.moving_evaluations
+    );
+    assert!(
+        work.point_edge_samples <= 2_048,
+        "{name}: {} point-edge samples",
+        work.point_edge_samples
+    );
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{name}: {} vs {expected}",
+        work.distance
+    );
 }
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]

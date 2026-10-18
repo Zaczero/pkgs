@@ -15,32 +15,33 @@ fn chart_and_geodetic_poles_remain_distinct_for_southward_latitude_axes() {
     assert_eq!(frame.native_latitude_pole(GeodeticPole::North), -90.0);
     assert_eq!(frame.native_latitude_pole(GeodeticPole::South), 90.0);
 }
-#[test]
-fn conventional_degree_latitude_conversion_preserves_source_bits() {
+#[rstest::rstest]
+#[case::enabled(true)]
+#[case::disabled(false)]
+fn conventional_degree_latitude_conversion_preserves_source_bits(#[case] latitude_north: bool) {
     let unit = factor(std::f64::consts::PI / 180.0);
-    for latitude_north in [true, false] {
-        let frame = GeographicFrame::try_new_with_orientation(
-            unit,
-            unit,
-            0.0,
-            GeographicAxisOrientation::from_axis_directions(true, latitude_north),
-        )
-        .unwrap();
-        for latitude in [
-            -63.870_640_325_120_85,
-            -61.836_984_191_501_61,
-            43.625_172_661_832_906,
-        ] {
-            let native_latitude = latitude * frame.latitude_orientation_sign();
-            assert_bits(
-                frame.to_geodesic_latitude(native_latitude).unwrap(),
-                latitude,
-            );
-            let native = frame
-                .point_from_geodesic(crate::geometry::Point::new_raw_xy(0.0, latitude))
-                .unwrap();
-            assert_bits(native.y, native_latitude);
-        }
+
+    let frame = GeographicFrame::try_new_with_orientation(
+        unit,
+        unit,
+        0.0,
+        GeographicAxisOrientation::from_axis_directions(true, latitude_north),
+    )
+    .unwrap();
+    for latitude in [
+        -63.870_640_325_120_85,
+        -61.836_984_191_501_61,
+        43.625_172_661_832_906,
+    ] {
+        let native_latitude = latitude * frame.latitude_orientation_sign();
+        assert_bits(
+            frame.to_geodesic_latitude(native_latitude).unwrap(),
+            latitude,
+        );
+        let native = frame
+            .point_from_geodesic(crate::geometry::Point::new_raw_xy(0.0, latitude))
+            .unwrap();
+        assert_bits(native.y, native_latitude);
     }
 }
 #[test]

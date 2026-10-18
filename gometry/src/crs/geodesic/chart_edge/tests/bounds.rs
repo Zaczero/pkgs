@@ -1,37 +1,44 @@
-#[test]
-fn chart_edge_bounds_contain_conditioned_positions_across_native_frames() {
-    let degree = degrees();
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::grads({
     let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+    GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap()
+})]
+#[case::radians({
     let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+    GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap()
+})]
+#[case::shifted_grads({
+    let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+    GeographicFrame::try_new(grad_unit, grad_unit, 2.0_f64.to_radians()).unwrap()
+})]
+#[case::south_grads({
+    let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
     let orientation = GeographicAxisOrientation::from_axis_directions(true, false);
-    let frames = [
-        degree,
-        GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap(),
-        GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap(),
-        GeographicFrame::try_new(grad_unit, grad_unit, 2.0_f64.to_radians()).unwrap(),
-        GeographicFrame::try_new_with_orientation(grad_unit, grad_unit, 0.0, orientation).unwrap(),
-    ];
-    for frame in frames {
-        let axis = frame.longitude();
-        let start = Point::new_raw_xy(axis.degrees_to_native(170.0), frame.pole() * 0.6);
-        let end = Point::new_raw_xy(axis.degrees_to_native(-170.0), frame.pole() * 0.9);
-        let edge = ChartEdge::new(start, end, frame).unwrap();
-        let bounds = edge.bounds();
-        for sample in 0..=64 {
-            let parameter = f64::from(sample) / 64.0;
-            let chart = edge.chart_position(parameter).unwrap();
-            let (longitude, latitude) = frame.to_geodesic_xy(chart.x, chart.y).unwrap();
-            let longitude = degrees().longitude().canonicalize(longitude).unwrap().get();
-            let contains_longitude = if bounds.west <= bounds.east {
-                (bounds.west..=bounds.east).contains(&longitude)
-            } else {
-                longitude >= bounds.west || longitude <= bounds.east
-            };
-            assert!(
-                contains_longitude && (bounds.south..=bounds.north).contains(&latitude),
-                "frame={frame:?}, t={parameter}, point=({longitude}, {latitude}), bounds={bounds:?}"
-            );
-        }
+    GeographicFrame::try_new_with_orientation(grad_unit, grad_unit, 0.0, orientation).unwrap()
+})]
+fn chart_edge_bounds_contain_conditioned_positions_across_native_frames(
+    #[case] frame: GeographicFrame,
+) {
+    let axis = frame.longitude();
+    let start = Point::new_raw_xy(axis.degrees_to_native(170.0), frame.pole() * 0.6);
+    let end = Point::new_raw_xy(axis.degrees_to_native(-170.0), frame.pole() * 0.9);
+    let edge = ChartEdge::new(start, end, frame).unwrap();
+    let bounds = edge.bounds();
+    for sample in 0..=64 {
+        let parameter = f64::from(sample) / 64.0;
+        let chart = edge.chart_position(parameter).unwrap();
+        let (longitude, latitude) = frame.to_geodesic_xy(chart.x, chart.y).unwrap();
+        let longitude = degrees().longitude().canonicalize(longitude).unwrap().get();
+        let contains_longitude = if bounds.west <= bounds.east {
+            (bounds.west..=bounds.east).contains(&longitude)
+        } else {
+            longitude >= bounds.west || longitude <= bounds.east
+        };
+        assert!(
+            contains_longitude && (bounds.south..=bounds.north).contains(&latitude),
+            "frame={frame:?}, t={parameter}, point=({longitude}, {latitude}), bounds={bounds:?}"
+        );
     }
 }
 

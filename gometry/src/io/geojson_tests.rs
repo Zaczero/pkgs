@@ -129,32 +129,35 @@ fn checked_geojson_charges_leading_comma_with_the_complete_position() {
     assert_eq!(exact.text.as_str(), expected);
 }
 
-#[test]
-fn geojson_upper_bound_covers_each_geometry_kind() {
-    for source in [
-        "POINT (0 0)",
-        "POINT EMPTY",
-        "MULTIPOINT ((0 0), (1 1))",
-        "LINESTRING (0 0, 1 1)",
-        "MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))",
-        "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))",
-        "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 0)), ((3 3, 4 3, 4 4, 3 3)))",
-        "MULTIPOLYGON EMPTY",
-        "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))",
-        "GEOMETRYCOLLECTION EMPTY",
-    ] {
-        let shape = parse_wkt(source).expect("fixture WKT parses");
-        let output = to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian)
-            .expect("fixture GeoJSON serializes");
-        let upper_bound = geojson_text_summary(&shape)
-            .geojson_upper_bound()
-            .expect("fixture upper bound is representable");
-        assert!(
-            output.len() <= upper_bound,
-            "upper bound {upper_bound} is below output length {} for {source}",
-            output.len()
-        );
-    }
+#[rstest::rstest]
+#[case::point_0_0("POINT (0 0)")]
+#[case::point_empty("POINT EMPTY")]
+#[case::multipoint_0_0_1_1("MULTIPOINT ((0 0), (1 1))")]
+#[case::linestring_0_0_1_1("LINESTRING (0 0, 1 1)")]
+#[case::multilinestring_0_0_1_1_2_2_3_3("MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))")]
+#[case::polygon_0_0_2_0_2_2_0_0_0_5_0_5_1_0_5_1_1_0_5_0_5(
+    "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))"
+)]
+#[case::multipolygon_0_0_2_0_2_2_0_0_3_3_4_3_4_4_3_3(
+    "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 0)), ((3 3, 4 3, 4 4, 3 3)))"
+)]
+#[case::multipolygon_empty("MULTIPOLYGON EMPTY")]
+#[case::geometrycollection_point_0_0_geometrycollection_point_empty(
+    "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))"
+)]
+#[case::geometrycollection_empty("GEOMETRYCOLLECTION EMPTY")]
+fn geojson_upper_bound_covers_each_geometry_kind(#[case] source: &'static str) {
+    let shape = parse_wkt(source).expect("fixture WKT parses");
+    let output = to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian)
+        .expect("fixture GeoJSON serializes");
+    let upper_bound = geojson_text_summary(&shape)
+        .geojson_upper_bound()
+        .expect("fixture upper bound is representable");
+    assert!(
+        output.len() <= upper_bound,
+        "upper bound {upper_bound} is below output length {} for {source}",
+        output.len()
+    );
 }
 
 #[test]
@@ -482,24 +485,20 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
     to_geojson_string(&explicit_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 }
 
-#[test]
-fn empty_geojson_coordinate_arrays_become_typed_empty_shapes() {
-    let cases = [
-        ("MultiPoint", crate::geometry::GeometryKind::MultiPoint),
-        ("LineString", crate::geometry::GeometryKind::LineString),
-        (
-            "MultiLineString",
-            crate::geometry::GeometryKind::MultiLineString,
-        ),
-        ("MultiPolygon", crate::geometry::GeometryKind::MultiPolygon),
-    ];
-    for (kind, expected) in cases {
-        let value = json!({"type": kind, "coordinates": []});
-        assert_eq!(
-            parse_geojson(&value).unwrap(),
-            Shape::typed_empty(expected, CoordinateAxes::XY)
-        );
-    }
+#[rstest::rstest]
+#[case::multipoint("MultiPoint", crate::geometry::GeometryKind::MultiPoint)]
+#[case::linestring("LineString", crate::geometry::GeometryKind::LineString)]
+#[case::multilinestring("MultiLineString", crate::geometry::GeometryKind::MultiLineString)]
+#[case::multipolygon("MultiPolygon", crate::geometry::GeometryKind::MultiPolygon)]
+fn empty_geojson_coordinate_arrays_become_typed_empty_shapes(
+    #[case] kind: &'static str,
+    #[case] expected: crate::geometry::GeometryKind,
+) {
+    let value = json!({"type": kind, "coordinates": []});
+    assert_eq!(
+        parse_geojson(&value).unwrap(),
+        Shape::typed_empty(expected, CoordinateAxes::XY)
+    );
 }
 
 #[test]
@@ -511,42 +510,38 @@ fn value_point_parse_does_not_allocate_a_path() {
     assert_eq!(allocations, 0);
 }
 
-#[test]
-fn nested_empty_members_are_preserved_by_both_geojson_readers() {
-    let cases = [
-        (
-            "MultiPoint",
-            serde_json::json!({"type": "MultiPoint", "coordinates": [[], [1.0, 2.0]]}),
-            "MULTIPOINT (EMPTY, (1 2))",
-        ),
-        (
-            "MultiLineString",
-            serde_json::json!({
-                "type": "MultiLineString",
-                "coordinates": [[], [[0.0, 0.0], [1.0, 1.0]]]
-            }),
-            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
-        ),
-        (
-            "MultiPolygon",
-            serde_json::json!({
-                "type": "MultiPolygon",
-                "coordinates": [[], [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]]]
-            }),
-            "MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))",
-        ),
-    ];
-    for (kind, value, expected_wkt) in cases {
-        let direct = parse_geojson(&value).expect("value-tree GeoJSON parses");
-        assert_eq!(direct.part_count(), 2, "kind={kind}");
-        assert_eq!(
-            crate::io::to_wkt(&direct).unwrap(),
-            expected_wkt,
-            "kind={kind}"
-        );
+#[rstest::rstest]
+#[case::multipoint("MultiPoint", serde_json::json!({"type": "MultiPoint", "coordinates": [[], [1.0, 2.0]]}), "MULTIPOINT (EMPTY, (1 2))")]
+#[case::multilinestring(
+    "MultiLineString",
+    serde_json::json!({
+        "type": "MultiLineString",
+        "coordinates": [[], [[0.0, 0.0], [1.0, 1.0]]]
+    }),
+    "MULTILINESTRING (EMPTY, (0 0, 1 1))"
+)]
+#[case::multipolygon(
+    "MultiPolygon",
+    serde_json::json!({
+        "type": "MultiPolygon",
+        "coordinates": [[], [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]]]
+    }),
+    "MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))"
+)]
+fn nested_empty_members_are_preserved_by_both_geojson_readers(
+    #[case] kind: &'static str,
+    #[case] value: serde_json::Value,
+    #[case] expected_wkt: &'static str,
+) {
+    let direct = parse_geojson(&value).expect("value-tree GeoJSON parses");
+    assert_eq!(direct.part_count(), 2, "kind={kind}");
+    assert_eq!(
+        crate::io::to_wkt(&direct).unwrap(),
+        expected_wkt,
+        "kind={kind}"
+    );
 
-        assert_eq!(direct, parse_geojson(&value).unwrap(), "kind={kind}");
-    }
+    assert_eq!(direct, parse_geojson(&value).unwrap(), "kind={kind}");
 }
 
 #[test]

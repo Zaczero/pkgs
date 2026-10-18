@@ -751,25 +751,27 @@ mod tests {
         assert!(segment_offends_row(edge, &prepared.rows[0], 1.0).unwrap());
     }
 
-    #[test]
-    fn exact_segment_midpoint_handles_subnormal_and_maximum_coordinates() {
-        let cases = [(0.0, f64::from_bits(1)), (f64::MAX.next_down(), f64::MAX)];
-        for (lower, upper) in cases {
-            let midpoint = exact_segment_midpoint(Segment {
-                start: XY::new(lower, 0.0),
-                end: XY::new(upper, 0.0),
-            })
-            .unwrap();
-            let x = ExactRational::new(midpoint[0].clone(), midpoint[2].clone()).unwrap();
-            assert_eq!(
-                x.try_cmp(&ExactRational::from_f64(lower)).unwrap(),
-                Ordering::Greater
-            );
-            assert_eq!(
-                x.try_cmp(&ExactRational::from_f64(upper)).unwrap(),
-                Ordering::Less
-            );
-        }
+    #[rstest::rstest]
+    #[case::lower_0_0(0.0, f64::from_bits(1))]
+    #[case::f64_max_next_down(f64::MAX.next_down(), f64::MAX)]
+    fn exact_segment_midpoint_handles_subnormal_and_maximum_coordinates(
+        #[case] lower: f64,
+        #[case] upper: f64,
+    ) {
+        let midpoint = exact_segment_midpoint(Segment {
+            start: XY::new(lower, 0.0),
+            end: XY::new(upper, 0.0),
+        })
+        .unwrap();
+        let x = ExactRational::new(midpoint[0].clone(), midpoint[2].clone()).unwrap();
+        assert_eq!(
+            x.try_cmp(&ExactRational::from_f64(lower)).unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            x.try_cmp(&ExactRational::from_f64(upper)).unwrap(),
+            Ordering::Less
+        );
     }
 
     #[test]

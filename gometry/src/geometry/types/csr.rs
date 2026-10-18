@@ -391,20 +391,20 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn packed_offset_finish_allocates_only_the_shared_owner() {
-        for rows in [0, 3, 1024] {
-            let mut builder = CsrOffsetBuilder::with_capacity(rows);
-            for end in 1..=rows {
-                builder.push_end(end, rows).unwrap();
-            }
-            let (column, allocations) =
-                crate::test_support::allocation_count(|| builder.finish(rows));
-            let column = column.unwrap();
-            assert_eq!(allocations, 1);
-            assert_eq!(column.len(), rows.wrapping_add(1));
-            assert!(column.iter().copied().eq(0..=rows as i32));
+    #[rstest::rstest]
+    #[case::rows_0(0)]
+    #[case::rows_3(3)]
+    #[case::rows_1024(1024)]
+    fn packed_offset_finish_allocates_only_the_shared_owner(#[case] rows: usize) {
+        let mut builder = CsrOffsetBuilder::with_capacity(rows);
+        for end in 1..=rows {
+            builder.push_end(end, rows).unwrap();
         }
+        let (column, allocations) = crate::test_support::allocation_count(|| builder.finish(rows));
+        let column = column.unwrap();
+        assert_eq!(allocations, 1);
+        assert_eq!(column.len(), rows.wrapping_add(1));
+        assert!(column.iter().copied().eq(0..=rows as i32));
     }
 
     #[test]

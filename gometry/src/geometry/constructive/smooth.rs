@@ -745,20 +745,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn smooth_rejects_iterations_that_blow_past_the_coordinate_budget() {
+    #[rstest::rstest]
+    #[case::iterations_30_i32(30_i32)]
+    #[case::iterations_31(31)]
+    #[case::i32_max(i32::MAX)]
+    fn smooth_rejects_iterations_that_blow_past_the_coordinate_budget(#[case] iterations: i32) {
         let src = line(5);
-        for iterations in [30_i32, 31, i32::MAX] {
-            for method in [SmoothMethod::Chaikin, SmoothMethod::CatmullRom] {
-                let message = src
-                    .smooth(iterations, method, true)
-                    .expect_err("budget overflow must be rejected")
-                    .to_string();
-                assert!(
-                    message.contains("reduce iterations"),
-                    "iterations={iterations} method={method:?}: {message}"
-                );
-            }
+
+        for method in [SmoothMethod::Chaikin, SmoothMethod::CatmullRom] {
+            let message = src
+                .smooth(iterations, method, true)
+                .expect_err("budget overflow must be rejected")
+                .to_string();
+            assert!(
+                message.contains("reduce iterations"),
+                "iterations={iterations} method={method:?}: {message}"
+            );
         }
     }
 

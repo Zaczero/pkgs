@@ -27,68 +27,64 @@ mod tests {
         out
     }
 
-    #[test]
-    fn wkt_float_parse_matches_std_bits() {
-        let tokens = [
-            "0",
-            "-0.0",
-            "1.2345678901234567",
-            "-987654321.123456789",
-            "1e308",
-            "1e-308",
-            "5.5e-17",
-            "-2.5E+12",
-            "3.141592653589793",
-            "1.7976931348623157e308",
-            "2.2250738585072014e-308",
-        ];
-        for token in tokens {
-            let std_value = token.parse::<f64>().expect("std baseline");
-            let wkt = format!("POINT ({token} {token})");
-            let point = parse_wkt(&wkt).expect("wkt parses");
-            let Shape::Point(parsed) = point else {
-                panic!("expected point");
-            };
-            assert_eq!(parsed.x.to_bits(), std_value.to_bits(), "token={token}");
-            assert_eq!(parsed.y.to_bits(), std_value.to_bits(), "token={token}");
-        }
+    #[rstest::rstest]
+    #[case::token_0("0")]
+    #[case::token_0_0("-0.0")]
+    #[case::token_1_2345678901234567("1.2345678901234567")]
+    #[case::token_987654321_123456789("-987654321.123456789")]
+    #[case::token_1e308("1e308")]
+    #[case::token_1e_308("1e-308")]
+    #[case::token_5_5e_17("5.5e-17")]
+    #[case::token_2_5e_12("-2.5E+12")]
+    #[case::token_3_141592653589793("3.141592653589793")]
+    #[case::token_1_7976931348623157e308("1.7976931348623157e308")]
+    #[case::token_2_2250738585072014e_308("2.2250738585072014e-308")]
+    fn wkt_float_parse_matches_std_bits(#[case] token: &'static str) {
+        let std_value = token.parse::<f64>().expect("std baseline");
+        let wkt = format!("POINT ({token} {token})");
+        let point = parse_wkt(&wkt).expect("wkt parses");
+        let Shape::Point(parsed) = point else {
+            panic!("expected point");
+        };
+        assert_eq!(parsed.x.to_bits(), std_value.to_bits(), "token={token}");
+        assert_eq!(parsed.y.to_bits(), std_value.to_bits(), "token={token}");
     }
 
-    #[test]
-    fn all_typed_empty_kinds_round_trip_through_wkt_and_wkb() {
-        let cases = [
-            ("POINT", GeometryKind::Point),
-            ("MULTIPOINT", GeometryKind::MultiPoint),
-            ("LINESTRING", GeometryKind::LineString),
-            ("MULTILINESTRING", GeometryKind::MultiLineString),
-            ("POLYGON", GeometryKind::Polygon),
-            ("MULTIPOLYGON", GeometryKind::MultiPolygon),
-            ("GEOMETRYCOLLECTION", GeometryKind::GeometryCollection),
-        ];
+    #[rstest::rstest]
+    #[case::point("POINT", GeometryKind::Point)]
+    #[case::multipoint("MULTIPOINT", GeometryKind::MultiPoint)]
+    #[case::linestring("LINESTRING", GeometryKind::LineString)]
+    #[case::multilinestring("MULTILINESTRING", GeometryKind::MultiLineString)]
+    #[case::polygon("POLYGON", GeometryKind::Polygon)]
+    #[case::multipolygon("MULTIPOLYGON", GeometryKind::MultiPolygon)]
+    #[case::geometrycollection("GEOMETRYCOLLECTION", GeometryKind::GeometryCollection)]
+    fn all_typed_empty_kinds_round_trip_through_wkt_and_wkb(
+        #[case] keyword: &'static str,
+        #[case] kind: GeometryKind,
+    ) {
         let axes = [
             ("", CoordinateAxes::XY),
             (" Z", CoordinateAxes::XYZ),
             (" M", CoordinateAxes::XYM),
             (" ZM", CoordinateAxes::XYZM),
         ];
-        for (keyword, kind) in cases {
-            for (tag, expected_axes) in axes {
-                let input = format!("{keyword}{tag} EMPTY");
-                let parsed = parse_wkt(&input).expect("typed empty WKT parses");
-                assert_eq!(
-                    parsed,
-                    Shape::typed_empty(kind, expected_axes),
-                    "input={input}"
-                );
-                let wkt = to_wkt(&parsed).expect("typed empty WKT writes");
-                assert_eq!(parse_wkt(&wkt).unwrap(), parsed, "wkt={wkt}");
-                let wkb = crate::io::to_wkb(&parsed, None, false).expect("typed empty WKB writes");
-                assert_eq!(
-                    crate::io::parse_wkb(&wkb).unwrap().shape,
-                    parsed,
-                    "input={input}"
-                );
-            }
+
+        for (tag, expected_axes) in axes {
+            let input = format!("{keyword}{tag} EMPTY");
+            let parsed = parse_wkt(&input).expect("typed empty WKT parses");
+            assert_eq!(
+                parsed,
+                Shape::typed_empty(kind, expected_axes),
+                "input={input}"
+            );
+            let wkt = to_wkt(&parsed).expect("typed empty WKT writes");
+            assert_eq!(parse_wkt(&wkt).unwrap(), parsed, "wkt={wkt}");
+            let wkb = crate::io::to_wkb(&parsed, None, false).expect("typed empty WKB writes");
+            assert_eq!(
+                crate::io::parse_wkb(&wkb).unwrap().shape,
+                parsed,
+                "input={input}"
+            );
         }
     }
 
@@ -106,19 +102,15 @@ mod tests {
         assert_eq!(reparsed, parsed);
     }
 
-    #[test]
-    fn explicit_empty_line_and_polygon_members_survive_wkb() {
-        let cases = [
-            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
-            "MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))",
-        ];
-        for input in cases {
-            let shape = parse_wkt(input).expect("explicit empty multipart WKT parses");
-            assert_eq!(shape.part_count(), 2, "input={input}");
-            let bytes = crate::io::to_wkb(&shape, None, false).expect("WKB writes");
-            let reparsed = crate::io::parse_wkb(&bytes).expect("WKB parses").shape;
-            assert_eq!(reparsed, shape, "input={input}");
-        }
+    #[rstest::rstest]
+    #[case::multilinestring_empty_0_0_1_1("MULTILINESTRING (EMPTY, (0 0, 1 1))")]
+    #[case::multipolygon_empty_0_0_1_0_0_1_0_0("MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))")]
+    fn explicit_empty_line_and_polygon_members_survive_wkb(#[case] input: &'static str) {
+        let shape = parse_wkt(input).expect("explicit empty multipart WKT parses");
+        assert_eq!(shape.part_count(), 2, "input={input}");
+        let bytes = crate::io::to_wkb(&shape, None, false).expect("WKB writes");
+        let reparsed = crate::io::parse_wkb(&bytes).expect("WKB parses").shape;
+        assert_eq!(reparsed, shape, "input={input}");
     }
 
     #[test]
@@ -154,39 +146,49 @@ mod tests {
         assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(_)));
     }
 
-    #[test]
-    fn shortest_wkt_numbers_preserve_policy_and_round_trip() {
-        let cases = [
-            (1.0, "1"),
-            (-2.0, "-2"),
-            (0.0, "0"),
-            (-0.0, "-0"),
-            (-122.4194, "-122.4194"),
-            (37.7749, "37.7749"),
-            (
-                1e-300,
-                "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
-            ),
-            (
-                1e300,
-                "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            ),
-            (
-                f64::from_bits(1),
-                "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005",
-            ),
-            (f64::from_bits(0x3FF0_0000_0000_0001), "1.0000000000000002"),
-            (f64::from_bits(0x3FD5_5555_5555_5555), "0.3333333333333333"),
-            (f64::from_bits(0x4345_1EB8_51EB_851F), "11889503016258110"),
-            (f64::from_bits(0xC083_4567_89AB_CDEF), "-616.6755555555554"),
-        ];
-
-        for (value, expected) in cases {
-            let rendered = wkt_number(value);
-            assert_eq!(rendered, expected, "value={value:?}");
-            let parsed = rendered.parse::<f64>().unwrap();
-            assert_eq!(parsed.to_bits(), value.to_bits(), "rendered={rendered}");
-        }
+    #[rstest::rstest]
+    #[case::value_1_0(1.0, "1")]
+    #[case::negative_value_2_0(-2.0, "-2")]
+    #[case::value_0_0(0.0, "0")]
+    #[case::negative_value_0_0(-0.0, "-0")]
+    #[case::negative_value_122_4194(-122.4194, "-122.4194")]
+    #[case::value_37_7749(37.7749, "37.7749")]
+    #[case::value_1e_300(
+        1e-300,
+        "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+    )]
+    #[case::value_1e300(
+        1e300,
+        "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    )]
+    #[case::f64_from_bits_1(
+        f64::from_bits(1),
+        "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005"
+    )]
+    #[case::f64_from_bits_0x3ff0_0000_0000_0001(
+        f64::from_bits(0x3FF0_0000_0000_0001),
+        "1.0000000000000002"
+    )]
+    #[case::f64_from_bits_0x3fd5_5555_5555_5555(
+        f64::from_bits(0x3FD5_5555_5555_5555),
+        "0.3333333333333333"
+    )]
+    #[case::f64_from_bits_0x4345_1eb8_51eb_851f(
+        f64::from_bits(0x4345_1EB8_51EB_851F),
+        "11889503016258110"
+    )]
+    #[case::f64_from_bits_0xc083_4567_89ab_cdef(
+        f64::from_bits(0xC083_4567_89AB_CDEF),
+        "-616.6755555555554"
+    )]
+    fn shortest_wkt_numbers_preserve_policy_and_round_trip(
+        #[case] value: f64,
+        #[case] expected: &'static str,
+    ) {
+        let rendered = wkt_number(value);
+        assert_eq!(rendered, expected, "value={value:?}");
+        let parsed = rendered.parse::<f64>().unwrap();
+        assert_eq!(parsed.to_bits(), value.to_bits(), "rendered={rendered}");
     }
 
     #[test]

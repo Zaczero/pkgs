@@ -364,59 +364,56 @@ mod tests {
         minimum
     }
 
-    #[test]
-    fn flat_latitude_envelopes_keep_ordered_bounds_below_attained_distances() {
+    #[rstest::rstest]
+    #[case::negative_latitude_80_0_f64(-80.0_f64)]
+    #[case::negative_latitude_1_0(-1.0)]
+    #[case::latitude_1_0(1.0)]
+    #[case::latitude_80_0(80.0)]
+    fn flat_latitude_envelopes_keep_ordered_bounds_below_attained_distances(#[case] latitude: f64) {
         let geodesic = Geodesic::wgs84();
         let query = Point::new_raw_xy(0.0, 0.0);
         let bound = GeodesicEnvelopeBound::new(geodesic.a, geodesic.f, query);
-        for latitude in [-80.0_f64, -1.0, 1.0, 80.0] {
-            for north in [latitude, latitude.next_up()] {
-                for longitude in [0.0, 10.0] {
-                    let bounds = box_(longitude, latitude, longitude, north);
-                    let lower = bound.lower_bound(bounds);
-                    let attained: f64 = geodesic.inverse(0.0, 0.0, latitude, longitude);
-                    assert!(lower.is_finite());
-                    assert!(lower >= 0.0);
-                    assert!(lower <= attained, "{bounds:?}: {lower} > {attained}");
-                }
+
+        for north in [latitude, latitude.next_up()] {
+            for longitude in [0.0, 10.0] {
+                let bounds = box_(longitude, latitude, longitude, north);
+                let lower = bound.lower_bound(bounds);
+                let attained: f64 = geodesic.inverse(0.0, 0.0, latitude, longitude);
+                assert!(lower.is_finite());
+                assert!(lower >= 0.0);
+                assert!(lower <= attained, "{bounds:?}: {lower} > {attained}");
             }
         }
     }
 
-    #[test]
-    fn chart_box_lower_bound_stays_below_sampled_ellipsoidal_distances() {
+    #[rstest::rstest]
+    #[case::box_1_0_1_0_1_0_1_0(box_(-1.0, -1.0, 1.0, 1.0), box_(9.0, -1.0, 11.0, 1.0))]
+    #[case::box_0_0_0_0_1_0_1_0(box_(0.0, 0.0, 1.0, 1.0), box_(0.0, 3.0, 1.0, 4.0))]
+    #[case::box_179_0_1_0_180_0_1_0(box_(179.0, -1.0, 180.0, 1.0), box_(-180.0, -1.0, -179.0, 1.0))]
+    #[case::box_179_0_1_0_179_0_1_0(box_(179.0, -1.0, -179.0, 1.0), box_(-1.0, -1.0, 1.0, 1.0))]
+    #[case::box_180_0_80_0_180_0_90_0(box_(-180.0, 80.0, 180.0, 90.0), box_(-1.0, 0.0, 1.0, 1.0))]
+    #[case::box_180_0_1_0_180_0_1_0(box_(-180.0, -1.0, 180.0, 1.0), box_(20.0, 10.0, 21.0, 11.0))]
+    #[case::box_0_0_80_0_1_0_81_0(box_(0.0, 80.0, 1.0, 81.0), box_(10.0, 80.0, 11.0, 81.0))]
+    #[case::box_10_0_5_0_10_0_5_0(box_(-10.0, -5.0, 10.0, 5.0), box_(9.0, 4.0, 11.0, 6.0))]
+    #[case::box_0_0_0_0_0_0_0_0(box_(0.0, 0.0, 0.0, 0.0), box_(90.0, 0.0, 90.0, 0.0))]
+    #[case::box_0_0_0_0_0_0_0_0_8e824889(
+        box_(0.0, 0.0, 0.0, 0.0),
+        box_(179.999, 0.001, 179.999, 0.001)
+    )]
+    #[case::box_179_999_80_0_179_999_80_0(box_(179.999, 80.0, 179.999, 80.0), box_(-179.999, 80.0, -179.999, 80.0))]
+    fn chart_box_lower_bound_stays_below_sampled_ellipsoidal_distances(
+        #[case] first: ChartBox,
+        #[case] second: ChartBox,
+    ) {
         let geodesic = Geodesic::wgs84();
         let bound = GeodesicBoxEnvelopeBound::new(geodesic.a, geodesic.f);
-        let cases = [
-            (box_(-1.0, -1.0, 1.0, 1.0), box_(9.0, -1.0, 11.0, 1.0)),
-            (box_(0.0, 0.0, 1.0, 1.0), box_(0.0, 3.0, 1.0, 4.0)),
-            (
-                box_(179.0, -1.0, 180.0, 1.0),
-                box_(-180.0, -1.0, -179.0, 1.0),
-            ),
-            (box_(179.0, -1.0, -179.0, 1.0), box_(-1.0, -1.0, 1.0, 1.0)),
-            (box_(-180.0, 80.0, 180.0, 90.0), box_(-1.0, 0.0, 1.0, 1.0)),
-            (box_(-180.0, -1.0, 180.0, 1.0), box_(20.0, 10.0, 21.0, 11.0)),
-            (box_(0.0, 80.0, 1.0, 81.0), box_(10.0, 80.0, 11.0, 81.0)),
-            (box_(-10.0, -5.0, 10.0, 5.0), box_(9.0, 4.0, 11.0, 6.0)),
-            (box_(0.0, 0.0, 0.0, 0.0), box_(90.0, 0.0, 90.0, 0.0)),
-            (
-                box_(0.0, 0.0, 0.0, 0.0),
-                box_(179.999, 0.001, 179.999, 0.001),
-            ),
-            (
-                box_(179.999, 80.0, 179.999, 80.0),
-                box_(-179.999, 80.0, -179.999, 80.0),
-            ),
-        ];
-        for (first, second) in cases {
-            let lower_bound = bound.lower_bound(first, second);
-            let sampled = sampled_distance(&geodesic, first, second);
-            assert!(
-                lower_bound <= sampled + 1e-6,
-                "bound {lower_bound} exceeds sampled distance {sampled}: {first:?} / {second:?}"
-            );
-        }
+
+        let lower_bound = bound.lower_bound(first, second);
+        let sampled = sampled_distance(&geodesic, first, second);
+        assert!(
+            lower_bound <= sampled + 1e-6,
+            "bound {lower_bound} exceeds sampled distance {sampled}: {first:?} / {second:?}"
+        );
     }
 
     #[test]

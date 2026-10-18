@@ -635,31 +635,32 @@ fn xy_finite_bounds_preserves_finite_extreme_coordinates() {
     );
 }
 
-#[test]
-fn xy_finite_bounds_keeps_extrema_across_lane_and_xy_crossover_lengths() {
+#[rstest::rstest]
+#[case::below_simd(REDUCE_SIMD_MIN.wrapping_sub(1))]
+#[case::at_simd(REDUCE_SIMD_MIN)]
+#[case::above_simd(REDUCE_SIMD_MIN.wrapping_add(1))]
+#[case::below_fused({
     let xy_crossover = crossover::FUSED_XY_BOUNDS;
-    let lengths = [
-        REDUCE_SIMD_MIN.wrapping_sub(1),
-        REDUCE_SIMD_MIN,
-        REDUCE_SIMD_MIN.wrapping_add(1),
-        xy_crossover.wrapping_sub(1),
-        xy_crossover,
-        xy_crossover.wrapping_add(1),
-    ];
-    for len in lengths {
-        let mut xs = vec![2.0; len];
-        let mut ys = vec![-3.0; len];
-        *xs.first_mut().expect("non-empty x column") = -11.0;
-        *xs.last_mut().expect("non-empty x column") = 13.0;
-        *ys.first_mut().expect("non-empty y column") = 17.0;
-        *ys.last_mut().expect("non-empty y column") = -19.0;
+    xy_crossover.wrapping_sub(1)
+})]
+#[case::at_fused(crossover::FUSED_XY_BOUNDS)]
+#[case::above_fused({
+    let xy_crossover = crossover::FUSED_XY_BOUNDS;
+    xy_crossover.wrapping_add(1)
+})]
+fn xy_finite_bounds_keeps_extrema_across_lane_and_xy_crossover_lengths(#[case] len: usize) {
+    let mut xs = vec![2.0; len];
+    let mut ys = vec![-3.0; len];
+    *xs.first_mut().expect("non-empty x column") = -11.0;
+    *xs.last_mut().expect("non-empty x column") = 13.0;
+    *ys.first_mut().expect("non-empty y column") = 17.0;
+    *ys.last_mut().expect("non-empty y column") = -19.0;
 
-        assert_eq!(
-            xy_finite_bounds_columns(&xs, &ys),
-            Some([-11.0, -19.0, 13.0, 17.0]),
-            "length {len}",
-        );
-    }
+    assert_eq!(
+        xy_finite_bounds_columns(&xs, &ys),
+        Some([-11.0, -19.0, 13.0, 17.0]),
+        "length {len}",
+    );
 }
 
 #[test]

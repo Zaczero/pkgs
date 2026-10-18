@@ -722,11 +722,11 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
     }
 }
 
-#[test]
-fn small_collision_classes_match_the_exhaustive_production_certificate() {
-    for count in [3, 4] {
-        assert_collision_class_matches_search(count, true);
-    }
+#[rstest::rstest]
+#[case::count_3(3)]
+#[case::count_4(4)]
+fn small_collision_classes_match_the_exhaustive_production_certificate(#[case] count: usize) {
+    assert_collision_class_matches_search(count, true);
 }
 
 #[test]
@@ -1201,59 +1201,59 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     ]));
 }
 
-#[test]
-fn candidate_lattices_use_real_binade_neighbors_and_exact_order() {
-    for center in [0.5_f64, 1.0, 2.0, 1024.0] {
-        let upper_step = center.next_up() - center;
-        let lower_step = center - center.next_down();
-        assert_eq!(lower_step, upper_step * 0.5);
-        let offset = dyadic(upper_step / 8.0);
-        let exact = dyadic(center).try_add(offset).unwrap();
-        let (nearest, candidates, ordered) = planar_candidate_values(
-            exact.clone(),
-            exact.clone(),
-            embedding::EmbeddingDomain::Plane,
+#[rstest::rstest]
+#[case::center_0_5_f64(0.5_f64)]
+#[case::center_1_0(1.0)]
+#[case::center_2_0(2.0)]
+#[case::center_1024_0(1024.0)]
+fn candidate_lattices_use_real_binade_neighbors_and_exact_order(#[case] center: f64) {
+    let upper_step = center.next_up() - center;
+    let lower_step = center - center.next_down();
+    assert_eq!(lower_step, upper_step * 0.5);
+    let offset = dyadic(upper_step / 8.0);
+    let exact = dyadic(center).try_add(offset).unwrap();
+    let (nearest, candidates, ordered) = planar_candidate_values(
+        exact.clone(),
+        exact.clone(),
+        embedding::EmbeddingDomain::Plane,
+    );
+    assert_eq!(nearest, XY::new(center, center));
+    assert_eq!(candidates.len(), 9);
+    for x in [center.next_down(), center, center.next_up()] {
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.x.to_bits() == x.to_bits())
         );
-        assert_eq!(nearest, XY::new(center, center));
-        assert_eq!(candidates.len(), 9);
-        for x in [center.next_down(), center, center.next_up()] {
-            assert!(
-                candidates
-                    .iter()
-                    .any(|candidate| candidate.x.to_bits() == x.to_bits())
-            );
-        }
-        for y in [center.next_down(), center, center.next_up()] {
-            assert!(
-                candidates
-                    .iter()
-                    .any(|candidate| candidate.y.to_bits() == y.to_bits())
-            );
-        }
-        let ordered_x: Vec<_> = ordered
-            .iter()
-            .filter_map(|candidate| {
-                (candidate.y.to_bits() == center.to_bits()).then_some(candidate.x)
-            })
-            .collect();
-        assert_eq!(
-            ordered_x,
-            [center, center.next_down(), center.next_up()],
-            "exact displacement order around {center}"
+    }
+    for y in [center.next_down(), center, center.next_up()] {
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.y.to_bits() == y.to_bits())
         );
-        for candidate in candidates {
-            let bound = dyadic(1.5 * upper_step);
-            let delta_x = dyadic(candidate.x)
-                .try_subtract(exact.clone())
-                .unwrap()
-                .abs();
-            let delta_y = dyadic(candidate.y)
-                .try_subtract(exact.clone())
-                .unwrap()
-                .abs();
-            assert_ne!(delta_x.cmp(&bound), Ordering::Greater);
-            assert_ne!(delta_y.cmp(&bound), Ordering::Greater);
-        }
+    }
+    let ordered_x: Vec<_> = ordered
+        .iter()
+        .filter_map(|candidate| (candidate.y.to_bits() == center.to_bits()).then_some(candidate.x))
+        .collect();
+    assert_eq!(
+        ordered_x,
+        [center, center.next_down(), center.next_up()],
+        "exact displacement order around {center}"
+    );
+    for candidate in candidates {
+        let bound = dyadic(1.5 * upper_step);
+        let delta_x = dyadic(candidate.x)
+            .try_subtract(exact.clone())
+            .unwrap()
+            .abs();
+        let delta_y = dyadic(candidate.y)
+            .try_subtract(exact.clone())
+            .unwrap()
+            .abs();
+        assert_ne!(delta_x.cmp(&bound), Ordering::Greater);
+        assert_ne!(delta_y.cmp(&bound), Ordering::Greater);
     }
 }
 

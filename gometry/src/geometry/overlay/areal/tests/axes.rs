@@ -51,79 +51,81 @@ fn overlay_preserves_input_vertices_bit_exactly() {
     }
 }
 
-#[test]
-fn disjoint_ordinate_axes_match_forced_graph_wkb() {
-    let inputs = [
-        (
-            "XYZ",
-            z_square(0.0, 0.0, 1.0, 1.0, 10.0),
-            z_square(3.0, 3.0, 4.0, 4.0, 20.0),
-        ),
-        (
-            "XYM",
-            m_square(0.0, 0.0, 1.0, 1.0, 10.0),
-            m_square(3.0, 3.0, 4.0, 4.0, 20.0),
-        ),
-        (
-            "XYZM",
-            zm_square(0.0, 0.0, 1.0, 1.0, 10.0),
-            zm_square(3.0, 3.0, 4.0, 4.0, 20.0),
-        ),
-    ];
-    for (axes, left, right) in inputs {
-        assert_eq!(left.coordinate_axes(), axes);
-        assert_eq!(right.coordinate_axes(), axes);
-        for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-            assert_disjoint_certificate_matches_graph(&[&left, &right], op);
-        }
+#[rstest::rstest]
+#[case::xyz(
+    "XYZ",
+    z_square(0.0, 0.0, 1.0, 1.0, 10.0),
+    z_square(3.0, 3.0, 4.0, 4.0, 20.0)
+)]
+#[case::xym(
+    "XYM",
+    m_square(0.0, 0.0, 1.0, 1.0, 10.0),
+    m_square(3.0, 3.0, 4.0, 4.0, 20.0)
+)]
+#[case::xyzm(
+    "XYZM",
+    zm_square(0.0, 0.0, 1.0, 1.0, 10.0),
+    zm_square(3.0, 3.0, 4.0, 4.0, 20.0)
+)]
+fn disjoint_ordinate_axes_match_forced_graph_wkb(
+    #[case] axes: &'static str,
+    #[case] left: Shape,
+    #[case] right: Shape,
+) {
+    assert_eq!(left.coordinate_axes(), axes);
+    assert_eq!(right.coordinate_axes(), axes);
+    for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+        assert_disjoint_certificate_matches_graph(&[&left, &right], op);
     }
 }
 
-#[test]
-fn disjoint_invalid_zm_area_and_line_use_the_same_ordinate_path() {
+#[rstest::rstest]
+#[case::overlayop_union(OverlayOp::Union)]
+#[case::overlayop_symmetricdifference(OverlayOp::SymmetricDifference)]
+fn disjoint_invalid_zm_area_and_line_use_the_same_ordinate_path(#[case] op: OverlayOp) {
     let polygon = invalid_zm_bowtie();
     let line = zm_line((10.0, 0.0), (11.0, 1.0));
-    for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-        let certified = overlay_all(
-            &[&polygon, &line],
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        )
-        .expect("certified mixed ZM overlay");
-        let forced = super::super::nary::overlay_all_without_bounds_certificates(
-            &[&polygon, &line],
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        )
-        .expect("forced mixed ZM overlay");
-        assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name());
-    }
+
+    let certified = overlay_all(
+        &[&polygon, &line],
+        crate::geometry::TopologyDomain::Cartesian,
+        op,
+        Strictness::Strict,
+    )
+    .expect("certified mixed ZM overlay");
+    let forced = super::super::nary::overlay_all_without_bounds_certificates(
+        &[&polygon, &line],
+        crate::geometry::TopologyDomain::Cartesian,
+        op,
+        Strictness::Strict,
+    )
+    .expect("forced mixed ZM overlay");
+    assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name());
 }
 
-#[test]
-fn empty_ordinate_disjoint_paths_return_the_same_error() {
+#[rstest::rstest]
+#[case::overlayop_union(OverlayOp::Union)]
+#[case::overlayop_symmetricdifference(OverlayOp::SymmetricDifference)]
+fn empty_ordinate_disjoint_paths_return_the_same_error(#[case] op: OverlayOp) {
     let polygon = square(0.0, 0.0, 1.0, 1.0);
     let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
     let remote = square(3.0, 3.0, 4.0, 4.0);
-    for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-        let certified = overlay_all(
-            &[&polygon, &empty_z, &remote],
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        );
-        let forced = super::super::nary::overlay_all_without_bounds_certificates(
-            &[&polygon, &empty_z, &remote],
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        );
-        let (certified, forced) = (certified.unwrap_err(), forced.unwrap_err());
-        assert_eq!(certified.to_string(), forced.to_string(), "{}", op.name());
-        assert!(certified.to_string().contains("cannot represent Z/M"));
-    }
+
+    let certified = overlay_all(
+        &[&polygon, &empty_z, &remote],
+        crate::geometry::TopologyDomain::Cartesian,
+        op,
+        Strictness::Strict,
+    );
+    let forced = super::super::nary::overlay_all_without_bounds_certificates(
+        &[&polygon, &empty_z, &remote],
+        crate::geometry::TopologyDomain::Cartesian,
+        op,
+        Strictness::Strict,
+    );
+    let (certified, forced) = (certified.unwrap_err(), forced.unwrap_err());
+    assert_eq!(certified.to_string(), forced.to_string(), "{}", op.name());
+    assert!(certified.to_string().contains("cannot represent Z/M"));
 }
 
 #[test]
@@ -245,8 +247,11 @@ fn empty_overlay_declares_union_axes_without_coordinates() {
     ));
 }
 
-#[test]
-fn commutative_overlay_operand_reversal_keeps_axes_and_ordinates() {
+#[rstest::rstest]
+#[case::overlayop_union(OverlayOp::Union)]
+#[case::overlayop_intersection(OverlayOp::Intersection)]
+#[case::overlayop_symmetricdifference(OverlayOp::SymmetricDifference)]
+fn commutative_overlay_operand_reversal_keeps_axes_and_ordinates(#[case] op: OverlayOp) {
     let left = zm_square(0.0, 0.0, 2.0, 2.0, 10.0);
     let right = zm_square(1.0, 1.0, 3.0, 3.0, 10.0);
     let signature = |shape: &Shape| {
@@ -267,15 +272,10 @@ fn commutative_overlay_operand_reversal_keeps_axes_and_ordinates() {
         points.dedup();
         (shape.coordinate_axes(), points)
     };
-    for op in [
-        OverlayOp::Union,
-        OverlayOp::Intersection,
-        OverlayOp::SymmetricDifference,
-    ] {
-        let forward = op.apply(&left, &right, Strictness::Lenient).unwrap();
-        let reversed = op.apply(&right, &left, Strictness::Lenient).unwrap();
-        assert_eq!(signature(&forward), signature(&reversed), "{}", op.name());
-    }
+
+    let forward = op.apply(&left, &right, Strictness::Lenient).unwrap();
+    let reversed = op.apply(&right, &left, Strictness::Lenient).unwrap();
+    assert_eq!(signature(&forward), signature(&reversed), "{}", op.name());
 }
 
 #[test]

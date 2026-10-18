@@ -455,21 +455,22 @@ mod coordseq_builder_tests {
         }
     }
 
-    #[test]
-    fn try_from_points_rejects_nonfinite_active_ordinates() {
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            for point in [
-                Point::new_raw_xy(value, 0.0),
-                Point::new_raw_xy(0.0, value),
-                Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(value)), MOrdinate(None)),
-                Point::new_raw_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(value))),
-            ] {
-                let error = CoordSeq::try_from_points(&[point, point]).unwrap_err();
-                assert!(matches!(
-                    error.kind(),
-                    ErrorKind::Geometry(GeometryErrorKind::NonFiniteCoordinate)
-                ));
-            }
+    #[rstest::rstest]
+    #[case::f64_nan(f64::NAN)]
+    #[case::f64_infinity(f64::INFINITY)]
+    #[case::f64_neg_infinity(f64::NEG_INFINITY)]
+    fn try_from_points_rejects_nonfinite_active_ordinates(#[case] value: f64) {
+        for point in [
+            Point::new_raw_xy(value, 0.0),
+            Point::new_raw_xy(0.0, value),
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(value)), MOrdinate(None)),
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(value))),
+        ] {
+            let error = CoordSeq::try_from_points(&[point, point]).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::NonFiniteCoordinate)
+            ));
         }
     }
 
@@ -589,32 +590,33 @@ mod coordseq_builder_tests {
         assert_eq!(seq.axes(), CoordinateAxes::XY);
     }
 
-    #[test]
-    fn coordinate_growth_preserves_every_active_column() {
-        for (axes, z, m) in [
-            (CoordinateAxes::XY, None, None),
-            (CoordinateAxes::XYZ, Some(17.0), None),
-            (CoordinateAxes::XYM, None, Some(23.0)),
-            (CoordinateAxes::XYZM, Some(17.0), Some(23.0)),
-        ] {
-            let mut builder = CoordSeqBuilder::with_capacity(axes, 0);
-            for index in 0..32 {
-                builder.push(Point::new_raw_axes(
-                    f64::from(index),
-                    5.0,
-                    ZOrdinate(z),
-                    MOrdinate(m),
-                ));
-            }
-            let coords = builder.finish().unwrap();
-            assert_eq!(coords.len(), 32);
-            assert_eq!(coords.axes(), axes);
-            for (index, point) in coords.iter().enumerate() {
-                assert_eq!(point.x, index as f64);
-                assert_eq!(point.y, 5.0);
-                assert_eq!(point.z(), z);
-                assert_eq!(point.m(), m);
-            }
+    #[rstest::rstest]
+    #[case::coordinateaxes_xy(CoordinateAxes::XY, None, None)]
+    #[case::coordinateaxes_xyz(CoordinateAxes::XYZ, Some(17.0), None)]
+    #[case::coordinateaxes_xym(CoordinateAxes::XYM, None, Some(23.0))]
+    #[case::coordinateaxes_xyzm(CoordinateAxes::XYZM, Some(17.0), Some(23.0))]
+    fn coordinate_growth_preserves_every_active_column(
+        #[case] axes: CoordinateAxes,
+        #[case] z: Option<f64>,
+        #[case] m: Option<f64>,
+    ) {
+        let mut builder = CoordSeqBuilder::with_capacity(axes, 0);
+        for index in 0..32 {
+            builder.push(Point::new_raw_axes(
+                f64::from(index),
+                5.0,
+                ZOrdinate(z),
+                MOrdinate(m),
+            ));
+        }
+        let coords = builder.finish().unwrap();
+        assert_eq!(coords.len(), 32);
+        assert_eq!(coords.axes(), axes);
+        for (index, point) in coords.iter().enumerate() {
+            assert_eq!(point.x, index as f64);
+            assert_eq!(point.y, 5.0);
+            assert_eq!(point.z(), z);
+            assert_eq!(point.m(), m);
         }
     }
 }

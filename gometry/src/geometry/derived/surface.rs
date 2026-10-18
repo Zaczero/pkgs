@@ -655,16 +655,16 @@ mod tests {
         visits
     }
 
-    #[test]
-    fn empty_geometry_yields_empty_point_without_staging() {
-        for empty in [
-            Shape::empty_point(),
-            Shape::empty_polygon(),
-            Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
-        ] {
-            let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface());
-            assert_eq!(result.expect("empty surface point"), Shape::empty_point());
-        }
+    #[rstest::rstest]
+    #[case::shape_empty_point(Shape::empty_point())]
+    #[case::shape_empty_polygon(Shape::empty_polygon())]
+    #[case::shape_typed_empty_geometrykind_geometrycollectio_626bf096(Shape::typed_empty(
+        GeometryKind::GeometryCollection,
+        CoordinateAxes::XY
+    ))]
+    fn empty_geometry_yields_empty_point_without_staging(#[case] empty: Shape) {
+        let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface());
+        assert_eq!(result.expect("empty surface point"), Shape::empty_point());
     }
 
     #[test]

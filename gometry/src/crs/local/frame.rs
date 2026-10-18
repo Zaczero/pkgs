@@ -1118,97 +1118,95 @@ mod datum_preserving_tests {
         expected_authority: Option<&'static str>,
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn selected_local_frames_preserve_the_source_datum() {
+    #[case::case_name_wgs_84_utm_crs_epsg_4326_point_74_0_40_515e8a36(Case {
+        name: "WGS 84 UTM",
+        crs: "EPSG:4326",
+        point: (-74.0, 40.0),
+        expected_authority: Some("EPSG:32618"),
+    })]
+    #[case::case_name_wgs_84_3d_horizontal_projection_crs_ep_6904240b(Case {
+        name: "WGS 84 3D horizontal projection",
+        crs: "EPSG:4979",
+        point: (-74.0, 40.0),
+        expected_authority: Some("EPSG:32618"),
+    })]
+    #[case::case_name_nad83_datum_matched_utm_crs_epsg_4269_c5970ee7(Case {
+        name: "NAD83 datum-matched UTM",
+        crs: "EPSG:4269",
+        point: (-74.0, 41.0),
+        expected_authority: Some("EPSG:26918"),
+    })]
+    #[case::case_name_nad83_polar_custom_tm_crs_epsg_4269_po_033e24ed(Case {
+        name: "NAD83 polar custom TM",
+        crs: "EPSG:4269",
+        point: (0.0, -81.0),
+        expected_authority: None,
+    })]
+    #[case::case_name_ntf_paris_grads_custom_tm_crs_epsg_480_d04afedf(Case {
+        name: "NTF Paris grads custom TM",
+        crs: "EPSG:4807",
+        point: (0.0, 55.5),
+        expected_authority: None,
+    })]
+    #[case::case_name_etrs89_datum_matched_utm_crs_epsg_4258_2a4c0a4d(Case {
+        name: "ETRS89 datum-matched UTM",
+        crs: "EPSG:4258",
+        point: (10.0, 51.0),
+        expected_authority: Some("EPSG:25832"),
+    })]
+    #[case::case_name_gda2020_datum_matched_utm_crs_epsg_784_33f37f85(Case {
+        name: "GDA2020 datum-matched UTM",
+        crs: "EPSG:7844",
+        point: (151.2, -33.9),
+        expected_authority: Some("EPSG:7856"),
+    })]
+    #[case::case_name_authalic_sphere_custom_tm_crs_epsg_404_2d7fd0d6(Case {
+        name: "authalic sphere custom TM",
+        crs: "EPSG:4047",
+        point: (0.0, 0.0),
+        expected_authority: None,
+    })]
+    #[case::case_name_wgs_84_polar_ups_crs_epsg_4326_point_0_dfa93c52(Case {
+        name: "WGS 84 polar UPS",
+        crs: "EPSG:4326",
+        point: (0.0, -81.0),
+        expected_authority: Some("EPSG:5042"),
+    })]
+    fn selected_local_frames_preserve_the_source_datum(#[case] case: Case) {
         let state = runtime_state_snapshot().unwrap();
-        let cases = [
-            Case {
-                name: "WGS 84 UTM",
-                crs: "EPSG:4326",
-                point: (-74.0, 40.0),
-                expected_authority: Some("EPSG:32618"),
-            },
-            Case {
-                name: "WGS 84 3D horizontal projection",
-                crs: "EPSG:4979",
-                point: (-74.0, 40.0),
-                expected_authority: Some("EPSG:32618"),
-            },
-            Case {
-                name: "NAD83 datum-matched UTM",
-                crs: "EPSG:4269",
-                point: (-74.0, 41.0),
-                expected_authority: Some("EPSG:26918"),
-            },
-            Case {
-                name: "NAD83 polar custom TM",
-                crs: "EPSG:4269",
-                point: (0.0, -81.0),
-                expected_authority: None,
-            },
-            Case {
-                name: "NTF Paris grads custom TM",
-                crs: "EPSG:4807",
-                point: (0.0, 55.5),
-                expected_authority: None,
-            },
-            Case {
-                name: "ETRS89 datum-matched UTM",
-                crs: "EPSG:4258",
-                point: (10.0, 51.0),
-                expected_authority: Some("EPSG:25832"),
-            },
-            Case {
-                name: "GDA2020 datum-matched UTM",
-                crs: "EPSG:7844",
-                point: (151.2, -33.9),
-                expected_authority: Some("EPSG:7856"),
-            },
-            Case {
-                name: "authalic sphere custom TM",
-                crs: "EPSG:4047",
-                point: (0.0, 0.0),
-                expected_authority: None,
-            },
-            Case {
-                name: "WGS 84 polar UPS",
-                crs: "EPSG:4326",
-                point: (0.0, -81.0),
-                expected_authority: Some("EPSG:5042"),
-            },
-        ];
 
-        for case in cases {
-            let shape = Shape::Point(Point::new_raw_xy(case.point.0, case.point.1));
-            let local = estimate_local_crs_at(&[&shape], case.crs, &state)
-                .unwrap_or_else(|error| panic!("{}: {error}", case.name));
-            ensure_datum_preserving_local_operation(case.crs, &local.definition, &state)
-                .unwrap_or_else(|error| {
-                    panic!("{} selected {}: {error}", case.name, local.definition)
-                });
-            match case.expected_authority {
-                Some(expected) => assert_eq!(local.definition, expected, "{}", case.name),
-                None => assert_eq!(
-                    local.display_name,
-                    Some(super::LOCAL_CRS_DISPLAY_NAME),
-                    "{}",
-                    case.name,
-                ),
-            }
+        let shape = Shape::Point(Point::new_raw_xy(case.point.0, case.point.1));
+        let local = estimate_local_crs_at(&[&shape], case.crs, &state)
+            .unwrap_or_else(|error| panic!("{}: {error}", case.name));
+        ensure_datum_preserving_local_operation(case.crs, &local.definition, &state)
+            .unwrap_or_else(|error| panic!("{} selected {}: {error}", case.name, local.definition));
+        match case.expected_authority {
+            Some(expected) => assert_eq!(local.definition, expected, "{}", case.name),
+            None => assert_eq!(
+                local.display_name,
+                Some(super::LOCAL_CRS_DISPLAY_NAME),
+                "{}",
+                case.name,
+            ),
         }
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn pipeline_owner_rejects_the_previous_cross_datum_fallbacks() {
+    #[case::epsg_4807("EPSG:4807", "EPSG:32631")]
+    #[case::epsg_4269("EPSG:4269", "EPSG:5042")]
+    fn pipeline_owner_rejects_the_previous_cross_datum_fallbacks(
+        #[case] source: &'static str,
+        #[case] previous_target: &'static str,
+    ) {
         let state = runtime_state_snapshot().unwrap();
-        for (source, previous_target) in [("EPSG:4807", "EPSG:32631"), ("EPSG:4269", "EPSG:5042")] {
-            assert!(
-                ensure_datum_preserving_local_operation(source, previous_target, &state).is_err(),
-                "{source} → {previous_target} must not hide a datum operation",
-            );
-        }
+
+        assert!(
+            ensure_datum_preserving_local_operation(source, previous_target, &state).is_err(),
+            "{source} → {previous_target} must not hide a datum operation",
+        );
     }
 
     #[test]

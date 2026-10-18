@@ -49,43 +49,28 @@ fn spherical_antipodal_interval_lower_never_exceeds_its_attained_endpoint() {
         "certified lower {lower} exceeds the independent spherical endpoint distance lower {attained_lower}"
     );
 }
-#[test]
-fn chart_box_lower_bound_is_sound_for_seams_and_poles() {
+#[rstest::rstest]
+#[case::point_new_raw_xy_180_0_0_0(Point::new_raw_xy(-180.0, 0.0), Point::new_raw_xy(179.0, 10.0), Point::new_raw_xy(-179.0, 20.0))]
+#[case::point_new_raw_xy_30_0_89_9(Point::new_raw_xy(30.0, 89.9), Point::new_raw_xy(-45.0, 80.0), Point::new_raw_xy(45.0, 80.0))]
+#[case::point_new_raw_xy_100_0_89_8(Point::new_raw_xy(100.0, -89.8), Point::new_raw_xy(170.0, 88.0), Point::new_raw_xy(-100.0, 87.0))]
+#[case::point_new_raw_xy_0_0_90_0(Point::new_raw_xy(0.0, 90.0), Point::new_raw_xy(-120.0, 89.0), Point::new_raw_xy(120.0, 89.5))]
+fn chart_box_lower_bound_is_sound_for_seams_and_poles(
+    #[case] point: Point,
+    #[case] start: Point,
+    #[case] end: Point,
+) {
     let frame = GeographicFrame::crs84();
     let metric = metric(&Geodesic::wgs84(), frame);
-    let cases = [
-        (
-            Point::new_raw_xy(-180.0, 0.0),
-            Point::new_raw_xy(179.0, 10.0),
-            Point::new_raw_xy(-179.0, 20.0),
-        ),
-        (
-            Point::new_raw_xy(30.0, 89.9),
-            Point::new_raw_xy(-45.0, 80.0),
-            Point::new_raw_xy(45.0, 80.0),
-        ),
-        (
-            Point::new_raw_xy(100.0, -89.8),
-            Point::new_raw_xy(170.0, 88.0),
-            Point::new_raw_xy(-100.0, 87.0),
-        ),
-        (
-            Point::new_raw_xy(0.0, 90.0),
-            Point::new_raw_xy(-120.0, 89.0),
-            Point::new_raw_xy(120.0, 89.5),
-        ),
-    ];
-    for (point, start, end) in cases {
-        let edge = metric.chart_edge(start, end).expect("admitted chart edge");
-        let bounds = edge.bounds();
-        let lower = metric.point_envelope_bound(point)(bounds);
-        for sample in 0..=256_u32 {
-            let parameter = f64::from(sample) / 256.0;
-            let distance = oracle_distance(&metric, point, &edge, parameter);
-            assert!(
-                lower <= distance + 1.0e-8,
-                "bounds={bounds:?}, point={point:?}, t={parameter}: {lower} > {distance}"
-            );
-        }
+
+    let edge = metric.chart_edge(start, end).expect("admitted chart edge");
+    let bounds = edge.bounds();
+    let lower = metric.point_envelope_bound(point)(bounds);
+    for sample in 0..=256_u32 {
+        let parameter = f64::from(sample) / 256.0;
+        let distance = oracle_distance(&metric, point, &edge, parameter);
+        assert!(
+            lower <= distance + 1.0e-8,
+            "bounds={bounds:?}, point={point:?}, t={parameter}: {lower} > {distance}"
+        );
     }
 }

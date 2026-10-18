@@ -74,125 +74,132 @@ fn q_source_axis_band_emission_checks_the_exact_ring_role() {
     );
 }
 
-#[test]
-fn q_ring_cycles_keep_the_lifted_alias_after_two_native_periods() {
-    let grads_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
-    let radians_unit = AngularFactor::try_new("radian", 1.0).unwrap();
-    let cases: [(&str, GeographicFrame, &[f64], f64, f64); 3] = [
-        (
-            "degree",
-            GeographicFrame::crs84(),
-            [
-                122.427_194,
-                -177.572_806,
-                -117.572_806,
-                -57.572_806,
-                2.427_194,
-                62.427_194,
-            ]
-            .as_slice(),
-            842.427_194,
-            -597.572_806,
-        ),
-        (
-            "grad",
-            GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
-            [
-                25.0,
-                75.0,
-                124.999_999_999_999_99,
-                174.999_999_999_999_97,
-                -174.999_999_999_999_97,
-                -124.999_999_999_999_97,
-                -74.999_999_999_999_99,
-                -24.999_999_999_999_993,
-            ]
-            .as_slice(),
-            825.0,
-            -775.0,
-        ),
-        (
-            "radian",
-            GeographicFrame::try_new(radians_unit, radians_unit, 0.0).unwrap(),
-            [
-                0.25,
-                1.035_398_163_397_448_3,
-                1.820_796_326_794_896_6,
-                2.606_194_490_192_345,
-                -2.891_592_653_589_793,
-                -2.106_194_490_192_345,
-                -1.320_796_326_794_896_6,
-                -0.535_398_163_397_448_3,
-            ]
-            .as_slice(),
-            12.816_370_614_359_172,
-            -12.316_370_614_359_172,
-        ),
-    ];
+#[rstest::rstest]
+#[case::degree(
+    "degree",
+    GeographicFrame::crs84(),
+    [
+        122.427_194,
+        -177.572_806,
+        -117.572_806,
+        -57.572_806,
+        2.427_194,
+        62.427_194,
+    ]
+    .as_slice(),
+    842.427_194,
+    -597.572_806
+)]
+#[case::grad(
+    "grad",
+    {
+        let grads_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap()
+    },
+    [
+        25.0,
+        75.0,
+        124.999_999_999_999_99,
+        174.999_999_999_999_97,
+        -174.999_999_999_999_97,
+        -124.999_999_999_999_97,
+        -74.999_999_999_999_99,
+        -24.999_999_999_999_993,
+    ]
+    .as_slice(),
+    825.0,
+    -775.0
+)]
+#[case::radian(
+    "radian",
+    {
+        let radians_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(radians_unit, radians_unit, 0.0).unwrap()
+    },
+    [
+        0.25,
+        1.035_398_163_397_448_3,
+        1.820_796_326_794_896_6,
+        2.606_194_490_192_345,
+        -2.891_592_653_589_793,
+        -2.106_194_490_192_345,
+        -1.320_796_326_794_896_6,
+        -0.535_398_163_397_448_3,
+    ]
+    .as_slice(),
+    12.816_370_614_359_172,
+    -12.316_370_614_359_172
+)]
+fn q_ring_cycles_keep_the_lifted_alias_after_two_native_periods(
+    #[case] name: &str,
+    #[case] frame: GeographicFrame,
+    #[case] lap: &[f64],
+    #[case] positive: f64,
+    #[case] negative: f64,
+) {
+    for (direction, expected) in [(1.0, positive), (-1.0, negative)] {
+        let path = if direction > 0.0 {
+            lap.to_vec()
+        } else {
+            std::iter::once(lap[0])
+                .chain(lap[1..].iter().rev().copied())
+                .collect()
+        };
+        let mut coordinates = path
+            .iter()
+            .map(|&longitude| (longitude, 0.1))
+            .collect::<Vec<_>>();
+        let repeated_start = coordinates.len();
+        coordinates.push((lap[0], 0.1));
+        coordinates.extend(path.iter().skip(1).map(|&longitude| (longitude, 0.1)));
+        let high_latitude_vertex = coordinates.len();
+        coordinates.push((lap[0], 0.2));
+        coordinates.push((lap[0], 0.1));
 
-    for (name, frame, lap, positive, negative) in cases {
-        for (direction, expected) in [(1.0, positive), (-1.0, negative)] {
-            let path = if direction > 0.0 {
-                lap.to_vec()
-            } else {
-                std::iter::once(lap[0])
-                    .chain(lap[1..].iter().rev().copied())
-                    .collect()
-            };
-            let mut coordinates = path
-                .iter()
-                .map(|&longitude| (longitude, 0.1))
-                .collect::<Vec<_>>();
-            let repeated_start = coordinates.len();
-            coordinates.push((lap[0], 0.1));
-            coordinates.extend(path.iter().skip(1).map(|&longitude| (longitude, 0.1)));
-            let high_latitude_vertex = coordinates.len();
-            coordinates.push((lap[0], 0.2));
-            coordinates.push((lap[0], 0.1));
+        let chart_points = q_ring_chart_points(frame, &coordinates, &[repeated_start]).unwrap();
 
-            let chart_points =
-                q_ring_chart_points(frame, &coordinates, &[repeated_start]).unwrap();
-
-            assert_eq!(
-                chart_points[high_latitude_vertex].x.to_bits(),
-                expected.to_bits(),
-                "{name} frame, direction {direction}"
-            );
-            assert_eq!(
-                chart_points.last().unwrap().x.to_bits(),
-                chart_points.first().unwrap().x.to_bits(),
-                "{name} frame closure"
-            );
-        }
-    }
-}
-
-#[test]
-fn q_ring_half_period_ties_keep_each_native_seam_spelling() {
-    let grads_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
-    let radians_unit = AngularFactor::try_new("radian", 1.0).unwrap();
-    let cases = [
-        ("degree", GeographicFrame::crs84(), -180.0),
-        (
-            "grad",
-            GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
-            -199.999_999_999_999_97,
-        ),
-        (
-            "radian",
-            GeographicFrame::try_new(radians_unit, radians_unit, 0.0).unwrap(),
-            -std::f64::consts::PI,
-        ),
-    ];
-
-    for (name, frame, seam) in cases {
-        let chart_points =
-            q_ring_chart_points(frame, &[(0.0, 0.1), (seam, 0.1), (0.0, 0.1)], &[]).unwrap();
-        assert_eq!(chart_points[1].x.to_bits(), seam.to_bits(), "{name} seam");
+        assert_eq!(
+            chart_points[high_latitude_vertex].x.to_bits(),
+            expected.to_bits(),
+            "{name} frame, direction {direction}"
+        );
         assert_eq!(
             chart_points.last().unwrap().x.to_bits(),
             chart_points.first().unwrap().x.to_bits(),
-            "{name} closure"
+            "{name} frame closure"
         );
     }
+}
+
+#[rstest::rstest]
+#[case::degree("degree", GeographicFrame::crs84(), -180.0)]
+#[case::grad(
+    "grad",
+    {
+        let unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        GeographicFrame::try_new(unit, unit, 0.0).unwrap()
+    },
+    -199.999_999_999_999_97
+)]
+#[case::radian(
+    "radian",
+    {
+        let unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(unit, unit, 0.0).unwrap()
+    },
+    -std::f64::consts::PI
+)]
+fn q_ring_half_period_ties_keep_each_native_seam_spelling(
+    #[case] name: &'static str,
+    #[case] frame: GeographicFrame,
+    #[case] seam: f64,
+) {
+    let chart_points =
+        q_ring_chart_points(frame, &[(0.0, 0.1), (seam, 0.1), (0.0, 0.1)], &[]).unwrap();
+    assert_eq!(chart_points[1].x.to_bits(), seam.to_bits(), "{name} seam");
+    assert_eq!(
+        chart_points.last().unwrap().x.to_bits(),
+        chart_points.first().unwrap().x.to_bits(),
+        "{name} closure"
+    );
 }

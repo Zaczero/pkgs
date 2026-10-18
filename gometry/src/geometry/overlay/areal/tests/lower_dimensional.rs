@@ -136,43 +136,41 @@ fn disjoint_line_bounds_keep_certificate_before_provenance() {
     );
 }
 
-#[test]
-fn aggregate_overlay_wkb_is_permutation_invariant() {
+#[rstest::rstest]
+#[case::overlayop_union(OverlayOp::Union)]
+#[case::overlayop_intersection(OverlayOp::Intersection)]
+#[case::overlayop_symmetricdifference(OverlayOp::SymmetricDifference)]
+fn aggregate_overlay_wkb_is_permutation_invariant(#[case] op: OverlayOp) {
     let shapes = [
         square(0.0, 0.0, 3.0, 3.0),
         square(1.0, 1.0, 4.0, 4.0),
         square(2.0, -1.0, 5.0, 2.0),
     ];
-    for op in [
-        OverlayOp::Union,
-        OverlayOp::Intersection,
-        OverlayOp::SymmetricDifference,
-    ] {
-        let baseline = wkb(&overlay_all(
-            &[&shapes[0], &shapes[1], &shapes[2]],
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        )
-        .unwrap());
-        for order in [[2, 1, 0], [1, 0, 2], [0, 2, 1]] {
-            let inputs = order
-                .iter()
-                .map(|&index| &shapes[index])
-                .collect::<Vec<_>>();
-            assert_eq!(
-                wkb(&overlay_all(
-                    &inputs,
-                    crate::geometry::TopologyDomain::Cartesian,
-                    op,
-                    Strictness::Strict
-                )
-                .unwrap()),
-                baseline,
-                "{} order={order:?}",
-                op.name()
-            );
-        }
+
+    let baseline = wkb(&overlay_all(
+        &[&shapes[0], &shapes[1], &shapes[2]],
+        crate::geometry::TopologyDomain::Cartesian,
+        op,
+        Strictness::Strict,
+    )
+    .unwrap());
+    for order in [[2, 1, 0], [1, 0, 2], [0, 2, 1]] {
+        let inputs = order
+            .iter()
+            .map(|&index| &shapes[index])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            wkb(&overlay_all(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict
+            )
+            .unwrap()),
+            baseline,
+            "{} order={order:?}",
+            op.name()
+        );
     }
 }
 

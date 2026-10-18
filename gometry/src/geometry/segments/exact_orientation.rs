@@ -137,41 +137,39 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn cross_sign_matches_exact_dyadics() {
-        let tiny = f64::from_bits(1);
-        let max = f64::MAX;
-        let xy = XY::new;
-        let cases = [
-            (xy(0.0, 0.0), xy(1.0, 0.0), xy(5.0, 5.0), xy(7.0, 5.0)),
-            (
-                xy(0.0, 0.0),
-                xy(1.0, 1.0),
-                xy(0.0, 0.0),
-                xy(1.0, 1.0_f64.next_up()),
-            ),
-            (xy(0.1, 0.2), xy(0.3, 0.7), xy(-4.0, 1.0), xy(-3.8, 1.5)),
-            (xy(-max, -max), xy(max, max), xy(max, -max), xy(-max, max)),
-            (
-                xy(tiny, 0.0),
-                xy(3.0 * tiny, tiny),
-                xy(0.0, 0.0),
-                xy(2.0 * tiny, tiny),
-            ),
-            (xy(1.0, 2.0), xy(3.0, 4.0), xy(3.0, 4.0), xy(1.0, 2.0)),
-            (xy(0.0, 0.0), xy(-1.0, 3.0), xy(2.0, 2.0), xy(5.0, -1.0)),
-        ];
-        for (a, b, c, d) in cases {
-            let expected = dyadic_cross_sign(
-                &[dyadic_difference(b.x, a.x), dyadic_difference(b.y, a.y)],
-                &[dyadic_difference(d.x, c.x), dyadic_difference(d.y, c.y)],
-            );
-            assert_eq!(
-                stored_cross_sign(a, b, c, d),
-                expected,
-                "{a:?} {b:?} {c:?} {d:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::xy_0_0_0_0(
+        XY::new(0.0, 0.0),
+        XY::new(1.0, 0.0),
+        XY::new(5.0, 5.0),
+        XY::new(7.0, 5.0)
+    )]
+    #[case::xy_0_0_0_0_e6e9f12a(XY::new(0.0, 0.0), XY::new(1.0, 1.0), XY::new(0.0, 0.0), XY::new(1.0, 1.0_f64.next_up()))]
+    #[case::xy_0_1_0_2(XY::new(0.1, 0.2), XY::new(0.3, 0.7), XY::new(-4.0, 1.0), XY::new(-3.8, 1.5))]
+    #[case::xy_max_max(XY::new(-f64::MAX, -f64::MAX), XY::new(f64::MAX, f64::MAX), XY::new(f64::MAX, -f64::MAX), XY::new(-f64::MAX, f64::MAX))]
+    #[case::xy_tiny_0_0(XY::new(f64::from_bits(1), 0.0), XY::new(3.0 * f64::from_bits(1), f64::from_bits(1)), XY::new(0.0, 0.0), XY::new(2.0 * f64::from_bits(1), f64::from_bits(1)))]
+    #[case::xy_1_0_2_0(
+        XY::new(1.0, 2.0),
+        XY::new(3.0, 4.0),
+        XY::new(3.0, 4.0),
+        XY::new(1.0, 2.0)
+    )]
+    #[case::xy_0_0_0_0_2d45c9e3(XY::new(0.0, 0.0), XY::new(-1.0, 3.0), XY::new(2.0, 2.0), XY::new(5.0, -1.0))]
+    fn cross_sign_matches_exact_dyadics(
+        #[case] a: XY,
+        #[case] b: XY,
+        #[case] c: XY,
+        #[case] d: XY,
+    ) {
+        let expected = dyadic_cross_sign(
+            &[dyadic_difference(b.x, a.x), dyadic_difference(b.y, a.y)],
+            &[dyadic_difference(d.x, c.x), dyadic_difference(d.y, c.y)],
+        );
+        assert_eq!(
+            stored_cross_sign(a, b, c, d),
+            expected,
+            "{a:?} {b:?} {c:?} {d:?}"
+        );
     }
 
     #[test]
@@ -220,25 +218,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn axis_aligned_ties_are_collinear() {
-        let subnormal = f64::from_bits(1);
-        let max = f64::MAX;
-        for (a, b, c) in [
-            ((-0.0, -0.0), (1.0, -0.0), (-1.0, 0.0)),
-            ((-0.0, -1.0), (0.0, 0.0), (0.0, 1.0)),
-            (
-                (subnormal, subnormal),
-                (2.0 * subnormal, subnormal),
-                (3.0 * subnormal, subnormal),
-            ),
-            ((max, -max), (max, 0.0), (max, max)),
-        ] {
-            assert_eq!(
-                orientation_xy(a.0, a.1, b.0, b.1, c.0, c.1),
-                Orientation::Collinear
-            );
-        }
+    #[rstest::rstest]
+    #[case::a_0_0_0_0((-0.0, -0.0), (1.0, -0.0), (-1.0, 0.0))]
+    #[case::a_0_0_1_0((-0.0, -1.0), (0.0, 0.0), (0.0, 1.0))]
+    #[case::subnormal_subnormal((f64::from_bits(1), f64::from_bits(1)), (2.0 * f64::from_bits(1), f64::from_bits(1)), (3.0 * f64::from_bits(1), f64::from_bits(1)))]
+    #[case::max_max((f64::MAX, -f64::MAX), (f64::MAX, 0.0), (f64::MAX, f64::MAX))]
+    fn axis_aligned_ties_are_collinear(
+        #[case] a: (f64, f64),
+        #[case] b: (f64, f64),
+        #[case] c: (f64, f64),
+    ) {
+        assert_eq!(
+            orientation_xy(a.0, a.1, b.0, b.1, c.0, c.1),
+            Orientation::Collinear
+        );
     }
 
     #[test]

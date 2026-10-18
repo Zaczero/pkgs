@@ -186,44 +186,45 @@ mod tests {
     use super::checked_geodesic_route;
     use crate::geometry::Point;
 
-    #[test]
-    fn geodesic_route_rejects_nonunique_shortest_endpoints() {
-        for (geodesic, start, end) in [
-            (Geodesic::wgs84(), (0.0, 90.0), (0.0, -90.0)),
-            (Geodesic::wgs84(), (0.0, 0.0), (180.0, 0.0)),
-            (Geodesic::new(6_378_137.0, 0.0), (0.0, 10.0), (180.0, -10.0)),
-            (
-                Geodesic::new(6_378_137.0, -0.01),
-                (0.0, 10.0),
-                (180.0, -10.0),
-            ),
-        ] {
-            checked_geodesic_route(
-                &geodesic,
-                Point::new_raw_xy(start.0, start.1),
-                Point::new_raw_xy(end.0, end.1),
-            )
-            .unwrap_err();
-        }
+    #[rstest::rstest]
+    #[case::geodesic_wgs84(Geodesic::wgs84(), (0.0, 90.0), (0.0, -90.0))]
+    #[case::geodesic_wgs84_f397cf7c(Geodesic::wgs84(), (0.0, 0.0), (180.0, 0.0))]
+    #[case::geodesic_new_6_378_137_0_0_0(Geodesic::new(6_378_137.0, 0.0), (0.0, 10.0), (180.0, -10.0))]
+    #[case::geodesic_new_6_378_137_0_0_01(Geodesic::new(6_378_137.0, -0.01), (0.0, 10.0), (180.0, -10.0))]
+    fn geodesic_route_rejects_nonunique_shortest_endpoints(
+        #[case] geodesic: Geodesic,
+        #[case] start: (f64, f64),
+        #[case] end: (f64, f64),
+    ) {
+        checked_geodesic_route(
+            &geodesic,
+            Point::new_raw_xy(start.0, start.1),
+            Point::new_raw_xy(end.0, end.1),
+        )
+        .unwrap_err();
     }
 
-    #[test]
-    fn spherical_antipodal_latitude_sign_selects_the_original_meridian_branch() {
+    #[rstest::rstest]
+    #[case::negative_latitude_1e_18(-1e-18, 180.0_f64)]
+    #[case::latitude_1e_18(1e-18, 0.0_f64)]
+    fn spherical_antipodal_latitude_sign_selects_the_original_meridian_branch(
+        #[case] latitude: f64,
+        #[case] expected_azimuth: f64,
+    ) {
         let sphere = Geodesic::new(6_378_137.0, 0.0);
-        for (latitude, expected_azimuth) in [(-1e-18, 180.0_f64), (1e-18, 0.0_f64)] {
-            let route = checked_geodesic_route(
-                &sphere,
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(180.0, latitude),
-            )
-            .expect("signed antipodal perturbation is unique");
-            assert_eq!(route.azimuth.to_bits(), expected_azimuth.to_bits());
-            let (middle_latitude, _): (f64, f64) =
-                sphere.direct(0.0, 0.0, route.azimuth, route.length / 2.0);
-            assert_eq!(
-                middle_latitude.is_sign_negative(),
-                latitude.is_sign_negative()
-            );
-        }
+
+        let route = checked_geodesic_route(
+            &sphere,
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(180.0, latitude),
+        )
+        .expect("signed antipodal perturbation is unique");
+        assert_eq!(route.azimuth.to_bits(), expected_azimuth.to_bits());
+        let (middle_latitude, _): (f64, f64) =
+            sphere.direct(0.0, 0.0, route.azimuth, route.length / 2.0);
+        assert_eq!(
+            middle_latitude.is_sign_negative(),
+            latitude.is_sign_negative()
+        );
     }
 }

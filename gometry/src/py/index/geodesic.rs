@@ -306,19 +306,25 @@ mod tests {
     }
 
     /// Reduced and geodetic latitudes are inverses across the domain.
-    #[test]
-    fn latitude_conversions_round_trip() {
+    #[rstest::rstest]
+    #[case::negative_lat_90_0(-90.0)]
+    #[case::negative_lat_45_0(-45.0)]
+    #[case::negative_lat_1e_9(-1e-9)]
+    #[case::lat_0_0(0.0)]
+    #[case::lat_30_0(30.0)]
+    #[case::lat_89_999(89.999)]
+    #[case::lat_90_0(90.0)]
+    fn latitude_conversions_round_trip(#[case] lat: f64) {
         let one_minus_f = 1.0 - 1.0 / 298.257_223_563;
-        for lat in [-90.0, -45.0, -1e-9, 0.0, 30.0, 89.999, 90.0] {
-            let beta = reduced_latitude(Degrees(lat), one_minus_f);
-            let back = geodetic_latitude(beta, one_minus_f);
-            assert!(
-                (back.0 - lat).abs() < 1e-9,
-                "{lat} -> {} -> {}",
-                beta.0,
-                back.0
-            );
-        }
+
+        let beta = reduced_latitude(Degrees(lat), one_minus_f);
+        let back = geodetic_latitude(beta, one_minus_f);
+        assert!(
+            (back.0 - lat).abs() < 1e-9,
+            "{lat} -> {} -> {}",
+            beta.0,
+            back.0
+        );
     }
 
     /// A zero-radius window at the seam covers both spellings of ±180.

@@ -336,83 +336,87 @@ mod tests {
         .filter(move |&cell| cell <= maximum)
     }
 
-    #[test]
-    fn settled_cell_primitives_agree_with_the_decided_matrix() {
+    #[rstest::rstest]
+    #[case::point(POINT)]
+    #[case::line(LINE)]
+    #[case::ring(RING)]
+    #[case::area(AREA)]
+    fn settled_cell_primitives_agree_with_the_decided_matrix(#[case] left: OperandShape) {
         // Predicate formulas share eval; only these Cells adapters differ.
-        for left in [POINT, LINE, RING, AREA] {
-            for right in [POINT, LINE, RING, AREA] {
-                let open = De9imInterval::open(left, right);
-                for (row, col) in LOCATION_PAIRS {
-                    for value in admitted_cells(*interval_cell(&open.hi, row, col)) {
-                        let mut interval = open;
-                        if let Cell::Dim(dimension) = value {
-                            interval.witness(row, col, dimension);
-                        }
-                        settle_all(&mut interval);
-                        let decided = matrix_predicates::Decided(interval.matrix().unwrap());
-                        for cell in MatrixCell::ALL {
-                            assert_eq!(interval.is_empty(cell), decided.is_empty(cell));
-                            for dimension in
-                                [Dimension::Point, Dimension::Curve, Dimension::Surface]
-                            {
-                                assert_eq!(
-                                    interval.at_least(cell, dimension),
-                                    decided.at_least(cell, dimension)
-                                );
-                                assert_eq!(
-                                    interval.exactly(cell, dimension),
-                                    decided.exactly(cell, dimension)
-                                );
-                            }
-                        }
-                        for operand in [MatrixOperand::Left, MatrixOperand::Right] {
+
+        for right in [POINT, LINE, RING, AREA] {
+            let open = De9imInterval::open(left, right);
+            for (row, col) in LOCATION_PAIRS {
+                for value in admitted_cells(*interval_cell(&open.hi, row, col)) {
+                    let mut interval = open;
+                    if let Cell::Dim(dimension) = value {
+                        interval.witness(row, col, dimension);
+                    }
+                    settle_all(&mut interval);
+                    let decided = matrix_predicates::Decided(interval.matrix().unwrap());
+                    for cell in MatrixCell::ALL {
+                        assert_eq!(interval.is_empty(cell), decided.is_empty(cell));
+                        for dimension in [Dimension::Point, Dimension::Curve, Dimension::Surface] {
                             assert_eq!(
-                                interval.interior_dim(operand),
-                                decided.interior_dim(operand)
+                                interval.at_least(cell, dimension),
+                                decided.at_least(cell, dimension)
+                            );
+                            assert_eq!(
+                                interval.exactly(cell, dimension),
+                                decided.exactly(cell, dimension)
                             );
                         }
+                    }
+                    for operand in [MatrixOperand::Left, MatrixOperand::Right] {
+                        assert_eq!(
+                            interval.interior_dim(operand),
+                            decided.interior_dim(operand)
+                        );
                     }
                 }
             }
         }
     }
 
-    #[test]
-    fn settled_interior_dimensions_agree_on_every_admitted_row_and_column() {
-        for left in [POINT, LINE, RING, AREA] {
-            for right in [POINT, LINE, RING, AREA] {
-                let open = De9imInterval::open(left, right);
-                for (operand, locations) in [
-                    (MatrixOperand::Left, [
-                        (Loc::Interior, Loc::Interior),
-                        (Loc::Interior, Loc::Boundary),
-                        (Loc::Interior, Loc::Exterior),
-                    ]),
-                    (MatrixOperand::Right, [
-                        (Loc::Interior, Loc::Interior),
-                        (Loc::Boundary, Loc::Interior),
-                        (Loc::Exterior, Loc::Interior),
-                    ]),
-                ] {
-                    let [first, second, third] =
-                        locations.map(|(row, col)| *interval_cell(&open.hi, row, col));
-                    for a in admitted_cells(first) {
-                        for b in admitted_cells(second) {
-                            for c in admitted_cells(third) {
-                                let mut interval = open;
-                                for ((row, col), value) in locations.into_iter().zip([a, b, c]) {
-                                    if let Cell::Dim(dimension) = value {
-                                        interval.witness(row, col, dimension);
-                                    }
+    #[rstest::rstest]
+    #[case::point(POINT)]
+    #[case::line(LINE)]
+    #[case::ring(RING)]
+    #[case::area(AREA)]
+    fn settled_interior_dimensions_agree_on_every_admitted_row_and_column(
+        #[case] left: OperandShape,
+    ) {
+        for right in [POINT, LINE, RING, AREA] {
+            let open = De9imInterval::open(left, right);
+            for (operand, locations) in [
+                (MatrixOperand::Left, [
+                    (Loc::Interior, Loc::Interior),
+                    (Loc::Interior, Loc::Boundary),
+                    (Loc::Interior, Loc::Exterior),
+                ]),
+                (MatrixOperand::Right, [
+                    (Loc::Interior, Loc::Interior),
+                    (Loc::Boundary, Loc::Interior),
+                    (Loc::Exterior, Loc::Interior),
+                ]),
+            ] {
+                let [first, second, third] =
+                    locations.map(|(row, col)| *interval_cell(&open.hi, row, col));
+                for a in admitted_cells(first) {
+                    for b in admitted_cells(second) {
+                        for c in admitted_cells(third) {
+                            let mut interval = open;
+                            for ((row, col), value) in locations.into_iter().zip([a, b, c]) {
+                                if let Cell::Dim(dimension) = value {
+                                    interval.witness(row, col, dimension);
                                 }
-                                settle_all(&mut interval);
-                                let decided =
-                                    matrix_predicates::Decided(interval.matrix().unwrap());
-                                assert_eq!(
-                                    interval.interior_dim(operand),
-                                    decided.interior_dim(operand)
-                                );
                             }
+                            settle_all(&mut interval);
+                            let decided = matrix_predicates::Decided(interval.matrix().unwrap());
+                            assert_eq!(
+                                interval.interior_dim(operand),
+                                decided.interior_dim(operand)
+                            );
                         }
                     }
                 }

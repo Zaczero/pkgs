@@ -953,8 +953,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hausdorff_upper_contains_intervals_where_nearest_target_changes() {
+    #[rstest::rstest]
+    #[case::parameter_0_46(0.46)]
+    #[case::parameter_0_5(0.5)]
+    #[case::parameter_0_54(0.54)]
+    fn hausdorff_upper_contains_intervals_where_nearest_target_changes(#[case] parameter: f64) {
         let geodesic = Geodesic::wgs84();
         let frame = GeographicFrame::crs84();
         let metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
@@ -978,18 +981,16 @@ mod tests {
             &metric,
         );
         let upper = interval_upper(&left, &right, &edge, &metric);
-        for parameter in [0.46, 0.5, 0.54] {
-            let source = chart_source(parameter);
-            let left_distance: f64 =
-                geodesic.inverse(source.y, source.x, left_target.y, left_target.x);
-            let right_distance: f64 =
-                geodesic.inverse(source.y, source.x, right_target.y, right_target.x);
-            let attained = left_distance.min(right_distance);
-            assert!(
-                upper >= attained,
-                "source t={parameter}: interval upper {upper} is below target-set distance {attained}"
-            );
-        }
+
+        let source = chart_source(parameter);
+        let left_distance: f64 = geodesic.inverse(source.y, source.x, left_target.y, left_target.x);
+        let right_distance: f64 =
+            geodesic.inverse(source.y, source.x, right_target.y, right_target.x);
+        let attained = left_distance.min(right_distance);
+        assert!(
+            upper >= attained,
+            "source t={parameter}: interval upper {upper} is below target-set distance {attained}"
+        );
     }
 
     #[test]

@@ -368,70 +368,24 @@ fn assert_refinement_order_identity(wkt: &str, option: &str, value: f64) {
     });
 }
 
-macro_rules! refinement_order_case {
-    ($name:ident, $wkt:literal, $option:literal, $value:expr) => {
-        #[test]
-        #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-        fn $name() {
-            assert_refinement_order_identity($wkt, $option, $value);
-        }
-    };
+#[rstest::rstest]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+#[case::area_1024_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 1024.0)]
+#[case::area_2048_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 2048.0)]
+#[case::area_4096_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 4096.0)]
+#[case::area_8192_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 8192.0)]
+#[case::angle_1024_order_identity("POLYGON((0 0,256 0,256 1,0 1,0 0))", "min_angle", 20.0)]
+#[case::angle_2048_order_identity("POLYGON((0 0,512 0,512 1,0 1,0 0))", "min_angle", 20.0)]
+#[case::angle_4096_order_identity("POLYGON((0 0,1024 0,1024 1,0 1,0 0))", "min_angle", 20.0)]
+#[case::angle_8192_order_identity("POLYGON((0 0,2048 0,2048 1,0 1,0 0))", "min_angle", 20.0)]
+#[case::angle_16384_order_identity("POLYGON((0 0,4096 0,4096 1,0 1,0 0))", "min_angle", 20.0)]
+fn refinement_preserves_insertion_order_identity(
+    #[case] wkt: &str,
+    #[case] option: &str,
+    #[case] value: f64,
+) {
+    assert_refinement_order_identity(wkt, option, value);
 }
-
-refinement_order_case!(
-    area_1024_order_identity,
-    "POLYGON((0 0,2 0,2 2,0 2,0 0))",
-    "max_area",
-    4.0 / 1024.0
-);
-refinement_order_case!(
-    area_2048_order_identity,
-    "POLYGON((0 0,2 0,2 2,0 2,0 0))",
-    "max_area",
-    4.0 / 2048.0
-);
-refinement_order_case!(
-    area_4096_order_identity,
-    "POLYGON((0 0,2 0,2 2,0 2,0 0))",
-    "max_area",
-    4.0 / 4096.0
-);
-refinement_order_case!(
-    area_8192_order_identity,
-    "POLYGON((0 0,2 0,2 2,0 2,0 0))",
-    "max_area",
-    4.0 / 8192.0
-);
-refinement_order_case!(
-    angle_1024_order_identity,
-    "POLYGON((0 0,256 0,256 1,0 1,0 0))",
-    "min_angle",
-    20.0
-);
-refinement_order_case!(
-    angle_2048_order_identity,
-    "POLYGON((0 0,512 0,512 1,0 1,0 0))",
-    "min_angle",
-    20.0
-);
-refinement_order_case!(
-    angle_4096_order_identity,
-    "POLYGON((0 0,1024 0,1024 1,0 1,0 0))",
-    "min_angle",
-    20.0
-);
-refinement_order_case!(
-    angle_8192_order_identity,
-    "POLYGON((0 0,2048 0,2048 1,0 1,0 0))",
-    "min_angle",
-    20.0
-);
-refinement_order_case!(
-    angle_16384_order_identity,
-    "POLYGON((0 0,4096 0,4096 1,0 1,0 0))",
-    "min_angle",
-    20.0
-);
 
 #[test]
 fn outside_insertions_replace_only_the_visible_hull_chain() {
@@ -607,24 +561,31 @@ fn irregular_sites_are_delaunay_consistent_across_input_orders() {
     }
 }
 
-#[test]
-fn hull_only_regular_polygons_are_delaunay() {
+#[rstest::rstest]
+#[case::n_5_usize(5_usize)]
+#[case::n_6(6)]
+#[case::n_9(9)]
+#[case::n_16(16)]
+fn hull_only_regular_polygons_are_delaunay(#[case] n: usize) {
     // Every site is a hull corner, so nothing is ever inserted and the
     // seed fan has to be legalized on its own: a regular n-gon's fan from
     // one corner is far from Delaunay.
-    for n in [5_usize, 6, 9, 16] {
-        let points: Vec<Point> = (0..n)
-            .map(|i| {
-                let t = std::f64::consts::TAU * i as f64 / n as f64;
-                Point::new_raw_xy(t.cos(), t.sin())
-            })
-            .collect();
-        let mesh = exact_delaunay(&points).unwrap();
-        assert_eq!(mesh.triangles.len() / 3, n - 2, "n={n} triangles");
-        assert_eq!(mesh.hull.len(), n, "n={n} hull");
-        assert_halfedges_consistent(&mesh);
-        assert_delaunay(&mesh, &points);
-    }
+
+    let points: Vec<Point> = (0..n)
+        .map(|i| {
+            let t = std::f64::consts::TAU * i as f64 / n as f64;
+            Point::new_raw_xy(t.cos(), t.sin())
+        })
+        .collect();
+    let mesh = exact_delaunay(&points).unwrap();
+    assert_eq!(
+        mesh.triangles.len() / 3,
+        n.wrapping_sub(2),
+        "n={n} triangles"
+    );
+    assert_eq!(mesh.hull.len(), n, "n={n} hull");
+    assert_halfedges_consistent(&mesh);
+    assert_delaunay(&mesh, &points);
 }
 
 #[test]
@@ -744,37 +705,41 @@ fn sites_on_existing_edges_and_vertices_insert_exactly() {
     assert_eq!(mesh.triangles.len() / 3, 2 * 7 - 4 - 2);
 }
 
-#[test]
-fn late_center_insertion_walks_large_cavities_in_boundary_order() {
-    for n in [16, 32, 65] {
-        let mut pts: Vec<_> = (0..n)
-            .map(|i| {
-                let angle = std::f64::consts::TAU * i as f64 / n as f64;
-                Point::new_raw_xy(angle.cos(), angle.sin())
-            })
-            .collect();
-        pts.push(Point::new_raw_xy(0.0, 0.0));
-        let xy = |site: usize| pts[site].xy();
-        let hull: Vec<_> = (0..n).collect();
-        let mut mesh = Mesh::seed(&hull, pts.len());
-        mesh.try_legalize(&xy).unwrap();
-        let located = mesh.locate(&xy, FaceId::from_index(0), xy(n)).unwrap();
-        let (_, changed) = mesh
-            .try_insert_with(&xy, n, located, None, |mut cavity, slots| {
-                assert_eq!(cavity.len(), n - 2);
-                assert_eq!(slots.len(), n);
-                cavity.extend_from_slice(slots);
-                cavity
-            })
-            .unwrap();
-        assert_eq!(changed.len(), 2 * n - 2);
-        let steps = PERIMETER_STEPS.with(std::cell::Cell::get);
-        assert_eq!(steps, 3 * (n - 2));
-        eprintln!("late center: boundary={n}, cavity={}, steps={steps}", n - 2);
-        let result = mesh.finish(&xy).unwrap();
-        assert_halfedges_consistent(&result);
-        assert_delaunay(&result, &pts);
-    }
+#[rstest::rstest]
+#[case::n_16(16)]
+#[case::n_32(32)]
+#[case::n_65(65)]
+fn late_center_insertion_walks_large_cavities_in_boundary_order(#[case] n: usize) {
+    let mut pts: Vec<_> = (0..n)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * i as f64 / n as f64;
+            Point::new_raw_xy(angle.cos(), angle.sin())
+        })
+        .collect();
+    pts.push(Point::new_raw_xy(0.0, 0.0));
+    let xy = |site: usize| pts[site].xy();
+    let hull: Vec<_> = (0..n).collect();
+    let mut mesh = Mesh::seed(&hull, pts.len());
+    mesh.try_legalize(&xy).unwrap();
+    let located = mesh.locate(&xy, FaceId::from_index(0), xy(n)).unwrap();
+    let (_, changed) = mesh
+        .try_insert_with(&xy, n, located, None, |mut cavity, slots| {
+            assert_eq!(cavity.len(), n.wrapping_sub(2));
+            assert_eq!(slots.len(), n);
+            cavity.extend_from_slice(slots);
+            cavity
+        })
+        .unwrap();
+    assert_eq!(changed.len(), n.wrapping_mul(2).wrapping_sub(2));
+    let steps = PERIMETER_STEPS.with(std::cell::Cell::get);
+    assert_eq!(steps, n.wrapping_sub(2).wrapping_mul(3));
+    eprintln!(
+        "late center: boundary={n}, cavity={}, steps={steps}",
+        n.wrapping_sub(2)
+    );
+    let result = mesh.finish(&xy).unwrap();
+    assert_halfedges_consistent(&result);
+    assert_delaunay(&result, &pts);
 }
 
 #[test]

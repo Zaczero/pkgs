@@ -103,42 +103,4 @@ fn assert_ring_row(row: &RingRow, reversed: bool, shift: f64) {
     );
 }
 
-/// Give each source row six independent spelling cases while retaining every rotation.
-macro_rules! ring_rule_cases {
-    ($(($name:ident, $label:literal, $rings:expr, $multi:expr, $expectation:expr)),* $(,)?) => {
-        $(
-            mod $name {
-                use super::*;
-
-                fn row() -> RingRow {
-                    RingRow {
-                        name: $label,
-                        rings: $rings,
-                        multi: $multi,
-                        expectation: $expectation,
-                    }
-                }
-
-                #[test]
-                fn forward() { assert_ring_row(&row(), false, 0.0); }
-
-                #[test]
-                fn forward_east_period() { assert_ring_row(&row(), false, 360.0); }
-
-                #[test]
-                fn forward_west_period() { assert_ring_row(&row(), false, -360.0); }
-
-                #[test]
-                fn reversed() { assert_ring_row(&row(), true, 0.0); }
-
-                #[test]
-                fn reversed_east_period() { assert_ring_row(&row(), true, 360.0); }
-
-                #[test]
-                fn reversed_west_period() { assert_ring_row(&row(), true, -360.0); }
-            }
-        )*
-    };
-}
-
 mod cases;

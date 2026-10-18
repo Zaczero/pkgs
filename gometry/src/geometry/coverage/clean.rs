@@ -728,38 +728,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn coverage_clean_preserves_reversed_duplicate_and_cancelled_collinear_support() {
+    #[rstest::rstest]
+    #[case::polygon_0_0_0_4_4_4_4_0_0_0("POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))")]
+    #[case::polygon_0_0_2_0_4_0_4_4_0_4_0_0("POLYGON ((0 0, 2 0, 4 0, 4 4, 0 4, 0 0))")]
+    #[case::polygon_0_0_4_0_4_4_0_4_0_0_2_0_0_0("POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0, -2 0, 0 0))")]
+    fn coverage_clean_preserves_reversed_duplicate_and_cancelled_collinear_support(
+        #[case] wkt: &'static str,
+    ) {
         let other = rectangle(2.0, 0.0, 6.0, 4.0);
-        for wkt in [
-            "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))",
-            "POLYGON ((0 0, 2 0, 4 0, 4 4, 0 4, 0 0))",
-            "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0, -2 0, 0 0))",
-        ] {
-            let left = crate::io::parse_wkt(wkt).expect("collinear traversal fixture");
-            let rows = [left, other.clone()];
-            let output = coverage_clean(
-                &rows,
-                0.0,
-                0.0,
-                CoverageOverlapRule::LongestBorder,
-                &SourceArcContext::cartesian(),
-            )
-            .expect("coverage clean");
-            assert_eq!(output.len(), 2);
-            assert!(
-                (output.iter().map(Shape::area).sum::<f64>() - 24.0).abs() < 1.0e-9,
-                "collinear traversal changed support: {output:?}"
-            );
-            assert!(crate::geometry::coverage_is_valid(&output, 0.0).unwrap());
-            for shape in &output {
-                shape
-                    .try_for_each_point(|point| {
-                        assert!(point.x >= 0.0);
-                        Ok::<_, crate::error::Error>(())
-                    })
-                    .expect("collinear support output points");
-            }
+
+        let left = crate::io::parse_wkt(wkt).expect("collinear traversal fixture");
+        let rows = [left, other];
+        let output = coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &SourceArcContext::cartesian(),
+        )
+        .expect("coverage clean");
+        assert_eq!(output.len(), 2);
+        assert!(
+            (output.iter().map(Shape::area).sum::<f64>() - 24.0).abs() < 1.0e-9,
+            "collinear traversal changed support: {output:?}"
+        );
+        assert!(crate::geometry::coverage_is_valid(&output, 0.0).unwrap());
+        for shape in &output {
+            shape
+                .try_for_each_point(|point| {
+                    assert!(point.x >= 0.0);
+                    Ok::<_, crate::error::Error>(())
+                })
+                .expect("collinear support output points");
         }
     }
 

@@ -781,16 +781,16 @@ fn try_h3_grid_ring_cells_with_budget(
 mod immediate_neighbor_tests {
     use super::*;
 
-    #[test]
-    fn immediate_neighbors_preserve_safe_pentagon_order() {
-        for resolution in [h3o::Resolution::Zero, h3o::Resolution::Seven] {
-            for cell in resolution.pentagons() {
-                let expected: Vec<_> = cell
-                    .grid_disk_distances_safe(1)
-                    .filter_map(|(neighbor, distance)| (distance == 1).then_some(neighbor))
-                    .collect();
-                assert_eq!(h3_immediate_neighbors(cell), expected);
-            }
+    #[rstest::rstest]
+    #[case::h3o_resolution_zero(h3o::Resolution::Zero)]
+    #[case::h3o_resolution_seven(h3o::Resolution::Seven)]
+    fn immediate_neighbors_preserve_safe_pentagon_order(#[case] resolution: h3o::Resolution) {
+        for cell in resolution.pentagons() {
+            let expected: Vec<_> = cell
+                .grid_disk_distances_safe(1)
+                .filter_map(|(neighbor, distance)| (distance == 1).then_some(neighbor))
+                .collect();
+            assert_eq!(h3_immediate_neighbors(cell), expected);
         }
     }
 }

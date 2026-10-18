@@ -9,47 +9,48 @@ use crate::geometry::{
     Shape, TopologyDomain, ZOrdinate,
 };
 
-#[test]
-fn point_overlays_match_full_partition_across_polygon_locations() {
+#[rstest::rstest]
+#[case::interior("interior", Point::new_raw_xy(1.0, 1.0), true)]
+#[case::shell_boundary("shell boundary", Point::new_raw_xy(0.0, 3.0), true)]
+#[case::shell_vertex("shell vertex", Point::new_raw_xy(0.0, 0.0), true)]
+#[case::hole_interior("hole interior", Point::new_raw_xy(3.0, 3.0), false)]
+#[case::hole_boundary("hole boundary", Point::new_raw_xy(2.0, 3.0), true)]
+#[case::exterior("exterior", Point::new_raw_xy(7.0, 3.0), false)]
+fn point_overlays_match_full_partition_across_polygon_locations(
+    #[case] name: &'static str,
+    #[case] point: Point,
+    #[case] covered: bool,
+) {
     let carrier =
         crate::io::parse_wkt("POLYGON ((0 0,6 0,6 6,0 6,0 0),(2 2,4 2,4 4,2 4,2 2))").unwrap();
-    let cases = [
-        ("interior", Point::new_raw_xy(1.0, 1.0), true),
-        ("shell boundary", Point::new_raw_xy(0.0, 3.0), true),
-        ("shell vertex", Point::new_raw_xy(0.0, 0.0), true),
-        ("hole interior", Point::new_raw_xy(3.0, 3.0), false),
-        ("hole boundary", Point::new_raw_xy(2.0, 3.0), true),
-        ("exterior", Point::new_raw_xy(7.0, 3.0), false),
-    ];
-    for (name, point, covered) in cases {
-        let point_shape = Shape::Point(point);
-        assert_puntal_points_match_partition(
-            name,
-            &point_shape,
-            &carrier,
-            OverlayOp::Intersection,
-            Strictness::Lenient,
-        );
-        let intersection = overlay_all(
-            &[&point_shape, &carrier],
-            TopologyDomain::Cartesian,
-            OverlayOp::Intersection,
-            Strictness::Lenient,
-        )
-        .unwrap();
-        assert_eq!(
-            point_part(&intersection).is_some_and(|part| !part.is_empty()),
-            covered,
-            "{name}: {intersection:?}"
-        );
-        assert_puntal_points_match_partition(
-            name,
-            &point_shape,
-            &carrier,
-            OverlayOp::Difference,
-            Strictness::Lenient,
-        );
-    }
+
+    let point_shape = Shape::Point(point);
+    assert_puntal_points_match_partition(
+        name,
+        &point_shape,
+        &carrier,
+        OverlayOp::Intersection,
+        Strictness::Lenient,
+    );
+    let intersection = overlay_all(
+        &[&point_shape, &carrier],
+        TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        Strictness::Lenient,
+    )
+    .unwrap();
+    assert_eq!(
+        point_part(&intersection).is_some_and(|part| !part.is_empty()),
+        covered,
+        "{name}: {intersection:?}"
+    );
+    assert_puntal_points_match_partition(
+        name,
+        &point_shape,
+        &carrier,
+        OverlayOp::Difference,
+        Strictness::Lenient,
+    );
 }
 
 #[test]
@@ -547,52 +548,41 @@ fn assert_degenerate_point_overlays(polygon_name: &str, polygon_wkt: &str) {
     }
 }
 
-macro_rules! degenerate_overlay_cases {
-    ($($case:ident => ($name:literal, $polygon:literal $(,)?),)*) => {
-        $(mod $case {
-            use super::*;
-
-            #[test]
-            fn line_overlays_match_full_partition_wkb() {
-                assert_degenerate_line_overlays($name, $polygon);
-            }
-
-            #[test]
-            fn point_overlays_match_full_partition_wkb() {
-                assert_degenerate_point_overlays($name, $polygon);
-            }
-        })*
-    };
-}
-
-degenerate_overlay_cases! {
-    degenerate_spike => (
-        "spike",
-        "POLYGON((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))",
-    ),
-    degenerate_collapsed => ("collapsed", "POLYGON((0 0,2 2,4 4,0 0))"),
-    degenerate_shell_equals_hole => (
-        "shell equals hole",
-        "POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
-    ),
-    degenerate_bow_tie => ("bow-tie", "POLYGON((0 0,4 4,4 0,0 4,0 0))"),
-    degenerate_twice_wound => (
-        "twice-wound square",
-        "POLYGON((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
-    ),
-    degenerate_touching_hole => (
-        "hole touching shell",
-        "POLYGON((0 0,6 0,6 6,0 6,0 0),(0 0,3 2,3 4,0 0))",
-    ),
-    degenerate_external_hole => (
-        "external hole",
-        "POLYGON((0 0,4 0,4 4,0 4,0 0),(10 10,11 10,11 11,10 10))",
-    ),
-    degenerate_empty => ("empty", "POLYGON EMPTY"),
-    degenerate_collapsed_member => (
-        "multipolygon with collapsed member",
-        "MULTIPOLYGON(((0 0,2 2,4 4,0 0)),((5 5,7 5,7 7,5 7,5 5)))",
-    ),
+#[rstest::rstest]
+#[case::degenerate_spike("spike", "POLYGON((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))")]
+#[case::degenerate_collapsed("collapsed", "POLYGON((0 0,2 2,4 4,0 0))")]
+#[case::degenerate_shell_equals_hole(
+    "shell equals hole",
+    "POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))"
+)]
+#[case::degenerate_bow_tie("bow-tie", "POLYGON((0 0,4 4,4 0,0 4,0 0))")]
+#[case::degenerate_twice_wound(
+    "twice-wound square",
+    "POLYGON((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))"
+)]
+#[case::degenerate_touching_hole(
+    "hole touching shell",
+    "POLYGON((0 0,6 0,6 6,0 6,0 0),(0 0,3 2,3 4,0 0))"
+)]
+#[case::degenerate_external_hole(
+    "external hole",
+    "POLYGON((0 0,4 0,4 4,0 4,0 0),(10 10,11 10,11 11,10 10))"
+)]
+#[case::degenerate_empty("empty", "POLYGON EMPTY")]
+#[case::degenerate_collapsed_member(
+    "multipolygon with collapsed member",
+    "MULTIPOLYGON(((0 0,2 2,4 4,0 0)),((5 5,7 5,7 7,5 7,5 5)))"
+)]
+fn degenerate_overlays_match_full_partition_wkb(
+    #[case] name: &str,
+    #[case] polygon: &str,
+    #[values(false, true)] point_operands: bool,
+) {
+    if point_operands {
+        assert_degenerate_point_overlays(name, polygon);
+    } else {
+        assert_degenerate_line_overlays(name, polygon);
+    }
 }
 
 #[test]
@@ -714,55 +704,46 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
     }
 }
 
-macro_rules! shared_set_overlay_identity_tests {
-    ($($test:ident => ($name:literal, $depth:literal)),+ $(,)?) => {
-        $(
-            #[test]
-            fn $test() {
-                assert_shared_set_overlay_identity($name, $depth);
-            }
-        )+
-    };
+#[rstest::rstest]
+#[case::shared_polygon_set_ops_match_expansion_at_depth_2("polygon", 2)]
+#[case::shared_line_set_ops_match_expansion_at_depth_2("line", 2)]
+#[case::shared_point_set_ops_match_expansion_at_depth_2("point", 2)]
+#[case::shared_holed_polygon_set_ops_match_expansion_at_depth_2("polygon with hole", 2)]
+#[case::shared_zm_set_ops_match_expansion_at_depth_2("Z/M points sharing XY", 2)]
+#[case::shared_mixed_set_ops_match_expansion_at_depth_2("mixed collection", 2)]
+#[case::shared_polygon_set_ops_match_expansion_at_depth_3("polygon", 3)]
+#[case::shared_line_set_ops_match_expansion_at_depth_3("line", 3)]
+#[case::shared_point_set_ops_match_expansion_at_depth_3("point", 3)]
+#[case::shared_holed_polygon_set_ops_match_expansion_at_depth_3("polygon with hole", 3)]
+#[case::shared_zm_set_ops_match_expansion_at_depth_3("Z/M points sharing XY", 3)]
+#[case::shared_mixed_set_ops_match_expansion_at_depth_3("mixed collection", 3)]
+fn shared_set_overlay_identity_matches_expansion(#[case] name: &str, #[case] depth: usize) {
+    assert_shared_set_overlay_identity(name, depth);
 }
 
-shared_set_overlay_identity_tests! {
-    shared_polygon_set_ops_match_expansion_at_depth_2 => ("polygon", 2),
-    shared_line_set_ops_match_expansion_at_depth_2 => ("line", 2),
-    shared_point_set_ops_match_expansion_at_depth_2 => ("point", 2),
-    shared_holed_polygon_set_ops_match_expansion_at_depth_2 => ("polygon with hole", 2),
-    shared_zm_set_ops_match_expansion_at_depth_2 => ("Z/M points sharing XY", 2),
-    shared_mixed_set_ops_match_expansion_at_depth_2 => ("mixed collection", 2),
-    shared_polygon_set_ops_match_expansion_at_depth_3 => ("polygon", 3),
-    shared_line_set_ops_match_expansion_at_depth_3 => ("line", 3),
-    shared_point_set_ops_match_expansion_at_depth_3 => ("point", 3),
-    shared_holed_polygon_set_ops_match_expansion_at_depth_3 => ("polygon with hole", 3),
-    shared_zm_set_ops_match_expansion_at_depth_3 => ("Z/M points sharing XY", 3),
-    shared_mixed_set_ops_match_expansion_at_depth_3 => ("mixed collection", 3),
-}
-
-#[test]
-fn depth_128_shared_set_overlay_finishes_with_correct_support() {
+#[rstest::rstest]
+#[case::depth_40(40)]
+#[case::depth_128(128)]
+fn depth_128_shared_set_overlay_finishes_with_correct_support(#[case] depth: usize) {
     let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
-    for depth in [40, 128] {
-        let mut shared = base.clone();
-        for _ in 0..depth {
-            shared = Shape::geometry_collection(vec![shared.clone(), shared])
-                .expect("shared collection depth is admitted");
-        }
 
-        let parts = shared
-            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
-            .expect("deep subdivision succeeds");
-        assert!(!parts.is_empty(), "depth {depth}");
-        let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
-            .expect("deep subdivision parts union");
-        approx::assert_relative_eq!(area.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
-
-        let union =
-            Shape::union_all_topo(&[&shared], TopologyDomain::Cartesian, Strictness::Lenient)
-                .expect("deep union succeeds");
-        approx::assert_relative_eq!(union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
+    let mut shared = base;
+    for _ in 0..depth {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared])
+            .expect("shared collection depth is admitted");
     }
+
+    let parts = shared
+        .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
+        .expect("deep subdivision succeeds");
+    assert!(!parts.is_empty(), "depth {depth}");
+    let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
+        .expect("deep subdivision parts union");
+    approx::assert_relative_eq!(area.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
+
+    let union = Shape::union_all_topo(&[&shared], TopologyDomain::Cartesian, Strictness::Lenient)
+        .expect("deep union succeeds");
+    approx::assert_relative_eq!(union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
 }
 
 use crate::geometry::test_support::polygon;
@@ -1328,227 +1309,233 @@ fn t2_two_ambiguous_selected_cycles_emit_one_pole_free_strip() {
     }
 }
 
-#[test]
-fn t2_equator_crossing_generated_boundary_closes_only_the_selected_pole() {
-    for (latitude, selected, opposite) in [(-5.0, -85.0, 85.0), (5.0, 85.0, -85.0)] {
-        let cap = polygon(&[
-            (-180.0, latitude),
-            (-90.0, latitude),
-            (0.0, latitude),
-            (90.0, latitude),
-            (180.0, latitude),
-            (-180.0, latitude),
-        ]);
-        let connector = polygon(&[
-            (-10.0, -20.0),
-            (10.0, -20.0),
-            (10.0, 10.0),
-            (-10.0, 10.0),
-            (-10.0, -20.0),
-        ]);
-        let output = super::super::nary::overlay_all(
-            &[&cap, &connector],
-            TopologyDomain::Geographic(frame()),
-            OverlayOp::Union,
-            Strictness::Strict,
-        )
-        .expect("the selected cap and connector have a valid union");
-        let pole = if latitude < 0.0 {
-            crate::geographic::ChartPole::South
-        } else {
-            crate::geographic::ChartPole::North
-        };
-        assert_native_pole_path(&output, frame(), pole);
-        for (point, expected) in [
-            ((0.0, selected), Loc::Interior),
-            ((0.0, 0.0), Loc::Interior),
-            ((50.0, 0.0), Loc::Exterior),
-            ((0.0, opposite), Loc::Exterior),
-        ] {
-            assert_eq!(
-                exact_location(&output, Point::new_raw_xy(point.0, point.1)),
-                expected,
-                "boundary latitude={latitude}, point={point:?}"
-            );
-        }
+#[rstest::rstest]
+#[case::negative_latitude_5_0(-5.0, -85.0, 85.0)]
+#[case::latitude_5_0(5.0, 85.0, -85.0)]
+fn t2_equator_crossing_generated_boundary_closes_only_the_selected_pole(
+    #[case] latitude: f64,
+    #[case] selected: f64,
+    #[case] opposite: f64,
+) {
+    let cap = polygon(&[
+        (-180.0, latitude),
+        (-90.0, latitude),
+        (0.0, latitude),
+        (90.0, latitude),
+        (180.0, latitude),
+        (-180.0, latitude),
+    ]);
+    let connector = polygon(&[
+        (-10.0, -20.0),
+        (10.0, -20.0),
+        (10.0, 10.0),
+        (-10.0, 10.0),
+        (-10.0, -20.0),
+    ]);
+    let output = super::super::nary::overlay_all(
+        &[&cap, &connector],
+        TopologyDomain::Geographic(frame()),
+        OverlayOp::Union,
+        Strictness::Strict,
+    )
+    .expect("the selected cap and connector have a valid union");
+    let pole = if latitude < 0.0 {
+        crate::geographic::ChartPole::South
+    } else {
+        crate::geographic::ChartPole::North
+    };
+    assert_native_pole_path(&output, frame(), pole);
+    for (point, expected) in [
+        ((0.0, selected), Loc::Interior),
+        ((0.0, 0.0), Loc::Interior),
+        ((50.0, 0.0), Loc::Exterior),
+        ((0.0, opposite), Loc::Exterior),
+    ] {
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(point.0, point.1)),
+            expected,
+            "boundary latitude={latitude}, point={point:?}"
+        );
     }
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn t2_synthetic_pole_closure_drops_unsourceable_axes_before_publication() {
+#[case::coordinateaxes_xyz(CoordinateAxes::XYZ)]
+#[case::coordinateaxes_xym(CoordinateAxes::XYM)]
+#[case::coordinateaxes_xyzm(CoordinateAxes::XYZM)]
+fn t2_synthetic_pole_closure_drops_unsourceable_axes_before_publication(
+    #[case] axes: CoordinateAxes,
+) {
     let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
     let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
     let crate::crs::ResolvedMetric::Geodesic(metric) = resolved else {
         unreachable!("EPSG:4326 resolves to a geodesic chart metric")
     };
     let metric_access = || Ok(&metric);
-    for axes in [
-        CoordinateAxes::XYZ,
-        CoordinateAxes::XYM,
-        CoordinateAxes::XYZM,
-    ] {
-        let cap = polygon_with_axes(
-            &[
-                (-180.0, -5.0),
-                (-90.0, -5.0),
-                (0.0, -5.0),
-                (90.0, -5.0),
-                (180.0, -5.0),
-                (-180.0, -5.0),
-            ],
-            axes,
-            7.0,
-            70.0,
-        );
-        let connector = polygon_with_axes(
-            &[
-                (-10.0, -20.0),
-                (10.0, -20.0),
-                (10.0, 10.0),
-                (-10.0, 10.0),
-                (-10.0, -20.0),
-            ],
-            axes,
-            11.0,
-            110.0,
-        );
-        let inputs = [&cap, &connector];
-        let strict = crate::geometry::overlay_all_with_metric(
-            &inputs,
-            TopologyDomain::Geographic(frame()),
-            OverlayOp::Union,
-            Strictness::Strict,
-            &metric_access,
-        );
-        assert!(
-            matches!(
-                &strict,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        crate::error::ErrorKind::Geometry(
-                            crate::geometry::GeometryErrorKind::OrdinateDropped(operation)
-                        )
-                        if operation.as_ref() == "union"
-                    ),
-            ),
-            "{axes:?}: {strict:?}"
-        );
-        let lenient = crate::geometry::overlay_all_with_metric(
-            &inputs,
-            TopologyDomain::Geographic(frame()),
-            OverlayOp::Union,
-            Strictness::Lenient,
-            &metric_access,
-        )
-        .expect("lenient synthetic closures publish a consistent XY shape");
-        assert_eq!(lenient.axes(), CoordinateAxes::XY);
-    }
+
+    let cap = polygon_with_axes(
+        &[
+            (-180.0, -5.0),
+            (-90.0, -5.0),
+            (0.0, -5.0),
+            (90.0, -5.0),
+            (180.0, -5.0),
+            (-180.0, -5.0),
+        ],
+        axes,
+        7.0,
+        70.0,
+    );
+    let connector = polygon_with_axes(
+        &[
+            (-10.0, -20.0),
+            (10.0, -20.0),
+            (10.0, 10.0),
+            (-10.0, 10.0),
+            (-10.0, -20.0),
+        ],
+        axes,
+        11.0,
+        110.0,
+    );
+    let inputs = [&cap, &connector];
+    let strict = crate::geometry::overlay_all_with_metric(
+        &inputs,
+        TopologyDomain::Geographic(frame()),
+        OverlayOp::Union,
+        Strictness::Strict,
+        &metric_access,
+    );
+    assert!(
+        matches!(
+            &strict,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::OrdinateDropped(operation)
+                    )
+                    if operation.as_ref() == "union"
+                ),
+        ),
+        "{axes:?}: {strict:?}"
+    );
+    let lenient = crate::geometry::overlay_all_with_metric(
+        &inputs,
+        TopologyDomain::Geographic(frame()),
+        OverlayOp::Union,
+        Strictness::Lenient,
+        &metric_access,
+    )
+    .expect("lenient synthetic closures publish a consistent XY shape");
+    assert_eq!(lenient.axes(), CoordinateAxes::XY);
 }
 
-#[test]
-fn t2_selected_strip_support_uses_each_native_angular_frame() {
+#[rstest::rstest]
+#[case::degrees(frame())]
+#[case::radians({
     let radians = crate::geographic::AngularFactor::try_new("radian", 1.0).unwrap();
-    let grads =
-        crate::geographic::AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
-    let frames = [
-        frame(),
-        crate::geographic::GeographicFrame::try_new(radians, radians, 0.0).unwrap(),
-        crate::geographic::GeographicFrame::try_new(grads, grads, 0.0).unwrap(),
-    ];
-    for frame in frames {
-        let half = frame.longitude().half_period();
-        let pole = frame.pole();
-        let source = polygon(&[
-            (-half, 0.125 * pole),
-            (-half / 2.0, 0.125 * pole),
-            (-half / 16.0, 0.125 * pole),
-            (-half / 16.0, -0.125 * pole),
-            (0.0, -0.125 * pole),
-            (half / 16.0, -0.125 * pole),
-            (half / 16.0, 0.125 * pole),
-            (half / 2.0, 0.125 * pole),
-            (half, 0.125 * pole),
-            (half, pole),
-            (half / 2.0, pole),
-            (0.0, pole),
-            (-half / 2.0, pole),
-            (-half, pole),
-            (-half, 0.125 * pole),
-        ]);
-        let band = polygon(&[
-            (-half, -0.25 * pole),
-            (-half / 2.0, -0.25 * pole),
-            (0.0, -0.25 * pole),
-            (half / 2.0, -0.25 * pole),
-            (-half, -0.25 * pole),
-            (-half, 0.25 * pole),
-            (half / 2.0, 0.25 * pole),
-            (0.0, 0.25 * pole),
-            (-half / 2.0, 0.25 * pole),
-            (-half, 0.25 * pole),
-            (-half, -0.25 * pole),
-        ]);
-        let output = super::super::nary::overlay_all(
-            &[&source, &band],
-            TopologyDomain::Geographic(frame),
-            OverlayOp::Intersection,
-            Strictness::Strict,
-        )
-        .unwrap_or_else(|error| panic!("Native frame {frame:?}: {error}"));
-        for (point, expected) in [
-            ((0.0, -0.0625 * pole), Loc::Interior),
-            ((0.0, 0.125 * pole), Loc::Interior),
-            ((half / 2.0, 0.0), Loc::Exterior),
-            ((0.0, 0.5 * pole), Loc::Exterior),
-            ((half, 0.1875 * pole), Loc::Interior),
-            ((-half, 0.1875 * pole), Loc::Interior),
-        ] {
-            assert_eq!(
-                exact_location_in_frame(&output, Point::new_raw_xy(point.0, point.1), frame),
-                expected,
-                "frame={frame:?}, point={point:?}"
-            );
-        }
+    crate::geographic::GeographicFrame::try_new(radians, radians, 0.0).unwrap()
+})]
+#[case::grads({
+    let grads = crate::geographic::AngularFactor::try_new("grad", std::f64::consts::PI / 200.0)
+        .unwrap();
+    crate::geographic::GeographicFrame::try_new(grads, grads, 0.0).unwrap()
+})]
+fn t2_selected_strip_support_uses_each_native_angular_frame(
+    #[case] frame: crate::geographic::GeographicFrame,
+) {
+    let half = frame.longitude().half_period();
+    let pole = frame.pole();
+    let source = polygon(&[
+        (-half, 0.125 * pole),
+        (-half / 2.0, 0.125 * pole),
+        (-half / 16.0, 0.125 * pole),
+        (-half / 16.0, -0.125 * pole),
+        (0.0, -0.125 * pole),
+        (half / 16.0, -0.125 * pole),
+        (half / 16.0, 0.125 * pole),
+        (half / 2.0, 0.125 * pole),
+        (half, 0.125 * pole),
+        (half, pole),
+        (half / 2.0, pole),
+        (0.0, pole),
+        (-half / 2.0, pole),
+        (-half, pole),
+        (-half, 0.125 * pole),
+    ]);
+    let band = polygon(&[
+        (-half, -0.25 * pole),
+        (-half / 2.0, -0.25 * pole),
+        (0.0, -0.25 * pole),
+        (half / 2.0, -0.25 * pole),
+        (-half, -0.25 * pole),
+        (-half, 0.25 * pole),
+        (half / 2.0, 0.25 * pole),
+        (0.0, 0.25 * pole),
+        (-half / 2.0, 0.25 * pole),
+        (-half, 0.25 * pole),
+        (-half, -0.25 * pole),
+    ]);
+    let output = super::super::nary::overlay_all(
+        &[&source, &band],
+        TopologyDomain::Geographic(frame),
+        OverlayOp::Intersection,
+        Strictness::Strict,
+    )
+    .unwrap_or_else(|error| panic!("Native frame {frame:?}: {error}"));
+    for (point, expected) in [
+        ((0.0, -0.0625 * pole), Loc::Interior),
+        ((0.0, 0.125 * pole), Loc::Interior),
+        ((half / 2.0, 0.0), Loc::Exterior),
+        ((0.0, 0.5 * pole), Loc::Exterior),
+        ((half, 0.1875 * pole), Loc::Interior),
+        ((-half, 0.1875 * pole), Loc::Interior),
+    ] {
+        assert_eq!(
+            exact_location_in_frame(&output, Point::new_raw_xy(point.0, point.1), frame),
+            expected,
+            "frame={frame:?}, point={point:?}"
+        );
+    }
 
-        let cap_latitude = -0.0625 * pole;
-        let cap = polygon(&[
-            (-half, cap_latitude),
-            (-half / 2.0, cap_latitude),
-            (0.0, cap_latitude),
-            (half / 2.0, cap_latitude),
-            (half, cap_latitude),
-            (-half, cap_latitude),
-        ]);
-        let connector_half = half / 18.0;
-        let connector = polygon(&[
-            (-connector_half, -0.25 * pole),
-            (connector_half, -0.25 * pole),
-            (connector_half, 0.125 * pole),
-            (-connector_half, 0.125 * pole),
-            (-connector_half, -0.25 * pole),
-        ]);
-        let cap_output = super::super::nary::overlay_all(
-            &[&cap, &connector],
-            TopologyDomain::Geographic(frame),
-            OverlayOp::Union,
-            Strictness::Strict,
-        )
-        .unwrap_or_else(|error| panic!("Native pole frame {frame:?}: {error}"));
-        assert_native_pole_path(&cap_output, frame, crate::geographic::ChartPole::South);
-        for (point, expected) in [
-            ((0.0, -0.5 * pole), Loc::Interior),
-            ((0.0, 0.0), Loc::Interior),
-            ((half / 4.0, 0.0), Loc::Exterior),
-            ((0.0, 0.5 * pole), Loc::Exterior),
-        ] {
-            assert_eq!(
-                exact_location_in_frame(&cap_output, Point::new_raw_xy(point.0, point.1), frame),
-                expected,
-                "frame={frame:?}, point={point:?}"
-            );
-        }
+    let cap_latitude = -0.0625 * pole;
+    let cap = polygon(&[
+        (-half, cap_latitude),
+        (-half / 2.0, cap_latitude),
+        (0.0, cap_latitude),
+        (half / 2.0, cap_latitude),
+        (half, cap_latitude),
+        (-half, cap_latitude),
+    ]);
+    let connector_half = half / 18.0;
+    let connector = polygon(&[
+        (-connector_half, -0.25 * pole),
+        (connector_half, -0.25 * pole),
+        (connector_half, 0.125 * pole),
+        (-connector_half, 0.125 * pole),
+        (-connector_half, -0.25 * pole),
+    ]);
+    let cap_output = super::super::nary::overlay_all(
+        &[&cap, &connector],
+        TopologyDomain::Geographic(frame),
+        OverlayOp::Union,
+        Strictness::Strict,
+    )
+    .unwrap_or_else(|error| panic!("Native pole frame {frame:?}: {error}"));
+    assert_native_pole_path(&cap_output, frame, crate::geographic::ChartPole::South);
+    for (point, expected) in [
+        ((0.0, -0.5 * pole), Loc::Interior),
+        ((0.0, 0.0), Loc::Interior),
+        ((half / 4.0, 0.0), Loc::Exterior),
+        ((0.0, 0.5 * pole), Loc::Exterior),
+    ] {
+        assert_eq!(
+            exact_location_in_frame(&cap_output, Point::new_raw_xy(point.0, point.1), frame),
+            expected,
+            "frame={frame:?}, point={point:?}"
+        );
     }
 }
 

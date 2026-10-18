@@ -223,35 +223,57 @@ fn assert_target_cap_certificate(target: Resolution, north: u64, south: u64) {
     );
 }
 
-/// Give each target its own test while sharing its cap across all certificate checks.
-macro_rules! target_cap_cases {
-    ($($name:ident: $resolution:ident => ($north:expr, $south:expr)),* $(,)?) => {
-        $(
-            #[test]
-            fn $name() {
-                assert_target_cap_certificate(Resolution::$resolution, $north, $south);
-            }
-        )*
-    };
-}
-
-target_cap_cases! {
-    target_zero_cap_certificate: Zero => (0x0800_1FFF_FFFF_FFFF, 0x080F_3FFF_FFFF_FFFF),
-    target_one_cap_certificate: One => (0x0810_33FF_FFFF_FFFF, 0x081F_2BFF_FFFF_FFFF),
-    target_two_cap_certificate: Two => (0x0820_327F_FFFF_FFFF, 0x082F_297F_FFFF_FFFF),
-    target_three_cap_certificate: Three => (0x0830_326F_FFFF_FFFF, 0x083F_293F_FFFF_FFFF),
-    target_four_cap_certificate: Four => (0x0840_3263_FFFF_FFFF, 0x084F_2939_FFFF_FFFF),
-    target_five_cap_certificate: Five => (0x0850_3262_3FFF_FFFF, 0x085F_2938_3FFF_FFFF),
-    target_six_cap_certificate: Six => (0x0860_3262_37FF_FFFF, 0x086F_2938_0FFF_FFFF),
-    target_seven_cap_certificate: Seven => (0x0870_3262_33FF_FFFF, 0x087F_2938_0EFF_FFFF),
-    target_eight_cap_certificate: Eight => (0x0880_3262_33BF_FFFF, 0x088F_2938_0E1F_FFFF),
-    target_nine_cap_certificate: Nine => (0x0890_3262_33AB_FFFF, 0x089F_2938_0E0F_FFFF),
-    target_ten_cap_certificate: Ten => (0x08A0_3262_33AB_7FFF, 0x08AF_2938_0E0D_7FFF),
-    target_eleven_cap_certificate: Eleven => (0x08B0_3262_33AB_0FFF, 0x08BF_2938_0E0D_0FFF),
-    target_twelve_cap_certificate: Twelve => (0x08C0_3262_33AB_03FF, 0x08CF_2938_0E0D_0DFF),
-    target_thirteen_cap_certificate: Thirteen => (0x08D0_3262_33AB_03BF, 0x08DF_2938_0E0D_0CFF),
-    target_fourteen_cap_certificate: Fourteen => (0x08E0_3262_33AB_039F, 0x08EF_2938_0E0D_0CC7),
-    target_fifteen_cap_certificate: Fifteen => (0x08F0_3262_33AB_0399, 0x08FF_2938_0E0D_0CC4),
+#[rstest::rstest]
+#[case::target_zero_cap_certificate(Resolution::Zero, 0x0800_1FFF_FFFF_FFFF, 0x080F_3FFF_FFFF_FFFF)]
+#[case::target_one_cap_certificate(Resolution::One, 0x0810_33FF_FFFF_FFFF, 0x081F_2BFF_FFFF_FFFF)]
+#[case::target_two_cap_certificate(Resolution::Two, 0x0820_327F_FFFF_FFFF, 0x082F_297F_FFFF_FFFF)]
+#[case::target_three_cap_certificate(
+    Resolution::Three,
+    0x0830_326F_FFFF_FFFF,
+    0x083F_293F_FFFF_FFFF
+)]
+#[case::target_four_cap_certificate(Resolution::Four, 0x0840_3263_FFFF_FFFF, 0x084F_2939_FFFF_FFFF)]
+#[case::target_five_cap_certificate(Resolution::Five, 0x0850_3262_3FFF_FFFF, 0x085F_2938_3FFF_FFFF)]
+#[case::target_six_cap_certificate(Resolution::Six, 0x0860_3262_37FF_FFFF, 0x086F_2938_0FFF_FFFF)]
+#[case::target_seven_cap_certificate(
+    Resolution::Seven,
+    0x0870_3262_33FF_FFFF,
+    0x087F_2938_0EFF_FFFF
+)]
+#[case::target_eight_cap_certificate(
+    Resolution::Eight,
+    0x0880_3262_33BF_FFFF,
+    0x088F_2938_0E1F_FFFF
+)]
+#[case::target_nine_cap_certificate(Resolution::Nine, 0x0890_3262_33AB_FFFF, 0x089F_2938_0E0F_FFFF)]
+#[case::target_ten_cap_certificate(Resolution::Ten, 0x08A0_3262_33AB_7FFF, 0x08AF_2938_0E0D_7FFF)]
+#[case::target_eleven_cap_certificate(
+    Resolution::Eleven,
+    0x08B0_3262_33AB_0FFF,
+    0x08BF_2938_0E0D_0FFF
+)]
+#[case::target_twelve_cap_certificate(
+    Resolution::Twelve,
+    0x08C0_3262_33AB_03FF,
+    0x08CF_2938_0E0D_0DFF
+)]
+#[case::target_thirteen_cap_certificate(
+    Resolution::Thirteen,
+    0x08D0_3262_33AB_03BF,
+    0x08DF_2938_0E0D_0CFF
+)]
+#[case::target_fourteen_cap_certificate(
+    Resolution::Fourteen,
+    0x08E0_3262_33AB_039F,
+    0x08EF_2938_0E0D_0CC7
+)]
+#[case::target_fifteen_cap_certificate(
+    Resolution::Fifteen,
+    0x08F0_3262_33AB_0399,
+    0x08FF_2938_0E0D_0CC4
+)]
+fn target_cap_certificate(#[case] resolution: Resolution, #[case] north: u64, #[case] south: u64) {
+    assert_target_cap_certificate(resolution, north, south);
 }
 
 #[test]
@@ -324,13 +346,21 @@ fn cap_halfwidth_uses_the_correlated_upper_endpoint() {
     );
 }
 
-#[test]
-fn ideal_face_crossing_stays_strict_at_the_pinned_profile_depths() {
-    for (depth, target) in [(0, 1), (0, 2), (1, 3), (4, 5), (4, 10), (0, 15), (14, 15)] {
-        let target = Resolution::try_from(target).expect("stored H3 resolution");
-        let depth = Resolution::try_from(depth).expect("stored H3 resolution");
-        let ratio = certified_ideal_face_ratio(target, depth)
-            .expect("the stored finite profile proves fewer than three face-family crossings");
-        assert!(ratio.hi < 1.0, "target {target:?}, depth {depth:?}");
-    }
+#[rstest::rstest]
+#[case::depth_0(0, 1)]
+#[case::depth_0_439a0698(0, 2)]
+#[case::depth_1(1, 3)]
+#[case::depth_4(4, 5)]
+#[case::depth_4_ad390e6f(4, 10)]
+#[case::depth_0_2d8645b5(0, 15)]
+#[case::depth_14(14, 15)]
+fn ideal_face_crossing_stays_strict_at_the_pinned_profile_depths(
+    #[case] depth: u8,
+    #[case] target: u8,
+) {
+    let target = Resolution::try_from(target).expect("stored H3 resolution");
+    let depth = Resolution::try_from(depth).expect("stored H3 resolution");
+    let ratio = certified_ideal_face_ratio(target, depth)
+        .expect("the stored finite profile proves fewer than three face-family crossings");
+    assert!(ratio.hi < 1.0, "target {target:?}, depth {depth:?}");
 }

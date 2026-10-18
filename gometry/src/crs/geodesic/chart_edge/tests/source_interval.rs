@@ -106,79 +106,104 @@ fn retained_source_connection_preserves_relative_lift_and_public_half_turn_polic
     );
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn source_sheet_publication_uses_rust_admitted_frame_periods_and_branches() {
-    let grad_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
-    let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
-    let west_radian = GeographicFrame::try_new_with_orientation(
-        radian_unit,
-        radian_unit,
-        0.0,
-        GeographicAxisOrientation::from_axis_directions(false, true),
-    )
-    .unwrap();
-    let south_grad = GeographicFrame::try_new_with_orientation(
-        grad_unit,
-        grad_unit,
-        0.0,
-        GeographicAxisOrientation::from_axis_directions(true, false),
-    )
-    .unwrap();
-    let state = crate::crs::runtime_state_snapshot().unwrap();
-    let proj_radian = geographic_metric_frame_at(
-        "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
-        &state,
-    )
-    .unwrap();
-    let proj_grad = geographic_metric_frame_at("EPSG:4807", &state).unwrap();
-    let cases = [
-        ("degrees", degrees(), 360.0, 10.0, 2.0),
-        ("radians", radians(), std::f64::consts::TAU, 0.0, 0.5),
-        (
-            "PROJ radian CRS",
-            proj_radian,
-            std::f64::consts::TAU,
+#[case::degrees("degrees", degrees(), 360.0, 10.0, 2.0)]
+#[case::radians("radians", radians(), std::f64::consts::TAU, 0.0, 0.5)]
+#[case::proj_radian_crs(
+    "PROJ radian CRS",
+    {
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        geographic_metric_frame_at(
+    "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
+    &state,
+)
+.unwrap()
+    },
+    std::f64::consts::TAU,
+    0.0,
+    0.5
+)]
+#[case::epsg_4807_grad_crs(
+    "EPSG:4807 grad CRS",
+    {
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        geographic_metric_frame_at("EPSG:4807", &state).unwrap()
+    },
+    400.0,
+    5.0,
+    2.0
+)]
+#[case::west_radians(
+    "west radians",
+    {
+        let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new_with_orientation(
+            radian_unit,
+            radian_unit,
             0.0,
-            0.5,
-        ),
-        ("EPSG:4807 grad CRS", proj_grad, 400.0, 5.0, 2.0),
-        ("west radians", west_radian, std::f64::consts::TAU, 0.0, 0.5),
-        ("south grads", south_grad, 400.0, 5.0, 2.0),
-    ];
-    for (name, frame, expected_period, base, step) in cases {
-        let axis = frame.longitude();
+            GeographicAxisOrientation::from_axis_directions(false, true),
+        )
+        .unwrap()
+    },
+    std::f64::consts::TAU,
+    0.0,
+    0.5
+)]
+#[case::south_grads(
+    "south grads",
+    {
+        let grad_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        GeographicFrame::try_new_with_orientation(
+            grad_unit,
+            grad_unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap()
+    },
+    400.0,
+    5.0,
+    2.0
+)]
+fn source_sheet_publication_uses_rust_admitted_frame_periods_and_branches(
+    #[case] name: &str,
+    #[case] frame: GeographicFrame,
+    #[case] expected_period: f64,
+    #[case] base: f64,
+    #[case] step: f64,
+) {
+    let axis = frame.longitude();
+    assert_eq!(
+        axis.period().to_bits(),
+        expected_period.to_bits(),
+        "{name} frame period"
+    );
+    for turns in [-2.0, -1.0, 1.0, 2.0] {
+        let source_start = base + turns * axis.period();
+        let source_end = source_start + step;
+        let start = Point::new_raw_xy(source_start, 0.0);
+        let end = Point::new_raw_xy(source_end, 0.0);
+        let admitted = axis.chart_connection(source_start, source_end).unwrap();
+        let edge = ChartEdge::new(start, end, frame).unwrap();
         assert_eq!(
-            axis.period().to_bits(),
-            expected_period.to_bits(),
-            "{name} frame period"
+            edge.retained_longitude().endpoints(),
+            &[admitted.start, admitted.end],
+            "{name}, turns={turns}: admitted canonical endpoints"
         );
-        for turns in [-2.0, -1.0, 1.0, 2.0] {
-            let source_start = base + turns * axis.period();
-            let source_end = source_start + step;
-            let start = Point::new_raw_xy(source_start, 0.0);
-            let end = Point::new_raw_xy(source_end, 0.0);
-            let admitted = axis.chart_connection(source_start, source_end).unwrap();
-            let edge = ChartEdge::new(start, end, frame).unwrap();
-            assert_eq!(
-                edge.retained_longitude().endpoints(),
-                &[admitted.start, admitted.end],
-                "{name}, turns={turns}: admitted canonical endpoints"
-            );
-            assert_eq!(
-                edge.retained_longitude().periods(),
-                i64::from(admitted.source_lift),
-                "{name}, turns={turns}: admitted relative lift"
-            );
-            let canonical = edge.chart_position(0.5).unwrap();
-            let published = edge.source_sheet_point(start, end, 0.5, canonical).unwrap();
-            let expected = source_start + step / 2.0;
-            assert_eq!(
-                published.x.to_bits(),
-                expected.to_bits(),
-                "{name}, turns={turns}"
-            );
-        }
+        assert_eq!(
+            edge.retained_longitude().periods(),
+            i64::from(admitted.source_lift),
+            "{name}, turns={turns}: admitted relative lift"
+        );
+        let canonical = edge.chart_position(0.5).unwrap();
+        let published = edge.source_sheet_point(start, end, 0.5, canonical).unwrap();
+        let expected = source_start + step / 2.0;
+        assert_eq!(
+            published.x.to_bits(),
+            expected.to_bits(),
+            "{name}, turns={turns}"
+        );
     }
 }
 
@@ -211,35 +236,35 @@ fn source_interval_readback_accepts_correctly_rounded_endpoint_differences() {
     );
 }
 
-#[test]
-fn source_interval_readback_accepts_monotone_latitude_quantization_with_longitude_motion() {
-    for (direction, end_latitude) in [
-        ("increasing latitude", 10.0_f64.next_up()),
-        ("decreasing latitude", 10.0_f64.next_down()),
-    ] {
-        let start = Point::new_raw_xy(0.0, 10.0);
-        let end = Point::new_raw_xy(10.0, end_latitude);
-        let edge = ChartEdge::new(start, end, degrees()).unwrap();
-        let from = 0.125;
-        let to = 0.25;
-        let from_point = edge
-            .source_sheet_point(start, end, from, edge.chart_position(from).unwrap())
-            .unwrap();
-        let to_point = edge
-            .source_sheet_point(start, end, to, edge.chart_position(to).unwrap())
-            .unwrap();
+#[rstest::rstest]
+#[case::increasing_latitude("increasing latitude", 10.0_f64.next_up())]
+#[case::decreasing_latitude("decreasing latitude", 10.0_f64.next_down())]
+fn source_interval_readback_accepts_monotone_latitude_quantization_with_longitude_motion(
+    #[case] direction: &'static str,
+    #[case] end_latitude: f64,
+) {
+    let start = Point::new_raw_xy(0.0, 10.0);
+    let end = Point::new_raw_xy(10.0, end_latitude);
+    let edge = ChartEdge::new(start, end, degrees()).unwrap();
+    let from = 0.125;
+    let to = 0.25;
+    let from_point = edge
+        .source_sheet_point(start, end, from, edge.chart_position(from).unwrap())
+        .unwrap();
+    let to_point = edge
+        .source_sheet_point(start, end, to, edge.chart_position(to).unwrap())
+        .unwrap();
 
-        assert_eq!(
-            (from_point.x, from_point.y, to_point.x, to_point.y),
-            (1.25, 10.0, 2.5, 10.0),
-            "{direction}"
-        );
-        assert!(
-            edge.source_interval_reads_correctly(from, to, from_point, to_point)
-                .unwrap(),
-            "{direction}: exact latitude movement may round monotonically to equality"
-        );
-    }
+    assert_eq!(
+        (from_point.x, from_point.y, to_point.x, to_point.y),
+        (1.25, 10.0, 2.5, 10.0),
+        "{direction}"
+    );
+    assert!(
+        edge.source_interval_reads_correctly(from, to, from_point, to_point)
+            .unwrap(),
+        "{direction}: exact latitude movement may round monotonically to equality"
+    );
 }
 
 #[test]

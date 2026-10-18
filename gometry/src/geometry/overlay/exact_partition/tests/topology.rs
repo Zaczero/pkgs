@@ -162,69 +162,62 @@ fn hole_hosts_scale_with_the_hole_count() {
 
 /// A leftward ray includes a lower endpoint, excludes an upper endpoint, and
 /// never crosses a horizontal span. The empty-query check uses nonempty edges.
-#[test]
-fn rays_handle_empty_queries_and_query_height_boundaries() {
-    for (segments, query_point, contact) in [
-        (
-            vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)],
-            XY::new(4.0, 0.0),
-            None,
-        ),
-        (
-            vec![
-                seg(0.0, 2.0, 2.0, 0.0),
-                seg(2.0, 0.0, 3.0, 2.0),
-                seg(4.0, 0.0, 4.0, 0.0),
-            ],
-            XY::new(4.0, 0.0),
-            Some((XY::new(2.0, 0.0), XY::new(3.0, 2.0))),
-        ),
-        (
-            vec![seg(0.0, 0.0, 2.0, 2.0), seg(4.0, 2.0, 4.0, 2.0)],
-            XY::new(4.0, 2.0),
-            None,
-        ),
-    ] {
-        let case = run(&segments);
-        let partition = case.partition();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let query = partition.stored_node(query_point).unwrap();
-        let expected = contact.map(|(start, end)| {
-            let (start, end) = (
-                partition.stored_node(start).unwrap(),
-                partition.stored_node(end).unwrap(),
-            );
-            partition
-                .spans
-                .iter()
-                .position(|span| span.start == start && span.end == end)
-                .unwrap()
-        });
-        let ray_edge = |index: usize| {
-            let span = partition
-                .spans
-                .get(index)
-                .expect("ray edge index comes from the partition spans");
-            [span.start.0, span.end.0]
-        };
-        assert!(
-            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[])
-                .unwrap()
-                .is_empty()
+#[rstest::rstest]
+#[case::vec_seg_0_0_0_0_2_0_0_0_seg_4_0_0_0_4_0_0_0(vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)], XY::new(4.0, 0.0), None)]
+#[case::vec_seg_0_0_2_0_2_0_0_0_seg_2_0_0_0_3_0_2_0_seg_4_0_0_0_4_0_0_0(
+    vec![
+        seg(0.0, 2.0, 2.0, 0.0),
+        seg(2.0, 0.0, 3.0, 2.0),
+        seg(4.0, 0.0, 4.0, 0.0),
+    ],
+    XY::new(4.0, 0.0),
+    Some((XY::new(2.0, 0.0), XY::new(3.0, 2.0)))
+)]
+#[case::vec_seg_0_0_0_0_2_0_2_0_seg_4_0_2_0_4_0_2_0(vec![seg(0.0, 0.0, 2.0, 2.0), seg(4.0, 2.0, 4.0, 2.0)], XY::new(4.0, 2.0), None)]
+fn rays_handle_empty_queries_and_query_height_boundaries(
+    #[case] segments: Vec<Segment>,
+    #[case] query_point: XY,
+    #[case] contact: Option<(XY, XY)>,
+) {
+    let case = run(&segments);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let query = partition.stored_node(query_point).unwrap();
+    let expected = contact.map(|(start, end)| {
+        let (start, end) = (
+            partition.stored_node(start).unwrap(),
+            partition.stored_node(end).unwrap(),
         );
-        assert_eq!(
-            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[
-                query.0
-            ],)
-            .unwrap(),
-            [expected]
-        );
-        let faces = partition.global_faces(&topology, &edges).unwrap();
-        assert_eq!(
-            faces.component_hosts[topology.component_of[query.0 as usize] as usize],
-            0
-        );
-    }
+        partition
+            .spans
+            .iter()
+            .position(|span| span.start == start && span.end == end)
+            .unwrap()
+    });
+    let ray_edge = |index: usize| {
+        let span = partition
+            .spans
+            .get(index)
+            .expect("ray edge index comes from the partition spans");
+        [span.start.0, span.end.0]
+    };
+    assert!(
+        shoot_left(&partition.points, partition.spans.len(), ray_edge, &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        shoot_left(&partition.points, partition.spans.len(), ray_edge, &[
+            query.0
+        ],)
+        .unwrap(),
+        [expected]
+    );
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    assert_eq!(
+        faces.component_hosts[topology.component_of[query.0 as usize] as usize],
+        0
+    );
 }
 
 #[test]
@@ -518,44 +511,41 @@ fn selected_boundaries_split_a_hole_touching_its_shell() {
     );
 }
 
-#[test]
-fn selected_polygon_walks_classify_constructed_extrema() {
-    for sources in [
-        [
-            seg(-2.0, 0.0, 2.0, 0.0),
-            seg(-1.0, -2.0, 1.0, 4.0),
-            seg(-1.0, 2.0, 2.0, -1.0),
-        ],
-        [
-            seg(-4.0, 4.0, 4.0, -4.0),
-            seg(-4.0, 9.0, 4.0, -7.0),
-            seg(-4.0, 11.0, 4.0, -13.0),
-        ],
-    ] {
-        let case = run(&sources);
-        let partition = case.partition();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let faces = partition.global_faces(&topology, &edges).unwrap();
-        let occupied: Vec<_> = (0..faces.count).map(|face| face != 0).collect();
-        let plan = faces
-            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
-            .unwrap();
-        let polygons = plan.polygon_walks(&partition, &topology).unwrap();
-        assert_eq!(polygons.len(), 1);
-        assert_eq!(polygons[0].len(), 1);
-        assert_eq!(plan.walks[polygons[0][0]].len(), 3);
-        for chord in &plan.walks[polygons[0][0]] {
-            let node = NodeId(topology.owners[plan.source_darts[chord.sources.start] as usize]);
-            assert!(!partition.is_stored(node));
-        }
-        assert_eq!(
-            certify_plan(&plan, &partition, &topology, &edges)
-                .unwrap()
-                .1
-                .len(),
-            3
-        );
+#[rstest::rstest]
+#[case::seg_2_0_0_0_2_0_0_0_seg_1_0_2_0_1_0_4_0_seg_1_0_2_0_2_0_1_0([
+    seg(-2.0, 0.0, 2.0, 0.0),
+    seg(-1.0, -2.0, 1.0, 4.0),
+    seg(-1.0, 2.0, 2.0, -1.0),
+])]
+#[case::seg_4_0_4_0_4_0_4_0_seg_4_0_9_0_4_0_7_0_seg_4_0_11_0_4_0_13_0([
+    seg(-4.0, 4.0, 4.0, -4.0),
+    seg(-4.0, 9.0, 4.0, -7.0),
+    seg(-4.0, 11.0, 4.0, -13.0),
+])]
+fn selected_polygon_walks_classify_constructed_extrema(#[case] sources: [Segment; 3]) {
+    let case = run(&sources);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    let occupied: Vec<_> = (0..faces.count).map(|face| face != 0).collect();
+    let plan = faces
+        .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
+        .unwrap();
+    let polygons = plan.polygon_walks(&partition, &topology).unwrap();
+    assert_eq!(polygons.len(), 1);
+    assert_eq!(polygons[0].len(), 1);
+    assert_eq!(plan.walks[polygons[0][0]].len(), 3);
+    for chord in &plan.walks[polygons[0][0]] {
+        let node = NodeId(topology.owners[plan.source_darts[chord.sources.start] as usize]);
+        assert!(!partition.is_stored(node));
     }
+    assert_eq!(
+        certify_plan(&plan, &partition, &topology, &edges)
+            .unwrap()
+            .1
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -646,61 +636,61 @@ fn certified_line_serialization_keeps_bends_and_protected_vertices() {
     ]);
 }
 
-#[test]
-fn certified_line_serialization_closes_cycles_and_stops_at_junctions() {
-    for spur in [false, true] {
-        let mut segments = vec![
-            seg(0.0, 0.0, 4.0, 0.0),
-            seg(4.0, 4.0, 4.0, 0.0),
-            seg(4.0, 4.0, 0.0, 4.0),
-            seg(0.0, 0.0, 0.0, 4.0),
-        ];
-        if spur {
-            segments.push(seg(0.0, 0.0, -2.0, 0.0));
-        }
-        let case = run(&segments);
-        let partition = case.partition();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let faces = partition.global_faces(&topology, &edges).unwrap();
-        let cells = ArealCells {
-            faces: vec![false; faces.count as usize],
-            spans: vec![true; partition.spans.len()],
-            nodes: vec![true; partition.node_count()],
-        };
-        let plan = cells
-            .emission_plan(&partition, &topology, &edges, &faces)
-            .unwrap();
-        let (points, lines, polygons) = plan
-            .emit_xy_parts(&partition, &topology, &edges, "test")
-            .unwrap();
-        assert!(points.is_empty());
-        assert!(polygons.is_empty());
-        assert_eq!(lines.len(), if spur { 2 } else { 1 });
-        let cycle = lines.iter().find(|line| line.xs().len() == 5).unwrap();
-        let coordinates: Vec<_> = cycle
-            .xs()
-            .iter()
-            .copied()
-            .zip(cycle.ys().iter().copied())
-            .collect();
-        assert_eq!(coordinates.first(), coordinates.last());
-        let mut corners = coordinates[..4].to_vec();
-        let origin = corners
-            .iter()
-            .position(|&point| point == (0.0, 0.0))
-            .unwrap();
-        corners.rotate_left(origin);
-        if corners[1] == (4.0, 0.0) {
-            corners[1..].reverse();
-        }
-        assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 4.0), (4.0, 0.0)]);
-        if spur {
-            let line = lines.iter().find(|line| line.xs().len() == 2).unwrap();
-            let mut xs = line.xs().to_vec();
-            xs.sort_unstable_by(f64::total_cmp);
-            assert_eq!(xs, [-2.0, 0.0]);
-            assert_eq!(line.ys(), [0.0, 0.0]);
-        }
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn certified_line_serialization_closes_cycles_and_stops_at_junctions(#[case] spur: bool) {
+    let mut segments = vec![
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(4.0, 4.0, 4.0, 0.0),
+        seg(4.0, 4.0, 0.0, 4.0),
+        seg(0.0, 0.0, 0.0, 4.0),
+    ];
+    if spur {
+        segments.push(seg(0.0, 0.0, -2.0, 0.0));
+    }
+    let case = run(&segments);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    let cells = ArealCells {
+        faces: vec![false; faces.count as usize],
+        spans: vec![true; partition.spans.len()],
+        nodes: vec![true; partition.node_count()],
+    };
+    let plan = cells
+        .emission_plan(&partition, &topology, &edges, &faces)
+        .unwrap();
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(&partition, &topology, &edges, "test")
+        .unwrap();
+    assert!(points.is_empty());
+    assert!(polygons.is_empty());
+    assert_eq!(lines.len(), if spur { 2 } else { 1 });
+    let cycle = lines.iter().find(|line| line.xs().len() == 5).unwrap();
+    let coordinates: Vec<_> = cycle
+        .xs()
+        .iter()
+        .copied()
+        .zip(cycle.ys().iter().copied())
+        .collect();
+    assert_eq!(coordinates.first(), coordinates.last());
+    let mut corners = coordinates[..4].to_vec();
+    let origin = corners
+        .iter()
+        .position(|&point| point == (0.0, 0.0))
+        .unwrap();
+    corners.rotate_left(origin);
+    if corners[1] == (4.0, 0.0) {
+        corners[1..].reverse();
+    }
+    assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 4.0), (4.0, 0.0)]);
+    if spur {
+        let line = lines.iter().find(|line| line.xs().len() == 2).unwrap();
+        let mut xs = line.xs().to_vec();
+        xs.sort_unstable_by(f64::total_cmp);
+        assert_eq!(xs, [-2.0, 0.0]);
+        assert_eq!(line.ys(), [0.0, 0.0]);
     }
 }
 

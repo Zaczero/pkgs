@@ -195,44 +195,45 @@ fn polygonize_keeps_collinear_source_nodes_and_zero_ordinates() {
     }
 }
 
-
-
-#[test]
-fn reciprocal_delaunay_legalizes_with_the_source_incircle() {
-    for exponent in [77, 159, 200, 300] {
-        let large = 10.0_f64.powi(exponent);
-        let tiny = 10.0_f64.powi(-exponent);
-        for swap_axes in [false, true] {
-            let point = |x, y| {
-                if swap_axes {
-                    Point::new_raw_xy(y, x)
-                } else {
-                    Point::new_raw_xy(x, y)
-                }
-            };
-            let points = [
-                point(-large, 0.0),
-                point(0.0, -tiny),
-                point(large, 0.0),
-                point(0.0, 2.0 * tiny),
-            ];
-            let triangulation = super::delaunay::delaunay_triangulation(&points).unwrap();
-            let has_edge = |left, right| {
-                triangulation
-                    .triangles
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .any(|triangle| {
-                        triangle.iter().zip(triangle.iter().cycle().skip(1)).any(
-                            |(&start, &end)| {
-                                (start == left && end == right) || (start == right && end == left)
-                            },
-                        )
-                    })
-            };
-            assert!(has_edge(1, 3), "exp={exponent} swap_axes={swap_axes}");
-            assert!(!has_edge(0, 2), "exp={exponent} swap_axes={swap_axes}");
-        }
+#[rstest::rstest]
+#[case::exponent_77(77)]
+#[case::exponent_159(159)]
+#[case::exponent_200(200)]
+#[case::exponent_300(300)]
+fn reciprocal_delaunay_legalizes_with_the_source_incircle(#[case] exponent: i32) {
+    let large = 10.0_f64.powi(exponent);
+    let tiny = 10.0_f64.powi(exponent.wrapping_neg());
+    for swap_axes in [false, true] {
+        let point = |x, y| {
+            if swap_axes {
+                Point::new_raw_xy(y, x)
+            } else {
+                Point::new_raw_xy(x, y)
+            }
+        };
+        let points = [
+            point(-large, 0.0),
+            point(0.0, -tiny),
+            point(large, 0.0),
+            point(0.0, 2.0 * tiny),
+        ];
+        let triangulation = super::delaunay::delaunay_triangulation(&points).unwrap();
+        let has_edge = |left, right| {
+            triangulation
+                .triangles
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .any(|triangle| {
+                    triangle
+                        .iter()
+                        .zip(triangle.iter().cycle().skip(1))
+                        .any(|(&start, &end)| {
+                            (start == left && end == right) || (start == right && end == left)
+                        })
+                })
+        };
+        assert!(has_edge(1, 3), "exp={exponent} swap_axes={swap_axes}");
+        assert!(!has_edge(0, 2), "exp={exponent} swap_axes={swap_axes}");
     }
 }

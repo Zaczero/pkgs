@@ -1,17 +1,19 @@
-#[test]
-fn chart_edge_colatitude_uses_native_subtraction_before_conversion() {
-    for frame in [degrees(), grads(), radians(), south_axis_degrees()] {
-        let latitude = frame.pole().next_down();
-        let edge = ChartEdge::new(
-            Point::new_raw_xy(0.0, latitude),
-            Point::new_raw_xy(0.25, latitude),
-            frame,
-        )
-        .unwrap();
-        let expected = (frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit();
-        let actual = (edge.chart_pole - edge.start_latitude.abs()) * edge.latitude_unit.abs();
-        assert_eq!(actual.to_bits(), expected.to_bits());
-    }
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::grads(grads())]
+#[case::radians(radians())]
+#[case::south_axis_degrees(south_axis_degrees())]
+fn chart_edge_colatitude_uses_native_subtraction_before_conversion(#[case] frame: GeographicFrame) {
+    let latitude = frame.pole().next_down();
+    let edge = ChartEdge::new(
+        Point::new_raw_xy(0.0, latitude),
+        Point::new_raw_xy(0.25, latitude),
+        frame,
+    )
+    .unwrap();
+    let expected = (frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit();
+    let actual = (edge.chart_pole - edge.start_latitude.abs()) * edge.latitude_unit.abs();
+    assert_eq!(actual.to_bits(), expected.to_bits());
 }
 
 #[test]
@@ -41,57 +43,62 @@ fn reversed_native_latitude_uses_the_same_physical_meridian_measure() {
     assert!((edge.length(&geodesic).unwrap() - expected).abs() <= 1.0e-8);
 }
 
-#[test]
-fn chart_edge_rejects_exact_half_periods_with_an_actionable_geometry_error() {
-    for frame in [degrees(), grads(), radians()] {
-        let error = ChartEdge::new(
-            Point::new_raw_xy(0.0, 10.0),
-            Point::new_raw_xy(frame.longitude().half_period(), 10.0),
-            frame,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(
-                    GeometryErrorKind::Parameter { message, .. }
-                ) if message.as_ref() == "edge spans exactly half the longitude period; add a vertex"
-            ),
-            "{error}"
-        );
-    }
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::grads(grads())]
+#[case::radians(radians())]
+fn chart_edge_rejects_exact_half_periods_with_an_actionable_geometry_error(
+    #[case] frame: GeographicFrame,
+) {
+    let error = ChartEdge::new(
+        Point::new_raw_xy(0.0, 10.0),
+        Point::new_raw_xy(frame.longitude().half_period(), 10.0),
+        frame,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(
+                GeometryErrorKind::Parameter { message, .. }
+            ) if message.as_ref() == "edge spans exactly half the longitude period; add a vertex"
+        ),
+        "{error}"
+    );
 }
 
-#[test]
-fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_period_spellings() {
-    let frames = [degrees(), grads(), radians()];
-    for frame in frames {
-        let axis = frame.longitude();
-        let half = axis.half_period();
-        let period = axis.period();
-        for (from, to) in [
-            (0.0, half.next_down()),
-            (0.0, half),
-            (0.0, half.next_up()),
-            (0.0, -half.next_down()),
-            (0.0, -half),
-            (0.0, -half.next_up()),
-            (-period, period),
-            (2.0 * period, 3.0 * period),
-            (-3.0 * period, -2.0 * period),
-            (half.next_down(), -half.next_down()),
-            (-half.next_down(), half.next_down()),
-            (half.next_up(), -half.next_up()),
-            (-half.next_up(), half.next_up()),
-            (period * 5.25, period * -4.125),
-            (period * -5.25, period * 4.125),
-            (period * 0.125, period * 5.375),
-            (period * -0.125, period * -5.375),
-            (period * 0.375, period * -5.125),
-            (period * -0.375, period * 5.125),
-        ] {
-            assert_topology_delta(frame, from, to);
-        }
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::grads(grads())]
+#[case::radians(radians())]
+fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_period_spellings(
+    #[case] frame: GeographicFrame,
+) {
+    let axis = frame.longitude();
+    let half = axis.half_period();
+    let period = axis.period();
+    for (from, to) in [
+        (0.0, half.next_down()),
+        (0.0, half),
+        (0.0, half.next_up()),
+        (0.0, -half.next_down()),
+        (0.0, -half),
+        (0.0, -half.next_up()),
+        (-period, period),
+        (2.0 * period, 3.0 * period),
+        (-3.0 * period, -2.0 * period),
+        (half.next_down(), -half.next_down()),
+        (-half.next_down(), half.next_down()),
+        (half.next_up(), -half.next_up()),
+        (-half.next_up(), half.next_up()),
+        (period * 5.25, period * -4.125),
+        (period * -5.25, period * 4.125),
+        (period * 0.125, period * 5.375),
+        (period * -0.125, period * -5.375),
+        (period * 0.375, period * -5.125),
+        (period * -0.375, period * 5.125),
+    ] {
+        assert_topology_delta(frame, from, to);
     }
 }
 

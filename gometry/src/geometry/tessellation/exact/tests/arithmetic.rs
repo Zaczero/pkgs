@@ -176,22 +176,23 @@ fn long_division_reconstructs_the_dividend() {
     }
 }
 
-#[test]
-fn nearest_integer_dyadic_quotient_trims_aligned_words_and_rounds_ties_to_zero() {
+#[rstest::rstest]
+#[case::value_0_5(0.5, ExactDyadic::zero())]
+#[case::negative_value_0_5(-0.5, ExactDyadic::zero())]
+#[case::value_0_75(0.75, ExactDyadic::one())]
+#[case::negative_value_0_75(-0.75, ExactDyadic::one().neg())]
+fn nearest_integer_dyadic_quotient_trims_aligned_words_and_rounds_ties_to_zero(
+    #[case] value: f64,
+    #[case] expected: ExactDyadic,
+) {
     let divisor = ExactDyadic::from_f64(1.0);
-    for (value, expected) in [
-        (0.5, ExactDyadic::zero()),
-        (-0.5, ExactDyadic::zero()),
-        (0.75, ExactDyadic::one()),
-        (-0.75, ExactDyadic::one().neg()),
-    ] {
-        assert_eq!(
-            ExactDyadic::from_f64(value)
-                .nearest_integer_quotient_ties_to_zero(&divisor)
-                .unwrap(),
-            expected
-        );
-    }
+
+    assert_eq!(
+        ExactDyadic::from_f64(value)
+            .nearest_integer_quotient_ties_to_zero(&divisor)
+            .unwrap(),
+        expected
+    );
 }
 
 #[test]
@@ -346,7 +347,10 @@ fn incircle_cocircular_underflow_negative() {
 #[test]
 fn incircle_cocircular_squares_underflow_to_opposite_wrong_signs() {
     use crate::geometry::numerics::product::exact_power_of_two;
-    for scale in [3.0 * exact_power_of_two(-270), 13.0 * exact_power_of_two(-272)] {
+    for scale in [
+        3.0 * exact_power_of_two(-270),
+        13.0 * exact_power_of_two(-272),
+    ] {
         let [a, b, c, d] = [
             XY::new(0.0, 0.0),
             XY::new(scale, 0.0),
@@ -565,15 +569,15 @@ fn exact_signs_cover_full_binary64_range() {
     );
 }
 
-#[test]
-fn ratio_rounding_rejects_zero_denominators() {
-    for numerator in [ExactDyadic::zero(), ExactDyadic::one()] {
-        let error = round_ratio(&numerator, &ExactDyadic::zero()).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactRatioZeroDenominator)
-        ));
-    }
+#[rstest::rstest]
+#[case::exactdyadic_zero(ExactDyadic::zero())]
+#[case::exactdyadic_one(ExactDyadic::one())]
+fn ratio_rounding_rejects_zero_denominators(#[case] numerator: ExactDyadic) {
+    let error = round_ratio(&numerator, &ExactDyadic::zero()).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactRatioZeroDenominator)
+    ));
 }
 
 #[test]
@@ -845,31 +849,32 @@ fn exact_rational_quotient_rejects_zero_and_negative_squares() {
     ));
 }
 
-#[test]
-fn exact_dyadic_power_two_quotients_preserve_signs() {
-    for (numerator, divisor, expected) in [
-        (1.0, -1.0, -1.0),
-        (-1.0, 1.0, -1.0),
-        (-1.0, -1.0, 1.0),
-        (8.0, -1.0, -8.0),
-        (-8.0, 1.0, -8.0),
-        (-8.0, -1.0, 8.0),
-        (1.0, 8.0, 0.125),
-        (-1.0, 8.0, -0.125),
-        (1.0, -8.0, -0.125),
-        (-1.0, -8.0, 0.125),
-        (1.0, 0.125, 8.0),
-        (-1.0, -0.125, 8.0),
-    ] {
-        let actual = ExactDyadic::from_f64(numerator)
-            .try_exact_quotient(&ExactDyadic::from_f64(divisor))
-            .unwrap();
-        assert_eq!(
-            actual,
-            ExactDyadic::from_f64(expected),
-            "{numerator:?} / {divisor:?}"
-        );
-    }
+#[rstest::rstest]
+#[case::numerator_1_0(1.0, -1.0, -1.0)]
+#[case::negative_numerator_1_0(-1.0, 1.0, -1.0)]
+#[case::negative_numerator_1_0_12330c75(-1.0, -1.0, 1.0)]
+#[case::numerator_8_0(8.0, -1.0, -8.0)]
+#[case::negative_numerator_8_0(-8.0, 1.0, -8.0)]
+#[case::negative_numerator_8_0_40d79552(-8.0, -1.0, 8.0)]
+#[case::numerator_1_0_c8d7e2d7(1.0, 8.0, 0.125)]
+#[case::negative_numerator_1_0_ef217ccf(-1.0, 8.0, -0.125)]
+#[case::numerator_1_0_eb946231(1.0, -8.0, -0.125)]
+#[case::negative_numerator_1_0_a6b3a544(-1.0, -8.0, 0.125)]
+#[case::numerator_1_0_28974f2e(1.0, 0.125, 8.0)]
+#[case::negative_numerator_1_0_fbf0260b(-1.0, -0.125, 8.0)]
+fn exact_dyadic_power_two_quotients_preserve_signs(
+    #[case] numerator: f64,
+    #[case] divisor: f64,
+    #[case] expected: f64,
+) {
+    let actual = ExactDyadic::from_f64(numerator)
+        .try_exact_quotient(&ExactDyadic::from_f64(divisor))
+        .unwrap();
+    assert_eq!(
+        actual,
+        ExactDyadic::from_f64(expected),
+        "{numerator:?} / {divisor:?}"
+    );
 }
 
 #[test]
@@ -901,25 +906,24 @@ fn exact_dyadic_power_two_quotients_preserve_extreme_exponents() {
     );
 }
 
-#[test]
-fn certified_ratio_proposal_matches_complete_binary_search() {
-    let cases = [
-        (ExactDyadic::one(), ExactDyadic::from_f64(3.0)),
-        (
-            ExactDyadic::from_f64(f64::from_bits(1)),
-            ExactDyadic::from_f64(2.0),
-        ),
-        (ExactDyadic::from_f64(f64::MAX), ExactDyadic::from_f64(3.0)),
-        (ExactDyadic::from_f64(-1.0), ExactDyadic::from_f64(10.0)),
-    ];
-    for (numerator, denominator) in cases {
-        assert_eq!(
-            round_ratio(&numerator, &denominator).unwrap().to_bits(),
-            round_ratio_binary(&numerator, &denominator)
-                .unwrap()
-                .to_bits(),
-        );
-    }
+#[rstest::rstest]
+#[case::exactdyadic_one(ExactDyadic::one(), ExactDyadic::from_f64(3.0))]
+#[case::exactdyadic_from_f64_f64_from_bits_1(
+    ExactDyadic::from_f64(f64::from_bits(1)),
+    ExactDyadic::from_f64(2.0)
+)]
+#[case::exactdyadic_from_f64_f64_max(ExactDyadic::from_f64(f64::MAX), ExactDyadic::from_f64(3.0))]
+#[case::exactdyadic_from_f64_1_0(ExactDyadic::from_f64(-1.0), ExactDyadic::from_f64(10.0))]
+fn certified_ratio_proposal_matches_complete_binary_search(
+    #[case] numerator: ExactDyadic,
+    #[case] denominator: ExactDyadic,
+) {
+    assert_eq!(
+        round_ratio(&numerator, &denominator).unwrap().to_bits(),
+        round_ratio_binary(&numerator, &denominator)
+            .unwrap()
+            .to_bits(),
+    );
 }
 
 #[test]
@@ -1414,28 +1418,24 @@ fn ratio_rounding_matches_binary_reference_on_curated_bit_patterns() {
     }
 }
 
-#[test]
-fn ratio_intervals_contain_extreme_exact_values() {
-    let cases = [
-        (ExactDyadic::from_f64(f64::from_bits(1)), ExactDyadic::one()),
-        (ExactDyadic::from_f64(f64::MAX), ExactDyadic::one()),
-        (ExactDyadic::one(), ExactDyadic::from_f64(f64::MAX)),
-        (
-            ExactDyadic::from_parts(false, vec![1, u64::MAX, 3, 7, 1], -211),
-            ExactDyadic::from_f64(3.0),
-        ),
-        (
-            ExactDyadic::from_parts(true, vec![1, 0, 0, 0, u64::MAX], 900),
-            ExactDyadic::one(),
-        ),
-    ];
-    for (numerator, denominator) in cases {
-        verify_interval(
-            &numerator,
-            &denominator,
-            ratio_interval(&numerator, &denominator),
-        );
-    }
+#[rstest::rstest]
+#[case::exactdyadic_from_f64_f64_from_bits_1(
+    ExactDyadic::from_f64(f64::from_bits(1)),
+    ExactDyadic::one()
+)]
+#[case::exactdyadic_from_f64_f64_max(ExactDyadic::from_f64(f64::MAX), ExactDyadic::one())]
+#[case::exactdyadic_one(ExactDyadic::one(), ExactDyadic::from_f64(f64::MAX))]
+#[case::exactdyadic_from_parts_false_vec_1_u64_max_3_7_1_211(ExactDyadic::from_parts(false, vec![1, u64::MAX, 3, 7, 1], -211), ExactDyadic::from_f64(3.0))]
+#[case::exactdyadic_from_parts_true_vec_1_0_0_0_u64_max_900(ExactDyadic::from_parts(true, vec![1, 0, 0, 0, u64::MAX], 900), ExactDyadic::one())]
+fn ratio_intervals_contain_extreme_exact_values(
+    #[case] numerator: ExactDyadic,
+    #[case] denominator: ExactDyadic,
+) {
+    verify_interval(
+        &numerator,
+        &denominator,
+        ratio_interval(&numerator, &denominator),
+    );
 }
 
 #[test]

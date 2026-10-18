@@ -138,33 +138,32 @@ fn ordinary_l_shape_refinement_work_stays_bounded() {
     );
 }
 
-#[test]
-fn directed_adjacent_box_refinement_work_scales_with_boundary_spans() {
-    for count in [8, 16, 32, 64] {
-        let shape = adjacent_box_union(count);
-        let tolerance = derived::scale_aware_default_tolerance(&shape);
-        let (source, boundary) = adjacent_box_prepared_support(count);
-        let limit = count * 64;
-        let (result, work) = {
-            let _guard = limit_refinement_work(limit);
-            let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
-            let mut context = SearchContext::new_directed(
-                &accuracy,
-                Rational::one(),
-                Rational::from_f64(tolerance),
-            );
-            let result = run_directed(&source, &boundary, &mut context);
-            let work = refinement_work();
-            (result, work)
-        };
-        let result = result.unwrap();
-        let radius = downward_sqrt(&result.center_squared).unwrap();
-        assert_eq!(radius, 0.5);
-        assert!(
-            work <= limit,
-            "adjacent boxes used {work} refinements, limit {limit}"
-        );
-    }
+#[rstest::rstest]
+#[case::count_8(8)]
+#[case::count_16(16)]
+#[case::count_32(32)]
+#[case::count_64(64)]
+fn directed_adjacent_box_refinement_work_scales_with_boundary_spans(#[case] count: usize) {
+    let shape = adjacent_box_union(count);
+    let tolerance = derived::scale_aware_default_tolerance(&shape);
+    let (source, boundary) = adjacent_box_prepared_support(count);
+    let limit = count.wrapping_mul(64);
+    let (result, work) = {
+        let _guard = limit_refinement_work(limit);
+        let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
+        let mut context =
+            SearchContext::new_directed(&accuracy, Rational::one(), Rational::from_f64(tolerance));
+        let result = run_directed(&source, &boundary, &mut context);
+        let work = refinement_work();
+        (result, work)
+    };
+    let result = result.unwrap();
+    let radius = downward_sqrt(&result.center_squared).unwrap();
+    assert_eq!(radius, 0.5);
+    assert!(
+        work <= limit,
+        "adjacent boxes used {work} refinements, limit {limit}"
+    );
 }
 
 fn regular_polygon(count: usize, offset: (f64, f64)) -> Shape {
@@ -184,22 +183,24 @@ fn regular_polygon(count: usize, offset: (f64, f64)) -> Shape {
     polygon(&vertices)
 }
 
-#[test]
-fn filled_translation_refinement_stays_near_the_boundary_maximum() {
+#[rstest::rstest]
+#[case::count_4(4)]
+#[case::count_16(16)]
+#[case::count_64(64)]
+fn filled_translation_refinement_stays_near_the_boundary_maximum(#[case] count: usize) {
     // A convex polygon against its translation by t is exactly |t| apart.
     // Boxes that cannot hold an interior maximum are discarded instead of
     // being refined until their corners fall below it; without that the
     // 64-gon needed over 13,000 refinements, and now about ten.
-    for count in [4, 16, 64] {
-        let source = regular_polygon(count, (0.0, 0.0));
-        let target = regular_polygon(count, (1.0, 0.5));
-        let _guard = limit_refinement_work(100);
-        let value = distance(&source, &target, None, 1.0).unwrap();
-        assert!(
-            (value - 1.25_f64.sqrt()).abs() <= 1e-9 * value,
-            "{count}: {value}"
-        );
-    }
+
+    let source = regular_polygon(count, (0.0, 0.0));
+    let target = regular_polygon(count, (1.0, 0.5));
+    let _guard = limit_refinement_work(100);
+    let value = distance(&source, &target, None, 1.0).unwrap();
+    assert!(
+        (value - 1.25_f64.sqrt()).abs() <= 1e-9 * value,
+        "{count}: {value}"
+    );
 }
 
 #[test]
@@ -539,18 +540,18 @@ fn overflowed_exact_point_distance_can_certify_maximum_with_large_error() {
         .expect_err("an allowance below the exact max-to-upper gap must not certify f64::MAX");
 }
 
-#[test]
-fn filled_interior_and_parallel_plateau_obey_the_error_bound() {
-    for vertices in [vec![(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)], vec![
-        (0.0, 0.0),
-        (100.0, 0.0),
-        (100.0, 2.0),
-        (0.0, 2.0),
-        (0.0, 0.0),
-    ]] {
-        let value = distance(&polygon(&vertices), &line(&vertices), Some(1e-6), 1.0).unwrap();
-        assert!((value - 1.0).abs() <= 1e-6, "{value}");
-    }
+#[rstest::rstest]
+#[case::vec_0_0_0_0_4_0_0_0_0_0_3_0_0_0_0_0(vec![(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)])]
+#[case::vec_0_0_0_0_100_0_0_0_100_0_2_0_0_0_2_0_0_0_0_0(vec![
+    (0.0, 0.0),
+    (100.0, 0.0),
+    (100.0, 2.0),
+    (0.0, 2.0),
+    (0.0, 0.0),
+])]
+fn filled_interior_and_parallel_plateau_obey_the_error_bound(#[case] vertices: Vec<(f64, f64)>) {
+    let value = distance(&polygon(&vertices), &line(&vertices), Some(1e-6), 1.0).unwrap();
+    assert!((value - 1.0).abs() <= 1e-6, "{value}");
 }
 
 #[test]
@@ -652,10 +653,13 @@ fn identical_cancelled_polygon_support_is_undefined() {
     distance(&shape, &shape, Some(1e-6), 1.0).unwrap_err();
 }
 
-#[test]
-fn invalid_accuracy_is_rejected_before_identity() {
+#[rstest::rstest]
+#[case::error_0_0(0.0)]
+#[case::negative_error_1_0(-1.0)]
+#[case::f64_infinity(f64::INFINITY)]
+#[case::f64_nan(f64::NAN)]
+fn invalid_accuracy_is_rejected_before_identity(#[case] error: f64) {
     let point = Shape::Point(Point::new_raw_xy(3.0, 4.0));
-    for error in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-        distance(&point, &point, Some(error), 1.0).unwrap_err();
-    }
+
+    distance(&point, &point, Some(error), 1.0).unwrap_err();
 }

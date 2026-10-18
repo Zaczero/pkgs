@@ -1,22 +1,19 @@
-#[test]
-fn q_source_only_points_keep_admitted_latitude_bits_and_chart_identity() {
+#[rstest::rstest]
+#[case::negative_source_y_0_0(-0.0, EmittedNodeKey::Coordinate(0.0_f64.to_bits(), 0.0_f64.to_bits()))]
+#[case::pole_next_up(GeographicFrame::crs84().pole().next_up(), EmittedNodeKey::NorthPole)]
+fn q_source_only_points_keep_admitted_latitude_bits_and_chart_identity(
+    #[case] source_y: f64,
+    #[case] identity: EmittedNodeKey,
+) {
     let frame = GeographicFrame::crs84();
-    let pole = frame.pole();
-    for (source_y, identity) in [
-        (
-            -0.0,
-            EmittedNodeKey::Coordinate(0.0_f64.to_bits(), 0.0_f64.to_bits()),
-        ),
-        (pole.next_up(), EmittedNodeKey::NorthPole),
-    ] {
-        let source = Point::new_raw_xy(0.0, source_y);
-        let output = q_union_one_source(&Shape::Point(source), frame);
-        let emitted = emitted_single_point(&output);
 
-        assert_eq!(emitted.y.to_bits(), source_y.to_bits());
-        assert_eq!(emitted_node_key(frame, emitted.xy()).unwrap(), identity);
-        assert_eq!(emitted_node_key(frame, source.xy()).unwrap(), identity);
-    }
+    let source = Point::new_raw_xy(0.0, source_y);
+    let output = q_union_one_source(&Shape::Point(source), frame);
+    let emitted = emitted_single_point(&output);
+
+    assert_eq!(emitted.y.to_bits(), source_y.to_bits());
+    assert_eq!(emitted_node_key(frame, emitted.xy()).unwrap(), identity);
+    assert_eq!(emitted_node_key(frame, source.xy()).unwrap(), identity);
 }
 
 #[test]
@@ -39,8 +36,8 @@ fn q_source_only_whole_sphere_ring_keeps_source_latitude_bits() {
     let shell = Ring::try_from_closed(CoordSeq::try_from_points(&source_points).unwrap())
         .expect("closed pole-to-pole source ring");
     let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
-    let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(&source))
-        .expect("source admits");
+    let inputs =
+        GeographicInputs::try_from_shapes(frame, std::iter::once(&source)).expect("source admits");
     let topology =
         ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
             .expect("Q topology builds");
@@ -131,9 +128,7 @@ fn source_boundary_binds_the_pinned_y_sign_after_shape_assembly() -> Result<()> 
     let ordinal = coordinates
         .iter()
         .position(|point| point.y.to_bits() == (-0.0_f64).to_bits())
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("pinned source Y record is missing".into())
-        })?;
+        .ok_or_else(|| GeometryErrorKind::Invalid("pinned source Y record is missing".into()))?;
     let image = layout
         .points
         .get(ordinal)
@@ -210,9 +205,7 @@ fn k0_source_point_y_bits_are_rechecked_in_the_final_shape() -> Result<()> {
         .position(|point| {
             point.x.to_bits() == 5.0_f64.to_bits() && point.y.to_bits() == 0.0_f64.to_bits()
         })
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("pinned K0 source point is missing".into())
-        })?;
+        .ok_or_else(|| GeometryErrorKind::Invalid("pinned K0 source point is missing".into()))?;
     let image = layout
         .points
         .get(ordinal)
@@ -295,9 +288,7 @@ fn source_pole_point_keeps_its_raw_longitude_record() -> Result<()> {
             | QSourceImage::PublicationSample(_) => false,
         })
         .ok_or_else(|| {
-            GeometryErrorKind::Invalid(
-                "source pole slot lost its source-record authority".into(),
-            )
+            GeometryErrorKind::Invalid("source pole slot lost its source-record authority".into())
         })?;
     assert!(matches!(
         bind_source_shape(&topology, shape, layout)?,
@@ -399,9 +390,7 @@ fn computed_q_line_alias_does_not_acquire_source_xy_bit_pinning() -> Result<()> 
         .first()
         .and_then(|row| row.images.first())
         .copied()
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("computed Q line has no literal image".into())
-        })?;
+        .ok_or_else(|| GeometryErrorKind::Invalid("computed Q line has no literal image".into()))?;
     assert!(matches!(image, QSourceImage::Port(_)));
 
     let Shape::LineString(line) = shape else {

@@ -367,11 +367,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_excluded_and_non_ascii_alphabet_symbols() {
-        for token in ["a", "i", "l", "o", "é"] {
-            assert!(Geohash::parse(token).is_err(), "accepted {token:?}");
-        }
+    #[rstest::rstest]
+    #[case::a("a")]
+    #[case::i("i")]
+    #[case::l("l")]
+    #[case::o("o")]
+    #[case::empty("é")]
+    fn rejects_excluded_and_non_ascii_alphabet_symbols(#[case] token: &'static str) {
+        assert!(Geohash::parse(token).is_err(), "accepted {token:?}");
     }
 
     #[test]

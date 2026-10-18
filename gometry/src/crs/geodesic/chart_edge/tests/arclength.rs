@@ -61,37 +61,22 @@ fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
     }
 }
 
-#[test]
-fn chart_edge_matches_mpmath_length_literals() {
-    let cases = [
-        (
-            "general ellipsoidal edge",
-            edge_length(degrees(), (-10.0, 35.0), (10.0, 48.0)).unwrap(),
-            2_205_762.711_444_021_7,
-        ),
-        (
-            "near-pole chart edge",
-            edge_length(degrees(), (0.0, 89.9999), (100.0, 89.99995)).unwrap(),
-            15.684_865_577_474_26,
-        ),
-        (
-            "parallel closed form",
-            edge_length(degrees(), (0.0, 60.0), (90.0, 60.0)).unwrap(),
-            5_022_000.141_519_251,
-        ),
-        (
-            "meridian closed form",
-            edge_length(degrees(), (15.0, -20.0), (15.0, 70.0)).unwrap(),
-            9_981_346.981_941_827,
-        ),
-    ];
-    for (label, actual, expected) in cases {
-        let relative_error = (actual - expected).abs() / expected;
-        assert!(
-            relative_error <= 1.0e-15,
-            "{label}: actual={actual:.17}, expected={expected:.17}, relative_error={relative_error:.3e}"
-        );
-    }
+#[rstest::rstest]
+#[case::general_ellipsoidal_edge((-10.0, 35.0), (10.0, 48.0), 2_205_762.711_444_021_7)]
+#[case::near_pole_chart_edge((0.0, 89.9999), (100.0, 89.99995), 15.684_865_577_474_26)]
+#[case::parallel_closed_form((0.0, 60.0), (90.0, 60.0), 5_022_000.141_519_251)]
+#[case::meridian_closed_form((15.0, -20.0), (15.0, 70.0), 9_981_346.981_941_827)]
+fn chart_edge_matches_mpmath_length_literals(
+    #[case] start: (f64, f64),
+    #[case] end: (f64, f64),
+    #[case] expected: f64,
+) {
+    let actual = edge_length(degrees(), start, end).unwrap();
+    let relative_error = (actual - expected).abs() / expected;
+    assert!(
+        relative_error <= 1.0e-15,
+        "actual={actual:.17}, expected={expected:.17}, relative_error={relative_error:.3e}"
+    );
 }
 
 #[test]
@@ -126,8 +111,12 @@ fn chart_edge_partial_arclength_and_inverse_match_mpmath() {
     assert!((point.y - 32.114_429_312_511_14).abs() <= 3.0e-14);
 }
 
-#[test]
-fn chart_station_retains_actual_arclength_only_for_its_parameter() {
+#[rstest::rstest]
+#[case::fraction_0_1(0.1)]
+#[case::fraction_0_3(0.3)]
+#[case::fraction_0_7(0.7)]
+#[case::fraction_0_9(0.9)]
+fn chart_station_retains_actual_arclength_only_for_its_parameter(#[case] fraction: f64) {
     let geodesic = wgs84();
     let edge = ChartEdge::new(
         Point::new_raw_xy(0.0, 10.0),
@@ -136,21 +125,20 @@ fn chart_station_retains_actual_arclength_only_for_its_parameter() {
     )
     .unwrap();
     let length = edge.length(&geodesic).unwrap();
-    for fraction in [0.1, 0.3, 0.7, 0.9] {
-        let target = length * fraction;
-        let station = edge.locate_t(target, length, &geodesic).unwrap();
-        let parameter = station.parameter();
-        let measured_fraction = edge
-            .arclength_fraction(parameter, Some(length), &geodesic)
-            .unwrap();
-        approx::assert_relative_eq!(
-            station.fraction_at(parameter, length).unwrap(),
-            measured_fraction,
-            max_relative = 8.0 * f64::EPSILON,
-        );
-        assert_eq!(station.fraction_at(parameter.next_up(), length), None);
-        assert_eq!(station.fraction_at(parameter.next_down(), length), None);
-    }
+
+    let target = length * fraction;
+    let station = edge.locate_t(target, length, &geodesic).unwrap();
+    let parameter = station.parameter();
+    let measured_fraction = edge
+        .arclength_fraction(parameter, Some(length), &geodesic)
+        .unwrap();
+    approx::assert_relative_eq!(
+        station.fraction_at(parameter, length).unwrap(),
+        measured_fraction,
+        max_relative = 8.0 * f64::EPSILON,
+    );
+    assert_eq!(station.fraction_at(parameter.next_up(), length), None);
+    assert_eq!(station.fraction_at(parameter.next_down(), length), None);
 }
 
 #[test]

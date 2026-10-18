@@ -95,34 +95,33 @@ fn squared_midpoint(lower: f64, upper: f64) -> Rational {
         .expect("squared midpoint")
 }
 
-#[test]
-fn misaligned_metric_boundary_incidence_is_rejected_before_consumption() {
-    for support in [
-        ExactMetricSupport {
-            exact_points: Vec::new().into(),
-            spans: Vec::new(),
-            points: Vec::new(),
-            faces: Vec::new(),
-            area_location_cells: None,
-            boundary_spans: Some(vec![true]),
-            boundary_points: None,
-        },
-        ExactMetricSupport {
-            exact_points: Vec::new().into(),
-            spans: Vec::new(),
-            points: Vec::new(),
-            faces: Vec::new(),
-            area_location_cells: None,
-            boundary_spans: None,
-            boundary_points: Some(vec![true]),
-        },
-    ] {
-        let error = PreparedSupport::from_metric_support(support).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
-        ));
-    }
+#[rstest::rstest]
+#[case::exactmetricsupport_exact_points_vec_new_into_spa_e0fe60e7(ExactMetricSupport {
+    exact_points: Vec::new().into(),
+    spans: Vec::new(),
+    points: Vec::new(),
+    faces: Vec::new(),
+    area_location_cells: None,
+    boundary_spans: Some(vec![true]),
+    boundary_points: None,
+})]
+#[case::exactmetricsupport_exact_points_vec_new_into_spa_b9ed3112(ExactMetricSupport {
+    exact_points: Vec::new().into(),
+    spans: Vec::new(),
+    points: Vec::new(),
+    faces: Vec::new(),
+    area_location_cells: None,
+    boundary_spans: None,
+    boundary_points: Some(vec![true]),
+})]
+fn misaligned_metric_boundary_incidence_is_rejected_before_consumption(
+    #[case] support: ExactMetricSupport,
+) {
+    let error = PreparedSupport::from_metric_support(support).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+    ));
 }
 
 /// Exact squared distance from a point to a box, the oracle for the
@@ -150,28 +149,26 @@ fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> 
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
-#[test]
-fn floating_box_pruning_stays_below_exact_distance() {
+#[rstest::rstest]
+#[case::x_0_0(0.0, 0.0)]
+#[case::x_0_1(0.1, -0.3)]
+#[case::f64_from_bits_1(f64::from_bits(1), 0.0)]
+#[case::f64_max(f64::MAX, -f64::MAX)]
+fn floating_box_pruning_stays_below_exact_distance(#[case] x: f64, #[case] y: f64) {
     let target = FloatBox {
         min_x: -2.0,
         max_x: -1.0,
         min_y: 1.0,
         max_y: 2.0,
     };
-    for (x, y) in [
-        (0.0, 0.0),
-        (0.1, -0.3),
-        (f64::from_bits(1), 0.0),
-        (f64::MAX, -f64::MAX),
-    ] {
-        let point = ExactPoint::from_xy(XY::new(x, y));
-        let lower = box_distance_lower(FloatBox::from_point(&point).unwrap(), target);
-        let exact = aabb_lower_squared(&point, target).unwrap();
-        assert_ne!(
-            Rational::from_f64(lower).try_cmp(&exact).unwrap(),
-            Ordering::Greater,
-        );
-    }
+
+    let point = ExactPoint::from_xy(XY::new(x, y));
+    let lower = box_distance_lower(FloatBox::from_point(&point).unwrap(), target);
+    let exact = aabb_lower_squared(&point, target).unwrap();
+    assert_ne!(
+        Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+        Ordering::Greater,
+    );
 }
 
 #[test]
@@ -201,32 +198,32 @@ fn exact_metric_nodes_share_the_frozen_area_location_point_table() {
     assert!(Arc::ptr_eq(&support.exact_points, &cells.geometry.points));
 }
 
-#[test]
-fn floating_box_pruning_covers_normal_sums_of_subnormal_products_and_overflow() {
-    for (target, probe) in [
-        (XY::new(0.0, 0.0), XY::new(1.2, 1.2)),
-        (XY::new(0.0, 0.0), XY::new(1.1e-154, 1.1e-154)),
-        (XY::new(0.0, 0.0), XY::new(1e-160, 1e-160)),
-        (XY::new(0.0, 0.0), XY::new(1e200, 0.0)),
-        (XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0)),
-    ] {
-        let bounds = FloatBox {
-            min_x: target.x,
-            max_x: target.x,
-            min_y: target.y,
-            max_y: target.y,
-        };
-        let point = ExactPoint::from_xy(probe);
-        let lower = box_distance_lower(FloatBox::from_point(&point).unwrap(), bounds);
-        let exact = aabb_lower_squared(&point, bounds).unwrap();
-        assert!(lower.is_finite());
-        assert!(lower >= 0.0);
-        assert_ne!(
-            Rational::from_f64(lower).try_cmp(&exact).unwrap(),
-            Ordering::Greater,
-            "target={target:?}, probe={probe:?}"
-        );
-    }
+#[rstest::rstest]
+#[case::xy_new_0_0_0_0(XY::new(0.0, 0.0), XY::new(1.2, 1.2))]
+#[case::xy_new_0_0_0_0_9f7be109(XY::new(0.0, 0.0), XY::new(1.1e-154, 1.1e-154))]
+#[case::xy_new_0_0_0_0_9fd29d18(XY::new(0.0, 0.0), XY::new(1e-160, 1e-160))]
+#[case::xy_new_0_0_0_0_d898fa6c(XY::new(0.0, 0.0), XY::new(1e200, 0.0))]
+#[case::xy_new_f64_max_0_0(XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0))]
+fn floating_box_pruning_covers_normal_sums_of_subnormal_products_and_overflow(
+    #[case] target: XY,
+    #[case] probe: XY,
+) {
+    let bounds = FloatBox {
+        min_x: target.x,
+        max_x: target.x,
+        min_y: target.y,
+        max_y: target.y,
+    };
+    let point = ExactPoint::from_xy(probe);
+    let lower = box_distance_lower(FloatBox::from_point(&point).unwrap(), bounds);
+    let exact = aabb_lower_squared(&point, bounds).unwrap();
+    assert!(lower.is_finite());
+    assert!(lower >= 0.0);
+    assert_ne!(
+        Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+        Ordering::Greater,
+        "target={target:?}, probe={probe:?}"
+    );
 }
 
 #[test]
@@ -391,36 +388,41 @@ fn longest_axis_box_split_handles_extreme_equal_and_unrepresentable_axes() {
     }
 }
 
-#[test]
-fn parallel_strip_rejects_outside_points_with_reversed_carriers() {
+#[rstest::rstest]
+#[case::y_1_0(1.0, true)]
+#[case::y_3_0(3.0, false)]
+#[case::negative_y_1_0(-1.0, false)]
+fn parallel_strip_rejects_outside_points_with_reversed_carriers(
+    #[case] y: f64,
+    #[case] inside: bool,
+) {
     let target =
         PreparedSupport::from_line_columns(&[0.0, 4.0, 4.0, 0.0], &[0.0, 0.0, 2.0, 2.0]).unwrap();
     let source = PreparedSupport::from_line_columns(&[2.0], &[1.0]).unwrap();
     let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
     let context = SearchContext::new(&accuracy);
-    for (y, inside) in [(1.0, true), (3.0, false), (-1.0, false)] {
-        let patch = SourcePatch::Box(FloatBox {
-            min_x: 2.0,
-            max_x: 2.0,
-            min_y: y,
-            max_y: y,
-        });
-        let upper = parallel_strip_upper(
-            &patch,
-            &source,
-            &target,
-            &[PrimitiveId::Span(0), PrimitiveId::Span(2)],
-            &context,
-        )
-        .unwrap();
-        if inside {
-            assert_eq!(
-                upper.unwrap().try_cmp(&Rational::one()).unwrap(),
-                Ordering::Equal
-            );
-        } else {
-            assert!(upper.is_none());
-        }
+
+    let patch = SourcePatch::Box(FloatBox {
+        min_x: 2.0,
+        max_x: 2.0,
+        min_y: y,
+        max_y: y,
+    });
+    let upper = parallel_strip_upper(
+        &patch,
+        &source,
+        &target,
+        &[PrimitiveId::Span(0), PrimitiveId::Span(2)],
+        &context,
+    )
+    .unwrap();
+    if inside {
+        assert_eq!(
+            upper.unwrap().try_cmp(&Rational::one()).unwrap(),
+            Ordering::Equal
+        );
+    } else {
+        assert!(upper.is_none());
     }
 }
 
@@ -680,107 +682,110 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
     assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
 }
 
-#[test]
-fn selected_span_clamps_oblique_projection() {
+#[rstest::rstest]
+#[case::lo_0_0(0.0, 1.0, 1.0, 3.0, 1.0)]
+#[case::lo_0_0_ded91db3(0.0, 1.0, -3.0, -4.0, 25.0)]
+#[case::lo_0_0_18ae5308(0.0, 1.0, 6.0, 8.0, 25.0)]
+#[case::lo_0_25(0.25, 0.75, 0.0, 0.0, 1.5625)]
+#[case::lo_0_25_9fae2d39(0.25, 0.75, 3.0, 4.0, 1.5625)]
+fn selected_span_clamps_oblique_projection(
+    #[case] lo: f64,
+    #[case] hi: f64,
+    #[case] x: f64,
+    #[case] y: f64,
+    #[case] expected: f64,
+) {
     let mut support = PreparedSupport::from_line_columns(&[0.0, 3.0], &[0.0, 4.0]).unwrap();
-    for (lo, hi, x, y, expected) in [
-        (0.0, 1.0, 1.0, 3.0, 1.0),
-        (0.0, 1.0, -3.0, -4.0, 25.0),
-        (0.0, 1.0, 6.0, 8.0, 25.0),
-        (0.25, 0.75, 0.0, 0.0, 1.5625),
-        (0.25, 0.75, 3.0, 4.0, 1.5625),
-    ] {
-        Arc::make_mut(&mut support.spans)[0].range = Some(Box::new(SelectedSpan {
-            parameters: [Rational::from_f64(lo), Rational::from_f64(hi)],
-            start: ExactPoint::from_xy(XY::new(3.0 * lo, 4.0 * lo)),
-        }));
-        let span = &support.spans[0];
-        let value = point_span_distance_squared(
-            &ExactPoint::from_xy(XY::new(x, y)),
-            span.carrier().unwrap(),
-            span.lo(),
-            span.hi(),
+
+    Arc::make_mut(&mut support.spans)[0].range = Some(Box::new(SelectedSpan {
+        parameters: [Rational::from_f64(lo), Rational::from_f64(hi)],
+        start: ExactPoint::from_xy(XY::new(3.0 * lo, 4.0 * lo)),
+    }));
+    let span = &support.spans[0];
+    let value = point_span_distance_squared(
+        &ExactPoint::from_xy(XY::new(x, y)),
+        span.carrier().unwrap(),
+        span.lo(),
+        span.hi(),
+    )
+    .unwrap();
+    assert_eq!(
+        value
+            .try_cmp_rational(&Rational::from_f64(expected))
+            .unwrap(),
+        Ordering::Equal
+    );
+}
+
+#[rstest::rstest]
+#[case::xs_0_0_3_0([0.0, 3.0], [0.0, 4.0], (1.0, 3.0))]
+#[case::xs_0_0_3_0_8a7f618a([0.0, 3.0], [0.0, 4.0], (-3.0, -4.0))]
+#[case::xs_0_0_3_0_b00829da([0.0, 3.0], [0.0, 4.0], (6.0, 8.0))]
+#[case::xs_3_0_0_0([3.0, 0.0], [4.0, 0.0], (1.0, 3.0))]
+#[case::xs_0_0_1_0([0.0, 1.0], [0.0, 0.0], (0.5, 1.0 + f64::EPSILON))]
+#[case::xs_0_0_1_0_96229f4e([0.0, 1.0], [0.0, 0.0], (-1.0 - f64::EPSILON, 1.0 + f64::EPSILON))]
+#[case::xs_0_0_1e_100([0.0, 1e-100], [0.0, 0.0], (5e-101, 1e-100))]
+fn binary64_span_filter_encloses_interior_and_endpoint_clearances(
+    #[case] xs: [f64; 2],
+    #[case] ys: [f64; 2],
+    #[case] probe: (f64, f64),
+) {
+    let support = PreparedSupport::from_line_columns(&xs, &ys).unwrap();
+    let point = ExactPoint::from_xy(XY::new(probe.0, probe.1));
+    let bounds = FloatBox::from_point(&point).unwrap();
+    let interval = point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0])
+        .expect("the binary64 filter decides these finite separated regimes");
+    let filtered = point_span_binary64_bounds(bounds, &support.spans[0])
+        .expect("the distance-error filter decides these finite separated regimes");
+    let exact = support
+        .primitive_distance_squared(PrimitiveId::Span(0), &point)
+        .unwrap()
+        .to_rational()
+        .unwrap();
+    for (lower, upper) in [interval, filtered] {
+        assert_ne!(
+            Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+            Ordering::Greater
+        );
+        assert_ne!(
+            Rational::from_f64(upper).try_cmp(&exact).unwrap(),
+            Ordering::Less
+        );
+    }
+}
+
+#[rstest::rstest]
+#[case::end_x_1e100(1e100, 5e99, 1e100)]
+#[case::end_x_1e200(1e200, 5e199, 1e200)]
+fn nearest_distance_refines_overflowing_squared_distance_terms(
+    #[case] end_x: f64,
+    #[case] probe_x: f64,
+    #[case] clearance: f64,
+) {
+    let support = PreparedSupport::from_line_columns(&[0.0, end_x], &[0.0, 0.0]).unwrap();
+    let point = ExactPoint::from_xy(XY::new(probe_x, clearance));
+    let bounds = FloatBox::from_point(&point).unwrap();
+    assert!(point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0]).is_none());
+    let nearest = support
+        .index
+        .nearest(
+            &support,
+            &point,
+            Some(Tightness {
+                relative: 0.0,
+                absolute: 0.0,
+            }),
         )
         .unwrap();
-        assert_eq!(
-            value
-                .try_cmp_rational(&Rational::from_f64(expected))
-                .unwrap(),
-            Ordering::Equal
-        );
-    }
-}
-
-#[test]
-fn binary64_span_filter_encloses_interior_and_endpoint_clearances() {
-    for (xs, ys, probe) in [
-        ([0.0, 3.0], [0.0, 4.0], (1.0, 3.0)),
-        ([0.0, 3.0], [0.0, 4.0], (-3.0, -4.0)),
-        ([0.0, 3.0], [0.0, 4.0], (6.0, 8.0)),
-        ([3.0, 0.0], [4.0, 0.0], (1.0, 3.0)),
-        ([0.0, 1.0], [0.0, 0.0], (0.5, 1.0 + f64::EPSILON)),
-        (
-            [0.0, 1.0],
-            [0.0, 0.0],
-            (-1.0 - f64::EPSILON, 1.0 + f64::EPSILON),
-        ),
-        ([0.0, 1e-100], [0.0, 0.0], (5e-101, 1e-100)),
-    ] {
-        let support = PreparedSupport::from_line_columns(&xs, &ys).unwrap();
-        let point = ExactPoint::from_xy(XY::new(probe.0, probe.1));
-        let bounds = FloatBox::from_point(&point).unwrap();
-        let interval = point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0])
-            .expect("the binary64 filter decides these finite separated regimes");
-        let filtered = point_span_binary64_bounds(bounds, &support.spans[0])
-            .expect("the distance-error filter decides these finite separated regimes");
-        let exact = support
-            .primitive_distance_squared(PrimitiveId::Span(0), &point)
-            .unwrap()
-            .to_rational()
-            .unwrap();
-        for (lower, upper) in [interval, filtered] {
-            assert_ne!(
-                Rational::from_f64(lower).try_cmp(&exact).unwrap(),
-                Ordering::Greater
-            );
-            assert_ne!(
-                Rational::from_f64(upper).try_cmp(&exact).unwrap(),
-                Ordering::Less
-            );
-        }
-    }
-}
-
-#[test]
-fn nearest_distance_refines_overflowing_squared_distance_terms() {
-    for (end_x, probe_x, clearance) in [(1e100, 5e99, 1e100), (1e200, 5e199, 1e200)] {
-        let support = PreparedSupport::from_line_columns(&[0.0, end_x], &[0.0, 0.0]).unwrap();
-        let point = ExactPoint::from_xy(XY::new(probe_x, clearance));
-        let bounds = FloatBox::from_point(&point).unwrap();
-        assert!(
-            point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0]).is_none()
-        );
-        let nearest = support
-            .index
-            .nearest(
-                &support,
-                &point,
-                Some(Tightness {
-                    relative: 0.0,
-                    absolute: 0.0,
-                }),
-            )
-            .unwrap();
-        let expected = Rational::from_f64(clearance).try_square().unwrap();
-        assert_eq!(
-            nearest.bounds.lower.try_cmp(&expected).unwrap(),
-            Ordering::Equal
-        );
-        assert_eq!(
-            nearest.bounds.upper.try_cmp(&expected).unwrap(),
-            Ordering::Equal
-        );
-    }
+    let expected = Rational::from_f64(clearance).try_square().unwrap();
+    assert_eq!(
+        nearest.bounds.lower.try_cmp(&expected).unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(
+        nearest.bounds.upper.try_cmp(&expected).unwrap(),
+        Ordering::Equal
+    );
 }
 
 #[test]

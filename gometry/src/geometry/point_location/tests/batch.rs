@@ -12,30 +12,27 @@ fn generic_point_tester_uses_exact_source_incidence() {
     assert!(tester.contains_point(Point::new_raw_xy(1.0, 1.0)));
 }
 
-#[test]
-fn indexed_point_tester_uses_composed_source_support() {
-    for (wkt, point, contains) in [
-        (
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
-            Point::new_raw_xy(2.0, 2.0),
-            true,
-        ),
-        (
-            "POLYGON ((0 0,2 0,1 0,0 0))",
-            Point::new_raw_xy(1.0, 0.0),
-            true,
-        ),
-        (
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))",
-            Point::new_raw_xy(2.0, 2.0),
-            true,
-        ),
-    ] {
-        let shape = crate::io::parse_wkt(wkt).unwrap();
-        let tester = PointBatchTester::new(&shape).unwrap();
-        assert_eq!(tester.contains_point(point), contains);
-        assert_eq!(tester.covers_point(point), contains);
-    }
+#[rstest::rstest]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_4_0_4_4_0_4_0_0(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+    Point::new_raw_xy(2.0, 2.0),
+    true
+)]
+#[case::polygon_0_0_2_0_1_0_0_0("POLYGON ((0 0,2 0,1 0,0 0))", Point::new_raw_xy(1.0, 0.0), true)]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_8_8_9_8_9_9_8_9_8_8(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))",
+    Point::new_raw_xy(2.0, 2.0),
+    true
+)]
+fn indexed_point_tester_uses_composed_source_support(
+    #[case] wkt: &'static str,
+    #[case] point: Point,
+    #[case] contains: bool,
+) {
+    let shape = crate::io::parse_wkt(wkt).unwrap();
+    let tester = PointBatchTester::new(&shape).unwrap();
+    assert_eq!(tester.contains_point(point), contains);
+    assert_eq!(tester.covers_point(point), contains);
 }
 
 /// The tester's location must agree with the exact source scan on every

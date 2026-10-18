@@ -81,56 +81,58 @@ fn point_edge_cutoff_is_strict_and_threshold_is_inclusive() {
             .contains("geodesic dwithin limit is not finite")
     );
 }
-#[test]
-fn threshold_search_certifies_near_endpoint_minima_from_derivative_sign() {
+#[rstest::rstest]
+#[case::delta_1_0e_12(1.0e-12)]
+#[case::delta_1_0e_11(1.0e-11)]
+#[case::delta_1_0e_9(1.0e-9)]
+fn threshold_search_certifies_near_endpoint_minima_from_derivative_sign(#[case] delta: f64) {
     let frame = GeographicFrame::crs84();
     let metric = metric(&Geodesic::wgs84(), frame);
     let start = Point::new_raw_xy(0.0, 0.0);
     let end = Point::new_raw_xy(5.0, 0.0);
     let edge = metric.chart_edge(start, end).unwrap();
-    for delta in [1.0e-12, 1.0e-11, 1.0e-9] {
-        let point = Point::new_raw_xy(5.0 + delta, 0.0);
-        let endpoint_distance = metric.segment_length(point, end);
-        assert!(endpoint_distance > 0.0, "{delta}");
 
-        let outside = metric
-            .point_edge_query(
-                point,
-                &edge,
-                0.0,
-                PointEdgeQuery::Dwithin {
-                    limit: endpoint_distance.next_down(),
-                },
-                &mut PointEdgeScratch::default(),
-            )
-            .unwrap();
-        assert!(
-            matches!(
-                outside,
-                PointEdgeQueryResult::Outside {
-                    lower_bound,
-                    evaluations: 2,
-                } if lower_bound > endpoint_distance.next_down()
-            ),
-            "{delta}: {outside:?}"
-        );
+    let point = Point::new_raw_xy(5.0 + delta, 0.0);
+    let endpoint_distance = metric.segment_length(point, end);
+    assert!(endpoint_distance > 0.0, "{delta}");
 
-        let within = metric
-            .point_edge_query(
-                point,
-                &edge,
-                0.0,
-                PointEdgeQuery::Dwithin {
-                    limit: endpoint_distance,
-                },
-                &mut PointEdgeScratch::default(),
-            )
-            .unwrap();
-        assert!(
-            matches!(within, PointEdgeQueryResult::Within { .. }),
-            "{delta}: {within:?}"
-        );
-    }
+    let outside = metric
+        .point_edge_query(
+            point,
+            &edge,
+            0.0,
+            PointEdgeQuery::Dwithin {
+                limit: endpoint_distance.next_down(),
+            },
+            &mut PointEdgeScratch::default(),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            outside,
+            PointEdgeQueryResult::Outside {
+                lower_bound,
+                evaluations: 2,
+            } if lower_bound > endpoint_distance.next_down()
+        ),
+        "{delta}: {outside:?}"
+    );
+
+    let within = metric
+        .point_edge_query(
+            point,
+            &edge,
+            0.0,
+            PointEdgeQuery::Dwithin {
+                limit: endpoint_distance,
+            },
+            &mut PointEdgeScratch::default(),
+        )
+        .unwrap();
+    assert!(
+        matches!(within, PointEdgeQueryResult::Within { .. }),
+        "{delta}: {within:?}"
+    );
 }
 #[test]
 fn exhausted_threshold_and_cutoff_straddles_preserve_unresolved_bounds() {

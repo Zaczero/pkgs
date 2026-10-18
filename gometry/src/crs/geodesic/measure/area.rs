@@ -28,43 +28,34 @@ fn chart_and_rectangular_cell_areas_match_high_precision_literals() {
         "triangle area={triangle_area:.17}, expected={triangle_expected:.17}"
     );
 }
-#[test]
+#[rstest::rstest]
 #[expect(
     clippy::excessive_precision,
     reason = "40-digit mpmath oracle literals preserve the independent reference value"
 )]
-fn chart_area_series_matches_spherical_oblate_and_prolate_literals() {
+#[case::flattening_0_0(
+    0.0,
+    2_882_901_463_210.015_326_402_293_007_066_545_690_845_072_588_580_157_504_759_345_263_7
+)]
+#[case::flattening_0_02(0.02, 2_983_569_749_854.379_4)]
+#[case::negative_flattening_0_01(-0.01, 2_834_347_845_268.142_6)]
+#[case::negative_flattening_0_02(-0.02, 2_786_935_860_224.112_3)]
+fn chart_area_series_matches_spherical_oblate_and_prolate_literals(
+    #[case] flattening: f64,
+    #[case] expected: f64,
+) {
     let frame = GeographicFrame::crs84();
     let zone = polygon(
         &[(-45.0, 70.0), (45.0, 70.0), (45.0, 80.0), (-45.0, 80.0)],
         &[],
     );
-    let cases = [
-            (
-                0.0,
-                2_882_901_463_210.015_326_402_293_007_066_545_690_845_072_588_580_157_504_759_345_263_7,
-            ),
-            (
-                0.02,
-                2_983_569_749_854.379_597_021_215_698_894_220_798_358_603_884_467_051_635_905_974_172_6,
-            ),
-            (
-                -0.01,
-                2_834_347_845_268.142_710_504_611_349_147_843_595_380_138_617_606_293_374_597_410_335_3,
-            ),
-            (
-                -0.02,
-                2_786_935_860_224.112_177_661_439_970_501_767_621_835_507_624_194_058_932_566_591_678_653_706_110_492_542_005_216_399_049_841_502_098_670_087_493_2,
-            ),
-        ];
-    for (flattening, expected) in cases {
-        let metric = metric_with_flattening(flattening);
-        let actual = chart_polygon_area(&metric, &zone, frame).unwrap();
-        assert!(
-            (actual - expected).abs() <= 1.0e-14 * expected,
-            "flattening={flattening}: actual={actual:.17}, expected={expected:.17}"
-        );
-    }
+
+    let metric = metric_with_flattening(flattening);
+    let actual = chart_polygon_area(&metric, &zone, frame).unwrap();
+    assert!(
+        (actual - expected).abs() <= 1.0e-14 * expected,
+        "flattening={flattening}: actual={actual:.17}, expected={expected:.17}"
+    );
 }
 #[test]
 fn chart_area_and_perimeter_are_invariant_between_degree_grad_and_radian_frames() {
@@ -104,8 +95,13 @@ fn chart_area_and_perimeter_are_invariant_between_degree_grad_and_radian_frames(
         assert!((actual - degree_length).abs() <= 1.0e-14 * degree_length);
     }
 }
-#[test]
-fn chart_polar_area_maps_native_poles_to_physical_hemispheres() {
+#[rstest::rstest]
+#[case::north("north", 80.0_f64)]
+#[case::south("south", -80.0)]
+fn chart_polar_area_maps_native_poles_to_physical_hemispheres(
+    #[case] name: &'static str,
+    #[case] physical_latitude: f64,
+) {
     let expected = 3_908_572_761_836.564_5;
     let frame = GeographicFrame::try_new_with_orientation(
         AngularFactor::try_new("west longitude grad", std::f64::consts::TAU / 400.0).unwrap(),
@@ -117,16 +113,14 @@ fn chart_polar_area_maps_native_poles_to_physical_hemispheres() {
     let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
     let longitudes = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0];
 
-    for (name, physical_latitude) in [("north", 80.0_f64), ("south", -80.0)] {
-        let native_latitude = -physical_latitude.to_radians();
-        let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
-        let polygon = polygon(&points, &[]);
-        let area = chart_polygon_area(&metric, &polygon, frame).unwrap();
-        assert!(
-            (area - expected).abs() <= 3.0e-15 * expected,
-            "{name} cap area={area:.17}, expected={expected:.17}"
-        );
-    }
+    let native_latitude = -physical_latitude.to_radians();
+    let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
+    let polygon = polygon(&points, &[]);
+    let area = chart_polygon_area(&metric, &polygon, frame).unwrap();
+    assert!(
+        (area - expected).abs() <= 3.0e-15 * expected,
+        "{name} cap area={area:.17}, expected={expected:.17}"
+    );
 }
 #[test]
 #[expect(

@@ -706,28 +706,25 @@ fn polygonize_faces_serialize_the_supplied_certified_node_table() {
     assert!(polygon.holes.is_empty());
 }
 
-#[test]
-fn polygonize_returns_no_polygons_without_a_bounded_face() {
-    for segments in [
-        &[][..],
-        &[seg(0.0, 0.0, 0.0, 0.0)][..],
-        &[seg(0.0, 0.0, 2.0, 0.0)][..],
-    ] {
-        let inventory = ExactSourceInventory::from_segments(segments).unwrap();
-        let mut budget = ExpansionBudget::new("polygonize", "linework without a bounded face");
-        let mut partition = inventory.partition(&mut budget).unwrap();
-        assert!(
-            inventory
-                .linework_polygons(
-                    &mut partition,
-                    false,
-                    "polygonize",
-                    CoordinateAxes::XY,
-                    false,
-                    &crate::geometry::SourceArcContext::cartesian(),
-                )
-                .unwrap()
-                .is_empty()
-        );
-    }
+#[rstest::rstest]
+#[case::empty(&[][..])]
+#[case::seg_0_0_0_0_0_0_0_0(&[seg(0.0, 0.0, 0.0, 0.0)][..])]
+#[case::seg_0_0_0_0_2_0_0_0(&[seg(0.0, 0.0, 2.0, 0.0)][..])]
+fn polygonize_returns_no_polygons_without_a_bounded_face(#[case] segments: &[Segment]) {
+    let inventory = ExactSourceInventory::from_segments(segments).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "linework without a bounded face");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    assert!(
+        inventory
+            .linework_polygons(
+                &mut partition,
+                false,
+                "polygonize",
+                CoordinateAxes::XY,
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap()
+            .is_empty()
+    );
 }

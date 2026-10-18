@@ -1445,9 +1445,22 @@ mod root_capture_tests {
         )
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn geographic_xy_hull_and_rectangle_kernels_skip_root_capture() {
+    #[case::line(line(&[Point::new_raw_xy(0.0, 1.0), Point::new_raw_xy(360.0, 60.0)]))]
+    #[case::polygon(polygon(&[
+        Point::new_raw_xy(-10.0, -5.0),
+        Point::new_raw_xy(10.0, -5.0),
+        Point::new_raw_xy(10.0, 5.0),
+        Point::new_raw_xy(-10.0, 5.0),
+        Point::new_raw_xy(-10.0, -5.0),
+    ]))]
+    #[case::multipoint(points(&[
+        Point::new_raw_xy(170.0, 0.0),
+        Point::new_raw_xy(-170.0, 0.0),
+        Point::new_raw_xy(180.0, 10.0),
+    ]))]
+    fn geographic_xy_hull_and_rectangle_kernels_skip_root_capture(#[case] input: Shape) {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let frame = Frame::Crs("OGC:CRS84".into());
         let mut scratch = MetricScratch::default();
@@ -1460,37 +1473,19 @@ mod root_capture_tests {
             metric,
             lane: Lane::Scalar,
         };
-        let inputs = [
-            line(&[Point::new_raw_xy(0.0, 1.0), Point::new_raw_xy(360.0, 60.0)]),
-            polygon(&[
-                Point::new_raw_xy(-10.0, -5.0),
-                Point::new_raw_xy(10.0, -5.0),
-                Point::new_raw_xy(10.0, 5.0),
-                Point::new_raw_xy(-10.0, 5.0),
-                Point::new_raw_xy(-10.0, -5.0),
-            ]),
-            points(&[
-                Point::new_raw_xy(170.0, 0.0),
-                Point::new_raw_xy(-170.0, 0.0),
-                Point::new_raw_xy(180.0, 10.0),
-            ]),
-        ];
+        let data = PreparedPlan::new(input);
 
-        for input in inputs {
-            let data = PreparedPlan::new(input);
+        reset_root_work_counters();
+        let hull = unary_convex_hull(&data, &context).expect("geographic XY hull");
+        assert!(!hull.is_empty());
+        assert_eq!(hull.axes(), CoordinateAxes::XY);
+        assert_eq!(root_work_counters(), RootWorkCounters::default());
 
-            reset_root_work_counters();
-            let hull = unary_convex_hull(&data, &context).expect("geographic XY hull");
-            assert!(!hull.is_empty());
-            assert_eq!(hull.axes(), CoordinateAxes::XY);
-            assert_eq!(root_work_counters(), RootWorkCounters::default());
-
-            reset_root_work_counters();
-            let rectangle =
-                unary_minimum_rotated_rectangle(&data, &context).expect("geographic XY MRR");
-            assert!(!rectangle.is_empty());
-            assert_eq!(rectangle.axes(), CoordinateAxes::XY);
-            assert_eq!(root_work_counters(), RootWorkCounters::default());
-        }
+        reset_root_work_counters();
+        let rectangle =
+            unary_minimum_rotated_rectangle(&data, &context).expect("geographic XY MRR");
+        assert!(!rectangle.is_empty());
+        assert_eq!(rectangle.axes(), CoordinateAxes::XY);
+        assert_eq!(root_work_counters(), RootWorkCounters::default());
     }
 }

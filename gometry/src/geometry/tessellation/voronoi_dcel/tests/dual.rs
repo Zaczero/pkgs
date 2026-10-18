@@ -1,81 +1,83 @@
-#[test]
-fn direct_dual_subnormal_admission_matches_legacy_builder() {
-    for (units, admitted) in [(1_u64, false), (4, true)] {
-        let step = f64::from_bits(units);
-        let sites: Vec<_> = [(0.0, 0.0), (step, 0.0), (0.0, step)]
-            .into_iter()
-            .enumerate()
-            .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
-            .collect();
-        let mut dual_budget = ExpansionBudget::new("test", "subnormal dual");
-        let dual = dual_build(
-            &sites,
-            VoronoiBoundary::Envelope,
-            &mut dual_budget,
-            &certified_delaunay(&sites).unwrap(),
-        );
-        let mut legacy_budget = ExpansionBudget::new("test", "subnormal legacy");
-        let legacy = build(
-            &sites,
-            VoronoiBoundary::Envelope,
-            &mut legacy_budget,
-            false,
-            &certified_delaunay(&sites).unwrap(),
-        );
+#[rstest::rstest]
+#[case::units_1_u64(1_u64, false)]
+#[case::units_4(4, true)]
+fn direct_dual_subnormal_admission_matches_legacy_builder(
+    #[case] units: u64,
+    #[case] admitted: bool,
+) {
+    let step = f64::from_bits(units);
+    let sites: Vec<_> = [(0.0, 0.0), (step, 0.0), (0.0, step)]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
+        .collect();
+    let mut dual_budget = ExpansionBudget::new("test", "subnormal dual");
+    let dual = dual_build(
+        &sites,
+        VoronoiBoundary::Envelope,
+        &mut dual_budget,
+        &certified_delaunay(&sites).unwrap(),
+    );
+    let mut legacy_budget = ExpansionBudget::new("test", "subnormal legacy");
+    let legacy = build(
+        &sites,
+        VoronoiBoundary::Envelope,
+        &mut legacy_budget,
+        false,
+        &certified_delaunay(&sites).unwrap(),
+    );
 
-        match (admitted, dual, legacy) {
-            (false, Err(dual), Err(legacy)) => {
+    match (admitted, dual, legacy) {
+        (false, Err(dual), Err(legacy)) => {
+            assert!(
+                matches!(
+                    dual.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                    )
+                ),
+                "unexpected dual error: {dual}"
+            );
+            assert!(
+                matches!(
+                    legacy.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                    )
+                ),
+                "unexpected legacy error: {legacy}"
+            );
+        },
+        (true, Ok(dual), Ok(legacy)) => {
+            let clip = Shape::Polygon(Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()));
+            for diagram in [dual, legacy] {
+                assert_eq!(diagram.polygons.len(), 3, "units={units}");
+                let cells: Vec<_> = diagram
+                    .polygons
+                    .iter()
+                    .map(|output| Shape::Polygon(output.polygon.clone()))
+                    .collect();
+                assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())));
+                assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
+                let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
                 assert!(
-                    matches!(
-                        dual.kind(),
-                        crate::error::ErrorKind::Geometry(
-                            GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
-                        )
-                    ),
-                    "unexpected dual error: {dual}"
+                    clip.difference(&union, Strictness::Lenient)
+                        .unwrap()
+                        .is_empty()
                 );
                 assert!(
-                    matches!(
-                        legacy.kind(),
-                        crate::error::ErrorKind::Geometry(
-                            GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
-                        )
-                    ),
-                    "unexpected legacy error: {legacy}"
+                    union
+                        .difference(&clip, Strictness::Lenient)
+                        .unwrap()
+                        .is_empty()
                 );
-            },
-            (true, Ok(dual), Ok(legacy)) => {
-                let clip =
-                    Shape::Polygon(Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()));
-                for diagram in [dual, legacy] {
-                    assert_eq!(diagram.polygons.len(), 3, "units={units}");
-                    let cells: Vec<_> = diagram
-                        .polygons
-                        .iter()
-                        .map(|output| Shape::Polygon(output.polygon.clone()))
-                        .collect();
-                    assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())));
-                    assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
-                    let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
-                    assert!(
-                        clip.difference(&union, Strictness::Lenient)
-                            .unwrap()
-                            .is_empty()
-                    );
-                    assert!(
-                        union
-                            .difference(&clip, Strictness::Lenient)
-                            .unwrap()
-                            .is_empty()
-                    );
-                }
-            },
-            (expected, dual, legacy) => panic!(
-                "units={units} expected admitted={expected}, dual admitted={}, legacy admitted={}",
-                dual.is_ok(),
-                legacy.is_ok(),
-            ),
-        }
+            }
+        },
+        (expected, dual, legacy) => panic!(
+            "units={units} expected admitted={expected}, dual admitted={}, legacy admitted={}",
+            dual.is_ok(),
+            legacy.is_ok(),
+        ),
     }
 }
 
@@ -215,7 +217,10 @@ fn rounded_duplicate(point: &exact::ExactPoint) -> exact::ExactPoint {
     base.midpoint(&upper).unwrap().midpoint(&base).unwrap()
 }
 
-#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn rounded_boundary_side(point: XY, bounds: [f64; 4]) -> Option<usize> {
     if point.y == bounds[2] {
         Some(0)
@@ -340,14 +345,7 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
     for (name, mutation) in mutations {
         let mut budget = ExpansionBudget::new("test", "mutated dual partition");
         assert!(
-            dual_embed(
-                &mutation,
-                &clip,
-                &sites,
-                VoronoiProduct::Both,
-                &mut budget,
-            )
-            .is_err(),
+            dual_embed(&mutation, &clip, &sites, VoronoiProduct::Both, &mut budget,).is_err(),
             "dual mutation unexpectedly admitted: {name}"
         );
     }

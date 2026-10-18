@@ -6,15 +6,20 @@ use super::super::interval::verified_sqrt_enclosure;
 use super::super::{CertSign, LongitudeSpan};
 use super::*;
 
-#[test]
-fn trig_encloses_fast_path_without_libm_in_the_carrier() {
-    for value in [-0.7, -0.2, 0.0, 0.2, 0.7, 1.0, -1.0] {
-        let (sin, cos) = sin_cos(Bound::exact(value).unwrap()).unwrap();
-        assert!(sin.bound().unwrap().lo <= value.sin());
-        assert!(sin.bound().unwrap().hi >= value.sin());
-        assert!(cos.bound().unwrap().lo <= value.cos());
-        assert!(cos.bound().unwrap().hi >= value.cos());
-    }
+#[rstest::rstest]
+#[case::negative_value_0_7(-0.7)]
+#[case::negative_value_0_2(-0.2)]
+#[case::value_0_0(0.0)]
+#[case::value_0_2(0.2)]
+#[case::value_0_7(0.7)]
+#[case::value_1_0(1.0)]
+#[case::negative_value_1_0(-1.0)]
+fn trig_encloses_fast_path_without_libm_in_the_carrier(#[case] value: f64) {
+    let (sin, cos) = sin_cos(Bound::exact(value).unwrap()).unwrap();
+    assert!(sin.bound().unwrap().lo <= value.sin());
+    assert!(sin.bound().unwrap().hi >= value.sin());
+    assert!(cos.bound().unwrap().lo <= value.cos());
+    assert!(cos.bound().unwrap().hi >= value.cos());
 }
 
 #[test]

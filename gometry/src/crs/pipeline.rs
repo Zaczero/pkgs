@@ -657,41 +657,41 @@ mod tests {
         assert_eq!(singleton_t, [2020.0]);
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn spherical_tmerc_forward_scales_through_the_equatorial_acos_band() {
+    #[case::half_width_1_0e_5(1.0e-5)]
+    #[case::half_width_1_0e_9(1.0e-9)]
+    fn spherical_tmerc_forward_scales_through_the_equatorial_acos_band(#[case] half_width: f64) {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
         let pipeline = spherical_tm_pipeline(&state);
         let center = 0.500_134_258_785_931_5;
 
-        for half_width in [1.0e-5, 1.0e-9] {
-            let start = spherical_witness_position(center - half_width);
-            let end = spherical_witness_position(center + half_width);
-            let middle = spherical_witness_position(center);
-            let delta_longitude = end.0 - start.0;
-            let delta_latitude = end.1 - start.1;
-            let middle_latitude = f64::midpoint(start.1, end.1);
-            let source_length = SPHERICAL_TM_RADIUS
-                * (delta_longitude * middle_latitude.cos()).hypot(delta_latitude);
-            let local_scale = [start, middle, end]
-                .into_iter()
-                .map(|(longitude, latitude)| spherical_tm_scale(&pipeline, longitude, latitude))
-                .fold(0.0_f64, f64::max);
+        let start = spherical_witness_position(center - half_width);
+        let end = spherical_witness_position(center + half_width);
+        let middle = spherical_witness_position(center);
+        let delta_longitude = end.0 - start.0;
+        let delta_latitude = end.1 - start.1;
+        let middle_latitude = f64::midpoint(start.1, end.1);
+        let source_length =
+            SPHERICAL_TM_RADIUS * (delta_longitude * middle_latitude.cos()).hypot(delta_latitude);
+        let local_scale = [start, middle, end]
+            .into_iter()
+            .map(|(longitude, latitude)| spherical_tm_scale(&pipeline, longitude, latitude))
+            .fold(0.0_f64, f64::max);
 
-            let mut x = [start.0, end.0];
-            let mut y = [start.1, end.1];
-            transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
-            let [x0, x1] = x;
-            let [y0, y1] = y;
-            let image_separation = (x1 - x0).hypot(y1 - y0);
+        let mut x = [start.0, end.0];
+        let mut y = [start.1, end.1];
+        transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+        let [x0, x1] = x;
+        let [y0, y1] = y;
+        let image_separation = (x1 - x0).hypot(y1 - y0);
 
-            assert!(
-                image_separation <= 2.0 * source_length * local_scale,
-                "half-width={half_width:e}, source={source_length:e} m, \
-                 image={image_separation:e} m, local scale={local_scale:e}"
-            );
-        }
+        assert!(
+            image_separation <= 2.0 * source_length * local_scale,
+            "half-width={half_width:e}, source={source_length:e} m, \
+             image={image_separation:e} m, local scale={local_scale:e}"
+        );
     }
 
     #[test]

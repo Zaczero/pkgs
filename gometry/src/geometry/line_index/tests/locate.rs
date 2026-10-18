@@ -91,19 +91,19 @@ fn planar_locate_prefers_interior_on_endpoint_interior_exact_tie() {
         "segment 1's interior station is the diagonal length sqrt(2) plus one"
     );
 }
-#[test]
-fn planar_locate_interpolate_matches_proximity_away_from_part_boundaries() {
-    for (wkt, probe) in [
-        ("LINESTRING (0 0, 8 0)", Point::new_raw_xy(2.0, 1.0)),
-        ("LINESTRING (0 0, 0 4, 4 4)", Point::new_raw_xy(2.0, 5.0)),
-        (
-            "MULTILINESTRING ((0 0, 2 0), (10 0, 14 0))",
-            Point::new_raw_xy(12.0, 1.0),
-        ),
-    ] {
-        let prepared = crate::geometry::PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
-        assert_locate_interpolate_matches_proximity(&prepared, probe);
-    }
+#[rstest::rstest]
+#[case::linestring_0_0_8_0("LINESTRING (0 0, 8 0)", Point::new_raw_xy(2.0, 1.0))]
+#[case::linestring_0_0_0_4_4_4("LINESTRING (0 0, 0 4, 4 4)", Point::new_raw_xy(2.0, 5.0))]
+#[case::multilinestring_0_0_2_0_10_0_14_0(
+    "MULTILINESTRING ((0 0, 2 0), (10 0, 14 0))",
+    Point::new_raw_xy(12.0, 1.0)
+)]
+fn planar_locate_interpolate_matches_proximity_away_from_part_boundaries(
+    #[case] wkt: &'static str,
+    #[case] probe: Point,
+) {
+    let prepared = crate::geometry::PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
+    assert_locate_interpolate_matches_proximity(&prepared, probe);
 }
 #[test]
 fn planar_one_shot_locate_streams_without_route_allocations() {

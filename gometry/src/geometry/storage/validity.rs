@@ -773,20 +773,23 @@ mod tests {
         assert_eq!(mask.arrow_bitmap().0.as_ref(), &[0b10]);
     }
 
-    #[test]
-    fn validity_builder_reserves_the_first_missing_run_once() {
-        for prefix in [0, 7, 8, 9, 511] {
-            let mut builder = super::ValidityBuilder::new();
-            builder.extend_present(prefix);
-            let ((), allocations) =
-                crate::test_support::allocation_count(|| builder.extend_missing(4096));
-            assert_eq!(allocations, 1, "prefix {prefix}");
-            let mask = builder.finish().expect("missing run");
-            assert_eq!(mask.present_count(), prefix);
-            assert_eq!(mask.missing_count(), 4096);
-            assert!(mask.iter().take(prefix).all(|missing| !missing));
-            assert!(mask.iter().skip(prefix).all(|missing| missing));
-        }
+    #[rstest::rstest]
+    #[case::prefix_0(0)]
+    #[case::prefix_7(7)]
+    #[case::prefix_8(8)]
+    #[case::prefix_9(9)]
+    #[case::prefix_511(511)]
+    fn validity_builder_reserves_the_first_missing_run_once(#[case] prefix: usize) {
+        let mut builder = super::ValidityBuilder::new();
+        builder.extend_present(prefix);
+        let ((), allocations) =
+            crate::test_support::allocation_count(|| builder.extend_missing(4096));
+        assert_eq!(allocations, 1, "prefix {prefix}");
+        let mask = builder.finish().expect("missing run");
+        assert_eq!(mask.present_count(), prefix);
+        assert_eq!(mask.missing_count(), 4096);
+        assert!(mask.iter().take(prefix).all(|missing| !missing));
+        assert!(mask.iter().skip(prefix).all(|missing| missing));
     }
 
     #[test]
@@ -873,7 +876,7 @@ mod tests {
     #[test]
     fn operation_rank_directory_is_linear_for_unaligned_large_batches() {
         let len = 2049;
-        let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap();
+        let mask = ValidityMask::from_sparse(len, &[len.wrapping_sub(1)]).unwrap();
         let rows: Vec<_> = (0..len).collect();
 
         reset_count_valid_bytes();
@@ -900,22 +903,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn operation_rank_directory_scales_linearly_across_batch_sizes() {
-        for len in [1025, 2049, 4097] {
-            let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap();
-            let rows: Vec<_> = (0..len).collect();
-            reset_count_valid_bytes();
-            let rank = mask.rank_for_rows(rows.iter().copied());
-            for &row in &rows {
-                let _ = rank.resolve(row);
-            }
-            let bytes = count_valid_bytes();
-            assert!(
-                bytes <= mask.bytes.len() + len * RANK_BLOCK_BYTES,
-                "directory visited {bytes} bytes for {len} rows"
-            );
+    #[rstest::rstest]
+    #[case::len_1025(1025)]
+    #[case::len_2049(2049)]
+    #[case::len_4097(4097)]
+    fn operation_rank_directory_scales_linearly_across_batch_sizes(#[case] len: usize) {
+        let mask = ValidityMask::from_sparse(len, &[len.wrapping_sub(1)]).unwrap();
+        let rows: Vec<_> = (0..len).collect();
+        reset_count_valid_bytes();
+        let rank = mask.rank_for_rows(rows.iter().copied());
+        for &row in &rows {
+            let _ = rank.resolve(row);
         }
+        let bytes = count_valid_bytes();
+        assert!(
+            bytes
+                <= mask
+                    .bytes
+                    .len()
+                    .wrapping_add(len.wrapping_mul(RANK_BLOCK_BYTES)),
+            "directory visited {bytes} bytes for {len} rows"
+        );
     }
 
     #[test]

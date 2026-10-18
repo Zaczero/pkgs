@@ -201,23 +201,23 @@ pub(crate) fn siti_to_st(si: u32) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cube_face_ties_prefer_z_then_y_like_canonical_s2() {
-        for (point, expected) in [
-            (Point3::new(1.0, 1.0, 0.0), Face::F1),
-            (Point3::new(1.0, 0.0, 1.0), Face::F2),
-            (Point3::new(0.0, 1.0, 1.0), Face::F2),
-            (Point3::new(1.0, 1.0, 1.0), Face::F2),
-            (Point3::new(-1.0, -1.0, 0.0), Face::F4),
-            (Point3::new(-1.0, 0.0, -1.0), Face::F5),
-            (Point3::new(0.0, -1.0, -1.0), Face::F5),
-            (Point3::new(-1.0, -1.0, -1.0), Face::F5),
-            (Point3::new(1.0_f64.next_up(), 1.0, 1.0), Face::F0),
-            (Point3::new(1.0, 1.0_f64.next_up(), 1.0), Face::F1),
-            (Point3::new(1.0, 1.0, 1.0_f64.next_up()), Face::F2),
-        ] {
-            assert_eq!(face(point), expected, "{point:?}");
-        }
+    #[rstest::rstest]
+    #[case::point3_new_1_0_1_0_0_0(Point3::new(1.0, 1.0, 0.0), Face::F1)]
+    #[case::point3_new_1_0_0_0_1_0(Point3::new(1.0, 0.0, 1.0), Face::F2)]
+    #[case::point3_new_0_0_1_0_1_0(Point3::new(0.0, 1.0, 1.0), Face::F2)]
+    #[case::point3_new_1_0_1_0_1_0(Point3::new(1.0, 1.0, 1.0), Face::F2)]
+    #[case::point3_new_1_0_1_0_0_0_d70e475b(Point3::new(-1.0, -1.0, 0.0), Face::F4)]
+    #[case::point3_new_1_0_0_0_1_0_eca4874a(Point3::new(-1.0, 0.0, -1.0), Face::F5)]
+    #[case::point3_new_0_0_1_0_1_0_02fa5b00(Point3::new(0.0, -1.0, -1.0), Face::F5)]
+    #[case::point3_new_1_0_1_0_1_0_de6b882c(Point3::new(-1.0, -1.0, -1.0), Face::F5)]
+    #[case::point3_new_1_0_f64_next_up_1_0_1_0(Point3::new(1.0_f64.next_up(), 1.0, 1.0), Face::F0)]
+    #[case::point3_new_1_0_1_0_f64_next_up_1_0(Point3::new(1.0, 1.0_f64.next_up(), 1.0), Face::F1)]
+    #[case::point3_new_1_0_1_0_1_0_f64_next_up(Point3::new(1.0, 1.0, 1.0_f64.next_up()), Face::F2)]
+    fn cube_face_ties_prefer_z_then_y_like_canonical_s2(
+        #[case] point: Point3,
+        #[case] expected: Face,
+    ) {
+        assert_eq!(face(point), expected, "{point:?}");
     }
 
     /// Internal consistency over a global sweep including cube corners and

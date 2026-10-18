@@ -80,8 +80,11 @@ fn point_from(shape: &Shape) -> Point {
     point
 }
 
-#[test]
-fn exact_owner_work_reuses_shared_collection_slices() {
+#[rstest::rstest]
+#[case::depth_8(8)]
+#[case::depth_12(12)]
+#[case::depth_128(128)]
+fn exact_owner_work_reuses_shared_collection_slices(#[case] depth: usize) {
     let polygon = polygon(0.0, 0.0, 1.0);
     let line = line(&[(0.0, 0.0), (3.0, 4.0)]);
     let multi_point = Shape::multi_point(
@@ -93,72 +96,71 @@ fn exact_owner_work_reuses_shared_collection_slices() {
         .unwrap(),
     );
 
-    for depth in [8, 12, 128] {
-        let cases = [
-            (
-                repeated(polygon.clone(), depth),
-                CentroidDimension::Areal,
-                (0.5, 0.5),
-                10,
-            ),
-            (
-                repeated(line.clone(), depth),
-                CentroidDimension::Lineal,
-                (1.5, 2.0),
-                4,
-            ),
-            (
-                repeated(multi_point.clone(), depth),
-                CentroidDimension::Puntal,
-                (4.0, 2.0),
-                4,
-            ),
-        ];
-        for (shape, tier, expected, source_xy) in cases {
-            let (centroid, work) = exact_owner_centroid_with_work(&shape, tier).unwrap();
-            let centroid = centroid.expect("positive tier measure");
-            assert_eq!(centroid, expected);
-            let expected_owner_visits = depth
-                .checked_add(2)
-                .expect("test depth fits its owner count");
-            let leaf_members = match tier {
-                CentroidDimension::Areal => 2,
-                CentroidDimension::Lineal => 0,
-                CentroidDimension::Puntal => 4,
-            };
-            let expected_member_slots = depth
-                .checked_mul(2)
-                .and_then(|slots| slots.checked_add(leaf_members))
-                .expect("test depth fits its member count");
-            assert_eq!(work.owner_visits, expected_owner_visits);
-            assert_eq!(work.member_slots, expected_member_slots);
-            assert_eq!(work.source_xy, source_xy);
-        }
+    let cases = [
+        (
+            repeated(polygon, depth),
+            CentroidDimension::Areal,
+            (0.5, 0.5),
+            10,
+        ),
+        (
+            repeated(line, depth),
+            CentroidDimension::Lineal,
+            (1.5, 2.0),
+            4,
+        ),
+        (
+            repeated(multi_point, depth),
+            CentroidDimension::Puntal,
+            (4.0, 2.0),
+            4,
+        ),
+    ];
+    for (shape, tier, expected, source_xy) in cases {
+        let (centroid, work) = exact_owner_centroid_with_work(&shape, tier).unwrap();
+        let centroid = centroid.expect("positive tier measure");
+        assert_eq!(centroid, expected);
+        let expected_owner_visits = depth
+            .checked_add(2)
+            .expect("test depth fits its owner count");
+        let leaf_members = match tier {
+            CentroidDimension::Areal => 2,
+            CentroidDimension::Lineal => 0,
+            CentroidDimension::Puntal => 4,
+        };
+        let expected_member_slots = depth
+            .checked_mul(2)
+            .and_then(|slots| slots.checked_add(leaf_members))
+            .expect("test depth fits its member count");
+        assert_eq!(work.owner_visits, expected_owner_visits);
+        assert_eq!(work.member_slots, expected_member_slots);
+        assert_eq!(work.source_xy, source_xy);
     }
 }
 
-#[test]
-fn repeated_shared_line_dags_wait_for_the_repeat_work_budget() {
+#[rstest::rstest]
+#[case::depth_4(4)]
+#[case::depth_8(8)]
+fn repeated_shared_line_dags_wait_for_the_repeat_work_budget(#[case] depth: usize) {
     let source = line(&[(0.0, 0.0), (2.0, 0.0)]);
-    for depth in [4, 8] {
-        let shape = repeated(source.clone(), depth);
-        let mut admission = None;
-        let outcome = visit_lineal_owner_runs(&shape, &mut admission, &mut |_, _| false);
-        assert!(
-            admission
-                .as_ref()
-                .is_some_and(|admission| admission.repeated_owner)
-        );
-        let repeated_work = admission.as_ref().unwrap().repeated_work;
-        if depth == 4 {
-            assert!(matches!(outcome, CentroidAttempt::Ready(())));
-            assert!(repeated_work <= CENTROID_FAST_REPEAT_WORK_BUDGET);
-        } else {
-            assert!(matches!(outcome, CentroidAttempt::ExactAtRoot(_)));
-            assert!(repeated_work > CENTROID_FAST_REPEAT_WORK_BUDGET);
-        }
-        assert_ordinary_point(point_from(&shape), (1.0, 0.0));
+
+    let shape = repeated(source, depth);
+    let mut admission = None;
+    let outcome = visit_lineal_owner_runs(&shape, &mut admission, &mut |_, _| false);
+    assert!(
+        admission
+            .as_ref()
+            .is_some_and(|admission| admission.repeated_owner)
+    );
+    let repeated_work = admission.as_ref().unwrap().repeated_work;
+    if depth == 4 {
+        assert!(matches!(outcome, CentroidAttempt::Ready(())));
+        assert!(repeated_work <= CENTROID_FAST_REPEAT_WORK_BUDGET);
+    } else {
+        assert!(matches!(outcome, CentroidAttempt::ExactAtRoot(_)));
+        assert!(repeated_work > CENTROID_FAST_REPEAT_WORK_BUDGET);
     }
+    assert_ordinary_point(point_from(&shape), (1.0, 0.0));
 }
 
 #[test]

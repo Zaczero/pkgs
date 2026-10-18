@@ -140,65 +140,75 @@ mod tests {
         assert!(comparisons.get() <= 2 * len);
     }
 
-    #[test]
-    fn column_normalization_matches_full_ordinate_presentation_orbit() {
+    #[rstest::rstest]
+    #[case::empty(vec![])]
+    #[case::open({
         let point = |x, z| Point::new_axes(x, x, ZOrdinate(Some(z)), MOrdinate(Some(-z))).unwrap();
-        for input in [
-            vec![],
-            vec![point(2., 3.), point(1., 4.)],
-            vec![point(0., 9.), point(1., 3.), point(0., 1.)],
-            vec![
-                point(0., 1.),
-                point(2., 2.),
-                point(0., 1.),
-                point(1., 3.),
-                point(0., 1.),
-            ],
-            vec![
-                point(-0., 1.),
-                point(2., 2.),
-                point(0., 1.),
-                point(1., 3.),
-                point(-0., 1.),
-            ],
-        ] {
-            let mut presentations = Vec::new();
-            for reverse in [false, true] {
-                let mut sequence = input.clone();
-                if reverse {
-                    sequence.reverse();
-                }
-                if sequence.len() > 2 && same_point(sequence[0], sequence[sequence.len() - 1]) {
-                    sequence.pop();
-                    for start in 0..sequence.len() {
-                        let mut rotated = sequence.clone();
-                        rotated.rotate_left(start);
-                        rotated.push(rotated[0]);
-                        presentations.push(rotated);
-                    }
-                } else {
-                    presentations.push(sequence);
-                }
+        vec![point(2., 3.), point(1., 4.)]
+    })]
+    #[case::closed({
+        let point = |x, z| Point::new_axes(x, x, ZOrdinate(Some(z)), MOrdinate(Some(-z))).unwrap();
+        vec![point(0., 9.), point(1., 3.), point(0., 1.)]
+    })]
+    #[case::repeated_minimum({
+        let point = |x, z| Point::new_axes(x, x, ZOrdinate(Some(z)), MOrdinate(Some(-z))).unwrap();
+        vec![
+            point(0., 1.),
+            point(2., 2.),
+            point(0., 1.),
+            point(1., 3.),
+            point(0., 1.),
+        ]
+    })]
+    #[case::signed_zero({
+        let point = |x, z| Point::new_axes(x, x, ZOrdinate(Some(z)), MOrdinate(Some(-z))).unwrap();
+        vec![
+            point(-0., 1.),
+            point(2., 2.),
+            point(0., 1.),
+            point(1., 3.),
+            point(-0., 1.),
+        ]
+    })]
+    fn column_normalization_matches_full_ordinate_presentation_orbit(#[case] input: Vec<Point>) {
+        let mut presentations = Vec::new();
+        for reverse in [false, true] {
+            let mut sequence = input.clone();
+            if reverse {
+                sequence.reverse();
             }
-            let expected = presentations
-                .into_iter()
-                .min_by(crate::geometry::compare_point_slices)
-                .unwrap();
-            let source = CoordSeq::try_from_points(&input).unwrap();
-            let actual = normalized_line(&source).unwrap();
-            let bits = |point: Point| {
-                (
-                    point.x.to_bits(),
-                    point.y.to_bits(),
-                    point.z().map(f64::to_bits),
-                    point.m().map(f64::to_bits),
-                )
-            };
-            assert_eq!(
-                actual.iter_coords().map(bits).collect::<Vec<_>>(),
-                expected.into_iter().map(bits).collect::<Vec<_>>()
-            );
+            if sequence.len() > 2
+                && same_point(sequence[0], sequence[sequence.len().wrapping_sub(1)])
+            {
+                sequence.pop();
+                for start in 0..sequence.len() {
+                    let mut rotated = sequence.clone();
+                    rotated.rotate_left(start);
+                    rotated.push(rotated[0]);
+                    presentations.push(rotated);
+                }
+            } else {
+                presentations.push(sequence);
+            }
         }
+        let expected = presentations
+            .into_iter()
+            .min_by(crate::geometry::compare_point_slices)
+            .unwrap();
+        let source = CoordSeq::try_from_points(&input).unwrap();
+        let actual = normalized_line(&source).unwrap();
+        let bits = |point: Point| {
+            (
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z().map(f64::to_bits),
+                point.m().map(f64::to_bits),
+            )
+        };
+        assert_eq!(
+            actual.iter_coords().map(bits).collect::<Vec<_>>(),
+            expected.into_iter().map(bits).collect::<Vec<_>>()
+        );
     }
 
     #[test]

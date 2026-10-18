@@ -225,20 +225,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn empty_axes_preserve_present_z_and_m_without_owner_allocations() {
-        for axes in [
-            CoordinateAxes::XY,
-            CoordinateAxes::XYZ,
-            CoordinateAxes::XYM,
-            CoordinateAxes::XYZM,
-        ] {
-            let (sequence, allocations) = allocation_count(|| CoordSeq::empty(axes));
-            assert_eq!(allocations, 0);
-            assert_eq!(sequence.axes(), axes);
-            assert_eq!(sequence.zs().is_some(), axes.has_z());
-            assert_eq!(sequence.ms().is_some(), axes.has_m());
-        }
+    #[rstest::rstest]
+    #[case::coordinateaxes_xy(CoordinateAxes::XY)]
+    #[case::coordinateaxes_xyz(CoordinateAxes::XYZ)]
+    #[case::coordinateaxes_xym(CoordinateAxes::XYM)]
+    #[case::coordinateaxes_xyzm(CoordinateAxes::XYZM)]
+    fn empty_axes_preserve_present_z_and_m_without_owner_allocations(#[case] axes: CoordinateAxes) {
+        let (sequence, allocations) = allocation_count(|| CoordSeq::empty(axes));
+        assert_eq!(allocations, 0);
+        assert_eq!(sequence.axes(), axes);
+        assert_eq!(sequence.zs().is_some(), axes.has_z());
+        assert_eq!(sequence.ms().is_some(), axes.has_m());
     }
 
     #[test]

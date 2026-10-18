@@ -811,8 +811,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packed_pickle_checks_present_mask_count_for_each_packed_family() {
+    #[rstest::rstest]
+    #[case::empty_mask_as_slice(&[])]
+    #[case::long_mask_as_slice(&[0, 0, 0])]
+    fn packed_pickle_checks_present_mask_count_for_each_packed_family(#[case] missing: &[u8]) {
         let point_x = f64_bytes(&[1.0]);
         let point_y = f64_bytes(&[2.0]);
         let line_x = f64_bytes(&[0.0, 1.0]);
@@ -820,30 +822,25 @@ mod tests {
         let line_offsets = i32_bytes(&[0, 2]);
         let empty_ring_offsets = i32_bytes(&[0]);
         let empty_polygon_offsets = i32_bytes(&[0, 0]);
-        let empty_mask = [];
-        let long_mask = [0, 0, 0];
-        let masks = [empty_mask.as_slice(), long_mask.as_slice()];
 
-        for missing in masks {
-            assert_mask_count_error(
-                (point_x.as_slice(), point_y.as_slice(), None, None),
-                OffsetLevels::Points,
-                missing,
-            );
-            assert_mask_count_error(
-                (line_x.as_slice(), line_y.as_slice(), None, None),
-                OffsetLevels::Lines(line_offsets.as_slice()),
-                missing,
-            );
-            assert_mask_count_error(
-                (b"", b"", None, None),
-                OffsetLevels::Polygons {
-                    rings: empty_ring_offsets.as_slice(),
-                    polygons: empty_polygon_offsets.as_slice(),
-                },
-                missing,
-            );
-        }
+        assert_mask_count_error(
+            (point_x.as_slice(), point_y.as_slice(), None, None),
+            OffsetLevels::Points,
+            missing,
+        );
+        assert_mask_count_error(
+            (line_x.as_slice(), line_y.as_slice(), None, None),
+            OffsetLevels::Lines(line_offsets.as_slice()),
+            missing,
+        );
+        assert_mask_count_error(
+            (b"", b"", None, None),
+            OffsetLevels::Polygons {
+                rings: empty_ring_offsets.as_slice(),
+                polygons: empty_polygon_offsets.as_slice(),
+            },
+            missing,
+        );
     }
 
     #[test]

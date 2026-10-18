@@ -191,33 +191,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn integer_lattice_centers_and_ties_round_exactly() {
+    #[rstest::rstest]
+    #[case::a_0_0_0_0((0.0, 0.0), (2.0, 0.0), (0.0, 2.0))]
+    #[case::a_0_0_0_0_3a19fcb5((0.0, 0.0), (1.0, 0.0), (0.0, 1.0))]
+    #[case::a_1_0_0_0((-1.0, 0.0), (1.0, 0.0), (0.0, 1.0))]
+    #[case::a_3_0_7_0((3.0, 7.0), (11.0, 7.0), (3.0, 19.0))]
+    #[case::a_0_0_0_0_811840e0((0.0, 0.0), (1e15, 0.0), (0.0, 1e15))]
+    #[case::a_1e300_1e300((1e300, 1e300), (1e300 + 1e284, 1e300), (1e300, 1e300 + 1e284))]
+    // A true tie: the center's x is 2^52 + 1/2, exactly halfway between
+    // two doubles, so the certificate must decline and the exact
+    // construction round to even.
+    #[case::a_4_503_599_627_370_496_0_0_0((4_503_599_627_370_496.0, 0.0), (4_503_599_627_370_497.0, 0.0), (4_503_599_627_370_496.0, 4.0))]
+    fn integer_lattice_centers_and_ties_round_exactly(
+        #[case] a: (f64, f64),
+        #[case] b: (f64, f64),
+        #[case] c: (f64, f64),
+    ) {
         // Right triangles on the lattice have circumcenters at half-integers,
         // which are exact; symmetric triples put the center on an axis.
-        for (a, b, c) in [
-            ((0.0, 0.0), (2.0, 0.0), (0.0, 2.0)),
-            ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
-            ((-1.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
-            ((3.0, 7.0), (11.0, 7.0), (3.0, 19.0)),
-            ((0.0, 0.0), (1e15, 0.0), (0.0, 1e15)),
-            (
-                (1e300, 1e300),
-                (1e300 + 1e284, 1e300),
-                (1e300, 1e300 + 1e284),
-            ),
-            // A true tie: the center's x is 2^52 + 1/2, exactly halfway between
-            // two doubles, so the certificate must decline and the exact
-            // construction round to even.
-            (
-                (4_503_599_627_370_496.0, 0.0),
-                (4_503_599_627_370_497.0, 0.0),
-                (4_503_599_627_370_496.0, 4.0),
-            ),
-        ] {
-            let (a, b, c) = (XY::new(a.0, a.1), XY::new(b.0, b.1), XY::new(c.0, c.1));
-            agree(a, b, c);
-        }
+
+        let (a, b, c) = (XY::new(a.0, a.1), XY::new(b.0, b.1), XY::new(c.0, c.1));
+        agree(a, b, c);
     }
 
     #[test]

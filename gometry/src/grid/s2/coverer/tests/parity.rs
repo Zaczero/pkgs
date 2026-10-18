@@ -167,26 +167,16 @@ fn assert_source_permutations_are_deterministic(level: u8, rule: CoverRule) {
     );
 }
 
-/// Give each level and rule an independently runnable permutation case.
-macro_rules! source_permutation_cases {
-    ($($name:ident: ($level:literal, $rule:ident)),* $(,)?) => {
-        $(
-            #[test]
-            fn $name() {
-                assert_source_permutations_are_deterministic($level, CoverRule::$rule);
-            }
-        )*
-    };
-}
-
-source_permutation_cases! {
-    source_permutations_level_four_overlap: (4, Overlap),
-    source_permutations_level_four_within: (4, Within),
-    source_permutations_level_four_center: (4, Center),
-    source_permutations_level_six_overlap: (6, Overlap),
-    source_permutations_level_six_within: (6, Within),
-    source_permutations_level_six_center: (6, Center),
-    source_permutations_level_eight_overlap: (8, Overlap),
-    source_permutations_level_eight_within: (8, Within),
-    source_permutations_level_eight_center: (8, Center),
+#[rstest::rstest]
+#[case::source_permutations_level_four_overlap(4, CoverRule::Overlap)]
+#[case::source_permutations_level_four_within(4, CoverRule::Within)]
+#[case::source_permutations_level_four_center(4, CoverRule::Center)]
+#[case::source_permutations_level_six_overlap(6, CoverRule::Overlap)]
+#[case::source_permutations_level_six_within(6, CoverRule::Within)]
+#[case::source_permutations_level_six_center(6, CoverRule::Center)]
+#[case::source_permutations_level_eight_overlap(8, CoverRule::Overlap)]
+#[case::source_permutations_level_eight_within(8, CoverRule::Within)]
+#[case::source_permutations_level_eight_center(8, CoverRule::Center)]
+fn source_permutations_are_deterministic(#[case] level: u8, #[case] rule: CoverRule) {
+    assert_source_permutations_are_deterministic(level, rule);
 }

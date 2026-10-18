@@ -729,56 +729,60 @@ fn geographic_coverage_source_fails_open_without_a_physical_pole_roof() {
     assert_eq!(source.ring_fills().len(), 0);
 }
 
-#[test]
-fn periodic_pole_roof_blocks_raw_latitude_pruning() {
+#[rstest::rstest]
+#[case::reverse_false(false, 60.0, 70.0, 1, PhysicalEndpointKey::NorthPole)]
+#[case::reverse_true(true, 60.0, 70.0, -1, PhysicalEndpointKey::NorthPole)]
+#[case::reverse_false_f9214708(false, -60.0, -70.0, 1, PhysicalEndpointKey::SouthPole)]
+#[case::reverse_true_f31a9e67(true, -60.0, -70.0, -1, PhysicalEndpointKey::SouthPole)]
+fn periodic_pole_roof_blocks_raw_latitude_pruning(
+    #[case] reverse: bool,
+    #[case] ring_latitude: f64,
+    #[case] latitude: f64,
+    #[case] degree: i64,
+    #[case] pole: PhysicalEndpointKey,
+) {
     // The roof follows the physical latitude hemisphere, not the direction
     // of the longitude walk. The candidate lies strictly inside each
     // analytic cap while being strictly disjoint from the raw ring latitude,
     // so removing the periodic roof from the rectangle proof makes this test
     // turn red.
-    for (reverse, ring_latitude, latitude, degree, pole) in [
-        (false, 60.0, 70.0, 1, PhysicalEndpointKey::NorthPole),
-        (true, 60.0, 70.0, -1, PhysicalEndpointKey::NorthPole),
-        (false, -60.0, -70.0, 1, PhysicalEndpointKey::SouthPole),
-        (true, -60.0, -70.0, -1, PhysicalEndpointKey::SouthPole),
-    ] {
-        let source = GeographicCoverageSource::new(
-            &Shape::Polygon(Polygon::new(
-                periodic_latitude_ring(ring_latitude, reverse),
-                Vec::new(),
-            )),
-            SphericalGridTarget::H3(Resolution::Two),
-        )
-        .unwrap();
-        let fill = source.ring_fills().next().expect("one analytic shell");
-        assert_eq!(fill.degree, degree);
-        assert_eq!(
-            fill.roof
-                .as_ref()
-                .expect("physical polar ring has a pole roof")
-                .pole,
-            pole
-        );
-        assert_eq!(
-            source.authority_point_class(0.0, latitude),
-            GridPointClass::Interior
-        );
-        let latitude = if latitude > 0.0 {
-            Bound::new(69.0, 71.0).unwrap()
-        } else {
-            Bound::new(-71.0, -69.0).unwrap()
-        };
-        let candidate = DegreeWindowResult::Windows(CertifiedDegreeWindows {
-            latitude,
-            longitude: CertifiedLongitudeDegrees::One(Bound::new(-1.0, 1.0).unwrap()),
-        });
-        assert_ne!(
-            source
-                .classify_rect(&source.admit_rectangular_candidate(candidate))
-                .expect("exact rectangle classification"),
-            RectClass::Outside
-        );
-    }
+
+    let source = GeographicCoverageSource::new(
+        &Shape::Polygon(Polygon::new(
+            periodic_latitude_ring(ring_latitude, reverse),
+            Vec::new(),
+        )),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap();
+    let fill = source.ring_fills().next().expect("one analytic shell");
+    assert_eq!(fill.degree, degree);
+    assert_eq!(
+        fill.roof
+            .as_ref()
+            .expect("physical polar ring has a pole roof")
+            .pole,
+        pole
+    );
+    assert_eq!(
+        source.authority_point_class(0.0, latitude),
+        GridPointClass::Interior
+    );
+    let latitude = if latitude > 0.0 {
+        Bound::new(69.0, 71.0).unwrap()
+    } else {
+        Bound::new(-71.0, -69.0).unwrap()
+    };
+    let candidate = DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude,
+        longitude: CertifiedLongitudeDegrees::One(Bound::new(-1.0, 1.0).unwrap()),
+    });
+    assert_ne!(
+        source
+            .classify_rect(&source.admit_rectangular_candidate(candidate))
+            .expect("exact rectangle classification"),
+        RectClass::Outside
+    );
 }
 
 #[test]

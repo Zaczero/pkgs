@@ -32,65 +32,70 @@ fn geographic_strict_membership_retains_shared_line_boundary_parity() {
     }
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_point_membership_matches_full_relation() {
-    for wkt in [
-        "POLYGON ((0 0,4 0,4 4,0 4,0 0))",
-        "POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))",
-        "POLYGON ((0 0,2 2,4 4,0 0))",
-        "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
-        "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
-        "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
-        "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 1,2 1,2 2,0 2,0 1))",
-        "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))",
-        "POLYGON EMPTY",
-        "MULTIPOLYGON (((0 0,2 2,4 4,0 0)),EMPTY)",
-        "POLYGON ((179 0,181 0,181 4,179 4,179 0))",
-        "LINESTRING (0 80,0 90)",
-    ] {
-        let shape = crate::io::parse_wkt(wkt).unwrap();
-        let target = PreparedPlan::transient(&shape);
-        let target_cache = crate::geometry::FrameDependentCaches::default();
-        for (x, y) in [(2.0, 2.0), (0.0, 1.5), (-180.0, 2.0), (75.0, 90.0)] {
-            let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y)));
-            let point_cache = crate::geometry::FrameDependentCaches::default();
-            for swapped in [false, true] {
-                let pair = if swapped {
-                    PreparedTopologyPair::try_geographic(
-                        &point,
-                        &point_cache,
-                        &target,
-                        &target_cache,
-                        degrees(),
-                    )
-                } else {
-                    PreparedTopologyPair::try_geographic(
-                        &target,
-                        &target_cache,
-                        &point,
-                        &point_cache,
-                        degrees(),
-                    )
-                }
-                .unwrap();
-                let relation = pair.relate().unwrap();
-                for predicate in [
-                    Predicate::Contains,
-                    Predicate::ContainsProperly,
-                    Predicate::Within,
-                    Predicate::Covers,
-                    Predicate::CoveredBy,
-                    Predicate::Intersects,
-                    Predicate::Disjoint,
-                ] {
-                    let spec = predicate.spec();
-                    assert_eq!(
-                        topology_scalar_pair(&spec, &pair).unwrap(),
-                        predicate_matrix_value(&spec, relation),
-                        "{wkt}, ({x}, {y}), {predicate:?}, swapped={swapped}",
-                    );
-                }
+#[case::polygon_0_0_4_0_4_4_0_4_0_0("POLYGON ((0 0,4 0,4 4,0 4,0 0))")]
+#[case::polygon_0_0_4_0_4_4_2_4_2_7_2_4_0_4_0_0("POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))")]
+#[case::polygon_0_0_2_2_4_4_0_0("POLYGON ((0 0,2 2,4 4,0 0))")]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_0_0_4_0_4_4_0_4_0_0(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))"
+)]
+#[case::polygon_0_0_4_4_0_4_4_0_0_0("POLYGON ((0 0,4 4,0 4,4 0,0 0))")]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_4_0_4_4_0_4_0_0(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))"
+)]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_0_1_2_1_2_2_0_2_0_1(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 1,2 1,2 2,0 2,0 1))"
+)]
+#[case::polygon_0_0_4_0_4_4_0_4_0_0_8_8_9_8_9_9_8_9_8_8(
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))"
+)]
+#[case::polygon_empty("POLYGON EMPTY")]
+#[case::multipolygon_0_0_2_2_4_4_0_0_empty("MULTIPOLYGON (((0 0,2 2,4 4,0 0)),EMPTY)")]
+#[case::polygon_179_0_181_0_181_4_179_4_179_0("POLYGON ((179 0,181 0,181 4,179 4,179 0))")]
+#[case::linestring_0_80_0_90("LINESTRING (0 80,0 90)")]
+fn geographic_point_membership_matches_full_relation(#[case] wkt: &'static str) {
+    let shape = crate::io::parse_wkt(wkt).unwrap();
+    let target = PreparedPlan::transient(&shape);
+    let target_cache = crate::geometry::FrameDependentCaches::default();
+    for (x, y) in [(2.0, 2.0), (0.0, 1.5), (-180.0, 2.0), (75.0, 90.0)] {
+        let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y)));
+        let point_cache = crate::geometry::FrameDependentCaches::default();
+        for swapped in [false, true] {
+            let pair = if swapped {
+                PreparedTopologyPair::try_geographic(
+                    &point,
+                    &point_cache,
+                    &target,
+                    &target_cache,
+                    degrees(),
+                )
+            } else {
+                PreparedTopologyPair::try_geographic(
+                    &target,
+                    &target_cache,
+                    &point,
+                    &point_cache,
+                    degrees(),
+                )
+            }
+            .unwrap();
+            let relation = pair.relate().unwrap();
+            for predicate in [
+                Predicate::Contains,
+                Predicate::ContainsProperly,
+                Predicate::Within,
+                Predicate::Covers,
+                Predicate::CoveredBy,
+                Predicate::Intersects,
+                Predicate::Disjoint,
+            ] {
+                let spec = predicate.spec();
+                assert_eq!(
+                    topology_scalar_pair(&spec, &pair).unwrap(),
+                    predicate_matrix_value(&spec, relation),
+                    "{wkt}, ({x}, {y}), {predicate:?}, swapped={swapped}",
+                );
             }
         }
     }
@@ -287,76 +292,64 @@ fn exterior_scalar_points_do_not_warm_a_membership_index() {
     assert!(control_allocations > 0);
 }
 
-#[test]
-fn shared_boolean_point_predicates_match_unshared_wkb_expansion() {
-    let cases = [
-            (
-                crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
-                Point::new_raw_xy(1.0, 1.0),
-            ),
-            (
-                crate::io::parse_wkt("LINESTRING (0 0,2 0)").unwrap(),
-                Point::new_raw_xy(0.0, 0.0),
-            ),
-            (
-                crate::io::parse_wkt("POINT (1 1)").unwrap(),
-                Point::new_raw_xy(1.0, 1.0),
-            ),
-            (
-                crate::io::parse_wkt(
-                    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",
-                )
-                .unwrap(),
-                Point::new_raw_xy(0.5, 0.5),
-            ),
-            (
-                crate::io::parse_wkt(
-                    "GEOMETRYCOLLECTION (POINT ZM (0 0 1 10), POINT ZM (0 0 2 20), POINT ZM (1 1 3 30))",
-                )
-                .unwrap(),
-                Point::new_raw_xy(0.0, 0.0),
-            ),
-            (
-                Shape::geometry_collection(vec![
-                    crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
-                    crate::io::parse_wkt("LINESTRING (-1 1,3 1)").unwrap(),
-                    crate::io::parse_wkt("POINT (1 1)").unwrap(),
-                ])
-                .unwrap(),
-                Point::new_raw_xy(1.0, 1.0),
-            ),
-        ];
+#[rstest::rstest]
+#[case::crate_io_parse_wkt_polygon_0_0_2_0_2_2_0_2_0_0_unwrap(crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(), Point::new_raw_xy(1.0, 1.0))]
+#[case::crate_io_parse_wkt_linestring_0_0_2_0_unwrap(crate::io::parse_wkt("LINESTRING (0 0,2 0)").unwrap(), Point::new_raw_xy(0.0, 0.0))]
+#[case::crate_io_parse_wkt_point_1_1_unwrap(crate::io::parse_wkt("POINT (1 1)").unwrap(), Point::new_raw_xy(1.0, 1.0))]
+#[case::crate_io_parse_wkt_polygon_0_0_4_0_4_4_0_4_0_0_1_b9d057e1(
+    crate::io::parse_wkt("POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",).unwrap(),
+    Point::new_raw_xy(0.5, 0.5)
+)]
+#[case::crate_io_parse_wkt_geometrycollection_point_zm_0_e8953f49(
+    crate::io::parse_wkt(
+        "GEOMETRYCOLLECTION (POINT ZM (0 0 1 10), POINT ZM (0 0 2 20), POINT ZM (1 1 3 30))",
+    )
+    .unwrap(),
+    Point::new_raw_xy(0.0, 0.0)
+)]
+#[case::shape_geometry_collection_vec_crate_io_parse_wkt_71544452(
+    Shape::geometry_collection(vec![
+        crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
+        crate::io::parse_wkt("LINESTRING (-1 1,3 1)").unwrap(),
+        crate::io::parse_wkt("POINT (1 1)").unwrap(),
+    ])
+    .unwrap(),
+    Point::new_raw_xy(1.0, 1.0)
+)]
+fn shared_boolean_point_predicates_match_unshared_wkb_expansion(
+    #[case] base: Shape,
+    #[case] query: Point,
+) {
+    let point = Shape::Point(query);
+    for depth in [2, 3] {
+        let shared = shared_collection(base.clone(), depth);
+        let expanded = crate::io::parse_wkb(&wkb(&shared))
+            .expect("expanded WKB parses")
+            .shape;
 
-    for (base, query) in cases {
-        let point = Shape::Point(query);
-        for depth in [2, 3] {
-            let shared = shared_collection(base.clone(), depth);
-            let expanded = crate::io::parse_wkb(&wkb(&shared))
-                .expect("expanded WKB parses")
-                .shape;
-
-            for predicate in [
-                Predicate::Intersects,
-                Predicate::Disjoint,
-                Predicate::Covers,
-            ] {
-                assert_eq!(
-                    cartesian_predicate(predicate, &shared, &point),
-                    cartesian_predicate(predicate, &expanded, &point),
-                    "{predicate:?}, depth {depth}"
-                );
-            }
+        for predicate in [
+            Predicate::Intersects,
+            Predicate::Disjoint,
+            Predicate::Covers,
+        ] {
             assert_eq!(
-                cartesian_predicate(Predicate::CoveredBy, &point, &shared),
-                cartesian_predicate(Predicate::CoveredBy, &point, &expanded),
-                "CoveredBy, depth {depth}"
+                cartesian_predicate(predicate, &shared, &point),
+                cartesian_predicate(predicate, &expanded, &point),
+                "{predicate:?}, depth {depth}"
             );
         }
+        assert_eq!(
+            cartesian_predicate(Predicate::CoveredBy, &point, &shared),
+            cartesian_predicate(Predicate::CoveredBy, &point, &expanded),
+            "CoveredBy, depth {depth}"
+        );
     }
 }
 
-#[test]
-fn exact_location_predicates_keep_occurrence_boundary_parity() {
+#[rstest::rstest]
+#[case::predicate_contains(Predicate::Contains)]
+#[case::predicate_touches(Predicate::Touches)]
+fn exact_location_predicates_keep_occurrence_boundary_parity(#[case] predicate: Predicate) {
     let line = crate::io::parse_wkt("LINESTRING (0 0,1 0)").unwrap();
     let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
     let shared = shared_collection(line, 6);
@@ -364,23 +357,22 @@ fn exact_location_predicates_keep_occurrence_boundary_parity() {
         .expect("expanded WKB parses")
         .shape;
 
-    for predicate in [Predicate::Contains, Predicate::Touches] {
-        assert_eq!(
-            cartesian_predicate(predicate, &shared, &point),
-            cartesian_predicate(predicate, &expanded, &point),
-            "{predicate:?}"
-        );
-    }
+    assert_eq!(
+        cartesian_predicate(predicate, &shared, &point),
+        cartesian_predicate(predicate, &expanded, &point),
+        "{predicate:?}"
+    );
 }
 
-#[test]
-fn depth_40_and_128_shared_point_intersects_complete() {
+#[rstest::rstest]
+#[case::depth_40(40)]
+#[case::depth_128(128)]
+fn depth_40_and_128_shared_point_intersects_complete(#[case] depth: usize) {
     let square = rectangle(0.0, 0.0, 1.0, 1.0);
     let point = Shape::Point(Point::new_raw_xy(0.5, 0.5));
-    for depth in [40, 128] {
-        let shared = shared_collection(square.clone(), depth);
-        assert!(cartesian_predicate(Predicate::Intersects, &shared, &point));
-    }
+
+    let shared = shared_collection(square, depth);
+    assert!(cartesian_predicate(Predicate::Intersects, &shared, &point));
 }
 
 #[test]

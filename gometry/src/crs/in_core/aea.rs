@@ -251,19 +251,20 @@ mod tests {
         Aea::inverse_unframed(&setup, 0.0, apex_y).unwrap_err();
     }
 
-    #[test]
-    fn inverse_accepts_a_valid_polar_cone_apex() {
+    #[rstest::rstest]
+    #[case::latitude_90_0(90.0)]
+    #[case::negative_latitude_90_0(-90.0)]
+    fn inverse_accepts_a_valid_polar_cone_apex(#[case] latitude: f64) {
         let ellipsoid = Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_222_101);
-        for latitude in [90.0, -90.0] {
-            let setup = Aea::setup(ellipsoid, AeaParams {
-                lat_0: latitude,
-                lat_1: latitude,
-                lat_2: latitude,
-            })
-            .unwrap();
-            let actual = Aea::inverse_unframed(&setup, 0.0, setup.a * setup.rho0).unwrap();
-            assert_eq!(actual.0, 0.0);
-            assert_eq!(actual.1, latitude.to_radians());
-        }
+
+        let setup = Aea::setup(ellipsoid, AeaParams {
+            lat_0: latitude,
+            lat_1: latitude,
+            lat_2: latitude,
+        })
+        .unwrap();
+        let actual = Aea::inverse_unframed(&setup, 0.0, setup.a * setup.rho0).unwrap();
+        assert_eq!(actual.0, 0.0);
+        assert_eq!(actual.1, latitude.to_radians());
     }
 }

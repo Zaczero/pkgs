@@ -1131,8 +1131,11 @@ fn expand_collection_owners(shape: &Shape) -> Shape {
     }
 }
 
-#[test]
-fn geographic_shared_line_subdivision_matches_expanded_occurrences() {
+#[rstest::rstest]
+#[case::depth_4(4)]
+#[case::depth_8(8)]
+#[case::depth_16(16)]
+fn geographic_shared_line_subdivision_matches_expanded_occurrences(#[case] depth: usize) {
     let longitude =
         crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
             .unwrap();
@@ -1150,28 +1153,28 @@ fn geographic_shared_line_subdivision_matches_expanded_occurrences() {
         Some(&no_metric),
     );
 
-    for depth in [4, 8, 16] {
-        let shared = shared_repeated_lines(depth);
-        let expanded = expand_collection_owners(&shared);
-        let shared_parts = shared
-            .subdivide_with_context(2, false, &context)
-            .expect("geographic-frame shared subdivision succeeds");
-        let expanded_parts = expanded
-            .subdivide_with_context(2, false, &context)
-            .expect("expanded geographic-frame subdivision succeeds");
-        let wkb = |parts: &[Shape]| {
-            parts
-                .iter()
-                .map(|part| crate::io::to_wkb(part, None, false).unwrap())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(shared_parts.len(), 4, "shared depth {depth}");
-        assert_eq!(wkb(&shared_parts), wkb(&expanded_parts), "depth {depth}");
-    }
+    let shared = shared_repeated_lines(depth);
+    let expanded = expand_collection_owners(&shared);
+    let shared_parts = shared
+        .subdivide_with_context(2, false, &context)
+        .expect("geographic-frame shared subdivision succeeds");
+    let expanded_parts = expanded
+        .subdivide_with_context(2, false, &context)
+        .expect("expanded geographic-frame subdivision succeeds");
+    let wkb = |parts: &[Shape]| {
+        parts
+            .iter()
+            .map(|part| crate::io::to_wkb(part, None, false).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shared_parts.len(), 4, "shared depth {depth}");
+    assert_eq!(wkb(&shared_parts), wkb(&expanded_parts), "depth {depth}");
 }
 
-#[test]
-fn geographic_deep_shared_polygon_subdivision_keeps_support() {
+#[rstest::rstest]
+#[case::depth_40(40)]
+#[case::depth_128(128)]
+fn geographic_deep_shared_polygon_subdivision_keeps_support(#[case] depth: usize) {
     let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
     let longitude =
         crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
@@ -1190,32 +1193,30 @@ fn geographic_deep_shared_polygon_subdivision_keeps_support() {
         Some(&no_metric),
     );
 
-    for depth in [40, 128] {
-        let mut shared = base.clone();
-        for _ in 0..depth {
-            shared = Shape::geometry_collection(vec![shared.clone(), shared])
-                .expect("shared collection depth is admitted");
-        }
-        let parts = shared
-            .subdivide_with_context(8, false, &context)
-            .expect("deep geographic subdivision succeeds");
-        assert!(!parts.is_empty(), "depth {depth}");
-        let parts_union = Shape::union_all_topo(
-            &parts,
-            crate::geometry::TopologyDomain::Geographic(frame),
-            crate::geometry::Strictness::Lenient,
-        )
-        .expect("deep geographic subdivision parts union");
-        approx::assert_relative_eq!(parts_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
-
-        let source_union = Shape::union_all_topo(
-            &[&shared],
-            crate::geometry::TopologyDomain::Geographic(frame),
-            crate::geometry::Strictness::Lenient,
-        )
-        .expect("deep geographic source union");
-        approx::assert_relative_eq!(source_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
+    let mut shared = base;
+    for _ in 0..depth {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared])
+            .expect("shared collection depth is admitted");
     }
+    let parts = shared
+        .subdivide_with_context(8, false, &context)
+        .expect("deep geographic subdivision succeeds");
+    assert!(!parts.is_empty(), "depth {depth}");
+    let parts_union = Shape::union_all_topo(
+        &parts,
+        crate::geometry::TopologyDomain::Geographic(frame),
+        crate::geometry::Strictness::Lenient,
+    )
+    .expect("deep geographic subdivision parts union");
+    approx::assert_relative_eq!(parts_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
+
+    let source_union = Shape::union_all_topo(
+        &[&shared],
+        crate::geometry::TopologyDomain::Geographic(frame),
+        crate::geometry::Strictness::Lenient,
+    )
+    .expect("deep geographic source union");
+    approx::assert_relative_eq!(source_union.area(), 1.0, max_relative = 64.0 * f64::EPSILON);
 }
 
 #[test]
@@ -1314,19 +1315,20 @@ fn exact_seam_rounding_and_zm_resolution_are_shared() {
     assert!(new_shared > 0);
 }
 
-#[test]
-fn tangent_holes_and_collapsed_support_follow_exact_selection() {
-    for wkt in [
-        "POLYGON ((0 0,1 0,2 0,3 0,4 0,4 4,0 4,0 0),(2 1,3 1,3 2,2 2,2 1))",
-        "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))",
-    ] {
-        let shape = crate::io::parse_wkt(wkt).unwrap();
-        let parts = shape
-            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
-            .unwrap();
-        assert!(!parts.is_empty(), "{wkt}");
-        assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
-    }
+#[rstest::rstest]
+#[case::polygon_0_0_1_0_2_0_3_0_4_0_4_4_0_4_0_0_2_1_3_1_3_2_2_2_2_1(
+    "POLYGON ((0 0,1 0,2 0,3 0,4 0,4 4,0 4,0 0),(2 1,3 1,3 2,2 2,2 1))"
+)]
+#[case::polygon_0_0_4_0_2_0_0_0_1_1_3_1_3_3_1_3_1_1(
+    "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))"
+)]
+fn tangent_holes_and_collapsed_support_follow_exact_selection(#[case] wkt: &'static str) {
+    let shape = crate::io::parse_wkt(wkt).unwrap();
+    let parts = shape
+        .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
+        .unwrap();
+    assert!(!parts.is_empty(), "{wkt}");
+    assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
 }
 
 #[test]

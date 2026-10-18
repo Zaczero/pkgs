@@ -154,11 +154,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn axis_scale_keeps_zero_and_nonfinite_inputs_as_identity() {
-        for value in [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
-            assert_eq!(axis_pow2_scale(value).to_bits(), 1.0_f64.to_bits());
-        }
+    #[rstest::rstest]
+    #[case::value_0_0(0.0)]
+    #[case::negative_value_0_0(-0.0)]
+    #[case::f64_infinity(f64::INFINITY)]
+    #[case::f64_neg_infinity(f64::NEG_INFINITY)]
+    #[case::f64_nan(f64::NAN)]
+    fn axis_scale_keeps_zero_and_nonfinite_inputs_as_identity(#[case] value: f64) {
+        assert_eq!(axis_pow2_scale(value).to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]

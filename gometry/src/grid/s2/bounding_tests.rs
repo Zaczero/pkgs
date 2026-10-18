@@ -278,33 +278,35 @@ fn line_0_0_to_0_45_contains_samples() {
     assert_hilbert_contains_samples(cell, &[(0.0, 0.0), (0.0, 10.0), (0.0, 30.0), (0.0, 44.9)]);
 }
 
-#[test]
-fn face_diagonal_meridian_135_lat0_to_5_raises() {
-    for lon in [135.0, -135.0] {
-        assert!(
-            bounding_cell_bbox(Bounds::new_raw(lon, 0.0, lon, 5.0)).is_none(),
-            "lon={lon} lat 0..5 must multi-face"
-        );
-    }
+#[rstest::rstest]
+#[case::lon_135_0(135.0)]
+#[case::negative_lon_135_0(-135.0)]
+fn face_diagonal_meridian_135_lat0_to_5_raises(#[case] lon: f64) {
+    assert!(
+        bounding_cell_bbox(Bounds::new_raw(lon, 0.0, lon, 5.0)).is_none(),
+        "lon={lon} lat 0..5 must multi-face"
+    );
 }
 
-#[test]
-fn face_boundary_meridian_135_short_raises() {
-    for lon in [-135.0, 135.0] {
-        assert!(
-            bounding_cell_bbox(Bounds::new_raw(lon, -10.0, lon, -9.7)).is_none(),
-            "lon={lon} short face-boundary segment must multi-face"
-        );
-    }
+#[rstest::rstest]
+#[case::negative_lon_135_0(-135.0)]
+#[case::lon_135_0(135.0)]
+fn face_boundary_meridian_135_short_raises(#[case] lon: f64) {
+    assert!(
+        bounding_cell_bbox(Bounds::new_raw(lon, -10.0, lon, -9.7)).is_none(),
+        "lon={lon} short face-boundary segment must multi-face"
+    );
 }
 
-#[test]
-fn cube_edge_meridian_45_to_60_raise_or_closed_contain() {
-    for lon in [90.0, -90.0, -180.0, 180.0] {
-        match bounding_cell_bbox(Bounds::new_raw(lon, 45.0, lon, 60.0)) {
-            None => {},
-            Some(cell) => dense_edge_geom_ok(cell, lon, 45.0, lon, 60.0),
-        }
+#[rstest::rstest]
+#[case::lon_90_0(90.0)]
+#[case::negative_lon_90_0(-90.0)]
+#[case::negative_lon_180_0(-180.0)]
+#[case::lon_180_0(180.0)]
+fn cube_edge_meridian_45_to_60_raise_or_closed_contain(#[case] lon: f64) {
+    match bounding_cell_bbox(Bounds::new_raw(lon, 45.0, lon, 60.0)) {
+        None => {},
+        Some(cell) => dense_edge_geom_ok(cell, lon, 45.0, lon, 60.0),
     }
 }
 
@@ -314,16 +316,18 @@ fn south_pole_lon90_closed_contains() {
     dense_edge_geom_ok(cell, 90.0, -80.0, 91.0, -79.0);
 }
 
-#[test]
-fn antimeridian_south_closed_contains() {
-    for (minx, miny, maxx, maxy) in [
-        (-180.0, -85.0, -179.0, -84.0),
-        (-180.0, -80.0, -179.0, -79.0),
-        (-180.0, -75.0, -179.0, -74.0),
-    ] {
-        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
-        dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
-    }
+#[rstest::rstest]
+#[case::negative_minx_180_0(-180.0, -85.0, -179.0, -84.0)]
+#[case::negative_minx_180_0_142f7038(-180.0, -80.0, -179.0, -79.0)]
+#[case::negative_minx_180_0_f65a2234(-180.0, -75.0, -179.0, -74.0)]
+fn antimeridian_south_closed_contains(
+    #[case] minx: f64,
+    #[case] miny: f64,
+    #[case] maxx: f64,
+    #[case] maxy: f64,
+) {
+    let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
+    dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
 }
 
 #[test]
@@ -484,29 +488,25 @@ fn polygon_with_hole_uses_bbox() {
     assert_edge_samples_contained(cell, -1.0, -1.0, 1.0, 1.0);
 }
 
-#[test]
-fn false_reject_corpus_targets() {
-    let cases = [
-        (
-            -163.431_550,
-            34.574_955,
-            -160.480_306,
-            36.395_188,
-            "7dd",
-            4_u8,
-        ),
-        (-2.612_665, 41.780_618, -0.655_635, 43.761_980, "0d5", 4),
-        (121.977_231, 41.851_431, 124.077_057, 42.468_080, "5e3", 4),
-    ];
-    for (minx, miny, maxx, maxy, token, level) in cases {
-        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
-        assert_eq!(
-            (cell.token().as_str(), cell.level()),
-            (token, level),
-            "bbox ({minx},{miny},{maxx},{maxy})"
-        );
-        assert_edge_samples_contained(cell, minx, miny, maxx, maxy);
-    }
+#[rstest::rstest]
+#[case::negative_minx_163_431_550(-163.431_550, 34.574_955, -160.480_306, 36.395_188, "7dd", 4_u8)]
+#[case::negative_minx_2_612_665(-2.612_665, 41.780_618, -0.655_635, 43.761_980, "0d5", 4)]
+#[case::minx_121_977_231(121.977_231, 41.851_431, 124.077_057, 42.468_080, "5e3", 4)]
+fn false_reject_corpus_targets(
+    #[case] minx: f64,
+    #[case] miny: f64,
+    #[case] maxx: f64,
+    #[case] maxy: f64,
+    #[case] token: &'static str,
+    #[case] level: u8,
+) {
+    let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
+    assert_eq!(
+        (cell.token().as_str(), cell.level()),
+        (token, level),
+        "bbox ({minx},{miny},{maxx},{maxy})"
+    );
+    assert_edge_samples_contained(cell, minx, miny, maxx, maxy);
 }
 
 #[test]
@@ -535,28 +535,29 @@ fn band_0_2_boxes_no_false_reject() {
 }
 
 /// Each face and each supported fixture scale has an independently checked box.
-#[test]
-fn multi_scale_face_boxes_contain_their_whole_bounds() {
-    for (minx, miny, size) in [
-        (-170.0, -60.0, 0.2),
-        (-120.0, -20.0, 0.2),
-        (-20.0, -20.0, 0.2),
-        (70.0, 20.0, 0.2),
-        (160.0, 20.0, 0.2),
-        (0.0, 80.0, 0.2),
-        (13.4, 52.5, 0.2),
-        (13.4, 52.5, 0.01),
-        (13.4, 52.5, 1e-4),
-        (13.4, 52.5, 1e-6),
-    ] {
-        let maxx = minx + size;
-        let maxy = miny + size;
-        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy))
-            .expect("each off-seam box is inside one face");
-        bbox_sound_ok(cell, minx, miny, maxx, maxy);
-        let leaf = CellId::from_lonlat(f64::midpoint(minx, maxx), f64::midpoint(miny, maxy));
-        assert!(cell.contains(leaf), "{minx} {miny} size={size}");
-    }
+#[rstest::rstest]
+#[case::negative_minx_170_0(-170.0, -60.0, 0.2)]
+#[case::negative_minx_120_0(-120.0, -20.0, 0.2)]
+#[case::negative_minx_20_0(-20.0, -20.0, 0.2)]
+#[case::minx_70_0(70.0, 20.0, 0.2)]
+#[case::minx_160_0(160.0, 20.0, 0.2)]
+#[case::minx_0_0(0.0, 80.0, 0.2)]
+#[case::minx_13_4(13.4, 52.5, 0.2)]
+#[case::minx_13_4_11b66e33(13.4, 52.5, 0.01)]
+#[case::minx_13_4_36f2bf7a(13.4, 52.5, 1e-4)]
+#[case::minx_13_4_433cc12c(13.4, 52.5, 1e-6)]
+fn multi_scale_face_boxes_contain_their_whole_bounds(
+    #[case] minx: f64,
+    #[case] miny: f64,
+    #[case] size: f64,
+) {
+    let maxx = minx + size;
+    let maxy = miny + size;
+    let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy))
+        .expect("each off-seam box is inside one face");
+    bbox_sound_ok(cell, minx, miny, maxx, maxy);
+    let leaf = CellId::from_lonlat(f64::midpoint(minx, maxx), f64::midpoint(miny, maxy));
+    assert!(cell.contains(leaf), "{minx} {miny} size={size}");
 }
 
 #[test]

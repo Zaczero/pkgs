@@ -566,8 +566,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unary_multipart_certificate_requires_one_common_chart() {
+    #[rstest::rstest]
+    #[case::west_200_0(200.0, 220.0, GeographicTopologyRoute::ExactPartition, None)]
+    #[case::negative_west_220_0(-220.0, -200.0, GeographicTopologyRoute::ExactPartition, None)]
+    #[case::west_200_0_84b98301(
+        200.0,
+        202.0,
+        GeographicTopologyRoute::ExactPartition,
+        Some("shared_linework")
+    )]
+    #[case::west_200_0_e0d9faa4(200.0, -160.0, GeographicTopologyRoute::Quotient, Some("shared_linework"))]
+    #[case::west_200_0_9116a370(200.0, -140.0, GeographicTopologyRoute::Quotient, None)]
+    #[case::west_200_0_cc1db36d(200.0, 0.0, GeographicTopologyRoute::Quotient, None)]
+    fn unary_multipart_certificate_requires_one_common_chart(
+        #[case] west: f64,
+        #[case] east: f64,
+        #[case] route: GeographicTopologyRoute,
+        #[case] expected_code: Option<&'static str>,
+    ) {
         let rectangle = |west| {
             let Shape::Polygon(polygon) = polygon(&[
                 (west, 0.0),
@@ -581,49 +597,26 @@ mod tests {
             polygon
         };
         let frame = GeographicFrame::crs84();
-        for (west, east, route, expected_code) in [
-            (200.0, 220.0, GeographicTopologyRoute::ExactPartition, None),
-            (
-                -220.0,
-                -200.0,
-                GeographicTopologyRoute::ExactPartition,
-                None,
-            ),
-            (
-                200.0,
-                202.0,
-                GeographicTopologyRoute::ExactPartition,
-                Some("shared_linework"),
-            ),
-            (
-                200.0,
-                -160.0,
-                GeographicTopologyRoute::Quotient,
-                Some("shared_linework"),
-            ),
-            (200.0, -140.0, GeographicTopologyRoute::Quotient, None),
-            (200.0, 0.0, GeographicTopologyRoute::Quotient, None),
-        ] {
-            let shape = Shape::MultiPolygon(vec![rectangle(west), rectangle(east)].into());
-            let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
-            assert_eq!(classify_geographic_validity_chart(view), route);
-            let exact =
-                crate::geometry::ExactGeographicTopology::from_views(frame, std::iter::once(view))
-                    .unwrap();
-            let quotient = exact.validity_issue(&shape).unwrap();
+
+        let shape = Shape::MultiPolygon(vec![rectangle(west), rectangle(east)].into());
+        let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
+        assert_eq!(classify_geographic_validity_chart(view), route);
+        let exact =
+            crate::geometry::ExactGeographicTopology::from_views(frame, std::iter::once(view))
+                .unwrap();
+        let quotient = exact.validity_issue(&shape).unwrap();
+        assert_eq!(
+            quotient.as_ref().map(|issue| issue.code),
+            expected_code,
+            "{west}, {east}"
+        );
+        if route == GeographicTopologyRoute::ExactPartition {
+            let planar = shape.validate().unwrap();
+            assert_eq!(planar.as_ref().map(|issue| issue.code), expected_code);
             assert_eq!(
-                quotient.as_ref().map(|issue| issue.code),
-                expected_code,
-                "{west}, {east}"
+                planar.as_ref().and_then(|issue| issue.path.as_deref()),
+                quotient.as_ref().and_then(|issue| issue.path.as_deref())
             );
-            if route == GeographicTopologyRoute::ExactPartition {
-                let planar = shape.validate().unwrap();
-                assert_eq!(planar.as_ref().map(|issue| issue.code), expected_code);
-                assert_eq!(
-                    planar.as_ref().and_then(|issue| issue.path.as_deref()),
-                    quotient.as_ref().and_then(|issue| issue.path.as_deref())
-                );
-            }
         }
     }
 
@@ -731,21 +724,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn seam_crossing_from_xy_columns_is_independent_of_ordinate_layout() {
+    #[rstest::rstest]
+    #[case::none(None, None)]
+    #[case::some_vec_3_0_7_0(Some(vec![3.0, 7.0]), None)]
+    #[case::none_c1fd008a(None, Some(vec![11.0, 19.0]))]
+    #[case::some_vec_3_0_7_0_ecb2920d(Some(vec![3.0, 7.0]), Some(vec![11.0, 19.0]))]
+    fn seam_crossing_from_xy_columns_is_independent_of_ordinate_layout(
+        #[case] zs: Option<Vec<f64>>,
+        #[case] ms: Option<Vec<f64>>,
+    ) {
         let frame = GeographicFrame::crs84();
-        let ordinate_columns = [
-            (None, None),
-            (Some(vec![3.0, 7.0]), None),
-            (None, Some(vec![11.0, 19.0])),
-            (Some(vec![3.0, 7.0]), Some(vec![11.0, 19.0])),
-        ];
-        for (zs, ms) in ordinate_columns {
-            let coords =
-                CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![2.0, 5.0], zs, ms).unwrap();
-            let line = LineSeq::try_new(coords).unwrap();
-            assert!(chain_crosses_antimeridian(&line, frame));
-        }
+
+        let coords = CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![2.0, 5.0], zs, ms).unwrap();
+        let line = LineSeq::try_new(coords).unwrap();
+        assert!(chain_crosses_antimeridian(&line, frame));
     }
 
     #[test]

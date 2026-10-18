@@ -327,19 +327,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ring_touch_directions_classify_small_and_large_fans() {
+    #[rstest::rstest]
+    #[case::count_2(2)]
+    #[case::count_18(18)]
+    fn ring_touch_directions_classify_small_and_large_fans(#[case] count: i32) {
         let point = XY::new(0.0, 0.0);
         let left = [XY::new(-1.0, 1.0), XY::new(-1.0, -1.0)];
-        for count in [2, 18] {
-            let mut right: Vec<_> = (1..=count).map(|y| XY::new(1.0, f64::from(y))).collect();
-            assert!(!wedges_interleave(&right, &left, point));
-            assert!(!wedges_interleave(&left, &right, point));
 
-            right.push(XY::new(-2.0, 0.0));
-            assert!(wedges_interleave(&right, &left, point));
-            assert!(wedges_interleave(&left, &right, point));
-        }
+        let mut right: Vec<_> = (1..=count).map(|y| XY::new(1.0, f64::from(y))).collect();
+        assert!(!wedges_interleave(&right, &left, point));
+        assert!(!wedges_interleave(&left, &right, point));
+
+        right.push(XY::new(-2.0, 0.0));
+        assert!(wedges_interleave(&right, &left, point));
+        assert!(wedges_interleave(&left, &right, point));
     }
 
     #[test]

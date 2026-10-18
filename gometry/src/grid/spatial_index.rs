@@ -240,21 +240,24 @@ mod tests {
 
     use super::{PackedBvh, PackedBvhEntry};
 
-    #[test]
-    fn packed_bvh_leaf_and_branch_boundaries_preserve_visit_order() {
+    #[rstest::rstest]
+    #[case::count_0(0)]
+    #[case::count_1(1)]
+    #[case::count_9(9)]
+    #[case::count_41(41)]
+    fn packed_bvh_leaf_and_branch_boundaries_preserve_visit_order(#[case] count: usize) {
         let envelope = AABB::from_corners([0.0, 0.0], [1.0, 1.0]);
-        for count in [0, 1, 9, 41] {
-            let entries = (0..count)
-                .map(|value| PackedBvhEntry::new(value, envelope))
-                .collect();
-            let tree = PackedBvh::build(entries);
-            let mut visited = Vec::new();
-            tree.visit(envelope, &mut |value| {
-                visited.push(*value);
-                Ok(())
-            })
-            .expect("visitor");
-            assert_eq!(visited, (0..count).collect::<Vec<_>>());
-        }
+
+        let entries = (0..count)
+            .map(|value| PackedBvhEntry::new(value, envelope))
+            .collect();
+        let tree = PackedBvh::build(entries);
+        let mut visited = Vec::new();
+        tree.visit(envelope, &mut |value| {
+            visited.push(*value);
+            Ok(())
+        })
+        .expect("visitor");
+        assert_eq!(visited, (0..count).collect::<Vec<_>>());
     }
 }

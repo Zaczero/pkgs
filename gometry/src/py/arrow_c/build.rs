@@ -894,15 +894,16 @@ mod owner_export_tests {
         assert!(extension_metadata_json(None, None).unwrap().is_none());
     }
 
-    #[test]
-    fn extension_metadata_json_rejects_nonfinite_epoch() {
-        for epoch in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let error = extension_metadata_json(None, Some(epoch)).unwrap_err();
-            assert!(
-                matches!(&error, NativeArrowExportError::Geometry(message) if message.contains("finite")),
-                "{error:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::f64_nan(f64::NAN)]
+    #[case::f64_infinity(f64::INFINITY)]
+    #[case::f64_neg_infinity(f64::NEG_INFINITY)]
+    fn extension_metadata_json_rejects_nonfinite_epoch(#[case] epoch: f64) {
+        let error = extension_metadata_json(None, Some(epoch)).unwrap_err();
+        assert!(
+            matches!(&error, NativeArrowExportError::Geometry(message) if message.contains("finite")),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -939,35 +940,32 @@ mod owner_export_tests {
         assert_eq!(value["crs_type"], "projjson");
     }
 
-    #[test]
-    fn assemble_extension_metadata_epoch_extremes_use_one_envelope_allocation() {
-        for epoch in [
-            f64::MAX,
-            f64::MIN,
-            f64::MIN_POSITIVE,
-            f64::from_bits(1),
-            -0.0,
-        ] {
-            let number = Number::from_f64(epoch).expect("finite epoch");
-            let reserved = number.clone();
-            let (text, allocations) = crate::test_support::allocation_count(|| {
-                assemble_extension_metadata(None, None, Some(reserved))
-            });
-            assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
-            let token = text
-                .strip_prefix(EPOCH_ONLY_PREFIX)
-                .and_then(|body| body.strip_suffix(OBJECT_END))
-                .expect("epoch-only envelope uses the reserved prefix and suffix");
-            assert!(
-                token.len() <= ZMIJ_F64_DISPLAY,
-                "Display outgrew the zmij buffer: {token:?} ({} bytes)",
-                token.len()
-            );
-            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-            assert!(value["epoch"].is_number(), "{text}");
-            let repeated = assemble_extension_metadata(None, None, Some(number));
-            assert_eq!(repeated, text);
-        }
+    #[rstest::rstest]
+    #[case::f64_max(f64::MAX)]
+    #[case::f64_min(f64::MIN)]
+    #[case::f64_min_positive(f64::MIN_POSITIVE)]
+    #[case::f64_from_bits_1(f64::from_bits(1))]
+    #[case::negative_epoch_0_0(-0.0)]
+    fn assemble_extension_metadata_epoch_extremes_use_one_envelope_allocation(#[case] epoch: f64) {
+        let number = Number::from_f64(epoch).expect("finite epoch");
+        let reserved = number.clone();
+        let (text, allocations) = crate::test_support::allocation_count(|| {
+            assemble_extension_metadata(None, None, Some(reserved))
+        });
+        assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
+        let token = text
+            .strip_prefix(EPOCH_ONLY_PREFIX)
+            .and_then(|body| body.strip_suffix(OBJECT_END))
+            .expect("epoch-only envelope uses the reserved prefix and suffix");
+        assert!(
+            token.len() <= ZMIJ_F64_DISPLAY,
+            "Display outgrew the zmij buffer: {token:?} ({} bytes)",
+            token.len()
+        );
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(value["epoch"].is_number(), "{text}");
+        let repeated = assemble_extension_metadata(None, None, Some(number));
+        assert_eq!(repeated, text);
     }
 
     #[test]

@@ -105,19 +105,19 @@ fn area_scaling_preserves_exact_values_and_nonfinite_receipts() {
     assert_eq!(negative_area.to_bits(), (-64.0_f64).to_bits());
 }
 
-#[test]
-fn ceil_log2_matches_positive_integer_width_boundaries() {
-    for (value, expected) in [
-        (1, 0),
-        (2, 1),
-        (3, 2),
-        (4, 2),
-        (5, 3),
-        (1_usize << (usize::BITS - 1), usize::BITS - 1),
-        (usize::MAX, usize::BITS),
-    ] {
-        assert_eq!(ceil_log2(value), expected);
-    }
+#[rstest::rstest]
+#[case::value_1(1, 0)]
+#[case::value_2(2, 1)]
+#[case::value_3(3, 2)]
+#[case::value_4(4, 2)]
+#[case::value_5(5, 3)]
+#[case::value_1_usize_usize_bits_1(1_usize << (usize::BITS - 1), usize::BITS - 1)]
+#[case::usize_max(usize::MAX, usize::BITS)]
+fn ceil_log2_matches_positive_integer_width_boundaries(
+    #[case] value: usize,
+    #[case] expected: u32,
+) {
+    assert_eq!(ceil_log2(value), expected);
 }
 
 #[test]

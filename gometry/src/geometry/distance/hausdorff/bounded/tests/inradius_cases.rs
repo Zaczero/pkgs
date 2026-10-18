@@ -12,40 +12,48 @@ fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> Directed
     run_directed(&source, &boundary, &mut context).unwrap()
 }
 
-#[test]
-fn public_inscribed_circle_work_does_not_follow_aspect_ratio() {
-    for extent in [100.0, 1000.0, 10_000.0, 100_000.0, 1_000_000.0] {
-        let shape = polygon(&[(0.0, 0.0), (extent, 1.0), (2.0 * extent, 0.0), (0.0, 0.0)]);
-        let _guard = limit_refinement_work(32);
-        reset_exact_span_evaluations();
-        let circle = shape.maximum_inscribed_circle(None).unwrap();
-        assert!(matches!(circle, Shape::Polygon(_)));
-        assert!(refinement_work() <= 32, "extent {extent}");
-        assert!(exact_span_evaluations() <= 512, "extent {extent}");
-    }
+#[rstest::rstest]
+#[case::extent_100_0(100.0)]
+#[case::extent_1000_0(1000.0)]
+#[case::extent_10_000_0(10_000.0)]
+#[case::extent_100_000_0(100_000.0)]
+#[case::extent_1_000_000_0(1_000_000.0)]
+fn public_inscribed_circle_work_does_not_follow_aspect_ratio(#[case] extent: f64) {
+    let shape = polygon(&[(0.0, 0.0), (extent, 1.0), (2.0 * extent, 0.0), (0.0, 0.0)]);
+    let _guard = limit_refinement_work(32);
+    reset_exact_span_evaluations();
+    let circle = shape.maximum_inscribed_circle(None).unwrap();
+    assert!(matches!(circle, Shape::Polygon(_)));
+    assert!(refinement_work() <= 32, "extent {extent}");
+    assert!(exact_span_evaluations() <= 512, "extent {extent}");
 }
 
-#[test]
-fn shared_polygon_pole_search_is_bounded_on_thin_nonrectangular_support() {
-    for extent in [10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10_000.0] {
-        for shape in [
-            polygon(&[(0.0, 0.0), (extent, 0.0), (0.0, 1.0), (0.0, 0.0)]),
-            polygon(&[
-                (0.0, 0.0),
-                (extent, 0.0),
-                (extent, 0.9),
-                (0.0, 1.0),
-                (0.0, 0.0),
-            ]),
-        ] {
-            let _guard = limit_refinement_work(32);
-            reset_exact_span_evaluations();
-            let label = shape.polylabel(Some(0.001)).unwrap();
-            let circle = shape.maximum_inscribed_circle(Some(0.001)).unwrap();
-            assert!(matches!(label, Shape::Point(_)));
-            assert!(matches!(circle, Shape::Polygon(_)));
-            assert!(exact_span_evaluations() <= 512, "extent {extent}");
-        }
+#[rstest::rstest]
+#[case::extent_10_0(10.0)]
+#[case::extent_30_0(30.0)]
+#[case::extent_100_0(100.0)]
+#[case::extent_300_0(300.0)]
+#[case::extent_1000_0(1000.0)]
+#[case::extent_3000_0(3000.0)]
+#[case::extent_10_000_0(10_000.0)]
+fn shared_polygon_pole_search_is_bounded_on_thin_nonrectangular_support(#[case] extent: f64) {
+    for shape in [
+        polygon(&[(0.0, 0.0), (extent, 0.0), (0.0, 1.0), (0.0, 0.0)]),
+        polygon(&[
+            (0.0, 0.0),
+            (extent, 0.0),
+            (extent, 0.9),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]),
+    ] {
+        let _guard = limit_refinement_work(32);
+        reset_exact_span_evaluations();
+        let label = shape.polylabel(Some(0.001)).unwrap();
+        let circle = shape.maximum_inscribed_circle(Some(0.001)).unwrap();
+        assert!(matches!(label, Shape::Point(_)));
+        assert!(matches!(circle, Shape::Polygon(_)));
+        assert!(exact_span_evaluations() <= 512, "extent {extent}");
     }
 }
 

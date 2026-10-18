@@ -32,8 +32,19 @@ fn productive_state_is_isolated_between_sources() {
     assert_eq!(covering.outer(), vec![face]);
 }
 
-#[test]
-fn within_of_nonpolygonal_sources_returns_empty_without_classification() {
+#[rstest::rstest]
+#[case::point(Shape::Point(Point::new_raw_xy(0.0, 0.0)))]
+#[case::line(Shape::LineString(
+    LineSeq::try_new(
+        CoordSeq::try_from_points(&[
+            Point::new_raw_xy(-50.0, -40.0),
+            Point::new_raw_xy(50.0, -40.0),
+        ])
+        .unwrap(),
+    )
+    .expect("fixture line is valid"),
+))]
+#[case::collection({
     let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
     let line = Shape::LineString(
         LineSeq::try_new(
@@ -45,29 +56,28 @@ fn within_of_nonpolygonal_sources_returns_empty_without_classification() {
         )
         .expect("fixture line is valid"),
     );
-    let collection = Shape::geometry_collection(vec![point.clone(), line.clone()])
-        .expect("nonpolygonal collection is valid");
+    Shape::geometry_collection(vec![point, line]).expect("nonpolygonal collection is valid")
+})]
+fn within_of_nonpolygonal_sources_returns_empty_without_classification(#[case] source: Shape) {
+    let source = &source;
+    for (min_level, max_level) in [(0, 9), (8, 8)] {
+        for max_cells in [None, Some(1)] {
+            let coverer = Coverer {
+                min_level,
+                max_level,
+                level_mod: 1,
+                max_cells,
+                target_cells: 8,
+            };
+            let covering = coverer
+                .cover_identity_for_rule(source, CoverRule::Within)
+                .expect("nonpolygonal within cover is empty and valid");
+            let stats = covering.stats();
 
-    for source in [&point, &line, &collection] {
-        for (min_level, max_level) in [(0, 9), (8, 8)] {
-            for max_cells in [None, Some(1)] {
-                let coverer = Coverer {
-                    min_level,
-                    max_level,
-                    level_mod: 1,
-                    max_cells,
-                    target_cells: 8,
-                };
-                let covering = coverer
-                    .cover_identity_for_rule(source, CoverRule::Within)
-                    .expect("nonpolygonal within cover is empty and valid");
-                let stats = covering.stats();
-
-                assert!(covering.outer().is_empty());
-                assert_eq!(stats.raw_classify_calls, 0, "{source:?} {coverer:?}");
-                assert_eq!(stats.unique_local_point_probes, 0, "{source:?} {coverer:?}");
-                assert_eq!(stats.committed_emissions, 0, "{source:?} {coverer:?}");
-            }
+            assert!(covering.outer().is_empty());
+            assert_eq!(stats.raw_classify_calls, 0, "{source:?} {coverer:?}");
+            assert_eq!(stats.unique_local_point_probes, 0, "{source:?} {coverer:?}");
+            assert_eq!(stats.committed_emissions, 0, "{source:?} {coverer:?}");
         }
     }
 }

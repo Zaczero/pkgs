@@ -173,17 +173,14 @@ pub(crate) fn with_geodesic_at<T>(
 mod tests {
     use super::{GEODESIC_SERIES_MAX_FLATTENING, admit_geodesic_ellipsoid};
 
-    #[test]
-    fn series_domain_admits_sphere_and_both_boundaries() {
-        for flattening in [
-            -GEODESIC_SERIES_MAX_FLATTENING,
-            0.0,
-            GEODESIC_SERIES_MAX_FLATTENING,
-        ] {
-            let semi_minor = 6_378_137.0 * (1.0 - flattening);
-            admit_geodesic_ellipsoid("test", 6_378_137.0, semi_minor, flattening)
-                .expect("series boundary is admitted");
-        }
+    #[rstest::rstest]
+    #[case::negative_geodesic_series_max_flattening(-GEODESIC_SERIES_MAX_FLATTENING)]
+    #[case::flattening_0_0(0.0)]
+    #[case::geodesic_series_max_flattening(GEODESIC_SERIES_MAX_FLATTENING)]
+    fn series_domain_admits_sphere_and_both_boundaries(#[case] flattening: f64) {
+        let semi_minor = 6_378_137.0 * (1.0 - flattening);
+        admit_geodesic_ellipsoid("test", 6_378_137.0, semi_minor, flattening)
+            .expect("series boundary is admitted");
     }
 
     #[test]
@@ -210,47 +207,41 @@ mod tests {
             .expect_err("non-finite flattening must be rejected");
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn axis_arithmetic_boundaries_admit_scaled_physical_distances() {
-        for axis in [
-            f64::from_bits(0x2006_A09E_667F_3BCD),
-            f64::from_bits(0x5FD2_0DD7_5042_9B6D),
-        ] {
-            let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
-            let model = crate::crs::metric_model(Some(&crs)).unwrap();
-            let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
-            let distance = crate::crs::geodesic_point_pair_distance(
-                &metric.geodesic,
-                crate::geometry::Point::new_raw_xy(0.0, 0.0),
-                crate::geometry::Point::new_raw_xy(90.0, 0.0),
-                metric.frame,
-                metric.state.generation,
-            )
-            .unwrap();
-            assert!(distance.is_finite() && distance > 0.0);
-            assert!((distance / axis - std::f64::consts::FRAC_PI_2).abs() <= 4.0 * f64::EPSILON);
-        }
+    #[case::f64_from_bits_0x2006_a09e_667f_3bcd(f64::from_bits(0x2006_A09E_667F_3BCD))]
+    #[case::f64_from_bits_0x5fd2_0dd7_5042_9b6d(f64::from_bits(0x5FD2_0DD7_5042_9B6D))]
+    fn axis_arithmetic_boundaries_admit_scaled_physical_distances(#[case] axis: f64) {
+        let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
+        let model = crate::crs::metric_model(Some(&crs)).unwrap();
+        let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+        let distance = crate::crs::geodesic_point_pair_distance(
+            &metric.geodesic,
+            crate::geometry::Point::new_raw_xy(0.0, 0.0),
+            crate::geometry::Point::new_raw_xy(90.0, 0.0),
+            metric.frame,
+            metric.state.generation,
+        )
+        .unwrap();
+        assert!(distance.is_finite() && distance > 0.0);
+        assert!((distance / axis - std::f64::consts::FRAC_PI_2).abs() <= 4.0 * f64::EPSILON);
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn axis_arithmetic_boundaries_reject_adjacent_unrepresentable_areas() {
-        for axis in [
-            f64::from_bits(0x2006_A09E_667F_3BCC),
-            f64::from_bits(0x5FD2_0DD7_5042_9B6E),
-        ] {
-            let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
-            let model = crate::crs::metric_model(Some(&crs)).unwrap();
-            let Err(error) = crate::crs::GeodesicMetric::from_model(&model) else {
-                panic!("an adjacent axis outside the arithmetic range is admitted");
-            };
-            let message = error.to_string();
-            assert!(
-                message.contains("outside the representable binary64 range"),
-                "{message}"
-            );
-            assert!(message.contains("finite normal values"), "{message}");
-        }
+    #[case::f64_from_bits_0x2006_a09e_667f_3bcc(f64::from_bits(0x2006_A09E_667F_3BCC))]
+    #[case::f64_from_bits_0x5fd2_0dd7_5042_9b6e(f64::from_bits(0x5FD2_0DD7_5042_9B6E))]
+    fn axis_arithmetic_boundaries_reject_adjacent_unrepresentable_areas(#[case] axis: f64) {
+        let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
+        let model = crate::crs::metric_model(Some(&crs)).unwrap();
+        let Err(error) = crate::crs::GeodesicMetric::from_model(&model) else {
+            panic!("an adjacent axis outside the arithmetic range is admitted");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("outside the representable binary64 range"),
+            "{message}"
+        );
+        assert!(message.contains("finite normal values"), "{message}");
     }
 }

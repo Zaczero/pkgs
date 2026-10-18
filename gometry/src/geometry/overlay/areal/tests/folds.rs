@@ -5,28 +5,31 @@ use super::test_support::{
 use crate::geometry::overlay::{OverlayOp, Strictness, overlay_all};
 use crate::geometry::{GeometryKind, MOrdinate, Point, Shape, ZOrdinate};
 
-#[test]
-fn intersection_all_matches_left_fold_for_permutations() {
+#[rstest::rstest]
+#[case::order_0_1_2([0, 1, 2])]
+#[case::order_2_0_1([2, 0, 1])]
+#[case::order_1_2_0([1, 2, 0])]
+#[case::order_2_1_0([2, 1, 0])]
+fn intersection_all_matches_left_fold_for_permutations(#[case] order: [usize; 3]) {
     let shapes = [
         square(0.0, 0.0, 4.0, 4.0),
         square(1.0, -1.0, 5.0, 3.0),
         square(2.0, 1.0, 6.0, 5.0),
     ];
-    for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0], [2, 1, 0]] {
-        let inputs = order
-            .iter()
-            .map(|&index| &shapes[index])
-            .collect::<Vec<_>>();
-        let canonical = overlay_all(
-            &inputs,
-            crate::geometry::TopologyDomain::Cartesian,
-            OverlayOp::Intersection,
-            Strictness::Strict,
-        )
-        .unwrap();
-        let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
-        assert_topologically_equal(&canonical, &folded);
-    }
+
+    let inputs = order
+        .iter()
+        .map(|&index| &shapes[index])
+        .collect::<Vec<_>>();
+    let canonical = overlay_all(
+        &inputs,
+        crate::geometry::TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        Strictness::Strict,
+    )
+    .unwrap();
+    let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
+    assert_topologically_equal(&canonical, &folded);
 }
 
 #[test]
@@ -47,8 +50,10 @@ fn intersection_all_mixed_dimension_narrows_like_left_fold() {
     assert_topologically_equal(&canonical, &folded);
 }
 
-#[test]
-fn intersection_all_singleton_is_faithful_and_keeps_ordinates() {
+#[rstest::rstest]
+#[case::strictness_lenient(Strictness::Lenient)]
+#[case::strictness_strict(Strictness::Strict)]
+fn intersection_all_singleton_is_faithful_and_keeps_ordinates(#[case] strictness: Strictness) {
     let input = Shape::geometry_collection(vec![
         Shape::Point(Point::new_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap()),
         Shape::Point(Point::new_axes(4.0, 5.0, ZOrdinate(None), MOrdinate(Some(6.0))).unwrap()),
@@ -56,17 +61,16 @@ fn intersection_all_singleton_is_faithful_and_keeps_ordinates() {
     .expect("test collection is valid");
     // A single operand intersects to itself — faithful, so both policies
     // keep Z/M (force_2d is the way to flatten).
-    for strictness in [Strictness::Lenient, Strictness::Strict] {
-        let kept = overlay_all(
-            &[&input],
-            crate::geometry::TopologyDomain::Cartesian,
-            OverlayOp::Intersection,
-            strictness,
-        )
-        .unwrap();
-        assert_eq!(kept, input);
-        assert!(kept.has_z() && kept.has_m(), "{kept:?}");
-    }
+
+    let kept = overlay_all(
+        &[&input],
+        crate::geometry::TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        strictness,
+    )
+    .unwrap();
+    assert_eq!(kept, input);
+    assert!(kept.has_z() && kept.has_m(), "{kept:?}");
 }
 
 #[test]
@@ -110,8 +114,11 @@ fn intersection_all_unresolved_survivor_degrades_under_auto_raises_under_strict(
     assert!(error.is_err(), "{error:?}");
 }
 
-#[test]
-fn symmetric_difference_all_permutation_invariant_for_polygons() {
+#[rstest::rstest]
+#[case::order_2_1_0([2, 1, 0])]
+#[case::order_1_0_2([1, 0, 2])]
+#[case::order_0_2_1([0, 2, 1])]
+fn symmetric_difference_all_permutation_invariant_for_polygons(#[case] order: [usize; 3]) {
     let shapes = [
         square(0.0, 0.0, 3.0, 3.0),
         square(1.0, 1.0, 4.0, 4.0),
@@ -124,22 +131,21 @@ fn symmetric_difference_all_permutation_invariant_for_polygons() {
         Strictness::Strict,
     )
     .unwrap();
-    for order in [[2, 1, 0], [1, 0, 2], [0, 2, 1]] {
-        let inputs = order
-            .iter()
-            .map(|&index| &shapes[index])
-            .collect::<Vec<_>>();
-        let canonical = overlay_all(
-            &inputs,
-            crate::geometry::TopologyDomain::Cartesian,
-            OverlayOp::SymmetricDifference,
-            Strictness::Strict,
-        )
-        .unwrap();
-        let folded = manual_left_fold(&inputs, OverlayOp::SymmetricDifference);
-        assert_topologically_equal(&canonical, &baseline);
-        assert_topologically_equal(&canonical, &folded);
-    }
+
+    let inputs = order
+        .iter()
+        .map(|&index| &shapes[index])
+        .collect::<Vec<_>>();
+    let canonical = overlay_all(
+        &inputs,
+        crate::geometry::TopologyDomain::Cartesian,
+        OverlayOp::SymmetricDifference,
+        Strictness::Strict,
+    )
+    .unwrap();
+    let folded = manual_left_fold(&inputs, OverlayOp::SymmetricDifference);
+    assert_topologically_equal(&canonical, &baseline);
+    assert_topologically_equal(&canonical, &folded);
 }
 
 #[test]

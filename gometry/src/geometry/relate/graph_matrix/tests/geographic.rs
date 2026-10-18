@@ -55,56 +55,51 @@ fn prepared_geographic_point_membership_uses_the_open_chart() {
     assert_eq!(plan.geographic_exact_topology_builds(), 0);
 }
 
-#[test]
-fn retained_geographic_queries_match_closed_point_and_line_support() {
-    for (wkt, point, covered) in [
-        ("POINT (1 2)", Point::new_raw_xy(361.0, 2.0), true),
-        ("POINT (1 2)", Point::new_raw_xy(1.0, 2.5), false),
-        ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.0), true),
-        ("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.5), false),
-        (
-            "POLYGON ((0 0,2 2,4 4,0 0))",
-            Point::new_raw_xy(1.0, 1.0),
-            true,
-        ),
-        (
-            "POLYGON ((0 0,2 2,4 4,0 0))",
-            Point::new_raw_xy(1.0, 1.5),
-            false,
-        ),
-        (
-            "LINESTRING (10 80,10 90)",
-            Point::new_raw_xy(-100.0, 90.0),
-            true,
-        ),
-        (
-            "LINESTRING (10 80,10 90)",
-            Point::new_raw_xy(-100.0, 89.0),
-            false,
-        ),
-    ] {
-        let plan = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
-        let cache = crate::geometry::FrameDependentCaches::default();
-        let prepared =
-            GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
-        let queries = prepared.prepare_point_covers(7).unwrap();
-        assert_eq!(queries.covers(point).unwrap(), covered, "{wkt}");
-        assert_eq!(
-            prepared
-                .exact_topology()
-                .unwrap()
-                .locate_point(point)
-                .unwrap()
-                .geometry
-                != Loc::Exterior,
-            covered,
-            "{wkt}: quotient authority"
-        );
-    }
+#[rstest::rstest]
+#[case::point_1_2("POINT (1 2)", Point::new_raw_xy(361.0, 2.0), true)]
+#[case::point_1_2_606c3c65("POINT (1 2)", Point::new_raw_xy(1.0, 2.5), false)]
+#[case::linestring_0_0_2_2("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.0), true)]
+#[case::linestring_0_0_2_2_21e1d96f("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.5), false)]
+#[case::polygon_0_0_2_2_4_4_0_0("POLYGON ((0 0,2 2,4 4,0 0))", Point::new_raw_xy(1.0, 1.0), true)]
+#[case::polygon_0_0_2_2_4_4_0_0_2d201abc(
+    "POLYGON ((0 0,2 2,4 4,0 0))",
+    Point::new_raw_xy(1.0, 1.5),
+    false
+)]
+#[case::linestring_10_80_10_90("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 90.0), true)]
+#[case::linestring_10_80_10_90_373cfb13("LINESTRING (10 80,10 90)", Point::new_raw_xy(-100.0, 89.0), false)]
+fn retained_geographic_queries_match_closed_point_and_line_support(
+    #[case] wkt: &'static str,
+    #[case] point: Point,
+    #[case] covered: bool,
+) {
+    let plan = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
+    let cache = crate::geometry::FrameDependentCaches::default();
+    let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+    let queries = prepared.prepare_point_covers(7).unwrap();
+    assert_eq!(queries.covers(point).unwrap(), covered, "{wkt}");
+    assert_eq!(
+        prepared
+            .exact_topology()
+            .unwrap()
+            .locate_point(point)
+            .unwrap()
+            .geometry
+            != Loc::Exterior,
+        covered,
+        "{wkt}: quotient authority"
+    );
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
+#[case::maxx_0_49(0.49, b"212101212")]
+#[case::maxx_0_5(0.5, b"212101212")]
+#[case::maxx_0_500_000_000_000_000_1(0.500_000_000_000_000_1, b"212101212")]
+#[case::maxx_0_51(0.51, b"212101212")]
+fn geographic_near_vertical_box_keeps_planar_boundary_dimension(
+    #[case] maxx: f64,
+    #[case] expected: &'static [u8],
+) {
     let hexagon = Shape::Polygon(polygon(&[
         [1.0, 0.0],
         [0.500_000_000_000_000_1, 0.866_025_403_784_438_6],
@@ -114,121 +109,90 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
         [0.500_000_000_000_000_1, -0.866_025_403_784_438_6],
         [1.0, 0.0],
     ]));
-    for (maxx, expected) in [
-        (0.49, b"212101212"),
-        (0.5, b"212101212"),
-        (0.500_000_000_000_000_1, b"212101212"),
-        (0.51, b"212101212"),
-    ] {
-        let rectangle = crate::geometry::geographic_bounds_to_shape(
-            Bounds::new(-10.0, -10.0, maxx, 10.0).expect("ordered bounds"),
-            crate::crs::info("EPSG:4326")
-                .expect("known geographic CRS")
-                .geographic_frame()
-                .expect("geographic CRS"),
-        )
-        .expect("geographic rectangle");
-        let geographic = graph_relate_shapes_geographic(&hexagon, &rectangle);
-        assert_eq!(geographic.0, *expected, "maxx={maxx}");
-        assert_eq!(
-            graph_relate_shapes_geographic(&rectangle, &hexagon).0,
-            geographic.transpose().0,
-            "maxx={maxx}: transpose"
-        );
-        assert_eq!(
-            graph_relate_shapes(&hexagon, &rectangle).unwrap().0,
-            *expected,
-            "maxx={maxx}: planar"
-        );
-    }
+
+    let rectangle = crate::geometry::geographic_bounds_to_shape(
+        Bounds::new(-10.0, -10.0, maxx, 10.0).expect("ordered bounds"),
+        crate::crs::info("EPSG:4326")
+            .expect("known geographic CRS")
+            .geographic_frame()
+            .expect("geographic CRS"),
+    )
+    .expect("geographic rectangle");
+    let geographic = graph_relate_shapes_geographic(&hexagon, &rectangle);
+    assert_eq!(geographic.0, *expected, "maxx={maxx}");
+    assert_eq!(
+        graph_relate_shapes_geographic(&rectangle, &hexagon).0,
+        geographic.transpose().0,
+        "maxx={maxx}: transpose"
+    );
+    assert_eq!(
+        graph_relate_shapes(&hexagon, &rectangle).unwrap().0,
+        *expected,
+        "maxx={maxx}: planar"
+    );
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn ordinary_geographic_relation_matches_known_matrices() {
-    let frame = crate::crs::info("EPSG:4326")
-        .unwrap()
-        .geographic_frame()
-        .unwrap();
-    let with_hole = Shape::Polygon(donut());
-    let multipolygon = Shape::MultiPolygon(
+#[case::disjoint("disjoint", Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)), Shape::Polygon(rectangle(-16.0, 0.0, -14.0, 2.0)), "FF2FF1212")]
+#[case::nested("nested", Shape::Polygon(rectangle(-20.0, 0.0, -10.0, 10.0)), Shape::Polygon(rectangle(-18.0, 2.0, -16.0, 4.0)), "212FF1FF2")]
+#[case::overlapping("overlapping", Shape::Polygon(rectangle(-20.0, 0.0, -16.0, 4.0)), Shape::Polygon(rectangle(-18.0, 2.0, -14.0, 6.0)), "212101212")]
+#[case::shared_edge("shared edge", Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)), Shape::Polygon(rectangle(-18.0, 0.0, -16.0, 2.0)), "FF2F11212")]
+#[case::shared_corner("shared corner", Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)), Shape::Polygon(rectangle(-18.0, 2.0, -16.0, 4.0)), "FF2F01212")]
+#[case::hole(
+    "hole",
+    Shape::Polygon(donut()),
+    Shape::Polygon(rectangle(2.0, 2.0, 5.0, 5.0)),
+    "212101212"
+)]
+#[case::multipolygon(
+    "multipolygon",
+    Shape::MultiPolygon(
         vec![
             rectangle(-10.0, -10.0, -6.0, -6.0),
             rectangle(-4.0, -10.0, 0.0, -6.0),
         ]
         .into(),
+    ),
+    Shape::Polygon(rectangle(-8.0, -8.0, -2.0, -4.0)),
+    "212101212"
+)]
+fn ordinary_geographic_relation_matches_known_matrices(
+    #[case] name: &str,
+    #[case] left: Shape,
+    #[case] right: Shape,
+    #[case] expected: &str,
+) {
+    let frame = crate::crs::info("EPSG:4326")
+        .unwrap()
+        .geographic_frame()
+        .unwrap();
+    let left_plan = PreparedPlan::transient(&left);
+    let right_plan = PreparedPlan::transient(&right);
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    let left_prepared =
+        GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
+    let right_prepared =
+        GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
+    assert_eq!(
+        left_prepared.chart_route(),
+        GeographicTopologyRoute::ExactPartition,
+        "{name}: left chart route"
     );
-    for (name, left, right, expected) in [
-        (
-            "disjoint",
-            Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)),
-            Shape::Polygon(rectangle(-16.0, 0.0, -14.0, 2.0)),
-            "FF2FF1212",
-        ),
-        (
-            "nested",
-            Shape::Polygon(rectangle(-20.0, 0.0, -10.0, 10.0)),
-            Shape::Polygon(rectangle(-18.0, 2.0, -16.0, 4.0)),
-            "212FF1FF2",
-        ),
-        (
-            "overlapping",
-            Shape::Polygon(rectangle(-20.0, 0.0, -16.0, 4.0)),
-            Shape::Polygon(rectangle(-18.0, 2.0, -14.0, 6.0)),
-            "212101212",
-        ),
-        (
-            "shared edge",
-            Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)),
-            Shape::Polygon(rectangle(-18.0, 0.0, -16.0, 2.0)),
-            "FF2F11212",
-        ),
-        (
-            "shared corner",
-            Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)),
-            Shape::Polygon(rectangle(-18.0, 2.0, -16.0, 4.0)),
-            "FF2F01212",
-        ),
-        (
-            "hole",
-            with_hole,
-            Shape::Polygon(rectangle(2.0, 2.0, 5.0, 5.0)),
-            "212101212",
-        ),
-        (
-            "multipolygon",
-            multipolygon,
-            Shape::Polygon(rectangle(-8.0, -8.0, -2.0, -4.0)),
-            "212101212",
-        ),
-    ] {
-        let left_plan = PreparedPlan::transient(&left);
-        let right_plan = PreparedPlan::transient(&right);
-        let left_cache = crate::geometry::FrameDependentCaches::default();
-        let right_cache = crate::geometry::FrameDependentCaches::default();
-        let left_prepared =
-            GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
-        let right_prepared =
-            GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
-        assert_eq!(
-            left_prepared.chart_route(),
-            GeographicTopologyRoute::ExactPartition,
-            "{name}: left chart route"
-        );
-        assert_eq!(
-            right_prepared.chart_route(),
-            GeographicTopologyRoute::ExactPartition,
-            "{name}: right chart route"
-        );
-        let q = graph_relate_data_geographic_q(&left_prepared, &right_prepared).unwrap();
-        let routed = graph_relate_data_geographic(left_prepared, right_prepared).unwrap();
-        assert_eq!(q.text(), expected, "{name}: exact Q matrix");
-        assert_eq!(routed.text(), expected, "{name}: routed matrix");
-        assert_eq!(
-            graph_relate_shapes_geographic(&left, &right).text(),
-            expected,
-            "{name}: shape dispatch",
-        );
-    }
+    assert_eq!(
+        right_prepared.chart_route(),
+        GeographicTopologyRoute::ExactPartition,
+        "{name}: right chart route"
+    );
+    let q = graph_relate_data_geographic_q(&left_prepared, &right_prepared).unwrap();
+    let routed = graph_relate_data_geographic(left_prepared, right_prepared).unwrap();
+    assert_eq!(q.text(), expected, "{name}: exact Q matrix");
+    assert_eq!(routed.text(), expected, "{name}: routed matrix");
+    assert_eq!(
+        graph_relate_shapes_geographic(&left, &right).text(),
+        expected,
+        "{name}: shape dispatch",
+    );
 }
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
@@ -287,59 +251,65 @@ fn ordinary_country_charts_match_q_relation() {
         "country fixture has no ordinary-chart geometries"
     );
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_pair_q_matches_known_matrices_at_quotient_aliases() {
-    let frame = crate::crs::info("EPSG:4326")
-        .unwrap()
-        .geographic_frame()
-        .unwrap();
-    let ordinary = Shape::Polygon(rectangle(10.0, 0.0, 12.0, 2.0));
-    let seam = Shape::Polygon(polygon(&[
+#[case::seam(
+    "seam",
+    Shape::Polygon(polygon(&[
         [170.0, 0.0],
         [-170.0, 0.0],
         [-170.0, 10.0],
         [170.0, 10.0],
         [170.0, 0.0],
-    ]));
-    let pole = Shape::Polygon(rectangle(10.0, 80.0, 12.0, 90.0));
-    let noncanonical = Shape::Polygon(rectangle(350.0, 0.0, 360.0, 2.0));
-    for (name, left, expected) in [
-        ("seam", seam, "FF2FF1212"),
-        ("pole", pole, "FF2FF1212"),
-        ("longitude 360", noncanonical, "FF2FF1212"),
-    ] {
-        let left_plan = PreparedPlan::transient(&left);
-        let right_plan = PreparedPlan::transient(&ordinary);
-        let left_cache = crate::geometry::FrameDependentCaches::default();
-        let right_cache = crate::geometry::FrameDependentCaches::default();
-        let left_prepared =
-            GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
-        let right_prepared =
-            GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
-        assert_eq!(
-            left_prepared.chart_route(),
-            GeographicTopologyRoute::Quotient,
-            "{name}: quotient route",
-        );
-        assert_eq!(
-            right_prepared.chart_route(),
-            GeographicTopologyRoute::ExactPartition,
-            "{name}: ordinary route",
-        );
-        assert_eq!(
-            graph_relate_data_geographic(left_prepared, right_prepared,)
-                .unwrap()
-                .text(),
-            expected,
-            "{name}: exact quotient relation",
-        );
-        assert_eq!(
-            graph_relate_shapes_geographic(&ordinary, &left).text(),
-            expected,
-            "{name}: reverse relation",
-        );
-    }
+    ])),
+    "FF2FF1212"
+)]
+#[case::pole("pole", Shape::Polygon(rectangle(10.0, 80.0, 12.0, 90.0)), "FF2FF1212")]
+#[case::longitude_360(
+    "longitude 360",
+    Shape::Polygon(rectangle(350.0, 0.0, 360.0, 2.0)),
+    "FF2FF1212"
+)]
+fn geographic_pair_q_matches_known_matrices_at_quotient_aliases(
+    #[case] name: &str,
+    #[case] left: Shape,
+    #[case] expected: &str,
+) {
+    let frame = crate::crs::info("EPSG:4326")
+        .unwrap()
+        .geographic_frame()
+        .unwrap();
+    let ordinary = Shape::Polygon(rectangle(10.0, 0.0, 12.0, 2.0));
+    let left_plan = PreparedPlan::transient(&left);
+    let right_plan = PreparedPlan::transient(&ordinary);
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    let left_prepared =
+        GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
+    let right_prepared =
+        GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
+    assert_eq!(
+        left_prepared.chart_route(),
+        GeographicTopologyRoute::Quotient,
+        "{name}: quotient route",
+    );
+    assert_eq!(
+        right_prepared.chart_route(),
+        GeographicTopologyRoute::ExactPartition,
+        "{name}: ordinary route",
+    );
+    assert_eq!(
+        graph_relate_data_geographic(left_prepared, right_prepared,)
+            .unwrap()
+            .text(),
+        expected,
+        "{name}: exact quotient relation",
+    );
+    assert_eq!(
+        graph_relate_shapes_geographic(&ordinary, &left).text(),
+        expected,
+        "{name}: reverse relation",
+    );
 }
 #[test]
 fn geographic_cap_point_matrices_are_stable() {
@@ -437,16 +407,38 @@ fn geographic_split_crossing_keeps_boundary_point_relation() {
     assert_eq!(raw_probe_relation, "212FF1FF2");
     assert_eq!(split_probe_relation, raw_probe_relation);
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_aggregate_contacts_use_quotient_face_locations() {
-    let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
-    let right = Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0));
-    let adjacent =
-        Shape::geometry_collection(vec![left.clone(), right.clone()]).expect("valid collection");
-    let duplicates = Shape::geometry_collection(vec![left.clone(), left.clone(), left, right])
-        .expect("test collection is valid");
-    let pinch = Shape::geometry_collection(vec![
+#[case::adjacent_interior(
+    {
+        let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
+        let right = Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0));
+        Shape::geometry_collection(vec![left, right]).expect("valid collection")
+    },
+    Point::new_raw_xy(1.0, 0.5),
+    "0F2FF1FF2"
+)]
+#[case::adjacent_boundary(
+    {
+        let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
+        let right = Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0));
+        Shape::geometry_collection(vec![left, right]).expect("valid collection")
+    },
+    Point::new_raw_xy(1.0, 0.0),
+    "FF20F1FF2"
+)]
+#[case::duplicates(
+    {
+        let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
+        let right = Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0));
+        Shape::geometry_collection(vec![left.clone(), left.clone(), left, right])
+            .expect("test collection is valid")
+    },
+    Point::new_raw_xy(1.0, 0.5),
+    "0F2FF1FF2"
+)]
+#[case::pinch(
+    Shape::geometry_collection(vec![
         Shape::Polygon(Polygon::new(
             Ring::from_closed(
                 CoordSeq::try_from_points(&[
@@ -474,36 +466,38 @@ fn geographic_aggregate_contacts_use_quotient_face_locations() {
             Vec::new(),
         )),
     ])
-    .expect("test collection is valid");
+    .expect("test collection is valid"),
+    Point::new_raw_xy(0.0, 0.0),
+    "FF20F1FF2"
+)]
+fn geographic_aggregate_contacts_use_quotient_face_locations(
+    #[case] geometry: Shape,
+    #[case] point: Point,
+    #[case] expected: &str,
+) {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
         .geographic_frame()
         .unwrap();
-    for (geometry, point, expected) in [
-        (&adjacent, Point::new_raw_xy(1.0, 0.5), "0F2FF1FF2"),
-        (&adjacent, Point::new_raw_xy(1.0, 0.0), "FF20F1FF2"),
-        (&duplicates, Point::new_raw_xy(1.0, 0.5), "0F2FF1FF2"),
-        (&pinch, Point::new_raw_xy(0.0, 0.0), "FF20F1FF2"),
-    ] {
-        let point = Shape::Point(point);
-        assert_eq!(
-            graph_relate_shapes_geographic(geometry, &point).text(),
-            expected
-        );
-        let left = PreparedPlan::new(geometry.clone());
-        let right = PreparedPlan::new(point);
-        let left_cache = crate::geometry::FrameDependentCaches::default();
-        let right_cache = crate::geometry::FrameDependentCaches::default();
-        assert_eq!(
-            graph_relate_data_geographic(
-                GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
-                GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
-            )
-            .unwrap()
-            .text(),
-            expected
-        );
-    }
+    let geometry = &geometry;
+    let point = Shape::Point(point);
+    assert_eq!(
+        graph_relate_shapes_geographic(geometry, &point).text(),
+        expected
+    );
+    let left = PreparedPlan::new(geometry.clone());
+    let right = PreparedPlan::new(point);
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    assert_eq!(
+        graph_relate_data_geographic(
+            GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
+            GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
+        )
+        .unwrap()
+        .text(),
+        expected
+    );
 }
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
@@ -539,10 +533,10 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
         };
     }
 }
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
-    let left = Shape::geometry_collection(vec![
+#[case::ordinary(
+    Shape::geometry_collection(vec![
         Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
         Shape::LineString(
             LineSeq::try_new(
@@ -557,8 +551,8 @@ fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
         ),
         Shape::Point(Point::new_raw_xy(1.0, 1.0)),
     ])
-    .expect("test collection is valid");
-    let right = Shape::geometry_collection(vec![
+    .expect("test collection is valid"),
+    Shape::geometry_collection(vec![
         Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
         Shape::LineString(
             LineSeq::try_new(
@@ -571,8 +565,11 @@ fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
             .expect("line coordinate sequence must contain at least two vertices"),
         ),
     ])
-    .expect("test collection is valid");
-    let geographic_left = Shape::geometry_collection(vec![
+    .expect("test collection is valid"),
+    "212101212"
+)]
+#[case::seam(
+    Shape::geometry_collection(vec![
         Shape::Polygon(polygon(&[
             [170.0, 0.0],
             [-170.0, 0.0],
@@ -593,8 +590,8 @@ fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
         ),
         Shape::Point(Point::new_raw_xy(180.0, 5.0)),
     ])
-    .expect("test collection is valid");
-    let geographic_right = Shape::geometry_collection(vec![
+    .expect("test collection is valid"),
+    Shape::geometry_collection(vec![
         Shape::Polygon(rectangle(175.0, -5.0, 179.0, 5.0)),
         Shape::LineString(
             LineSeq::try_new(
@@ -607,58 +604,63 @@ fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
             .expect("line coordinate sequence must contain at least two vertices"),
         ),
     ])
-    .expect("test collection is valid");
+    .expect("test collection is valid"),
+    "212101212"
+)]
+fn mixed_geographic_relation_keeps_known_area_and_curve_cells(
+    #[case] left: Shape,
+    #[case] right: Shape,
+    #[case] expected: &str,
+) {
     let frame = crate::crs::info("EPSG:4326")
         .expect("EPSG:4326 must be available")
         .geographic_frame()
         .expect("EPSG:4326 must have a geographic frame");
-    for (left, right, expected) in [
-        (&left, &right, "212101212"),
-        (&geographic_left, &geographic_right, "212101212"),
-    ] {
-        let direct = graph_relate_shapes_geographic(left, right);
-        assert_eq!(direct.text(), expected);
-        assert_eq!(
-            graph_relate_shapes_geographic(right, left).text(),
-            direct.transpose().text(),
-        );
+    let left = &left;
+    let right = &right;
+    let direct = graph_relate_shapes_geographic(left, right);
+    assert_eq!(direct.text(), expected);
+    assert_eq!(
+        graph_relate_shapes_geographic(right, left).text(),
+        direct.transpose().text(),
+    );
 
-        let left_plan = PreparedPlan::transient(left);
-        let right_plan = PreparedPlan::transient(right);
-        let left_cache = crate::geometry::FrameDependentCaches::default();
-        let right_cache = crate::geometry::FrameDependentCaches::default();
-        let left_prepared =
-            GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
-        let right_prepared =
-            GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
-        assert_eq!(
-            graph_relate_data_geographic_q(&left_prepared, &right_prepared)
-                .unwrap()
-                .text(),
-            expected,
-        );
-        assert_eq!(
-            graph_relate_data_geographic(left_prepared, right_prepared)
-                .unwrap()
-                .text(),
-            expected,
-        );
-    }
+    let left_plan = PreparedPlan::transient(left);
+    let right_plan = PreparedPlan::transient(right);
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    let left_prepared =
+        GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
+    let right_prepared =
+        GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
+    assert_eq!(
+        graph_relate_data_geographic_q(&left_prepared, &right_prepared)
+            .unwrap()
+            .text(),
+        expected,
+    );
+    assert_eq!(
+        graph_relate_data_geographic(left_prepared, right_prepared)
+            .unwrap()
+            .text(),
+        expected,
+    );
 }
-#[test]
-fn geographic_point_on_line_interior_is_an_exact_curve_contact() {
-    for (name, coordinates, x) in [
-        ("ordinary", [[0.0, 0.0], [10.0, 0.0]], 5.0),
-        ("seam-crossing", [[170.0, 0.0], [-170.0, 0.0]], 175.0),
-    ] {
-        let line = line(&coordinates);
-        let point = Shape::Point(Point::new_raw_xy(x, 0.0));
-        assert_eq!(
-            graph_relate_shapes_geographic(&line, &point).text(),
-            "0F1FF0FF2",
-            "{name} line interior contact"
-        );
-    }
+#[rstest::rstest]
+#[case::ordinary("ordinary", [[0.0, 0.0], [10.0, 0.0]], 5.0)]
+#[case::seam_crossing("seam-crossing", [[170.0, 0.0], [-170.0, 0.0]], 175.0)]
+fn geographic_point_on_line_interior_is_an_exact_curve_contact(
+    #[case] name: &'static str,
+    #[case] coordinates: [[f64; 2]; 2],
+    #[case] x: f64,
+) {
+    let line = line(&coordinates);
+    let point = Shape::Point(Point::new_raw_xy(x, 0.0));
+    assert_eq!(
+        graph_relate_shapes_geographic(&line, &point).text(),
+        "0F1FF0FF2",
+        "{name} line interior contact"
+    );
 }
 #[test]
 fn geographic_shared_multiline_endpoint_is_not_a_boundary() {

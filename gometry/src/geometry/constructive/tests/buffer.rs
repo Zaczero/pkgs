@@ -100,51 +100,43 @@ fn buffer_accepts_an_edge_whose_raw_delta_overflows_when_offsets_are_finite() {
         })
         .expect("all buffered vertices are finite");
 }
-#[test]
-fn buffer_keeps_vertical_diagonal_and_tiny_source_geometry_finite() {
-    let cases = [
-        (
-            Point::new_raw_xy(-1.5e308, -1.5e308),
-            Point::new_raw_xy(1.5e308, 1.5e308),
-            1.0e300,
-        ),
-        (
-            Point::new_raw_xy(1.5e308, -1.5e308),
-            Point::new_raw_xy(1.5e308, 1.5e308),
-            1.0e300,
-        ),
-        (
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0e-200, 2.0e-200),
-            1.0e-200,
-        ),
-    ];
-    for (start, end, radius) in cases {
-        let line = Shape::LineString(
-            LineSeq::try_new(CoordSeq::try_from_points(&[start, end]).unwrap()).unwrap(),
-        );
-        for cap_style in [
-            BufferCapStyle::Round,
-            BufferCapStyle::Flat,
-            BufferCapStyle::Square,
-        ] {
-            let buffered = line
-                .buffer_with_style(
-                    radius,
-                    cap_style,
-                    BufferJoinStyle::Miter,
-                    NonZeroU32::new(4).unwrap(),
-                    Positive::try_new("miter_limit", 5.0).unwrap(),
-                )
-                .expect("representable buffer output");
-            assert!(!buffered.is_empty());
-            buffered
-                .try_for_each_point::<()>(|point| {
-                    assert!(point.x.is_finite() && point.y.is_finite());
-                    Ok(())
-                })
-                .expect("all emitted coordinates are finite");
-        }
+#[rstest::rstest]
+#[case::point_new_raw_xy_1_5e308_1_5e308(Point::new_raw_xy(-1.5e308, -1.5e308), Point::new_raw_xy(1.5e308, 1.5e308), 1.0e300)]
+#[case::point_new_raw_xy_1_5e308_1_5e308_d4079927(Point::new_raw_xy(1.5e308, -1.5e308), Point::new_raw_xy(1.5e308, 1.5e308), 1.0e300)]
+#[case::point_new_raw_xy_0_0_0_0(
+    Point::new_raw_xy(0.0, 0.0),
+    Point::new_raw_xy(1.0e-200, 2.0e-200),
+    1.0e-200
+)]
+fn buffer_keeps_vertical_diagonal_and_tiny_source_geometry_finite(
+    #[case] start: Point,
+    #[case] end: Point,
+    #[case] radius: f64,
+) {
+    let line = Shape::LineString(
+        LineSeq::try_new(CoordSeq::try_from_points(&[start, end]).unwrap()).unwrap(),
+    );
+    for cap_style in [
+        BufferCapStyle::Round,
+        BufferCapStyle::Flat,
+        BufferCapStyle::Square,
+    ] {
+        let buffered = line
+            .buffer_with_style(
+                radius,
+                cap_style,
+                BufferJoinStyle::Miter,
+                NonZeroU32::new(4).unwrap(),
+                Positive::try_new("miter_limit", 5.0).unwrap(),
+            )
+            .expect("representable buffer output");
+        assert!(!buffered.is_empty());
+        buffered
+            .try_for_each_point::<()>(|point| {
+                assert!(point.x.is_finite() && point.y.is_finite());
+                Ok(())
+            })
+            .expect("all emitted coordinates are finite");
     }
 }
 #[test]

@@ -12,129 +12,179 @@ use crate::geometry::{
     CoordSeq, ExpansionBudget, LineSeq, MOrdinate, Point, Polygon, Shape, ZOrdinate,
 };
 
-#[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "exact half-period equality selects the source seam spelling without rounding"
+#[rstest::rstest]
+#[case::positive_period(degrees(), 0.0, 360.0, 0.0, 0.0, 1)]
+#[case::negative_period(degrees(), 0.0, -360.0, 0.0, 0.0, -1)]
+#[case::positive_half(degrees(), 0.0, 180.0, 0.0, -180.0, 1)]
+#[case::negative_half(degrees(), 0.0, -180.0, 0.0, -180.0, 0)]
+#[case::from_seam(degrees(), 180.0, 175.0, -180.0, 175.0, -1)]
+#[case::to_seam(degrees(), 175.0, 180.0, 175.0, -180.0, 1)]
+#[case::positive_lift(degrees(), 530.0, 190.0, 170.0, -170.0, 1)]
+#[case::negative_lift(degrees(), 190.0, 530.0, -170.0, 170.0, -1)]
+#[case::large(
+    degrees(),
+    exact_power_of_two(60),
+    exact_power_of_two(60),
+    136.0,
+    136.0,
+    0
 )]
-fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence() {
-    let degree = degrees();
-    let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
-    let grad = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
-    let rad = GeographicFrame::try_new(
+#[case::signed_zero(degrees(), -0.0, f64::from_bits(1), 0.0, f64::from_bits(1), 0)]
+#[case::subnormal(
+    degrees(),
+    f64::from_bits(1),
+    {
+        let tiny = f64::from_bits(1);
+        -tiny
+    },
+    f64::from_bits(1),
+    {
+        let tiny = f64::from_bits(1);
+        -tiny
+    },
+    0
+)]
+#[case::tiny_to_period(degrees(), 1.0e-20, 360.0, 1.0e-20, 0.0, 0)]
+#[case::grad_positive(
+    {
+        let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
+        GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap()
+    },
+    195.0,
+    -195.0,
+    195.0,
+    -195.0,
+    1
+)]
+#[case::grad_negative(
+    {
+        let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
+        GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap()
+    },
+    -195.0,
+    195.0,
+    -195.0,
+    195.0,
+    -1
+)]
+#[case::radian_positive(
+    GeographicFrame::try_new(
         AngularFactor::try_new("radians", 1.0).unwrap(),
         AngularFactor::try_new("radians", 1.0).unwrap(),
         0.0,
     )
-    .unwrap();
-    let tiny = f64::from_bits(1);
-    let cases = [
-        (degree, 0.0, 360.0, 0.0, 0.0, 1),
-        (degree, 0.0, -360.0, 0.0, 0.0, -1),
-        (degree, 0.0, 180.0, 0.0, -180.0, 1),
-        (degree, 0.0, -180.0, 0.0, -180.0, 0),
-        (degree, 180.0, 175.0, -180.0, 175.0, -1),
-        (degree, 175.0, 180.0, 175.0, -180.0, 1),
-        (degree, 530.0, 190.0, 170.0, -170.0, 1),
-        (degree, 190.0, 530.0, -170.0, 170.0, -1),
-        (
-            degree,
-            exact_power_of_two(60),
-            exact_power_of_two(60),
-            136.0,
-            136.0,
+    .unwrap(),
+    3.0,
+    -3.0,
+    3.0,
+    -3.0,
+    1
+)]
+#[case::radian_negative(
+    GeographicFrame::try_new(
+        AngularFactor::try_new("radians", 1.0).unwrap(),
+        AngularFactor::try_new("radians", 1.0).unwrap(),
+        0.0,
+    )
+    .unwrap(),
+    -3.0,
+    3.0,
+    -3.0,
+    3.0,
+    -1
+)]
+fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence(
+    #[case] frame: GeographicFrame,
+    #[case] from: f64,
+    #[case] to: f64,
+    #[case] native_from: f64,
+    #[case] native_to: f64,
+    #[case] periods: i64,
+) {
+    let source = [Point::new_raw_xy(from, 1.0), Point::new_raw_xy(to, 2.0)];
+    let mut inventory = ExactGeographicChartInventory::new(frame, 1);
+    let before = source_admission_counts::snapshot();
+    let _ = inventory
+        .append_source_edge(
+            source[0],
+            source[1],
+            SourceRowId(0),
+            SourceEdgeKind::Line {
+                line: SourceLineId(0),
+            },
             0,
-        ),
-        (degree, -0.0, tiny, 0.0, tiny, 0),
-        (degree, tiny, -tiny, tiny, -tiny, 0),
-        (degree, 1.0e-20, 360.0, 1.0e-20, 0.0, 0),
-        (grad, 195.0, -195.0, 195.0, -195.0, 1),
-        (grad, -195.0, 195.0, -195.0, 195.0, -1),
-        (rad, 3.0, -3.0, 3.0, -3.0, 1),
-        (rad, -3.0, 3.0, -3.0, 3.0, -1),
-    ];
-    for (frame, from, to, native_from, native_to, periods) in cases {
-        let source = [Point::new_raw_xy(from, 1.0), Point::new_raw_xy(to, 2.0)];
-        let mut inventory = ExactGeographicChartInventory::new(frame, 1);
-        let before = source_admission_counts::snapshot();
-        let _ = inventory
-            .append_source_edge(
-                source[0],
-                source[1],
-                SourceRowId(0),
-                SourceEdgeKind::Line {
-                    line: SourceLineId(0),
-                },
-                0,
-            )
-            .unwrap();
-        let after = source_admission_counts::snapshot();
-        assert_eq!(after.0 - before.0, 1, "{from} -> {to}");
-        let edge = &inventory.edges[0];
-        for (actual, original) in edge.source.iter().zip(source) {
-            assert_eq!(actual.x.to_bits(), original.x.to_bits());
-            assert_eq!(actual.y.to_bits(), original.y.to_bits());
-        }
-        let retained = edge.retained_longitude();
-        assert_eq!(retained.periods(), periods, "{from} -> {to}");
-        assert_eq!(
-            retained.endpoints()[0].get().to_bits(),
-            native_from.to_bits()
-        );
-        assert_eq!(retained.endpoints()[1].get().to_bits(), native_to.to_bits());
-        let delta = ExactDyadic::from_f64(native_to)
-            .try_subtract_ref(&ExactDyadic::from_f64(native_from))
-            .unwrap()
-            .try_add(
-                ExactDyadic::from_f64(frame.longitude().period())
-                    .try_product(&ExactDyadic::from_i64(periods))
-                    .unwrap(),
-            )
-            .unwrap();
-        let chart_start =
-            if native_from == -frame.longitude().half_period() && from.is_sign_positive() {
-                frame.longitude().half_period()
-            } else {
-                native_from
-            };
-        let alias_adjust = i64::from(chart_start.to_bits() != native_from.to_bits());
-        for piece in &inventory.pieces {
-            for (point, parameter) in [
-                (&piece.start, &piece.source_range.start),
-                (&piece.end, &piece.source_range.end),
-            ] {
-                let original_x = ExactRational::from_f64(chart_start)
-                    .try_add(
-                        &ExactRational::from_dyadic(delta.clone())
-                            .try_product(parameter)
-                            .unwrap(),
-                    )
-                    .unwrap();
-                let lifted_x = point
-                    .x
-                    .try_add(
-                        &ExactRational::from_f64(frame.longitude().period())
-                            .try_product(&ExactRational::from_dyadic(ExactDyadic::from_i64(
-                                piece.lift + alias_adjust,
-                            )))
-                            .unwrap(),
-                    )
-                    .unwrap();
-                assert_eq!(
-                    lifted_x.try_cmp(&original_x).unwrap(),
-                    Ordering::Equal,
-                    "{from} -> {to}"
-                );
-                let expected_y = ExactRational::one().try_add(parameter).unwrap();
-                assert_eq!(point.y.try_cmp(&expected_y).unwrap(), Ordering::Equal);
-            }
-        }
-        let actual_delta = local_longitude_edge(frame, from, edge.retained_longitude())
-            .delta_x(frame.longitude().period())
-            .unwrap();
-        assert_eq!(actual_delta, delta);
-        assert_eq!(source_admission_counts::snapshot(), after);
+        )
+        .unwrap();
+    let after = source_admission_counts::snapshot();
+    assert_eq!(after.0.wrapping_sub(before.0), 1, "{from} -> {to}");
+    let edge = &inventory.edges[0];
+    for (actual, original) in edge.source.iter().zip(source) {
+        assert_eq!(actual.x.to_bits(), original.x.to_bits());
+        assert_eq!(actual.y.to_bits(), original.y.to_bits());
     }
+    let retained = edge.retained_longitude();
+    assert_eq!(retained.periods(), periods, "{from} -> {to}");
+    assert_eq!(
+        retained.endpoints()[0].get().to_bits(),
+        native_from.to_bits()
+    );
+    assert_eq!(retained.endpoints()[1].get().to_bits(), native_to.to_bits());
+    let delta = ExactDyadic::from_f64(native_to)
+        .try_subtract_ref(&ExactDyadic::from_f64(native_from))
+        .unwrap()
+        .try_add(
+            ExactDyadic::from_f64(frame.longitude().period())
+                .try_product(&ExactDyadic::from_i64(periods))
+                .unwrap(),
+        )
+        .unwrap();
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact half-period equality selects the source seam spelling without rounding"
+    )]
+    let chart_start = if native_from == -frame.longitude().half_period() && from.is_sign_positive()
+    {
+        frame.longitude().half_period()
+    } else {
+        native_from
+    };
+    let alias_adjust = i64::from(chart_start.to_bits() != native_from.to_bits());
+    for piece in &inventory.pieces {
+        for (point, parameter) in [
+            (&piece.start, &piece.source_range.start),
+            (&piece.end, &piece.source_range.end),
+        ] {
+            let original_x = ExactRational::from_f64(chart_start)
+                .try_add(
+                    &ExactRational::from_dyadic(delta.clone())
+                        .try_product(parameter)
+                        .unwrap(),
+                )
+                .unwrap();
+            let lifted_x = point
+                .x
+                .try_add(
+                    &ExactRational::from_f64(frame.longitude().period())
+                        .try_product(&ExactRational::from_dyadic(ExactDyadic::from_i64(
+                            piece.lift.wrapping_add(alias_adjust),
+                        )))
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(
+                lifted_x.try_cmp(&original_x).unwrap(),
+                Ordering::Equal,
+                "{from} -> {to}"
+            );
+            let expected_y = ExactRational::one().try_add(parameter).unwrap();
+            assert_eq!(point.y.try_cmp(&expected_y).unwrap(), Ordering::Equal);
+        }
+    }
+    let actual_delta = local_longitude_edge(frame, from, edge.retained_longitude())
+        .delta_x(frame.longitude().period())
+        .unwrap();
+    assert_eq!(actual_delta, delta);
+    assert_eq!(source_admission_counts::snapshot(), after);
 }
 
 #[test]

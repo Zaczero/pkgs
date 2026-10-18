@@ -436,87 +436,79 @@ mod cyclic_and_nearness_tests {
         assert!(columns_within(&negative_zero, &positive_zero, -0.0));
     }
 
-    #[test]
-    fn columns_within_preserves_exceptional_ordinate_decisions_in_chunks_and_tail() {
-        let first_nan = f64::from_bits(0x7FF8_0000_0000_0001);
-        let second_nan = f64::from_bits(0x7FF8_0000_0000_0002);
-        let smallest_subnormal = f64::from_bits(1);
-        let cases = [
-            (
-                "equal positive infinity",
-                f64::INFINITY,
-                f64::INFINITY,
-                0.0,
-                true,
-            ),
-            (
-                "equal negative infinity",
-                f64::NEG_INFINITY,
-                f64::NEG_INFINITY,
-                0.0,
-                true,
-            ),
-            (
-                "opposite infinities",
-                f64::INFINITY,
-                f64::NEG_INFINITY,
-                f64::MAX,
-                false,
-            ),
-            (
-                "finite and infinity",
-                f64::MAX,
-                f64::INFINITY,
-                f64::MAX,
-                false,
-            ),
-            ("same NaN payload", first_nan, first_nan, 0.0, true),
-            (
-                "different NaN payload",
-                first_nan,
-                second_nan,
-                f64::MAX,
-                false,
-            ),
-            (
-                "finite subtraction overflow",
-                f64::MAX,
-                -f64::MAX,
-                f64::MAX,
-                false,
-            ),
-            (
-                "subnormal above zero tolerance",
-                smallest_subnormal,
-                0.0,
-                0.0,
-                false,
-            ),
-            (
-                "subnormal at tolerance",
-                smallest_subnormal,
-                0.0,
-                smallest_subnormal,
-                true,
-            ),
-        ];
-
-        for (name, left_value, right_value, tolerance, expected) in cases {
-            for position in [0_usize, 8] {
-                let mut left = [0.0; 9];
-                let mut right = [0.0; 9];
-                *left
-                    .get_mut(position)
-                    .expect("test position is in its column") = left_value;
-                *right
-                    .get_mut(position)
-                    .expect("test position is in its column") = right_value;
-                assert_eq!(
-                    columns_within(&left, &right, tolerance),
-                    expected,
-                    "{name} at position {position}"
-                );
-            }
+    #[rstest::rstest]
+    #[case::equal_positive_infinity(
+        "equal positive infinity",
+        f64::INFINITY,
+        f64::INFINITY,
+        0.0,
+        true
+    )]
+    #[case::equal_negative_infinity(
+        "equal negative infinity",
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        true
+    )]
+    #[case::opposite_infinities(
+        "opposite infinities",
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        false
+    )]
+    #[case::finite_and_infinity("finite and infinity", f64::MAX, f64::INFINITY, f64::MAX, false)]
+    #[case::same_nan_payload(
+        "same NaN payload",
+        f64::from_bits(0x7FF8_0000_0000_0001),
+        f64::from_bits(0x7FF8_0000_0000_0001),
+        0.0,
+        true
+    )]
+    #[case::different_nan_payload(
+        "different NaN payload",
+        f64::from_bits(0x7FF8_0000_0000_0001),
+        f64::from_bits(0x7FF8_0000_0000_0002),
+        f64::MAX,
+        false
+    )]
+    #[case::finite_subtraction_overflow("finite subtraction overflow", f64::MAX, -f64::MAX, f64::MAX, false)]
+    #[case::subnormal_above_zero_tolerance(
+        "subnormal above zero tolerance",
+        f64::from_bits(1),
+        0.0,
+        0.0,
+        false
+    )]
+    #[case::subnormal_at_tolerance(
+        "subnormal at tolerance",
+        f64::from_bits(1),
+        0.0,
+        f64::from_bits(1),
+        true
+    )]
+    fn columns_within_preserves_exceptional_ordinate_decisions_in_chunks_and_tail(
+        #[case] name: &'static str,
+        #[case] left_value: f64,
+        #[case] right_value: f64,
+        #[case] tolerance: f64,
+        #[case] expected: bool,
+    ) {
+        for position in [0_usize, 8] {
+            let mut left = [0.0; 9];
+            let mut right = [0.0; 9];
+            *left
+                .get_mut(position)
+                .expect("test position is in its column") = left_value;
+            *right
+                .get_mut(position)
+                .expect("test position is in its column") = right_value;
+            assert_eq!(
+                columns_within(&left, &right, tolerance),
+                expected,
+                "{name} at position {position}"
+            );
         }
     }
 }

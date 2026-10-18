@@ -329,23 +329,23 @@ impl ExactSign {
 mod tests {
     use super::*;
 
-    #[test]
-    fn binary_powers_cover_normal_subnormal_and_range_endpoints() {
-        for (exponent, expected) in [
-            (i32::MIN, 0.0),
-            (-1075, 0.0),
-            (-1074, f64::from_bits(1)),
-            (-1023, f64::MIN_POSITIVE / 2.0),
-            (-1022, f64::MIN_POSITIVE),
-            (-1, 0.5),
-            (0, 1.0),
-            (1, 2.0),
-            (1023, f64::from_bits(0x7FE0_0000_0000_0000)),
-            (1024, f64::INFINITY),
-            (i32::MAX, f64::INFINITY),
-        ] {
-            assert_eq!(exact_power_of_two(exponent).to_bits(), expected.to_bits());
-        }
+    #[rstest::rstest]
+    #[case::i32_min(i32::MIN, 0.0)]
+    #[case::negative_exponent_1075(-1075, 0.0)]
+    #[case::negative_exponent_1074(-1074, f64::from_bits(1))]
+    #[case::negative_exponent_1023(-1023, f64::MIN_POSITIVE / 2.0)]
+    #[case::negative_exponent_1022(-1022, f64::MIN_POSITIVE)]
+    #[case::negative_exponent_1(-1, 0.5)]
+    #[case::exponent_0(0, 1.0)]
+    #[case::exponent_1(1, 2.0)]
+    #[case::exponent_1023(1023, f64::from_bits(0x7FE0_0000_0000_0000))]
+    #[case::exponent_1024(1024, f64::INFINITY)]
+    #[case::i32_max(i32::MAX, f64::INFINITY)]
+    fn binary_powers_cover_normal_subnormal_and_range_endpoints(
+        #[case] exponent: i32,
+        #[case] expected: f64,
+    ) {
+        assert_eq!(exact_power_of_two(exponent).to_bits(), expected.to_bits());
     }
 
     /// Known residuals, including magnitudes a splitter would overflow and a

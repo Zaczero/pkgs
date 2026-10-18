@@ -629,33 +629,34 @@ mod tests {
     use crate::geometry::{MOrdinate, ZOrdinate};
     use crate::io::{CoordSeq, Ring, TextWidthBound};
 
-    #[test]
-    fn base_writer_upper_bound_covers_each_geometry_kind() {
-        for source in [
-            "POINT (0 0)",
-            "POINT EMPTY",
-            "MULTIPOINT (EMPTY, (0 0))",
-            "LINESTRING (0 0, 1 1)",
-            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
-            "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))",
-            "MULTIPOLYGON (EMPTY, ((0 0, 2 0, 2 2, 0 0)))",
-            "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))",
-        ] {
-            let shape = crate::io::parse_wkt(source).expect("fixture WKT parses");
-            let output = to_wkt(&shape).expect("fixture WKT serializes");
-            let summary = wkt_text_summary(&shape);
-            let upper_bound = summary
-                .wkt_upper_bound(
-                    shape.axes().dimension(),
-                    WktNumberFormat::Shortest.maximum_ordinate_bytes(),
-                )
-                .expect("fixture upper bound is representable");
-            assert!(
-                output.len() <= upper_bound,
-                "upper bound {upper_bound} is below output length {} for {source}",
-                output.len()
-            );
-        }
+    #[rstest::rstest]
+    #[case::point_0_0("POINT (0 0)")]
+    #[case::point_empty("POINT EMPTY")]
+    #[case::multipoint_empty_0_0("MULTIPOINT (EMPTY, (0 0))")]
+    #[case::linestring_0_0_1_1("LINESTRING (0 0, 1 1)")]
+    #[case::multilinestring_empty_0_0_1_1("MULTILINESTRING (EMPTY, (0 0, 1 1))")]
+    #[case::polygon_0_0_2_0_2_2_0_0_0_5_0_5_1_0_5_1_1_0_5_0_5(
+        "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))"
+    )]
+    #[case::multipolygon_empty_0_0_2_0_2_2_0_0("MULTIPOLYGON (EMPTY, ((0 0, 2 0, 2 2, 0 0)))")]
+    #[case::geometrycollection_point_0_0_geometrycollection_point_empty(
+        "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))"
+    )]
+    fn base_writer_upper_bound_covers_each_geometry_kind(#[case] source: &'static str) {
+        let shape = crate::io::parse_wkt(source).expect("fixture WKT parses");
+        let output = to_wkt(&shape).expect("fixture WKT serializes");
+        let summary = wkt_text_summary(&shape);
+        let upper_bound = summary
+            .wkt_upper_bound(
+                shape.axes().dimension(),
+                WktNumberFormat::Shortest.maximum_ordinate_bytes(),
+            )
+            .expect("fixture upper bound is representable");
+        assert!(
+            output.len() <= upper_bound,
+            "upper bound {upper_bound} is below output length {} for {source}",
+            output.len()
+        );
     }
 
     #[test]

@@ -208,21 +208,22 @@ mod lonlat_shape_under_tests {
     use crate::error::ErrorKind;
     use crate::geometry::{GeometryErrorKind, Point, Shape};
 
-    #[test]
-    fn domain_error_is_native_result() {
+    #[rstest::rstest]
+    #[case::none(None)]
+    #[case::some_epsg_4326(Some("EPSG:4326"))]
+    fn domain_error_is_native_result(#[case] crs: Option<&'static str>) {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
-        for crs in [None, Some("EPSG:4326")] {
-            let error = lonlat_shape_under(&shape, crs).expect_err("out of domain");
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-            ));
-            let message = error.to_string();
-            assert!(
-                message.contains("invalid longitude/latitude (0, 95)"),
-                "{message}"
-            );
-        }
+
+        let error = lonlat_shape_under(&shape, crs).expect_err("out of domain");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid longitude/latitude (0, 95)"),
+            "{message}"
+        );
     }
 
     #[test]

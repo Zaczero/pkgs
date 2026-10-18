@@ -890,27 +890,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edge_y_dense_iterator_preserves_closed_band_order() {
+    #[rstest::rstest]
+    #[case::negative_y_1_0(-1.0, &[0][..])]
+    #[case::y_0_0(0.0, &[0][..])]
+    #[case::y_40_0(40.0, &[39, 40][..])]
+    // Dense bands include the edge ending at the adjacent band boundary.
+    #[case::y_40_25(40.25, &[39, 40][..])]
+    #[case::y_128_0(128.0, &[126, 127][..])]
+    #[case::y_200_0(200.0, &[126, 127][..])]
+    fn edge_y_dense_iterator_preserves_closed_band_order(
+        #[case] y: f64,
+        #[case] expected: &'static [u32],
+    ) {
         let ys: Vec<f64> = (0..=128).map(f64::from).collect();
         let index = EdgeYIndex::build(&ys).unwrap();
-        for (y, expected) in [
-            (-1.0, &[0][..]),
-            (0.0, &[0][..]),
-            (40.0, &[39, 40][..]),
-            // Dense bands include the edge ending at the adjacent band boundary.
-            (40.25, &[39, 40][..]),
-            (128.0, &[126, 127][..]),
-            (200.0, &[126, 127][..]),
-        ] {
-            let from_iterator = index
-                .dense_band_edges(y)
-                .expect("dense plan")
-                .map(|edge| edge.as_usize() as u32)
-                .collect::<Vec<_>>();
-            assert_eq!(from_iterator, expected, "y={y}");
-            assert_eq!(collect_edge_ids(&index, y), expected, "visitor y={y}");
-        }
+
+        let from_iterator = index
+            .dense_band_edges(y)
+            .expect("dense plan")
+            .map(|edge| edge.as_usize() as u32)
+            .collect::<Vec<_>>();
+        assert_eq!(from_iterator, expected, "y={y}");
+        assert_eq!(collect_edge_ids(&index, y), expected, "visitor y={y}");
     }
 
     #[test]

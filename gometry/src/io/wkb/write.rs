@@ -657,17 +657,20 @@ mod tests {
         shape
     }
 
-    #[test]
-    fn shared_collection_wkb_lengths_match_occurrence_output() {
-        for (depth, expected) in [(8, 7_671), (10, 30_711)] {
-            let shape = doubled_collection(depth);
-            let bytes = to_wkb(&shape, None, false).expect("representable WKB writes");
-            assert_eq!(bytes.len(), expected);
-            assert_eq!(
-                wkb_len(&shape, false).expect("length is representable"),
-                expected
-            );
-        }
+    #[rstest::rstest]
+    #[case::depth_8(8, 7_671)]
+    #[case::depth_10(10, 30_711)]
+    fn shared_collection_wkb_lengths_match_occurrence_output(
+        #[case] depth: usize,
+        #[case] expected: usize,
+    ) {
+        let shape = doubled_collection(depth);
+        let bytes = to_wkb(&shape, None, false).expect("representable WKB writes");
+        assert_eq!(bytes.len(), expected);
+        assert_eq!(
+            wkb_len(&shape, false).expect("length is representable"),
+            expected
+        );
     }
 
     #[test]

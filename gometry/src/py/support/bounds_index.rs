@@ -421,22 +421,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn geographic_index_windows_stay_linear_on_shared_dags() {
+    #[rstest::rstest]
+    #[case::depth_16_usize(16_usize)]
+    #[case::depth_128(128)]
+    fn geographic_index_windows_stay_linear_on_shared_dags(#[case] depth: usize) {
         let frame = frame();
         let base = line(&[170.0, -170.0], &[0.0, 1.0]);
         let expected = window_bits(&geographic_index_envelopes(&base, frame).unwrap());
-        for depth in [16_usize, 128] {
-            let mut shared = base.clone();
-            for _ in 0..depth {
-                shared = Shape::geometry_collection(vec![shared.clone(), shared])
-                    .expect("nested shared collection stays within the depth limit");
-            }
-            assert_eq!(
-                window_bits(&geographic_index_envelopes(&shared, frame).unwrap()),
-                expected
-            );
+
+        let mut shared = base;
+        for _ in 0..depth {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                .expect("nested shared collection stays within the depth limit");
         }
+        assert_eq!(
+            window_bits(&geographic_index_envelopes(&shared, frame).unwrap()),
+            expected
+        );
     }
 
     #[test]

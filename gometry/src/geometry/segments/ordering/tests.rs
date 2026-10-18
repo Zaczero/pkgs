@@ -242,64 +242,64 @@ fn fallible_sort_stops_at_a_merge_error_with_a_valid_item_permutation() {
     }
 }
 
-#[test]
-fn cuts_sort_by_directed_coordinate_at_float_extremes() {
-    let cases = [
-        (
-            Segment {
-                start: XY::new(0.0, 0.0),
-                end: XY::new(4.0, 0.0),
-            },
-            XY::new(1.0, 0.0),
-            XY::new(3.0, 0.0),
-        ),
-        (
-            Segment {
-                start: XY::new(0.0, 0.0),
-                end: XY::new(0.0, 4.0),
-            },
-            XY::new(0.0, 1.0),
-            XY::new(0.0, 3.0),
-        ),
-        (
-            Segment {
-                start: XY::new(4.0, 0.0),
-                end: XY::new(0.0, 0.0),
-            },
-            XY::new(3.0, 0.0),
-            XY::new(1.0, 0.0),
-        ),
-        (
-            Segment {
-                start: XY::new(-4.0, 0.0),
-                end: XY::new(0.0, 0.0),
-            },
-            XY::new(-3.0, 0.0),
-            XY::new(-1.0, 0.0),
-        ),
-        (
-            Segment {
-                start: XY::new(0.0, 0.0),
-                end: XY::new(4.0 * f64::from_bits(1), 0.0),
-            },
-            XY::new(f64::from_bits(1), 0.0),
-            XY::new(3.0 * f64::from_bits(1), 0.0),
-        ),
-        (
-            Segment {
-                start: XY::new(-f64::MAX, 0.0),
-                end: XY::new(f64::MAX, 0.0),
-            },
-            XY::new(-f64::MAX / 2.0, 0.0),
-            XY::new(f64::MAX / 2.0, 0.0),
-        ),
-    ];
-    for (segment, first, second) in cases {
-        assert_eq!(
-            compare_along_segment(segment, first, second),
-            std::cmp::Ordering::Less
-        );
-    }
+#[rstest::rstest]
+#[case::segment_start_xy_new_0_0_0_0_end_xy_new_4_0_0_0(
+    Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(4.0, 0.0),
+    },
+    XY::new(1.0, 0.0),
+    XY::new(3.0, 0.0)
+)]
+#[case::segment_start_xy_new_0_0_0_0_end_xy_new_0_0_4_0(
+    Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(0.0, 4.0),
+    },
+    XY::new(0.0, 1.0),
+    XY::new(0.0, 3.0)
+)]
+#[case::segment_start_xy_new_4_0_0_0_end_xy_new_0_0_0_0(
+    Segment {
+        start: XY::new(4.0, 0.0),
+        end: XY::new(0.0, 0.0),
+    },
+    XY::new(3.0, 0.0),
+    XY::new(1.0, 0.0)
+)]
+#[case::segment_start_xy_new_4_0_0_0_end_xy_new_0_0_0_0_02521fe3(
+    Segment {
+        start: XY::new(-4.0, 0.0),
+        end: XY::new(0.0, 0.0),
+    },
+    XY::new(-3.0, 0.0),
+    XY::new(-1.0, 0.0)
+)]
+#[case::segment_start_xy_new_0_0_0_0_end_xy_new_4_0_f64_from_bits_1_0_0(
+    Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(4.0 * f64::from_bits(1), 0.0),
+    },
+    XY::new(f64::from_bits(1), 0.0),
+    XY::new(3.0 * f64::from_bits(1), 0.0)
+)]
+#[case::segment_start_xy_new_f64_max_0_0_end_xy_new_f64_max_0_0(
+    Segment {
+        start: XY::new(-f64::MAX, 0.0),
+        end: XY::new(f64::MAX, 0.0),
+    },
+    XY::new(-f64::MAX / 2.0, 0.0),
+    XY::new(f64::MAX / 2.0, 0.0)
+)]
+fn cuts_sort_by_directed_coordinate_at_float_extremes(
+    #[case] segment: Segment,
+    #[case] first: XY,
+    #[case] second: XY,
+) {
+    assert_eq!(
+        compare_along_segment(segment, first, second),
+        std::cmp::Ordering::Less
+    );
 }
 
 #[test]

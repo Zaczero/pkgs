@@ -174,20 +174,17 @@ mod tests {
         assert_eq!(morton_interleave(0b101, 0b011), 0b01_1011);
     }
 
-    #[test]
-    fn morton_deinterleave_inverts_interleave() {
-        for (x, y) in [
-            (0, 0),
-            (1, 0),
-            (0, 1),
-            (0b101, 0b011),
-            (u32::MAX, 0),
-            (0, u32::MAX),
-            (u32::MAX, u32::MAX),
-            (0xDEAD_BEEF, 0x1234_5678),
-        ] {
-            assert_eq!(morton_deinterleave(morton_interleave(x, y)), (x, y));
-        }
+    #[rstest::rstest]
+    #[case::x_0(0, 0)]
+    #[case::x_1(1, 0)]
+    #[case::x_0_fc74f2d0(0, 1)]
+    #[case::x_0b101(0b101, 0b011)]
+    #[case::u32_max(u32::MAX, 0)]
+    #[case::x_0_c4d557cb(0, u32::MAX)]
+    #[case::u32_max_ccffb85b(u32::MAX, u32::MAX)]
+    #[case::x_0xdead_beef(0xDEAD_BEEF, 0x1234_5678)]
+    fn morton_deinterleave_inverts_interleave(#[case] x: u32, #[case] y: u32) {
+        assert_eq!(morton_deinterleave(morton_interleave(x, y)), (x, y));
     }
 
     #[test]

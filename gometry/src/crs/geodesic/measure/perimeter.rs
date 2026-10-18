@@ -1,95 +1,124 @@
 use super::*;
 
-#[test]
-fn closures_measure_the_same_parallel_in_supported_angular_frames() {
-    let degree = GeographicFrame::crs84();
-    let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
-    let grad = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
-    let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
-    let radians = GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap();
-    let degree_unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
-    let paris = GeographicFrame::try_new(
-        degree_unit,
-        degree_unit,
-        2.596_921_3 * std::f64::consts::PI / 180.0,
-    )
-    .unwrap();
-
-    for (name, frame, scale, longitude) in [
-        ("degrees", degree, 1.0, 40.0),
-        (
-            "radians at zero",
-            radians,
-            std::f64::consts::PI / 180.0,
-            0.0,
-        ),
-        (
-            "radians at the seam",
-            radians,
-            std::f64::consts::PI / 180.0,
-            -180.0,
-        ),
-        (
-            "radians at 90 degrees",
-            radians,
-            std::f64::consts::PI / 180.0,
-            90.0,
-        ),
-        ("grads at zero", grad, 10.0 / 9.0, 0.0),
-        ("grads at the seam", grad, 10.0 / 9.0, -180.0),
-        ("Paris prime meridian", paris, 1.0, 40.0),
-    ] {
-        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
-        let points = north_closure(longitude, 60.0, false)
-            .into_iter()
-            .map(|(longitude, latitude)| (longitude * scale, latitude * scale))
-            .collect::<Vec<_>>();
-        let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
-        let actual = perimeter(&metric, &shape, frame);
-        let expected = analytic_parallel_circumference(&metric, 60.0);
-        assert!(
-            (actual - expected).abs() <= 1.0e-8 * expected,
-            "{name}: {actual:.12} != {expected:.12}"
-        );
-    }
+#[rstest::rstest]
+#[case::degrees("degrees", GeographicFrame::crs84(), 1.0, 40.0)]
+#[case::radians_at_zero(
+    "radians at zero",
+    {
+        let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap()
+    },
+    std::f64::consts::PI / 180.0,
+    0.0
+)]
+#[case::radians_at_the_seam(
+    "radians at the seam",
+    {
+        let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap()
+    },
+    std::f64::consts::PI / 180.0,
+    -180.0
+)]
+#[case::radians_at_90_degrees(
+    "radians at 90 degrees",
+    {
+        let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(radian_unit, radian_unit, 0.0).unwrap()
+    },
+    std::f64::consts::PI / 180.0,
+    90.0
+)]
+#[case::grads_at_zero(
+    "grads at zero",
+    {
+        let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+        GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap()
+    },
+    10.0 / 9.0,
+    0.0
+)]
+#[case::grads_at_the_seam(
+    "grads at the seam",
+    {
+        let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+        GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap()
+    },
+    10.0 / 9.0,
+    -180.0
+)]
+#[case::paris_prime_meridian(
+    "Paris prime meridian",
+    {
+        let degree_unit =
+            AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        GeographicFrame::try_new(
+            degree_unit,
+            degree_unit,
+            2.596_921_3 * std::f64::consts::PI / 180.0,
+        )
+        .unwrap()
+    },
+    1.0,
+    40.0
+)]
+fn closures_measure_the_same_parallel_in_supported_angular_frames(
+    #[case] name: &str,
+    #[case] frame: GeographicFrame,
+    #[case] scale: f64,
+    #[case] longitude: f64,
+) {
+    let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+    let points = north_closure(longitude, 60.0, false)
+        .into_iter()
+        .map(|(longitude, latitude)| (longitude * scale, latitude * scale))
+        .collect::<Vec<_>>();
+    let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
+    let actual = perimeter(&metric, &shape, frame);
+    let expected = analytic_parallel_circumference(&metric, 60.0);
+    assert!(
+        (actual - expected).abs() <= 1.0e-8 * expected,
+        "{name}: {actual:.12} != {expected:.12}"
+    );
 }
-#[test]
-fn nonidentical_radian_and_grad_aliases_remain_stored_without_a_tolerance() {
-    for (name, frame, scale) in [
-        (
-            "radians",
-            GeographicFrame::try_new(
-                AngularFactor::try_new("radian", 1.0).unwrap(),
-                AngularFactor::try_new("radian", 1.0).unwrap(),
-                0.0,
-            )
-            .unwrap(),
-            std::f64::consts::PI / 180.0,
-        ),
-        (
-            "grads",
-            GeographicFrame::try_new(
-                AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap(),
-                AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap(),
-                0.0,
-            )
-            .unwrap(),
-            10.0 / 9.0,
-        ),
-    ] {
-        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
-        let points = north_closure(40.0, 60.0, false)
-            .into_iter()
-            .map(|(longitude, latitude)| (longitude * scale, latitude * scale))
-            .collect::<Vec<_>>();
-        let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
-        let stored = raw_stored_perimeter(&metric, &shape);
-        let actual = perimeter(&metric, &shape, frame);
-        assert!(
-            (actual - stored).abs() <= 16.0 * f64::EPSILON * stored,
-            "{name} alias spellings are distinct exact positions",
-        );
-    }
+#[rstest::rstest]
+#[case::radians(
+    "radians",
+    GeographicFrame::try_new(
+        AngularFactor::try_new("radian", 1.0).unwrap(),
+        AngularFactor::try_new("radian", 1.0).unwrap(),
+        0.0,
+    )
+    .unwrap(),
+    std::f64::consts::PI / 180.0
+)]
+#[case::grads(
+    "grads",
+    GeographicFrame::try_new(
+        AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap(),
+        AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap(),
+        0.0,
+    )
+    .unwrap(),
+    10.0 / 9.0
+)]
+fn nonidentical_radian_and_grad_aliases_remain_stored_without_a_tolerance(
+    #[case] name: &'static str,
+    #[case] frame: GeographicFrame,
+    #[case] scale: f64,
+) {
+    let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+    let points = north_closure(40.0, 60.0, false)
+        .into_iter()
+        .map(|(longitude, latitude)| (longitude * scale, latitude * scale))
+        .collect::<Vec<_>>();
+    let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
+    let stored = raw_stored_perimeter(&metric, &shape);
+    let actual = perimeter(&metric, &shape, frame);
+    assert!(
+        (actual - stored).abs() <= 16.0 * f64::EPSILON * stored,
+        "{name} alias spellings are distinct exact positions",
+    );
 }
 #[test]
 fn chart_perimeter_cancels_partial_periodic_seam_overlaps() {
@@ -122,22 +151,26 @@ fn chart_perimeter_cancels_partial_periodic_seam_overlaps() {
         "combined={combined:.17}, expected={expected:.17}"
     );
 }
-#[test]
-fn stepped_and_hop_polar_closures_measure_one_parallel() {
+#[rstest::rstest]
+#[case::longitude_0_0(0.0)]
+#[case::longitude_40_0(40.0)]
+#[case::negative_longitude_179_0(-179.0)]
+#[case::longitude_180_0(180.0)]
+#[case::negative_longitude_180_0(-180.0)]
+fn stepped_and_hop_polar_closures_measure_one_parallel(#[case] longitude: f64) {
     let metric = metric();
     let expected = analytic_parallel_circumference(&metric, 60.0);
-    for longitude in [0.0, 40.0, -179.0, 180.0, -180.0] {
-        for hop in [false, true] {
-            let shape = Shape::Polygon(Polygon::new(
-                ring(&north_closure(longitude, 60.0, hop)),
-                Vec::new(),
-            ));
-            let actual = perimeter(&metric, &shape, metric.frame);
-            assert!(
-                (actual - expected).abs() <= 1.0e-8 * expected,
-                "longitude={longitude}, hop={hop}: {actual:.12} != {expected:.12}"
-            );
-        }
+
+    for hop in [false, true] {
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&north_closure(longitude, 60.0, hop)),
+            Vec::new(),
+        ));
+        let actual = perimeter(&metric, &shape, metric.frame);
+        assert!(
+            (actual - expected).abs() <= 1.0e-8 * expected,
+            "longitude={longitude}, hop={hop}: {actual:.12} != {expected:.12}"
+        );
     }
 }
 #[test]
@@ -167,37 +200,39 @@ fn clockwise_polar_closure_measures_one_parallel() {
         "clockwise closure={actual:.12}, expected={expected:.12}"
     );
 }
-#[test]
-fn oblique_and_noded_polar_closures_measure_one_parallel() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn oblique_and_noded_polar_closures_measure_one_parallel(#[case] noded: bool) {
     let metric = metric();
     let expected = analytic_parallel_circumference(&metric, 60.0);
-    for noded in [false, true] {
-        let shape = Shape::Polygon(Polygon::new(
-            ring(&oblique_north_closure(0.0, 60.0, noded)),
-            Vec::new(),
-        ));
-        let actual = perimeter(&metric, &shape, metric.frame);
-        assert!(
-            (actual - expected).abs() <= 1.0e-8 * expected,
-            "noded={noded}: {actual:.12} != {expected:.12}"
-        );
-    }
+
+    let shape = Shape::Polygon(Polygon::new(
+        ring(&oblique_north_closure(0.0, 60.0, noded)),
+        Vec::new(),
+    ));
+    let actual = perimeter(&metric, &shape, metric.frame);
+    assert!(
+        (actual - expected).abs() <= 1.0e-8 * expected,
+        "noded={noded}: {actual:.12} != {expected:.12}"
+    );
 }
-#[test]
-fn arbitrary_slope_lifted_copies_cancel_with_or_without_a_collinear_node() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn arbitrary_slope_lifted_copies_cancel_with_or_without_a_collinear_node(#[case] noded: bool) {
     let metric = metric();
     let expected = analytic_parallel_circumference(&metric, 60.0);
-    for noded in [false, true] {
-        let shape = Shape::Polygon(Polygon::new(
-            ring(&arbitrary_cut_closure(noded)),
-            Vec::new(),
-        ));
-        let actual = perimeter(&metric, &shape, metric.frame);
-        assert!(
-            (actual - expected).abs() <= 1.0e-8 * expected,
-            "noded={noded}: {actual:.12} != {expected:.12}"
-        );
-    }
+
+    let shape = Shape::Polygon(Polygon::new(
+        ring(&arbitrary_cut_closure(noded)),
+        Vec::new(),
+    ));
+    let actual = perimeter(&metric, &shape, metric.frame);
+    assert!(
+        (actual - expected).abs() <= 1.0e-8 * expected,
+        "noded={noded}: {actual:.12} != {expected:.12}"
+    );
 }
 #[test]
 fn fractional_collinear_cut_node_keeps_polar_closure_perimeter() {
@@ -320,8 +355,10 @@ fn public_scalar_length_uses_the_polar_chart_cut_perimeter() {
         "public length={actual:.6} m, expected={expected:.6} m"
     );
 }
-#[test]
-fn seam_split_and_mixed_orientation_keep_only_the_exterior_boundary() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn seam_split_and_mixed_orientation_keep_only_the_exterior_boundary(#[case] reverse_east: bool) {
     let metric = metric();
     let shared = metric
         .chart_edge(
@@ -338,26 +375,25 @@ fn seam_split_and_mixed_orientation_keep_only_the_exterior_boundary() {
         ]),
     );
     let expected = stored_sum - 2.0 * shared_length;
-    for reverse_east in [false, true] {
-        let orientation_case = if reverse_east {
-            "E CW + W CCW"
-        } else {
-            "E CCW + W CCW"
-        };
-        let east = box_polygon(170.0, -10.0, 180.0, 10.0);
-        let east_ring = if reverse_east {
-            east.shell.reversed().unwrap()
-        } else {
-            east.shell
-        };
-        let east_member = Polygon::new(east_ring, Vec::new());
-        let shape = multi_polygon(vec![east_member, box_polygon(-180.0, -10.0, -170.0, 10.0)]);
-        let actual = perimeter(&metric, &shape, metric.frame);
-        assert!(
-            (actual - expected).abs() < 1.0e-7,
-            "{orientation_case}: mixed seam perimeter={actual:.12}, expected={expected:.12}"
-        );
-    }
+
+    let orientation_case = if reverse_east {
+        "E CW + W CCW"
+    } else {
+        "E CCW + W CCW"
+    };
+    let east = box_polygon(170.0, -10.0, 180.0, 10.0);
+    let east_ring = if reverse_east {
+        east.shell.reversed().unwrap()
+    } else {
+        east.shell
+    };
+    let east_member = Polygon::new(east_ring, Vec::new());
+    let shape = multi_polygon(vec![east_member, box_polygon(-180.0, -10.0, -170.0, 10.0)]);
+    let actual = perimeter(&metric, &shape, metric.frame);
+    assert!(
+        (actual - expected).abs() < 1.0e-7,
+        "{orientation_case}: mixed seam perimeter={actual:.12}, expected={expected:.12}"
+    );
 }
 #[test]
 fn partial_seam_overlap_cancels_only_its_shared_latitude_interval() {
@@ -544,46 +580,44 @@ fn a_later_multipolygon_ring_with_a_lifted_pair_is_not_screened_away() {
         "multipolygon perimeter={actual:.12}, expected={expected:.12}"
     );
 }
-#[test]
-fn cached_bounds_and_longitude_fold_take_the_same_slow_perimeter_path() {
+#[rstest::rstest]
+#[case::shape_polygon_box_polygon_10_0_10_0_20_0_30_0(Shape::Polygon(box_polygon(-10.0, -10.0, 20.0, 30.0)))]
+#[case::shape_polygon_polygon_new_ring_oblique_north_clo_69c95274(Shape::Polygon(Polygon::new(
+    ring(&oblique_north_closure(0.0, 60.0, true)),
+    Vec::new(),
+)))]
+#[case::shape_polygon_polygon_new_ring_full_longitude_ba_aa896d2d(Shape::Polygon(Polygon::new(
+    ring(&full_longitude_band(40.0, -60.0, 60.0)),
+    Vec::new(),
+)))]
+#[case::multi_polygon_vec_box_polygon_170_0_10_0_180_0_1_910b6efc(multi_polygon(vec![
+    box_polygon(170.0, -10.0, 180.0, 10.0),
+    box_polygon(-180.0, -10.0, -170.0, 10.0),
+]))]
+fn cached_bounds_and_longitude_fold_take_the_same_slow_perimeter_path(#[case] shape: Shape) {
     let metric = metric();
-    let cases = [
-        Shape::Polygon(box_polygon(-10.0, -10.0, 20.0, 30.0)),
-        Shape::Polygon(Polygon::new(
-            ring(&oblique_north_closure(0.0, 60.0, true)),
-            Vec::new(),
-        )),
-        Shape::Polygon(Polygon::new(
-            ring(&full_longitude_band(40.0, -60.0, 60.0)),
-            Vec::new(),
-        )),
-        multi_polygon(vec![
-            box_polygon(170.0, -10.0, 180.0, 10.0),
-            box_polygon(-180.0, -10.0, -170.0, 10.0),
-        ]),
-    ];
+
     let expanded_bounds = Bounds::new_raw(-1000.0, -90.0, 1000.0, 90.0);
-    for shape in cases {
-        let folded = perimeter(&metric, &shape, metric.frame);
-        let cached_bounds = crate::geometry::geographic_polygonal_perimeter(
-            &metric,
-            &shape,
-            metric.frame,
-            shape.bounds(),
-        )
-        .unwrap();
-        let forced_slow = crate::geometry::geographic_polygonal_perimeter(
-            &metric,
-            &shape,
-            metric.frame,
-            Some(expanded_bounds),
-        )
-        .unwrap();
-        for actual in [cached_bounds, forced_slow] {
-            assert!(
-                (actual - folded).abs() <= 1.0e-12 * folded.abs().max(1.0),
-                "screened={folded:.17}, cached/slow={actual:.17}"
-            );
-        }
+
+    let folded = perimeter(&metric, &shape, metric.frame);
+    let cached_bounds = crate::geometry::geographic_polygonal_perimeter(
+        &metric,
+        &shape,
+        metric.frame,
+        shape.bounds(),
+    )
+    .unwrap();
+    let forced_slow = crate::geometry::geographic_polygonal_perimeter(
+        &metric,
+        &shape,
+        metric.frame,
+        Some(expanded_bounds),
+    )
+    .unwrap();
+    for actual in [cached_bounds, forced_slow] {
+        assert!(
+            (actual - folded).abs() <= 1.0e-12 * folded.abs().max(1.0),
+            "screened={folded:.17}, cached/slow={actual:.17}"
+        );
     }
 }

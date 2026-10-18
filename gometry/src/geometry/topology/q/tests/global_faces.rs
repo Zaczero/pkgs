@@ -138,23 +138,14 @@ fn assert_seed_in_native_frames(points: &[(f64, f64)]) {
     }
 }
 
-macro_rules! period_seed_case {
-    ($name:ident, $points:expr) => {
-        #[test]
-        fn $name() {
-            assert_seed_in_native_frames(&$points);
-        }
-    };
-}
-
-period_seed_case!(lifted_seed_matches_circle_plus_bump, [
+#[rstest::rstest]
+#[case::lifted_seed_matches_circle_plus_bump(&[
     (0.0, 60.0),
     (360.0, 60.0),
     (315.0, 65.0),
     (0.0, 60.0)
-]);
-
-period_seed_case!(lifted_seed_matches_hop_closure, [
+])]
+#[case::lifted_seed_matches_hop_closure(&[
     (45.0, 60.0),
     (135.0, 60.0),
     (225.0, 60.0),
@@ -163,9 +154,8 @@ period_seed_case!(lifted_seed_matches_hop_closure, [
     (405.0, 90.0),
     (45.0, 90.0),
     (45.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_stepped_pole_closure, [
+])]
+#[case::lifted_seed_matches_stepped_pole_closure(&[
     (45.0, 60.0),
     (135.0, 60.0),
     (225.0, 60.0),
@@ -177,9 +167,8 @@ period_seed_case!(lifted_seed_matches_stepped_pole_closure, [
     (135.0, 90.0),
     (45.0, 90.0),
     (45.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_oblique_pole_closure, [
+])]
+#[case::lifted_seed_matches_oblique_pole_closure(&[
     (0.0, 60.0),
     (90.0, 60.0),
     (180.0, 60.0),
@@ -191,17 +180,15 @@ period_seed_case!(lifted_seed_matches_oblique_pole_closure, [
     (180.0, 90.0),
     (90.0, 90.0),
     (0.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_explicit_full_period_cap, [
+])]
+#[case::lifted_seed_matches_explicit_full_period_cap(&[
     (0.0, 60.0),
     (360.0, 60.0),
     (360.0, 90.0),
     (0.0, 90.0),
     (0.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_unmarked_cap_with_a_period_pole_edge, [
+])]
+#[case::lifted_seed_matches_unmarked_cap_with_a_period_pole_edge(&[
     (0.0, 60.0),
     (90.0, 60.0),
     (180.0, 60.0),
@@ -209,28 +196,28 @@ period_seed_case!(lifted_seed_matches_unmarked_cap_with_a_period_pole_edge, [
     (0.0, 90.0),
     (360.0, 90.0),
     (0.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_south_circle_plus_bump, [
+])]
+#[case::lifted_seed_matches_south_circle_plus_bump(&[
     (0.0, -60.0),
     (360.0, -60.0),
     (315.0, -65.0),
     (0.0, -60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_reversed_circle_plus_bump, [
+])]
+#[case::lifted_seed_matches_reversed_circle_plus_bump(&[
     (0.0, 60.0),
     (315.0, 65.0),
     (360.0, 60.0),
     (0.0, 60.0),
-]);
-
-period_seed_case!(lifted_seed_matches_rotated_circle_plus_bump, [
+])]
+#[case::lifted_seed_matches_rotated_circle_plus_bump(&[
     (90.0, 60.0),
     (450.0, 60.0),
     (405.0, 65.0),
     (90.0, 60.0),
-]);
+])]
+fn lifted_seed_matches_native_circle_reference(#[case] points: &[(f64, f64)]) {
+    assert_seed_in_native_frames(points);
+}
 
 fn exact_topology(shape: &Shape) -> ExactGeographicTopology {
     let frame = degrees();
@@ -759,111 +746,142 @@ fn relation(rows: &[Shape]) -> String {
 
 /// A westward host ray that ends on a node holding an exact east dart must still place
 /// the component in the face east of the span it hit, not in the face CCW of that dart.
-#[test]
-fn host_ray_ending_at_an_east_dart_node_keeps_the_component_in_the_outer_face() {
+#[rstest::rstest]
+#[case::pentagon(
+    "pentagon",
+    {
+        let step = |points: &[(f64, f64)]| {
+            let mut closed = points.to_vec();
+            closed.push(points[0]);
+            Polygon::new(ring(&closed), Vec::new())
+        };
+        let pentagon = step(&[
+            (0.0, 10.0),
+            (20.0, 10.0),
+            (20.0, 20.0),
+            (40.0, 20.0),
+            (0.0, 30.0),
+        ]);
+        vec![pentagon]
+    },
+    3_usize,
+    2_usize
+)]
+#[case::step_ring(
+    "step ring",
+    {
+        let step = |points: &[(f64, f64)]| {
+            let mut closed = points.to_vec();
+            closed.push(points[0]);
+            Polygon::new(ring(&closed), Vec::new())
+        };
+        let step_ring = step(&[
+            (0.0, 10.0),
+            (20.0, 10.0),
+            (20.0, 20.0),
+            (40.0, 20.0),
+            (40.0, 30.0),
+            (0.0, 30.0),
+        ]);
+        vec![step_ring]
+    },
+    3,
+    2
+)]
+#[case::corner_touching_boxes(
+    "corner-touching boxes",
+    {
+        let corner_touching = [
+            box_polygon(20.0, 20.0, 40.0, 30.0),
+            box_polygon(0.0, 10.0, 20.0, 20.0),
+        ];
+        corner_touching.to_vec()
+    },
+    4,
+    3
+)]
+fn host_ray_ending_at_an_east_dart_node_keeps_the_component_in_the_outer_face(
+    #[case] name: &str,
+    #[case] members: Vec<Polygon>,
+    #[case] faces: usize,
+    #[case] union_polygons: usize,
+) {
     let seam_box = || box_polygon(170.0, 20.0, 190.0, 40.0);
-    let step = |points: &[(f64, f64)]| {
-        let mut closed = points.to_vec();
-        closed.push(points[0]);
-        Polygon::new(ring(&closed), Vec::new())
-    };
-    let pentagon = step(&[
-        (0.0, 10.0),
-        (20.0, 10.0),
-        (20.0, 20.0),
-        (40.0, 20.0),
-        (0.0, 30.0),
-    ]);
-    let step_ring = step(&[
-        (0.0, 10.0),
-        (20.0, 10.0),
-        (20.0, 20.0),
-        (40.0, 20.0),
-        (40.0, 30.0),
-        (0.0, 30.0),
-    ]);
-    let corner_touching = [
-        box_polygon(20.0, 20.0, 40.0, 30.0),
-        box_polygon(0.0, 10.0, 20.0, 20.0),
-    ];
-    for (name, members, faces, union_polygons) in [
-        ("pentagon", vec![pentagon], 3_usize, 2_usize),
-        ("step ring", vec![step_ring], 3, 2),
-        ("corner-touching boxes", corner_touching.to_vec(), 4, 3),
-    ] {
-        let mut polygons = members;
-        polygons.push(seam_box());
-        let topology = exact_topology(&multipolygon(polygons));
-        assert_eq!(
-            topology.q.global_face_count, faces,
-            "{name}: one face per interior plus one outer face"
-        );
-        assert!(
-            topology
-                .q
-                .component_hosts
-                .windows(2)
-                .all(|pair| pair.first() == pair.last()),
-            "{name}: every component's outer face is the one global outer face"
-        );
-        assert_eq!(
-            location(&topology, 170.0, 30.0),
-            (Loc::Boundary, Loc::Boundary),
-            "{name}"
-        );
-        assert_eq!(
-            location(&topology, 175.0, 30.0),
-            (Loc::Interior, Loc::Interior),
-            "{name}"
-        );
-        assert_eq!(
-            location(&topology, 165.0, 30.0),
-            (Loc::Exterior, Loc::Exterior),
-            "{name}"
-        );
-        assert_eq!(quotient_union_polygons(&topology), union_polygons, "{name}");
-    }
+    let mut polygons = members;
+    polygons.push(seam_box());
+    let topology = exact_topology(&multipolygon(polygons));
+    assert_eq!(
+        topology.q.global_face_count, faces,
+        "{name}: one face per interior plus one outer face"
+    );
+    assert!(
+        topology
+            .q
+            .component_hosts
+            .windows(2)
+            .all(|pair| pair.first() == pair.last()),
+        "{name}: every component's outer face is the one global outer face"
+    );
+    assert_eq!(
+        location(&topology, 170.0, 30.0),
+        (Loc::Boundary, Loc::Boundary),
+        "{name}"
+    );
+    assert_eq!(
+        location(&topology, 175.0, 30.0),
+        (Loc::Interior, Loc::Interior),
+        "{name}"
+    );
+    assert_eq!(
+        location(&topology, 165.0, 30.0),
+        (Loc::Exterior, Loc::Exterior),
+        "{name}"
+    );
+    assert_eq!(quotient_union_polygons(&topology), union_polygons, "{name}");
 }
 
 /// The same ray ends on a node without an east dart, or misses every node: unchanged.
-#[test]
-fn host_ray_ending_at_a_node_without_an_east_dart_or_missing_it_stays_correct() {
-    for seam_south in [20.0, 19.0] {
-        let topology = exact_topology(&multipolygon(vec![
-            box_polygon(0.0, 10.0, 20.0, 20.0),
-            box_polygon(170.0, seam_south, 190.0, seam_south + 20.0),
-        ]));
-        assert_eq!(topology.q.global_face_count, 3);
-        assert_eq!(
-            location(&topology, 170.0, seam_south + 10.0),
-            (Loc::Boundary, Loc::Boundary)
-        );
-        assert_eq!(quotient_union_polygons(&topology), 2);
-    }
+#[rstest::rstest]
+#[case::seam_south_20_0(20.0)]
+#[case::seam_south_19_0(19.0)]
+fn host_ray_ending_at_a_node_without_an_east_dart_or_missing_it_stays_correct(
+    #[case] seam_south: f64,
+) {
+    let topology = exact_topology(&multipolygon(vec![
+        box_polygon(0.0, 10.0, 20.0, 20.0),
+        box_polygon(170.0, seam_south, 190.0, seam_south + 20.0),
+    ]));
+    assert_eq!(topology.q.global_face_count, 3);
+    assert_eq!(
+        location(&topology, 170.0, seam_south + 10.0),
+        (Loc::Boundary, Loc::Boundary)
+    );
+    assert_eq!(quotient_union_polygons(&topology), 2);
 }
 
 /// Row occupancy follows the faces: a third component hosted beside a shared edge or an
 /// overlap must not inherit the neighbouring polygon's interior.
-#[test]
-fn host_row_occupancy_does_not_leak_from_a_neighbouring_polygon_interior() {
+#[rstest::rstest]
+#[case::shared_edge("shared edge", box_polygon(10.0, 0.0, 30.0, 20.0))]
+#[case::overlap("overlap", box_polygon(10.0, 0.0, 30.0, 25.0))]
+fn host_row_occupancy_does_not_leak_from_a_neighbouring_polygon_interior(
+    #[case] name: &'static str,
+    #[case] b: Polygon,
+) {
     let a = box_polygon(20.0, 20.0, 40.0, 40.0);
     let d = box_polygon(100.0, 20.0, 120.0, 40.0);
-    for (name, b) in [
-        ("shared edge", box_polygon(10.0, 0.0, 30.0, 20.0)),
-        ("overlap", box_polygon(10.0, 0.0, 30.0, 25.0)),
-    ] {
-        let members = multipolygon(vec![a.clone(), b, d.clone()]);
-        for shift in [0.0, 360.0] {
-            let outside = Shape::Polygon(box_polygon(130.0 + shift, 25.0, 140.0 + shift, 35.0));
-            assert_eq!(
-                relation(&[members.clone(), outside]),
-                "FF2FF1212",
-                "{name} shift {shift}: a polygon over empty background is not occupied"
-            );
-        }
-        let inside_d = Shape::Polygon(box_polygon(105.0, 25.0, 115.0, 35.0));
-        assert_eq!(relation(&[members, inside_d]), "212FF1FF2", "{name}");
+
+    let members = multipolygon(vec![a, b, d]);
+    for shift in [0.0, 360.0] {
+        let outside = Shape::Polygon(box_polygon(130.0 + shift, 25.0, 140.0 + shift, 35.0));
+        assert_eq!(
+            relation(&[members.clone(), outside]),
+            "FF2FF1212",
+            "{name} shift {shift}: a polygon over empty background is not occupied"
+        );
     }
+    let inside_d = Shape::Polygon(box_polygon(105.0, 25.0, 115.0, 35.0));
+    assert_eq!(relation(&[members, inside_d]), "212FF1FF2", "{name}");
 }
 
 /// An isolated point queries upward; a hit node with an east dart is already correct there.

@@ -171,34 +171,35 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
         Some(FullTurnPole::Bounded(ChartPole::North))
     );
 }
-#[test]
-fn exact_axis_boxes_are_world_bands_without_fabricating_turns() {
-    for frame in [degrees(), frame(1.0), frame(std::f64::consts::TAU / 400.0)] {
-        let half = frame.longitude().half_period();
-        let summary = axis_box(frame, -half, half, -frame.pole() / 2.0, frame.pole() / 2.0);
-        assert_eq!(summary.turn(), RingTurn::None);
-        assert!(summary.exact_axis_band);
-        assert_eq!(
-            summary.domain,
-            RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
-        );
-        let reverse = axis_box(frame, half, -half, -frame.pole(), frame.pole());
-        assert_eq!(reverse.turn(), RingTurn::None);
-        assert!(reverse.exact_axis_band);
-        assert_eq!(
-            reverse.domain,
-            RingDomain::FullLongitude(RingLatitudeSpan::PoleToPole)
-        );
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::frame_1_0(frame(1.0))]
+#[case::frame_std_f64_consts_tau_400_0(frame(std::f64::consts::TAU / 400.0))]
+fn exact_axis_boxes_are_world_bands_without_fabricating_turns(#[case] frame: GeographicFrame) {
+    let half = frame.longitude().half_period();
+    let summary = axis_box(frame, -half, half, -frame.pole() / 2.0, frame.pole() / 2.0);
+    assert_eq!(summary.turn(), RingTurn::None);
+    assert!(summary.exact_axis_band);
+    assert_eq!(
+        summary.domain,
+        RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
+    );
+    let reverse = axis_box(frame, half, -half, -frame.pole(), frame.pole());
+    assert_eq!(reverse.turn(), RingTurn::None);
+    assert!(reverse.exact_axis_band);
+    assert_eq!(
+        reverse.domain,
+        RingDomain::FullLongitude(RingLatitudeSpan::PoleToPole)
+    );
 
-        let inside = axis_box(
-            frame,
-            -half,
-            half.next_down(),
-            -frame.pole() / 2.0,
-            frame.pole() / 2.0,
-        );
-        assert_eq!(inside.domain, RingDomain::Ordinary);
-    }
+    let inside = axis_box(
+        frame,
+        -half,
+        half.next_down(),
+        -frame.pole() / 2.0,
+        frame.pole() / 2.0,
+    );
+    assert_eq!(inside.domain, RingDomain::Ordinary);
 }
 #[test]
 fn canonical_axis_band_spelling_retains_both_complete_parallel_turns() {
@@ -218,8 +219,12 @@ fn canonical_axis_band_spelling_retains_both_complete_parallel_turns() {
         );
     }
 }
-#[test]
-fn historical_parallel_levels_reject_interior_cancellation_independent_of_start() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn historical_parallel_levels_reject_interior_cancellation_independent_of_start(
+    #[case] reverse: bool,
+) {
     let frame = degrees();
     let counterring = [
         (0.0, 10.0),
@@ -233,17 +238,15 @@ fn historical_parallel_levels_reject_interior_cancellation_independent_of_start(
         (0.0, 10.0),
     ];
 
-    for reverse in [false, true] {
-        for offset in 0..counterring.len() - 1 {
-            let source = rotated_ring(&counterring, offset, reverse);
-            let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
-            let fused = admitted_ring_summary(frame, &source);
+    for offset in 0..counterring.len().wrapping_sub(1) {
+        let source = rotated_ring(&counterring, offset, reverse);
+        let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
+        let fused = admitted_ring_summary(frame, &source);
 
-            assert_eq!(summary, fused);
-            assert_eq!(summary.chart_turn, 0);
-            assert!(!summary.exact_axis_band);
-            assert_eq!(summary.domain, RingDomain::Ordinary);
-        }
+        assert_eq!(summary, fused);
+        assert_eq!(summary.chart_turn, 0);
+        assert!(!summary.exact_axis_band);
+        assert_eq!(summary.domain, RingDomain::Ordinary);
     }
 }
 #[test]

@@ -341,28 +341,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exact_fallback_handles_crossing_and_parallel_segments() {
-        let cases = [
-            (
-                ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.1, 0.0], [
-                    1.0, -0.1, 0.0,
-                ]),
-                0.0,
-            ),
-            (
-                ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [
-                    1.0, 2.0, 0.0,
-                ]),
-                2.0,
-            ),
-        ];
-        for (inputs, expected) in cases {
-            assert_eq!(
-                segment_segment_distance_3d(inputs.0, inputs.1, inputs.2, inputs.3)
-                    .expect("exact fallback result"),
-                expected
-            );
-        }
+    #[rstest::rstest]
+    #[case::inputs_0_0_0_0_0_0_1_0_0_0_0_0_0_0_0_1_0_0_1_0_0_1_0_0(
+        ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.1, 0.0], [
+            1.0, -0.1, 0.0,
+        ]),
+        0.0
+    )]
+    #[case::inputs_0_0_0_0_0_0_1_0_0_0_0_0_0_0_2_0_0_0_1_0_2_0_0_0(
+        ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [
+            1.0, 2.0, 0.0,
+        ]),
+        2.0
+    )]
+    fn exact_fallback_handles_crossing_and_parallel_segments(
+        #[case] inputs: ([f64; 3], [f64; 3], [f64; 3], [f64; 3]),
+        #[case] expected: f64,
+    ) {
+        assert_eq!(
+            segment_segment_distance_3d(inputs.0, inputs.1, inputs.2, inputs.3)
+                .expect("exact fallback result"),
+            expected
+        );
     }
 }

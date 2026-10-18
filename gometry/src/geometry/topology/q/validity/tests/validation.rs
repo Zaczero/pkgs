@@ -265,36 +265,33 @@ fn geographic_q_validity_uses_xy_without_losing_zm_storage() {
     assert_eq!(signature(&xy), signature(&zm));
 }
 
-#[test]
-fn exact_partition_route_matches_planar_validity_codes_paths_and_witnesses() {
+#[rstest::rstest]
+#[case::simple_shell(Shape::Polygon(polygon(&[box_ring(0.0, 10.0, 0.0, 10.0)])))]
+#[case::crossed_shell(Shape::Polygon(Polygon::new(
+    ring(&[
+        (0.0, 0.0),
+        (10.0, 10.0),
+        (10.0, 0.0),
+        (0.0, 10.0),
+        (0.0, 0.0),
+    ]),
+    Vec::new(),
+)))]
+#[case::external_hole(Shape::Polygon(polygon(&[
+    box_ring(0.0, 20.0, 0.0, 20.0),
+    box_ring(25.0, 30.0, 5.0, 10.0),
+])))]
+fn exact_partition_route_matches_planar_validity_codes_paths_and_witnesses(#[case] shape: Shape) {
     let frame = frame();
-    let shell = box_ring(0.0, 20.0, 0.0, 20.0);
-    let hole_outside = box_ring(25.0, 30.0, 5.0, 10.0);
-    let shapes = [
-        Shape::Polygon(polygon(&[box_ring(0.0, 10.0, 0.0, 10.0)])),
-        Shape::Polygon(Polygon::new(
-            ring(&[
-                (0.0, 0.0),
-                (10.0, 10.0),
-                (10.0, 0.0),
-                (0.0, 10.0),
-                (0.0, 0.0),
-            ]),
-            Vec::new(),
-        )),
-        Shape::Polygon(polygon(&[shell, hole_outside])),
-    ];
-    for shape in shapes {
-        let view = crate::geographic::ScalarGeographicView::try_new(frame, &shape).unwrap();
-        assert_eq!(
-            crate::geometry::classify_geographic_chart(view),
-            crate::geometry::GeographicTopologyRoute::ExactPartition
-        );
-        let topology = ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap();
-        assert_eq!(
-            signature_from_issue(topology.validity_issue(&shape).unwrap()),
-            signature_from_issue(shape.validate().unwrap()),
-            "{shape:?}"
-        );
-    }
+    let view = crate::geographic::ScalarGeographicView::try_new(frame, &shape).unwrap();
+    assert_eq!(
+        crate::geometry::classify_geographic_chart(view),
+        crate::geometry::GeographicTopologyRoute::ExactPartition
+    );
+    let topology = ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap();
+    assert_eq!(
+        signature_from_issue(topology.validity_issue(&shape).unwrap()),
+        signature_from_issue(shape.validate().unwrap()),
+        "{shape:?}"
+    );
 }

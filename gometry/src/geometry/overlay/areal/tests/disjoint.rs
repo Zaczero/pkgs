@@ -6,8 +6,11 @@ use super::test_support::{
 use crate::geometry::overlay::{OverlayOp, Strictness, overlay_all};
 use crate::geometry::{CoordSeq, CoordinateAxes, GeometryKind, LineSeq, Point, Polygon, Shape};
 
-#[test]
-fn disjoint_bounds_certificates_match_joint_graph_assembly() {
+#[rstest::rstest]
+#[case::overlayop_union(OverlayOp::Union)]
+#[case::overlayop_difference(OverlayOp::Difference)]
+#[case::overlayop_symmetricdifference(OverlayOp::SymmetricDifference)]
+fn disjoint_bounds_certificates_match_joint_graph_assembly(#[case] op: OverlayOp) {
     let polygons = [square(0.0, 0.0, 1.0, 1.0), square(3.0, 3.0, 4.0, 4.0)];
     let mixed = [
         square(0.0, 0.0, 1.0, 1.0),
@@ -43,16 +46,10 @@ fn disjoint_bounds_certificates_match_joint_graph_assembly() {
     let remote = square(6.0, 6.0, 7.0, 7.0);
     let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
 
-    for op in [
-        OverlayOp::Union,
-        OverlayOp::Difference,
-        OverlayOp::SymmetricDifference,
-    ] {
-        assert_disjoint_certificate_matches_graph(&[&polygons[0], &polygons[1]], op);
-        assert_disjoint_certificate_matches_graph(&[&mixed[0], &mixed[1], &mixed[2]], op);
-        assert_disjoint_certificate_matches_graph(&[&multipart, &remote], op);
-        assert_disjoint_results_match(&[&polygons[0], &empty_z, &polygons[1]], op);
-    }
+    assert_disjoint_certificate_matches_graph(&[&polygons[0], &polygons[1]], op);
+    assert_disjoint_certificate_matches_graph(&[&mixed[0], &mixed[1], &mixed[2]], op);
+    assert_disjoint_certificate_matches_graph(&[&multipart, &remote], op);
+    assert_disjoint_results_match(&[&polygons[0], &empty_z, &polygons[1]], op);
 }
 
 /// Three bounds components: an overlapping pair, an invalid bowtie with a

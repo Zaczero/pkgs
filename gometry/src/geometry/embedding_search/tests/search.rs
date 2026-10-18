@@ -630,137 +630,135 @@ fn solution_copy_refusal_does_not_mark_the_stream_as_yielded() {
     assert_eq!(problem.local_calls.get(), 1);
 }
 
-#[test]
-fn two_and_three_class_acceptance_tables_follow_first_blame_order() {
-    for (streams, class_orders) in [
-        (vec![vec![0, 1], vec![2, 3]], vec![vec![0, 1], vec![1, 0]]),
-        (vec![vec![0, 1], vec![2, 3], vec![4, 5]], vec![
-            vec![0, 1, 2],
-            vec![0, 2, 1],
-            vec![1, 0, 2],
-            vec![1, 2, 0],
-            vec![2, 0, 1],
-            vec![2, 1, 0],
-        ]),
-    ] {
-        let first_blame = 1;
-        let mut digit_order = Vec::with_capacity(streams.len());
-        digit_order.push(first_blame);
-        digit_order.extend((0..streams.len()).filter(|&node| node != first_blame));
-        let products = cartesian_products_with_ordered_fastest_stream(&streams, &digit_order);
-        let acceptance_count = 1_usize
-            .checked_shl(u32::try_from(products.len()).unwrap())
-            .unwrap();
-        let accepted_tables = if streams.len() == 2 {
-            (0..acceptance_count).collect::<Vec<_>>()
-        } else {
-            vec![
-                0,
-                1,
-                2,
-                4,
-                128,
-                3,
-                7,
-                0b0101_0101,
-                0b1010_1010,
-                0b1110_0000,
-                255,
-            ]
-        };
-        let candidates = (0..streams.len())
-            .map(|node| {
-                let first = u8::try_from(node).unwrap().wrapping_mul(2);
-                vec![first, first.wrapping_add(1)]
-            })
-            .collect::<Vec<_>>();
+#[rstest::rstest]
+#[case::vec_vec_0_1_vec_2_3(vec![vec![0, 1], vec![2, 3]], vec![vec![0, 1], vec![1, 0]])]
+#[case::vec_vec_0_1_vec_2_3_vec_4_5(vec![vec![0, 1], vec![2, 3], vec![4, 5]], vec![
+    vec![0, 1, 2],
+    vec![0, 2, 1],
+    vec![1, 0, 2],
+    vec![1, 2, 0],
+    vec![2, 0, 1],
+    vec![2, 1, 0],
+])]
+fn two_and_three_class_acceptance_tables_follow_first_blame_order(
+    #[case] streams: Vec<Vec<u8>>,
+    #[case] class_orders: Vec<Vec<usize>>,
+) {
+    let first_blame = 1;
+    let mut digit_order = Vec::with_capacity(streams.len());
+    digit_order.push(first_blame);
+    digit_order.extend((0..streams.len()).filter(|&node| node != first_blame));
+    let products = cartesian_products_with_ordered_fastest_stream(&streams, &digit_order);
+    let acceptance_count = 1_usize
+        .checked_shl(u32::try_from(products.len()).unwrap())
+        .unwrap();
+    let accepted_tables = if streams.len() == 2 {
+        (0..acceptance_count).collect::<Vec<_>>()
+    } else {
+        vec![
+            0,
+            1,
+            2,
+            4,
+            128,
+            3,
+            7,
+            0b0101_0101,
+            0b1010_1010,
+            0b1110_0000,
+            255,
+        ]
+    };
+    let candidates = (0..streams.len())
+        .map(|node| {
+            let first = u8::try_from(node).unwrap().wrapping_mul(2);
+            vec![first, first.wrapping_add(1)]
+        })
+        .collect::<Vec<_>>();
 
-        for class_order in class_orders {
-            for &accepted in &accepted_tables {
-                let global_requirements = products
+    for class_order in class_orders {
+        for &accepted in &accepted_tables {
+            let global_requirements = products
+                .iter()
+                .enumerate()
+                .filter_map(|(index, product)| {
+                    let bit = 1_usize.checked_shl(u32::try_from(index).unwrap()).unwrap();
+                    (accepted & bit != 0)
+                        .then(|| product.iter().copied().enumerate().collect::<Vec<_>>())
+                })
+                .collect();
+            let class_for_node = |node| {
+                class_order
                     .iter()
-                    .enumerate()
-                    .filter_map(|(index, product)| {
-                        let bit = 1_usize.checked_shl(u32::try_from(index).unwrap()).unwrap();
-                        (accepted & bit != 0)
-                            .then(|| product.iter().copied().enumerate().collect::<Vec<_>>())
-                    })
-                    .collect();
-                let class_for_node = |node| {
-                    class_order
-                        .iter()
-                        .position(|&class_node| class_node == node)
-                        .expect("each singleton node has one original class ID")
-                };
-                let blame_by_assignment = products
-                    .iter()
-                    .enumerate()
-                    .map(|(index, product)| {
-                        let assignment = product.iter().copied().enumerate().collect();
-                        let blamed_node = match index {
-                            1 => 0,
-                            2 => streams.len().wrapping_sub(1),
-                            _ => first_blame,
-                        };
-                        (assignment, vec![class_for_node(blamed_node)])
-                    })
-                    .collect();
-                let classes = class_order.iter().copied().map(|node| vec![node]).collect();
-                let mut problem = FixtureProblem::new(classes, candidates.clone());
-                problem.global_requirements = Some(global_requirements);
-                problem.blamed_classes = vec![class_for_node(first_blame)];
-                problem.blame_by_assignment = blame_by_assignment;
-                let visits = Rc::new(RefCell::new(Vec::new()));
-                problem.global_visits = Some(Rc::clone(&visits));
-                let result = search_fixture(problem, streams.len());
+                    .position(|&class_node| class_node == node)
+                    .expect("each singleton node has one original class ID")
+            };
+            let blame_by_assignment = products
+                .iter()
+                .enumerate()
+                .map(|(index, product)| {
+                    let assignment = product.iter().copied().enumerate().collect();
+                    let blamed_node = match index {
+                        1 => 0,
+                        2 => streams.len().wrapping_sub(1),
+                        _ => first_blame,
+                    };
+                    (assignment, vec![class_for_node(blamed_node)])
+                })
+                .collect();
+            let classes = class_order.iter().copied().map(|node| vec![node]).collect();
+            let mut problem = FixtureProblem::new(classes, candidates.clone());
+            problem.global_requirements = Some(global_requirements);
+            problem.blamed_classes = vec![class_for_node(first_blame)];
+            problem.blame_by_assignment = blame_by_assignment;
+            let visits = Rc::new(RefCell::new(Vec::new()));
+            problem.global_visits = Some(Rc::clone(&visits));
+            let result = search_fixture(problem, streams.len());
 
-                let first = products.iter().enumerate().find(|(index, _)| {
-                    let bit = 1_usize.checked_shl(u32::try_from(*index).unwrap()).unwrap();
-                    accepted & bit != 0
-                });
-                let expected_visit_count =
-                    first.map_or(products.len(), |(index, _)| index.wrapping_add(1));
-                let expected_visits = products
+            let first = products.iter().enumerate().find(|(index, _)| {
+                let bit = 1_usize.checked_shl(u32::try_from(*index).unwrap()).unwrap();
+                accepted & bit != 0
+            });
+            let expected_visit_count =
+                first.map_or(products.len(), |(index, _)| index.wrapping_add(1));
+            let expected_visits = products
+                .iter()
+                .take(expected_visit_count)
+                .map(|product| product.iter().copied().enumerate().collect::<Vec<_>>())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                *visits.borrow(),
+                expected_visits,
+                "acceptance mask {accepted:#x}, class order {class_order:?}"
+            );
+
+            if let Some((_, expected)) = first {
+                assert!(
+                    result.is_ok(),
+                    "acceptance mask {accepted:#x}, class order {class_order:?} must return the first passing product: {result:?}"
+                );
+                let assignment = result.unwrap();
+                let actual = assignment
+                    .classes
                     .iter()
-                    .take(expected_visit_count)
-                    .map(|product| product.iter().copied().enumerate().collect::<Vec<_>>())
+                    .flat_map(|class| {
+                        class
+                            .variables
+                            .iter()
+                            .copied()
+                            .zip(class.values.iter().copied())
+                    })
                     .collect::<Vec<_>>();
                 assert_eq!(
-                    *visits.borrow(),
-                    expected_visits,
-                    "acceptance mask {accepted:#x}, class order {class_order:?}"
+                    actual,
+                    expected.iter().copied().enumerate().collect::<Vec<_>>()
                 );
-
-                if let Some((_, expected)) = first {
-                    assert!(
-                        result.is_ok(),
-                        "acceptance mask {accepted:#x}, class order {class_order:?} must return the first passing product: {result:?}"
-                    );
-                    let assignment = result.unwrap();
-                    let actual = assignment
-                        .classes
-                        .iter()
-                        .flat_map(|class| {
-                            class
-                                .variables
-                                .iter()
-                                .copied()
-                                .zip(class.values.iter().copied())
-                        })
-                        .collect::<Vec<_>>();
-                    assert_eq!(
-                        actual,
-                        expected.iter().copied().enumerate().collect::<Vec<_>>()
-                    );
-                } else {
-                    let error = result.unwrap_err();
-                    assert!(matches!(
-                        error.kind(),
-                        ErrorKind::Geometry(
-                            GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
-                        )
-                    ));
-                }
+            } else {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable { .. })
+                ));
             }
         }
     }

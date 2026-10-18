@@ -630,22 +630,27 @@ mod tests {
 
     /// Geometry epoch policy: the WGS 84 ensemble and dynamic datums admit
     /// epochs; a static datum and a merely dynamic-member ensemble do not.
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn geometry_epoch_admission_matches_frame_policy() {
-        for (crs, expected) in [
-            ("EPSG:4326", true),  // WGS 84 ensemble of dynamic realizations
-            ("EPSG:9000", true),  // ITRF2014 (dynamic reference frame)
-            ("EPSG:2180", false), // ETRF2000 Poland (static geodetic frame)
-            ("EPSG:4258", false), // ETRS89 ensemble is not itself dynamic
-            ("EPSG:3857", true),  // Web Mercator on the WGS84 ensemble
-        ] {
-            assert_eq!(
-                admits_geometry_epoch(crs).unwrap(),
-                expected,
-                "epoch admission for {crs}",
-            );
-        }
+    #[case::epsg_4326("EPSG:4326", true)]
+    // WGS 84 ensemble of dynamic realizations
+    #[case::epsg_9000("EPSG:9000", true)]
+    // ITRF2014 (dynamic reference frame)
+    #[case::epsg_2180("EPSG:2180", false)]
+    // ETRF2000 Poland (static geodetic frame)
+    #[case::epsg_4258("EPSG:4258", false)]
+    // ETRS89 ensemble is not itself dynamic
+    #[case::epsg_3857("EPSG:3857", true)]
+    // Web Mercator on the WGS84 ensemble
+    fn geometry_epoch_admission_matches_frame_policy(
+        #[case] crs: &'static str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            admits_geometry_epoch(crs).unwrap(),
+            expected,
+            "epoch admission for {crs}",
+        );
     }
 
     fn authored_geographic_wkt(
@@ -673,64 +678,67 @@ mod tests {
         )
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn authored_axis_meaning_is_preserved_in_native_forward_inverse_pipeline() {
+    #[case::enabled(true)]
+    #[case::disabled(false)]
+    fn authored_axis_meaning_is_preserved_in_native_forward_inverse_pipeline(
+        #[case] latitude_first: bool,
+    ) {
         let a = 6_378_137.0;
         let degree = std::f64::consts::PI / 180.0;
         let mercator_y = a * (0.5 * degree).tan().asinh();
-        for latitude_first in [true, false] {
-            for longitude_direction in ["east", "west"] {
-                for latitude_direction in ["north", "south"] {
-                    let source = authored_geographic_wkt(
-                        latitude_first,
-                        longitude_direction,
-                        latitude_direction,
-                        0.02,
-                        degree,
-                    );
-                    let expected_x: f64 = a
-                        * 100.0
-                        * 0.02
-                        * if longitude_direction == "west" {
-                            -1.0
-                        } else {
-                            1.0
-                        };
-                    let expected_y: f64 = mercator_y
-                        * if latitude_direction == "south" {
-                            -1.0
-                        } else {
-                            1.0
-                        };
-                    let mut x = [100.0_f64];
-                    let mut y = [0.5_f64];
-                    transform_coordinates(
-                        &source,
-                        "EPSG:3857",
-                        &mut x,
-                        &mut y,
-                        crate::Zt::None,
-                        TransformOptions::default(),
-                    )
-                    .unwrap();
-                    assert_eq!(x[0].to_bits(), expected_x.to_bits(), "{source}");
-                    assert_eq!(y[0].to_bits(), expected_y.to_bits(), "{source}");
 
-                    let mut inverse_x = [expected_x];
-                    let mut inverse_y = [expected_y];
-                    transform_coordinates(
-                        "EPSG:3857",
-                        &source,
-                        &mut inverse_x,
-                        &mut inverse_y,
-                        crate::Zt::None,
-                        TransformOptions::default(),
-                    )
-                    .unwrap();
-                    assert_close(inverse_x[0], 100.0, 4.0 * f64::EPSILON * 100.0);
-                    assert_close(inverse_y[0], 0.5, 4.0 * f64::EPSILON);
-                }
+        for longitude_direction in ["east", "west"] {
+            for latitude_direction in ["north", "south"] {
+                let source = authored_geographic_wkt(
+                    latitude_first,
+                    longitude_direction,
+                    latitude_direction,
+                    0.02,
+                    degree,
+                );
+                let expected_x: f64 = a
+                    * 100.0
+                    * 0.02
+                    * if longitude_direction == "west" {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                let expected_y: f64 = mercator_y
+                    * if latitude_direction == "south" {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                let mut x = [100.0_f64];
+                let mut y = [0.5_f64];
+                transform_coordinates(
+                    &source,
+                    "EPSG:3857",
+                    &mut x,
+                    &mut y,
+                    crate::Zt::None,
+                    TransformOptions::default(),
+                )
+                .unwrap();
+                assert_eq!(x[0].to_bits(), expected_x.to_bits(), "{source}");
+                assert_eq!(y[0].to_bits(), expected_y.to_bits(), "{source}");
+
+                let mut inverse_x = [expected_x];
+                let mut inverse_y = [expected_y];
+                transform_coordinates(
+                    "EPSG:3857",
+                    &source,
+                    &mut inverse_x,
+                    &mut inverse_y,
+                    crate::Zt::None,
+                    TransformOptions::default(),
+                )
+                .unwrap();
+                assert_close(inverse_x[0], 100.0, 4.0 * f64::EPSILON * 100.0);
+                assert_close(inverse_y[0], 0.5, 4.0 * f64::EPSILON);
             }
         }
     }

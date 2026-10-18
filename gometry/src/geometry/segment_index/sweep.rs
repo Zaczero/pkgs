@@ -1162,41 +1162,44 @@ fn visit_pair<B, W: Work>(
 mod window_tests {
     use super::*;
 
-    #[test]
-    fn banded_cross_windows_preserve_closed_contacts_and_operand_order() {
-        for (first_cross_max, expected) in [(0.0, vec![(7, 4), (3, 4)]), (-0.5, vec![(3, 4)])] {
-            let entries = [
-                (7, CROSS_LEFT_SIDE, [0.0, 2.0], [-2.0, first_cross_max]),
-                (4, CROSS_RIGHT_SIDE, [1.0, 3.0], [0.0, 2.0]),
-                (3, CROSS_LEFT_SIDE, [2.0, 4.0], [-1.0, 1.0]),
-                (5, CROSS_RIGHT_SIDE, [5.0, 6.0], [-4.0, 0.0]),
-            ]
-            .map(
-                |(ordinal, side, [sweep_min, sweep_max], [cross_min, cross_max])| SweepEntry {
-                    sweep_min,
-                    sweep_max,
-                    cross_min,
-                    cross_max,
-                    ordinal,
-                    side,
-                },
-            );
-            let mut pairs = Vec::new();
-            let flow = banded_windows(
-                &entries,
-                4,
-                -4.0,
-                1.5,
-                &mut Unmetered,
-                &mut |left, right, _| {
-                    pairs.push((left, right));
-                    Ok(ControlFlow::<()>::Continue(()))
-                },
-            )
-            .unwrap();
-            assert_eq!(flow, ControlFlow::Continue(()));
-            assert_eq!(pairs, expected);
-        }
+    #[rstest::rstest]
+    #[case::first_cross_max_0_0(0.0, vec![(7, 4), (3, 4)])]
+    #[case::negative_first_cross_max_0_5(-0.5, vec![(3, 4)])]
+    fn banded_cross_windows_preserve_closed_contacts_and_operand_order(
+        #[case] first_cross_max: f64,
+        #[case] expected: Vec<(usize, usize)>,
+    ) {
+        let entries = [
+            (7, CROSS_LEFT_SIDE, [0.0, 2.0], [-2.0, first_cross_max]),
+            (4, CROSS_RIGHT_SIDE, [1.0, 3.0], [0.0, 2.0]),
+            (3, CROSS_LEFT_SIDE, [2.0, 4.0], [-1.0, 1.0]),
+            (5, CROSS_RIGHT_SIDE, [5.0, 6.0], [-4.0, 0.0]),
+        ]
+        .map(
+            |(ordinal, side, [sweep_min, sweep_max], [cross_min, cross_max])| SweepEntry {
+                sweep_min,
+                sweep_max,
+                cross_min,
+                cross_max,
+                ordinal,
+                side,
+            },
+        );
+        let mut pairs = Vec::new();
+        let flow = banded_windows(
+            &entries,
+            4,
+            -4.0,
+            1.5,
+            &mut Unmetered,
+            &mut |left, right, _| {
+                pairs.push((left, right));
+                Ok(ControlFlow::<()>::Continue(()))
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(pairs, expected);
     }
 }
 

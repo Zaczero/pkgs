@@ -38,36 +38,32 @@ fn latitude_admission_is_one_exterior_ulp_and_contextual() {
         GeographicError::LatitudeOutOfRange { .. }
     ));
 }
-#[test]
-fn coordinate_domain_errors_precede_pending_ambiguous_ring_gates() {
-    for shell in [
-        ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
+#[rstest::rstest]
+#[case::ring_vec_180_0_90_0_0_0_90_0_180_0_vec_5_0_5_0_5_0_5_0_5_0(ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
             -5.0, 5.0, 5.0, 5.0, -5.0,
-        ]),
-        ring_from_points(&[
-            (0.0, 20.0),
-            (120.0, -20.0),
-            (240.0, 20.0),
-            (360.0, -20.0),
-            (480.0, 20.0),
-            (600.0, -20.0),
-            (0.0, 20.0),
-        ]),
-    ] {
-        let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
-            100.0, 100.0, 101.0, 100.0,
-        ]);
-        let shape =
-            crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
+        ]))]
+#[case::ring_from_points_0_0_20_0_120_0_20_0_240_0_20_0_9b44bbc7(ring_from_points(&[
+    (0.0, 20.0),
+    (120.0, -20.0),
+    (240.0, 20.0),
+    (360.0, -20.0),
+    (480.0, 20.0),
+    (600.0, -20.0),
+    (0.0, 20.0),
+]))]
+fn coordinate_domain_errors_precede_pending_ambiguous_ring_gates(#[case] shell: crate::Ring) {
+    let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
+        100.0, 100.0, 101.0, 100.0,
+    ]);
+    let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
 
-        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
-        assert_eq!(error.location.ring, Some(1));
-        assert_eq!(error.location.coordinate, 0);
-        assert!(matches!(
-            error.source,
-            GeographicError::LatitudeOutOfRange { .. }
-        ));
-    }
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
 }
 #[test]
 fn valid_deeply_nested_validation_does_not_allocate_per_coordinate() {

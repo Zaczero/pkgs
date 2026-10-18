@@ -1,23 +1,24 @@
-#[test]
-fn scalar_rows_relate_from_fixed_graphs_in_both_cartesian_orders() {
+#[rstest::rstest]
+#[case::enabled(true)]
+#[case::disabled(false)]
+fn scalar_rows_relate_from_fixed_graphs_in_both_cartesian_orders(#[case] scalar_is_left: bool) {
     let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
     let rows = [line((-1.0, 1.0), (3.0, 1.0)), line((3.0, 3.0), (4.0, 4.0))];
     let cache = crate::geometry::FrameDependentCaches::default();
-    for scalar_is_left in [true, false] {
-        let actual = scalar_vs_shapes(
-            &Predicate::Intersects.spec(),
-            &scalar,
-            rows.iter()
-                .enumerate()
-                .map(|(index, shape)| (index, Some(ShapeRow::Shape(shape)))),
-            scalar_is_left,
-            None,
-            TopologyDomain::Cartesian,
-            &cache,
-        )
-        .expect("fixture admits");
-        assert_eq!(actual, [true, false]);
-    }
+
+    let actual = scalar_vs_shapes(
+        &Predicate::Intersects.spec(),
+        &scalar,
+        rows.iter()
+            .enumerate()
+            .map(|(index, shape)| (index, Some(ShapeRow::Shape(shape)))),
+        scalar_is_left,
+        None,
+        TopologyDomain::Cartesian,
+        &cache,
+    )
+    .expect("fixture admits");
+    assert_eq!(actual, [true, false]);
 }
 
 #[test]
@@ -182,29 +183,29 @@ fn scalar_rows_relate_prepared_array_rows_from_fixed_graphs() {
     assert_eq!(actual, [true, false]);
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_scalar_rows_cover_sound_and_unsound_operands_in_both_orders() {
-    let sound_scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
-    let sound_row = line((-1.0, 1.0), (3.0, 1.0));
-    let unsound_scalar = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
-    let unsound_row = rectangle(170.0, 40.0, -170.0, 50.0);
-
-    for (scalar, row) in [(&sound_scalar, &sound_row), (&unsound_scalar, &unsound_row)] {
-        let cache = crate::geometry::FrameDependentCaches::default();
-        for scalar_is_left in [true, false] {
-            let actual = scalar_vs_shapes(
-                &Predicate::Intersects.spec(),
-                scalar,
-                [(0, Some(ShapeRow::Shape(row)))].into_iter(),
-                scalar_is_left,
-                None,
-                TopologyDomain::Geographic(degrees()),
-                &cache,
-            )
-            .expect("fixture admits");
-            assert_eq!(actual, [true]);
-        }
+#[case::sound(PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)), line((-1.0, 1.0), (3.0, 1.0)))]
+#[case::unsound(PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)), rectangle(170.0, 40.0, -170.0, 50.0))]
+fn geographic_scalar_rows_cover_sound_and_unsound_operands_in_both_orders(
+    #[case] scalar: PreparedPlan,
+    #[case] row: Shape,
+) {
+    let scalar = &scalar;
+    let row = &row;
+    let cache = crate::geometry::FrameDependentCaches::default();
+    for scalar_is_left in [true, false] {
+        let actual = scalar_vs_shapes(
+            &Predicate::Intersects.spec(),
+            scalar,
+            [(0, Some(ShapeRow::Shape(row)))].into_iter(),
+            scalar_is_left,
+            None,
+            TopologyDomain::Geographic(degrees()),
+            &cache,
+        )
+        .expect("fixture admits");
+        assert_eq!(actual, [true]);
     }
 }
 

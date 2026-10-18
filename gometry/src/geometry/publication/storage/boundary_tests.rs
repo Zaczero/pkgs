@@ -157,63 +157,67 @@ fn drawing_groups_reject_authentic_q_rows_with_group_addresses() {
     ));
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories() {
-    for logical in [0, 2] {
-        let (mut rows, mut expected, frame) = mixed_rows();
-        let shape = expected
-            .get_mut(logical)
-            .expect("the selected logical row is present")
-            .as_mut()
-            .unwrap();
-        let changed = std::cell::Cell::new(false);
-        *shape = shape
-            .map_points(&|point| {
-                let m = point.m().unwrap();
-                let m = if changed.replace(true) {
-                    m
-                } else {
-                    f64::from_bits(m.to_bits() ^ 1)
-                };
-                Ok(Point::new_raw_axes(
-                    point.x,
-                    point.y,
-                    ZOrdinate(point.z()),
-                    MOrdinate(Some(m)),
-                ))
-            })
-            .unwrap();
-        assert!(changed.get());
-        replace_writer(&mut rows, expected);
-        assert_invalid(rows.finish(frame));
-    }
+#[case::logical_0(0)]
+#[case::logical_2(2)]
+fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories(#[case] logical: usize) {
+    let (mut rows, mut expected, frame) = mixed_rows();
+    let shape = expected
+        .get_mut(logical)
+        .expect("the selected logical row is present")
+        .as_mut()
+        .unwrap();
+    let changed = std::cell::Cell::new(false);
+    *shape = shape
+        .map_points(&|point| {
+            let m = point.m().unwrap();
+            let m = if changed.replace(true) {
+                m
+            } else {
+                f64::from_bits(m.to_bits() ^ 1)
+            };
+            Ok(Point::new_raw_axes(
+                point.x,
+                point.y,
+                ZOrdinate(point.z()),
+                MOrdinate(Some(m)),
+            ))
+        })
+        .unwrap();
+    assert!(changed.get());
+    replace_writer(&mut rows, expected);
+    assert_invalid(rows.finish(frame));
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories() {
-    for logical in [0, 2] {
-        let (mut rows, _expected, frame) = mixed_rows();
-        let unique = unique_checked_index(&rows.records, logical);
-        rows.records.remove(unique);
-        assert_invalid(rows.finish(frame));
-    }
+#[case::logical_0(0)]
+#[case::logical_2(2)]
+fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories(
+    #[case] logical: usize,
+) {
+    let (mut rows, _expected, frame) = mixed_rows();
+    let unique = unique_checked_index(&rows.records, logical);
+    rows.records.remove(unique);
+    assert_invalid(rows.finish(frame));
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories() {
-    for logical in [0, 2] {
-        let (mut rows, _expected, frame) = mixed_rows();
-        let unique = unique_checked_index(&rows.records, logical);
-        rows.records
-            .get_mut(unique)
-            .expect("the selected unique image exists")
-            .address
-            .logical_row = 3;
-        assert_invalid(rows.finish(frame));
-    }
+#[case::logical_0(0)]
+#[case::logical_2(2)]
+fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories(
+    #[case] logical: usize,
+) {
+    let (mut rows, _expected, frame) = mixed_rows();
+    let unique = unique_checked_index(&rows.records, logical);
+    rows.records
+        .get_mut(unique)
+        .expect("the selected unique image exists")
+        .address
+        .logical_row = 3;
+    assert_invalid(rows.finish(frame));
 }
 
 #[test]

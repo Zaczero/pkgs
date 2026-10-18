@@ -103,8 +103,8 @@ fn stored_dyadic_recovery_preserves_binary64_edges_without_rounding() {
 #[test]
 #[cfg(debug_assertions)]
 fn stored_recovery_does_not_round_ratios_or_reconvert_coordinates() {
-    use crate::geometry::source_support::exact_stored_point;
     use crate::geometry::round_ratio;
+    use crate::geometry::source_support::exact_stored_point;
     use crate::test_support::exact_operation_counts::measure;
     let point = stored_exact_point(XY::new(7.25, -3.125));
     let (recovered, counts) = measure(|| exact_stored_point(&point).unwrap());
@@ -186,40 +186,41 @@ fn nonareal_atoms_skip_probes_and_dirty_atoms_reuse_stored_vertices() {
     );
 }
 
-#[test]
-fn uncut_atom_tables_do_not_allocate_per_segment() {
-    for count in [1, 32, 128] {
-        let segments = (0..count)
-            .map(|i| Segment {
-                start: XY::new(i as f64, 0.0),
-                end: XY::new(i as f64 + 1.0, 0.0),
-            })
-            .collect::<Vec<_>>();
-        let mut cuts = vec![Vec::new(); count];
-        let mut forest = ExactPointForest::with_capacity(&segments, 0);
-        let mut coordinates = ExactCoordinates::default();
-        let ((boundaries, coverage), allocations) = crate::test_support::allocation_count(|| {
-            let (boundaries, positions) =
-                order_event_cuts(&segments, &mut cuts, &mut forest, &mut coordinates).unwrap();
-            let coverage = build_atom_coverage(
-                &[],
-                &segments,
-                &[],
-                &boundaries,
-                &positions,
-                &mut forest,
-                &mut coordinates,
-            )
-            .unwrap();
-            (boundaries, coverage)
-        });
-        assert_eq!(boundaries.len(), count);
-        assert_eq!(coverage.len(), count);
-        assert!(
-            allocations <= 2,
-            "{count} uncut segments allocated {allocations} times"
-        );
-    }
+#[rstest::rstest]
+#[case::count_1(1)]
+#[case::count_32(32)]
+#[case::count_128(128)]
+fn uncut_atom_tables_do_not_allocate_per_segment(#[case] count: usize) {
+    let segments = (0..count)
+        .map(|i| Segment {
+            start: XY::new(i as f64, 0.0),
+            end: XY::new(i as f64 + 1.0, 0.0),
+        })
+        .collect::<Vec<_>>();
+    let mut cuts = vec![Vec::new(); count];
+    let mut forest = ExactPointForest::with_capacity(&segments, 0);
+    let mut coordinates = ExactCoordinates::default();
+    let ((boundaries, coverage), allocations) = crate::test_support::allocation_count(|| {
+        let (boundaries, positions) =
+            order_event_cuts(&segments, &mut cuts, &mut forest, &mut coordinates).unwrap();
+        let coverage = build_atom_coverage(
+            &[],
+            &segments,
+            &[],
+            &boundaries,
+            &positions,
+            &mut forest,
+            &mut coordinates,
+        )
+        .unwrap();
+        (boundaries, coverage)
+    });
+    assert_eq!(boundaries.len(), count);
+    assert_eq!(coverage.len(), count);
+    assert!(
+        allocations <= 2,
+        "{count} uncut segments allocated {allocations} times"
+    );
 }
 
 #[test]
@@ -253,7 +254,7 @@ fn corrected_clean_ring_atom_labels_keep_full_oracle_matrices() {
                     "first vertex keeps point support"
                 );
                 assert!(!node.area);
-            }
+            },
             "POINT (11 10)" => {
                 assert_eq!(node.location, Loc::Exterior);
                 let midpoint = PreparedPlan::transient(&external)
@@ -261,7 +262,7 @@ fn corrected_clean_ring_atom_labels_keep_full_oracle_matrices() {
                     .unwrap();
                 assert_eq!(midpoint.location, Loc::Interior);
                 assert!(!midpoint.area);
-            }
+            },
             "MULTIPOINT ((10 10),(11 10))" => {
                 assert_eq!(node.location, Loc::Interior);
                 assert!(!node.area);
@@ -270,7 +271,7 @@ fn corrected_clean_ring_atom_labels_keep_full_oracle_matrices() {
                     .unwrap();
                 assert_eq!(midpoint.location, Loc::Interior);
                 assert!(!midpoint.area);
-            }
+            },
             _ => {
                 for (x, y) in [(10.0, 10.0), (12.0, 10.0), (12.0, 12.0), (10.0, 12.0)] {
                     let node = PreparedPlan::transient(&external)
@@ -279,7 +280,7 @@ fn corrected_clean_ring_atom_labels_keep_full_oracle_matrices() {
                     assert_eq!(node.location, Loc::Interior);
                     assert!(!node.area);
                 }
-            }
+            },
         }
     }
 

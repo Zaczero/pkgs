@@ -180,26 +180,28 @@ fn minimum_circle_certificate_does_not_assume_radius_denominator_is_center_weigh
         .expect("equivalent S/T representation must certify");
 }
 
-#[test]
-fn minimum_circle_emission_keeps_the_requested_quadrant_count() {
+#[rstest::rstest]
+#[case::quadrants_1(1)]
+#[case::quadrants_2(2)]
+#[case::quadrants_16(16)]
+fn minimum_circle_emission_keeps_the_requested_quadrant_count(#[case] quadrants: u32) {
     let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
     let circle = smallest_enclosing_circle(&source).expect("diameter support");
     let disk = circle.certified_disk(&source).expect("exact disk");
-    for quadrants in [1, 2, 16] {
-        let output = emit_minimum_bounding_circle(
-            &disk,
-            NonZeroU32::new(quadrants).expect("non-zero"),
-            &mut realization_budget(),
-        )
-        .expect("representable tangent polygon");
-        let Shape::Polygon(polygon) = output else {
-            panic!("minimum circle must emit a polygon");
-        };
-        assert_eq!(
-            polygon.rings().next().expect("shell").coords().len(),
-            quadrants as usize * 4 + 1
-        );
-    }
+
+    let output = emit_minimum_bounding_circle(
+        &disk,
+        NonZeroU32::new(quadrants).expect("non-zero"),
+        &mut realization_budget(),
+    )
+    .expect("representable tangent polygon");
+    let Shape::Polygon(polygon) = output else {
+        panic!("minimum circle must emit a polygon");
+    };
+    assert_eq!(
+        polygon.rings().next().expect("shell").coords().len(),
+        (quadrants as usize).wrapping_mul(4).wrapping_add(1)
+    );
 }
 
 #[test]
@@ -232,7 +234,10 @@ fn minimum_circle_polygon_admits_the_complete_requested_ring_before_emission() {
     let points = [
         Point::new_raw_xy(exact_power_of_two(60), exact_power_of_two(60)),
         Point::new_raw_xy(exact_power_of_two(60) + 1024.0, exact_power_of_two(60)),
-        Point::new_raw_xy(exact_power_of_two(60) + 256.0, exact_power_of_two(60) + 768.0),
+        Point::new_raw_xy(
+            exact_power_of_two(60) + 256.0,
+            exact_power_of_two(60) + 768.0,
+        ),
     ];
     let disk = smallest_enclosing_circle(&points)
         .expect("three sites")
@@ -270,51 +275,50 @@ fn minimum_circle_polygon_maps_nonfinite_source_to_unrepresentable_output() {
     ));
 }
 
-#[test]
-fn minimum_circle_support_matches_independent_boundary_cases() {
-    let cases = [
-        (
-            vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 0.0),
-                Point::new_raw_xy(1.0, 3.0),
-            ],
-            vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(1.0, 3.0)],
-        ),
-        (
-            vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 0.0),
-                Point::new_raw_xy(1.0, 0.5),
-            ],
-            vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0)],
-        ),
-        (
-            vec![
-                Point::new_raw_xy(-3.0, -3.0),
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 4.0),
-                Point::new_raw_xy(1.0, 1.0),
-            ],
-            vec![XY::new(-3.0, -3.0), XY::new(4.0, 4.0)],
-        ),
-    ];
-    for (points, mut expected) in cases {
-        let circle = smallest_enclosing_circle(&points).unwrap();
-        let (support, count) = circle.support_xy(&points);
-        let mut actual = support[..count].to_vec();
-        actual.sort_unstable_by(|left, right| {
-            left.x
-                .total_cmp(&right.x)
-                .then_with(|| left.y.total_cmp(&right.y))
-        });
-        expected.sort_unstable_by(|left, right| {
-            left.x
-                .total_cmp(&right.x)
-                .then_with(|| left.y.total_cmp(&right.y))
-        });
-        assert_eq!(actual, expected);
-    }
+#[rstest::rstest]
+#[case::acute_triangle(
+    vec![
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(4.0, 0.0),
+        Point::new_raw_xy(1.0, 3.0),
+    ],
+    vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(1.0, 3.0)],
+)]
+#[case::obtuse_triangle(
+    vec![
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(4.0, 0.0),
+        Point::new_raw_xy(1.0, 0.5),
+    ],
+    vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0)],
+)]
+#[case::collinear(
+    vec![
+        Point::new_raw_xy(-3.0, -3.0),
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(4.0, 4.0),
+        Point::new_raw_xy(1.0, 1.0),
+    ],
+    vec![XY::new(-3.0, -3.0), XY::new(4.0, 4.0)],
+)]
+fn minimum_circle_support_matches_independent_boundary_cases(
+    #[case] points: Vec<Point>,
+    #[case] mut expected: Vec<XY>,
+) {
+    let circle = smallest_enclosing_circle(&points).unwrap();
+    let (support, count) = circle.support_xy(&points);
+    let mut actual = support[..count].to_vec();
+    actual.sort_unstable_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    expected.sort_unstable_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    assert_eq!(actual, expected);
 }
 
 #[test]

@@ -9,32 +9,33 @@ use crate::geometry::segment_index::{
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 use crate::work::Unmetered;
 
-#[test]
-fn cross_bounds_sweep_preserves_each_side_ordinal() {
-    for count in [2, 32, 2_048] {
-        let left = (0..count)
-            .map(|index| {
-                let x = index as f64 * 10.0;
-                Bounds::new_raw(x, x, x + 2.0, x + 2.0)
-            })
-            .collect::<Vec<_>>();
-        let right = (0..count)
-            .map(|index| {
-                let x = index as f64 * 10.0 - 1.0;
-                Bounds::new_raw(x, x + 2.0, x + 2.0, x + 3.0)
-            })
-            .collect::<Vec<_>>();
-        let expected = (0..count).map(|index| (index, index)).collect::<Vec<_>>();
-        let mut actual = Vec::new();
-        let flow = for_each_overlapping_bounds_cross_pair(&left, &right, |left, right| {
-            actual.push((left, right));
-            ControlFlow::<()>::Continue(())
+#[rstest::rstest]
+#[case::count_2(2)]
+#[case::count_32(32)]
+#[case::count_2_048(2_048)]
+fn cross_bounds_sweep_preserves_each_side_ordinal(#[case] count: usize) {
+    let left = (0..count)
+        .map(|index| {
+            let x = index as f64 * 10.0;
+            Bounds::new_raw(x, x, x + 2.0, x + 2.0)
         })
-        .unwrap();
-        assert!(matches!(flow, ControlFlow::Continue(())));
-        actual.sort_unstable();
-        assert_eq!(actual, expected);
-    }
+        .collect::<Vec<_>>();
+    let right = (0..count)
+        .map(|index| {
+            let x = index as f64 * 10.0 - 1.0;
+            Bounds::new_raw(x, x + 2.0, x + 2.0, x + 3.0)
+        })
+        .collect::<Vec<_>>();
+    let expected = (0..count).map(|index| (index, index)).collect::<Vec<_>>();
+    let mut actual = Vec::new();
+    let flow = for_each_overlapping_bounds_cross_pair(&left, &right, |left, right| {
+        actual.push((left, right));
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    assert!(matches!(flow, ControlFlow::Continue(())));
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
 }
 
 #[cfg(test)]
@@ -239,20 +240,22 @@ mod sweep_characterization {
         }
     }
 
-    #[test]
-    fn for_each_candidate_pair_stops_on_break() {
+    #[rstest::rstest]
+    #[case::count_4(4)]
+    #[case::count_20(20)]
+    #[case::count_4096(4096)]
+    fn for_each_candidate_pair_stops_on_break(#[case] count: usize) {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        for count in [4, 20, 4096] {
-            let pool = structured_pool(count);
-            let mut visited = 0;
-            let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
-                visited += 1;
-                ControlFlow::Break(String::from("contact"))
-            })
-            .expect("sweep indexes fit their structural widths");
-            assert_eq!(flow, ControlFlow::Break(String::from("contact")));
-            assert_eq!(visited, 1);
-        }
+
+        let pool = structured_pool(count);
+        let mut visited = 0_usize;
+        let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
+            visited = visited.wrapping_add(1);
+            ControlFlow::Break(String::from("contact"))
+        })
+        .expect("sweep indexes fit their structural widths");
+        assert_eq!(flow, ControlFlow::Break(String::from("contact")));
+        assert_eq!(visited, 1);
     }
 }
 
@@ -492,8 +495,12 @@ mod run_collapse_dispatch {
         pairs
     }
 
-    #[test]
-    fn empty_two_edge_chain_envelope_visits_no_pairs() {
+    #[rstest::rstest]
+    #[case::scale_x_1_0(1.0, 2.0)]
+    #[case::scale_x_2_0(2.0, 1.0)]
+    #[case::negative_scale_x_1_0(-1.0, 2.0)]
+    #[case::negative_scale_x_2_0(-2.0, 1.0)]
+    fn empty_two_edge_chain_envelope_visits_no_pairs(#[case] scale_x: f64, #[case] scale_y: f64) {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let left = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
         let right = [
@@ -503,6 +510,47 @@ mod run_collapse_dispatch {
             (1.0, 1.0),
             (1.25, 1.25),
         ];
+
+        let transform = |points: &[(f64, f64)]| {
+            points
+                .iter()
+                .map(|&(x, y)| (x * scale_x, y * scale_y))
+                .collect::<Vec<_>>()
+        };
+        let (left, right) = (transform(&left), transform(&right));
+        for pool in [pool_of(&left, &right), pool_of(&right, &left)] {
+            assert!(ordered_candidates(&pool).is_empty());
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::right_0_25_0_75_0_75_0_25_1_25_0_25_1_75_0_75_2_25_1_25(
+        [
+            (0.25, -0.75),
+            (0.75, -0.25),
+            (1.25, 0.25),
+            (1.75, 0.75),
+            (2.25, 1.25),
+        ],
+        [(0, 3), (1, 5)]
+    )]
+    #[case::right_2_0_2_0_2_0_1_5_2_0_1_0_2_0_0_5_2_0_0_0(
+        [
+            (2.0, -2.0),
+            (2.0, -1.5),
+            (2.0, -1.0),
+            (2.0, -0.5),
+            (2.0, 0.0),
+        ],
+        [(0, 5), (1, 5)]
+    )]
+    fn two_edge_chain_keeps_closed_boundary_contacts(
+        #[case] right: [(f64, f64); 5],
+        #[case] expected: [(usize, usize); 2],
+    ) {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let left = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
+
         for (scale_x, scale_y) in [(1.0, 2.0), (2.0, 1.0), (-1.0, 2.0), (-2.0, 1.0)] {
             let transform = |points: &[(f64, f64)]| {
                 points
@@ -511,55 +559,15 @@ mod run_collapse_dispatch {
                     .collect::<Vec<_>>()
             };
             let (left, right) = (transform(&left), transform(&right));
-            for pool in [pool_of(&left, &right), pool_of(&right, &left)] {
-                assert!(ordered_candidates(&pool).is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn two_edge_chain_keeps_closed_boundary_contacts() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let left = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
-        for (right, expected) in [
-            (
-                [
-                    (0.25, -0.75),
-                    (0.75, -0.25),
-                    (1.25, 0.25),
-                    (1.75, 0.75),
-                    (2.25, 1.25),
-                ],
-                [(0, 3), (1, 5)],
-            ),
-            (
-                [
-                    (2.0, -2.0),
-                    (2.0, -1.5),
-                    (2.0, -1.0),
-                    (2.0, -0.5),
-                    (2.0, 0.0),
-                ],
-                [(0, 5), (1, 5)],
-            ),
-        ] {
-            for (scale_x, scale_y) in [(1.0, 2.0), (2.0, 1.0), (-1.0, 2.0), (-2.0, 1.0)] {
-                let transform = |points: &[(f64, f64)]| {
-                    points
-                        .iter()
-                        .map(|&(x, y)| (x * scale_x, y * scale_y))
-                        .collect::<Vec<_>>()
-                };
-                let (left, right) = (transform(&left), transform(&right));
-                let mut pairs = ordered_candidates(&pool_of(&left, &right));
-                pairs.sort_unstable();
-                assert_eq!(pairs, expected);
-                let mut pairs = ordered_candidates(&pool_of(&right, &left));
-                pairs.sort_unstable();
-                let mut reversed = expected.map(|(short, long)| (long - 2, short + 4));
-                reversed.sort_unstable();
-                assert_eq!(pairs, reversed);
-            }
+            let mut pairs = ordered_candidates(&pool_of(&left, &right));
+            pairs.sort_unstable();
+            assert_eq!(pairs, expected);
+            let mut pairs = ordered_candidates(&pool_of(&right, &left));
+            pairs.sort_unstable();
+            let mut reversed =
+                expected.map(|(short, long)| (long.wrapping_sub(2), short.wrapping_add(4)));
+            reversed.sort_unstable();
+            assert_eq!(pairs, reversed);
         }
     }
 
@@ -602,52 +610,58 @@ mod run_collapse_dispatch {
         }
     }
 
-    #[test]
-    fn smooth_linework_collapses_at_every_size() {
+    #[rstest::rstest]
+    #[case::n_8_usize(8_usize)]
+    #[case::n_32(32)]
+    #[case::n_128(128)]
+    #[case::n_600(600)]
+    fn smooth_linework_collapses_at_every_size(#[case] n: usize) {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         // 32 segments is far below every threshold this dispatch used to carry,
         // and is where the reduction was being thrown away.
-        for n in [8_usize, 32, 128, 600] {
-            let pool = pool_of(&arc(0.0, 0.0, n), &arc(0.3, -0.6, n));
-            assert!(
-                runs_of(&pool) <= 8,
-                "n={n}: smooth linework should decompose into a handful of runs"
-            );
-            // The candidate count is bounded by the RUN structure, not the
-            // vertex count: a per-segment sweep hands over one candidate per
-            // chained adjacent pair and so grows with n, while the run join
-            // stays flat as the arcs are refined. That independence is the
-            // property a size threshold in front of this destroyed.
-            let dispatched = visits(&pool);
-            assert!(
-                dispatched <= 16,
-                "n={n}: {dispatched} candidates from {} segments — the run \
-                 collapse is not being taken",
-                pool.len()
-            );
-        }
+
+        let pool = pool_of(&arc(0.0, 0.0, n), &arc(0.3, -0.6, n));
+        assert!(
+            runs_of(&pool) <= 8,
+            "n={n}: smooth linework should decompose into a handful of runs"
+        );
+        // The candidate count is bounded by the RUN structure, not the
+        // vertex count: a per-segment sweep hands over one candidate per
+        // chained adjacent pair and so grows with n, while the run join
+        // stays flat as the arcs are refined. That independence is the
+        // property a size threshold in front of this destroyed.
+        let dispatched = visits(&pool);
+        assert!(
+            dispatched <= 16,
+            "n={n}: {dispatched} candidates from {} segments — the run \
+             collapse is not being taken",
+            pool.len()
+        );
     }
 
-    #[test]
-    fn linework_with_nothing_to_collapse_stays_linear() {
+    #[rstest::rstest]
+    #[case::n_8_usize(8_usize)]
+    #[case::n_32(32)]
+    #[case::n_128(128)]
+    #[case::n_600(600)]
+    fn linework_with_nothing_to_collapse_stays_linear(#[case] n: usize) {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         // The other end: one run per segment, so the decomposition saves no
         // pair at all. The sweep still has to stay near-linear in the pool —
         // this is the case a quadratic fallback would hide in.
-        for n in [8_usize, 32, 128, 600] {
-            let pool = pool_of(&zigzag(0.0, 0.0, n), &zigzag(0.05, -0.4, n));
-            assert_eq!(
-                runs_of(&pool),
-                pool.len(),
-                "n={n}: alternating linework should yield one run per segment"
-            );
-            let dispatched = visits(&pool);
-            assert!(
-                dispatched <= pool.len() * 4,
-                "n={n}: {dispatched} candidates from {} segments",
-                pool.len()
-            );
-        }
+
+        let pool = pool_of(&zigzag(0.0, 0.0, n), &zigzag(0.05, -0.4, n));
+        assert_eq!(
+            runs_of(&pool),
+            pool.len(),
+            "n={n}: alternating linework should yield one run per segment"
+        );
+        let dispatched = visits(&pool);
+        assert!(
+            dispatched <= pool.len().wrapping_mul(4),
+            "n={n}: {dispatched} candidates from {} segments",
+            pool.len()
+        );
     }
 }
 

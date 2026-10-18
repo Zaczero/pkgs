@@ -482,22 +482,23 @@ mod tests {
         assert!((bounds.maxy() - 53.330_872_983_017_07).abs() < 1e-9);
     }
 
-    #[test]
-    fn periodic_seam_has_canonical_owner() {
-        for lat in [-45.0, 0.0, 45.0] {
-            let owner = Tile::from_lonlat(-180.0, lat, TILE_MAX_ZOOM).unwrap();
-            for lon in [180.0, 540.0, -540.0] {
-                assert_eq!(Tile::from_lonlat(lon, lat, TILE_MAX_ZOOM), Some(owner));
-            }
-            assert_eq!(
-                Tile::from_lonlat((-180.0_f64).next_up(), lat, TILE_MAX_ZOOM),
-                Some(owner)
-            );
-            assert_ne!(
-                Tile::from_lonlat(180.0_f64.next_down(), lat, TILE_MAX_ZOOM),
-                Some(owner)
-            );
+    #[rstest::rstest]
+    #[case::negative_lat_45_0(-45.0)]
+    #[case::lat_0_0(0.0)]
+    #[case::lat_45_0(45.0)]
+    fn periodic_seam_has_canonical_owner(#[case] lat: f64) {
+        let owner = Tile::from_lonlat(-180.0, lat, TILE_MAX_ZOOM).unwrap();
+        for lon in [180.0, 540.0, -540.0] {
+            assert_eq!(Tile::from_lonlat(lon, lat, TILE_MAX_ZOOM), Some(owner));
         }
+        assert_eq!(
+            Tile::from_lonlat((-180.0_f64).next_up(), lat, TILE_MAX_ZOOM),
+            Some(owner)
+        );
+        assert_ne!(
+            Tile::from_lonlat(180.0_f64.next_down(), lat, TILE_MAX_ZOOM),
+            Some(owner)
+        );
     }
 
     #[test]
@@ -635,42 +636,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn named_latitude_boundaries_keep_literal_row_ownership() {
-        let cases = [
-            (4, 79.171_334_640_819_44, 2),
-            (4, 79.171_334_640_819_45, 2),
-            (4, 79.171_334_640_819_47, 1),
-            (4, -74.019_543_311_502_28, 13),
-            (29, 83.731_647_374_545_96, 20_227_569),
-            (29, 83.731_647_374_545_97, 20_227_569),
-            (29, 83.731_647_374_545_99, 20_227_568),
-            (29, -80.579_680_698_441_98, 481_729_089),
-        ];
-        for (zoom, lat, expected) in cases {
-            assert_eq!(
-                Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
-                expected,
-                "zoom={zoom} lat={lat:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::zoom_4(4, 79.171_334_640_819_44, 2)]
+    #[case::zoom_4_f672b540(4, 79.171_334_640_819_45, 2)]
+    #[case::zoom_4_0de56745(4, 79.171_334_640_819_47, 1)]
+    #[case::zoom_4_660cb8cc(4, -74.019_543_311_502_28, 13)]
+    #[case::zoom_29(29, 83.731_647_374_545_96, 20_227_569)]
+    #[case::zoom_29_3d42b00c(29, 83.731_647_374_545_97, 20_227_569)]
+    #[case::zoom_29_a87cfa28(29, 83.731_647_374_545_99, 20_227_568)]
+    #[case::zoom_29_b6d4779f(29, -80.579_680_698_441_98, 481_729_089)]
+    fn named_latitude_boundaries_keep_literal_row_ownership(
+        #[case] zoom: u8,
+        #[case] lat: f64,
+        #[case] expected: u32,
+    ) {
+        assert_eq!(
+            Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
+            expected,
+            "zoom={zoom} lat={lat:?}"
+        );
     }
 
-    #[test]
-    fn emitted_longitude_boundaries_are_half_open() {
-        let cases = [
-            (1, 1, -5e-324, 0),
-            (1, 1, 0.0, 1),
-            (1, 1, 5e-324, 1),
-            (29, 0x1000_0000, 0.0, 0x1000_0000),
-        ];
-        for (zoom, index, lon, expected) in cases {
-            assert_eq!(
-                Tile::from_lonlat(lon, 0.0, zoom).expect("in domain").x,
-                expected,
-                "zoom={zoom} index={index} lon={lon:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::zoom_1(1, 1, -5e-324, 0)]
+    #[case::zoom_1_a114632d(1, 1, 0.0, 1)]
+    #[case::zoom_1_33acc4df(1, 1, 5e-324, 1)]
+    #[case::zoom_29(29, 0x1000_0000, 0.0, 0x1000_0000)]
+    fn emitted_longitude_boundaries_are_half_open(
+        #[case] zoom: u8,
+        #[case] index: u32,
+        #[case] lon: f64,
+        #[case] expected: u32,
+    ) {
+        assert_eq!(
+            Tile::from_lonlat(lon, 0.0, zoom).expect("in domain").x,
+            expected,
+            "zoom={zoom} index={index} lon={lon:?}"
+        );
     }
 
     #[test]

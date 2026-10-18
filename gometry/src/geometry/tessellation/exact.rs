@@ -1699,56 +1699,57 @@ mod sqrt_ratio_tests {
         );
     }
 
-    #[test]
-    fn sqrt_bracketing_has_no_proposal_distance_limit() {
+    #[rstest::rstest]
+    #[case::proposal_0_0(0.0)]
+    #[case::f64_max(f64::MAX)]
+    fn sqrt_bracketing_has_no_proposal_distance_limit(#[case] proposal: f64) {
         let numerator = ExactDyadic::from_f64(2.0);
         let denominator = ExactDyadic::one();
-        for proposal in [0.0, f64::MAX] {
-            let (lower, upper) = exact_sqrt_ratio_bracket(&numerator, &denominator, proposal)
-                .unwrap()
-                .expect("finite root bracket");
-            assert_eq!(
-                upper - lower,
-                1,
-                "proposal {proposal:?} must still produce adjacent endpoints"
-            );
-            assert_ne!(
-                ExactDyadic::from_f64(f64::from_bits(lower))
-                    .square()
-                    .cmp(&numerator),
-                Ordering::Greater
-            );
-            assert_ne!(
-                ExactDyadic::from_f64(f64::from_bits(upper))
-                    .square()
-                    .cmp(&numerator),
-                Ordering::Less
-            );
-        }
+
+        let (lower, upper) = exact_sqrt_ratio_bracket(&numerator, &denominator, proposal)
+            .unwrap()
+            .expect("finite root bracket");
+        assert_eq!(
+            upper.wrapping_sub(lower),
+            1,
+            "proposal {proposal:?} must still produce adjacent endpoints"
+        );
+        assert_ne!(
+            ExactDyadic::from_f64(f64::from_bits(lower))
+                .square()
+                .cmp(&numerator),
+            Ordering::Greater
+        );
+        assert_ne!(
+            ExactDyadic::from_f64(f64::from_bits(upper))
+                .square()
+                .cmp(&numerator),
+            Ordering::Less
+        );
     }
 
-    #[test]
-    fn proposed_sqrt_bracket_matches_the_complete_binary_reference() {
-        for (numerator, denominator) in [
-            (1.0, 1.0),
-            (2.0, 1.0),
-            (3.0, 1.0),
-            (1.0, 3.0),
-            (f64::from_bits(1), 1.0),
-            (f64::MAX, 1.0),
-            (f64::MAX, 3.0),
-        ] {
-            let numerator = ExactDyadic::from_f64(numerator);
-            let denominator = ExactDyadic::from_f64(denominator);
-            assert_eq!(
-                round_sqrt_ratio(&numerator, &denominator)
-                    .unwrap()
-                    .to_bits(),
-                round_sqrt_ratio_binary(&numerator, &denominator)
-                    .unwrap()
-                    .to_bits()
-            );
-        }
+    #[rstest::rstest]
+    #[case::numerator_1_0(1.0, 1.0)]
+    #[case::numerator_2_0(2.0, 1.0)]
+    #[case::numerator_3_0(3.0, 1.0)]
+    #[case::numerator_1_0_ac779fb8(1.0, 3.0)]
+    #[case::f64_from_bits_1(f64::from_bits(1), 1.0)]
+    #[case::f64_max(f64::MAX, 1.0)]
+    #[case::f64_max_f53cfb94(f64::MAX, 3.0)]
+    fn proposed_sqrt_bracket_matches_the_complete_binary_reference(
+        #[case] numerator: f64,
+        #[case] denominator: f64,
+    ) {
+        let numerator = ExactDyadic::from_f64(numerator);
+        let denominator = ExactDyadic::from_f64(denominator);
+        assert_eq!(
+            round_sqrt_ratio(&numerator, &denominator)
+                .unwrap()
+                .to_bits(),
+            round_sqrt_ratio_binary(&numerator, &denominator)
+                .unwrap()
+                .to_bits()
+        );
     }
 }
 

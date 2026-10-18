@@ -774,8 +774,12 @@ fn explicit_point_occurrences_retain_incident_and_isolated_ownership() {
     assert_eq!(partition.spans.len(), 2);
 }
 
-#[test]
-fn isolated_nodes_preserve_point_sources_and_occurrence_order_in_both_lanes() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn isolated_nodes_preserve_point_sources_and_occurrence_order_in_both_lanes(
+    #[case] ordinates: bool,
+) {
     let (unique, provenance) = dedup_undirected_segments_sourced([
         seg(0.0, 0.0, 4.0, 0.0),
         seg(8.0, 1.0, 10.0, 1.0),
@@ -788,41 +792,42 @@ fn isolated_nodes_preserve_point_sources_and_occurrence_order_in_both_lanes() {
         XY::new(40.0, 4.0),
         XY::new(30.0, 3.0),
     ];
-    for ordinates in [false, true] {
-        for budgeted in [false, true] {
-            let mut budget = ExpansionBudget::new("exact_partition", "items");
-            let partition = match (ordinates, budgeted) {
-                (false, false) => {
-                    partition_unique_segments_unbudgeted::<false>(&unique, &provenance, &isolated)
-                },
-                (true, false) => {
-                    partition_unique_segments_unbudgeted::<true>(&unique, &provenance, &isolated)
-                },
-                (false, true) => {
-                    partition_unique_segments::<false>(&unique, &provenance, &isolated, &mut budget)
-                },
-                (true, true) => {
-                    partition_unique_segments::<true>(&unique, &provenance, &isolated, &mut budget)
-                },
-            }
-            .unwrap();
-            assert_eq!(partition.node_count(), 7);
-            assert_eq!(partition.spans.len(), 2);
-            assert_eq!(partition.isolated, [NodeId(4), NodeId(5), NodeId(6)]);
-            assert_eq!(partition.point_nodes, [
-                NodeId(1),
-                NodeId(5),
-                NodeId(6),
-                NodeId(5)
-            ]);
-            assert_eq!(partition.point_sources, [(NodeId(4), 2)]);
-            assert_eq!(budget.used(), 0);
+
+    for budgeted in [false, true] {
+        let mut budget = ExpansionBudget::new("exact_partition", "items");
+        let partition = match (ordinates, budgeted) {
+            (false, false) => {
+                partition_unique_segments_unbudgeted::<false>(&unique, &provenance, &isolated)
+            },
+            (true, false) => {
+                partition_unique_segments_unbudgeted::<true>(&unique, &provenance, &isolated)
+            },
+            (false, true) => {
+                partition_unique_segments::<false>(&unique, &provenance, &isolated, &mut budget)
+            },
+            (true, true) => {
+                partition_unique_segments::<true>(&unique, &provenance, &isolated, &mut budget)
+            },
         }
+        .unwrap();
+        assert_eq!(partition.node_count(), 7);
+        assert_eq!(partition.spans.len(), 2);
+        assert_eq!(partition.isolated, [NodeId(4), NodeId(5), NodeId(6)]);
+        assert_eq!(partition.point_nodes, [
+            NodeId(1),
+            NodeId(5),
+            NodeId(6),
+            NodeId(5)
+        ]);
+        assert_eq!(partition.point_sources, [(NodeId(4), 2)]);
+        assert_eq!(budget.used(), 0);
     }
 }
 
-#[test]
-fn constructed_crossing_splits_every_overlapping_source_in_both_orders() {
+#[rstest::rstest]
+#[case::reverse_false(false)]
+#[case::reverse_true(true)]
+fn constructed_crossing_splits_every_overlapping_source_in_both_orders(#[case] reverse: bool) {
     let mut sources = [
         seg(0.0, 0.0, 4.0, 0.0),
         seg(1.0, 0.0, 3.0, 0.0),
@@ -832,85 +837,84 @@ fn constructed_crossing_splits_every_overlapping_source_in_both_orders() {
         seg(11.0, 11.0, 12.0, 12.0),
         seg(20.0, 10.0, 21.0, 11.0),
     ];
-    for reverse in [false, true] {
-        if reverse {
-            sources.reverse();
-        }
-        let case = run(&sources);
-        let partition = case.partition();
-        let constructed: Vec<_> = partition.crossings().into_iter().collect();
-        assert_eq!(constructed.len(), 1);
-        let crossing = constructed[0];
-        let departures: Vec<_> = [
-            XY::new(3.0, 0.0),
-            XY::new(4.0, 2.0),
-            XY::new(1.0, 0.0),
-            XY::new(0.0, -1.0),
-        ]
-        .into_iter()
-        .map(|point| {
-            let target = partition.stored_node(point).unwrap();
-            partition
-                .spans
-                .iter()
-                .position(|span| {
-                    (span.start == crossing && span.end == target)
-                        || (span.end == crossing && span.start == target)
-                })
-                .unwrap()
-        })
-        .collect();
-        for (position, &left) in departures.iter().enumerate() {
-            for &right in &departures[position + 1..] {
-                assert_eq!(
-                    partition.compare_departures(crossing, left, right),
-                    Ordering::Less
-                );
-                assert_eq!(
-                    partition.compare_departures(crossing, right, left),
-                    Ordering::Greater
-                );
-            }
-        }
-        let exact = partition.exact(crossing).unwrap();
-        let [x, y, w] = &*exact;
-        let (topology, edges) = partition.local_topology().unwrap();
-        let row = topology.starts[crossing.0 as usize] as usize
-            ..topology.starts[crossing.0 as usize + 1] as usize;
-        assert_eq!(row.len(), 4);
-        for (&edge, &expected) in edges[row].iter().zip(&departures) {
-            assert_eq!(edge as usize, expected);
-        }
-        let four = ExactDyadic::from_f64(4.0);
-        let three = ExactDyadic::from_f64(3.0);
-        let zero = ExactDyadic::from_f64(0.0);
-        let one = ExactDyadic::from_f64(1.0);
-        assert_eq!(
-            compare_ratios(x, w, &four, &three).unwrap(),
-            Ordering::Equal
-        );
-        assert_eq!(compare_ratios(y, w, &zero, &one).unwrap(), Ordering::Equal);
-        let left = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
-        let right = partition.stored_node(XY::new(3.0, 0.0)).unwrap();
-        assert_eq!(
-            partition.compare_nodes(left, crossing).unwrap(),
-            Ordering::Less
-        );
-        assert_eq!(
-            partition.compare_nodes(right, crossing).unwrap(),
-            Ordering::Greater
-        );
-        let mut owner_counts: Vec<_> = partition
+
+    if reverse {
+        sources.reverse();
+    }
+    let case = run(&sources);
+    let partition = case.partition();
+    let constructed: Vec<_> = partition.crossings().into_iter().collect();
+    assert_eq!(constructed.len(), 1);
+    let crossing = constructed[0];
+    let departures: Vec<_> = [
+        XY::new(3.0, 0.0),
+        XY::new(4.0, 2.0),
+        XY::new(1.0, 0.0),
+        XY::new(0.0, -1.0),
+    ]
+    .into_iter()
+    .map(|point| {
+        let target = partition.stored_node(point).unwrap();
+        partition
             .spans
             .iter()
-            .enumerate()
-            .filter(|(_, span)| span.start == crossing || span.end == crossing)
-            .map(|(index, _)| partition.owners(index).len())
-            .collect();
-        owner_counts.sort_unstable();
-        assert_eq!(owner_counts, [1, 1, 3, 3]);
-        assert_eq!(partition.spans.len(), 9);
+            .position(|span| {
+                (span.start == crossing && span.end == target)
+                    || (span.end == crossing && span.start == target)
+            })
+            .unwrap()
+    })
+    .collect();
+    for (position, &left) in departures.iter().enumerate() {
+        for &right in departures.iter().skip(position.wrapping_add(1)) {
+            assert_eq!(
+                partition.compare_departures(crossing, left, right),
+                Ordering::Less
+            );
+            assert_eq!(
+                partition.compare_departures(crossing, right, left),
+                Ordering::Greater
+            );
+        }
     }
+    let exact = partition.exact(crossing).unwrap();
+    let [x, y, w] = &*exact;
+    let (topology, edges) = partition.local_topology().unwrap();
+    let row = topology.starts[crossing.0 as usize] as usize
+        ..topology.starts[crossing.0 as usize + 1] as usize;
+    assert_eq!(row.len(), 4);
+    for (&edge, &expected) in edges[row].iter().zip(&departures) {
+        assert_eq!(edge as usize, expected);
+    }
+    let four = ExactDyadic::from_f64(4.0);
+    let three = ExactDyadic::from_f64(3.0);
+    let zero = ExactDyadic::from_f64(0.0);
+    let one = ExactDyadic::from_f64(1.0);
+    assert_eq!(
+        compare_ratios(x, w, &four, &three).unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(compare_ratios(y, w, &zero, &one).unwrap(), Ordering::Equal);
+    let left = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
+    let right = partition.stored_node(XY::new(3.0, 0.0)).unwrap();
+    assert_eq!(
+        partition.compare_nodes(left, crossing).unwrap(),
+        Ordering::Less
+    );
+    assert_eq!(
+        partition.compare_nodes(right, crossing).unwrap(),
+        Ordering::Greater
+    );
+    let mut owner_counts: Vec<_> = partition
+        .spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| span.start == crossing || span.end == crossing)
+        .map(|(index, _)| partition.owners(index).len())
+        .collect();
+    owner_counts.sort_unstable();
+    assert_eq!(owner_counts, [1, 1, 3, 3]);
+    assert_eq!(partition.spans.len(), 9);
 }
 
 #[test]
@@ -1097,27 +1101,24 @@ fn crossings_rounding_to_one_double_stay_distinct() {
 
 /// Coordinates outside the certificate window and nearly parallel carriers
 /// decline to the exact construction, which still rounds nearest-even.
-#[test]
-fn out_of_window_and_near_parallel_crossings_decline() {
-    for segments in [
-        [
-            seg(0.0, 0.0, 3e300, 1e300),
-            seg(1e300, -1e300, 1e300, 1e300),
-        ],
-        [seg(0.0, 0.0, 1.0, 1.0), seg(0.0, 1e-17, 1.0, 1.0 - 1e-16)],
-    ] {
-        reset_partition_builds();
-        let case = run(&segments);
-        let partition = case.partition();
-        assert_eq!(partition_metrics().declined_crossings, 1);
-        let crossing = crossing_node(&partition);
-        let [first_unique, second_unique] = partition.unique.first_chunk::<2>().unwrap();
-        let [x, y, w] = crossing_homogeneous(*first_unique, *second_unique).unwrap();
-        assert_eq!(
-            partition.nearest_xy(crossing),
-            XY::new(round_ratio(&x, &w).unwrap(), round_ratio(&y, &w).unwrap())
-        );
-    }
+#[rstest::rstest]
+#[case::seg_0_0_0_0_3e300_1e300_seg_1e300_1e300_1e300_1e300([
+    seg(0.0, 0.0, 3e300, 1e300),
+    seg(1e300, -1e300, 1e300, 1e300),
+])]
+#[case::seg_0_0_0_0_1_0_1_0_seg_0_0_1e_17_1_0_1_0_1e_16([seg(0.0, 0.0, 1.0, 1.0), seg(0.0, 1e-17, 1.0, 1.0 - 1e-16)])]
+fn out_of_window_and_near_parallel_crossings_decline(#[case] segments: [Segment; 2]) {
+    reset_partition_builds();
+    let case = run(&segments);
+    let partition = case.partition();
+    assert_eq!(partition_metrics().declined_crossings, 1);
+    let crossing = crossing_node(&partition);
+    let [first_unique, second_unique] = partition.unique.first_chunk::<2>().unwrap();
+    let [x, y, w] = crossing_homogeneous(*first_unique, *second_unique).unwrap();
+    assert_eq!(
+        partition.nearest_xy(crossing),
+        XY::new(round_ratio(&x, &w).unwrap(), round_ratio(&y, &w).unwrap())
+    );
 }
 
 #[test]

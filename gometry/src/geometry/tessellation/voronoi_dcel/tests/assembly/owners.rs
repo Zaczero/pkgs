@@ -378,106 +378,107 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     assert_eq!(parts.iter().map(|part| part.holes.len()).sum::<usize>(), 1);
 }
 
-#[test]
-fn owner_local_faces_match_exact_membership_on_touching_producer_rings() {
+#[rstest::rstest]
+#[case::one_hole_multi_owner(
+    "one-hole-multi-owner",
+    Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
+        -1.0, -1.0, 1.0, 1.0,
+    )]),
+    3,
+    4
+)]
+#[case::shell_tangent(
+    "shell-tangent",
+    Polygon::new(rectangle(0.0, 0.0, 8.0, 8.0), vec![closed_ring(&[
+        (0.0, 4.0),
+        (2.0, 5.0),
+        (2.0, 3.0),
+    ])]),
+    2,
+    3
+)]
+#[case::two_holes_touch(
+    "two-holes-touch",
+    Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0), vec![
+        rectangle(2.0, 2.0, 4.0, 4.0),
+        rectangle(4.0, 4.0, 6.0, 6.0),
+    ]),
+    2,
+    4
+)]
+fn owner_local_faces_match_exact_membership_on_touching_producer_rings(
+    #[case] name: &'static str,
+    #[case] clip: Polygon,
+    #[case] expected_parts: usize,
+    #[case] expected_rings: usize,
+) {
     let sites = sites_xy(&[(-10.0, -10.0), (10.0, -10.0), (0.0, 10.0)]);
-    let fixtures = [
-        (
-            "one-hole-multi-owner",
-            Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
-                -1.0, -1.0, 1.0, 1.0,
-            )]),
-            3,
-            4,
-        ),
-        (
-            "shell-tangent",
-            Polygon::new(rectangle(0.0, 0.0, 8.0, 8.0), vec![closed_ring(&[
-                (0.0, 4.0),
-                (2.0, 5.0),
-                (2.0, 3.0),
-            ])]),
-            2,
-            3,
-        ),
-        (
-            "two-holes-touch",
-            Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0), vec![
-                rectangle(2.0, 2.0, 4.0, 4.0),
-                rectangle(4.0, 4.0, 6.0, 6.0),
-            ]),
-            2,
-            4,
-        ),
-    ];
 
-    for (name, clip, expected_parts, expected_rings) in fixtures {
-        let subdivision = grafted_clip_subdivision(&sites, &clip);
-        assembly::reset_owner_local_work();
-        let parts = assemble_cells(&subdivision).unwrap_or_else(|error| {
-            panic!("{name}: owner-local assembly rejected producer output: {error}")
-        });
-        let work = assembly::owner_local_work();
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    assembly::reset_owner_local_work();
+    let parts = assemble_cells(&subdivision).unwrap_or_else(|error| {
+        panic!("{name}: owner-local assembly rejected producer output: {error}")
+    });
+    let work = assembly::owner_local_work();
 
-        assert_eq!(parts.len(), expected_parts, "{name}");
-        assert_eq!(
-            parts.iter().map(|part| 1 + part.holes.len()).sum::<usize>(),
-            expected_rings,
-            "{name}"
-        );
-        assert_owner_parts_match_exact_point_oracle(&subdivision, &parts);
-        assert_eq!(
-            work.global_edge_slot_visits,
-            subdivision.edge_of_slot.len(),
-            "{name}: build one global slot inverse, independent of owner count"
-        );
+    assert_eq!(parts.len(), expected_parts, "{name}");
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| part.holes.len().wrapping_add(1))
+            .sum::<usize>(),
+        expected_rings,
+        "{name}"
+    );
+    assert_owner_parts_match_exact_point_oracle(&subdivision, &parts);
+    assert_eq!(
+        work.global_edge_slot_visits,
+        subdivision.edge_of_slot.len(),
+        "{name}: build one global slot inverse, independent of owner count"
+    );
+    assert!(
+        work.owner_ring_edges <= subdivision.edge_of_slot.len(),
+        "{name}"
+    );
+    assert!(work.host_queries <= work.components, "{name}");
+    assert!(
+        work.face_walks <= work.owner_ring_edges.wrapping_add(work.components),
+        "{name}"
+    );
+    assert!(work.ring_side_checks > 0, "{name}");
+
+    if name == "one-hole-multi-owner" {
+        let slots_by_edge = assembly::inverse_edge_slots(&subdivision);
+        let owner_zero = parts
+            .iter()
+            .find(|part| part.owner == SiteId(0))
+            .expect("minimal source fixture has owner zero");
+        let owner_only =
+            assembly::OwnerLocalFaces::build(&subdivision, &[&owner_zero.shell], &slots_by_edge)
+                .unwrap();
         assert!(
-            work.owner_ring_edges <= subdivision.edge_of_slot.len(),
-            "{name}"
-        );
-        assert!(work.host_queries <= work.components, "{name}");
-        assert!(
-            work.face_walks <= work.owner_ring_edges + work.components,
-            "{name}"
-        );
-        assert!(work.ring_side_checks > 0, "{name}");
-
-        if name == "one-hole-multi-owner" {
-            let slots_by_edge = assembly::inverse_edge_slots(&subdivision);
-            let owner_zero = parts
-                .iter()
-                .find(|part| part.owner == SiteId(0))
-                .expect("minimal source fixture has owner zero");
-            let owner_only = assembly::OwnerLocalFaces::build(
-                &subdivision,
-                &[&owner_zero.shell],
-                &slots_by_edge,
-            )
-            .unwrap();
-            assert!(
-                owner_only
-                    .ring_side_faces(&subdivision, &slots_by_edge, &owner_zero.shell)
-                    .is_ok(),
-                "filtering foreign darts must leave a constant shell side"
-            );
-
-            let all_owner_rings: Vec<_> = parts
-                .iter()
-                .flat_map(|part| std::iter::once(&part.shell).chain(part.holes.iter()))
-                .collect();
-            let foreign_boundary_mutant =
-                assembly::OwnerLocalFaces::build(&subdivision, &all_owner_rings, &slots_by_edge)
-                    .unwrap();
-            let mutant_error = foreign_boundary_mutant
+            owner_only
                 .ring_side_faces(&subdivision, &slots_by_edge, &owner_zero.shell)
-                .expect_err("foreign owner ring edges must not be retained as barriers");
-            assert!(
-                mutant_error
-                    .to_string()
-                    .contains("nonconstant left or right face"),
-                "foreign-boundary mutant failed unexpectedly: {mutant_error}"
-            );
-        }
+                .is_ok(),
+            "filtering foreign darts must leave a constant shell side"
+        );
+
+        let all_owner_rings: Vec<_> = parts
+            .iter()
+            .flat_map(|part| std::iter::once(&part.shell).chain(part.holes.iter()))
+            .collect();
+        let foreign_boundary_mutant =
+            assembly::OwnerLocalFaces::build(&subdivision, &all_owner_rings, &slots_by_edge)
+                .unwrap();
+        let mutant_error = foreign_boundary_mutant
+            .ring_side_faces(&subdivision, &slots_by_edge, &owner_zero.shell)
+            .expect_err("foreign owner ring edges must not be retained as barriers");
+        assert!(
+            mutant_error
+                .to_string()
+                .contains("nonconstant left or right face"),
+            "foreign-boundary mutant failed unexpectedly: {mutant_error}"
+        );
     }
 }
 

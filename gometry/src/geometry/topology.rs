@@ -485,35 +485,37 @@ mod tests {
     /// infinite intersection X, counting or dropping a genuine crossing by
     /// edge order). The sign-form decision must classify exactly like the
     /// same triangle scaled to a safe magnitude, in both vertex orders.
-    #[test]
-    fn ray_crossing_parity_is_scale_and_direction_stable_at_extreme_coordinates() {
-        for scale in [1e307_f64, 1e308_f64] {
-            let s = scale / 1e308;
-            let triangle = [
-                XY::new(-1e308 * s, -1.0),
-                XY::new(1e308 * s, 1.0),
-                XY::new(1e308 * s, -1.0),
-            ];
-            let mut reversed = triangle;
-            reversed.reverse();
-            // (0, 0.5) sits ABOVE the long diagonal (its y at x=0 is ~0):
-            // exterior. (5e307 * s, 0.0) sits below it and above the bottom
-            // edge: interior.
-            let exterior = [XY::new(0.0, 0.5), XY::new(-1e308 * s, 0.9999)];
-            let interior = [XY::new(5e307 * s, 0.0)];
-            for ring in [&triangle, &reversed] {
-                for probe in exterior {
-                    assert!(
-                        !ring_contains_interior_open(ring, probe),
-                        "scale={scale:e} ring={ring:?} probe={probe:?} must be exterior",
-                    );
-                }
-                for probe in interior {
-                    assert!(
-                        ring_contains_interior_open(ring, probe),
-                        "scale={scale:e} ring={ring:?} probe={probe:?} must be interior",
-                    );
-                }
+    #[rstest::rstest]
+    #[case::scale_1e307_f64(1e307_f64)]
+    #[case::scale_1e308_f64(1e308_f64)]
+    fn ray_crossing_parity_is_scale_and_direction_stable_at_extreme_coordinates(
+        #[case] scale: f64,
+    ) {
+        let s = scale / 1e308;
+        let triangle = [
+            XY::new(-1e308 * s, -1.0),
+            XY::new(1e308 * s, 1.0),
+            XY::new(1e308 * s, -1.0),
+        ];
+        let mut reversed = triangle;
+        reversed.reverse();
+        // (0, 0.5) sits ABOVE the long diagonal (its y at x=0 is ~0):
+        // exterior. (5e307 * s, 0.0) sits below it and above the bottom
+        // edge: interior.
+        let exterior = [XY::new(0.0, 0.5), XY::new(-1e308 * s, 0.9999)];
+        let interior = [XY::new(5e307 * s, 0.0)];
+        for ring in [&triangle, &reversed] {
+            for probe in exterior {
+                assert!(
+                    !ring_contains_interior_open(ring, probe),
+                    "scale={scale:e} ring={ring:?} probe={probe:?} must be exterior",
+                );
+            }
+            for probe in interior {
+                assert!(
+                    ring_contains_interior_open(ring, probe),
+                    "scale={scale:e} ring={ring:?} probe={probe:?} must be interior",
+                );
             }
         }
     }
@@ -682,8 +684,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ring_columns_keep_scalar_windows_counts_and_bbox_refinement() {
+    #[rstest::rstest]
+    #[case::corners_len(4)]
+    #[case::ray_crossing(RAY_CROSSING)]
+    #[case::ray_crossing_wrapping_add_3(RAY_CROSSING.wrapping_add(3))]
+    fn ring_columns_keep_scalar_windows_counts_and_bbox_refinement(#[case] vertex_count: usize) {
         let corners = [
             XY::new(10.0, 20.0),
             XY::new(17.0, 20.0),
@@ -698,76 +703,78 @@ mod tests {
             (XY::new(10.0, 22.0), 2, true, RingClass::Exterior, false),
         ];
 
-        for vertex_count in [corners.len(), RAY_CROSSING, RAY_CROSSING.wrapping_add(3)] {
-            let padding = vertex_count.wrapping_sub(corners.len());
-            let mut ring = Vec::with_capacity(vertex_count);
-            ring.push(corners[0]);
-            ring.extend(std::iter::repeat_n(corners[0], padding));
-            ring.extend_from_slice(&corners[1..]);
-            assert_eq!(ring.len(), vertex_count);
+        let padding = vertex_count.wrapping_sub(corners.len());
+        let mut ring = Vec::with_capacity(vertex_count);
+        ring.push(corners[0]);
+        ring.extend(std::iter::repeat_n(corners[0], padding));
+        ring.extend_from_slice(&corners[1..]);
+        assert_eq!(ring.len(), vertex_count);
 
-            let (xs, ys) = closed_columns(&ring);
-            for (probe, expected_count, expected_candidate, expected_class, expected_inside) in
-                probes
-            {
-                assert_eq!(
-                    ring_classify_crossings_columns(&xs, &ys, probe),
-                    (expected_count, expected_candidate),
-                    "vertices={vertex_count} probe={probe:?}",
-                );
-                assert_eq!(
-                    classify_columns(&xs, &ys, probe),
-                    expected_class,
-                    "vertices={vertex_count} probe={probe:?}",
-                );
-                assert_eq!(
-                    ring_contains_interior_open(&ring, probe),
-                    expected_inside,
-                    "vertices={vertex_count} probe={probe:?}",
-                );
-                assert_eq!(
-                    ring_contains_interior_open(&ring, probe),
-                    scalar_reference(&ring, probe),
-                    "vertices={vertex_count} scalar differential probe={probe:?}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn ring_classify_crossings_returns_zero_for_empty_and_single_vertex_columns() {
-        for (xs, ys) in [(&[][..], &[][..]), (&[3.0][..], &[4.0][..])] {
-            let point = XY::new(0.0, 0.0);
-            assert!(!ring_contains_interior_columns(xs, ys, point));
-            assert_eq!(ring_classify_crossings_columns(xs, ys, point), (0, false),);
-            assert_eq!(ring_crossing_columns_scalar(xs, ys, point, 0..0), 0,);
-            assert_eq!(
-                ring_classify_crossings_scalar(xs, ys, point, 0..0),
-                (0, false),
-            );
-        }
-    }
-
-    #[test]
-    fn ring_classify_crossings_pins_rectangle_counts_and_inclusive_boxes() {
-        let xs = [0.0, 4.0, 4.0, 0.0, 0.0];
-        let ys = [0.0, 0.0, 4.0, 4.0, 0.0];
-        for (probe, expected_count, expected_candidate, expected_class) in [
-            (XY::new(2.0, 2.0), 1, false, RingClass::Interior),
-            (XY::new(4.0, 2.0), 0, true, RingClass::Boundary),
-            (XY::new(5.0, 2.0), 0, false, RingClass::Exterior),
-            (XY::new(4.0, 4.0), 0, true, RingClass::Boundary),
-        ] {
+        let (xs, ys) = closed_columns(&ring);
+        for (probe, expected_count, expected_candidate, expected_class, expected_inside) in probes {
             assert_eq!(
                 ring_classify_crossings_columns(&xs, &ys, probe),
                 (expected_count, expected_candidate),
-                "probe={probe:?}",
+                "vertices={vertex_count} probe={probe:?}",
             );
             assert_eq!(
                 classify_columns(&xs, &ys, probe),
                 expected_class,
-                "probe={probe:?}",
+                "vertices={vertex_count} probe={probe:?}",
+            );
+            assert_eq!(
+                ring_contains_interior_open(&ring, probe),
+                expected_inside,
+                "vertices={vertex_count} probe={probe:?}",
+            );
+            assert_eq!(
+                ring_contains_interior_open(&ring, probe),
+                scalar_reference(&ring, probe),
+                "vertices={vertex_count} scalar differential probe={probe:?}",
             );
         }
+    }
+
+    #[rstest::rstest]
+    #[case::empty(&[][..], &[][..])]
+    #[case::xs_3_0(&[3.0][..], &[4.0][..])]
+    fn ring_classify_crossings_returns_zero_for_empty_and_single_vertex_columns(
+        #[case] xs: &'static [f64],
+        #[case] ys: &'static [f64],
+    ) {
+        let point = XY::new(0.0, 0.0);
+        assert!(!ring_contains_interior_columns(xs, ys, point));
+        assert_eq!(ring_classify_crossings_columns(xs, ys, point), (0, false),);
+        assert_eq!(ring_crossing_columns_scalar(xs, ys, point, 0..0), 0,);
+        assert_eq!(
+            ring_classify_crossings_scalar(xs, ys, point, 0..0),
+            (0, false),
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::xy_new_2_0_2_0(XY::new(2.0, 2.0), 1, false, RingClass::Interior)]
+    #[case::xy_new_4_0_2_0(XY::new(4.0, 2.0), 0, true, RingClass::Boundary)]
+    #[case::xy_new_5_0_2_0(XY::new(5.0, 2.0), 0, false, RingClass::Exterior)]
+    #[case::xy_new_4_0_4_0(XY::new(4.0, 4.0), 0, true, RingClass::Boundary)]
+    fn ring_classify_crossings_pins_rectangle_counts_and_inclusive_boxes(
+        #[case] probe: XY,
+        #[case] expected_count: u32,
+        #[case] expected_candidate: bool,
+        #[case] expected_class: RingClass,
+    ) {
+        let xs = [0.0, 4.0, 4.0, 0.0, 0.0];
+        let ys = [0.0, 0.0, 4.0, 4.0, 0.0];
+
+        assert_eq!(
+            ring_classify_crossings_columns(&xs, &ys, probe),
+            (expected_count, expected_candidate),
+            "probe={probe:?}",
+        );
+        assert_eq!(
+            classify_columns(&xs, &ys, probe),
+            expected_class,
+            "probe={probe:?}",
+        );
     }
 }

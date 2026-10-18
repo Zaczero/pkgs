@@ -1,4 +1,3 @@
-
 #[test]
 fn source_sample_occurrences_reserve_before_copying_requests() {
     let mut setup = Unmetered;
@@ -221,8 +220,7 @@ fn merging_vertex_aliases_keeps_presentation_and_source_rows_separate() {
 #[test]
 fn merging_periodic_vertex_aliases_keeps_the_existing_chart_lift() {
     let y = ExactRational::from_f64(20.0);
-    let left_point =
-        ExactChartPoint::from_rationals(ExactRational::from_f64(-170.0), y.clone());
+    let left_point = ExactChartPoint::from_rationals(ExactRational::from_f64(-170.0), y.clone());
     let right_point = ExactChartPoint::from_rationals(ExactRational::from_f64(190.0), y);
     let alias = |point, periods| NativePortData {
         node: EmissionNodeId(3),
@@ -261,8 +259,7 @@ fn native_vertex_merge_rejects_nonperiodic_longitude_aliases() {
     let mut work = Unmetered;
 
     assert!(
-        merge_native_port_data(frame, &left, &alias(point(190.25, 20.0), 1), &mut work)
-            .is_err(),
+        merge_native_port_data(frame, &left, &alias(point(190.25, 20.0), 1), &mut work).is_err(),
         "equal node IDs do not admit nonperiodic longitude differences"
     );
     assert!(
@@ -329,8 +326,13 @@ fn native_vertex_merge_preserves_one_authenticated_periodic_source_record() {
     assert_eq!(merged.point, left.point);
 }
 
-#[test]
-fn native_vertex_merge_selects_the_record_for_its_retained_chart_lift() {
+#[rstest::rstest]
+#[case::left_record_190_0(190.0, -170.0)]
+#[case::negative_left_record_170_0(-170.0, 190.0)]
+fn native_vertex_merge_selects_the_record_for_its_retained_chart_lift(
+    #[case] left_record: f64,
+    #[case] right_record: f64,
+) {
     let frame = GeographicFrame::crs84();
     let make_port = |longitude, periods, source_record| NativePortData {
         node: EmissionNodeId(3),
@@ -343,16 +345,15 @@ fn native_vertex_merge_selects_the_record_for_its_retained_chart_lift() {
         occurrences: Vec::new(),
     };
     let mut work = Unmetered;
-    for (left_record, right_record) in [(190.0, -170.0), (-170.0, 190.0)] {
-        let left = make_port(-170.0, 0, left_record);
-        let right = make_port(190.0, 1, right_record);
-        let merged = merge_native_port_data(frame, &left, &right, &mut work).unwrap();
-        assert_eq!(
-            merged.source_record.map(|record| record.x.to_bits()),
-            Some((-170.0_f64).to_bits()),
-            "the retained chart spelling, not contributor arrival order, selects the literal record"
-        );
-    }
+
+    let left = make_port(-170.0, 0, left_record);
+    let right = make_port(190.0, 1, right_record);
+    let merged = merge_native_port_data(frame, &left, &right, &mut work).unwrap();
+    assert_eq!(
+        merged.source_record.map(|record| record.x.to_bits()),
+        Some((-170.0_f64).to_bits()),
+        "the retained chart spelling, not contributor arrival order, selects the literal record"
+    );
 }
 
 #[test]
@@ -390,8 +391,7 @@ fn native_vertex_merge_keeps_seam_banks_and_pole_spellings_distinct() {
         occurrences: Vec::new(),
     };
     assert!(
-        merge_native_port_data(frame, &pole(10.0, 10.0), &pole(370.0, 10.0), &mut work,)
-            .is_ok(),
+        merge_native_port_data(frame, &pole(10.0, 10.0), &pole(370.0, 10.0), &mut work,).is_ok(),
         "same-pole coordinates may differ by an exact period when spelling is retained"
     );
     assert!(

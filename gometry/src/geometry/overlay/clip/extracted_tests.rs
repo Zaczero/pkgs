@@ -144,132 +144,134 @@ fn assert_public_clip_matches_intersection(name: &str, source_wkt: &str, rect: B
     }
 }
 
-#[test]
-fn rectangle_linework_preserves_exact_contacts_and_ordinates() {
-    let unit = bounds(0.0, 0.0, 1.0, 1.0);
-    for (name, source, rect, expected) in [
-        (
-            "crossing-at-window-end",
-            "MULTILINESTRING ((-1 -1,1 1),(-1 1,1 -1))",
-            unit,
-            "LINESTRING (0 0,1 1)",
-        ),
-        (
-            "point-at-constructed-end",
-            "GEOMETRYCOLLECTION (LINESTRING (-1 -1,2 2),POINT (0 0),POINT (0 1),POINT (2 0))",
-            unit,
-            "GEOMETRYCOLLECTION (POINT (0 1),LINESTRING (0 0,1 1))",
-        ),
-        (
-            "overlapping-carriers",
-            "MULTILINESTRING ((-1 0.5,2 0.5),(0.25 0.5,3 0.5))",
-            unit,
-            "LINESTRING (0 0.5,0.25 0.5,1 0.5)",
-        ),
-        (
-            "interior-crossing",
-            "MULTILINESTRING ((-1 -1,2 2),(-1 2,2 -1))",
-            unit,
-            "MULTILINESTRING ((0 0,0.5 0.5),(0 1,0.5 0.5),(0.5 0.5,1 0),(0.5 0.5,1 1))",
-        ),
-        (
-            "point-window",
-            "LINESTRING (-1 -1,2 2)",
-            bounds(0.0, 0.0, 0.0, 0.0),
-            "POINT (0 0)",
-        ),
-        (
-            "zero-length-source",
-            "MULTILINESTRING ((0 0,0 0),(-1 1,-1 1))",
-            unit,
-            "POINT (0 0)",
-        ),
-        (
-            "zm-window-parameters",
-            "LINESTRING ZM (-1 0.5 0 2,2 0.5 9 11)",
-            unit,
-            "LINESTRING ZM (0 0.5 3 5,1 0.5 6 8)",
-        ),
-    ] {
-        let actual = assert_public_clip_matches_intersection(name, source, rect);
-        let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
-        assert_eq!(
-            shape_wkb(&actual),
-            shape_wkb(&expected),
-            "{name}: {actual:?}"
-        );
-    }
+#[rstest::rstest]
+#[case::crossing_at_window_end(
+    "crossing-at-window-end",
+    "MULTILINESTRING ((-1 -1,1 1),(-1 1,1 -1))",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "LINESTRING (0 0,1 1)"
+)]
+#[case::point_at_constructed_end(
+    "point-at-constructed-end",
+    "GEOMETRYCOLLECTION (LINESTRING (-1 -1,2 2),POINT (0 0),POINT (0 1),POINT (2 0))",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "GEOMETRYCOLLECTION (POINT (0 1),LINESTRING (0 0,1 1))"
+)]
+#[case::overlapping_carriers(
+    "overlapping-carriers",
+    "MULTILINESTRING ((-1 0.5,2 0.5),(0.25 0.5,3 0.5))",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "LINESTRING (0 0.5,0.25 0.5,1 0.5)"
+)]
+#[case::interior_crossing(
+    "interior-crossing",
+    "MULTILINESTRING ((-1 -1,2 2),(-1 2,2 -1))",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "MULTILINESTRING ((0 0,0.5 0.5),(0 1,0.5 0.5),(0.5 0.5,1 0),(0.5 0.5,1 1))"
+)]
+#[case::point_window(
+    "point-window",
+    "LINESTRING (-1 -1,2 2)",
+    bounds(0.0, 0.0, 0.0, 0.0),
+    "POINT (0 0)"
+)]
+#[case::zero_length_source(
+    "zero-length-source",
+    "MULTILINESTRING ((0 0,0 0),(-1 1,-1 1))",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "POINT (0 0)"
+)]
+#[case::zm_window_parameters(
+    "zm-window-parameters",
+    "LINESTRING ZM (-1 0.5 0 2,2 0.5 9 11)",
+    bounds(0.0, 0.0, 1.0, 1.0),
+    "LINESTRING ZM (0 0.5 3 5,1 0.5 6 8)"
+)]
+fn rectangle_linework_preserves_exact_contacts_and_ordinates(
+    #[case] name: &'static str,
+    #[case] source: &'static str,
+    #[case] rect: Bounds,
+    #[case] expected: &'static str,
+) {
+    let actual = assert_public_clip_matches_intersection(name, source, rect);
+    let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
+    assert_eq!(
+        shape_wkb(&actual),
+        shape_wkb(&expected),
+        "{name}: {actual:?}"
+    );
 }
 
-#[test]
-fn rectangle_line_emission_matches_ring_vertex_dissolution() {
+#[rstest::rstest]
+#[case::crossing_bottom_edge(
+    "crossing bottom edge",
+    "LINESTRING (-1 0, 2 0, 5 0)",
+    "LINESTRING (0 0, 4 0)"
+)]
+#[case::contained_bottom_edge(
+    "contained bottom edge",
+    "LINESTRING (0 0, 2 0, 4 0)",
+    "LINESTRING (0 0, 4 0)"
+)]
+#[case::crossing_top_edge(
+    "crossing top edge",
+    "LINESTRING (-1 4, 2 4, 5 4)",
+    "LINESTRING (0 4, 4 4)"
+)]
+#[case::contained_left_edge(
+    "contained left edge",
+    "LINESTRING (0 0, 0 2, 0 4)",
+    "LINESTRING (0 0, 0 4)"
+)]
+#[case::crossing_right_edge(
+    "crossing right edge",
+    "LINESTRING (4 -1, 4 2, 4 5)",
+    "LINESTRING (4 0, 4 4)"
+)]
+#[case::interior_vertices_remain(
+    "interior vertices remain",
+    "LINESTRING (1 1, 2 1, 3 1)",
+    "LINESTRING (1 1, 2 1, 3 1)"
+)]
+#[case::boundary_corner_remains(
+    "boundary corner remains",
+    "LINESTRING (0 1, 0 2, 1 2)",
+    "LINESTRING (0 1, 0 2, 1 2)"
+)]
+#[case::branch_node_remains(
+    "branch node remains",
+    "MULTILINESTRING ((-1 0, 2 0, 5 0), (2 0, 2 2))",
+    "MULTILINESTRING ((0 0, 2 0), (2 0, 2 2), (2 0, 4 0))"
+)]
+#[case::explicit_point_node_remains(
+    "explicit point node remains",
+    "GEOMETRYCOLLECTION (LINESTRING (-1 0, 2 0, 5 0), POINT (2 0))",
+    "LINESTRING (0 0, 2 0, 4 0)"
+)]
+fn rectangle_line_emission_matches_ring_vertex_dissolution(
+    #[case] name: &'static str,
+    #[case] source: &'static str,
+    #[case] expected: &'static str,
+) {
     let rect = bounds(0.0, 0.0, 4.0, 4.0);
     let rectangle = Shape::Polygon(rect_polygon(rect).unwrap());
-    let cases = [
-        (
-            "crossing bottom edge",
-            "LINESTRING (-1 0, 2 0, 5 0)",
-            "LINESTRING (0 0, 4 0)",
-        ),
-        (
-            "contained bottom edge",
-            "LINESTRING (0 0, 2 0, 4 0)",
-            "LINESTRING (0 0, 4 0)",
-        ),
-        (
-            "crossing top edge",
-            "LINESTRING (-1 4, 2 4, 5 4)",
-            "LINESTRING (0 4, 4 4)",
-        ),
-        (
-            "contained left edge",
-            "LINESTRING (0 0, 0 2, 0 4)",
-            "LINESTRING (0 0, 0 4)",
-        ),
-        (
-            "crossing right edge",
-            "LINESTRING (4 -1, 4 2, 4 5)",
-            "LINESTRING (4 0, 4 4)",
-        ),
-        (
-            "interior vertices remain",
-            "LINESTRING (1 1, 2 1, 3 1)",
-            "LINESTRING (1 1, 2 1, 3 1)",
-        ),
-        (
-            "boundary corner remains",
-            "LINESTRING (0 1, 0 2, 1 2)",
-            "LINESTRING (0 1, 0 2, 1 2)",
-        ),
-        (
-            "branch node remains",
-            "MULTILINESTRING ((-1 0, 2 0, 5 0), (2 0, 2 2))",
-            "MULTILINESTRING ((0 0, 2 0), (2 0, 2 2), (2 0, 4 0))",
-        ),
-        (
-            "explicit point node remains",
-            "GEOMETRYCOLLECTION (LINESTRING (-1 0, 2 0, 5 0), POINT (2 0))",
-            "LINESTRING (0 0, 2 0, 4 0)",
-        ),
-    ];
-    for (name, source, expected) in cases {
-        let subject = crate::io::parse_wkt(source).unwrap();
-        let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
-        let full = super::nary::full_partition_cartesian_overlay(
-            &[&subject, &rectangle],
-            OverlayOp::Intersection,
-            Strictness::Lenient,
-        )
-        .unwrap();
-        assert_eq!(shape_wkb(&full), shape_wkb(&expected), "{name}");
-        for actual in [
-            subject.clip_by_rect(rect, false).unwrap(),
-            subject
-                .intersection(&rectangle, Strictness::Lenient)
-                .unwrap(),
-        ] {
-            assert_eq!(shape_wkb(&actual), shape_wkb(&expected), "{name}");
-        }
+
+    let subject = crate::io::parse_wkt(source).unwrap();
+    let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
+    let full = super::nary::full_partition_cartesian_overlay(
+        &[&subject, &rectangle],
+        OverlayOp::Intersection,
+        Strictness::Lenient,
+    )
+    .unwrap();
+    assert_eq!(shape_wkb(&full), shape_wkb(&expected), "{name}");
+    for actual in [
+        subject.clip_by_rect(rect, false).unwrap(),
+        subject
+            .intersection(&rectangle, Strictness::Lenient)
+            .unwrap(),
+    ] {
+        assert_eq!(shape_wkb(&actual), shape_wkb(&expected), "{name}");
     }
 }
 
@@ -456,37 +458,38 @@ fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
     );
 }
 
-#[test]
-fn contained_valid_polygonal_intersection_preserves_the_operand_verbatim() {
+#[rstest::rstest]
+#[case::noncanonical_shell_and_hole(
+    "noncanonical-shell-and-hole",
+    "POLYGON ((4 0, 2 0, 0 0, 0 4, 4 4, 4 0), (1 1, 1 3, 3 3, 3 1, 1 1))"
+)]
+#[case::noncanonical_multipolygon_order(
+    "noncanonical-multipolygon-order",
+    "MULTIPOLYGON (((4 0, 6 0, 6 2, 4 2, 4 0)), ((0 0, 2 0, 2 2, 0 2, 0 0)))"
+)]
+fn contained_valid_polygonal_intersection_preserves_the_operand_verbatim(
+    #[case] name: &'static str,
+    #[case] source_wkt: &'static str,
+) {
     let bounds = bounds(-1.0, -1.0, 7.0, 5.0);
-    for (name, source_wkt) in [
-        (
-            "noncanonical-shell-and-hole",
-            "POLYGON ((4 0, 2 0, 0 0, 0 4, 4 4, 4 0), (1 1, 1 3, 3 3, 3 1, 1 1))",
-        ),
-        (
-            "noncanonical-multipolygon-order",
-            "MULTIPOLYGON (((4 0, 6 0, 6 2, 4 2, 4 0)), ((0 0, 2 0, 2 2, 0 2, 0 0)))",
-        ),
-    ] {
-        let subject = crate::io::parse_wkt(source_wkt).unwrap();
-        let expected = shape_wkb(&subject);
-        let actual = assert_public_clip_matches_intersection(name, source_wkt, bounds);
-        assert_eq!(
-            shape_wkb(&actual),
-            expected,
-            "{name}: retained operand changed"
-        );
-        let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
-        let reversed = rectangle
-            .intersection(&subject, Strictness::Lenient)
-            .unwrap();
-        assert_eq!(
-            shape_wkb(&reversed),
-            expected,
-            "{name}: reversed operands changed the retained value"
-        );
-    }
+
+    let subject = crate::io::parse_wkt(source_wkt).unwrap();
+    let expected = shape_wkb(&subject);
+    let actual = assert_public_clip_matches_intersection(name, source_wkt, bounds);
+    assert_eq!(
+        shape_wkb(&actual),
+        expected,
+        "{name}: retained operand changed"
+    );
+    let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
+    let reversed = rectangle
+        .intersection(&subject, Strictness::Lenient)
+        .unwrap();
+    assert_eq!(
+        shape_wkb(&reversed),
+        expected,
+        "{name}: reversed operands changed the retained value"
+    );
 }
 
 #[test]
@@ -647,227 +650,261 @@ fn regular_ellipse(cx: f64, cy: f64, rx: f64, ry: f64, count: usize, phase: f64)
     )
 }
 
-#[test]
-fn rectangle_local_partition_matches_the_oracle_on_the_full_areal_matrix() {
-    let square = rectangle(0.0, 0.0, 4.0, 4.0);
-    let shell = ring(&[
-        (0.0, 0.0),
-        (10.0, 0.0),
-        (10.0, 10.0),
-        (0.0, 10.0),
-        (0.0, 0.0),
-    ]);
-    let hole = ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]);
-    let holed = Polygon::new(shell, vec![hole]);
-    let touching = [rectangle(0.0, 0.0, 2.0, 2.0), rectangle(2.0, 2.0, 4.0, 4.0)];
-    let concave = polygon(&[
-        (0.0, 0.0),
-        (6.0, 0.0),
-        (6.0, 6.0),
-        (4.0, 6.0),
-        (4.0, 2.0),
-        (2.0, 2.0),
-        (2.0, 6.0),
-        (0.0, 6.0),
-        (0.0, 0.0),
-    ]);
-    let spike = polygon(&[
-        (0.0, 0.0),
-        (4.0, 0.0),
-        (4.0, 4.0),
-        (2.0, 4.0),
-        (2.0, 2.0),
-        (3.0, 2.0),
-        (2.0, 2.0),
-        (2.0, 4.0),
-        (0.0, 4.0),
-        (0.0, 0.0),
-    ]);
-    let square_ring = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
-    let shell_equal_hole = Polygon::new(square_ring.clone(), vec![square_ring.clone()]);
-    let touching_hole_shell = Polygon::new(
-        ring(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]),
-        vec![ring(&[
-            (0.0, 2.0),
+#[rstest::rstest]
+#[case::contained_window("contained-window", vec![rectangle(-4.0, -3.0, 4.0, 3.0)], bounds(-1.0, -1.5, 1.25, 1.5))]
+#[case::source_disjoint_from_window("source-disjoint-from-window", vec![rectangle(0.0, 0.0, 1.0, 1.0)], bounds(5.0, 5.0, 6.0, 6.0))]
+#[case::source_vertices_on_side_and_corner(
+    "source-vertices-on-side-and-corner",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(0.0, 1.0, 2.0, 4.0)
+)]
+#[case::coincident_shell_and_window(
+    "coincident-shell-and-window",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(0.0, 0.0, 4.0, 4.0)
+)]
+#[case::left_side_overlap(
+    "left-side-overlap",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(0.0, 1.0, 2.0, 3.0)
+)]
+#[case::right_side_overlap(
+    "right-side-overlap",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(2.0, 1.0, 4.0, 3.0)
+)]
+#[case::bottom_side_overlap(
+    "bottom-side-overlap",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(1.0, 0.0, 3.0, 2.0)
+)]
+#[case::top_side_overlap(
+    "top-side-overlap",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(1.0, 2.0, 3.0, 4.0)
+)]
+#[case::corner_only_contact(
+    "corner-only-contact",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(4.0, 4.0, 5.0, 5.0)
+)]
+#[case::zero_width_window(
+    "zero-width-window",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(2.0, 0.0, 2.0, 4.0)
+)]
+#[case::zero_height_window(
+    "zero-height-window",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square]
+    },
+    bounds(0.0, 2.0, 4.0, 2.0)
+)]
+#[case::hole_crossed_by_window(
+    "hole-crossed-by-window",
+    {
+        let shell = ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let hole = ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]);
+        let holed = Polygon::new(shell, vec![hole]);
+        vec![holed]
+    },
+    bounds(3.0, 3.0, 7.0, 7.0)
+)]
+#[case::hole_contained_by_window(
+    "hole-contained-by-window",
+    {
+        let shell = ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let hole = ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]);
+        let holed = Polygon::new(shell, vec![hole]);
+        vec![holed]
+    },
+    bounds(2.0, 2.0, 8.0, 8.0)
+)]
+#[case::multiple_shells(
+    "multiple-shells",
+    {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        vec![square, rectangle(5.0, 1.0, 9.0, 5.0)]
+    },
+    bounds(1.0, 1.0, 7.0, 3.0)
+)]
+#[case::point_touching_parts(
+    "point-touching-parts",
+    {
+        let touching = [rectangle(0.0, 0.0, 2.0, 2.0), rectangle(2.0, 2.0, 4.0, 4.0)];
+        touching.to_vec()
+    },
+    bounds(1.0, 1.0, 3.0, 3.0)
+)]
+#[case::disconnected_concave_result(
+    "disconnected-concave-result",
+    {
+        let concave = polygon(&[
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 6.0),
+            (4.0, 6.0),
+            (4.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 6.0),
+            (0.0, 6.0),
+            (0.0, 0.0),
+        ]);
+        vec![concave]
+    },
+    bounds(0.5, 3.0, 5.5, 5.0)
+)]
+#[case::retraced_spike(
+    "retraced-spike",
+    {
+        let spike = polygon(&[
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (2.0, 4.0),
+            (2.0, 2.0),
+            (3.0, 2.0),
             (2.0, 2.0),
             (2.0, 4.0),
             (0.0, 4.0),
-            (0.0, 2.0),
-        ])],
-    );
-    let external_hole = Polygon::new(square_ring, vec![ring(&[
-        (5.0, 1.0),
-        (6.0, 1.0),
-        (6.0, 2.0),
-        (5.0, 2.0),
-        (5.0, 1.0),
-    ])]);
-
-    let cases = [
-        (
-            "contained-window",
-            vec![rectangle(-4.0, -3.0, 4.0, 3.0)],
-            bounds(-1.0, -1.5, 1.25, 1.5),
-        ),
-        (
-            "source-disjoint-from-window",
-            vec![rectangle(0.0, 0.0, 1.0, 1.0)],
-            bounds(5.0, 5.0, 6.0, 6.0),
-        ),
-        (
-            "source-vertices-on-side-and-corner",
-            vec![square.clone()],
-            bounds(0.0, 1.0, 2.0, 4.0),
-        ),
-        (
-            "coincident-shell-and-window",
-            vec![square.clone()],
-            bounds(0.0, 0.0, 4.0, 4.0),
-        ),
-        (
-            "left-side-overlap",
-            vec![square.clone()],
-            bounds(0.0, 1.0, 2.0, 3.0),
-        ),
-        (
-            "right-side-overlap",
-            vec![square.clone()],
-            bounds(2.0, 1.0, 4.0, 3.0),
-        ),
-        (
-            "bottom-side-overlap",
-            vec![square.clone()],
-            bounds(1.0, 0.0, 3.0, 2.0),
-        ),
-        (
-            "top-side-overlap",
-            vec![square.clone()],
-            bounds(1.0, 2.0, 3.0, 4.0),
-        ),
-        (
-            "corner-only-contact",
-            vec![square.clone()],
-            bounds(4.0, 4.0, 5.0, 5.0),
-        ),
-        (
-            "zero-width-window",
-            vec![square.clone()],
-            bounds(2.0, 0.0, 2.0, 4.0),
-        ),
-        (
-            "zero-height-window",
-            vec![square.clone()],
-            bounds(0.0, 2.0, 4.0, 2.0),
-        ),
-        (
-            "hole-crossed-by-window",
-            vec![holed.clone()],
-            bounds(3.0, 3.0, 7.0, 7.0),
-        ),
-        (
-            "hole-contained-by-window",
-            vec![holed],
-            bounds(2.0, 2.0, 8.0, 8.0),
-        ),
-        (
-            "multiple-shells",
-            vec![square, rectangle(5.0, 1.0, 9.0, 5.0)],
-            bounds(1.0, 1.0, 7.0, 3.0),
-        ),
-        (
-            "point-touching-parts",
-            touching.to_vec(),
-            bounds(1.0, 1.0, 3.0, 3.0),
-        ),
-        (
-            "disconnected-concave-result",
-            vec![concave],
-            bounds(0.5, 3.0, 5.5, 5.0),
-        ),
-        ("retraced-spike", vec![spike], bounds(0.5, 0.5, 3.5, 3.5)),
-        (
-            "collapsed-shell",
-            vec![polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)])],
-            bounds(-1.0, 1.0, 5.0, 3.0),
-        ),
-        (
-            "shell-equals-hole",
-            vec![shell_equal_hole],
-            bounds(-1.0, -1.0, 5.0, 5.0),
-        ),
-        (
-            "bow-tie",
-            vec![polygon(&[
-                (0.0, 0.0),
-                (2.0, 2.0),
-                (2.0, 0.0),
+            (0.0, 0.0),
+        ]);
+        vec![spike]
+    },
+    bounds(0.5, 0.5, 3.5, 3.5)
+)]
+#[case::collapsed_shell("collapsed-shell", vec![polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)])], bounds(-1.0, 1.0, 5.0, 3.0))]
+#[case::shell_equals_hole(
+    "shell-equals-hole",
+    {
+        let square_ring = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let shell_equal_hole = Polygon::new(square_ring.clone(), vec![square_ring]);
+        vec![shell_equal_hole]
+    },
+    bounds(-1.0, -1.0, 5.0, 5.0)
+)]
+#[case::bow_tie(
+    "bow-tie",
+    vec![polygon(&[
+        (0.0, 0.0),
+        (2.0, 2.0),
+        (2.0, 0.0),
+        (0.0, 2.0),
+        (0.0, 0.0),
+    ])],
+    bounds(-1.0, -1.0, 3.0, 1.0)
+)]
+#[case::twice_wound(
+    "twice-wound",
+    vec![polygon(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+    ])],
+    bounds(-1.0, -1.0, 5.0, 5.0)
+)]
+#[case::hole_touching_shell(
+    "hole-touching-shell",
+    {
+        let touching_hole_shell = Polygon::new(
+            ring(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]),
+            vec![ring(&[
                 (0.0, 2.0),
-                (0.0, 0.0),
-            ])],
-            bounds(-1.0, -1.0, 3.0, 1.0),
-        ),
-        (
-            "twice-wound",
-            vec![polygon(&[
-                (0.0, 0.0),
-                (4.0, 0.0),
-                (4.0, 4.0),
+                (2.0, 2.0),
+                (2.0, 4.0),
                 (0.0, 4.0),
-                (0.0, 0.0),
-                (4.0, 0.0),
-                (4.0, 4.0),
-                (0.0, 4.0),
-                (0.0, 0.0),
+                (0.0, 2.0),
             ])],
-            bounds(-1.0, -1.0, 5.0, 5.0),
-        ),
-        (
-            "hole-touching-shell",
-            vec![touching_hole_shell],
-            bounds(-1.0, -1.0, 7.0, 7.0),
-        ),
-        (
-            "external-hole",
-            vec![external_hole],
-            bounds(-1.0, -1.0, 7.0, 7.0),
-        ),
-        ("empty-polygon", Vec::new(), bounds(1.0, 1.0, 4.0, 4.0)),
-        (
-            "collapsed-member-multipolygon",
-            vec![
-                polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)]),
-                polygon(&[(5.0, 0.0), (7.0, 2.0), (9.0, 4.0), (5.0, 0.0)]),
-            ],
-            bounds(-1.0, -1.0, 10.0, 5.0),
-        ),
-    ];
-    for (name, polygons, rect) in cases {
-        assert_clip_matches_oracle(name, &polygons, rect);
-    }
+        );
+        vec![touching_hole_shell]
+    },
+    bounds(-1.0, -1.0, 7.0, 7.0)
+)]
+#[case::external_hole(
+    "external-hole",
+    {
+        let square_ring = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let external_hole = Polygon::new(square_ring, vec![ring(&[
+            (5.0, 1.0),
+            (6.0, 1.0),
+            (6.0, 2.0),
+            (5.0, 2.0),
+            (5.0, 1.0),
+        ])]);
+        vec![external_hole]
+    },
+    bounds(-1.0, -1.0, 7.0, 7.0)
+)]
+#[case::empty_polygon("empty-polygon", Vec::new(), bounds(1.0, 1.0, 4.0, 4.0))]
+#[case::collapsed_member_multipolygon(
+    "collapsed-member-multipolygon",
+    vec![
+        polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)]),
+        polygon(&[(5.0, 0.0), (7.0, 2.0), (9.0, 4.0), (5.0, 0.0)]),
+    ],
+    bounds(-1.0, -1.0, 10.0, 5.0)
+)]
+fn rectangle_local_partition_matches_the_oracle_on_the_full_areal_matrix(
+    #[case] name: &str,
+    #[case] polygons: Vec<Polygon>,
+    #[case] rect: Bounds,
+) {
+    assert_clip_matches_oracle(name, &polygons, rect);
 }
 
-#[test]
-fn named_convex_rings_match_the_rectangle_clip_oracle() {
-    let cases = [
-        (
-            "pentagon-contained-window",
-            regular_ellipse(-17.0, 12.0, 8.0, 4.0, 5, std::f64::consts::PI / 9.0),
-            bounds(-17.2, 11.8, -16.8, 12.2),
-        ),
-        (
-            "nine-vertex-crossing-window",
-            regular_ellipse(14.0, -9.0, 11.0, 3.0, 9, std::f64::consts::PI / 7.0),
-            bounds(18.0, -10.0, 24.0, -5.0),
-        ),
-        (
-            "thirty-two-vertex-crossing-window",
-            regular_ellipse(-40.0, -25.0, 16.0, 9.0, 32, std::f64::consts::PI / 13.0),
-            bounds(-29.0, -27.0, -18.0, -23.0),
-        ),
-    ];
-    for (name, polygon, rect) in cases {
-        assert_clip_matches_oracle(name, &[polygon], rect);
-    }
+#[rstest::rstest]
+#[case::pentagon_contained_window("pentagon-contained-window", regular_ellipse(-17.0, 12.0, 8.0, 4.0, 5, std::f64::consts::PI / 9.0), bounds(-17.2, 11.8, -16.8, 12.2))]
+#[case::nine_vertex_crossing_window("nine-vertex-crossing-window", regular_ellipse(14.0, -9.0, 11.0, 3.0, 9, std::f64::consts::PI / 7.0), bounds(18.0, -10.0, 24.0, -5.0))]
+#[case::thirty_two_vertex_crossing_window("thirty-two-vertex-crossing-window", regular_ellipse(-40.0, -25.0, 16.0, 9.0, 32, std::f64::consts::PI / 13.0), bounds(-29.0, -27.0, -18.0, -23.0))]
+fn named_convex_rings_match_the_rectangle_clip_oracle(
+    #[case] name: &'static str,
+    #[case] polygon: Polygon,
+    #[case] rect: Bounds,
+) {
+    assert_clip_matches_oracle(name, &[polygon], rect);
 }
 
 #[test]

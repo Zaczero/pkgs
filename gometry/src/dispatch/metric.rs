@@ -574,46 +574,49 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn wgs84_geographic_carry_captures_runtime_before_lazy_metric_resolution() {
+    #[case::epsg_4326("EPSG:4326")]
+    #[case::epsg_4979("EPSG:4979")]
+    fn wgs84_geographic_carry_captures_runtime_before_lazy_metric_resolution(
+        #[case] code: &'static str,
+    ) {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        for code in ["EPSG:4326", "EPSG:4979"] {
-            binary_dispatch_counters::reset();
-            let frame = test_frame(Some(code));
-            let mut scratch = MetricScratch::default();
-            let (domain, metric) = MetricResolver::GeographicCarry
-                .resolve_topology_ctx(&frame, &mut scratch)
-                .unwrap();
-            let MetricCtx::GeographicCarry {
-                scratch: context_scratch,
-            } = metric
-            else {
-                panic!("WGS84 carry retains its operation scratch");
-            };
 
-            assert!(matches!(domain, TopologyDomain::Geographic(_)), "{code}");
-            assert!(context_scratch.state.is_some(), "{code}");
-            assert!(context_scratch.model.get().is_none(), "{code}");
-            assert!(context_scratch.metric.get().is_none(), "{code}");
-            assert!(context_scratch.source_metric.is_none(), "{code}");
-            let generation = context_scratch.state.as_ref().unwrap().generation;
-            assert_eq!(
-                binary_dispatch_counters::snapshot().runtime_state_snapshots,
-                1,
-                "{code}"
-            );
+        binary_dispatch_counters::reset();
+        let frame = test_frame(Some(code));
+        let mut scratch = MetricScratch::default();
+        let (domain, metric) = MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut scratch)
+            .unwrap();
+        let MetricCtx::GeographicCarry {
+            scratch: context_scratch,
+        } = metric
+        else {
+            panic!("WGS84 carry retains its operation scratch");
+        };
 
-            let source_metric = metric
-                .geographic_chart_metric()
-                .unwrap()
-                .expect("geographic carry metric");
-            assert_eq!(source_metric.state.generation, generation, "{code}");
-            assert_eq!(
-                binary_dispatch_counters::snapshot().runtime_state_snapshots,
-                1,
-                "{code}"
-            );
-        }
+        assert!(matches!(domain, TopologyDomain::Geographic(_)), "{code}");
+        assert!(context_scratch.state.is_some(), "{code}");
+        assert!(context_scratch.model.get().is_none(), "{code}");
+        assert!(context_scratch.metric.get().is_none(), "{code}");
+        assert!(context_scratch.source_metric.is_none(), "{code}");
+        let generation = context_scratch.state.as_ref().unwrap().generation;
+        assert_eq!(
+            binary_dispatch_counters::snapshot().runtime_state_snapshots,
+            1,
+            "{code}"
+        );
+
+        let source_metric = metric
+            .geographic_chart_metric()
+            .unwrap()
+            .expect("geographic carry metric");
+        assert_eq!(source_metric.state.generation, generation, "{code}");
+        assert_eq!(
+            binary_dispatch_counters::snapshot().runtime_state_snapshots,
+            1,
+            "{code}"
+        );
     }
 }

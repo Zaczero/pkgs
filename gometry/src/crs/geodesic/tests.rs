@@ -41,63 +41,66 @@ fn geodesic_point_column_distance_rejects_invalid_latitude() {
     assert!(error.to_string().contains("invalid longitude/latitude"));
 }
 
-#[test]
-fn coincident_geodesic_points_have_zero_distance_across_inverse_grades() {
-    for geodesic in [
-        Geodesic::wgs84(),
-        Geodesic::new(6_378_137.0, 0.0),
-        Geodesic::new(6_378_137.0, -0.02),
+#[rstest::rstest]
+#[case::geodesic_wgs84(Geodesic::wgs84())]
+#[case::geodesic_new_6_378_137_0_0_0(Geodesic::new(6_378_137.0, 0.0))]
+#[case::geodesic_new_6_378_137_0_0_02(Geodesic::new(6_378_137.0, -0.02))]
+fn coincident_geodesic_points_have_zero_distance_across_inverse_grades(#[case] geodesic: Geodesic) {
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let frame = GeographicFrame::crs84();
+    for (name, first, second) in [
+        ("ordinary", p(0.0, 1.0), p(0.0, 1.0)),
+        ("signed zero", p(-0.0, 0.0), p(0.0, -0.0)),
+        ("seam", p(180.0, 1.0), p(-180.0, 1.0)),
+        ("period", p(12.5, 1.0), p(372.5, 1.0)),
+        ("north pole", p(-72.0, 90.0), p(123.0, 90.0)),
+        ("south pole", p(-72.0, -90.0), p(123.0, -90.0)),
     ] {
-        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        let frame = GeographicFrame::crs84();
-        for (name, first, second) in [
-            ("ordinary", p(0.0, 1.0), p(0.0, 1.0)),
-            ("signed zero", p(-0.0, 0.0), p(0.0, -0.0)),
-            ("seam", p(180.0, 1.0), p(-180.0, 1.0)),
-            ("period", p(12.5, 1.0), p(372.5, 1.0)),
-            ("north pole", p(-72.0, 90.0), p(123.0, 90.0)),
-            ("south pole", p(-72.0, -90.0), p(123.0, -90.0)),
-        ] {
-            assert_eq!(metric.segment_length(first, second).to_bits(), 0, "{name}");
-            let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
-                &geodesic, first.x, first.y, second.x, second.y,
-            );
-            assert_eq!(distance.to_bits(), 0, "{name}");
-            let sample = metric
-                .chart_point_distance_sample(first, second, 123_456.75, 0.37)
-                .unwrap();
-            assert_eq!(sample.distance.to_bits(), 0, "{name}");
-            assert_eq!(sample.derivative.to_bits(), 0, "{name}");
-            let route = super::route::checked_geodesic_route(
-                &geodesic,
-                frame.to_geodesic_point(first).unwrap(),
-                frame.to_geodesic_point(second).unwrap(),
-            )
+        assert_eq!(metric.segment_length(first, second).to_bits(), 0, "{name}");
+        let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
+            &geodesic, first.x, first.y, second.x, second.y,
+        );
+        assert_eq!(distance.to_bits(), 0, "{name}");
+        let sample = metric
+            .chart_point_distance_sample(first, second, 123_456.75, 0.37)
             .unwrap();
-            assert_eq!(route.length.to_bits(), 0, "{name}");
-        }
-        for second in [p(12.500_001, 1.000_001), p(12.5, 1.000_001), p(12.5, -1.0)] {
-            let first = p(12.5, 1.0);
-            let length = metric.segment_length(first, second);
-            assert!(
-                length > 0.0,
-                "f={}: {first:?} to {second:?}: distance={length:?}",
-                geodesic.f,
-            );
-            let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
-                &geodesic, first.x, first.y, second.x, second.y,
-            );
-            assert!(
-                distance > 0.0,
-                "f={}: {first:?} to {second:?}: joint distance={distance:?}",
-                geodesic.f,
-            );
-        }
+        assert_eq!(sample.distance.to_bits(), 0, "{name}");
+        assert_eq!(sample.derivative.to_bits(), 0, "{name}");
+        let route = super::route::checked_geodesic_route(
+            &geodesic,
+            frame.to_geodesic_point(first).unwrap(),
+            frame.to_geodesic_point(second).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(route.length.to_bits(), 0, "{name}");
+    }
+    for second in [p(12.500_001, 1.000_001), p(12.5, 1.000_001), p(12.5, -1.0)] {
+        let first = p(12.5, 1.0);
+        let length = metric.segment_length(first, second);
+        assert!(
+            length > 0.0,
+            "f={}: {first:?} to {second:?}: distance={length:?}",
+            geodesic.f,
+        );
+        let (distance, ..) = super::ellipsoid_metric::inverse_distance_azimuths(
+            &geodesic, first.x, first.y, second.x, second.y,
+        );
+        assert!(
+            distance > 0.0,
+            "f={}: {first:?} to {second:?}: joint distance={distance:?}",
+            geodesic.f,
+        );
     }
 }
 
-#[test]
-fn chart_point_sample_matches_backend_terminal_gradient() {
+#[rstest::rstest]
+#[case::wgs84("wgs84", Geodesic::wgs84())]
+#[case::sphere("sphere", Geodesic::new(6_378_137.0, 0.0))]
+#[case::prolate("prolate", Geodesic::new(6_378_137.0, -0.02))]
+fn chart_point_sample_matches_backend_terminal_gradient(
+    #[case] model: &'static str,
+    #[case] geodesic: Geodesic,
+) {
     let cases = [
         ("north_east", p(1.0, 5.0)),
         ("north_west", p(-1.0, 5.0)),
@@ -116,39 +119,33 @@ fn chart_point_sample_matches_backend_terminal_gradient() {
         ("near_antipodal", p(179.999, 0.001)),
         ("coincident", p(0.0, 0.0)),
     ];
-    for (model, geodesic) in [
-        ("wgs84", Geodesic::wgs84()),
-        ("sphere", Geodesic::new(6_378_137.0, 0.0)),
-        ("prolate", Geodesic::new(6_378_137.0, -0.02)),
-    ] {
-        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        let target = p(0.0, 0.0);
-        for (name, source) in cases {
-            let (distance, _, terminal_azimuth) =
-                super::ellipsoid_metric::inverse_distance_azimuths(
-                    &geodesic, target.x, target.y, source.x, source.y,
-                );
-            for speed in [0.0, 123_456.75] {
-                let sample = metric
-                    .chart_point_distance_sample(source, target, speed, 0.37)
-                    .expect("admitted point sample");
-                let derivative = if distance == 0.0 || speed == 0.0 {
-                    0.0
-                } else {
-                    speed * (0.37 - terminal_azimuth.to_radians()).cos()
-                };
-                assert!(
-                    (sample.distance - distance).abs()
-                        <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
-                    "{model}/{name}: distance {} != {distance}",
-                    sample.distance,
-                );
-                assert!(
-                    (sample.derivative - derivative).abs() <= 64.0 * f64::EPSILON * speed,
-                    "{model}/{name}: speed {speed} gradient {} != {derivative}",
-                    sample.derivative,
-                );
-            }
+
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let target = p(0.0, 0.0);
+    for (name, source) in cases {
+        let (distance, _, terminal_azimuth) = super::ellipsoid_metric::inverse_distance_azimuths(
+            &geodesic, target.x, target.y, source.x, source.y,
+        );
+        for speed in [0.0, 123_456.75] {
+            let sample = metric
+                .chart_point_distance_sample(source, target, speed, 0.37)
+                .expect("admitted point sample");
+            let derivative = if distance == 0.0 || speed == 0.0 {
+                0.0
+            } else {
+                speed * (0.37 - terminal_azimuth.to_radians()).cos()
+            };
+            assert!(
+                (sample.distance - distance).abs()
+                    <= metric.geodesic_numerical_policy().evaluation_allowance(2.0),
+                "{model}/{name}: distance {} != {distance}",
+                sample.distance,
+            );
+            assert!(
+                (sample.derivative - derivative).abs() <= 64.0 * f64::EPSILON * speed,
+                "{model}/{name}: speed {speed} gradient {} != {derivative}",
+                sample.derivative,
+            );
         }
     }
 }
@@ -205,26 +202,27 @@ fn lower_bound_stays_below_backend_distance() {
     }
 }
 
-#[test]
-fn disabled_lower_bound_is_zero_across_latitudes() {
+#[rstest::rstest]
+#[case::equatorial("equatorial", p(0.0, 0.0), p(1.0, 0.0))]
+#[case::southern_midlatitude("southern_midlatitude", p(-12.0, -45.0), p(78.0, -41.0))]
+#[case::northern_midlatitude("northern_midlatitude", p(-12.0, 45.0), p(78.0, 41.0))]
+#[case::polar("polar", p(0.0, 90.0), p(180.0, 89.0))]
+fn disabled_lower_bound_is_zero_across_latitudes(
+    #[case] name: &'static str,
+    #[case] a: Point,
+    #[case] b: Point,
+) {
     let geodesic = Geodesic::new(6_378_137.0, -0.01);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let cases = [
-        ("equatorial", p(0.0, 0.0), p(1.0, 0.0)),
-        ("southern_midlatitude", p(-12.0, -45.0), p(78.0, -41.0)),
-        ("northern_midlatitude", p(-12.0, 45.0), p(78.0, 41.0)),
-        ("polar", p(0.0, 90.0), p(180.0, 89.0)),
-    ];
-    for (name, a, b) in cases {
-        assert_eq!(
-            metric
-                .point_distance_lower_bound(a, b)
-                .expect("disabled lower-bound query")
-                .to_bits(),
-            0.0_f64.to_bits(),
-            "{name}: disabled lower bound"
-        );
-    }
+
+    assert_eq!(
+        metric
+            .point_distance_lower_bound(a, b)
+            .expect("disabled lower-bound query")
+            .to_bits(),
+        0.0_f64.to_bits(),
+        "{name}: disabled lower bound"
+    );
 }
 
 #[test]

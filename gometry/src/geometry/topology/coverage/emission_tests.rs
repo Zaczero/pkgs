@@ -29,9 +29,11 @@ fn geographic_clean_never_collapses_a_rational_sliver() {
     }
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_clean_attributes_belong_to_the_output_occurrence() {
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn geographic_clean_attributes_belong_to_the_output_occurrence(#[case] reverse: bool) {
     let rows = [
         crate::io::parse_wkt("POLYGON ZM ((0 0 10 7, 1 0 10 7, 1 1 10 7, 0 1 10 7, 0 0 10 7))")
             .expect("first adjacent row"),
@@ -53,29 +55,28 @@ fn geographic_clean_attributes_belong_to_the_output_occurrence() {
         TopologyDomain::Geographic(GeographicFrame::crs84()),
         Some(&metric_access),
     );
-    for reverse in [false, true] {
-        for permute in [false, true] {
-            let mut input = rows.to_vec();
-            if reverse {
-                input = input
-                    .into_iter()
-                    .map(|row| row.reverse())
-                    .collect::<Result<Vec<_>>>()
-                    .expect("reversed rows");
-            }
-            if permute {
-                input.swap(2, 3);
-            }
-            for selected in [&input[..2], &input[..]] {
-                let output =
-                    coverage_clean(selected, 0.0, 0.0, CoverageOverlapRule::MinIndex, &context)
-                        .expect("coverage drawing");
-                for (row, z) in output.iter().take(2).zip([10.0_f64, 20.0]) {
-                    assert_eq!(row.axes(), CoordinateAxes::XYZM);
-                    for point in row.points_vec().expect("output coordinates") {
-                        assert_eq!(point.z().map(f64::to_bits), Some(z.to_bits()));
-                        assert_eq!(point.m().map(f64::to_bits), Some(7.0_f64.to_bits()));
-                    }
+
+    for permute in [false, true] {
+        let mut input = rows.to_vec();
+        if reverse {
+            input = input
+                .into_iter()
+                .map(|row| row.reverse())
+                .collect::<Result<Vec<_>>>()
+                .expect("reversed rows");
+        }
+        if permute {
+            input.swap(2, 3);
+        }
+        for selected in [&input[..2], &input[..]] {
+            let output =
+                coverage_clean(selected, 0.0, 0.0, CoverageOverlapRule::MinIndex, &context)
+                    .expect("coverage drawing");
+            for (row, z) in output.iter().take(2).zip([10.0_f64, 20.0]) {
+                assert_eq!(row.axes(), CoordinateAxes::XYZM);
+                for point in row.points_vec().expect("output coordinates") {
+                    assert_eq!(point.z().map(f64::to_bits), Some(z.to_bits()));
+                    assert_eq!(point.m().map(f64::to_bits), Some(7.0_f64.to_bits()));
                 }
             }
         }
@@ -134,9 +135,11 @@ fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
     }
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_clean_area_rankings_retain_source_ring_anchors() {
+#[case::coverageoverlaprule_maxarea(CoverageOverlapRule::MaxArea)]
+#[case::coverageoverlaprule_minarea(CoverageOverlapRule::MinArea)]
+fn geographic_clean_area_rankings_retain_source_ring_anchors(#[case] rule: CoverageOverlapRule) {
     let rows = [
         crate::io::parse_wkt("POLYGON ((10 60, 10 85, 0 85, 0 60, 10 60))")
             .expect("northern rectangle"),
@@ -148,59 +151,59 @@ fn geographic_clean_area_rankings_retain_source_ring_anchors() {
     let access = || Ok(&metric);
     let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
     let context = SourceArcContext::new(domain, Some(&access));
-    for rule in [CoverageOverlapRule::MaxArea, CoverageOverlapRule::MinArea] {
-        let output =
-            coverage_clean(&rows, 0.0, 0.0, rule, &context).expect("ranked coverage drawing");
-        assert!(
-            crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
-                .expect("ranked coverage validates"),
-        );
-    }
+
+    let output = coverage_clean(&rows, 0.0, 0.0, rule, &context).expect("ranked coverage drawing");
+    assert!(
+        crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+            .expect("ranked coverage validates"),
+    );
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_clean_longest_border_retains_polar_boundary() {
+#[case::north(
+    "north",
+    "POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))",
+    "POLYGON ((10 70, 10 90, 0 90, 0 70, 10 70))"
+)]
+#[case::south(
+    "south",
+    "POLYGON ((0 -60, 0 -80, 10 -80, 10 -60, 0 -60))",
+    "POLYGON ((0 -70, 0 -90, 10 -90, 10 -70, 0 -70))"
+)]
+#[case::north_seam(
+    "north seam",
+    "POLYGON ((-170 60, -170 80, 170 80, 170 60, -170 60))",
+    "POLYGON ((-170 70, -170 90, 170 90, 170 70, -170 70))"
+)]
+fn geographic_clean_longest_border_retains_polar_boundary(
+    #[case] case: &'static str,
+    #[case] first: &'static str,
+    #[case] second: &'static str,
+) {
     let model = crate::crs::metric_model(Some("OGC:CRS84")).expect("CRS84 metric");
     let metric = crate::crs::GeodesicMetric::from_model(&model).expect("ellipsoidal metric");
     let access = || Ok(&metric);
     let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
     let context = SourceArcContext::new(domain, Some(&access));
-    for (case, first, second) in [
-        (
-            "north",
-            "POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))",
-            "POLYGON ((10 70, 10 90, 0 90, 0 70, 10 70))",
-        ),
-        (
-            "south",
-            "POLYGON ((0 -60, 0 -80, 10 -80, 10 -60, 0 -60))",
-            "POLYGON ((0 -70, 0 -90, 10 -90, 10 -70, 0 -70))",
-        ),
-        (
-            "north seam",
-            "POLYGON ((-170 60, -170 80, 170 80, 170 60, -170 60))",
-            "POLYGON ((-170 70, -170 90, 170 90, 170 70, -170 70))",
-        ),
-    ] {
-        let rows = [
-            crate::io::parse_wkt(first).expect("overlapping rectangle"),
-            crate::io::parse_wkt(second).expect("polar rectangle"),
-        ];
-        let output = coverage_clean(
-            &rows,
-            0.0,
-            0.0,
-            CoverageOverlapRule::LongestBorder,
-            &context,
-        )
-        .unwrap_or_else(|error| panic!("{case}: polar ranked coverage has no drawing: {error:?}"));
-        assert!(
-            crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
-                .expect("polar ranked coverage validates"),
-            "{case}",
-        );
-    }
+
+    let rows = [
+        crate::io::parse_wkt(first).expect("overlapping rectangle"),
+        crate::io::parse_wkt(second).expect("polar rectangle"),
+    ];
+    let output = coverage_clean(
+        &rows,
+        0.0,
+        0.0,
+        CoverageOverlapRule::LongestBorder,
+        &context,
+    )
+    .unwrap_or_else(|error| panic!("{case}: polar ranked coverage has no drawing: {error:?}"));
+    assert!(
+        crate::geometry::coverage_is_valid_with_domain(&output, 0.0, domain)
+            .expect("polar ranked coverage validates"),
+        "{case}",
+    );
 }
 
 #[test]

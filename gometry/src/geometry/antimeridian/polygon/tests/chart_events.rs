@@ -1,4 +1,3 @@
-
 #[test]
 fn chart_seam_event_retains_source_records_and_exact_branch() {
     let frame = GeographicFrame::crs84();
@@ -29,34 +28,32 @@ fn chart_seam_event_retains_source_records_and_exact_branch() {
     assert_eq!(event.seam_longitude, Some(180.0));
 }
 
-#[test]
-fn canonical_crs84_split_skips_retained_edge_admission() {
-    let shapes = [
-        line(&[10.0, 11.0, 12.0], &[0.0, 1.0, 0.0]),
-        Shape::Polygon(Polygon::new(
-            closed_ring(&[10.0, 20.0, 20.0, 10.0, 10.0], &[
-                10.0, 10.0, 20.0, 20.0, 10.0,
-            ]),
-            Vec::new(),
-        )),
-    ];
-
-    for shape in shapes {
-        let before = source_admission_counts::snapshot().0;
-        let split = shape
-            .split_antimeridian_in_frame(GeographicFrame::crs84())
-            .unwrap();
-        assert_eq!(
-            source_admission_counts::snapshot().0,
-            before,
-            "a canonical CRS84 identity split must not admit source edges"
-        );
-        assert_eq!(split, shape);
-    }
+#[rstest::rstest]
+#[case::line_10_0_11_0_12_0_0_0_1_0_0_0(line(&[10.0, 11.0, 12.0], &[0.0, 1.0, 0.0]))]
+#[case::shape_polygon_polygon_new_closed_ring_10_0_20_0_84b03528(Shape::Polygon(Polygon::new(
+    closed_ring(&[10.0, 20.0, 20.0, 10.0, 10.0], &[
+        10.0, 10.0, 20.0, 20.0, 10.0,
+    ]),
+    Vec::new(),
+)))]
+fn canonical_crs84_split_skips_retained_edge_admission(#[case] shape: Shape) {
+    let before = source_admission_counts::snapshot().0;
+    let split = shape
+        .split_antimeridian_in_frame(GeographicFrame::crs84())
+        .unwrap();
+    assert_eq!(
+        source_admission_counts::snapshot().0,
+        before,
+        "a canonical CRS84 identity split must not admit source edges"
+    );
+    assert_eq!(split, shape);
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn certified_chart_event_skip_falls_back_at_the_periodic_boundary() {
     const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
@@ -168,7 +165,10 @@ fn chart_line_seam_ordinates_use_the_original_root_arclength() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn segment_transit_ordinates_follow_the_retained_piece_arclength() {
     let source = [
@@ -206,7 +206,10 @@ fn segment_transit_ordinates_follow_the_retained_piece_arclength() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn split_line_preserves_an_authored_full_turn_circle() {
     let source = Shape::LineString(
@@ -249,7 +252,10 @@ fn split_line_preserves_an_authored_full_turn_circle() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn tilted_full_turn_seam_and_witnesses_use_the_original_root() {
     let source = Shape::LineString(
@@ -507,7 +513,10 @@ fn chart_line_eligible_interior_request_propagates_metric_failure() {
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping")]
+#[expect(
+    clippy::float_cmp,
+    reason = "this operation classifies exact antimeridian or pole coordinates before chart mapping"
+)]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn crossing_hole_circle_piece_ordinates_compose_to_the_original_root() {
     let shell = xyzm_ring(&[

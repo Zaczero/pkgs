@@ -1,60 +1,58 @@
 use super::*;
 
-#[test]
-fn major_and_period_edges_keep_native_steps_in_degrees_grads_and_radians() {
-    let frames = [
-        degrees(),
-        angular_frame(std::f64::consts::PI / 200.0),
-        angular_frame(1.0),
-    ];
-    for frame in frames {
-        let axis = frame.longitude();
-        let half = axis.half_period();
-        let small = axis.period() / 1000.0;
-        for delta in [half + small, -half - small, axis.period() - small] {
-            let result = publish_in(
-                frame,
-                &[Point::new_raw_xy(0.0, 10.0), Point::new_raw_xy(delta, 30.0)],
-                false,
-                &[delta],
-            );
-            assert!(result.len() >= 3, "frame={frame:?}, delta={delta}");
-            assert_eq!(result.first().unwrap().x, 0.0);
-            assert_eq!(
-                result.last().unwrap().x,
-                axis.canonicalize(delta).unwrap().get(),
-                "frame={frame:?}, delta={delta}"
-            );
-            let mut recovered = 0.0;
-            for pair in result.array_windows::<2>() {
-                let step = axis.chart_step(pair[0].x, pair[1].x).unwrap();
-                assert!(step.delta(axis).abs() <= half);
-                recovered += step.delta(axis);
-            }
-            assert_eq!(recovered, delta, "frame={frame:?}, delta={delta}");
-        }
-
-        let full_turn = axis.period();
-        let ring = publish_in(
+#[rstest::rstest]
+#[case::degrees(degrees())]
+#[case::angular_frame_std_f64_consts_pi_200_0(angular_frame(std::f64::consts::PI / 200.0))]
+#[case::angular_frame_1_0(angular_frame(1.0))]
+fn major_and_period_edges_keep_native_steps_in_degrees_grads_and_radians(
+    #[case] frame: GeographicFrame,
+) {
+    let axis = frame.longitude();
+    let half = axis.half_period();
+    let small = axis.period() / 1000.0;
+    for delta in [half + small, -half - small, axis.period() - small] {
+        let result = publish_in(
             frame,
-            &[Point::new_raw_xy(-half, 0.0), Point::new_raw_xy(half, 0.0)],
+            &[Point::new_raw_xy(0.0, 10.0), Point::new_raw_xy(delta, 30.0)],
             false,
-            &[full_turn],
+            &[delta],
+        );
+        assert!(result.len() >= 3, "frame={frame:?}, delta={delta}");
+        assert_eq!(result.first().unwrap().x, 0.0);
+        assert_eq!(
+            result.last().unwrap().x,
+            axis.canonicalize(delta).unwrap().get(),
+            "frame={frame:?}, delta={delta}"
         );
         let mut recovered = 0.0;
-        for pair in ring.array_windows::<2>() {
-            recovered += axis.chart_step(pair[0].x, pair[1].x).unwrap().delta(axis);
+        for pair in result.array_windows::<2>() {
+            let step = axis.chart_step(pair[0].x, pair[1].x).unwrap();
+            assert!(step.delta(axis).abs() <= half);
+            recovered += step.delta(axis);
         }
-        assert_eq!(recovered, full_turn, "frame={frame:?}");
-
-        let correctly_spelled_half = publish_in(
-            frame,
-            &[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(-half, 1.0)],
-            false,
-            &[-half],
-        );
-        assert_eq!(correctly_spelled_half.len(), 2, "frame={frame:?}");
+        assert_eq!(recovered, delta, "frame={frame:?}, delta={delta}");
     }
+
+    let full_turn = axis.period();
+    let ring = publish_in(
+        frame,
+        &[Point::new_raw_xy(-half, 0.0), Point::new_raw_xy(half, 0.0)],
+        false,
+        &[full_turn],
+    );
+    let mut recovered = 0.0;
+    for pair in ring.array_windows::<2>() {
+        recovered += axis.chart_step(pair[0].x, pair[1].x).unwrap().delta(axis);
+    }
+    assert_eq!(recovered, full_turn, "frame={frame:?}");
+
+    let correctly_spelled_half = publish_in(
+        frame,
+        &[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(-half, 1.0)],
+        false,
+        &[-half],
+    );
+    assert_eq!(correctly_spelled_half.len(), 2, "frame={frame:?}");
 }
 #[test]
 fn computed_major_period_wrong_half_and_correct_half_edges_keep_their_steps() {
@@ -96,25 +94,26 @@ fn computed_major_period_wrong_half_and_correct_half_edges_keep_their_steps() {
         Point::new_raw_xy(-180.0, 40.0),
     ]);
 }
-#[test]
-fn major_half_and_near_period_edges_use_their_full_intended_steps() {
-    for (end, delta, midpoint) in [
-        (187.0, 187.0, 93.5),
-        (-187.0, -187.0, -93.5),
-        (353.0, 353.0, 176.5),
-        (-353.0, -353.0, -176.5),
-    ] {
-        let result = publish(
-            &[Point::new_raw_xy(0.0, 4.0), Point::new_raw_xy(end, 8.0)],
-            false,
-            &[delta],
-        );
-        assert_eq!(result, [
-            Point::new_raw_xy(0.0, 4.0),
-            Point::new_raw_xy(midpoint, 6.0),
-            Point::new_raw_xy(degrees().longitude().canonicalize(end).unwrap().get(), 8.0,),
-        ]);
-    }
+#[rstest::rstest]
+#[case::end_187_0(187.0, 187.0, 93.5)]
+#[case::negative_end_187_0(-187.0, -187.0, -93.5)]
+#[case::end_353_0(353.0, 353.0, 176.5)]
+#[case::negative_end_353_0(-353.0, -353.0, -176.5)]
+fn major_half_and_near_period_edges_use_their_full_intended_steps(
+    #[case] end: f64,
+    #[case] delta: f64,
+    #[case] midpoint: f64,
+) {
+    let result = publish(
+        &[Point::new_raw_xy(0.0, 4.0), Point::new_raw_xy(end, 8.0)],
+        false,
+        &[delta],
+    );
+    assert_eq!(result, [
+        Point::new_raw_xy(0.0, 4.0),
+        Point::new_raw_xy(midpoint, 6.0),
+        Point::new_raw_xy(degrees().longitude().canonicalize(end).unwrap().get(), 8.0,),
+    ]);
 }
 #[test]
 fn computed_period_edges_include_a_seam_anchored_turn() {
@@ -193,29 +192,30 @@ fn stored_chart_circle_step_subdivides_before_canonical_publication() {
         Point::new_raw_xy(10.0, 0.0),
     ]);
 }
-#[test]
-fn subdivided_full_turn_edges_publish_only_minor_pieces() {
-    for latitude in [-90.0, 10.0, 90.0] {
-        for (start, end, delta) in [
-            (-180.0, 180.0, 360.0),
-            (180.0, -180.0, -360.0),
-            (-180.0, 540.0, 720.0),
-            (180.0, -540.0, -720.0),
-        ] {
-            let points = [
-                Point::new_raw_xy(start, latitude),
-                Point::new_raw_xy(end, latitude),
-            ];
-            let output = publish(&points, false, &[delta]);
-            let mut recovered = 0.0;
-            for [start, end] in output.array_windows::<2>() {
-                let axis = degrees().longitude();
-                let delta = axis.chart_step(start.x, end.x).unwrap().delta(axis);
-                assert!(delta.abs() < 180.0);
-                recovered += delta;
-            }
-            assert_eq!(recovered, delta);
+#[rstest::rstest]
+#[case::negative_latitude_90_0(-90.0)]
+#[case::latitude_10_0(10.0)]
+#[case::latitude_90_0(90.0)]
+fn subdivided_full_turn_edges_publish_only_minor_pieces(#[case] latitude: f64) {
+    for (start, end, delta) in [
+        (-180.0, 180.0, 360.0),
+        (180.0, -180.0, -360.0),
+        (-180.0, 540.0, 720.0),
+        (180.0, -540.0, -720.0),
+    ] {
+        let points = [
+            Point::new_raw_xy(start, latitude),
+            Point::new_raw_xy(end, latitude),
+        ];
+        let output = publish(&points, false, &[delta]);
+        let mut recovered = 0.0;
+        for [start, end] in output.array_windows::<2>() {
+            let axis = degrees().longitude();
+            let delta = axis.chart_step(start.x, end.x).unwrap().delta(axis);
+            assert!(delta.abs() < 180.0);
+            recovered += delta;
         }
+        assert_eq!(recovered, delta);
     }
 }
 #[test]

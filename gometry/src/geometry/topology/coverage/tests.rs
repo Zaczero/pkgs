@@ -303,49 +303,52 @@ fn geographic_face_labels_fill_a_seam_bordered_hole() {
     );
 }
 
-#[test]
+#[rstest::rstest]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn geographic_face_labels_keep_a_polar_hole_distinct_from_the_complement() {
-    for (shell_latitude, hole_latitude) in [(70.0, 89.0), (-70.0, -89.0)] {
-        let holed = crate::io::parse_wkt(&format!(
-            "POLYGON ((0 {shell_latitude}, 90 {shell_latitude}, \
-                 180 {shell_latitude}, 270 {shell_latitude}, 0 {shell_latitude}), \
-                 (0 {hole_latitude}, 90 {hole_latitude}, 180 {hole_latitude}, \
-                 270 {hole_latitude}, 0 {hole_latitude}))",
-        ))
-        .expect("polar shell and hole");
-        let rows = [holed];
-        let (face_rows, assignments) =
-            cleaning_assignments(&rows, 3.0, CoverageOverlapRule::LongestBorder);
-        let selected_gaps: Vec<_> = assignments
-            .gap_assignments
+#[case::shell_latitude_70_0(70.0, 89.0)]
+#[case::negative_shell_latitude_70_0(-70.0, -89.0)]
+fn geographic_face_labels_keep_a_polar_hole_distinct_from_the_complement(
+    #[case] shell_latitude: f64,
+    #[case] hole_latitude: f64,
+) {
+    let holed = crate::io::parse_wkt(&format!(
+        "POLYGON ((0 {shell_latitude}, 90 {shell_latitude}, \
+             180 {shell_latitude}, 270 {shell_latitude}, 0 {shell_latitude}), \
+             (0 {hole_latitude}, 90 {hole_latitude}, 180 {hole_latitude}, \
+             270 {hole_latitude}, 0 {hole_latitude}))",
+    ))
+    .expect("polar shell and hole");
+    let rows = [holed];
+    let (face_rows, assignments) =
+        cleaning_assignments(&rows, 3.0, CoverageOverlapRule::LongestBorder);
+    let selected_gaps: Vec<_> = assignments
+        .gap_assignments
+        .iter()
+        .enumerate()
+        .filter_map(|(face, &assigned)| assigned.then_some(face))
+        .collect();
+    assert_eq!(selected_gaps.len(), 1);
+    let hole_face = *selected_gaps.first().expect("polar hole is selected");
+    assert_eq!(
+        face_rows.first(),
+        Some(&vec![0]),
+        "global face zero is the occupied band, not a reserved exterior",
+    );
+    assert_eq!(assignments.owners.first(), Some(&Some(0)));
+    assert!(face_rows.get(hole_face).is_some_and(Vec::is_empty));
+    assert_eq!(
+        assignments.owners.get(hole_face).copied().flatten(),
+        Some(0)
+    );
+    assert_eq!(
+        face_rows
             .iter()
-            .enumerate()
-            .filter_map(|(face, &assigned)| assigned.then_some(face))
-            .collect();
-        assert_eq!(selected_gaps.len(), 1);
-        let hole_face = *selected_gaps.first().expect("polar hole is selected");
-        assert_eq!(
-            face_rows.first(),
-            Some(&vec![0]),
-            "global face zero is the occupied band, not a reserved exterior",
-        );
-        assert_eq!(assignments.owners.first(), Some(&Some(0)));
-        assert!(face_rows.get(hole_face).is_some_and(Vec::is_empty));
-        assert_eq!(
-            assignments.owners.get(hole_face).copied().flatten(),
-            Some(0)
-        );
-        assert_eq!(
-            face_rows
-                .iter()
-                .zip(&assignments.owners)
-                .filter(|(rows, owner)| rows.is_empty() && owner.is_none())
-                .count(),
-            1,
-            "the complementary face remains unassigned",
-        );
-    }
+            .zip(&assignments.owners)
+            .filter(|(rows, owner)| rows.is_empty() && owner.is_none())
+            .count(),
+        1,
+        "the complementary face remains unassigned",
+    );
 }
 
 #[test]

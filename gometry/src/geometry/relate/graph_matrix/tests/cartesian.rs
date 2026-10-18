@@ -217,22 +217,20 @@ fn two_unique_point_ring_relates_as_linework() {
         forward.transpose().0
     );
 }
-#[test]
-fn strict_convexity_rejects_short_rings_but_permissive_convexity_remains() {
-    let rings = [
-        CoordSeq::try_from_points(&Vec::<Point>::new()).unwrap(),
-        CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0)]).unwrap(),
-        CoordSeq::try_from_points(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ])
-        .unwrap(),
-    ];
-    for ring in rings {
-        assert!(predicates::shell_is_convex(&ring));
-        assert!(!predicates::shell_is_strictly_convex(&ring));
-    }
+#[rstest::rstest]
+#[case::coordseq_try_from_points_vec_point_new_unwrap(CoordSeq::try_from_points(&Vec::<Point>::new()).unwrap())]
+#[case::coordseq_try_from_points_point_new_raw_xy_0_0_0_0_unwrap(CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0)]).unwrap())]
+#[case::coordseq_try_from_points_point_new_raw_xy_0_0_0_27a15b71(
+    CoordSeq::try_from_points(&[
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(1.0, 0.0),
+        Point::new_raw_xy(0.0, 0.0),
+    ])
+    .unwrap()
+)]
+fn strict_convexity_rejects_short_rings_but_permissive_convexity_remains(#[case] ring: CoordSeq) {
+    assert!(predicates::shell_is_convex(&ring));
+    assert!(!predicates::shell_is_strictly_convex(&ring));
 }
 #[test]
 fn exact_areal_relation_transposes_for_curated_pairs() {
@@ -451,49 +449,45 @@ fn collapsed_cartesian_polygon_relation_uses_exact_partition() {
         "F1FF0F212"
     );
 }
-#[test]
-fn prepared_matrix_matches_shape_matrix_for_curated_pairs() {
-    let pairs = [
-        (
-            Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0)),
-            Shape::Polygon(rectangle(2.0, 2.0, 6.0, 6.0)),
-        ),
-        (
-            Shape::Polygon(donut()),
-            Shape::Point(Point::new_raw_xy(5.0, 5.0)),
-        ),
-        (
-            Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(2.0, 2.0),
-                    ])
-                    .unwrap(),
-                )
-                .expect("line coordinate sequence must contain at least two vertices"),
-            ),
-            Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(0.0, 2.0),
-                        Point::new_raw_xy(2.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
-                .expect("line coordinate sequence must contain at least two vertices"),
-            ),
-        ),
-    ];
-    for (left, right) in pairs {
-        let expected = graph_relate_shapes(&left, &right).unwrap();
-        let left = PreparedPlan::new(left);
-        let right = PreparedPlan::new(right);
-        assert_eq!(
-            graph_relate_data(&left, &right).unwrap().text(),
-            expected.text()
-        );
-    }
+#[rstest::rstest]
+#[case::shape_polygon_rectangle_0_0_0_0_4_0_4_0(
+    Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0)),
+    Shape::Polygon(rectangle(2.0, 2.0, 6.0, 6.0))
+)]
+#[case::shape_polygon_donut(Shape::Polygon(donut()), Shape::Point(Point::new_raw_xy(5.0, 5.0)))]
+#[case::shape_linestring_lineseq_try_new_coordseq_try_fr_8440e717(
+    Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0, 2.0),
+            ])
+            .unwrap(),
+        )
+        .expect("line coordinate sequence must contain at least two vertices"),
+    ),
+    Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 2.0),
+                Point::new_raw_xy(2.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .expect("line coordinate sequence must contain at least two vertices"),
+    )
+)]
+fn prepared_matrix_matches_shape_matrix_for_curated_pairs(
+    #[case] left: Shape,
+    #[case] right: Shape,
+) {
+    let expected = graph_relate_shapes(&left, &right).unwrap();
+    let left = PreparedPlan::new(left);
+    let right = PreparedPlan::new(right);
+    assert_eq!(
+        graph_relate_data(&left, &right).unwrap().text(),
+        expected.text()
+    );
 }
 #[test]
 fn empty_graph_keeps_the_nonempty_operand_dimensions() {

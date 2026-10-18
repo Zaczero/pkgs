@@ -78,7 +78,10 @@ fn cosine_circle_fails_open_to_generic_coverage() {
     );
 }
 
-#[expect(clippy::float_cmp, reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding")]
+#[expect(
+    clippy::float_cmp,
+    reason = "certified Voronoi topology classifies exact frame and vertex identity before rounding"
+)]
 fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
     let mut edges: std::collections::BTreeMap<[PointKey; 2], Vec<[XY; 2]>> =
         std::collections::BTreeMap::new();
@@ -218,8 +221,11 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
             .map(|point| exact::ExactPoint::from_xy(point.xy()))
             .collect();
         assert_ne!(
-            exact::incidence::point_in_cycle(&rounded_ring, &exact::ExactPoint::from_xy(site.point.xy()),)
-                .unwrap(),
+            exact::incidence::point_in_cycle(
+                &rounded_ring,
+                &exact::ExactPoint::from_xy(site.point.xy()),
+            )
+            .unwrap(),
             exact::PointInCycle::Outside,
         );
     }

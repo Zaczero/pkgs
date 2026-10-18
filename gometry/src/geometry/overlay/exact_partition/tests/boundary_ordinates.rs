@@ -17,38 +17,38 @@ fn boundary_of_polygonal_support(wkt: &str) -> String {
     crate::io::to_wkt(&boundary).expect("boundary WKT writes")
 }
 
-#[test]
-fn boundary_cells_publish_the_outline_of_occupied_area() {
-    let cases = [
-        (
-            "outward retraced spur",
-            "POLYGON ((0 0,4 0,4 4,2 4,2 6,2 4,0 4,0 0))",
-            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
-        ),
-        (
-            "inward retraced slit",
-            "POLYGON ((0 0,4 0,4 4,2 4,2 2,2 4,0 4,0 0))",
-            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
-        ),
-        (
-            "adjacent multipolygon members",
-            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 0,4 0,4 2,2 2,2 0)))",
-            "LINESTRING (0 0, 4 0, 4 2, 0 2, 0 0)",
-        ),
-        (
-            "overlapping multipolygon members",
-            "MULTIPOLYGON (((0 0,4 0,4 2,0 2,0 0)),((2 0,6 0,6 2,2 2,2 0)))",
-            "LINESTRING (0 0, 6 0, 6 2, 0 2, 0 0)",
-        ),
-        (
-            "external hole",
-            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(5 5,6 5,6 6,5 6,5 5))",
-            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
-        ),
-    ];
-    for (name, input, expected) in cases {
-        assert_eq!(boundary_of_polygonal_support(input), expected, "{name}");
-    }
+#[rstest::rstest]
+#[case::outward_retraced_spur(
+    "outward retraced spur",
+    "POLYGON ((0 0,4 0,4 4,2 4,2 6,2 4,0 4,0 0))",
+    "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)"
+)]
+#[case::inward_retraced_slit(
+    "inward retraced slit",
+    "POLYGON ((0 0,4 0,4 4,2 4,2 2,2 4,0 4,0 0))",
+    "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)"
+)]
+#[case::adjacent_multipolygon_members(
+    "adjacent multipolygon members",
+    "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 0,4 0,4 2,2 2,2 0)))",
+    "LINESTRING (0 0, 4 0, 4 2, 0 2, 0 0)"
+)]
+#[case::overlapping_multipolygon_members(
+    "overlapping multipolygon members",
+    "MULTIPOLYGON (((0 0,4 0,4 2,0 2,0 0)),((2 0,6 0,6 2,2 2,2 0)))",
+    "LINESTRING (0 0, 6 0, 6 2, 0 2, 0 0)"
+)]
+#[case::external_hole(
+    "external hole",
+    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(5 5,6 5,6 6,5 6,5 5))",
+    "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)"
+)]
+fn boundary_cells_publish_the_outline_of_occupied_area(
+    #[case] name: &'static str,
+    #[case] input: &'static str,
+    #[case] expected: &'static str,
+) {
+    assert_eq!(boundary_of_polygonal_support(input), expected, "{name}");
 }
 
 #[test]
@@ -482,41 +482,43 @@ fn coverage_xy_parts_serialize_the_certified_embedding() {
     }
 }
 
-#[test]
-fn line_contraction_preserves_bends_and_protected_points() {
-    for protect in [false, true] {
-        let mut sources = vec![
-            seg(2.0, 0.0, 1.0, 0.0),
-            seg(0.0, 0.0, 1.0, 0.0),
-            seg(2.0, 0.0, 2.0, 1.0),
-        ];
-        if protect {
-            sources.push(seg(1.0, 0.0, 1.0, 0.0));
-        }
-        let case = run(&sources);
-        let partition = case.partition();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let faces = partition.global_faces(&topology, &edges).unwrap();
-        let plan = faces
-            .boundary_plan(
-                &(0..partition.spans.len() as u32).collect::<Vec<_>>(),
-                &topology,
-                &edges,
-                &partition,
-                &[false],
-            )
-            .unwrap();
-        let (_, emitted) = certify_plan(&plan, &partition, &topology, &edges).unwrap();
-        assert_eq!(emitted.len(), if protect { 3 } else { 2 });
-        assert_eq!(plan.source_darts.len(), 3);
-        assert!(emitted.iter().any(|segment| {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn line_contraction_preserves_bends_and_protected_points(#[case] protect: bool) {
+    let mut sources = vec![
+        seg(2.0, 0.0, 1.0, 0.0),
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(2.0, 0.0, 2.0, 1.0),
+    ];
+    if protect {
+        sources.push(seg(1.0, 0.0, 1.0, 0.0));
+    }
+    let case = run(&sources);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    let plan = faces
+        .boundary_plan(
+            &(0..partition.spans.len() as u32).collect::<Vec<_>>(),
+            &topology,
+            &edges,
+            &partition,
+            &[false],
+        )
+        .unwrap();
+    let (_, emitted) = certify_plan(&plan, &partition, &topology, &edges).unwrap();
+    assert_eq!(emitted.len(), if protect { 3 } else { 2 });
+    assert_eq!(plan.source_darts.len(), 3);
+    assert!(
+        emitted.iter().any(|segment| {
             segment.start == XY::new(2.0, 0.0) && segment.end == XY::new(2.0, 1.0)
+        })
+    );
+    if !protect {
+        assert!(emitted.iter().any(|segment| {
+            segment.start == XY::new(2.0, 0.0) && segment.end == XY::new(0.0, 0.0)
         }));
-        if !protect {
-            assert!(emitted.iter().any(|segment| {
-                segment.start == XY::new(2.0, 0.0) && segment.end == XY::new(0.0, 0.0)
-            }));
-        }
     }
 }
 
@@ -552,196 +554,201 @@ fn line_contraction_ignores_omitted_branch_at_the_join() {
     );
 }
 
-#[test]
-fn boundary_contraction_preserves_explicit_points_and_source_paths() {
-    for (name, protect, attach_line) in [
-        ("unprotected", false, false),
-        ("explicit point", true, false),
-        ("line junction", false, true),
-    ] {
-        let mut sources = vec![
-            seg(1.0, 0.0, 2.0, 0.0),
-            seg(2.0, 0.0, 2.0, 2.0),
-            seg(2.0, 2.0, 0.0, 2.0),
-            seg(0.0, 2.0, 0.0, 0.0),
-            seg(0.0, 0.0, 1.0, 0.0),
-        ];
-        if protect {
-            sources.push(seg(1.0, 0.0, 1.0, 0.0));
-        }
-        if attach_line {
-            sources.push(seg(1.0, 0.0, 1.0, -1.0));
-        }
-        let case = run(&sources);
-        let partition = case.partition();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let faces = partition.global_faces(&topology, &edges).unwrap();
-        assert_eq!(faces.count, 2);
-        let lines = if attach_line {
-            let endpoint = partition.stored_node(XY::new(1.0, -1.0)).unwrap();
-            vec![
-                partition
-                    .spans
-                    .iter()
-                    .position(|span| span.start == endpoint || span.end == endpoint)
-                    .unwrap() as u32,
-            ]
-        } else {
-            Vec::new()
-        };
-        let plan = faces
-            .boundary_plan(&lines, &topology, &edges, &partition, &[false, true])
-            .unwrap();
-        assert_eq!(plan.walks.len(), 1);
-        assert_eq!(plan.source_darts.len(), if attach_line { 6 } else { 5 });
-        let (_, emitted) = certify_plan(&plan, &partition, &topology, &edges).unwrap();
-        assert_eq!(
-            plan.walks[0].len(),
-            if protect || attach_line { 5 } else { 4 },
-            "{name}"
-        );
-        assert_eq!(
-            emitted.len(),
-            plan.walks[0].len() + usize::from(attach_line)
-        );
-        assert_eq!(
-            emitted
+#[rstest::rstest]
+#[case::unprotected("unprotected", false, false)]
+#[case::explicit_point("explicit point", true, false)]
+#[case::line_junction("line junction", false, true)]
+fn boundary_contraction_preserves_explicit_points_and_source_paths(
+    #[case] name: &'static str,
+    #[case] protect: bool,
+    #[case] attach_line: bool,
+) {
+    let mut sources = vec![
+        seg(1.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 2.0, 2.0),
+        seg(2.0, 2.0, 0.0, 2.0),
+        seg(0.0, 2.0, 0.0, 0.0),
+        seg(0.0, 0.0, 1.0, 0.0),
+    ];
+    if protect {
+        sources.push(seg(1.0, 0.0, 1.0, 0.0));
+    }
+    if attach_line {
+        sources.push(seg(1.0, 0.0, 1.0, -1.0));
+    }
+    let case = run(&sources);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    assert_eq!(faces.count, 2);
+    let lines = if attach_line {
+        let endpoint = partition.stored_node(XY::new(1.0, -1.0)).unwrap();
+        vec![
+            partition
+                .spans
                 .iter()
-                .any(|segment| segment.start == XY::new(1.0, 0.0)),
-            protect || attach_line,
-        );
-        if !protect && !attach_line {
-            assert!(emitted.iter().any(|segment| {
-                segment.start == XY::new(0.0, 0.0) && segment.end == XY::new(2.0, 0.0)
-            }));
-        }
+                .position(|span| span.start == endpoint || span.end == endpoint)
+                .unwrap() as u32,
+        ]
+    } else {
+        Vec::new()
+    };
+    let plan = faces
+        .boundary_plan(&lines, &topology, &edges, &partition, &[false, true])
+        .unwrap();
+    assert_eq!(plan.walks.len(), 1);
+    assert_eq!(plan.source_darts.len(), if attach_line { 6 } else { 5 });
+    let (_, emitted) = certify_plan(&plan, &partition, &topology, &edges).unwrap();
+    assert_eq!(
+        plan.walks[0].len(),
+        if protect || attach_line { 5 } else { 4 },
+        "{name}"
+    );
+    assert_eq!(
+        emitted.len(),
+        plan.walks[0].len().wrapping_add(usize::from(attach_line))
+    );
+    assert_eq!(
+        emitted
+            .iter()
+            .any(|segment| segment.start == XY::new(1.0, 0.0)),
+        protect || attach_line,
+    );
+    if !protect && !attach_line {
+        assert!(emitted.iter().any(|segment| {
+            segment.start == XY::new(0.0, 0.0) && segment.end == XY::new(2.0, 0.0)
+        }));
     }
 }
 
-#[test]
-fn square_boundary_contraction_preserves_ordered_chain_and_point() {
-    for (name, explicit_point, expected_sources, expected_groups, expected_xs, expected_ys) in [
-        (
-            "four-dart square bottom contracts once",
-            None,
-            vec![
-                ((0.0, 0.0), (1.0, 0.0)),
-                ((1.0, 0.0), (2.0, 0.0)),
-                ((2.0, 0.0), (3.0, 0.0)),
-                ((3.0, 0.0), (4.0, 0.0)),
-                ((4.0, 0.0), (4.0, 2.0)),
-                ((4.0, 2.0), (0.0, 2.0)),
-                ((0.0, 2.0), (0.0, 0.0)),
-            ],
-            vec![
-                (0..4, [1, 0]),
-                (4..5, [1, 0]),
-                (5..6, [1, 0]),
-                (6..7, [1, 0]),
-            ],
-            vec![0.0, 4.0, 4.0, 0.0, 0.0],
-            vec![0.0, 0.0, 2.0, 2.0, 0.0],
-        ),
-        (
-            "explicit point at the square bottom midpoint splits the chord",
-            Some(XY::new(2.0, 0.0)),
-            vec![
-                ((0.0, 0.0), (1.0, 0.0)),
-                ((1.0, 0.0), (2.0, 0.0)),
-                ((2.0, 0.0), (3.0, 0.0)),
-                ((3.0, 0.0), (4.0, 0.0)),
-                ((4.0, 0.0), (4.0, 2.0)),
-                ((4.0, 2.0), (0.0, 2.0)),
-                ((0.0, 2.0), (0.0, 0.0)),
-            ],
-            vec![
-                (0..2, [1, 0]),
-                (2..4, [1, 0]),
-                (4..5, [1, 0]),
-                (5..6, [1, 0]),
-                (6..7, [1, 0]),
-            ],
-            vec![0.0, 2.0, 4.0, 4.0, 0.0, 0.0],
-            vec![0.0, 0.0, 0.0, 2.0, 2.0, 0.0],
-        ),
-    ] {
-        let case = square_boundary_case(explicit_point);
-        let mut budget = ExpansionBudget::new("union", "square boundary regression");
-        let partition = partition_unique_segments::<true>(
-            &case.unique,
-            &case.provenance,
-            &case.isolated,
-            &mut budget,
-        )
-        .unwrap();
-        assert_eq!(budget.used(), 0, "{name}");
-        assert!(
-            matches!(&partition.kept_nodes, KeptNodes::Selected),
-            "{name}"
-        );
-        if let Some(point) = explicit_point {
-            let point = partition
-                .stored_node(point)
-                .expect("explicit point is stored");
-            assert!(partition.point_nodes.contains(&point), "{name}");
-        }
-        let (topology, edges) = partition.local_topology().unwrap();
-        let global = partition.global_faces(&topology, &edges).unwrap();
-        assert_eq!(global.count, 2, "{name}");
-        let inner_face = edges
-            .iter()
-            .enumerate()
-            .find_map(|(slot, _)| {
-                let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
-                let target = partition.nearest_xy(NodeId(topology.targets[slot]));
-                (origin == XY::new(0.0, 0.0) && target == XY::new(1.0, 0.0))
-                    .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
-            })
-            .expect("square bottom has a directed source dart");
-        assert_ne!(inner_face, 0, "{name}");
-        let mut occupied = vec![false; global.count as usize];
-        occupied[inner_face] = true;
-        let plan = global
-            .boundary_plan(&[], &topology, &edges, &partition, &occupied)
-            .unwrap();
-
-        assert_eq!(plan.face_quotient, [0, 1], "{name}");
-        assert_eq!(plan.walks.len(), 1, "{name}");
-        assert!(plan.lines.is_empty(), "{name}");
-        assert!(plan.points.is_empty(), "{name}");
-        assert_eq!(plan.source_darts.len(), 7, "{name}");
-        assert_eq!(
-            forward_source_darts(&plan, &partition, &topology),
-            expected_sources,
-            "{name}: ordered source darts"
-        );
-        assert_eq!(
-            plan.walks[0]
-                .iter()
-                .map(|chord| (chord.sources.clone(), chord.sides))
-                .collect::<Vec<_>>(),
-            expected_groups,
-            "{name}: chord source ranges and side labels"
-        );
-
-        let (points, lines, polygons) = plan
-            .emit_xy_parts(&partition, &topology, &edges, "union")
-            .unwrap();
-        assert!(points.is_empty(), "{name}");
-        assert!(lines.is_empty(), "{name}");
-        assert_eq!(polygons.len(), 1, "{name}");
-        assert!(polygons[0].holes.is_empty(), "{name}");
-        assert_eq!(
-            polygons[0].shell.coords().xs(),
-            expected_xs,
-            "{name}: emitted x-coordinate buffer"
-        );
-        assert_eq!(
-            polygons[0].shell.coords().ys(),
-            expected_ys,
-            "{name}: emitted y-coordinate buffer"
-        );
+#[rstest::rstest]
+#[case::four_dart_square_bottom_contracts_once(
+    "four-dart square bottom contracts once",
+    None,
+    vec![
+        ((0.0, 0.0), (1.0, 0.0)),
+        ((1.0, 0.0), (2.0, 0.0)),
+        ((2.0, 0.0), (3.0, 0.0)),
+        ((3.0, 0.0), (4.0, 0.0)),
+        ((4.0, 0.0), (4.0, 2.0)),
+        ((4.0, 2.0), (0.0, 2.0)),
+        ((0.0, 2.0), (0.0, 0.0)),
+    ],
+    vec![
+        (0..4, [1, 0]),
+        (4..5, [1, 0]),
+        (5..6, [1, 0]),
+        (6..7, [1, 0]),
+    ],
+    vec![0.0, 4.0, 4.0, 0.0, 0.0],
+    vec![0.0, 0.0, 2.0, 2.0, 0.0]
+)]
+#[case::explicit_point_at_the_square_bottom_midpoint_splits_the_chord(
+    "explicit point at the square bottom midpoint splits the chord",
+    Some(XY::new(2.0, 0.0)),
+    vec![
+        ((0.0, 0.0), (1.0, 0.0)),
+        ((1.0, 0.0), (2.0, 0.0)),
+        ((2.0, 0.0), (3.0, 0.0)),
+        ((3.0, 0.0), (4.0, 0.0)),
+        ((4.0, 0.0), (4.0, 2.0)),
+        ((4.0, 2.0), (0.0, 2.0)),
+        ((0.0, 2.0), (0.0, 0.0)),
+    ],
+    vec![
+        (0..2, [1, 0]),
+        (2..4, [1, 0]),
+        (4..5, [1, 0]),
+        (5..6, [1, 0]),
+        (6..7, [1, 0]),
+    ],
+    vec![0.0, 2.0, 4.0, 4.0, 0.0, 0.0],
+    vec![0.0, 0.0, 0.0, 2.0, 2.0, 0.0]
+)]
+fn square_boundary_contraction_preserves_ordered_chain_and_point(
+    #[case] name: &'static str,
+    #[case] explicit_point: Option<XY>,
+    #[case] expected_sources: Vec<((f64, f64), (f64, f64))>,
+    #[case] expected_groups: Vec<(std::ops::Range<usize>, [u32; 2])>,
+    #[case] expected_xs: Vec<f64>,
+    #[case] expected_ys: Vec<f64>,
+) {
+    let case = square_boundary_case(explicit_point);
+    let mut budget = ExpansionBudget::new("union", "square boundary regression");
+    let partition = partition_unique_segments::<true>(
+        &case.unique,
+        &case.provenance,
+        &case.isolated,
+        &mut budget,
+    )
+    .unwrap();
+    assert_eq!(budget.used(), 0, "{name}");
+    assert!(
+        matches!(&partition.kept_nodes, KeptNodes::Selected),
+        "{name}"
+    );
+    if let Some(point) = explicit_point {
+        let point = partition
+            .stored_node(point)
+            .expect("explicit point is stored");
+        assert!(partition.point_nodes.contains(&point), "{name}");
     }
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    assert_eq!(global.count, 2, "{name}");
+    let inner_face = edges
+        .iter()
+        .enumerate()
+        .find_map(|(slot, _)| {
+            let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
+            let target = partition.nearest_xy(NodeId(topology.targets[slot]));
+            (origin == XY::new(0.0, 0.0) && target == XY::new(1.0, 0.0))
+                .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
+        })
+        .expect("square bottom has a directed source dart");
+    assert_ne!(inner_face, 0, "{name}");
+    let mut occupied = vec![false; global.count as usize];
+    occupied[inner_face] = true;
+    let plan = global
+        .boundary_plan(&[], &topology, &edges, &partition, &occupied)
+        .unwrap();
+
+    assert_eq!(plan.face_quotient, [0, 1], "{name}");
+    assert_eq!(plan.walks.len(), 1, "{name}");
+    assert!(plan.lines.is_empty(), "{name}");
+    assert!(plan.points.is_empty(), "{name}");
+    assert_eq!(plan.source_darts.len(), 7, "{name}");
+    assert_eq!(
+        forward_source_darts(&plan, &partition, &topology),
+        expected_sources,
+        "{name}: ordered source darts"
+    );
+    assert_eq!(
+        plan.walks[0]
+            .iter()
+            .map(|chord| (chord.sources.clone(), chord.sides))
+            .collect::<Vec<_>>(),
+        expected_groups,
+        "{name}: chord source ranges and side labels"
+    );
+
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(&partition, &topology, &edges, "union")
+        .unwrap();
+    assert!(points.is_empty(), "{name}");
+    assert!(lines.is_empty(), "{name}");
+    assert_eq!(polygons.len(), 1, "{name}");
+    assert!(polygons[0].holes.is_empty(), "{name}");
+    assert_eq!(
+        polygons[0].shell.coords().xs(),
+        expected_xs,
+        "{name}: emitted x-coordinate buffer"
+    );
+    assert_eq!(
+        polygons[0].shell.coords().ys(),
+        expected_ys,
+        "{name}: emitted y-coordinate buffer"
+    );
 }
 
 #[test]

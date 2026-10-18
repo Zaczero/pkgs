@@ -770,36 +770,35 @@ mod bound_tests {
         }
     }
 
-    #[test]
-    fn downward_bound_weakening_stays_small_for_normal_boxes() {
-        let cases: [(Aabb3d, Aabb3d); 3] = [
-            ([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
-                3.0, 4.0, 5.0, 4.0, 5.0, 6.0,
-            ]),
-            ([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
-                10.0, 20.0, 30.0, 11.0, 21.0, 31.0,
-            ]),
-            ([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
-                3.0, 0.0, 0.0, 4.0, 1.0, 1.0,
-            ]),
-        ];
-        for (a, b) in cases {
-            let old_gaps = (
-                (a[0] - b[3]).max(b[0] - a[3]).max(0.0),
-                (a[1] - b[4]).max(b[1] - a[4]).max(0.0),
-                (a[2] - b[5]).max(b[2] - a[5]).max(0.0),
-            );
-            let old = (old_gaps.0 * old_gaps.0 + old_gaps.1 * old_gaps.1 + old_gaps.2 * old_gaps.2)
-                .sqrt()
-                .next_down()
-                .max(0.0);
-            let new = aabb3_distance_lower_bound(a, b);
-            assert!(new > 0.0);
-            assert!(
-                new <= old,
-                "new bound should not exceed the old normal-range bound: new={new:?} old={old:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::a_0_0_0_0_0_0_1_0_1_0_1_0([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
+        3.0, 4.0, 5.0, 4.0, 5.0, 6.0,
+    ])]
+    #[case::a_0_0_0_0_0_0_1_0_1_0_1_0_a2e5a62d([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
+        10.0, 20.0, 30.0, 11.0, 21.0, 31.0,
+    ])]
+    #[case::a_0_0_0_0_0_0_1_0_1_0_1_0_9be2470b([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [
+        3.0, 0.0, 0.0, 4.0, 1.0, 1.0,
+    ])]
+    fn downward_bound_weakening_stays_small_for_normal_boxes(
+        #[case] a: [f64; 6],
+        #[case] b: [f64; 6],
+    ) {
+        let old_gaps = (
+            (a[0] - b[3]).max(b[0] - a[3]).max(0.0),
+            (a[1] - b[4]).max(b[1] - a[4]).max(0.0),
+            (a[2] - b[5]).max(b[2] - a[5]).max(0.0),
+        );
+        let old = (old_gaps.0 * old_gaps.0 + old_gaps.1 * old_gaps.1 + old_gaps.2 * old_gaps.2)
+            .sqrt()
+            .next_down()
+            .max(0.0);
+        let new = aabb3_distance_lower_bound(a, b);
+        assert!(new > 0.0);
+        assert!(
+            new <= old,
+            "new bound should not exceed the old normal-range bound: new={new:?} old={old:?}"
+        );
     }
 
     #[test]

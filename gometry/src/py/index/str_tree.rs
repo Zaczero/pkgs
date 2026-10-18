@@ -794,45 +794,49 @@ mod tests {
         ids
     }
 
-    #[test]
-    fn brute_force_parity_across_sizes_and_tombstones() {
-        for count in [0, 1, 15, 16, 17, 100, 1000] {
-            let entries = fixture(count);
-            let tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
-            let removed: Vec<usize> = (0..count).filter(|idx| idx % 7 == 3).collect();
-            let live =
-                LiveHandles::from_sorted((0..count).filter(|handle| !removed.contains(handle)));
+    #[rstest::rstest]
+    #[case::count_0(0)]
+    #[case::count_1(1)]
+    #[case::count_15(15)]
+    #[case::count_16(16)]
+    #[case::count_17(17)]
+    #[case::count_100(100)]
+    #[case::count_1000(1000)]
+    fn brute_force_parity_across_sizes_and_tombstones(#[case] count: usize) {
+        let entries = fixture(count);
+        let tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
+        let removed: Vec<usize> = (0..count).filter(|idx| idx % 7 == 3).collect();
+        let live = LiveHandles::from_sorted((0..count).filter(|handle| !removed.contains(handle)));
+        assert_eq!(
+            sorted(tree.live_entries(&live).map(|entry| entry.idx).collect()),
+            brute(&entries, &removed, |_| true)
+        );
+        for query in [
+            AABB::from_corners([50.0, 40.0], [180.0, 200.0]),
+            AABB::from_corners([0.0, 0.0], [311.0, 257.0]),
+            AABB::from_corners([400.0, 400.0], [500.0, 500.0]),
+            AABB::from_point([73.0, 131.0]),
+        ] {
+            let mut hits = Vec::new();
+            tree.append_intersecting(&live, &query, &mut hits);
             assert_eq!(
-                sorted(tree.live_entries(&live).map(|entry| entry.idx).collect()),
-                brute(&entries, &removed, |_| true)
+                sorted(hits),
+                brute(&entries, &removed, |entry| entry
+                    .envelope
+                    .intersects(&query))
             );
-            for query in [
-                AABB::from_corners([50.0, 40.0], [180.0, 200.0]),
-                AABB::from_corners([0.0, 0.0], [311.0, 257.0]),
-                AABB::from_corners([400.0, 400.0], [500.0, 500.0]),
-                AABB::from_point([73.0, 131.0]),
-            ] {
-                let mut hits = Vec::new();
-                tree.append_intersecting(&live, &query, &mut hits);
-                assert_eq!(
-                    sorted(hits),
-                    brute(&entries, &removed, |entry| entry
-                        .envelope
-                        .intersects(&query))
-                );
-            }
-            let point = [120.0, 90.0];
-            for radius_2 in [0.0, 100.0, 10_000.0] {
-                let mut near = Vec::new();
-                tree.append_within_distance_2(&live, point, radius_2, &mut near);
-                assert_eq!(
-                    sorted(near),
-                    brute(&entries, &removed, |entry| entry
-                        .envelope
-                        .distance_2(&point)
-                        <= radius_2)
-                );
-            }
+        }
+        let point = [120.0, 90.0];
+        for radius_2 in [0.0, 100.0, 10_000.0] {
+            let mut near = Vec::new();
+            tree.append_within_distance_2(&live, point, radius_2, &mut near);
+            assert_eq!(
+                sorted(near),
+                brute(&entries, &removed, |entry| entry
+                    .envelope
+                    .distance_2(&point)
+                    <= radius_2)
+            );
         }
     }
 

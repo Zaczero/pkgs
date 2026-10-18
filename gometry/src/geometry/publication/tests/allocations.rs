@@ -24,40 +24,44 @@ fn scalar_drawing_moves_the_owned_coordinate_buffers() {
     assert!(line.points().eq(points));
 }
 
-#[test]
-fn accepted_endpoint_publication_preserves_rows_and_both_point_columns() {
+#[rstest::rstest]
+#[case::count_1(1)]
+#[case::count_8(8)]
+#[case::count_33(33)]
+fn accepted_endpoint_publication_preserves_rows_and_both_point_columns(#[case] count: usize) {
     let frame = Frame::Crs(crs_arc_static("EPSG:4326"));
-    for count in [1, 8, 33] {
-        let accepted: Vec<_> = (0..count)
-            .map(|index| {
-                let step = index as f64 * 0.000_001;
-                [
-                    Point::new_raw_xy(1.25 + step, 2.5),
-                    Point::new_raw_xy(3.75 + step, 4.5),
-                ]
-            })
-            .collect();
-        {
-            let mut rows = PublicationRows::with_producer_drawing_capacity(count);
-            for (row, pair) in accepted.iter().enumerate() {
-                let line = Shape::LineString(
-                    LineSeq::try_new(CoordSeq::try_from_points(pair).unwrap()).unwrap(),
-                );
-                let pending = geographic_line_pending_row(line, row, "shortest_line").unwrap();
-                rows.try_push(GeometryOutput::Pending(pending)).unwrap();
-            }
-            let output = rows.finish(frame.clone()).unwrap();
-            assert_eq!(output.len(), count);
-            for (row, expected) in accepted.iter().enumerate() {
-                let actual = output.storage().row(row).line_coords().unwrap();
-                assert!(actual.iter_coords().eq(expected.iter().copied()));
-            }
+
+    let accepted: Vec<_> = (0..count)
+        .map(|index| {
+            let step = index as f64 * 0.000_001;
+            [
+                Point::new_raw_xy(1.25 + step, 2.5),
+                Point::new_raw_xy(3.75 + step, 4.5),
+            ]
+        })
+        .collect();
+    {
+        let mut rows = PublicationRows::with_producer_drawing_capacity(count);
+        for (row, pair) in accepted.iter().enumerate() {
+            let line = Shape::LineString(
+                LineSeq::try_new(CoordSeq::try_from_points(pair).unwrap()).unwrap(),
+            );
+            let pending = geographic_line_pending_row(line, row, "shortest_line").unwrap();
+            rows.try_push(GeometryOutput::Pending(pending)).unwrap();
         }
-        {
-            let pairs = accepted
-                .iter()
-                .map(|pair| Ok((Some((*pair).into()), pair[0].axes)));
-            let (left, right) = crate::nearest_point_columns_masked(
+        let output = rows.finish(frame.clone()).unwrap();
+        assert_eq!(output.len(), count);
+        for (row, expected) in accepted.iter().enumerate() {
+            let actual = output.storage().row(row).line_coords().unwrap();
+            assert!(actual.iter_coords().eq(expected.iter().copied()));
+        }
+    }
+    {
+        let pairs = accepted
+            .iter()
+            .map(|pair| Ok((Some((*pair).into()), pair[0].axes)));
+        let (left, right) =
+            crate::nearest_point_columns_masked(
                 pairs,
                 None,
                 crate::geometry::TopologyDomain::Geographic(
@@ -65,16 +69,15 @@ fn accepted_endpoint_publication_preserves_rows_and_both_point_columns() {
                 ),
             )
             .unwrap();
-            let (left, right) = (
-                left.finish(frame.clone()).unwrap(),
-                right.finish(frame.clone()).unwrap(),
-            );
-            assert_eq!(left.len(), count);
-            assert_eq!(right.len(), count);
-            for (row, expected) in accepted.iter().enumerate() {
-                assert_eq!(left.storage().row(row).point(), Some(expected[0]));
-                assert_eq!(right.storage().row(row).point(), Some(expected[1]));
-            }
+        let (left, right) = (
+            left.finish(frame.clone()).unwrap(),
+            right.finish(frame).unwrap(),
+        );
+        assert_eq!(left.len(), count);
+        assert_eq!(right.len(), count);
+        for (row, expected) in accepted.iter().enumerate() {
+            assert_eq!(left.storage().row(row).point(), Some(expected[0]));
+            assert_eq!(right.storage().row(row).point(), Some(expected[1]));
         }
     }
 }

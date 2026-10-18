@@ -128,17 +128,18 @@ mod select_soundness_tests {
 
     /// Under-yielding with an inflated `size_hint` still returns the true
     /// yield count. The hint only sizes the initial reservation.
-    #[test]
-    fn select_lying_under_yield_returns_true_length() {
+    #[rstest::rstest]
+    #[case::claimed_3(3)]
+    #[case::usize_max(usize::MAX)]
+    fn select_lying_under_yield_returns_true_length(#[case] claimed: usize) {
         let seq = sample_seq();
-        for claimed in [3, usize::MAX] {
-            let out = seq
-                .select(LyingIter::under(vec![0, 2], claimed))
-                .expect("selection");
-            assert_eq!(out.len(), 2);
-            assert_eq!(out.xs(), &[0.0, 2.0]);
-            assert_eq!(out.ys(), &[10.0, 12.0]);
-        }
+
+        let out = seq
+            .select(LyingIter::under(vec![0, 2], claimed))
+            .expect("selection");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.xs(), &[0.0, 2.0]);
+        assert_eq!(out.ys(), &[10.0, 12.0]);
     }
 
     /// Over-yielding with a deflated `size_hint` must not write past the

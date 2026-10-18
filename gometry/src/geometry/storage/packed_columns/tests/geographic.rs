@@ -69,29 +69,30 @@ fn faithful_geographic_screen_keeps_alias_rows_and_declines_mixed_charts() {
     assert!(!faithful(&invalid));
 }
 
-#[test]
-fn ordinary_geographic_screen_declines_pole_linework_but_keeps_point_rows() {
+#[rstest::rstest]
+#[case::pole_90_0_f64(90.0_f64)]
+#[case::negative_pole_90_0(-90.0)]
+fn ordinary_geographic_screen_declines_pole_linework_but_keeps_point_rows(#[case] pole: f64) {
     let frame = GeographicFrame::crs84();
-    for pole in [90.0_f64, -90.0] {
-        let line = |latitude| {
-            geographic_array(vec![Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_vecs(vec![0.0, 20.0, 10.0], vec![latitude; 3], None, None)
-                        .unwrap(),
-                )
-                .unwrap(),
-            )])
-        };
-        assert!(!ordinary_geographic(&line(pole), frame));
-        assert!(ordinary_geographic(
-            &line(90.0_f64.next_down().copysign(pole)),
-            frame
-        ));
-        assert!(ordinary_geographic(
-            &geographic_array(vec![Shape::Point(Point::new_raw_xy(0.0, pole))]),
-            frame
-        ));
-    }
+
+    let line = |latitude| {
+        geographic_array(vec![Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 20.0, 10.0], vec![latitude; 3], None, None)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )])
+    };
+    assert!(!ordinary_geographic(&line(pole), frame));
+    assert!(ordinary_geographic(
+        &line(90.0_f64.next_down().copysign(pole)),
+        frame
+    ));
+    assert!(ordinary_geographic(
+        &geographic_array(vec![Shape::Point(Point::new_raw_xy(0.0, pole))]),
+        frame
+    ));
 }
 
 #[test]

@@ -564,12 +564,11 @@ fn aggregate_support_bounds_use_at_most_one_handle_allocation() {
     );
 }
 
-#[test]
-fn scalar_and_owned_aggregate_bounds_keep_seam_band_pole_and_shared_support() {
-    let frame = native_frames()[0];
-    let seam = line(&[170.0, -170.0], &[0.0, 10.0]);
-    let shared = Shape::geometry_collection(vec![seam.clone(), seam.clone()]).unwrap();
-    let band = polygon(
+#[rstest::rstest]
+#[case::seam("seam", line(&[170.0, -170.0], &[0.0, 10.0]), crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0))]
+#[case::band(
+    "band",
+    polygon(
         &[
             (-180.0, -45.0),
             (-90.0, -45.0),
@@ -583,44 +582,45 @@ fn scalar_and_owned_aggregate_bounds_keep_seam_band_pole_and_shared_support() {
             (-180.0, 45.0),
         ],
         Vec::new(),
+    ),
+    crate::geometry::Bounds::new_raw(-180.0, -45.0, 180.0, 45.0)
+)]
+#[case::pole(
+    "pole",
+    {
+        let frame = native_frames()[0];
+        cap_polygon(frame, 45.0)
+    },
+    crate::geometry::Bounds::new_raw(-180.0, 45.0, 180.0, 90.0)
+)]
+#[case::shared(
+    "shared",
+    {
+        let seam = line(&[170.0, -170.0], &[0.0, 10.0]);
+        Shape::geometry_collection(vec![seam.clone(), seam]).unwrap()
+    },
+    crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0)
+)]
+fn scalar_and_owned_aggregate_bounds_keep_seam_band_pole_and_shared_support(
+    #[case] name: &str,
+    #[case] shape: Shape,
+    #[case] expected: crate::geometry::Bounds,
+) {
+    let frame = native_frames()[0];
+    assert_eq!(
+        GeographicSupportEnvelope::try_from_shape(frame, &shape)
+            .ok()
+            .and_then(|support| support.bounds(frame)),
+        Some(expected),
+        "{name} scalar bounds"
     );
-    for (name, shape, expected) in [
-        (
-            "seam",
-            seam,
-            crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0),
-        ),
-        (
-            "band",
-            band,
-            crate::geometry::Bounds::new_raw(-180.0, -45.0, 180.0, 45.0),
-        ),
-        (
-            "pole",
-            cap_polygon(frame, 45.0),
-            crate::geometry::Bounds::new_raw(-180.0, 45.0, 180.0, 90.0),
-        ),
-        (
-            "shared",
-            shared,
-            crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0),
-        ),
-    ] {
-        assert_eq!(
-            GeographicSupportEnvelope::try_from_shape(frame, &shape)
-                .ok()
-                .and_then(|support| support.bounds(frame)),
-            Some(expected),
-            "{name} scalar bounds"
-        );
-        assert_eq!(
-            GeographicSupportEnvelope::try_from_shapes(frame, &[shape])
-                .ok()
-                .and_then(|support| support.bounds(frame)),
-            Some(expected),
-            "{name} owned aggregate bounds"
-        );
-    }
+    assert_eq!(
+        GeographicSupportEnvelope::try_from_shapes(frame, &[shape])
+            .ok()
+            .and_then(|support| support.bounds(frame)),
+        Some(expected),
+        "{name} owned aggregate bounds"
+    );
 }
 
 #[test]
@@ -641,29 +641,30 @@ fn geographic_support_admission_preserves_invalid_coordinate_diagnostics() {
     ));
 }
 
-#[test]
-fn shared_collection_support_preserves_its_periodic_hull() {
+#[rstest::rstest]
+#[case::depth_16_usize(16_usize)]
+#[case::depth_128(128)]
+fn shared_collection_support_preserves_its_periodic_hull(#[case] depth: usize) {
     let frame = native_frames()[0];
     let base = line(&[170.0, -170.0], &[0.0, 1.0]);
     let expected = GeographicSupportEnvelope::try_from_shape(frame, &base).unwrap();
-    for depth in [16_usize, 128] {
-        let mut shape = base.clone();
-        for _ in 0..depth {
-            shape = Shape::geometry_collection(vec![shape.clone(), shape])
-                .expect("nested shared collection stays within the depth limit");
-        }
 
-        let products = GeographicSupportProducts::try_from_shape(frame, &shape).unwrap();
-        assert_eq!(products.support, expected);
-        assert_eq!(products.work, GeographicSupportWork {
-            coordinate_visits: 2,
-            point_events: 0,
-            point_intervals: 0,
-            segment_connections: 1,
-            segment_intervals: 1,
-            ring_summaries: 0,
-        });
+    let mut shape = base;
+    for _ in 0..depth {
+        shape = Shape::geometry_collection(vec![shape.clone(), shape])
+            .expect("nested shared collection stays within the depth limit");
     }
+
+    let products = GeographicSupportProducts::try_from_shape(frame, &shape).unwrap();
+    assert_eq!(products.support, expected);
+    assert_eq!(products.work, GeographicSupportWork {
+        coordinate_visits: 2,
+        point_events: 0,
+        point_intervals: 0,
+        segment_connections: 1,
+        segment_intervals: 1,
+        ring_summaries: 0,
+    });
 }
 
 #[test]
@@ -719,62 +720,63 @@ fn repeated_coordinate_runs_across_shapes_preserve_support() {
     assert_eq!(products.work.point_intervals, 2);
 }
 
-#[test]
-fn connected_run_components_preserve_native_endpoints_and_frame_variants() {
-    for (factor, east, north, prime) in [
-        (std::f64::consts::PI / 180.0, true, true, 0.0),
-        (std::f64::consts::TAU / 400.0, true, true, 0.0),
-        (1.0, true, true, 0.0),
-        (std::f64::consts::PI / 180.0, false, false, 0.25),
-        (std::f64::consts::TAU / 400.0, false, true, 0.31),
-        (1.0, true, false, -0.2),
+#[rstest::rstest]
+#[case::std_f64_consts_pi_180_0(std::f64::consts::PI / 180.0, true, true, 0.0)]
+#[case::std_f64_consts_tau_400_0(std::f64::consts::TAU / 400.0, true, true, 0.0)]
+#[case::factor_1_0(1.0, true, true, 0.0)]
+#[case::std_f64_consts_pi_180_0_52654929(std::f64::consts::PI / 180.0, false, false, 0.25)]
+#[case::std_f64_consts_tau_400_0_717e3750(std::f64::consts::TAU / 400.0, false, true, 0.31)]
+#[case::factor_1_0_711ae433(1.0, true, false, -0.2)]
+fn connected_run_components_preserve_native_endpoints_and_frame_variants(
+    #[case] factor: f64,
+    #[case] east: bool,
+    #[case] north: bool,
+    #[case] prime: f64,
+) {
+    let unit = AngularFactor::try_new("native component test", factor).unwrap();
+    let frame = GeographicFrame::try_new_with_orientation(
+        unit,
+        unit,
+        prime,
+        super::super::GeographicAxisOrientation::from_axis_directions(east, north),
+    )
+    .unwrap();
+    let period = frame.longitude().period();
+    let half = period / 2.0;
+    let tiny = -f64::from_bits(1);
+    for (xs, expected) in [
+        (vec![0.0, period], Bounds::new_raw(-half, 0.0, half, 0.0)),
+        (vec![0.0, -period], Bounds::new_raw(-half, 0.0, half, 0.0)),
+        (vec![0.0, half], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
+        (vec![0.0, -half], Bounds::new_raw(-half, 0.0, 0.0, 0.0)),
+        (vec![half, 0.0], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
+        (
+            vec![0.0, period / 3.0, 2.0 * period / 3.0, tiny],
+            Bounds::new_raw(0.0, 0.0, tiny, 0.0),
+        ),
+        (
+            vec![half.next_down(), -half],
+            Bounds::new_raw(half.next_down(), 0.0, -half, 0.0),
+        ),
     ] {
-        let unit = AngularFactor::try_new("native component test", factor).unwrap();
-        let frame = GeographicFrame::try_new_with_orientation(
-            unit,
-            unit,
-            prime,
-            super::super::GeographicAxisOrientation::from_axis_directions(east, north),
-        )
-        .unwrap();
-        let period = frame.longitude().period();
-        let half = period / 2.0;
-        let tiny = -f64::from_bits(1);
-        for (xs, expected) in [
-            (vec![0.0, period], Bounds::new_raw(-half, 0.0, half, 0.0)),
-            (vec![0.0, -period], Bounds::new_raw(-half, 0.0, half, 0.0)),
-            (vec![0.0, half], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
-            (vec![0.0, -half], Bounds::new_raw(-half, 0.0, 0.0, 0.0)),
-            (vec![half, 0.0], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
-            (
-                vec![0.0, period / 3.0, 2.0 * period / 3.0, tiny],
-                Bounds::new_raw(0.0, 0.0, tiny, 0.0),
-            ),
-            (
-                vec![half.next_down(), -half],
-                Bounds::new_raw(half.next_down(), 0.0, -half, 0.0),
-            ),
-        ] {
-            let ys = vec![0.0; xs.len()];
-            let products =
-                GeographicSupportProducts::try_from_shape(frame, &line(&xs, &ys)).unwrap();
-            assert_eq!(products.support.bounds(frame), Some(expected));
-            assert_eq!(products.work.coordinate_visits, xs.len());
-            assert_eq!(products.work.segment_connections, xs.len() - 1);
-            assert_eq!(products.work.segment_intervals, 1);
-        }
-        let xs = [0.0, period / 3.0, -period / 3.0, 0.0];
-        let coords = CoordSeq::try_from_vecs(xs.to_vec(), vec![0.0; 4], None, None).unwrap();
-        let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
-        let chain = Shape::LineString(LineSeq::try_new(coords).unwrap());
-        let disconnected = GeographicSupportProducts::try_from_shape(frame, &points).unwrap();
-        assert_ne!(disconnected.support.longitude, CircularInterval::Full);
-        assert_eq!(disconnected.work.point_intervals, 4);
-        let connected = GeographicSupportProducts::try_from_shape(frame, &chain).unwrap();
-        assert_eq!(connected.support.longitude, CircularInterval::Full);
-        assert_eq!(connected.work.segment_connections, 3);
-        assert_eq!(connected.work.segment_intervals, 1);
+        let ys = vec![0.0; xs.len()];
+        let products = GeographicSupportProducts::try_from_shape(frame, &line(&xs, &ys)).unwrap();
+        assert_eq!(products.support.bounds(frame), Some(expected));
+        assert_eq!(products.work.coordinate_visits, xs.len());
+        assert_eq!(products.work.segment_connections, xs.len().wrapping_sub(1));
+        assert_eq!(products.work.segment_intervals, 1);
     }
+    let xs = [0.0, period / 3.0, -period / 3.0, 0.0];
+    let coords = CoordSeq::try_from_vecs(xs.to_vec(), vec![0.0; 4], None, None).unwrap();
+    let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
+    let chain = Shape::LineString(LineSeq::try_new(coords).unwrap());
+    let disconnected = GeographicSupportProducts::try_from_shape(frame, &points).unwrap();
+    assert_ne!(disconnected.support.longitude, CircularInterval::Full);
+    assert_eq!(disconnected.work.point_intervals, 4);
+    let connected = GeographicSupportProducts::try_from_shape(frame, &chain).unwrap();
+    assert_eq!(connected.support.longitude, CircularInterval::Full);
+    assert_eq!(connected.work.segment_connections, 3);
+    assert_eq!(connected.work.segment_intervals, 1);
 }
 
 #[test]

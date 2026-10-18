@@ -13,74 +13,58 @@ use crate::geometry::{
 /// Every lower-dimensional contact of two areal operands is the same in
 /// both operand orders: shared boundary runs, isolated touches, a region
 /// plus a separate touch, nested with a shared side, identical operands.
-#[test]
-fn areal_intersection_contacts_are_operand_order_invariant() {
-    let cases = [
-        (
-            "shared edge",
-            square(0.0, 0.0, 2.0, 2.0),
-            square(2.0, 0.0, 4.0, 2.0),
-        ),
-        (
-            "corner touch",
-            square(0.0, 0.0, 2.0, 2.0),
-            square(2.0, 2.0, 4.0, 4.0),
-        ),
-        (
-            "edge interior touch",
-            square(0.0, 0.0, 2.0, 2.0),
-            square(2.0, 1.0, 4.0, 3.0),
-        ),
-        (
-            "two separate shared boundary runs",
-            Shape::Polygon(polygon(&[
-                (0.0, 0.0),
-                (4.0, 0.0),
-                (4.0, 1.0),
-                (1.0, 1.0),
-                (1.0, 3.0),
-                (4.0, 3.0),
-                (4.0, 4.0),
-                (0.0, 4.0),
-                (0.0, 0.0),
-            ])),
-            Shape::Polygon(polygon(&[
-                (2.0, 1.0),
-                (6.0, 1.0),
-                (6.0, 3.0),
-                (2.0, 3.0),
-                (2.0, 1.0),
-            ])),
-        ),
-        (
-            "nested sharing a side",
-            square(0.0, 0.0, 4.0, 4.0),
-            square(0.0, 1.0, 2.0, 3.0),
-        ),
-        (
-            "identical",
-            square(0.0, 0.0, 2.0, 2.0),
-            square(0.0, 0.0, 2.0, 2.0),
-        ),
-        (
-            "disjoint",
-            square(0.0, 0.0, 2.0, 2.0),
-            square(3.0, 3.0, 4.0, 4.0),
-        ),
-        (
-            "hole boundary touch",
-            Shape::Polygon(Polygon::new(
-                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-                vec![polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]).shell],
-            )),
-            square(2.0, 2.0, 3.0, 3.0),
-        ),
-    ];
-    for (name, left, right) in cases {
-        let forward = intersection(&left, &right);
-        let reverse = intersection(&right, &left);
-        assert_eq!(wkb(&forward), wkb(&reverse), "{name}");
-    }
+#[rstest::rstest]
+#[case::shared_edge("shared edge", square(0.0, 0.0, 2.0, 2.0), square(2.0, 0.0, 4.0, 2.0))]
+#[case::corner_touch("corner touch", square(0.0, 0.0, 2.0, 2.0), square(2.0, 2.0, 4.0, 4.0))]
+#[case::edge_interior_touch(
+    "edge interior touch",
+    square(0.0, 0.0, 2.0, 2.0),
+    square(2.0, 1.0, 4.0, 3.0)
+)]
+#[case::two_separate_shared_boundary_runs(
+    "two separate shared boundary runs",
+    Shape::Polygon(polygon(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 1.0),
+        (1.0, 1.0),
+        (1.0, 3.0),
+        (4.0, 3.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+    ])),
+    Shape::Polygon(polygon(&[
+        (2.0, 1.0),
+        (6.0, 1.0),
+        (6.0, 3.0),
+        (2.0, 3.0),
+        (2.0, 1.0),
+    ]))
+)]
+#[case::nested_sharing_a_side(
+    "nested sharing a side",
+    square(0.0, 0.0, 4.0, 4.0),
+    square(0.0, 1.0, 2.0, 3.0)
+)]
+#[case::identical("identical", square(0.0, 0.0, 2.0, 2.0), square(0.0, 0.0, 2.0, 2.0))]
+#[case::disjoint("disjoint", square(0.0, 0.0, 2.0, 2.0), square(3.0, 3.0, 4.0, 4.0))]
+#[case::hole_boundary_touch(
+    "hole boundary touch",
+    Shape::Polygon(Polygon::new(
+        polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+        vec![polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]).shell],
+    )),
+    square(2.0, 2.0, 3.0, 3.0)
+)]
+fn areal_intersection_contacts_are_operand_order_invariant(
+    #[case] name: &'static str,
+    #[case] left: Shape,
+    #[case] right: Shape,
+) {
+    let forward = intersection(&left, &right);
+    let reverse = intersection(&right, &left);
+    assert_eq!(wkb(&forward), wkb(&reverse), "{name}");
 }
 
 #[test]
@@ -157,36 +141,34 @@ fn areal_intersection_on_degenerate_boundaries() {
     }
 }
 
-#[test]
-fn areal_intersection_lane_preserves_zm_and_operand_order() {
+#[rstest::rstest]
+#[case::zm_square_1_0_1_0_3_0_3_0_20_0(zm_square(1.0, 1.0, 3.0, 3.0, 20.0))]
+#[case::zm_square_2_0_0_0_4_0_2_0_20_0(zm_square(2.0, 0.0, 4.0, 2.0, 20.0))]
+#[case::zm_square_2_0_2_0_4_0_4_0_20_0(zm_square(2.0, 2.0, 4.0, 4.0, 20.0))]
+fn areal_intersection_lane_preserves_zm_and_operand_order(#[case] right: Shape) {
     let left = zm_square(0.0, 0.0, 2.0, 2.0, 10.0);
-    for right in [
-        zm_square(1.0, 1.0, 3.0, 3.0, 20.0),
-        zm_square(2.0, 0.0, 4.0, 2.0, 20.0),
-        zm_square(2.0, 2.0, 4.0, 4.0, 20.0),
-    ] {
-        for strictness in [Strictness::Strict, Strictness::Lenient] {
-            let fast = overlay_all(
-                &[&left, &right],
-                crate::geometry::TopologyDomain::Cartesian,
-                OverlayOp::Intersection,
-                strictness,
-            );
-            let reverse = overlay_all(
-                &[&right, &left],
-                crate::geometry::TopologyDomain::Cartesian,
-                OverlayOp::Intersection,
-                strictness,
-            );
-            match (fast, reverse) {
-                (Ok(fast), Ok(reverse)) => {
-                    assert_eq!(wkb(&fast), wkb(&reverse), "{fast:?} != {reverse:?}");
-                },
-                (Err(fast), Err(reverse)) => {
-                    assert_eq!(fast.to_string(), reverse.to_string());
-                },
-                (fast, reverse) => panic!("diverged: fast={fast:?} reverse={reverse:?}"),
-            }
+
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let fast = overlay_all(
+            &[&left, &right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            strictness,
+        );
+        let reverse = overlay_all(
+            &[&right, &left],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            strictness,
+        );
+        match (fast, reverse) {
+            (Ok(fast), Ok(reverse)) => {
+                assert_eq!(wkb(&fast), wkb(&reverse), "{fast:?} != {reverse:?}");
+            },
+            (Err(fast), Err(reverse)) => {
+                assert_eq!(fast.to_string(), reverse.to_string());
+            },
+            (fast, reverse) => panic!("diverged: fast={fast:?} reverse={reverse:?}"),
         }
     }
 }
@@ -296,33 +278,33 @@ fn convex_intersection_fast_path_yields_a_polygon() {
     assert!(matches!(fast, Shape::Polygon(_)), "{fast:?}");
 }
 
-#[test]
-fn disjoint_convex_intersection_preserves_canonical_empty_fallback() {
-    let cases = [
-        (
-            "overlapping envelopes",
-            regular_polygon(0.0, 0.0, 1.0, 256),
-            regular_polygon(1.5, 1.5, 1.0, 256),
+#[rstest::rstest]
+#[case::overlapping_envelopes(
+    "overlapping envelopes",
+    regular_polygon(0.0, 0.0, 1.0, 256),
+    regular_polygon(1.5, 1.5, 1.0, 256)
+)]
+#[case::disjoint_envelopes(
+    "disjoint envelopes",
+    regular_polygon(0.0, 0.0, 1.0, 256),
+    regular_polygon(4.0, 0.0, 1.0, 256)
+)]
+fn disjoint_convex_intersection_preserves_canonical_empty_fallback(
+    #[case] name: &'static str,
+    #[case] left: Shape,
+    #[case] right: Shape,
+) {
+    // The first pair makes the candidate decline and must fall through
+    // the original exact assembly chain. The second is settled before
+    // dispatch by the bounds certificate. Both keep POLYGON EMPTY.
+    let fast = intersection(&left, &right);
+    assert!(
+        matches!(
+            fast,
+            Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
         ),
-        (
-            "disjoint envelopes",
-            regular_polygon(0.0, 0.0, 1.0, 256),
-            regular_polygon(4.0, 0.0, 1.0, 256),
-        ),
-    ];
-    for (name, left, right) in cases {
-        // The first pair makes the candidate decline and must fall through
-        // the original exact assembly chain. The second is settled before
-        // dispatch by the bounds certificate. Both keep POLYGON EMPTY.
-        let fast = intersection(&left, &right);
-        assert!(
-            matches!(
-                fast,
-                Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
-            ),
-            "{name}: {fast:?}"
-        );
-    }
+        "{name}: {fast:?}"
+    );
 }
 
 #[test]

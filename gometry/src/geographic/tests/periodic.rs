@@ -273,58 +273,54 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
         -8.0,
     );
 }
-#[test]
-fn nearest_longitude_alias_forms_whole_period_shifts_from_the_source() {
-    for axis in [
-        degrees().longitude(),
-        frame(std::f64::consts::TAU / 400.0).longitude(),
-        frame(1.0).longitude(),
-    ] {
-        // A nearby reference is not an alias of the source. Select k from
-        // the exact operands, then round source+kP instead of copying reference.
-        assert_bits(
-            axis.nearest_longitude_alias(1.0e-16, -axis.period())
-                .unwrap(),
-            0.0,
-        );
-        assert_bits(
-            axis.nearest_longitude_alias(-1.0e-16, axis.period())
-                .unwrap(),
-            0.0,
-        );
-    }
+#[rstest::rstest]
+#[case::degrees_longitude(degrees().longitude())]
+#[case::frame_std_f64_consts_tau_400_0_longitude(frame(std::f64::consts::TAU / 400.0).longitude())]
+#[case::frame_1_0_longitude(frame(1.0).longitude())]
+fn nearest_longitude_alias_forms_whole_period_shifts_from_the_source(#[case] axis: PeriodicAxis) {
+    // A nearby reference is not an alias of the source. Select k from
+    // the exact operands, then round source+kP instead of copying reference.
+    assert_bits(
+        axis.nearest_longitude_alias(1.0e-16, -axis.period())
+            .unwrap(),
+        0.0,
+    );
+    assert_bits(
+        axis.nearest_longitude_alias(-1.0e-16, axis.period())
+            .unwrap(),
+        0.0,
+    );
 }
-#[test]
-fn nearest_longitude_alias_matches_exact_native_period_shifts() {
-    for (axis, longitudes) in [
-        (degrees().longitude(), [
+#[rstest::rstest]
+#[case::degrees_longitude(degrees().longitude(), [
+    177.813_015_064_085_82,
+    -122.427_194,
+    0.1,
+    -0.1,
+])]
+#[case::frame_std_f64_consts_tau_400_0_longitude(frame(std::f64::consts::TAU / 400.0).longitude(), [
             177.813_015_064_085_82,
             -122.427_194,
             0.1,
             -0.1,
-        ]),
-        (frame(std::f64::consts::TAU / 400.0).longitude(), [
-            177.813_015_064_085_82,
-            -122.427_194,
-            0.1,
-            -0.1,
-        ]),
-        (frame(1.0).longitude(), [
-            1.778_130_150_640_858_2,
-            -1.224_271_94,
-            0.1,
-            -0.1,
-        ]),
-    ] {
-        for longitude in longitudes {
-            for periods in [-5_i32, -2, -1, 1, 2, 5] {
-                let reference =
-                    longitude + f64::from(periods) * axis.period() + axis.period() / 16.0;
-                assert_bits(
-                    axis.nearest_longitude_alias(reference, longitude).unwrap(),
-                    exact_native_alias_oracle(longitude, axis.period(), i128::from(periods)),
-                );
-            }
+        ])]
+#[case::frame_1_0_longitude(frame(1.0).longitude(), [
+    1.778_130_150_640_858_2,
+    -1.224_271_94,
+    0.1,
+    -0.1,
+])]
+fn nearest_longitude_alias_matches_exact_native_period_shifts(
+    #[case] axis: PeriodicAxis,
+    #[case] longitudes: [f64; 4],
+) {
+    for longitude in longitudes {
+        for periods in [-5_i32, -2, -1, 1, 2, 5] {
+            let reference = longitude + f64::from(periods) * axis.period() + axis.period() / 16.0;
+            assert_bits(
+                axis.nearest_longitude_alias(reference, longitude).unwrap(),
+                exact_native_alias_oracle(longitude, axis.period(), i128::from(periods)),
+            );
         }
     }
 }
@@ -368,44 +364,41 @@ fn nearest_longitude_alias_preserves_source_bits_for_no_shift() {
         negative_zero.to_bits()
     );
 }
-#[test]
-fn nearest_longitude_alias_pins_native_ties_and_finite_subtraction_overflow() {
-    for axis in [
-        degrees().longitude(),
-        frame(std::f64::consts::TAU / 400.0).longitude(),
-        frame(1.0).longitude(),
-    ] {
-        let half = axis.half_period();
-        let period = axis.period();
-        assert_bits(axis.nearest_longitude_alias(half, 0.0).unwrap(), 0.0);
-        assert_bits(axis.nearest_longitude_alias(0.0, half).unwrap(), half);
-        assert_bits(axis.nearest_longitude_alias(period, 0.0).unwrap(), period);
-        assert_bits(axis.nearest_longitude_alias(-period, 0.0).unwrap(), -period);
-        assert_bits(
-            axis.nearest_longitude_alias(f64::MAX, -f64::MAX).unwrap(),
-            f64::MAX,
-        );
-    }
+#[rstest::rstest]
+#[case::degrees_longitude(degrees().longitude())]
+#[case::frame_std_f64_consts_tau_400_0_longitude(frame(std::f64::consts::TAU / 400.0).longitude())]
+#[case::frame_1_0_longitude(frame(1.0).longitude())]
+fn nearest_longitude_alias_pins_native_ties_and_finite_subtraction_overflow(
+    #[case] axis: PeriodicAxis,
+) {
+    let half = axis.half_period();
+    let period = axis.period();
+    assert_bits(axis.nearest_longitude_alias(half, 0.0).unwrap(), 0.0);
+    assert_bits(axis.nearest_longitude_alias(0.0, half).unwrap(), half);
+    assert_bits(axis.nearest_longitude_alias(period, 0.0).unwrap(), period);
+    assert_bits(axis.nearest_longitude_alias(-period, 0.0).unwrap(), -period);
+    assert_bits(
+        axis.nearest_longitude_alias(f64::MAX, -f64::MAX).unwrap(),
+        f64::MAX,
+    );
 }
-#[test]
-fn huge_finite_longitudes_match_binary_oracle() {
+#[rstest::rstest]
+#[case::degrees_longitude(degrees().longitude())]
+#[case::frame_std_f64_consts_tau_400_0_longitude(frame(std::f64::consts::TAU / 400.0).longitude())]
+#[case::frame_1_0_longitude(frame(1.0).longitude())]
+fn huge_finite_longitudes_match_binary_oracle(#[case] axis: PeriodicAxis) {
     let values = [
         f64::MAX,
         -f64::MAX,
         f64::from_bits((2040_u64 << 52) | 0x1234_5678_9ABC),
         f64::from_bits((1800_u64 << 52) | 1),
     ];
-    for axis in [
-        degrees().longitude(),
-        frame(std::f64::consts::TAU / 400.0).longitude(),
-        frame(1.0).longitude(),
-    ] {
-        for value in values {
-            assert_bits(
-                axis.canonicalize(value).unwrap().get(),
-                exact_periodic_oracle(value, axis.period()),
-            );
-        }
+
+    for value in values {
+        assert_bits(
+            axis.canonicalize(value).unwrap().get(),
+            exact_periodic_oracle(value, axis.period()),
+        );
     }
 }
 #[test]

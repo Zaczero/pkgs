@@ -111,34 +111,35 @@ fn packed_size_endpoints_match_row_replay_for_views_and_gathers() {
     }
 }
 
-#[test]
-fn compact_points_preserve_every_coordinate_layout() {
-    for (z, m, axes) in [
-        (false, false, CoordinateAxes::XY),
-        (true, false, CoordinateAxes::XYZ),
-        (false, true, CoordinateAxes::XYM),
-        (true, true, CoordinateAxes::XYZM),
-    ] {
-        let present = PyGeometryArray::packed_points(
-            CoordSeq::try_from_vecs(
-                vec![1.0],
-                vec![2.0],
-                z.then(|| vec![3.0]),
-                m.then(|| vec![4.0]),
-            )
-            .unwrap(),
-            Frame::None,
+#[rstest::rstest]
+#[case::disabled(false, false, CoordinateAxes::XY)]
+#[case::enabled(true, false, CoordinateAxes::XYZ)]
+#[case::false_be2275af(false, true, CoordinateAxes::XYM)]
+#[case::true_141345ef(true, true, CoordinateAxes::XYZM)]
+fn compact_points_preserve_every_coordinate_layout(
+    #[case] z: bool,
+    #[case] m: bool,
+    #[case] axes: CoordinateAxes,
+) {
+    let present = PyGeometryArray::packed_points(
+        CoordSeq::try_from_vecs(
+            vec![1.0],
+            vec![2.0],
+            z.then(|| vec![3.0]),
+            m.then(|| vec![4.0]),
         )
-        .unwrap();
-        let array = PyGeometryArray::scatter_present_rows(
-            &present,
-            ValidityMask::from_vec(3, vec![true, false, true]).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(array.uniform_axes(), Some(axes));
-        let all_missing = array.gather_logical_rows(&[0, 2]).unwrap();
-        assert_eq!(all_missing.uniform_axes(), Some(axes));
-    }
+        .unwrap(),
+        Frame::None,
+    )
+    .unwrap();
+    let array = PyGeometryArray::scatter_present_rows(
+        &present,
+        ValidityMask::from_vec(3, vec![true, false, true]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(array.uniform_axes(), Some(axes));
+    let all_missing = array.gather_logical_rows(&[0, 2]).unwrap();
+    assert_eq!(all_missing.uniform_axes(), Some(axes));
 }
 
 #[test]

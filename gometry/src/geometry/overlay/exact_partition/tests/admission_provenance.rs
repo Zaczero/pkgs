@@ -216,133 +216,129 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
     ]);
 }
 
-#[test]
-fn collapsed_point_shell_holes_are_applied_to_every_visited_face() {
-    let cases = [
-        (
-            "collection-inner-first",
-            "GEOMETRYCOLLECTION (POLYGON ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)), POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)))",
-        ),
-        (
-            "collection-outer-first",
-            "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)), POLYGON ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)))",
-        ),
-        (
-            "multipolygon-inner-first",
-            "MULTIPOLYGON (((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)), ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)))",
-        ),
-        (
-            "multipolygon-outer-first",
-            "MULTIPOLYGON (((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)), ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)))",
-        ),
-    ];
+#[rstest::rstest]
+#[case::collection_inner_first(
+    "collection-inner-first",
+    "GEOMETRYCOLLECTION (POLYGON ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)), POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)))"
+)]
+#[case::collection_outer_first(
+    "collection-outer-first",
+    "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)), POLYGON ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)))"
+)]
+#[case::multipolygon_inner_first(
+    "multipolygon-inner-first",
+    "MULTIPOLYGON (((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)), ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)))"
+)]
+#[case::multipolygon_outer_first(
+    "multipolygon-outer-first",
+    "MULTIPOLYGON (((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2)), ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0)))"
+)]
+fn collapsed_point_shell_holes_are_applied_to_every_visited_face(
+    #[case] name: &'static str,
+    #[case] wkt: &'static str,
+) {
     let point = crate::io::parse_wkt("POINT (3 3)").unwrap();
 
-    for (name, wkt) in cases {
-        let shape = crate::io::parse_wkt(wkt).unwrap();
-        let inventory =
-            ExactSourceInventory::from_shapes_with_occurrences(&[&shape, &point]).unwrap();
-        let mut budget = ExpansionBudget::new("relate", "collapsed point shells covered by holes");
-        let partition = inventory.partition(&mut budget).unwrap();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let global = partition.global_faces(&topology, &edges).unwrap();
-        let winding_rings = inventory.winding_source_rings();
-        let facts = inventory
-            .build_cell_facts(
-                &partition,
-                &topology,
-                &edges,
-                &global,
-                &winding_rings,
-                false,
-            )
-            .unwrap();
-        for point in [XY::new(1.0, 1.0), XY::new(3.0, 3.0)] {
-            let node = partition
-                .stored_node(point)
-                .expect("collapsed shell point is staged");
-            assert!(
-                !facts.point_membership[node.0 as usize * 2],
-                "{name}: a shell point covered by its own hole must not be occupied: {point:?}"
-            );
-        }
-        assert_eq!(
-            inventory.relate(&partition).unwrap().text(),
-            "FFFFFF0F2",
-            "{name}"
-        );
-
-        let result = Shape::union_all(&[&shape], Strictness::Lenient).unwrap();
-        assert_eq!(
-            crate::io::to_wkt(&result).unwrap(),
-            "POLYGON EMPTY",
-            "{name}"
+    let shape = crate::io::parse_wkt(wkt).unwrap();
+    let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[&shape, &point]).unwrap();
+    let mut budget = ExpansionBudget::new("relate", "collapsed point shells covered by holes");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let winding_rings = inventory.winding_source_rings();
+    let facts = inventory
+        .build_cell_facts(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            &winding_rings,
+            false,
+        )
+        .unwrap();
+    for point in [XY::new(1.0, 1.0), XY::new(3.0, 3.0)] {
+        let node = partition
+            .stored_node(point)
+            .expect("collapsed shell point is staged");
+        assert!(
+            !facts.point_membership[node.0 as usize * 2],
+            "{name}: a shell point covered by its own hole must not be occupied: {point:?}"
         );
     }
+    assert_eq!(
+        inventory.relate(&partition).unwrap().text(),
+        "FFFFFF0F2",
+        "{name}"
+    );
+
+    let result = Shape::union_all(&[&shape], Strictness::Lenient).unwrap();
+    assert_eq!(
+        crate::io::to_wkt(&result).unwrap(),
+        "POLYGON EMPTY",
+        "{name}"
+    );
 }
 
-#[test]
-fn incident_collapsed_shell_points_keep_line_and_explicit_point_support() {
-    let cases = [
-        (
-            "inner-first",
-            "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(2 2,4 2,4 4,2 4,2 2)), POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,8 -2,8 8,-2 8,-2 -2)), LINESTRING (2 3,4 3), POINT (10 10))",
-        ),
-        (
-            "outer-first",
-            "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,8 -2,8 8,-2 8,-2 -2)), POLYGON ((3 3,3 3,3 3,3 3),(2 2,4 2,4 4,2 4,2 2)), LINESTRING (2 3,4 3), POINT (10 10))",
-        ),
-    ];
+#[rstest::rstest]
+#[case::inner_first(
+    "inner-first",
+    "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(2 2,4 2,4 4,2 4,2 2)), POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,8 -2,8 8,-2 8,-2 -2)), LINESTRING (2 3,4 3), POINT (10 10))"
+)]
+#[case::outer_first(
+    "outer-first",
+    "GEOMETRYCOLLECTION (POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,8 -2,8 8,-2 8,-2 -2)), POLYGON ((3 3,3 3,3 3,3 3),(2 2,4 2,4 4,2 4,2 2)), LINESTRING (2 3,4 3), POINT (10 10))"
+)]
+fn incident_collapsed_shell_points_keep_line_and_explicit_point_support(
+    #[case] name: &'static str,
+    #[case] wkt: &'static str,
+) {
+    let shape = crate::io::parse_wkt(wkt).unwrap();
+    let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[&shape]).unwrap();
+    let mut budget = ExpansionBudget::new("union", "incident collapsed shell points");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let winding_rings = inventory.winding_source_rings();
+    let facts = inventory
+        .build_cell_facts(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            &winding_rings,
+            false,
+        )
+        .unwrap();
 
-    for (name, wkt) in cases {
-        let shape = crate::io::parse_wkt(wkt).unwrap();
-        let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[&shape]).unwrap();
-        let mut budget = ExpansionBudget::new("union", "incident collapsed shell points");
-        let partition = inventory.partition(&mut budget).unwrap();
-        let (topology, edges) = partition.local_topology().unwrap();
-        let global = partition.global_faces(&topology, &edges).unwrap();
-        let winding_rings = inventory.winding_source_rings();
-        let facts = inventory
-            .build_cell_facts(
-                &partition,
-                &topology,
-                &edges,
-                &global,
-                &winding_rings,
-                false,
-            )
-            .unwrap();
+    let incident = partition
+        .stored_node(XY::new(3.0, 3.0))
+        .expect("line and both collapsed shells share this node");
+    let incident_row = topology.starts[incident.0 as usize] as usize
+        ..topology.starts[incident.0 as usize + 1] as usize;
+    assert!(incident_row.len() >= 2, "{name}: shell point is incident");
+    assert!(
+        !facts.point_membership[incident.0 as usize],
+        "{name}: the covered shell point must not be published"
+    );
+    assert!(
+        facts.span_curve.iter().any(|&is_curve| is_curve),
+        "{name}: the incident line remains curve support"
+    );
 
-        let incident = partition
-            .stored_node(XY::new(3.0, 3.0))
-            .expect("line and both collapsed shells share this node");
-        let incident_row = topology.starts[incident.0 as usize] as usize
-            ..topology.starts[incident.0 as usize + 1] as usize;
-        assert!(incident_row.len() >= 2, "{name}: shell point is incident");
-        assert!(
-            !facts.point_membership[incident.0 as usize],
-            "{name}: the covered shell point must not be published"
-        );
-        assert!(
-            facts.span_curve.iter().any(|&is_curve| is_curve),
-            "{name}: the incident line remains curve support"
-        );
+    let explicit = partition
+        .stored_node(XY::new(10.0, 10.0))
+        .expect("explicit point source is staged");
+    assert!(
+        facts.point_membership[explicit.0 as usize],
+        "{name}: unrelated explicit point support remains occupied"
+    );
 
-        let explicit = partition
-            .stored_node(XY::new(10.0, 10.0))
-            .expect("explicit point source is staged");
-        assert!(
-            facts.point_membership[explicit.0 as usize],
-            "{name}: unrelated explicit point support remains occupied"
-        );
-
-        let result = Shape::union_all(&[&shape], Strictness::Lenient).unwrap();
-        assert_eq!(
-            crate::io::to_wkt(&result).unwrap(),
-            "GEOMETRYCOLLECTION (POINT (10 10), LINESTRING (2 3, 3 3, 4 3))",
-            "{name}"
-        );
-    }
+    let result = Shape::union_all(&[&shape], Strictness::Lenient).unwrap();
+    assert_eq!(
+        crate::io::to_wkt(&result).unwrap(),
+        "GEOMETRYCOLLECTION (POINT (10 10), LINESTRING (2 3, 3 3, 4 3))",
+        "{name}"
+    );
 }
 
 #[test]
@@ -445,24 +441,25 @@ fn stored_ring_sources_keep_direction_and_shell_hole_composition() {
     }
 }
 
-#[test]
-fn set_inventory_deduplicates_shared_owners_and_occurrence_inventory_does_not() {
-    let line = crate::io::parse_wkt("LINESTRING (0 0,1 0)").unwrap();
-    let polygon = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
-    let point = crate::io::parse_wkt("POINT (0 0)").unwrap();
+#[rstest::rstest]
+#[case::line(crate::io::parse_wkt("LINESTRING (0 0,1 0)").unwrap(), 1, 0)]
+#[case::polygon(crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap(), 4, 0)]
+#[case::point(crate::io::parse_wkt("POINT (0 0)").unwrap(), 0, 1)]
+fn set_inventory_deduplicates_shared_owners_and_occurrence_inventory_does_not(
+    #[case] shape: Shape,
+    #[case] segments: usize,
+    #[case] isolated: usize,
+) {
+    let owner = Shape::geometry_collection(vec![shape]).unwrap();
+    let shared = Shape::geometry_collection(vec![owner.clone(), owner]).unwrap();
 
-    for (shape, segments, isolated) in [(line, 1, 0), (polygon, 4, 0), (point, 0, 1)] {
-        let owner = Shape::geometry_collection(vec![shape]).unwrap();
-        let shared = Shape::geometry_collection(vec![owner.clone(), owner]).unwrap();
+    let set = ExactSourceInventory::from_shapes(&[&shared]).unwrap();
+    assert_eq!(set.source_segments.len(), segments);
+    assert_eq!(set.isolated.len(), isolated);
 
-        let set = ExactSourceInventory::from_shapes(&[&shared]).unwrap();
-        assert_eq!(set.source_segments.len(), segments);
-        assert_eq!(set.isolated.len(), isolated);
-
-        let occurrences = ExactSourceInventory::from_shapes_with_occurrences(&[&shared]).unwrap();
-        assert_eq!(occurrences.source_segments.len(), segments * 2);
-        assert_eq!(occurrences.isolated.len(), isolated * 2);
-    }
+    let occurrences = ExactSourceInventory::from_shapes_with_occurrences(&[&shared]).unwrap();
+    assert_eq!(occurrences.source_segments.len(), segments.wrapping_mul(2));
+    assert_eq!(occurrences.isolated.len(), isolated.wrapping_mul(2));
 }
 
 #[test]
@@ -672,8 +669,12 @@ fn rectangle_intersection_uses_exact_source_contacts() {
     assert!(!exact_intersects_bounds(&disjoint, bounds).unwrap());
 }
 
-#[test]
-fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders(
+    #[case] rectangle_first: bool,
+) {
     let Shape::Polygon(subject) = crate::io::parse_wkt(
         "POLYGON ZM ((-2 -1 10 100,2 -1 20 200,2 1 30 300,-2 1 50 500,-2 -1 10 100))",
     )
@@ -683,92 +684,90 @@ fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
     let bounds = Bounds::new_raw(-1.0, -0.5, 1.0, 1.5);
     let rectangle = rect_polygon(bounds).unwrap();
 
-    for rectangle_first in [false, true] {
-        let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(
-            &[&subject],
-            &rectangle,
-            bounds,
-            rectangle_first,
-        )
-        .unwrap()
-        .expect("the subject's top edge enters the rectangle interior");
+    let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(
+        &[&subject],
+        &rectangle,
+        bounds,
+        rectangle_first,
+    )
+    .unwrap()
+    .expect("the subject's top edge enters the rectangle interior");
 
-        let expected_operands = if rectangle_first {
-            [1, 1, 1, 1, 0, 0, 0, 0]
-        } else {
-            [0, 0, 0, 0, 1, 1, 1, 1]
-        };
-        assert_eq!(inventory.source_operands.as_slice(), expected_operands);
+    let expected_operands = if rectangle_first {
+        [1, 1, 1, 1, 0, 0, 0, 0]
+    } else {
+        [0, 0, 0, 0, 1, 1, 1, 1]
+    };
+    assert_eq!(inventory.source_operands.as_slice(), expected_operands);
 
-        let expected_unique_segments = if rectangle_first {
-            [
-                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
-                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
-                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
-                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
-                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
-            ]
-        } else {
-            [
-                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
-                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
-                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
-                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
-                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
-            ]
-        };
-        let expected_source_ordinals = if rectangle_first {
-            [0, 1, 2, 3, 6]
-        } else {
-            [2, 4, 5, 6, 7]
-        };
-        let actual_unique_segments: Vec<_> = inventory
-            .unique
-            .iter()
-            .map(|segment| [segment.start, segment.end])
-            .collect();
-        assert_eq!(actual_unique_segments, expected_unique_segments);
-        for (owners, source) in inventory.provenance.iter().zip(expected_source_ordinals) {
-            assert_eq!(owners, &[(source, false)]);
-        }
+    let expected_unique_segments = if rectangle_first {
+        [
+            [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+            [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+            [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+            [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+            [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+        ]
+    } else {
+        [
+            [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+            [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+            [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+            [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+            [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+        ]
+    };
+    let expected_source_ordinals = if rectangle_first {
+        [0, 1, 2, 3, 6]
+    } else {
+        [2, 4, 5, 6, 7]
+    };
+    let actual_unique_segments: Vec<_> = inventory
+        .unique
+        .iter()
+        .map(|segment| [segment.start, segment.end])
+        .collect();
+    assert_eq!(actual_unique_segments, expected_unique_segments);
+    for (owners, source) in inventory.provenance.iter().zip(expected_source_ordinals) {
+        assert_eq!(owners, &[(source, false)]);
+    }
 
-        let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle source ordinals");
-        let partition = inventory
-            .partition_in_window(&intervals, bounds, &mut budget)
+    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle source ordinals");
+    let partition = inventory
+        .partition_in_window(&intervals, bounds, &mut budget)
+        .unwrap();
+    let mut crossing_ordinates = Vec::new();
+    for node in partition.crossings() {
+        let (z, m) = inventory
+            .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
+                &partition,
+                node,
+                crate::geometry::CoordinateAxes::XYZM,
+                &SourceArcContext::cartesian(),
+                None,
+            )
             .unwrap();
-        let mut crossing_ordinates = Vec::new();
-        for node in partition.crossings() {
-            let (z, m) = inventory
-                .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
-                    &partition,
-                    node,
-                    crate::geometry::CoordinateAxes::XYZM,
-                    &SourceArcContext::cartesian(),
-                    None,
+        crossing_ordinates.push((partition.nearest_xy(node), z.0, m.0));
+    }
+    let expected_crossing_ordinates = [
+        (XY::new(-1.0, 1.0), Some(45.0), Some(450.0)),
+        (XY::new(1.0, 1.0), Some(35.0), Some(350.0)),
+    ];
+    assert!(
+        crossing_ordinates
+            .iter()
+            .all(
+                |&(actual_xy, actual_z, actual_m)| expected_crossing_ordinates.iter().any(
+                    |&(expected_xy, expected_z, expected_m)| {
+                        same_point(actual_xy, expected_xy)
+                            && actual_z == expected_z
+                            && actual_m == expected_m
+                    }
                 )
-                .unwrap();
-            crossing_ordinates.push((partition.nearest_xy(node), z.0, m.0));
-        }
-        let expected_crossing_ordinates = [
-            (XY::new(-1.0, 1.0), Some(45.0), Some(450.0)),
-            (XY::new(1.0, 1.0), Some(35.0), Some(350.0)),
-        ];
-        assert!(
-            crossing_ordinates
-                .iter()
-                .all(
-                    |&(actual_xy, actual_z, actual_m)| expected_crossing_ordinates.iter().any(
-                        |&(expected_xy, expected_z, expected_m)| {
-                            same_point(actual_xy, expected_xy)
-                                && actual_z == expected_z
-                                && actual_m == expected_m
-                        }
-                    )
-                )
-        );
-        for expected in expected_crossing_ordinates {
-            assert!(crossing_ordinates.contains(&expected));
-        }
+            )
+    );
+    for expected in expected_crossing_ordinates {
+        assert!(crossing_ordinates.contains(&expected));
     }
 }
 

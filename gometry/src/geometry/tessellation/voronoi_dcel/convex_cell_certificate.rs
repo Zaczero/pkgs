@@ -7,36 +7,38 @@ fn xy(points: &[(f64, f64)]) -> Vec<XY> {
 /// A square of sites with its centre: every circumcenter lies on the
 /// envelope, so a clip hit and a center share one vertex, and the diagram
 /// must still cancel every interior edge at any scale.
-#[test]
-fn clip_hits_coinciding_with_centers_share_one_vertex() {
-    for scale in [1.0, 1e-20, 1e-150, 1e150] {
-        let sites: Vec<Site> = shape::canonical_voronoi_sites(
-            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)]
-                .into_iter()
-                .map(|(x, y)| Point::new_raw_xy(x * scale, y * scale))
-                .collect(),
-            0.0,
-        )
-        .unwrap();
-        let mut budget = ExpansionBudget::new("test", "coinciding vertices");
-        let cells = build(
-            &sites,
-            VoronoiBoundary::Envelope,
-            &mut budget,
-            true,
-            &certified_delaunay(&sites).unwrap(),
-        )
-        .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
-        .into_polygons();
-        assert_eq!(cells.len(), 5);
-        let vertex_count: usize = cells.iter().map(|cell| cell.shell.iter().count()).sum();
-        let shapes: Vec<_> = cells.iter().cloned().map(Shape::Polygon).collect();
-        assert!(shapes.iter().all(
-            |shape| matches!(shape, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
-        ));
-        assert!(coverage_is_valid(&shapes, 0.0).unwrap());
-        assert!(vertex_count > 0);
-    }
+#[rstest::rstest]
+#[case::scale_1_0(1.0)]
+#[case::scale_1e_20(1e-20)]
+#[case::scale_1e_150(1e-150)]
+#[case::scale_1e150(1e150)]
+fn clip_hits_coinciding_with_centers_share_one_vertex(#[case] scale: f64) {
+    let sites: Vec<Site> = shape::canonical_voronoi_sites(
+        [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)]
+            .into_iter()
+            .map(|(x, y)| Point::new_raw_xy(x * scale, y * scale))
+            .collect(),
+        0.0,
+    )
+    .unwrap();
+    let mut budget = ExpansionBudget::new("test", "coinciding vertices");
+    let cells = build(
+        &sites,
+        VoronoiBoundary::Envelope,
+        &mut budget,
+        true,
+        &certified_delaunay(&sites).unwrap(),
+    )
+    .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
+    .into_polygons();
+    assert_eq!(cells.len(), 5);
+    let vertex_count: usize = cells.iter().map(|cell| cell.shell.iter().count()).sum();
+    let shapes: Vec<_> = cells.iter().cloned().map(Shape::Polygon).collect();
+    assert!(shapes.iter().all(
+        |shape| matches!(shape, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+    ));
+    assert!(coverage_is_valid(&shapes, 0.0).unwrap());
+    assert!(vertex_count > 0);
 }
 
 #[test]

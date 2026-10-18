@@ -287,58 +287,56 @@ fn convex_hull_copies_first_seen_vertex_at_duplicate_xy() {
     assert_eq!(origin.x.to_bits(), 0.0_f64.to_bits());
 }
 
-#[test]
-fn axis_column_hull_keeps_first_extrema_ordinates() {
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn axis_column_hull_keeps_first_extrema_ordinates(#[case] vertical: bool) {
     let first = Point::new_axes(-0.0, -0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(20.0))).unwrap();
-    for vertical in [false, true] {
-        let mut points = vec![first];
-        for ordinal in 1..=300 {
-            let (x, y) = if vertical {
-                (-0.0, f64::from(ordinal))
-            } else {
-                (f64::from(ordinal), -0.0)
-            };
-            points.push(
-                Point::new_axes(
-                    x,
-                    y,
-                    ZOrdinate(Some(1000.0 + f64::from(ordinal))),
-                    MOrdinate(Some(2000.0 + f64::from(ordinal))),
-                )
-                .unwrap(),
-            );
-        }
-        let last = if vertical {
-            Point::new_axes(
-                -0.0,
-                300.0,
-                ZOrdinate(Some(1300.0)),
-                MOrdinate(Some(2300.0)),
-            )
+
+    let mut points = vec![first];
+    for ordinal in 1..=300 {
+        let (x, y) = if vertical {
+            (-0.0, f64::from(ordinal))
         } else {
-            Point::new_axes(
-                300.0,
-                -0.0,
-                ZOrdinate(Some(1300.0)),
-                MOrdinate(Some(2300.0)),
-            )
-        }
-        .unwrap();
-        points
-            .push(Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap());
+            (f64::from(ordinal), -0.0)
+        };
         points.push(
-            Point::new_axes(last.x, last.y, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap(),
+            Point::new_axes(
+                x,
+                y,
+                ZOrdinate(Some(1000.0 + f64::from(ordinal))),
+                MOrdinate(Some(2000.0 + f64::from(ordinal))),
+            )
+            .unwrap(),
         );
-        for source in [
-            multipoint(&points),
-            Shape::LineString(
-                LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-            ),
-        ] {
-            assert_eq!(source.convex_hull().unwrap().points_vec().unwrap(), vec![
-                first, last
-            ]);
-        }
+    }
+    let last = if vertical {
+        Point::new_axes(
+            -0.0,
+            300.0,
+            ZOrdinate(Some(1300.0)),
+            MOrdinate(Some(2300.0)),
+        )
+    } else {
+        Point::new_axes(
+            300.0,
+            -0.0,
+            ZOrdinate(Some(1300.0)),
+            MOrdinate(Some(2300.0)),
+        )
+    }
+    .unwrap();
+    points.push(Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap());
+    points.push(
+        Point::new_axes(last.x, last.y, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap(),
+    );
+    for source in [
+        multipoint(&points),
+        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap()),
+    ] {
+        assert_eq!(source.convex_hull().unwrap().points_vec().unwrap(), vec![
+            first, last
+        ]);
     }
 }
 
@@ -544,8 +542,12 @@ fn native_concave_hull_contract_invariants_and_reference_envelope() {
     assert!(native_threshold.area() >= native_baseline.area());
 }
 
-#[test]
-fn concave_hull_is_invariant_to_input_point_order() {
+#[rstest::rstest]
+#[case::order_5_4_3_2_1_0([5, 4, 3, 2, 1, 0])]
+#[case::order_2_3_4_5_0_1([2, 3, 4, 5, 0, 1])]
+#[case::order_4_0_5_1_3_2([4, 0, 5, 1, 3, 2])]
+#[case::order_1_5_2_4_0_3([1, 5, 2, 4, 0, 3])]
+fn concave_hull_is_invariant_to_input_point_order(#[case] order: [usize; 6]) {
     let points = [
         point(0.0, 0.0),
         point(4.0, 0.0),
@@ -557,18 +559,12 @@ fn concave_hull_is_invariant_to_input_point_order() {
     let expected = multipoint(&points)
         .concave_hull(1.0, 0.0)
         .expect("concave hull");
-    for order in [
-        [5, 4, 3, 2, 1, 0],
-        [2, 3, 4, 5, 0, 1],
-        [4, 0, 5, 1, 3, 2],
-        [1, 5, 2, 4, 0, 3],
-    ] {
-        let permuted = order.map(|index| points[index]);
-        let hull = multipoint(&permuted)
-            .concave_hull(1.0, 0.0)
-            .expect("concave hull");
-        assert!(hull.equals_exact(&expected, 0.0, false, false));
-    }
+
+    let permuted = order.map(|index| points[index]);
+    let hull = multipoint(&permuted)
+        .concave_hull(1.0, 0.0)
+        .expect("concave hull");
+    assert!(hull.equals_exact(&expected, 0.0, false, false));
 }
 
 #[test]

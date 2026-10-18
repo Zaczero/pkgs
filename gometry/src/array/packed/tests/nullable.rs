@@ -155,28 +155,26 @@ fn nullable_line_offsets_are_logical_without_missing_payload() {
     ));
 }
 
-#[test]
-fn point_validity_never_zips_against_present_payload_positions() {
+#[rstest::rstest]
+#[case::vec_true_false_false(vec![true, false, false])]
+#[case::vec_false_true_false(vec![false, true, false])]
+#[case::vec_false_false_true(vec![false, false, true])]
+#[case::vec_true_false_true_false(vec![true, false, true, false])]
+fn point_validity_never_zips_against_present_payload_positions(#[case] missing: Vec<bool>) {
     let present = PyGeometryArray::packed_points(
         CoordSeq::try_from_vecs(vec![10.0, 20.0], vec![1.0, 2.0], None, None).unwrap(),
         Frame::None,
     )
     .unwrap();
-    for missing in [
-        vec![true, false, false],
-        vec![false, true, false],
-        vec![false, false, true],
-        vec![true, false, true, false],
-    ] {
-        let mask = ValidityMask::from_vec(missing.len(), missing.clone()).unwrap();
-        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        let mut values = [10.0, 20.0].into_iter();
-        let expected = missing
-            .iter()
-            .map(|&missing| (!missing).then(|| values.next().unwrap()))
-            .collect::<Vec<_>>();
-        assert_eq!(logical_point_xs(&array), expected);
-    }
+
+    let mask = ValidityMask::from_vec(missing.len(), missing.clone()).unwrap();
+    let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
+    let mut values = [10.0, 20.0].into_iter();
+    let expected = missing
+        .iter()
+        .map(|&missing| (!missing).then(|| values.next().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(logical_point_xs(&array), expected);
 }
 
 #[test]

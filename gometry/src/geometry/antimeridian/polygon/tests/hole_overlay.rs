@@ -72,57 +72,57 @@ fn crossing_hole_subtraction_keeps_a_zero_turn_world_band_in_its_chart() {
     assert_eq!(witnesses, [true, true], "{split:?}");
 }
 
-#[test]
-fn captured_full_turn_shell_subtracts_a_crossing_hole_like_plain_split() {
-    let cases = [
-        (
-            polygon(
-                &[(0.0, 60.0), (90.0, 62.0), (180.0, 60.0), (270.0, 62.0)],
-                &[&[(170.0, 70.0), (-170.0, 70.0), (-170.0, 75.0), (170.0, 75.0)]],
-            ),
-            Point::new(175.0, 72.0).unwrap(),
-            Point::new(100.0, 72.0).unwrap(),
-        ),
-        (
-            polygon(
-                &[(0.0, 50.0), (90.0, 52.0), (180.0, 50.0), (270.0, 52.0)],
-                &[&[(0.0, 70.0), (270.0, 72.0), (180.0, 70.0), (90.0, 72.0)]],
-            ),
-            Point::new(0.0, 80.0).unwrap(),
-            Point::new(0.0, 60.0).unwrap(),
-        ),
-    ];
-    for (source, hole_witness, shell_witness) in cases {
-        let plain = split_crs84(&source);
-        let captured = source
-            .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
-                GeographicFrame::crs84(),
-                None,
-            )
-            .unwrap()
-            .finish_scalar(crate::Frame::None)
-            .unwrap()
-            .into_scalar()
-            .unwrap()
-            .0;
+#[rstest::rstest]
+#[case::polygon_0_0_60_0_90_0_62_0_180_0_60_0_270_0_62_0_1bcfcb3a(
+    polygon(
+        &[(0.0, 60.0), (90.0, 62.0), (180.0, 60.0), (270.0, 62.0)],
+        &[&[(170.0, 70.0), (-170.0, 70.0), (-170.0, 75.0), (170.0, 75.0)]],
+    ),
+    Point::new(175.0, 72.0).unwrap(),
+    Point::new(100.0, 72.0).unwrap()
+)]
+#[case::polygon_0_0_50_0_90_0_52_0_180_0_50_0_270_0_52_0_cdaff087(
+    polygon(
+        &[(0.0, 50.0), (90.0, 52.0), (180.0, 50.0), (270.0, 52.0)],
+        &[&[(0.0, 70.0), (270.0, 72.0), (180.0, 70.0), (90.0, 72.0)]],
+    ),
+    Point::new(0.0, 80.0).unwrap(),
+    Point::new(0.0, 60.0).unwrap()
+)]
+fn captured_full_turn_shell_subtracts_a_crossing_hole_like_plain_split(
+    #[case] source: Shape,
+    #[case] hole_witness: Point,
+    #[case] shell_witness: Point,
+) {
+    let plain = split_crs84(&source);
+    let captured = source
+        .split_antimeridian_captured_in_frame_with_metric::<crate::crs::GeodesicMetric>(
+            GeographicFrame::crs84(),
+            None,
+        )
+        .unwrap()
+        .finish_scalar(crate::Frame::None)
+        .unwrap()
+        .into_scalar()
+        .unwrap()
+        .0;
 
-        for split in [&plain, &captured] {
-            assert_eq!(split.validate().unwrap(), None, "{split:?}");
-            assert!(
-                !split.contains(&Shape::Point(hole_witness)).unwrap(),
-                "the crossing hole must remain empty: {split:?}"
-            );
-            assert!(
-                split.contains(&Shape::Point(shell_witness)).unwrap(),
-                "the surrounding polar shell must remain filled: {split:?}"
-            );
-        }
-        approx::assert_relative_eq!(
-            plain.area(),
-            captured.area(),
-            max_relative = 64.0 * f64::EPSILON,
+    for split in [&plain, &captured] {
+        assert_eq!(split.validate().unwrap(), None, "{split:?}");
+        assert!(
+            !split.contains(&Shape::Point(hole_witness)).unwrap(),
+            "the crossing hole must remain empty: {split:?}"
+        );
+        assert!(
+            split.contains(&Shape::Point(shell_witness)).unwrap(),
+            "the surrounding polar shell must remain filled: {split:?}"
         );
     }
+    approx::assert_relative_eq!(
+        plain.area(),
+        captured.area(),
+        max_relative = 64.0 * f64::EPSILON,
+    );
 }
 
 #[test]

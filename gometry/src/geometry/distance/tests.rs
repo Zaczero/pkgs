@@ -90,8 +90,10 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
     );
 }
 
-#[test]
-fn filled_hausdorff_support_matches_shared_wkb_expansion() {
+#[rstest::rstest]
+#[case::depth_2(2)]
+#[case::depth_3(3)]
+fn filled_hausdorff_support_matches_shared_wkb_expansion(#[case] depth: usize) {
     let square = polygon(vec![
         p(0.0, 0.0),
         p(1.0, 0.0),
@@ -100,27 +102,26 @@ fn filled_hausdorff_support_matches_shared_wkb_expansion() {
         p(0.0, 0.0),
     ]);
     let target = Shape::Point(p(3.0, 3.0));
-    for depth in [2, 3] {
-        let mut shared = square.clone();
-        for _ in 0..depth {
-            shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();
-        }
-        let expanded = crate::io::parse_wkb(
-            &crate::io::to_wkb(&shared, None, false).expect("shared source writes"),
-        )
-        .expect("unshared source expansion parses")
-        .shape;
 
-        assert_eq!(
-            hausdorff_distance(&shared, &target, Some(1e-9), 1.0)
-                .unwrap()
-                .to_bits(),
-            hausdorff_distance(&expanded, &target, Some(1e-9), 1.0)
-                .unwrap()
-                .to_bits(),
-            "depth {depth}"
-        );
+    let mut shared = square;
+    for _ in 0..depth {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();
     }
+    let expanded = crate::io::parse_wkb(
+        &crate::io::to_wkb(&shared, None, false).expect("shared source writes"),
+    )
+    .expect("unshared source expansion parses")
+    .shape;
+
+    assert_eq!(
+        hausdorff_distance(&shared, &target, Some(1e-9), 1.0)
+            .unwrap()
+            .to_bits(),
+        hausdorff_distance(&expanded, &target, Some(1e-9), 1.0)
+            .unwrap()
+            .to_bits(),
+        "depth {depth}"
+    );
 }
 
 #[test]
@@ -159,88 +160,90 @@ fn continuous_hausdorff_preserves_underflowed_local_determinant() {
     assert!(hausdorff_distance(&baseline, &graph, Some(length), 1.0).unwrap() > 0.0);
 }
 
-#[test]
-fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition() {
-    for exponent in [154, 155] {
-        let length = 10.0_f64.powi(exponent);
-        let height = 10.0_f64.powi(-exponent);
-        let baseline = line(vec![p(0.0, 0.0), p(length, 0.0)]);
-        let bent = line(vec![
-            p(0.0, height),
-            p(length / 2.0, 2.0 * height),
-            p(length, height),
-        ]);
-        let expected = 2.0 * height;
+#[rstest::rstest]
+#[case::exponent_154(154)]
+#[case::exponent_155(155)]
+fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition(
+    #[case] exponent: i32,
+) {
+    let length = 10.0_f64.powi(exponent);
+    let height = 10.0_f64.powi(exponent.wrapping_neg());
+    let baseline = line(vec![p(0.0, 0.0), p(length, 0.0)]);
+    let bent = line(vec![
+        p(0.0, height),
+        p(length / 2.0, 2.0 * height),
+        p(length, height),
+    ]);
+    let expected = 2.0 * height;
+    let max_error = expected * 1e-12;
+    assert!(
+        (hausdorff_distance(&baseline, &bent, Some(max_error), 1.0).unwrap() - expected).abs()
+            <= max_error,
+        "reciprocal-axis Hausdorff failed at e={exponent}",
+    );
+    assert!(
+        (hausdorff_distance(&bent, &baseline, Some(max_error), 1.0).unwrap() - expected).abs()
+            <= max_error
+    );
+}
+
+#[rstest::rstest]
+#[case::exponent_154(154)]
+#[case::exponent_200(200)]
+#[case::exponent_300(300)]
+fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts(#[case] exponent: i32) {
+    let length = 10.0_f64.powi(exponent);
+    let half_gap = 10.0_f64.powi(exponent.wrapping_neg());
+    let source = line(vec![p(-length, 0.0), p(length, 0.0)]);
+    let target = multiline(vec![vec![p(-length, 0.0), p(-half_gap, 0.0)], vec![
+        p(half_gap, 0.0),
+        p(length, 0.0),
+    ]]);
+    assert_eq!(
+        point_segment_distance(XY::new(0.0, 0.0), Segment {
+            start: XY::new(-length, 0.0),
+            end: XY::new(-half_gap, 0.0),
+        },)
+        .unwrap()
+        .to_bits(),
+        half_gap.to_bits(),
+    );
+    let max_error = half_gap * 1e-12;
+    assert!(
+        (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - half_gap).abs()
+            <= max_error,
+        "reciprocal-axis target gap failed at e={exponent}",
+    );
+}
+
+#[rstest::rstest]
+#[case::exponent_154(154)]
+#[case::exponent_200(200)]
+#[case::exponent_300(300)]
+fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections(#[case] exponent: i32) {
+    let length = 10.0_f64.powi(exponent);
+    let height = 10.0_f64.powi(exponent.wrapping_neg());
+    for swap in [false, true] {
+        let xy = |x: f64, y: f64| if swap { p(y, x) } else { p(x, y) };
+        let horizontal = line(vec![xy(-length, 10.0 * height), xy(length, 10.0 * height)]);
+        let vertical = line(vec![xy(0.0, -height), xy(0.0, height)]);
+        let lower = line(vec![xy(0.0, -height), xy(0.0, -height / 2.0)]);
+        let upper = line(vec![xy(0.0, height / 2.0), xy(0.0, height)]);
+        let source = Shape::geometry_collection(vec![horizontal.clone(), vertical])
+            .expect("test collection is valid");
+        let target = Shape::geometry_collection(vec![horizontal, lower, upper])
+            .expect("test collection is valid");
+        let expected = height / 2.0;
         let max_error = expected * 1e-12;
         assert!(
-            (hausdorff_distance(&baseline, &bent, Some(max_error), 1.0).unwrap() - expected).abs()
+            (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - expected).abs()
                 <= max_error,
-            "reciprocal-axis Hausdorff failed at e={exponent}",
+            "minor-axis collection gap failed at e={exponent}, swap={swap}"
         );
         assert!(
-            (hausdorff_distance(&bent, &baseline, Some(max_error), 1.0).unwrap() - expected).abs()
+            (hausdorff_distance(&target, &source, Some(max_error), 1.0).unwrap() - expected).abs()
                 <= max_error
         );
-    }
-}
-
-#[test]
-fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
-    for exponent in [154, 200, 300] {
-        let length = 10.0_f64.powi(exponent);
-        let half_gap = 10.0_f64.powi(-exponent);
-        let source = line(vec![p(-length, 0.0), p(length, 0.0)]);
-        let target = multiline(vec![vec![p(-length, 0.0), p(-half_gap, 0.0)], vec![
-            p(half_gap, 0.0),
-            p(length, 0.0),
-        ]]);
-        assert_eq!(
-            point_segment_distance(XY::new(0.0, 0.0), Segment {
-                start: XY::new(-length, 0.0),
-                end: XY::new(-half_gap, 0.0),
-            },)
-            .unwrap()
-            .to_bits(),
-            half_gap.to_bits(),
-        );
-        let max_error = half_gap * 1e-12;
-        assert!(
-            (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - half_gap).abs()
-                <= max_error,
-            "reciprocal-axis target gap failed at e={exponent}",
-        );
-    }
-}
-
-#[test]
-fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
-    for exponent in [154, 200, 300] {
-        let length = 10.0_f64.powi(exponent);
-        let height = 10.0_f64.powi(-exponent);
-        for swap in [false, true] {
-            let xy = |x: f64, y: f64| if swap { p(y, x) } else { p(x, y) };
-            let horizontal = line(vec![xy(-length, 10.0 * height), xy(length, 10.0 * height)]);
-            let vertical = line(vec![xy(0.0, -height), xy(0.0, height)]);
-            let lower = line(vec![xy(0.0, -height), xy(0.0, -height / 2.0)]);
-            let upper = line(vec![xy(0.0, height / 2.0), xy(0.0, height)]);
-            let source = Shape::geometry_collection(vec![horizontal.clone(), vertical])
-                .expect("test collection is valid");
-            let target = Shape::geometry_collection(vec![horizontal, lower, upper])
-                .expect("test collection is valid");
-            let expected = height / 2.0;
-            let max_error = expected * 1e-12;
-            assert!(
-                (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - expected)
-                    .abs()
-                    <= max_error,
-                "minor-axis collection gap failed at e={exponent}, swap={swap}"
-            );
-            assert!(
-                (hausdorff_distance(&target, &source, Some(max_error), 1.0).unwrap() - expected)
-                    .abs()
-                    <= max_error
-            );
-        }
     }
 }
 
@@ -349,41 +352,22 @@ fn continuous_hausdorff_on_subdivided_oblique_segments() {
     }
 }
 
-#[test]
-fn continuous_hausdorff_matches_known_fixtures() {
-    for (left, right, expected) in [
-        (
-            line(vec![p(0.0, 0.0), p(1.0, 1.0), p(2.0, 1.0)]),
-            line(vec![p(0.0, 1.0), p(1.0, 2.0), p(2.0, 2.0)]),
-            1.0,
-        ),
-        (
-            line(vec![p(0.0, 0.0), p(10.0, 0.0)]),
-            line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]),
-            8.0,
-        ),
-        (
-            Shape::Point(p(0.0, 0.0)),
-            line(vec![p(0.0, 1.0), p(3.0, 1.0)]),
-            10.0_f64.sqrt(),
-        ),
-        (
-            line(vec![p(-1.0, 0.5), p(4.0, 0.5)]),
-            polygon(vec![p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 0.0)]),
-            2.0,
-        ),
-        (
-            multipoint(vec![p(0.0, 0.0), p(5.0, 5.0)]),
-            line(vec![p(0.0, 1.0), p(10.0, 1.0)]),
-            41.0_f64.sqrt(),
-        ),
-    ] {
-        assert_hausdorff_close(
-            hausdorff_distance(&left, &right, Some(1e-9), 1.0).unwrap(),
-            expected,
-            1e-9,
-        );
-    }
+#[rstest::rstest]
+#[case::line_vec_p_0_0_0_0_p_1_0_1_0_p_2_0_1_0(line(vec![p(0.0, 0.0), p(1.0, 1.0), p(2.0, 1.0)]), line(vec![p(0.0, 1.0), p(1.0, 2.0), p(2.0, 2.0)]), 1.0)]
+#[case::line_vec_p_0_0_0_0_p_10_0_0_0(line(vec![p(0.0, 0.0), p(10.0, 0.0)]), line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]), 8.0)]
+#[case::shape_point_p_0_0_0_0(Shape::Point(p(0.0, 0.0)), line(vec![p(0.0, 1.0), p(3.0, 1.0)]), 10.0_f64.sqrt())]
+#[case::line_vec_p_1_0_0_5_p_4_0_0_5(line(vec![p(-1.0, 0.5), p(4.0, 0.5)]), polygon(vec![p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 0.0)]), 2.0)]
+#[case::multipoint_vec_p_0_0_0_0_p_5_0_5_0(multipoint(vec![p(0.0, 0.0), p(5.0, 5.0)]), line(vec![p(0.0, 1.0), p(10.0, 1.0)]), 41.0_f64.sqrt())]
+fn continuous_hausdorff_matches_known_fixtures(
+    #[case] left: Shape,
+    #[case] right: Shape,
+    #[case] expected: f64,
+) {
+    assert_hausdorff_close(
+        hausdorff_distance(&left, &right, Some(1e-9), 1.0).unwrap(),
+        expected,
+        1e-9,
+    );
 }
 
 #[test]
@@ -404,26 +388,19 @@ fn continuous_hausdorff_point_semantics() {
     );
 }
 
-#[test]
-fn point_targets_keep_interior_and_endpoint_maxima() {
-    for (source, target, expected) in [
-        (
-            line(vec![p(0.0, 0.0), p(2.0, 0.0)]),
-            multipoint(vec![p(0.0, 1.0), p(1.0, 1.0), p(2.0, 1.0)]),
-            1.25_f64.sqrt(),
-        ),
-        (
-            line(vec![p(0.0, 0.0), p(1.0, 0.0)]),
-            multipoint(vec![p(0.0, 1.0), p(0.6, 0.8)]),
-            1.0,
-        ),
-    ] {
-        assert_hausdorff_close(
-            hausdorff_distance(&source, &target, Some(1e-10), 1.0).unwrap(),
-            expected,
-            1e-10,
-        );
-    }
+#[rstest::rstest]
+#[case::line_vec_p_0_0_0_0_p_2_0_0_0(line(vec![p(0.0, 0.0), p(2.0, 0.0)]), multipoint(vec![p(0.0, 1.0), p(1.0, 1.0), p(2.0, 1.0)]), 1.25_f64.sqrt())]
+#[case::line_vec_p_0_0_0_0_p_1_0_0_0(line(vec![p(0.0, 0.0), p(1.0, 0.0)]), multipoint(vec![p(0.0, 1.0), p(0.6, 0.8)]), 1.0)]
+fn point_targets_keep_interior_and_endpoint_maxima(
+    #[case] source: Shape,
+    #[case] target: Shape,
+    #[case] expected: f64,
+) {
+    assert_hausdorff_close(
+        hausdorff_distance(&source, &target, Some(1e-10), 1.0).unwrap(),
+        expected,
+        1e-10,
+    );
 }
 
 #[test]
@@ -443,24 +420,29 @@ fn backtracking_collinear_line_keeps_its_full_support() {
     );
 }
 
-#[test]
-fn packed_hausdorff_columns_preserve_translations_within_bound() {
-    for count in [2, 3, 4, 9, 17] {
-        let xs: Vec<_> = (0..count).map(f64::from).collect();
-        let ys: Vec<_> = (0..count).map(|i| f64::from(i % 2)).collect();
-        let shifted: Vec<_> = ys.iter().map(|y| y + 0.25).collect();
-        let value =
-            hausdorff_distance_line_columns(&xs, &ys, &xs, &shifted, Some(1e-9), 1.0).unwrap();
-        assert_hausdorff_close(value, 0.25, 1e-9);
-    }
+#[rstest::rstest]
+#[case::count_2(2)]
+#[case::count_3(3)]
+#[case::count_4(4)]
+#[case::count_9(9)]
+#[case::count_17(17)]
+fn packed_hausdorff_columns_preserve_translations_within_bound(#[case] count: i32) {
+    let xs: Vec<_> = (0..count).map(f64::from).collect();
+    let ys: Vec<_> = (0..count).map(|i| f64::from(i % 2)).collect();
+    let shifted: Vec<_> = ys.iter().map(|y| y + 0.25).collect();
+    let value = hausdorff_distance_line_columns(&xs, &ys, &xs, &shifted, Some(1e-9), 1.0).unwrap();
+    assert_hausdorff_close(value, 0.25, 1e-9);
 }
 
-#[test]
-fn distance_3d_with_parts_matches_brute_oracle() {
-    let long_line = with_z(dense_line(0.0, 0.0, 2_000), 0.0);
-    let crossing_a = with_z(line(vec![p(0.0, 0.0), p(10.0, 10.0)]), 0.0);
-    let crossing_b = with_z(line(vec![p(5.0, 0.0), p(5.0, 10.0)]), 0.0);
-    let boundary = with_z(
+#[rstest::rstest]
+#[case::point_long_line(
+    with_z(Shape::Point(p(0.0, 0.0)), 0.0),
+    with_z(dense_line(0.0, 0.0, 2_000), 0.0)
+)]
+#[case::crossing(with_z(line(vec![p(0.0, 0.0), p(10.0, 10.0)]), 0.0), with_z(line(vec![p(5.0, 0.0), p(5.0, 10.0)]), 0.0))]
+#[case::filled(
+    with_z(Shape::Point(p(1.0, 1.0)), 0.0),
+    with_z(
         polygon(vec![
             p(0.0, 0.0),
             p(4.0, 0.0),
@@ -469,41 +451,28 @@ fn distance_3d_with_parts_matches_brute_oracle() {
             p(0.0, 0.0),
         ]),
         0.0,
+    )
+)]
+#[case::huge(
+    with_z(Shape::Point(p(0.0, 0.0)), 0.0),
+    with_z(Shape::Point(p(1e150, 1e150)), 0.0)
+)]
+#[case::tiny(
+    with_z(Shape::Point(p(1e-200, 1e-200)), 0.0),
+    with_z(Shape::Point(p(0.0, 0.0)), 0.0)
+)]
+#[case::ignore_m(Shape::Point(pzm(0.0, 0.0, 0.0, 1e200)), Shape::Point(pzm(3.0, 4.0, 12.0, -1e200)))]
+#[case::multipoint_line(with_z(multipoint(vec![p(0.0, 0.0), p(10.0, 0.0)]), 0.0), with_z(line(vec![p(5.0, 5.0), p(5.0, -5.0)]), 0.0))]
+fn distance_3d_with_parts_matches_brute_oracle(#[case] left_z: Shape, #[case] right_z: Shape) {
+    let left_parts = Distance3dParts::build(&left_z);
+    let right_parts = Distance3dParts::build(&right_z);
+    let brute = distance_3d_brute_parts(&left_parts, &right_parts).expect("exact brute distance");
+    let pruned = distance_3d_with_parts(&left_parts, &right_parts).expect("exact pruned distance");
+    assert_eq!(
+        pruned.to_bits(),
+        brute.to_bits(),
+        "left={left_z:?} right={right_z:?}"
     );
-    let cases = [
-        (with_z(Shape::Point(p(0.0, 0.0)), 0.0), long_line),
-        (crossing_a, crossing_b),
-        (with_z(Shape::Point(p(1.0, 1.0)), 0.0), boundary),
-        (
-            with_z(Shape::Point(p(0.0, 0.0)), 0.0),
-            with_z(Shape::Point(p(1e150, 1e150)), 0.0),
-        ),
-        (
-            with_z(Shape::Point(p(1e-200, 1e-200)), 0.0),
-            with_z(Shape::Point(p(0.0, 0.0)), 0.0),
-        ),
-        (
-            Shape::Point(pzm(0.0, 0.0, 0.0, 1e200)),
-            Shape::Point(pzm(3.0, 4.0, 12.0, -1e200)),
-        ),
-        (
-            with_z(multipoint(vec![p(0.0, 0.0), p(10.0, 0.0)]), 0.0),
-            with_z(line(vec![p(5.0, 5.0), p(5.0, -5.0)]), 0.0),
-        ),
-    ];
-    for (left_z, right_z) in cases {
-        let left_parts = Distance3dParts::build(&left_z);
-        let right_parts = Distance3dParts::build(&right_z);
-        let brute =
-            distance_3d_brute_parts(&left_parts, &right_parts).expect("exact brute distance");
-        let pruned =
-            distance_3d_with_parts(&left_parts, &right_parts).expect("exact pruned distance");
-        assert_eq!(
-            pruned.to_bits(),
-            brute.to_bits(),
-            "left={left_z:?} right={right_z:?}"
-        );
-    }
 }
 
 #[test]
@@ -575,13 +544,13 @@ fn facet_simd_extreme_coords_matches_scalar_oracle() {
     }
 }
 
-#[test]
-fn continuous_hausdorff_keeps_extreme_collinear_translation() {
-    for segment_count in [33, 65] {
-        let left = extreme_coord_line(segment_count);
-        let right = left.translate(1e149, 0.0).expect("translate extreme line");
-        let expected = ((1e150_f64 + 1e149) - 1e150).max((-1e150_f64 + 1e149) + 1e150);
-        let actual = hausdorff_distance(&left, &right, Some(1e137), 1.0).unwrap();
-        assert_hausdorff_close(actual, expected, 1e137);
-    }
+#[rstest::rstest]
+#[case::segment_count_33(33)]
+#[case::segment_count_65(65)]
+fn continuous_hausdorff_keeps_extreme_collinear_translation(#[case] segment_count: usize) {
+    let left = extreme_coord_line(segment_count);
+    let right = left.translate(1e149, 0.0).expect("translate extreme line");
+    let expected = ((1e150_f64 + 1e149) - 1e150).max((-1e150_f64 + 1e149) + 1e150);
+    let actual = hausdorff_distance(&left, &right, Some(1e137), 1.0).unwrap();
+    assert_hausdorff_close(actual, expected, 1e137);
 }

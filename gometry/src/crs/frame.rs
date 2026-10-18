@@ -586,27 +586,28 @@ mod tests {
     /// checklist would unify them, yet the same raw coordinate lands ~3000 km
     /// apart because the deriving conversion differs. 3857/3395 likewise
     /// (~32.75 km in Y), and 4326/4258 differ by datum.
-    #[test]
+    #[rstest::rstest]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn compatible_rejects_same_attribute_different_conversion() {
+    #[case::epsg_2180("EPSG:2180", "EPSG:2177")]
+    #[case::epsg_3857("EPSG:3857", "EPSG:3395")]
+    #[case::epsg_4326("EPSG:4326", "EPSG:4258")]
+    #[case::epsg_4326_e37ab5f0("EPSG:4326", "EPSG:4979")]
+    fn compatible_rejects_same_attribute_different_conversion(
+        #[case] left: &'static str,
+        #[case] right: &'static str,
+    ) {
         let frame = |code: &'static str| Frame::new(Some(crs_arc_static(code)), None).unwrap();
-        for (left, right) in [
-            ("EPSG:2180", "EPSG:2177"),
-            ("EPSG:3857", "EPSG:3395"),
-            ("EPSG:4326", "EPSG:4258"),
-            ("EPSG:4326", "EPSG:4979"),
-        ] {
-            let Err(err) = frame(left).compatible(&frame(right), "intersection") else {
-                panic!("{left} and {right} are different frames, yet resolved to one label");
-            };
-            assert!(
-                matches!(
-                    err.kind(),
-                    crate::error::ErrorKind::Frame(FrameError::CrsMismatch { .. })
-                ),
-                "{left} vs {right} must fail as a CRS mismatch, got {err:?}"
-            );
-        }
+
+        let Err(err) = frame(left).compatible(&frame(right), "intersection") else {
+            panic!("{left} and {right} are different frames, yet resolved to one label");
+        };
+        assert!(
+            matches!(
+                err.kind(),
+                crate::error::ErrorKind::Frame(FrameError::CrsMismatch { .. })
+            ),
+            "{left} vs {right} must fail as a CRS mismatch, got {err:?}"
+        );
     }
 
     #[test]

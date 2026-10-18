@@ -1,94 +1,98 @@
-#[test]
-fn oblique_polygon_line_contacts_keep_boundary_interior_points() {
+#[rstest::rstest]
+#[case::case_22(22)]
+#[case::case_29(29)]
+fn oblique_polygon_line_contacts_keep_boundary_interior_points(#[case] case: usize) {
     let polygon = Shape::Polygon(radial_polygon(97));
-    for case in [22, 29] {
-        let line = oscillating_line(case);
-        assert_eq!(
-            graph_relate_shapes(&polygon, &line).unwrap().text(),
-            "1F20F1102",
-            "radial case {case}: polygon/line"
-        );
-        assert_eq!(
-            graph_relate_shapes(&line, &polygon).unwrap().text(),
-            "101FF0212",
-            "radial case {case}: line/polygon"
-        );
-        let polygon_plan = PreparedPlan::transient(&polygon);
-        let line_plan = PreparedPlan::transient(&line);
-        assert_eq!(
-            graph_relate_data(&polygon_plan, &line_plan).unwrap().text(),
-            "1F20F1102",
-            "radial case {case}: prepared polygon/line"
-        );
-        assert_eq!(
-            graph_relate_data(&line_plan, &polygon_plan).unwrap().text(),
-            "101FF0212",
-            "radial case {case}: prepared line/polygon"
-        );
-    }
+
+    let line = oscillating_line(case);
+    assert_eq!(
+        graph_relate_shapes(&polygon, &line).unwrap().text(),
+        "1F20F1102",
+        "radial case {case}: polygon/line"
+    );
+    assert_eq!(
+        graph_relate_shapes(&line, &polygon).unwrap().text(),
+        "101FF0212",
+        "radial case {case}: line/polygon"
+    );
+    let polygon_plan = PreparedPlan::transient(&polygon);
+    let line_plan = PreparedPlan::transient(&line);
+    assert_eq!(
+        graph_relate_data(&polygon_plan, &line_plan).unwrap().text(),
+        "1F20F1102",
+        "radial case {case}: prepared polygon/line"
+    );
+    assert_eq!(
+        graph_relate_data(&line_plan, &polygon_plan).unwrap().text(),
+        "101FF0212",
+        "radial case {case}: prepared line/polygon"
+    );
 }
-#[test]
-fn polygon_line_boundary_interior_remains_empty_without_contact() {
+#[rstest::rstest]
+#[case::inside(
+    "inside",
+    Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(2.0, 2.0),
+                Point::new_raw_xy(3.0, 1.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    ),
+    "102FF1FF2",
+    "1FF0FF212"
+)]
+#[case::outside(
+    "outside",
+    Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-20.0, -20.0),
+                Point::new_raw_xy(-15.0, -15.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    ),
+    "FF2FF1102",
+    "FF1FF0212"
+)]
+#[case::endpoint_contact(
+    "endpoint contact",
+    Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-1.0, 0.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    ),
+    "FF2F01102",
+    "FF1F00212"
+)]
+fn polygon_line_boundary_interior_remains_empty_without_contact(
+    #[case] name: &'static str,
+    #[case] line: Shape,
+    #[case] expected: &'static str,
+    #[case] reverse_expected: &'static str,
+) {
     let polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
-    for (name, line, expected, reverse_expected) in [
-        (
-            "inside",
-            Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(1.0, 1.0),
-                        Point::new_raw_xy(2.0, 2.0),
-                        Point::new_raw_xy(3.0, 1.0),
-                    ])
-                    .unwrap(),
-                )
-                .unwrap(),
-            ),
-            "102FF1FF2",
-            "1FF0FF212",
-        ),
-        (
-            "outside",
-            Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-20.0, -20.0),
-                        Point::new_raw_xy(-15.0, -15.0),
-                    ])
-                    .unwrap(),
-                )
-                .unwrap(),
-            ),
-            "FF2FF1102",
-            "FF1FF0212",
-        ),
-        (
-            "endpoint contact",
-            Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-1.0, 0.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
-                .unwrap(),
-            ),
-            "FF2F01102",
-            "FF1F00212",
-        ),
-    ] {
-        assert_eq!(
-            graph_relate_shapes(&polygon, &line).unwrap().text(),
-            expected,
-            "{name}: polygon/line"
-        );
-        assert_eq!(
-            graph_relate_shapes(&line, &polygon).unwrap().text(),
-            reverse_expected,
-            "{name}: line/polygon"
-        );
-    }
+
+    assert_eq!(
+        graph_relate_shapes(&polygon, &line).unwrap().text(),
+        expected,
+        "{name}: polygon/line"
+    );
+    assert_eq!(
+        graph_relate_shapes(&line, &polygon).unwrap().text(),
+        reverse_expected,
+        "{name}: line/polygon"
+    );
 }
 #[test]
 fn polygon_line_relation_covers_line_walk_and_boundary_cases() {
@@ -229,25 +233,28 @@ fn a_shared_segment_split_by_the_other_operand_keeps_both_owners() {
     assert_eq!(graph_relate_shapes(&a, &b).unwrap().text(), "1F1F00102");
     assert_eq!(graph_relate_shapes_geographic(&a, &b).text(), "1F1F00102");
 }
-#[test]
-fn point_polygon_relation_matches_known_matrices() {
+#[rstest::rstest]
+#[case::inside("inside", 2.0, 2.0, "0F2FF1FF2")]
+#[case::boundary("boundary", 4.0, 2.0, "FF20F1FF2")]
+#[case::vertex("vertex", 0.0, 0.0, "FF20F1FF2")]
+#[case::outside("outside", 9.0, 9.0, "FF2FF10F2")]
+fn point_polygon_relation_matches_known_matrices(
+    #[case] name: &'static str,
+    #[case] x: f64,
+    #[case] y: f64,
+    #[case] expected: &'static str,
+) {
     let square = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
-    for (name, x, y, expected) in [
-        ("inside", 2.0, 2.0, "0F2FF1FF2"),
-        ("boundary", 4.0, 2.0, "FF20F1FF2"),
-        ("vertex", 0.0, 0.0, "FF20F1FF2"),
-        ("outside", 9.0, 9.0, "FF2FF10F2"),
-    ] {
-        let point = Shape::Point(crate::geometry::Point::new_raw_xy(x, y));
-        let left = PreparedPlan::transient(&square);
-        let right = PreparedPlan::transient(&point);
-        let forward = graph_relate_data(&left, &right).unwrap();
-        assert_eq!(forward.text(), expected, "{name} polygon-first");
-        let reverse = graph_relate_data(&right, &left).unwrap();
-        assert_eq!(
-            reverse.text(),
-            forward.transpose().text(),
-            "{name} point-first is the transpose"
-        );
-    }
+
+    let point = Shape::Point(crate::geometry::Point::new_raw_xy(x, y));
+    let left = PreparedPlan::transient(&square);
+    let right = PreparedPlan::transient(&point);
+    let forward = graph_relate_data(&left, &right).unwrap();
+    assert_eq!(forward.text(), expected, "{name} polygon-first");
+    let reverse = graph_relate_data(&right, &left).unwrap();
+    assert_eq!(
+        reverse.text(),
+        forward.transpose().text(),
+        "{name} point-first is the transpose"
+    );
 }

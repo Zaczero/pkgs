@@ -35,86 +35,98 @@ fn geographic_line_closedness_uses_quotient_vertex_identity() {
     assert!(line_is_closed(&line(&[point(-0.0, -0.0), point(0.0, 0.0)])));
 }
 
-#[test]
-fn ogc_mod2_multiline_point_relations_have_known_answers() {
-    let point = Point::new_raw_xy;
+#[rstest::rstest]
+#[case::odd_incidence_boundary(
+    "odd-incidence boundary",
+    Point::new_raw_xy(0.0, 0.0),
+    "F0FFFF102",
+    "FF10F0FF2",
+    false,
+    true,
+    true,
+    false
+)]
+#[case::even_incidence_shared_node(
+    "even-incidence shared node",
+    Point::new_raw_xy(4.0, 0.0),
+    "0FFFFF102",
+    "0F1FF0FF2",
+    true,
+    true,
+    false,
+    false
+)]
+#[case::off_line_point(
+    "off-line point",
+    Point::new_raw_xy(7.0, 9.0),
+    "FF0FFF102",
+    "FF1FF00F2",
+    false,
+    false,
+    false,
+    true
+)]
+fn ogc_mod2_multiline_point_relations_have_known_answers(
+    #[case] name: &'static str,
+    #[case] point: Point,
+    #[case] point_first: &'static str,
+    #[case] multiline_first: &'static str,
+    #[case] contains: bool,
+    #[case] covers: bool,
+    #[case] touches: bool,
+    #[case] disjoint: bool,
+) {
     let multiline = Shape::MultiLineString(
         MultiLineString::try_new(CoordinateAxes::XY, vec![
             MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&[point(0.0, 0.0), point(4.0, 0.0)]).unwrap(),
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(4.0, 0.0),
+                    ])
+                    .unwrap(),
                 )
                 .expect("test line is valid"),
             ),
             MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&[point(4.0, 0.0), point(4.0, 4.0)]).unwrap(),
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(4.0, 0.0),
+                        Point::new_raw_xy(4.0, 4.0),
+                    ])
+                    .unwrap(),
                 )
                 .expect("test line is valid"),
             ),
         ])
         .unwrap(),
     );
-    let cases = [
-        (
-            "odd-incidence boundary",
-            point(0.0, 0.0),
-            "F0FFFF102",
-            "FF10F0FF2",
-            false,
-            true,
-            true,
-            false,
-        ),
-        (
-            "even-incidence shared node",
-            point(4.0, 0.0),
-            "0FFFFF102",
-            "0F1FF0FF2",
-            true,
-            true,
-            false,
-            false,
-        ),
-        (
-            "off-line point",
-            point(7.0, 9.0),
-            "FF0FFF102",
-            "FF1FF00F2",
-            false,
-            false,
-            false,
-            true,
-        ),
-    ];
 
-    for (name, point, point_first, multiline_first, contains, covers, touches, disjoint) in cases {
-        let point = Shape::Point(point);
-        assert_eq!(point.relate(&multiline).unwrap(), point_first, "{name}");
-        assert_eq!(multiline.relate(&point).unwrap(), multiline_first, "{name}");
+    let point = Shape::Point(point);
+    assert_eq!(point.relate(&multiline).unwrap(), point_first, "{name}");
+    assert_eq!(multiline.relate(&point).unwrap(), multiline_first, "{name}");
 
-        assert!(!point.contains(&multiline).unwrap(), "{name}");
-        assert!(!point.contains_properly(&multiline).unwrap(), "{name}");
-        assert!(!point.covers(&multiline).unwrap(), "{name}");
-        assert_eq!(point.within(&multiline).unwrap(), contains, "{name}");
-        assert_eq!(point.covered_by(&multiline).unwrap(), covers, "{name}");
-        assert_eq!(point.touches(&multiline).unwrap(), touches, "{name}");
-        assert_eq!(point.intersects(&multiline).unwrap(), !disjoint, "{name}");
-        assert_eq!(point.disjoint(&multiline).unwrap(), disjoint, "{name}");
+    assert!(!point.contains(&multiline).unwrap(), "{name}");
+    assert!(!point.contains_properly(&multiline).unwrap(), "{name}");
+    assert!(!point.covers(&multiline).unwrap(), "{name}");
+    assert_eq!(point.within(&multiline).unwrap(), contains, "{name}");
+    assert_eq!(point.covered_by(&multiline).unwrap(), covers, "{name}");
+    assert_eq!(point.touches(&multiline).unwrap(), touches, "{name}");
+    assert_eq!(point.intersects(&multiline).unwrap(), !disjoint, "{name}");
+    assert_eq!(point.disjoint(&multiline).unwrap(), disjoint, "{name}");
 
-        assert_eq!(multiline.contains(&point).unwrap(), contains, "{name}");
-        assert_eq!(
-            multiline.contains_properly(&point).unwrap(),
-            contains,
-            "{name}"
-        );
-        assert_eq!(multiline.covers(&point).unwrap(), covers, "{name}");
-        assert!(!multiline.within(&point).unwrap(), "{name}");
-        assert!(!multiline.covered_by(&point).unwrap(), "{name}");
-        assert_eq!(multiline.touches(&point).unwrap(), touches, "{name}");
-        assert_eq!(multiline.intersects(&point).unwrap(), !disjoint, "{name}");
-        assert_eq!(multiline.disjoint(&point).unwrap(), disjoint, "{name}");
-    }
+    assert_eq!(multiline.contains(&point).unwrap(), contains, "{name}");
+    assert_eq!(
+        multiline.contains_properly(&point).unwrap(),
+        contains,
+        "{name}"
+    );
+    assert_eq!(multiline.covers(&point).unwrap(), covers, "{name}");
+    assert!(!multiline.within(&point).unwrap(), "{name}");
+    assert!(!multiline.covered_by(&point).unwrap(), "{name}");
+    assert_eq!(multiline.touches(&point).unwrap(), touches, "{name}");
+    assert_eq!(multiline.intersects(&point).unwrap(), !disjoint, "{name}");
+    assert_eq!(multiline.disjoint(&point).unwrap(), disjoint, "{name}");
 }
 
 #[test]
@@ -178,71 +190,69 @@ mod convex_tests {
 
     /// The atan2-free [`shell_is_convex`] must agree with the oracle on
     /// representative general-position rings of each admitted class.
-    #[test]
-    fn convexity_matches_oracle_on_curated_rings() {
-        let p = |x, y| Point::new_raw_xy(x, y);
-        let cases = [
-            ("convex_cw_triangle", vec![
-                p(-3.0, 3.0),
-                p(2.0, -2.0),
-                p(1.0, -4.0),
-            ]),
-            ("convex_ccw_pentagon", vec![
-                p(-3.0, -4.0),
-                p(3.0, -1.0),
-                p(3.0, 4.0),
-                p(-1.0, 1.0),
-                p(-2.0, -1.0),
-            ]),
-            ("simple_reflex_ccw", vec![
-                p(-2.0, 1.0),
-                p(-2.0, 3.0),
-                p(-4.0, -4.0),
-                p(0.0, 3.0),
-            ]),
-            ("simple_reflex_cw", vec![
-                p(-1.0, 0.0),
-                p(3.0, 1.0),
-                p(0.0, -1.0),
-                p(-1.0, -3.0),
-                p(0.0, 0.0),
-                p(-4.0, -1.0),
-            ]),
-            ("longer_reflex", vec![
-                p(-1.0, 0.0),
-                p(-1.0, -2.0),
-                p(3.0, 3.0),
-                p(2.0, -1.0),
-                p(3.0, -2.0),
-                p(-2.0, -4.0),
-                p(-4.0, -4.0),
-            ]),
-            ("self_crossing_six", vec![
-                p(3.0, 4.0),
-                p(1.0, -2.0),
-                p(-2.0, 3.0),
-                p(-2.0, -4.0),
-                p(3.0, -2.0),
-                p(-1.0, 3.0),
-            ]),
-            ("self_crossing_eight", vec![
-                p(0.0, -3.0),
-                p(-2.0, 0.0),
-                p(-3.0, -1.0),
-                p(-1.0, 4.0),
-                p(-1.0, 3.0),
-                p(-2.0, 4.0),
-                p(0.0, -1.0),
-                p(3.0, 1.0),
-            ]),
-        ];
-        for (name, ring) in cases {
-            assert_eq!(
-                shell_is_convex(ring.as_slice()),
-                oracle_convex(&ring),
-                "convexity disagreement in {name}: {ring:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::convex_cw_triangle("convex_cw_triangle", vec![
+        Point::new_raw_xy(-3.0, 3.0),
+        Point::new_raw_xy(2.0, -2.0),
+        Point::new_raw_xy(1.0, -4.0),
+    ])]
+    #[case::convex_ccw_pentagon("convex_ccw_pentagon", vec![
+        Point::new_raw_xy(-3.0, -4.0),
+        Point::new_raw_xy(3.0, -1.0),
+        Point::new_raw_xy(3.0, 4.0),
+        Point::new_raw_xy(-1.0, 1.0),
+        Point::new_raw_xy(-2.0, -1.0),
+    ])]
+    #[case::simple_reflex_ccw("simple_reflex_ccw", vec![
+        Point::new_raw_xy(-2.0, 1.0),
+        Point::new_raw_xy(-2.0, 3.0),
+        Point::new_raw_xy(-4.0, -4.0),
+        Point::new_raw_xy(0.0, 3.0),
+    ])]
+    #[case::simple_reflex_cw("simple_reflex_cw", vec![
+        Point::new_raw_xy(-1.0, 0.0),
+        Point::new_raw_xy(3.0, 1.0),
+        Point::new_raw_xy(0.0, -1.0),
+        Point::new_raw_xy(-1.0, -3.0),
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(-4.0, -1.0),
+    ])]
+    #[case::longer_reflex("longer_reflex", vec![
+        Point::new_raw_xy(-1.0, 0.0),
+        Point::new_raw_xy(-1.0, -2.0),
+        Point::new_raw_xy(3.0, 3.0),
+        Point::new_raw_xy(2.0, -1.0),
+        Point::new_raw_xy(3.0, -2.0),
+        Point::new_raw_xy(-2.0, -4.0),
+        Point::new_raw_xy(-4.0, -4.0),
+    ])]
+    #[case::self_crossing_six("self_crossing_six", vec![
+        Point::new_raw_xy(3.0, 4.0),
+        Point::new_raw_xy(1.0, -2.0),
+        Point::new_raw_xy(-2.0, 3.0),
+        Point::new_raw_xy(-2.0, -4.0),
+        Point::new_raw_xy(3.0, -2.0),
+        Point::new_raw_xy(-1.0, 3.0),
+    ])]
+    #[case::self_crossing_eight("self_crossing_eight", vec![
+        Point::new_raw_xy(0.0, -3.0),
+        Point::new_raw_xy(-2.0, 0.0),
+        Point::new_raw_xy(-3.0, -1.0),
+        Point::new_raw_xy(-1.0, 4.0),
+        Point::new_raw_xy(-1.0, 3.0),
+        Point::new_raw_xy(-2.0, 4.0),
+        Point::new_raw_xy(0.0, -1.0),
+        Point::new_raw_xy(3.0, 1.0),
+    ])]
+    fn convexity_matches_oracle_on_curated_rings(
+        #[case] name: &'static str,
+        #[case] ring: Vec<Point>,
+    ) {
+        assert_eq!(
+            shell_is_convex(ring.as_slice()),
+            oracle_convex(&ring),
+            "convexity disagreement in {name}: {ring:?}"
+        );
     }
 
     /// Collinear and degenerate cases excluded from the general-position table.
@@ -429,56 +439,79 @@ mod convex_tests {
         }
     }
 
-    #[test]
-    fn prepared_intersects_agrees_with_the_relate_matrix() {
+    #[rstest::rstest]
+    #[case::donut(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "POLYGON ((4 4,6 4,6 6,4 6,4 4))"
+    )]
+    #[case::donut_60e92e28(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "POLYGON ((3 4,6 4,6 6,3 6,3 4))"
+    )]
+    #[case::donut_4674ddcc(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "POLYGON ((2 4,6 4,6 6,2 6,2 4))"
+    )]
+    #[case::donut_3d36e8b3(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "POLYGON ((-1 -1,11 -1,11 11,-1 11,-1 -1))"
+    )]
+    #[case::donut_d9019745(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "LINESTRING (4 5,6 5)"
+    )]
+    #[case::donut_5d0f9fd8(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "LINESTRING (4 5,8 5)"
+    )]
+    #[case::donut_43a5172c(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "MULTIPOINT ((5 5),(20 20))"
+    )]
+    #[case::donut_dd28d030(
+        "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
+        "MULTIPOINT ((5 5),(1 1))"
+    )]
+    #[case::polygon_0_0_4_0_0_4_0_0("POLYGON ((0 0,4 0,0 4,0 0))", "POLYGON ((4 0,8 0,8 4,4 0))")]
+    #[case::polygon_0_0_4_0_0_4_0_0_7b87c194(
+        "POLYGON ((0 0,4 0,0 4,0 0))",
+        "POLYGON ((4.5 0,8 0,8 4,4.5 0))"
+    )]
+    #[case::multipolygon_0_0_1_0_1_1_0_1_0_0_5_5_6_5_6_6_5_6_5_5(
+        "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
+        "POLYGON ((5.5 5.5,9 5.5,9 9,5.5 9,5.5 5.5))"
+    )]
+    #[case::multipolygon_0_0_1_0_1_1_0_1_0_0_5_5_6_5_6_6_5_6_5_5_c7adfab1(
+        "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
+        "LINESTRING (2 2,4 4)"
+    )]
+    #[case::linestring_0_0_10_10("LINESTRING (0 0,10 10)", "LINESTRING (0 10,10 0)")]
+    #[case::linestring_0_0_10_10_fa2468c3("LINESTRING (0 0,10 10)", "LINESTRING (1 0,11 10)")]
+    fn prepared_intersects_agrees_with_the_relate_matrix(
+        #[case] left: &'static str,
+        #[case] right: &'static str,
+    ) {
         // Representative probes plus boundary contact decide `intersects`
         // without the matrix; holes, touching boundaries and nesting are
         // where either half alone would answer wrongly.
-        let donut = "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))";
-        let pairs = [
-            (donut, "POLYGON ((4 4,6 4,6 6,4 6,4 4))"),
-            (donut, "POLYGON ((3 4,6 4,6 6,3 6,3 4))"),
-            (donut, "POLYGON ((2 4,6 4,6 6,2 6,2 4))"),
-            (donut, "POLYGON ((-1 -1,11 -1,11 11,-1 11,-1 -1))"),
-            (donut, "LINESTRING (4 5,6 5)"),
-            (donut, "LINESTRING (4 5,8 5)"),
-            (donut, "MULTIPOINT ((5 5),(20 20))"),
-            (donut, "MULTIPOINT ((5 5),(1 1))"),
-            ("POLYGON ((0 0,4 0,0 4,0 0))", "POLYGON ((4 0,8 0,8 4,4 0))"),
-            (
-                "POLYGON ((0 0,4 0,0 4,0 0))",
-                "POLYGON ((4.5 0,8 0,8 4,4.5 0))",
-            ),
-            (
-                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
-                "POLYGON ((5.5 5.5,9 5.5,9 9,5.5 9,5.5 5.5))",
-            ),
-            (
-                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
-                "LINESTRING (2 2,4 4)",
-            ),
-            ("LINESTRING (0 0,10 10)", "LINESTRING (0 10,10 0)"),
-            ("LINESTRING (0 0,10 10)", "LINESTRING (1 0,11 10)"),
-        ];
-        for (left, right) in pairs {
-            let left = crate::io::parse_wkt(left).unwrap();
-            let right = crate::io::parse_wkt(right).unwrap();
-            let expected = graph_relate_shapes(&left, &right).unwrap().is_intersects();
-            let (left, right) = (
-                PreparedPlan::transient(&left),
-                PreparedPlan::transient(&right),
-            );
-            assert_eq!(
-                left.intersects(&right).unwrap(),
-                expected,
-                "{left:?} {right:?}"
-            );
-            assert_eq!(
-                right.intersects(&left).unwrap(),
-                expected,
-                "{right:?} {left:?}"
-            );
-        }
+
+        let left = crate::io::parse_wkt(left).unwrap();
+        let right = crate::io::parse_wkt(right).unwrap();
+        let expected = graph_relate_shapes(&left, &right).unwrap().is_intersects();
+        let (left, right) = (
+            PreparedPlan::transient(&left),
+            PreparedPlan::transient(&right),
+        );
+        assert_eq!(
+            left.intersects(&right).unwrap(),
+            expected,
+            "{left:?} {right:?}"
+        );
+        assert_eq!(
+            right.intersects(&left).unwrap(),
+            expected,
+            "{right:?} {left:?}"
+        );
     }
 
     #[test]

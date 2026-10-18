@@ -1,72 +1,44 @@
 use super::*;
 
-#[test]
-fn point_edge_fixed_minima_agree_with_dense_karney_and_golden_oracle() {
+#[rstest::rstest]
+#[case::short_equatorial_interior("short equatorial interior", Point::new_raw_xy(0.0, 0.001), Point::new_raw_xy(-0.005, 0.0), Point::new_raw_xy(0.005, 0.0), 0.4..=0.6)]
+#[case::start_endpoint("start endpoint", Point::new_raw_xy(-3.0, 1.0), Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0), 0.0..=0.0)]
+#[case::end_endpoint("end endpoint", Point::new_raw_xy(3.0, 1.0), Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0), 1.0..=1.0)]
+#[case::long_oblique_interior("long oblique interior", Point::new_raw_xy(30.0, 22.0), Point::new_raw_xy(-70.0, 10.0), Point::new_raw_xy(80.0, 55.0), 0.01..=0.99)]
+#[case::seam_interior("seam interior", Point::new_raw_xy(180.0, 20.0), Point::new_raw_xy(175.0, 10.0), Point::new_raw_xy(-175.0, 10.0), 0.4..=0.6)]
+fn point_edge_fixed_minima_agree_with_dense_karney_and_golden_oracle(
+    #[case] name: &'static str,
+    #[case] point: Point,
+    #[case] start: Point,
+    #[case] end: Point,
+    #[case] parameter_range: std::ops::RangeInclusive<f64>,
+) {
     let frame = GeographicFrame::crs84();
     let metric = metric(&Geodesic::wgs84(), frame);
-    let cases = [
-        (
-            "short equatorial interior",
-            Point::new_raw_xy(0.0, 0.001),
-            Point::new_raw_xy(-0.005, 0.0),
-            Point::new_raw_xy(0.005, 0.0),
-            0.4..=0.6,
-        ),
-        (
-            "start endpoint",
-            Point::new_raw_xy(-3.0, 1.0),
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            0.0..=0.0,
-        ),
-        (
-            "end endpoint",
-            Point::new_raw_xy(3.0, 1.0),
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            1.0..=1.0,
-        ),
-        (
-            "long oblique interior",
-            Point::new_raw_xy(30.0, 22.0),
-            Point::new_raw_xy(-70.0, 10.0),
-            Point::new_raw_xy(80.0, 55.0),
-            0.01..=0.99,
-        ),
-        (
-            "seam interior",
-            Point::new_raw_xy(180.0, 20.0),
-            Point::new_raw_xy(175.0, 10.0),
-            Point::new_raw_xy(-175.0, 10.0),
-            0.4..=0.6,
-        ),
-    ];
-    for (name, point, start, end, parameter_range) in cases {
-        let edge = metric.chart_edge(start, end).expect("admitted fixed edge");
-        let actual = point_edge_minimum(&metric, point, start, end);
-        let expected = dense_oracle(&metric, point, &edge);
-        let gap = 4.0e-11 * metric.geodesic.a;
-        assert!(
-            actual.distance
-                >= expected - metric.geodesic_numerical_policy().evaluation_allowance(2.0),
-            "{name}: attained {} below oracle {expected}",
-            actual.distance
-        );
-        assert!(
-            actual.distance <= expected + gap,
-            "{name}: attained {} exceeds oracle {expected} by more than {gap}",
-            actual.distance
-        );
-        assert!(
-            parameter_range.contains(&actual.parameter),
-            "{name}: t={}",
-            actual.parameter
-        );
-        assert!(
-            !actual.budget_exhausted,
-            "{name}: exhausted the 128-evaluation minimum budget"
-        );
-    }
+
+    let edge = metric.chart_edge(start, end).expect("admitted fixed edge");
+    let actual = point_edge_minimum(&metric, point, start, end);
+    let expected = dense_oracle(&metric, point, &edge);
+    let gap = 4.0e-11 * metric.geodesic.a;
+    assert!(
+        actual.distance >= expected - metric.geodesic_numerical_policy().evaluation_allowance(2.0),
+        "{name}: attained {} below oracle {expected}",
+        actual.distance
+    );
+    assert!(
+        actual.distance <= expected + gap,
+        "{name}: attained {} exceeds oracle {expected} by more than {gap}",
+        actual.distance
+    );
+    assert!(
+        parameter_range.contains(&actual.parameter),
+        "{name}: t={}",
+        actual.parameter
+    );
+    assert!(
+        !actual.budget_exhausted,
+        "{name}: exhausted the 128-evaluation minimum budget"
+    );
 }
 #[test]
 fn near_antipodal_short_edge_uses_the_lipschitz_fallback() {
@@ -123,70 +95,72 @@ fn chart_parameter_trial_closes_the_near_edge_station_counterexample() {
     assert!(minimum.evaluations <= 3);
     assert!(!minimum.budget_exhausted);
 }
-#[test]
-fn chart_witness_role_nearest_preserves_minimum_measurements() {
+#[rstest::rstest]
+#[case::interior("interior", [-1.0, 1.0], [1.0, 1.0], [0.0, 0.0])]
+#[case::endpoint("endpoint", [0.0, 1.0], [1.0, 2.0], [0.0, 0.0])]
+#[case::flat("flat", [-1e-10, 1.0], [1e-10, 1.0], [0.0, 0.0])]
+#[case::seam("seam", [175.0, 10.0], [-175.0, 10.0], [180.0, 20.0])]
+#[case::polar("polar", [-45.0, 80.0], [45.0, 80.0], [0.0, 89.999_999_999])]
+#[case::pole("pole", [-45.0, 60.0], [45.0, 60.0], [0.0, 90.0])]
+#[case::degenerate("degenerate", [0.0, 1.0], [0.0, 1.0], [0.0, 0.0])]
+#[case::contact("contact", [-1.0, 0.0], [1.0, 0.0], [0.0, 0.0])]
+fn chart_witness_role_nearest_preserves_minimum_measurements(
+    #[case] name: &'static str,
+    #[case] start: [f64; 2],
+    #[case] end: [f64; 2],
+    #[case] point: [f64; 2],
+) {
     let metric = metric(&Geodesic::wgs84(), GeographicFrame::crs84());
-    for (name, start, end, point) in [
-        ("interior", [-1.0, 1.0], [1.0, 1.0], [0.0, 0.0]),
-        ("endpoint", [0.0, 1.0], [1.0, 2.0], [0.0, 0.0]),
-        ("flat", [-1e-10, 1.0], [1e-10, 1.0], [0.0, 0.0]),
-        ("seam", [175.0, 10.0], [-175.0, 10.0], [180.0, 20.0]),
-        ("polar", [-45.0, 80.0], [45.0, 80.0], [0.0, 89.999_999_999]),
-        ("pole", [-45.0, 60.0], [45.0, 60.0], [0.0, 90.0]),
-        ("degenerate", [0.0, 1.0], [0.0, 1.0], [0.0, 0.0]),
-        ("contact", [-1.0, 0.0], [1.0, 0.0], [0.0, 0.0]),
-    ] {
-        let point = Point::new_raw_xy(point[0], point[1]);
-        let edge = metric
-            .chart_edge(
-                Point::new_raw_xy(start[0], start[1]),
-                Point::new_raw_xy(end[0], end[1]),
-            )
-            .unwrap();
-        let query = |query| {
-            metric
-                .point_edge_query(point, &edge, 0.0, query, &mut PointEdgeScratch::default())
-                .unwrap()
+
+    let point = Point::new_raw_xy(point[0], point[1]);
+    let edge = metric
+        .chart_edge(
+            Point::new_raw_xy(start[0], start[1]),
+            Point::new_raw_xy(end[0], end[1]),
+        )
+        .unwrap();
+    let query = |query| {
+        metric
+            .point_edge_query(point, &edge, 0.0, query, &mut PointEdgeScratch::default())
+            .unwrap()
+    };
+    let PointEdgeQueryResult::Minimum(reference) = query(PointEdgeQuery::Minimum {
+        cutoff: f64::INFINITY,
+    }) else {
+        panic!("{name}: unbounded minimum");
+    };
+    let allowance = metric.geodesic_numerical_policy().evaluation_allowance(2.0);
+    for cutoff in [f64::INFINITY, reference.distance + allowance] {
+        let PointEdgeQueryResult::Minimum(minimum) = query(PointEdgeQuery::Minimum { cutoff })
+        else {
+            panic!("{name}: admitted minimum");
         };
-        let PointEdgeQueryResult::Minimum(reference) = query(PointEdgeQuery::Minimum {
-            cutoff: f64::INFINITY,
-        }) else {
-            panic!("{name}: unbounded minimum");
+        let PointEdgeQueryResult::Minimum(nearest) = query(PointEdgeQuery::Nearest { cutoff })
+        else {
+            panic!("{name}: admitted nearest");
         };
-        let allowance = metric.geodesic_numerical_policy().evaluation_allowance(2.0);
-        for cutoff in [f64::INFINITY, reference.distance + allowance] {
-            let PointEdgeQueryResult::Minimum(minimum) = query(PointEdgeQuery::Minimum { cutoff })
-            else {
-                panic!("{name}: admitted minimum");
-            };
-            let PointEdgeQueryResult::Minimum(nearest) = query(PointEdgeQuery::Nearest { cutoff })
-            else {
-                panic!("{name}: admitted nearest");
-            };
-            approx::assert_abs_diff_eq!(minimum.distance, nearest.distance, epsilon = allowance,);
-            approx::assert_abs_diff_eq!(
-                minimum.lower_bound,
-                nearest.lower_bound,
-                epsilon = allowance,
+        approx::assert_abs_diff_eq!(minimum.distance, nearest.distance, epsilon = allowance,);
+        approx::assert_abs_diff_eq!(
+            minimum.lower_bound,
+            nearest.lower_bound,
+            epsilon = allowance,
+        );
+        assert_eq!(minimum.evaluations, nearest.evaluations, "{name}");
+        assert_eq!(minimum.budget_exhausted, nearest.budget_exhausted, "{name}");
+        if name == "contact" {
+            assert_eq!(minimum.distance, 0.0);
+            assert_eq!(minimum.parameter, 0.5);
+            assert_eq!(
+                edge.witness_role(nearest.parameter),
+                crate::geometry::WitnessRole::Interior
             );
-            assert_eq!(minimum.evaluations, nearest.evaluations, "{name}");
-            assert_eq!(minimum.budget_exhausted, nearest.budget_exhausted, "{name}");
-            if name == "contact" {
-                assert_eq!(minimum.distance, 0.0);
-                assert_eq!(minimum.parameter, 0.5);
-                assert_eq!(
-                    edge.witness_role(nearest.parameter),
-                    crate::geometry::WitnessRole::Interior
-                );
-                let PointEdgeQueryResult::Minimum(locate) =
-                    query(PointEdgeQuery::Locate { cutoff })
-                else {
-                    panic!("contact: admitted locate");
-                };
-                assert_eq!(locate.distance, 0.0);
-                assert_eq!(locate.parameter, 0.5);
-                assert_eq!(locate.evaluations, 3);
-            }
+            let PointEdgeQueryResult::Minimum(locate) = query(PointEdgeQuery::Locate { cutoff })
+            else {
+                panic!("contact: admitted locate");
+            };
+            assert_eq!(locate.distance, 0.0);
+            assert_eq!(locate.parameter, 0.5);
+            assert_eq!(locate.evaluations, 3);
         }
     }
 }

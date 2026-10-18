@@ -101,62 +101,58 @@ fn h3_region_certificate_covers_the_complete_rectangle() {
     }]));
 }
 
-#[test]
-fn directed_h3_bbox_retains_the_vendor_2pi_sheet() {
+#[rstest::rstest]
+#[case::raw_0x0800_1fff_ffff_ffff_u64(0x0800_1FFF_FFFF_FFFF_u64, 0_u8)]
+// Ordinary non-pentagon away from both poles.  It crosses the
+// degree seam, so erasing the accumulated lift makes this exact
+// bbox fail open to `Boundary`.
+#[case::raw_0x0805_bfff_ffff_ffff_u64(0x0805_BFFF_FFFF_FFFF_u64, 2_u8)]
+#[case::raw_0x0800_3fff_ffff_ffff_u64(0x0800_3FFF_FFFF_FFFF_u64, 2_u8)]
+#[case::raw_0x0800_5fff_ffff_ffff_u64(0x0800_5FFF_FFFF_FFFF_u64, 2_u8)]
+#[case::raw_0x0800_dfff_ffff_ffff_u64(0x0800_DFFF_FFFF_FFFF_u64, 2_u8)]
+#[case::raw_0x0810_1bff_ffff_ffff_u64(0x0810_1BFF_FFFF_FFFF_u64, 1_u8)]
+#[case::raw_0x0820_377f_ffff_ffff_u64(0x0820_377F_FFFF_FFFF_u64, 1_u8)]
+#[case::raw_0x0827_54ff_ffff_ffff_u64(0x0827_54FF_FFFF_FFFF_u64, 1_u8)]
+#[case::raw_0x0830_136f_ffff_ffff_u64(0x0830_136F_FFFF_FFFF_u64, 1_u8)]
+fn directed_h3_bbox_retains_the_vendor_2pi_sheet(#[case] raw: u64, #[case] expected: u8) {
     // The R0 polar root is Full; the next three roots exercise each
     // canonical seam form.  The remaining cells force the same carrier
     // through ordinary, polar-extremum, pentagon, and Class-III paths.
     // Every assertion calls the bbox certificate directly, before any
     // traversal can turn uncertainty into a conservative candidate.
-    for (raw, expected) in [
-        (0x0800_1FFF_FFFF_FFFF_u64, 0_u8),
-        // Ordinary non-pentagon away from both poles.  It crosses the
-        // degree seam, so erasing the accumulated lift makes this exact
-        // bbox fail open to `Boundary`.
-        (0x0805_BFFF_FFFF_FFFF_u64, 2_u8),
-        (0x0800_3FFF_FFFF_FFFF_u64, 2_u8),
-        (0x0800_5FFF_FFFF_FFFF_u64, 2_u8),
-        (0x0800_DFFF_FFFF_FFFF_u64, 2_u8),
-        (0x0810_1BFF_FFFF_FFFF_u64, 1_u8),
-        (0x0820_377F_FFFF_FFFF_u64, 1_u8),
-        (0x0827_54FF_FFFF_FFFF_u64, 1_u8),
-        (0x0830_136F_FFFF_FFFF_u64, 1_u8),
-    ] {
-        let cell = h3o::CellIndex::try_from(raw).unwrap();
-        let arcs = h3_ordered_arcs(cell).unwrap();
-        let DegreeWindowResult::Windows(CertifiedDegreeWindows { longitude, .. }) =
-            exact_h3_bbox(&arcs)
-        else {
-            panic!("{cell:?} must retain a certifiable directed longitude sheet");
-        };
-        assert_eq!(
-            match longitude {
-                CertifiedLongitudeDegrees::Full => 0,
-                CertifiedLongitudeDegrees::One(_) => 1,
-                CertifiedLongitudeDegrees::Two(_) => 2,
-            },
-            expected,
-            "{cell:?} must retain its canonical degree seam form"
-        );
-    }
+
+    let cell = h3o::CellIndex::try_from(raw).unwrap();
+    let arcs = h3_ordered_arcs(cell).unwrap();
+    let DegreeWindowResult::Windows(CertifiedDegreeWindows { longitude, .. }) =
+        exact_h3_bbox(&arcs)
+    else {
+        panic!("{cell:?} must retain a certifiable directed longitude sheet");
+    };
+    assert_eq!(
+        match longitude {
+            CertifiedLongitudeDegrees::Full => 0,
+            CertifiedLongitudeDegrees::One(_) => 1,
+            CertifiedLongitudeDegrees::Two(_) => 2,
+        },
+        expected,
+        "{cell:?} must retain its canonical degree seam form"
+    );
 }
 
-#[test]
-fn ordered_h3_arcs_certify_ordinary_pentagon_class_iii_and_both_poles() {
-    let cells = [
-        h3o::CellIndex::try_from(0x0827_54FF_FFFF_FFFF_u64).unwrap(),
-        h3o::CellIndex::try_from(0x0810_1BFF_FFFF_FFFF_u64).unwrap(),
-        h3o::CellIndex::try_from(0x0830_136F_FFFF_FFFF_u64).unwrap(),
-        h3o::CellIndex::try_from(0x0810_83FF_FFFF_FFFF_u64).unwrap(),
-        h3o::CellIndex::try_from(0x0820_327F_FFFF_FFFF_u64).unwrap(),
-        h3o::CellIndex::try_from(0x082F_297F_FFFF_FFFF_u64).unwrap(),
-    ];
-    for cell in cells {
-        let raw = cell.boundary_with_seeds();
-        let arcs = h3_ordered_arcs(cell).expect("raw ordered H3 boundary is certified");
-        assert_eq!(arcs.len(), raw.public.len());
-        assert_eq!(arcs.iter().count(), arcs.len());
-        assert!(arcs.len() <= MAX_H3_BOUNDARY_ARCS);
-        assert!(matches!(h3_fan_plan(cell), H3FanPlan::Certified(_)));
-    }
+#[rstest::rstest]
+#[case::h3o_cellindex_try_from_0x0827_54ff_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x0827_54FF_FFFF_FFFF_u64).unwrap())]
+#[case::h3o_cellindex_try_from_0x0810_1bff_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x0810_1BFF_FFFF_FFFF_u64).unwrap())]
+#[case::h3o_cellindex_try_from_0x0830_136f_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x0830_136F_FFFF_FFFF_u64).unwrap())]
+#[case::h3o_cellindex_try_from_0x0810_83ff_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x0810_83FF_FFFF_FFFF_u64).unwrap())]
+#[case::h3o_cellindex_try_from_0x0820_327f_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x0820_327F_FFFF_FFFF_u64).unwrap())]
+#[case::h3o_cellindex_try_from_0x082f_297f_ffff_ffff_u64_unwrap(h3o::CellIndex::try_from(0x082F_297F_FFFF_FFFF_u64).unwrap())]
+fn ordered_h3_arcs_certify_ordinary_pentagon_class_iii_and_both_poles(
+    #[case] cell: h3o::CellIndex,
+) {
+    let raw = cell.boundary_with_seeds();
+    let arcs = h3_ordered_arcs(cell).expect("raw ordered H3 boundary is certified");
+    assert_eq!(arcs.len(), raw.public.len());
+    assert_eq!(arcs.iter().count(), arcs.len());
+    assert!(arcs.len() <= MAX_H3_BOUNDARY_ARCS);
+    assert!(matches!(h3_fan_plan(cell), H3FanPlan::Certified(_)));
 }

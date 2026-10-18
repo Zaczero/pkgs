@@ -257,34 +257,32 @@ fn producer_triangle_receipt(stored: &[Point; 4], expected: &[Point; 4]) -> Prod
     ProducerDrawingReceipt::new(buffers, literals)
 }
 
-#[test]
-fn producer_drawing_binds_scalar_array_and_groups_storage() {
+#[rstest::rstest]
+#[case::storagetarget_scalar(StorageTarget::Scalar)]
+#[case::storagetarget_array(StorageTarget::Array)]
+#[case::storagetarget_groups(StorageTarget::Groups)]
+fn producer_drawing_binds_scalar_array_and_groups_storage(#[case] target: StorageTarget) {
     let point = Point::new_raw_xy(4.0, -2.0);
-    for target in [
-        StorageTarget::Scalar,
-        StorageTarget::Array,
-        StorageTarget::Groups,
-    ] {
-        let PublicationOutcome::Pass(finished) = finish_producer_point(target, point, point) else {
-            panic!("matching producer drawing must bind its final storage");
-        };
-        match target {
-            StorageTarget::Scalar => {
-                let (Shape::Point(actual), _) = finished.into_scalar().unwrap() else {
-                    panic!("scalar producer drawing retains its point");
-                };
-                assert_eq!(actual, point);
-            },
-            StorageTarget::Array => {
-                let (rows, _) = finished.into_array().unwrap();
-                assert_eq!(rows.len(), 1);
-            },
-            StorageTarget::Groups => {
-                let (groups, _) = finished.into_groups().unwrap();
-                assert_eq!(groups.values.len(), 1);
-                assert_eq!(groups.offsets, [0, 1]);
-            },
-        }
+
+    let PublicationOutcome::Pass(finished) = finish_producer_point(target, point, point) else {
+        panic!("matching producer drawing must bind its final storage");
+    };
+    match target {
+        StorageTarget::Scalar => {
+            let (Shape::Point(actual), _) = finished.into_scalar().unwrap() else {
+                panic!("scalar producer drawing retains its point");
+            };
+            assert_eq!(actual, point);
+        },
+        StorageTarget::Array => {
+            let (rows, _) = finished.into_array().unwrap();
+            assert_eq!(rows.len(), 1);
+        },
+        StorageTarget::Groups => {
+            let (groups, _) = finished.into_groups().unwrap();
+            assert_eq!(groups.values.len(), 1);
+            assert_eq!(groups.offsets, [0, 1]);
+        },
     }
 }
 

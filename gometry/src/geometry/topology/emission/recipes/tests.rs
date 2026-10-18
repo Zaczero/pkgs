@@ -1,35 +1,35 @@
-
-#[test]
-fn bent_and_backtracking_producers_are_not_flattened() {
-    let unsupported = [
-        (
-            vec![
-                pending_source_range(0, 0.0, 1.0, 0.0, 0.0),
-                pending_source_range(1, 1.0, 2.0, 0.0, 1.0),
-            ],
-            2.0,
-            1.0,
-        ),
-        (
-            vec![
-                pending_source_range(0, 0.0, 2.0, 0.0, 0.0),
-                pending_source_range(1, 2.0, 1.0, 0.0, 0.0),
-            ],
-            1.0,
-            0.0,
-        ),
-    ];
+#[rstest::rstest]
+#[case::vec_pending_source_range_0_0_0_1_0_0_0_0_0_pendi_8363ad6e(
+    vec![
+        pending_source_range(0, 0.0, 1.0, 0.0, 0.0),
+        pending_source_range(1, 1.0, 2.0, 0.0, 1.0),
+    ],
+    2.0,
+    1.0
+)]
+#[case::vec_pending_source_range_0_0_0_2_0_0_0_0_0_pendi_80ebfbe7(
+    vec![
+        pending_source_range(0, 0.0, 2.0, 0.0, 0.0),
+        pending_source_range(1, 2.0, 1.0, 0.0, 0.0),
+    ],
+    1.0,
+    0.0
+)]
+fn bent_and_backtracking_producers_are_not_flattened(
+    #[case] ranges: Vec<PendingSourceRange>,
+    #[case] longitude: f64,
+    #[case] latitude: f64,
+) {
     let mut work = Unmetered;
-    for (ranges, longitude, latitude) in unsupported {
-        producer_ranges(
-            ranges,
-            &ExactRational::from_f64(longitude),
-            &ExactRational::from_f64(latitude),
-            true,
-            &mut work,
-        )
-        .unwrap_err();
-    }
+
+    producer_ranges(
+        ranges,
+        &ExactRational::from_f64(longitude),
+        &ExactRational::from_f64(latitude),
+        true,
+        &mut work,
+    )
+    .unwrap_err();
 }
 
 #[test]

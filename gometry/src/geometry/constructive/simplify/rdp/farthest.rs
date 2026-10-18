@@ -596,32 +596,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn coincident_voronoi_vertices_and_initial_height_ties_preserve_maxima() {
-        for sites in [vec![(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)], vec![
-            (-1.0, -1.0),
-            (1.0, -1.0),
-            (1.0, 1.0),
-            (-1.0, 1.0),
-        ]] {
-            let queries = [(-2.0, 0.0), (0.0, 0.0), (2.0, 0.0), (0.0, 1.0)];
-            let xs: Vec<_> = sites.iter().chain(&queries).map(|&(x, _)| x).collect();
-            let ys: Vec<_> = sites.iter().chain(&queries).map(|&(_, y)| y).collect();
-            let ordinals: Vec<_> = (0..sites.len()).collect();
-            for seed in [0, 17, u64::MAX] {
-                let diagram = Diagram::build(&ordinals, &xs, &ys, [0.0, 1.0], seed).unwrap();
-                for &(x, y) in &queries {
-                    let query = XY::new(x, y);
-                    let winner = diagram.query(query, &ordinals, &xs, &ys).unwrap();
-                    let best = point_pair_distance_key(query, point(&xs, &ys, winner));
-                    for &source in &ordinals {
-                        assert!(
-                            !point_pair_distance_key(query, point(&xs, &ys, source))
-                                .cmp_distance(&best)
-                                .unwrap()
-                                .is_gt()
-                        );
-                    }
+    #[rstest::rstest]
+    #[case::vec_0_0_0_0_2_0_0_0_1_0_1_0(vec![(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)])]
+    #[case::vec_1_0_1_0_1_0_1_0_1_0_1_0_1_0_1_0(vec![
+        (-1.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (-1.0, 1.0),
+    ])]
+    fn coincident_voronoi_vertices_and_initial_height_ties_preserve_maxima(
+        #[case] sites: Vec<(f64, f64)>,
+    ) {
+        let queries = [(-2.0, 0.0), (0.0, 0.0), (2.0, 0.0), (0.0, 1.0)];
+        let xs: Vec<_> = sites.iter().chain(&queries).map(|&(x, _)| x).collect();
+        let ys: Vec<_> = sites.iter().chain(&queries).map(|&(_, y)| y).collect();
+        let ordinals: Vec<_> = (0..sites.len()).collect();
+        for seed in [0, 17, u64::MAX] {
+            let diagram = Diagram::build(&ordinals, &xs, &ys, [0.0, 1.0], seed).unwrap();
+            for &(x, y) in &queries {
+                let query = XY::new(x, y);
+                let winner = diagram.query(query, &ordinals, &xs, &ys).unwrap();
+                let best = point_pair_distance_key(query, point(&xs, &ys, winner));
+                for &source in &ordinals {
+                    assert!(
+                        !point_pair_distance_key(query, point(&xs, &ys, source))
+                            .cmp_distance(&best)
+                            .unwrap()
+                            .is_gt()
+                    );
                 }
             }
         }

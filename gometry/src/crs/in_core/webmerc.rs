@@ -167,16 +167,16 @@ mod tests {
     use super::*;
     use crate::error::ErrorKind;
 
-    #[test]
-    fn projection_poles_are_typed_domain_errors() {
-        for latitude in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
-            let error = WGS84_WEB_MERCATOR
-                .forward_xy(0.0, latitude * RAD_TO_DEG)
-                .expect_err("projection poles must not produce finite coordinates");
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Geometry(GeometryErrorKind::ProjectionDomain(_))
-            ));
-        }
+    #[rstest::rstest]
+    #[case::std_f64_consts_frac_pi_2(std::f64::consts::FRAC_PI_2)]
+    #[case::negative_std_f64_consts_frac_pi_2(-std::f64::consts::FRAC_PI_2)]
+    fn projection_poles_are_typed_domain_errors(#[case] latitude: f64) {
+        let error = WGS84_WEB_MERCATOR
+            .forward_xy(0.0, latitude * RAD_TO_DEG)
+            .expect_err("projection poles must not produce finite coordinates");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ProjectionDomain(_))
+        ));
     }
 }

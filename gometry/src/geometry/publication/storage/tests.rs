@@ -103,54 +103,54 @@ fn final_writer_rejects_present_to_missing() {
     ));
 }
 
-#[test]
-fn array_batch_preserves_missing_and_other_producer_row_domains() {
-    for (expected, actual) in [
-        (vec![], vec![]),
-        (vec![false], vec![false]),
-        (vec![true], vec![true]),
-        (vec![false], vec![true]),
-        (vec![true], vec![false]),
-        (vec![true, false], vec![false, true]),
-        (vec![true, false], vec![true]),
-    ] {
-        let correct = expected == actual;
-        let mut domain = FlatLiteralLayout::with_capacity(expected.len());
-        domain.rows.extend(
-            expected
-                .into_iter()
-                .map(|present| present.then_some(FlatRowBinding::OtherProducer)),
-        );
-        let mut writer = StreamingShapes::with_capacity(0, actual.len());
-        for present in actual {
-            if present {
-                writer.try_push(Shape::Point(xyzm(2., 3., 4., 5.))).unwrap();
-            } else {
-                writer.try_push_missing().unwrap();
-            }
-        }
-        let (storage, missing, layout) = writer.finish_parts().unwrap();
-        let batch = ArrayPublicationBatch {
-            storage: Arc::new(storage),
-            missing,
-            layout,
-            expected: domain,
-            records: Vec::new(),
-            accounts: Vec::new(),
-            drawing_only: false,
-        };
-        let result = finish_array_batch(batch, Frame::default(), &mut Unmetered);
-        if correct {
-            assert!(matches!(result.unwrap(), PublicationOutcome::Pass(_)));
+#[rstest::rstest]
+#[case::vec(vec![], vec![])]
+#[case::vec_false(vec![false], vec![false])]
+#[case::vec_true(vec![true], vec![true])]
+#[case::vec_false_443698ae(vec![false], vec![true])]
+#[case::vec_true_90108a1c(vec![true], vec![false])]
+#[case::vec_true_false(vec![true, false], vec![false, true])]
+#[case::vec_true_false_caebdbad(vec![true, false], vec![true])]
+fn array_batch_preserves_missing_and_other_producer_row_domains(
+    #[case] expected: Vec<bool>,
+    #[case] actual: Vec<bool>,
+) {
+    let correct = expected == actual;
+    let mut domain = FlatLiteralLayout::with_capacity(expected.len());
+    domain.rows.extend(
+        expected
+            .into_iter()
+            .map(|present| present.then_some(FlatRowBinding::OtherProducer)),
+    );
+    let mut writer = StreamingShapes::with_capacity(0, actual.len());
+    for present in actual {
+        if present {
+            writer.try_push(Shape::Point(xyzm(2., 3., 4., 5.))).unwrap();
         } else {
-            let Err(error) = result else {
-                panic!("a writer changed a missing or other-producer row domain");
-            };
-            assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-            ));
+            writer.try_push_missing().unwrap();
         }
+    }
+    let (storage, missing, layout) = writer.finish_parts().unwrap();
+    let batch = ArrayPublicationBatch {
+        storage: Arc::new(storage),
+        missing,
+        layout,
+        expected: domain,
+        records: Vec::new(),
+        accounts: Vec::new(),
+        drawing_only: false,
+    };
+    let result = finish_array_batch(batch, Frame::default(), &mut Unmetered);
+    if correct {
+        assert!(matches!(result.unwrap(), PublicationOutcome::Pass(_)));
+    } else {
+        let Err(error) = result else {
+            panic!("a writer changed a missing or other-producer row domain");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
     }
 }
 
@@ -182,120 +182,132 @@ fn final_writer_rejects_typed_empty_substitution() {
     ));
 }
 
-#[test]
-fn final_writer_rejects_changed_logical_domains() {
+#[rstest::rstest]
+#[case::missing_becomes_present("missing becomes present", vec![None], {
     let point = Shape::Point(xyzm(2., 3., 4., 5.));
-    let empty = Shape::Empty(
+    vec![Some(point,)]
+})]
+#[case::same_count_validity_swap(
+    "same-count validity swap",
+    {
+        let point = Shape::Point(xyzm(2., 3., 4., 5.));
+        vec![Some(point), None]
+    },
+    {
+        let point = Shape::Point(xyzm(2., 3., 4., 5.));
+        vec![None, Some(point)]
+    }
+)]
+#[case::trailing_missing_row_deletion(
+    "trailing missing row deletion",
+    {
+        let point = Shape::Point(xyzm(2., 3., 4., 5.));
+        vec![Some(point), None]
+    },
+    {
+        let point = Shape::Point(xyzm(2., 3., 4., 5.));
+        vec![Some(point)]
+    }
+)]
+#[case::all_missing_truncation("all-missing truncation", vec![None, None], vec![None])]
+#[case::zero_row_insertion("zero-row insertion", vec![], vec![None])]
+#[case::present_empty_becomes_missing("present empty becomes missing", {
+let empty = Shape::Empty(
         crate::geometry::GeometryKind::LineString,
         CoordinateAxes::XYZM,
     );
-    for (name, expected, actual) in [
-        ("missing becomes present", vec![None], vec![Some(
-            point.clone(),
-        )]),
-        (
-            "same-count validity swap",
-            vec![Some(point.clone()), None],
-            vec![None, Some(point.clone())],
-        ),
-        (
-            "trailing missing row deletion",
-            vec![Some(point.clone()), None],
-            vec![Some(point)],
-        ),
-        ("all-missing truncation", vec![None, None], vec![None]),
-        ("zero-row insertion", vec![], vec![None]),
-        ("present empty becomes missing", vec![Some(empty)], vec![
+vec![Some(empty)]
+}, vec![
             None,
-        ]),
-    ] {
-        let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
-        for (logical, shape) in expected.into_iter().enumerate() {
-            if let Some(shape) = shape {
-                rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
-                    .unwrap();
-            } else {
-                rows.try_push_missing().unwrap();
-            }
+        ])]
+fn final_writer_rejects_changed_logical_domains(
+    #[case] name: &str,
+    #[case] expected: Vec<Option<Shape>>,
+    #[case] actual: Vec<Option<Shape>>,
+) {
+    let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
+    for (logical, shape) in expected.into_iter().enumerate() {
+        if let Some(shape) = shape {
+            rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
+                .unwrap();
+        } else {
+            rows.try_push_missing().unwrap();
         }
-        let mut writer = StreamingShapes::with_capacity(0, actual.len());
-        for shape in actual {
-            if let Some(shape) = shape {
-                writer.try_push(shape).unwrap();
-            } else {
-                writer.try_push_missing().unwrap();
-            }
-        }
-        rows.writer = writer;
-        let Err(error) = rows.finish(Frame::default()) else {
-            panic!("{name}: changed final domain was published");
-        };
-        assert!(
-            matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-            ),
-            "{name}: {error:?}"
-        );
     }
-}
-
-#[test]
-fn final_writer_preserves_empty_and_missing_domains() {
-    for expected in [
-        vec![],
-        vec![None, None],
-        vec![Some(Shape::Empty(
-            crate::geometry::GeometryKind::LineString,
-            CoordinateAxes::XYZM,
-        ))],
-        vec![None, Some(Shape::Point(xyzm(2., 3., 4., 5.))), None],
-    ] {
-        let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
-        for (logical, shape) in expected.iter().cloned().enumerate() {
-            if let Some(shape) = shape {
-                rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
-                    .unwrap();
-            } else {
-                rows.try_push_missing().unwrap();
-            }
+    let mut writer = StreamingShapes::with_capacity(0, actual.len());
+    for shape in actual {
+        if let Some(shape) = shape {
+            writer.try_push(shape).unwrap();
+        } else {
+            writer.try_push_missing().unwrap();
         }
-        let result = rows.finish(Frame::default()).unwrap();
-        assert_eq!(result.len(), expected.len());
     }
-}
-
-#[test]
-fn final_writer_rejects_changed_container_structure() {
-    for (expected, actual) in [
-        ("POINT (2 3)", "MULTIPOINT ((2 3))"),
-        (
-            "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (2 3)))",
-            "GEOMETRYCOLLECTION (POINT (2 3))",
-        ),
-        ("MULTIPOINT (EMPTY, (2 3))", "MULTIPOINT ((2 3), EMPTY)"),
-        ("LINESTRING ZM EMPTY", "LINESTRING EMPTY"),
-        ("LINESTRING ZM EMPTY", "POINT ZM EMPTY"),
-    ] {
-        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
-        rows.try_push(GeometryOutput::Pending(drawing_pending(
-            crate::io::parse_wkt(expected).unwrap(),
-            0,
-        )))
-        .unwrap();
-        let mut writer = StreamingShapes::with_capacity(0, 1);
-        writer
-            .try_push(crate::io::parse_wkt(actual).unwrap())
-            .unwrap();
-        rows.writer = writer;
-        let Err(error) = rows.finish(Frame::default()) else {
-            panic!("{expected} was replaced with {actual}");
-        };
-        assert!(matches!(
+    rows.writer = writer;
+    let Err(error) = rows.finish(Frame::default()) else {
+        panic!("{name}: changed final domain was published");
+    };
+    assert!(
+        matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
+        ),
+        "{name}: {error:?}"
+    );
+}
+
+#[rstest::rstest]
+#[case::vec(vec![])]
+#[case::vec_none_none(vec![None, None])]
+#[case::vec_some_shape_empty_crate_geometry_geometrykind_16a39548(vec![Some(Shape::Empty(
+    crate::geometry::GeometryKind::LineString,
+    CoordinateAxes::XYZM,
+))])]
+#[case::vec_none_some_shape_point_xyzm_2_3_4_5_none(vec![None, Some(Shape::Point(xyzm(2., 3., 4., 5.))), None])]
+fn final_writer_preserves_empty_and_missing_domains(#[case] expected: Vec<Option<Shape>>) {
+    let mut rows = PublicationRows::with_producer_drawing_capacity(expected.len());
+    for (logical, shape) in expected.iter().cloned().enumerate() {
+        if let Some(shape) = shape {
+            rows.try_push(GeometryOutput::Pending(drawing_pending(shape, logical)))
+                .unwrap();
+        } else {
+            rows.try_push_missing().unwrap();
+        }
     }
+    let result = rows.finish(Frame::default()).unwrap();
+    assert_eq!(result.len(), expected.len());
+}
+
+#[rstest::rstest]
+#[case::point_2_3("POINT (2 3)", "MULTIPOINT ((2 3))")]
+#[case::geometrycollection_geometrycollection_point_2_3(
+    "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (2 3)))",
+    "GEOMETRYCOLLECTION (POINT (2 3))"
+)]
+#[case::multipoint_empty_2_3("MULTIPOINT (EMPTY, (2 3))", "MULTIPOINT ((2 3), EMPTY)")]
+#[case::linestring_zm_empty("LINESTRING ZM EMPTY", "LINESTRING EMPTY")]
+#[case::linestring_zm_empty_9f0aae9c("LINESTRING ZM EMPTY", "POINT ZM EMPTY")]
+fn final_writer_rejects_changed_container_structure(
+    #[case] expected: &'static str,
+    #[case] actual: &'static str,
+) {
+    let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+    rows.try_push(GeometryOutput::Pending(drawing_pending(
+        crate::io::parse_wkt(expected).unwrap(),
+        0,
+    )))
+    .unwrap();
+    let mut writer = StreamingShapes::with_capacity(0, 1);
+    writer
+        .try_push(crate::io::parse_wkt(actual).unwrap())
+        .unwrap();
+    rows.writer = writer;
+    let Err(error) = rows.finish(Frame::default()) else {
+        panic!("{expected} was replaced with {actual}");
+    };
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+    ));
 }
 
 #[test]
@@ -336,32 +348,30 @@ fn pending_append_preserves_captured_empty_structure() {
     ));
 }
 
-#[test]
-fn final_writer_rejects_xym_record_corruption_without_domain_changes() {
+#[rstest::rstest]
+#[case::point_new_raw_axes_0_0_3_0_zordinate_none_mordinate_some_0_0(Point::new_raw_axes(0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0))))]
+#[case::point_new_raw_axes_0_0_3_0_zordinate_none_mordinate_some_0_0_52a585fd(Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(0.0))))]
+#[case::point_new_raw_axes_0_0_3_0_zordinate_none_mordinate_some_7_0(Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(7.0))))]
+#[case::point_new_raw_xy_0_0_3_0(Point::new_raw_xy(-0.0, 3.0))]
+fn final_writer_rejects_xym_record_corruption_without_domain_changes(#[case] actual: Point) {
     let expected = Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0)));
-    for actual in [
-        Point::new_raw_axes(0.0, 3.0, ZOrdinate(None), MOrdinate(Some(-0.0))),
-        Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(0.0))),
-        Point::new_raw_axes(-0.0, 3.0, ZOrdinate(None), MOrdinate(Some(7.0))),
-        Point::new_raw_xy(-0.0, 3.0),
-    ] {
-        let mut rows = PublicationRows::with_producer_drawing_capacity(1);
-        rows.try_push(GeometryOutput::Pending(drawing_pending(
-            Shape::Point(expected),
-            0,
-        )))
-        .unwrap();
-        let mut writer = StreamingShapes::with_capacity(0, 1);
-        writer.try_push(Shape::Point(actual)).unwrap();
-        rows.writer = writer;
-        let Err(error) = rows.finish(Frame::default()) else {
-            panic!("the final writer changed active XYM bits or axes");
-        };
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
-    }
+
+    let mut rows = PublicationRows::with_producer_drawing_capacity(1);
+    rows.try_push(GeometryOutput::Pending(drawing_pending(
+        Shape::Point(expected),
+        0,
+    )))
+    .unwrap();
+    let mut writer = StreamingShapes::with_capacity(0, 1);
+    writer.try_push(Shape::Point(actual)).unwrap();
+    rows.writer = writer;
+    let Err(error) = rows.finish(Frame::default()) else {
+        panic!("the final writer changed active XYM bits or axes");
+    };
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+    ));
 }
 
 #[test]

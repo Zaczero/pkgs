@@ -233,25 +233,26 @@ fn area_receipt_keeps_the_selected_earcut_triangle_and_parameters() {
     assert!(draw.point.x.is_finite() && draw.point.y.is_finite());
 }
 
-#[test]
-fn periodic_alias_edges_sample_only_their_quotient_vertices() {
+#[rstest::rstest]
+#[case::coordinates_180_0_0_0_180_0_0_0([(-180.0, 0.0), (180.0, 0.0)], [-180.0, 180.0])]
+#[case::coordinates_0_0_0_0_720_0_0_0([(0.0, 0.0), (720.0, 0.0)], [0.0, 720.0])]
+fn periodic_alias_edges_sample_only_their_quotient_vertices(
+    #[case] coordinates: [(f64, f64); 2],
+    #[case] aliases: [f64; 2],
+) {
     let frame = GeographicFrame::crs84();
-    for (coordinates, aliases) in [
-        ([(-180.0, 0.0), (180.0, 0.0)], [-180.0, 180.0]),
-        ([(0.0, 0.0), (720.0, 0.0)], [0.0, 720.0]),
-    ] {
-        let source = line(&coordinates);
-        let points = source
-            .sample_points_in_domain(32, 5, TopologyDomain::Geographic(frame))
-            .unwrap();
-        assert_eq!(points.len(), 32);
-        assert!(
-            points
-                .iter()
-                .all(|point| { point.y == 0.0 && aliases.contains(&point.x) }),
-            "input={coordinates:?}, samples={points:?}"
-        );
-    }
+
+    let source = line(&coordinates);
+    let points = source
+        .sample_points_in_domain(32, 5, TopologyDomain::Geographic(frame))
+        .unwrap();
+    assert_eq!(points.len(), 32);
+    assert!(
+        points
+            .iter()
+            .all(|point| { point.y == 0.0 && aliases.contains(&point.x) }),
+        "input={coordinates:?}, samples={points:?}"
+    );
 }
 
 #[test]

@@ -14,80 +14,50 @@ use crate::geometry::{
 };
 use crate::work::Unmetered;
 
-#[test]
-fn pair_contacts_preserve_endpoint_ownership_and_each_exact_parameter() {
-    for (name, left, right, expected) in [
-        (
-            "endpoint touch",
-            [(0.0, 0.0), (2.0, 0.0)],
-            [(2.0, 0.0), (2.0, 3.0)],
-            vec![(2.0, 0.0, 1.0, 0.0)],
-        ),
-        (
-            "endpoint on interior",
-            [(0.0, 0.0), (4.0, 0.0)],
-            [(2.0, 0.0), (2.0, 3.0)],
-            vec![(2.0, 0.0, 0.5, 0.0)],
-        ),
-        (
-            "collinear endpoint touch",
-            [(0.0, 0.0), (2.0, 0.0)],
-            [(2.0, 0.0), (4.0, 0.0)],
-            vec![(2.0, 0.0, 1.0, 0.0)],
-        ),
-        (
-            "partial overlap",
-            [(0.0, 0.0), (4.0, 0.0)],
-            [(2.0, 0.0), (6.0, 0.0)],
-            vec![(4.0, 0.0, 1.0, 0.5), (2.0, 0.0, 0.5, 0.0)],
-        ),
-        (
-            "coincident reversed",
-            [(0.0, 0.0), (4.0, 0.0)],
-            [(4.0, 0.0), (0.0, 0.0)],
-            vec![(0.0, 0.0, 0.0, 1.0), (4.0, 0.0, 1.0, 0.0)],
-        ),
-        (
-            "coincident forward",
-            [(0.0, 0.0), (4.0, 0.0)],
-            [(0.0, 0.0), (4.0, 0.0)],
-            vec![(0.0, 0.0, 0.0, 0.0), (4.0, 0.0, 1.0, 1.0)],
-        ),
-    ] {
-        let sources = inventory(degrees(), &[line(&left), line(&right)]);
-        let mut actual = Vec::new();
-        exact_piece_contacts(
-            &sources.pieces[0],
-            &sources.pieces[1],
-            &mut Unmetered,
-            |point, left, right, _work| {
-                let ContactPoint::Endpoint(point) = point else {
-                    panic!("{name}: a source endpoint was reconstructed");
-                };
-                actual.push((point.clone(), left, right));
-                Ok(())
-            },
-        )
-        .expect("exact pair contacts");
-        assert_eq!(actual.len(), expected.len(), "{name}");
-        for ((point, left, right), (x, y, left_t, right_t)) in actual.iter().zip(expected) {
-            let expected = ExactChartPoint::from_rationals(
-                ExactRational::from_f64(x),
-                ExactRational::from_f64(y),
-            );
-            assert!(point.same_position(&expected).unwrap(), "{name}");
-            assert!(
-                left.try_cmp(&ExactRational::from_f64(left_t))
-                    .unwrap()
-                    .is_eq()
-            );
-            assert!(
-                right
-                    .try_cmp(&ExactRational::from_f64(right_t))
-                    .unwrap()
-                    .is_eq()
-            );
-        }
+#[rstest::rstest]
+#[case::endpoint_touch("endpoint touch", [(0.0, 0.0), (2.0, 0.0)], [(2.0, 0.0), (2.0, 3.0)], vec![(2.0, 0.0, 1.0, 0.0)])]
+#[case::endpoint_on_interior("endpoint on interior", [(0.0, 0.0), (4.0, 0.0)], [(2.0, 0.0), (2.0, 3.0)], vec![(2.0, 0.0, 0.5, 0.0)])]
+#[case::collinear_endpoint_touch("collinear endpoint touch", [(0.0, 0.0), (2.0, 0.0)], [(2.0, 0.0), (4.0, 0.0)], vec![(2.0, 0.0, 1.0, 0.0)])]
+#[case::partial_overlap("partial overlap", [(0.0, 0.0), (4.0, 0.0)], [(2.0, 0.0), (6.0, 0.0)], vec![(4.0, 0.0, 1.0, 0.5), (2.0, 0.0, 0.5, 0.0)])]
+#[case::coincident_reversed("coincident reversed", [(0.0, 0.0), (4.0, 0.0)], [(4.0, 0.0), (0.0, 0.0)], vec![(0.0, 0.0, 0.0, 1.0), (4.0, 0.0, 1.0, 0.0)])]
+#[case::coincident_forward("coincident forward", [(0.0, 0.0), (4.0, 0.0)], [(0.0, 0.0), (4.0, 0.0)], vec![(0.0, 0.0, 0.0, 0.0), (4.0, 0.0, 1.0, 1.0)])]
+fn pair_contacts_preserve_endpoint_ownership_and_each_exact_parameter(
+    #[case] name: &'static str,
+    #[case] left: [(f64, f64); 2],
+    #[case] right: [(f64, f64); 2],
+    #[case] expected: Vec<(f64, f64, f64, f64)>,
+) {
+    let sources = inventory(degrees(), &[line(&left), line(&right)]);
+    let mut actual = Vec::new();
+    exact_piece_contacts(
+        &sources.pieces[0],
+        &sources.pieces[1],
+        &mut Unmetered,
+        |point, left, right, _work| {
+            let ContactPoint::Endpoint(point) = point else {
+                panic!("{name}: a source endpoint was reconstructed");
+            };
+            actual.push((point.clone(), left, right));
+            Ok(())
+        },
+    )
+    .expect("exact pair contacts");
+    assert_eq!(actual.len(), expected.len(), "{name}");
+    for ((point, left, right), (x, y, left_t, right_t)) in actual.iter().zip(expected) {
+        let expected =
+            ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y));
+        assert!(point.same_position(&expected).unwrap(), "{name}");
+        assert!(
+            left.try_cmp(&ExactRational::from_f64(left_t))
+                .unwrap()
+                .is_eq()
+        );
+        assert!(
+            right
+                .try_cmp(&ExactRational::from_f64(right_t))
+                .unwrap()
+                .is_eq()
+        );
     }
 }
 
@@ -165,31 +135,34 @@ fn pair_refinement_refuses_primitive_work_before_emitting_a_contact() {
     ));
 }
 
-#[test]
-fn coincident_contacts_keep_each_source_occurrence_across_seam_aliases() {
-    for (longitude, alias) in [(0.0, 0.0), (180.0, -180.0)] {
-        let sources = inventory(degrees(), &[
-            line(&[(longitude, 0.0), (longitude, 4.0)]),
-            line(&[(alias, 4.0), (alias, 0.0)]),
-            line(&[(longitude, 0.0), (longitude, 4.0)]),
-        ]);
-        let mut budget = ExpansionBudget::new("contact_test", "exact chart");
-        let chart = sources.node(&mut budget).expect("coincident source noding");
-        assert_eq!(chart.nodes.len(), 2);
-        let mut owners = chart
-            .atoms
-            .iter()
-            .flat_map(|atom| &atom.owners)
-            .map(|owner| {
-                assert!(owner.source_range.start.is_zero());
-                assert!(owner.source_range.end.is_one());
-                owner.source_edge.0
-            })
-            .collect::<Vec<_>>();
-        owners.sort_unstable();
-        assert_eq!(owners, [0, 1, 2]);
-        assert_eq!(budget.used(), 0);
-    }
+#[rstest::rstest]
+#[case::longitude_0_0(0.0, 0.0)]
+#[case::longitude_180_0(180.0, -180.0)]
+fn coincident_contacts_keep_each_source_occurrence_across_seam_aliases(
+    #[case] longitude: f64,
+    #[case] alias: f64,
+) {
+    let sources = inventory(degrees(), &[
+        line(&[(longitude, 0.0), (longitude, 4.0)]),
+        line(&[(alias, 4.0), (alias, 0.0)]),
+        line(&[(longitude, 0.0), (longitude, 4.0)]),
+    ]);
+    let mut budget = ExpansionBudget::new("contact_test", "exact chart");
+    let chart = sources.node(&mut budget).expect("coincident source noding");
+    assert_eq!(chart.nodes.len(), 2);
+    let mut owners = chart
+        .atoms
+        .iter()
+        .flat_map(|atom| &atom.owners)
+        .map(|owner| {
+            assert!(owner.source_range.start.is_zero());
+            assert!(owner.source_range.end.is_one());
+            owner.source_edge.0
+        })
+        .collect::<Vec<_>>();
+    owners.sort_unstable();
+    assert_eq!(owners, [0, 1, 2]);
+    assert_eq!(budget.used(), 0);
 }
 
 #[test]

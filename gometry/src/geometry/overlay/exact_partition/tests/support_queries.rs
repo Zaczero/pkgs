@@ -1,51 +1,61 @@
-#[test]
-fn occupied_support_owner_composes_stored_rings_and_parts() {
-    let cases = [
-        ("POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))", 1.0),
-        ("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5),
-        (
-            "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
-            1.5,
-        ),
-        ("POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))", 1.0),
-        (
-            "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
-            0.0,
-        ),
-    ];
-    for (wkt, expected) in cases {
-        let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
-        let support = occupied_cartesian_support(&shape).expect("exact occupied support");
-        assert!(
-            (support.area() - expected).abs() <= 64.0 * f64::EPSILON * expected,
-            "{wkt}",
-        );
-    }
+#[rstest::rstest]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_1_0_1_1_0_1_0_0(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))",
+    1.0
+)]
+#[case::polygon_0_0_1_1_1_0_0_1_0_0("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5)]
+#[case::multipolygon_0_0_1_0_1_1_0_1_0_0_0_5_0_1_5_0_1_5_1_0_5_1_0_5_0(
+    "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
+    1.5
+)]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_3_0_4_0_4_1_3_1_3_0(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))",
+    1.0
+)]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_0_5_0_5_1_5_0_5_1_5_6688ce68(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
+    0.0
+)]
+fn occupied_support_owner_composes_stored_rings_and_parts(
+    #[case] wkt: &'static str,
+    #[case] expected: f64,
+) {
+    let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
+    let support = occupied_cartesian_support(&shape).expect("exact occupied support");
+    assert!(
+        (support.area() - expected).abs() <= 64.0 * f64::EPSILON * expected,
+        "{wkt}",
+    );
 }
 
-#[test]
-fn occupied_area_owner_rounds_exact_selected_faces() {
-    let cases = [
-        ("POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))", 1.0),
-        ("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5),
-        (
-            "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
-            1.5,
-        ),
-        ("POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))", 1.0),
-        (
-            "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
-            0.0,
-        ),
-    ];
-    for (wkt, expected) in cases {
-        let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
-        assert_eq!(
-            occupied_cartesian_area(&shape).expect("exact occupied area"),
-            expected,
-            "{wkt}"
-        );
-    }
+#[rstest::rstest]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_1_0_1_1_0_1_0_0(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))",
+    1.0
+)]
+#[case::polygon_0_0_1_1_1_0_0_1_0_0("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5)]
+#[case::multipolygon_0_0_1_0_1_1_0_1_0_0_0_5_0_1_5_0_1_5_1_0_5_1_0_5_0(
+    "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
+    1.5
+)]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_3_0_4_0_4_1_3_1_3_0(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))",
+    1.0
+)]
+#[case::polygon_0_0_1_0_1_1_0_1_0_0_0_5_0_5_1_5_0_5_1_5_6688ce68(
+    "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
+    0.0
+)]
+fn occupied_area_owner_rounds_exact_selected_faces(
+    #[case] wkt: &'static str,
+    #[case] expected: f64,
+) {
+    let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
+    assert_eq!(
+        occupied_cartesian_area(&shape).expect("exact occupied area"),
+        expected,
+        "{wkt}"
+    );
 }
 
 #[test]

@@ -550,41 +550,61 @@ fn exact_cycle_validator_rejects_crossed_ring() {
     assert!(!validates(&[crossed]));
 }
 
-#[test]
-fn exact_touch_graph_covers_all_five_outcomes_and_reversed_discovery() {
-    let shell = cycle(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
-    let one_shell_touch = vec![shell.clone(), cycle(&[(0.0, 4.0), (2.0, 5.0), (2.0, 3.0)])];
-    let two_shell_touches = vec![shell.clone(), cycle(&[(0.0, 2.0), (2.0, 4.0), (0.0, 6.0)])];
-    let two_holes_touch_once = vec![
-        shell.clone(),
-        cycle(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]),
-        cycle(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]),
-    ];
-    let four_hole_star = vec![
+#[rstest::rstest]
+#[case::one_shell_touch(
+    {
+        let shell = cycle(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
+        vec![shell, cycle(&[(0.0, 4.0), (2.0, 5.0), (2.0, 3.0)])]
+    },
+    true
+)]
+#[case::two_shell_touches(
+    {
+        let shell = cycle(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
+        vec![shell, cycle(&[(0.0, 2.0), (2.0, 4.0), (0.0, 6.0)])]
+    },
+    false
+)]
+#[case::two_holes_touch_once(
+    {
+        let shell = cycle(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
+        vec![
+            shell,
+            cycle(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]),
+            cycle(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]),
+        ]
+    },
+    true
+)]
+#[case::four_hole_star(
+    vec![
         cycle(&[(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]),
         cycle(&[(0.0, 0.0), (4.0, -1.0), (4.0, 1.0)]),
         cycle(&[(0.0, 0.0), (1.0, 4.0), (-1.0, 4.0)]),
         cycle(&[(0.0, 0.0), (-4.0, 1.0), (-4.0, -1.0)]),
         cycle(&[(0.0, 0.0), (-1.0, -4.0), (1.0, -4.0)]),
-    ];
-    let interleaved = vec![
-        shell,
-        cycle(&[(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)]),
-        cycle(&[(4.0, 0.0), (8.0, 4.0), (4.0, 8.0), (0.0, 4.0)]),
-    ];
-    let cases = [
-        (one_shell_touch, true),
-        (two_shell_touches, false),
-        (two_holes_touch_once, true),
-        (four_hole_star, true),
-        (interleaved, false),
-    ];
-    for (cycles, expected) in cases {
-        let restored = validates(&cycles);
-        let reversed = validates(&reversed_cycles(&cycles));
-        assert_eq!(restored, expected);
-        assert_eq!(reversed, restored);
-    }
+    ],
+    true
+)]
+#[case::interleaved(
+    {
+        let shell = cycle(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
+        vec![
+            shell,
+            cycle(&[(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)]),
+            cycle(&[(4.0, 0.0), (8.0, 4.0), (4.0, 8.0), (0.0, 4.0)]),
+        ]
+    },
+    false
+)]
+fn exact_touch_graph_covers_all_five_outcomes_and_reversed_discovery(
+    #[case] cycles: Vec<Vec<exact::ExactPoint>>,
+    #[case] expected: bool,
+) {
+    let restored = validates(&cycles);
+    let reversed = validates(&reversed_cycles(&cycles));
+    assert_eq!(restored, expected);
+    assert_eq!(reversed, restored);
 }
 
 #[test]

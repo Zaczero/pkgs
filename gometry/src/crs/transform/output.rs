@@ -410,19 +410,20 @@ mod lane_tests {
     use crate::error::ErrorKind;
     use crate::geometry::{CoordinateAxes, MultiPoint};
 
-    #[test]
-    fn output_counts_reject_one_vertex_past_each_packed_column_limit() {
+    #[rstest::rstest]
+    #[case::outputbatch_xy(OutputBatch::Xy)]
+    #[case::outputbatch_xyz(OutputBatch::Xyz)]
+    fn output_counts_reject_one_vertex_past_each_packed_column_limit(#[case] batch: OutputBatch) {
         let maximum = usize::try_from(i32::MAX).unwrap();
-        for batch in [OutputBatch::Xy, OutputBatch::Xyz] {
-            let mut counts = OutputCounts::default();
-            counts.add_run(batch, maximum).unwrap();
 
-            let error = counts.add_run(batch, 1).unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
-            ));
-        }
+        let mut counts = OutputCounts::default();
+        counts.add_run(batch, maximum).unwrap();
+
+        let error = counts.add_run(batch, 1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
     }
 
     #[test]
