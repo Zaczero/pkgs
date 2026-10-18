@@ -5,6 +5,7 @@ let
     url = "https://github.com/NixOS/nixpkgs/archive/f20cd90e28fe0403873f473b29e42662cd86e8c4.tar.gz";
     sha256 = "1vv6crfchmhjk5j61zgajggc3cgkalak2rvng07g41cvlcf6ldhj";
   }) { };
+  python = pkgs.python3;
 
   makeScript =
     with pkgs;
@@ -32,6 +33,7 @@ let
     k6
     lychee
     oha
+    python
     pyright
 
     (makeScript "nixpkgs-update" ''
@@ -119,6 +121,11 @@ let
     export NIX_ENFORCE_NO_NATIVE=0
     export NIX_ENFORCE_PURITY=0
     export PYTHONPATH=""
+    # PyO3 test executables embed this interpreter; nix-ld needs its LIBDIR to
+    # resolve that same libpython through the FHS loader.
+    export PYO3_PYTHON="${python}/bin/python3"
+    python_libdir="$(${python}/bin/python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+    export NIX_LD_LIBRARY_PATH="$python_libdir''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
     export COVERAGE_CORE=sysmon
 
     # `uv sync` builds through maturin's PEP 517 backend, which defaults to
