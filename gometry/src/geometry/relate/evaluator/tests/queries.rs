@@ -55,7 +55,7 @@ mod matrix_corpus {
     relation_corpus!(assert_matrix_oracle_parity);
 }
 
-fn assert_counter_case(
+fn assert_counter_contract(
     name: &str,
     left: &Shape,
     right: &Shape,
@@ -68,7 +68,6 @@ fn assert_counter_case(
         assert_eq!(oracle.text(), expected, "{name}: oracle matrix");
     }
     assert_locator_oracle_parity(name, left, right);
-    assert_full_oracle_and_controls(name, left, right, oracle);
     if let Some((predicate, expected)) = expected_predicate {
         let left_plan = PreparedPlan::transient(left);
         let right_plan = PreparedPlan::transient(right);

@@ -70,95 +70,132 @@ fn assert_locator_oracle_parity(name: &str, left: &Shape, right: &Shape) {
 }
 
 fn assert_full_oracle_and_controls(name: &str, left: &Shape, right: &Shape, oracle: De9im) {
-    assert_direction_against_oracle(name, "forward", left, right, oracle);
-    assert_direction_against_oracle(name, "reverse", right, left, oracle.transpose());
+    for reverse in [false, true] {
+        for checks in [
+            RelationQueryChecks::Matrices,
+            RelationQueryChecks::Predicates,
+            RelationQueryChecks::MatrixPatterns,
+            RelationQueryChecks::PatternControls,
+        ]
+        .into_iter()
+        .chain(
+            b"FT012"
+                .iter()
+                .copied()
+                .map(RelationQueryChecks::PatternCells),
+        ) {
+            assert_direction_against_oracle(name, left, right, oracle, reverse, checks);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RelationQueryChecks {
+    Matrices,
+    Predicates,
+    MatrixPatterns,
+    PatternCells(u8),
+    PatternControls,
 }
 
 fn assert_direction_against_oracle(
     name: &str,
-    direction: &str,
     left: &Shape,
     right: &Shape,
     oracle: De9im,
+    reverse: bool,
+    checks: RelationQueryChecks,
 ) {
+    let (direction, left, right, oracle) = if reverse {
+        ("reverse", right, left, oracle.transpose())
+    } else {
+        ("forward", left, right, oracle)
+    };
     let left_plan = PreparedPlan::transient(left);
     let right_plan = PreparedPlan::transient(right);
     let pair = [
         Operand::from_plan(&left_plan),
         Operand::from_plan(&right_plan),
     ];
-    let production = relate(&left_plan, &right_plan).unwrap();
-    let saturation_off = evaluate_mode::<MatrixQuery, false>(&pair, &MatrixQuery).unwrap();
-    let end_only =
-        evaluate_mode::<EndOnly<MatrixQuery>, false>(&pair, &EndOnly(MatrixQuery)).unwrap();
-    assert_eq!(
-        (production, saturation_off, end_only),
-        (oracle, oracle, oracle),
-        "{name} {direction}: production/saturation-off/end-only matrices"
-    );
-    assert_eq!(
-        evaluate_mode::<MatrixQuery, false>(
-            &[
-                Operand::from_row(ShapeRow::Shape(left)),
-                Operand::from_row(ShapeRow::Shape(right)),
-            ],
-            &MatrixQuery,
-        )
-        .unwrap(),
-        oracle,
-        "{name} {direction}: borrowed ShapeRow matrix"
-    );
-    for predicate in Predicate::ALL {
-        let expected = matrix_predicates::decided(predicate, oracle);
+    if matches!(checks, RelationQueryChecks::Matrices) {
+        let production = relate(&left_plan, &right_plan).unwrap();
+        let saturation_off = evaluate_mode::<MatrixQuery, false>(&pair, &MatrixQuery).unwrap();
+        let end_only =
+            evaluate_mode::<EndOnly<MatrixQuery>, false>(&pair, &EndOnly(MatrixQuery)).unwrap();
         assert_eq!(
-            self::predicate(&left_plan, &right_plan, predicate).unwrap(),
-            expected,
-            "{name} {direction}: {predicate:?}: production query"
+            (production, saturation_off, end_only),
+            (oracle, oracle, oracle),
+            "{name} {direction}: production/saturation-off/end-only matrices"
         );
         assert_eq!(
-            evaluate_mode::<PredicateQuery, false>(&pair, &PredicateQuery(predicate)).unwrap(),
-            expected,
-            "{name} {direction}: {predicate:?}: saturation-off query"
-        );
-        assert_eq!(
-            evaluate_mode::<EndOnly<PredicateQuery>, false>(
-                &pair,
-                &EndOnly(PredicateQuery(predicate)),
+            evaluate_mode::<MatrixQuery, false>(
+                &[
+                    Operand::from_row(ShapeRow::Shape(left)),
+                    Operand::from_row(ShapeRow::Shape(right)),
+                ],
+                &MatrixQuery,
             )
             .unwrap(),
-            expected,
-            "{name} {direction}: {predicate:?}: end-only query"
+            oracle,
+            "{name} {direction}: borrowed ShapeRow matrix"
         );
+        return;
     }
-    let mut patterns = vec![
-        CompiledPattern::new(&oracle.text()).expect("matrix string is a pattern"),
-        CompiledPattern::new("*********").expect("wildcard pattern is valid"),
-    ];
-    for cell in 0..9 {
-        for literal in b"FT012" {
-            let mut bytes = *b"*********";
-            *bytes.get_mut(cell).expect("DE-9IM has nine cells") = *literal;
-            patterns.push(
-                CompiledPattern::new(std::str::from_utf8(&bytes).expect("ASCII pattern"))
-                    .expect("single-cell pattern is valid"),
+    if matches!(checks, RelationQueryChecks::Predicates) {
+        for predicate in Predicate::ALL {
+            let expected = matrix_predicates::decided(predicate, oracle);
+            assert_eq!(
+                self::predicate(&left_plan, &right_plan, predicate).unwrap(),
+                expected,
+                "{name} {direction}: {predicate:?}: production query"
+            );
+            assert_eq!(
+                evaluate_mode::<PredicateQuery, false>(&pair, &PredicateQuery(predicate)).unwrap(),
+                expected,
+                "{name} {direction}: {predicate:?}: saturation-off query"
+            );
+            assert_eq!(
+                evaluate_mode::<EndOnly<PredicateQuery>, false>(
+                    &pair,
+                    &EndOnly(PredicateQuery(predicate)),
+                )
+                .unwrap(),
+                expected,
+                "{name} {direction}: {predicate:?}: end-only query"
             );
         }
+        return;
     }
-    for pattern in [
-        "T*T***T**",
-        "T*****FF*",
-        "F**F*****",
-        "T*F**F***",
-        "**T***T**",
-        "FF*FF****",
-        "F**0**F**",
-        "1********",
-        "2********",
-        "********0",
-        "****1****",
-    ] {
-        patterns.push(CompiledPattern::new(pattern).expect("fixed pattern is valid"));
-    }
+    let patterns = match checks {
+        RelationQueryChecks::MatrixPatterns => vec![
+            CompiledPattern::new(&oracle.text()).expect("matrix string is a pattern"),
+            CompiledPattern::new("*********").expect("wildcard pattern is valid"),
+        ],
+        RelationQueryChecks::PatternCells(literal) => (0..9)
+            .map(|cell| {
+                let mut bytes = *b"*********";
+                *bytes.get_mut(cell).expect("DE-9IM has nine cells") = literal;
+                CompiledPattern::new(std::str::from_utf8(&bytes).expect("ASCII pattern"))
+                    .expect("single-cell pattern is valid")
+            })
+            .collect(),
+        RelationQueryChecks::PatternControls => [
+            "T*T***T**",
+            "T*****FF*",
+            "F**F*****",
+            "T*F**F***",
+            "**T***T**",
+            "FF*FF****",
+            "F**0**F**",
+            "1********",
+            "2********",
+            "********0",
+            "****1****",
+        ]
+        .map(|pattern| CompiledPattern::new(pattern).expect("fixed pattern is valid"))
+        .to_vec(),
+        RelationQueryChecks::Matrices | RelationQueryChecks::Predicates => unreachable!(),
+    };
     for pattern in patterns {
         let expected = oracle.matches(pattern);
         assert_eq!(
@@ -180,13 +217,38 @@ fn assert_direction_against_oracle(
     }
 }
 
-fn assert_matrix_oracle_parity(name: &str, left: &Shape, right: &Shape) {
-    let oracle = partition_oracle(left, right)
-        .unwrap_or_else(|error| panic!("{name}: exact partition failed: {error}"));
-    assert_full_oracle_and_controls(name, left, right, oracle);
-}
-
 macro_rules! relation_case {
+    (assert_matrix_oracle_parity; $name:ident, $label:literal, $left:literal, $right:literal) => {
+        #[rstest::rstest]
+        #[case::matrices(RelationQueryChecks::Matrices)]
+        #[case::predicates(RelationQueryChecks::Predicates)]
+        #[case::matrix_patterns(RelationQueryChecks::MatrixPatterns)]
+        #[case::false_cells(RelationQueryChecks::PatternCells(b'F'))]
+        #[case::true_cells(RelationQueryChecks::PatternCells(b'T'))]
+        #[case::point_cells(RelationQueryChecks::PatternCells(b'0'))]
+        #[case::line_cells(RelationQueryChecks::PatternCells(b'1'))]
+        #[case::area_cells(RelationQueryChecks::PatternCells(b'2'))]
+        #[case::pattern_controls(RelationQueryChecks::PatternControls)]
+        fn $name(
+            #[case] checks: RelationQueryChecks,
+            #[values(false, true)] reverse: bool,
+        ) {
+            let left = crate::io::parse_wkt($left).expect("left fixture parses");
+            let right = crate::io::parse_wkt($right).expect("right fixture parses");
+            let oracle = partition_oracle(&left, &right)
+                .unwrap_or_else(|error| panic!("{}: exact partition failed: {error}", $label));
+            assert_direction_against_oracle($label, &left, &right, oracle, reverse, checks);
+        }
+    };
+    (assert_counter_case; $name:ident, $label:literal, $left:literal, $right:literal,
+     $expected_matrix:expr, $expected_predicate:expr) => {
+        mod $name {
+            use super::*;
+            relation_case!(assert_matrix_oracle_parity; queries, $label, $left, $right);
+            relation_case!(assert_counter_contract; locations_and_expected_relation, $label, $left,
+                $right, $expected_matrix, $expected_predicate);
+        }
+    };
     ($check:ident; $name:ident, $label:literal, $left:literal, $right:literal $(, $expected:expr)*) => {
         #[test]
         fn $name() {
