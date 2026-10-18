@@ -6,8 +6,15 @@ mod zigzag;
 
 use decode::decode;
 use encode::encode;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+
+impl From<errors::PolylineError> for PyErr {
+    fn from(error: errors::PolylineError) -> Self {
+        PyValueError::new_err(error.to_string())
+    }
+}
 
 #[pyfunction]
 #[pyo3(signature = (coordinates, precision = 5))]

@@ -79,9 +79,9 @@ def test_encode_decode(coords, precision, expected):
     ],
 )
 def test_decode_rejects_malformed_input(polyline):
-    with pytest.raises(ValueError, match='Invalid polyline'):
+    with pytest.raises(ValueError, match='polyline'):
         decode_latlon(polyline)
-    with pytest.raises(ValueError, match='Invalid polyline'):
+    with pytest.raises(ValueError, match='polyline'):
         decode_lonlat(polyline)
 
 
@@ -99,28 +99,28 @@ def test_encode_rounds_scaled_values_per_spec():
             encode_latlon,
             [(30.0, 0.0)],
             8,
-            'coordinate at index 0: latitude',
+            'latitude at index 0',
             id='precision-8-latitude-30',
         ),
         pytest.param(
             encode_lonlat,
             [(0.0, 30.0)],
             8,
-            'coordinate at index 0: latitude',
+            'latitude at index 0',
             id='precision-8-lonlat-order',
         ),
         pytest.param(
             encode_latlon,
             [(0.0, 180.0), (0.0, -180.0)],
             7,
-            'coordinate at index 1: longitude delta',
+            'longitude delta at index 1',
             id='longitude-delta-exceeds-i32',
         ),
         pytest.param(
             encode_lonlat,
             [(180.0, 0.0), (-180.0, 0.0)],
             7,
-            'coordinate at index 1: longitude delta',
+            'longitude delta at index 1',
             id='lonlat-large-delta',
         ),
     ],
@@ -157,17 +157,17 @@ def test_encode_accepts_signed_i32_coordinate_endpoints(
     ],
 )
 def test_encode_rejects_nonfinite_coordinates(coordinates, axis):
-    with pytest.raises(ValueError, match=f'coordinate at index 0: {axis}'):
+    with pytest.raises(ValueError, match=f'{axis} at index 0'):
         encode_latlon(coordinates, 5)
 
 
 @pytest.mark.parametrize('precision', [-(2**31), -299, 309, 2**31 - 1])
 def test_encode_and_decode_reject_unusable_precision_scales(precision):
     for encoder in (encode_latlon, encode_lonlat):
-        with pytest.raises(ValueError, match=f'Invalid precision {precision}'):
+        with pytest.raises(ValueError, match=f'precision {precision}'):
             encoder([], precision)
     for decoder in (decode_latlon, decode_lonlat):
-        with pytest.raises(ValueError, match=f'Invalid precision {precision}'):
+        with pytest.raises(ValueError, match=f'precision {precision}'):
             decoder('', precision)
 
 

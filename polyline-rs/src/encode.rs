@@ -9,10 +9,10 @@ fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, 
 
     let first = it
         .next()
-        .ok_or_else(|| PolylineError::CoordinateMustContain2Values { index }.into_pyerr())??;
+        .ok_or(PolylineError::CoordinateMustContain2Values { index })??;
     let second = it
         .next()
-        .ok_or_else(|| PolylineError::CoordinateMustContain2Values { index }.into_pyerr())??;
+        .ok_or(PolylineError::CoordinateMustContain2Values { index })??;
 
     Ok((first.extract()?, second.extract()?))
 }
@@ -34,11 +34,11 @@ fn encode_coordinate(
     previous: i32,
     index: usize,
     coordinate: &'static str,
-) -> PyResult<i32> {
+) -> Result<i32, PolylineError> {
     let scaled = coordinate_value * scale;
     let rounded = scaled.round();
     if !rounded.is_finite() || rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
-        return Err(PolylineError::CoordinateOutOfRange { index, coordinate }.into_pyerr());
+        return Err(PolylineError::CoordinateOutOfRange { index, coordinate });
     }
 
     let current = rounded as i32;
@@ -46,7 +46,7 @@ fn encode_coordinate(
     // rejects it if the wire's signed 32-bit delta cannot represent it.
     let delta = i64::from(current).wrapping_sub(i64::from(previous));
     let delta = i32::try_from(delta)
-        .map_err(|_| PolylineError::CoordinateDeltaOutOfRange { index, coordinate }.into_pyerr())?;
+        .map_err(|_| PolylineError::CoordinateDeltaOutOfRange { index, coordinate })?;
     encode_value(out, delta);
     Ok(current)
 }
@@ -55,8 +55,8 @@ pub(crate) fn encode<const LATLON: bool>(
     coordinates: &Bound<'_, PyAny>,
     precision: i32,
 ) -> PyResult<String> {
-    let scale = precision_scale(precision)
-        .ok_or_else(|| PolylineError::PrecisionOutOfRange { precision }.into_pyerr())?;
+    let scale =
+        precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
 
     let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
     let mut out = Vec::with_capacity(capacity);
