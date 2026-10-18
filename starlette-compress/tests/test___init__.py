@@ -1279,7 +1279,9 @@ def test_repeated_start_raises_runtime_error_and_preserves_response(
         errors.append(caught.value)
         await send({'type': 'http.response.body', 'body': b'original'})
 
-    middleware = CompressMiddleware(app)
+    middleware = CompressMiddleware(
+        app, zstd=False, brotli=False, gzip=accept_encoding == 'gzip'
+    )
     sent = asyncio.run(run_asgi(middleware, accept_encoding=accept_encoding))
 
     starts = [message for message in sent if message['type'] == 'http.response.start']
