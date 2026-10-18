@@ -19,6 +19,7 @@ import inspect
 import json
 import math
 import sys
+import sysconfig
 from fnmatch import fnmatchcase
 from functools import partial
 from importlib.metadata import distribution
@@ -259,7 +260,10 @@ def compression_cases(_scratch: Path) -> dict:
             if encoding == 'gzip':
                 decoded = gzip.decompress(encoded)
             elif encoding == 'br':
-                import brotli
+                if sysconfig.get_config_var('Py_GIL_DISABLED'):
+                    import brotlicffi as brotli
+                else:
+                    import brotli
 
                 decoded = brotli.decompress(encoded)
             elif encoding == 'zstd':
