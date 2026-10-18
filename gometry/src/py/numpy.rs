@@ -5,7 +5,7 @@
 //! shape rather than each spelling out rust-numpy mechanics.
 
 use numpy::ndarray::{Array2, ArrayView1};
-use numpy::{IntoPyArray as _, PyArray1, PyArrayDescrMethods as _, PyArrayMethods as _};
+use numpy::{IntoPyArray as _, PyArray1, PyArrayMethods as _};
 use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

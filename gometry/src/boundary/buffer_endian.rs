@@ -10,8 +10,7 @@ use pyo3::buffer::{Element, PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{PyBufferError, PyOverflowError};
 use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
-use pyo3::types::PyBytes;
-use pyo3::types::PyMemoryView;
+use pyo3::types::{PyBytes, PyMemoryView};
 
 #[cfg(Py_GIL_DISABLED)]
 use crate::py::vectors::Float64Buffer;

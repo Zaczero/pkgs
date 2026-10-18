@@ -6,7 +6,7 @@ use crate::py::arrow_c;
 use crate::py::arrow_c::PreparedArrowExportPlan;
 
 fn materialize_pyarrow(py: Python<'_>, plan: PreparedArrowExportPlan) -> PyResult<Py<PyAny>> {
-    let export = arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(py, plan)?;
     arrow_c::pyarrow_array_from_export(py, export)
 }
 
