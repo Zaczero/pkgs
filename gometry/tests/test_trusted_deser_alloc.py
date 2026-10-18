@@ -32,11 +32,16 @@ def test_cell_array_pickle_roundtrip():
     assert [c.id for c in out] == [c.id for c in arr]
 
 
-def test_pickle_row_buffer_preserves_exporter_exception() -> None:
-    error = RuntimeError('pickle row buffer exporter sentinel')
+@pytest.mark.parametrize(
+    'error_type', [RuntimeError, TypeError], ids=['runtime', 'type']
+)
+def test_pickle_row_buffer_preserves_exporter_exception(
+    error_type: type[Exception],
+) -> None:
+    error = error_type('pickle row buffer exporter sentinel')
     row = _lib._RaisingBuffer(error)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(error_type) as excinfo:
         _lib._unpickle_geometry_array_v1([row], None, None, None)
     assert excinfo.value is error
 

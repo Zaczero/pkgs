@@ -24,8 +24,19 @@ use crate::py::vectors::Float64Buffer;
 /// This distinguishes an ordinary non-buffer value from an exporter whose
 /// `PyObject_GetBuffer` callback raised an exception.
 pub(crate) fn get_untyped_buffer(value: &Bound<'_, PyAny>) -> PyResult<Option<PyUntypedBuffer>> {
+    #[cfg(PyPy)]
+    // PyPy exposes CheckBuffer only as a macro; query the same slot without
+    // invoking the exporter, whose acquisition errors must remain observable.
+    // SAFETY: the attached Bound keeps its type alive; this valid slot query
+    // borrows the callback pointer only to test for null, never to call it.
+    let supports_buffer = unsafe {
+        !pyo3::ffi::PyType_GetSlot(value.get_type().as_type_ptr(), pyo3::ffi::Py_bf_getbuffer)
+            .is_null()
+    };
+    #[cfg(not(PyPy))]
     // SAFETY: `value` is a live Python object attached to this call.
-    if unsafe { pyo3::ffi::PyObject_CheckBuffer(value.as_ptr()) } == 0 {
+    let supports_buffer = unsafe { pyo3::ffi::PyObject_CheckBuffer(value.as_ptr()) } != 0;
+    if !supports_buffer {
         return Ok(None);
     }
     PyUntypedBuffer::get(value).map(Some)
