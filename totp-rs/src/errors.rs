@@ -4,7 +4,7 @@ use thiserror::Error;
 pub(crate) enum TotpError {
     #[error("secret contains an invalid Base32 character at index {index}")]
     InvalidSecretChar { index: usize },
-    #[error("digits must be between 1 and 9; got {digits}")]
+    #[error("digits must be between 1 and 9, got {digits}")]
     DigitsOutOfRange { digits: u8 },
     #[error("step_seconds must be positive")]
     StepSecondsMustBePositive,

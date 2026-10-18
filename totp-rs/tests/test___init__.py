@@ -292,7 +292,7 @@ def test_invalid_inputs() -> None:
     for digits in (0, 10):
         with pytest.raises(
             ValueError,
-            match=f'digits must be between 1 and 9; got {digits}',
+            match=f'digits must be between 1 and 9, got {digits}',
         ):
             totp_generate(SECRET_SHA1, digits=digits)
 
