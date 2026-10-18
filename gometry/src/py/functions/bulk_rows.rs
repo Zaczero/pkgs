@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
+use crate::error::{BatchError, BatchResult};
 use crate::py::wire_crs::{SharedRowCrs, SridFrameAdmission};
 use crate::{Crs, Frame, PyGeometryArray, Shape, guard_epoch_frame};
 
@@ -268,10 +269,6 @@ struct SridBulkState {
     frame: SridFrameAdmission,
 }
 
-enum BatchError {
-    Row(usize, crate::error::Error),
-}
-
 struct AcquiredChunk<T> {
     rows: Vec<(usize, T)>,
     error: Option<(usize, PyErr)>,
@@ -339,7 +336,7 @@ where
     T: pyo3::marker::Ungil,
     S: pyo3::marker::Ungil,
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
-    Parse: Fn(S, Vec<(usize, T)>) -> std::result::Result<S, BatchError> + pyo3::marker::Ungil,
+    Parse: Fn(S, Vec<(usize, T)>) -> BatchResult<S> + pyo3::marker::Ungil,
 {
     let mut iter = iter;
     let mut first_row = 0;
@@ -354,12 +351,7 @@ where
         // chance to produce the earlier row error.
         if !rows.is_empty() {
             let parse = &parse_chunk;
-            state = match py.detach(move || parse(state, rows)) {
-                Ok(state) => state,
-                Err(BatchError::Row(row, error)) => {
-                    return Err(crate::note_array_row(error.into(), row));
-                },
-            };
+            state = py.detach(move || parse(state, rows))?;
         }
         if let Some((row, error)) = error {
             return Err(crate::note_array_row(error, row));
@@ -379,26 +371,26 @@ fn parse_srid_chunk<T, Parse>(
     context: &'static str,
     source: &'static str,
     parse_row: &Parse,
-) -> std::result::Result<SridBulkState, BatchError>
+) -> BatchResult<SridBulkState>
 where
     Parse: Fn(T) -> crate::error::Result<Option<StreamedSridRow>>,
 {
     for (row, owned) in chunk {
-        let Some(parsed) = parse_row(owned).map_err(|error| BatchError::Row(row, error))? else {
+        let Some(parsed) = parse_row(owned).map_err(|error| BatchError::Row { row, error })? else {
             state
                 .rows
                 .try_push_missing()
-                .map_err(|error| BatchError::Row(row, error))?;
+                .map_err(|error| BatchError::Row { row, error })?;
             continue;
         };
         state
             .frame
             .admit_srid(parsed.srid, row, context, source)
-            .map_err(|error| BatchError::Row(row, error))?;
+            .map_err(|error| BatchError::Row { row, error })?;
         state
             .rows
             .try_push(parsed.shape)
-            .map_err(|error| BatchError::Row(row, error))?;
+            .map_err(|error| BatchError::Row { row, error })?;
     }
     Ok(state)
 }
@@ -409,27 +401,27 @@ fn parse_geometry_chunk<T, Parse>(
     explicit_epoch: Option<f64>,
     crs_context: Option<&str>,
     parse_row: &Parse,
-) -> std::result::Result<BulkState, BatchError>
+) -> BatchResult<BulkState>
 where
     Parse: Fn(T, usize) -> crate::error::Result<StreamedShape>,
 {
     for (row, owned) in chunk {
-        let parsed = parse_row(owned, row).map_err(|error| BatchError::Row(row, error))?;
+        let parsed = parse_row(owned, row).map_err(|error| BatchError::Row { row, error })?;
         match parsed {
             StreamedShape::Present { shape, crs, epoch } => {
                 state
                     .rows
                     .try_push(shape)
-                    .map_err(|error| BatchError::Row(row, error))?;
+                    .map_err(|error| BatchError::Row { row, error })?;
                 state
                     .admit_present(crs, epoch, explicit_epoch, row, crs_context)
-                    .map_err(|error| BatchError::Row(row, error))?;
+                    .map_err(|error| BatchError::Row { row, error })?;
             },
             StreamedShape::Missing => {
                 state
                     .rows
                     .try_push_missing()
-                    .map_err(|error| BatchError::Row(row, error))?;
+                    .map_err(|error| BatchError::Row { row, error })?;
             },
         }
     }

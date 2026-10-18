@@ -20,8 +20,17 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyString, PyType};
 use pyo3::{create_exception, ffi};
 
-use crate::error::{Error, ErrorKind, ResourceError};
+use crate::error::{BatchError, Error, ErrorKind, ResourceError};
 use crate::{Crs, ValidationIssue};
+
+impl From<BatchError> for PyErr {
+    fn from(error: BatchError) -> Self {
+        match error {
+            BatchError::Batch(error) => error.into(),
+            BatchError::Row { row, error } => crate::note_array_row(error.into(), row),
+        }
+    }
+}
 
 create_exception!(
     gometry,

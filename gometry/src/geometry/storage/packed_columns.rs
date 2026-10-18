@@ -18,9 +18,7 @@ mod views;
 
 pub(crate) use map::map_selected_points;
 pub(crate) use replace::{replace_packed_columns_dispatch, validate_replacement_ring};
-pub(crate) use resolve::{
-    PackedColumnError, PackedColumnOutput, PackedColumnResult, assemble_packed_output,
-};
+pub(crate) use resolve::{PackedColumnOutput, assemble_packed_output};
 pub(super) use resolve::{batch_err, resolve_packed_columns, row_err};
 pub(crate) use transform::map_selected_to_crs;
 pub(crate) use views::{

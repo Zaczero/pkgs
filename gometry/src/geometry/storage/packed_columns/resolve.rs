@@ -3,17 +3,7 @@ use super::{
     PackedStorage, PointColumns, PolygonColumns, PolygonLevel, RingLevel, RowSelectionRef,
     ValidityMask, storage,
 };
-
-#[derive(Debug)]
-pub(crate) enum PackedColumnError {
-    Batch(crate::error::Error),
-    Row {
-        row: usize,
-        error: crate::error::Error,
-    },
-}
-
-pub(crate) type PackedColumnResult<T> = std::result::Result<T, PackedColumnError>;
+use crate::error::BatchError;
 
 pub(crate) enum PackedColumnOutput {
     Points(CoordSeq),
@@ -26,12 +16,6 @@ pub(crate) enum PackedColumnOutput {
         ring_offsets: CsrOffsetColumn<RingLevel>,
         polygon_offsets: CsrOffsetColumn<PolygonLevel>,
     },
-}
-
-impl From<crate::error::Error> for PackedColumnError {
-    fn from(error: crate::error::Error) -> Self {
-        Self::Batch(error)
-    }
 }
 
 fn resolve_columns<'a>(
@@ -144,15 +128,13 @@ pub(crate) fn assemble_packed_output(output: PackedColumnOutput) -> GeometryArra
     }
 }
 
-pub(in crate::geometry::storage) const fn batch_err(
-    error: crate::error::Error,
-) -> PackedColumnError {
-    PackedColumnError::Batch(error)
+pub(in crate::geometry::storage) const fn batch_err(error: crate::error::Error) -> BatchError {
+    BatchError::Batch(error)
 }
 
 pub(in crate::geometry::storage) const fn row_err(
     row: usize,
     error: crate::error::Error,
-) -> PackedColumnError {
-    PackedColumnError::Row { row, error }
+) -> BatchError {
+    BatchError::Row { row, error }
 }

@@ -6,21 +6,13 @@ use pyo3::marker::Ungil;
 use pyo3::prelude::{PyErr, PyResult, Python};
 
 use crate::array::{ComputedCaches, Frame, PyGeometryArray, StorageLayout};
-use crate::broadcast::rows_err;
+use crate::error::{BatchError, BatchResult};
 use crate::geometry::storage::packed_columns::{
-    PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, PointColumns,
-    assemble_packed_output, map_selected_points, map_selected_to_crs,
-    replace_packed_columns_dispatch,
+    PackedColumnOutput, PackedColumns, PointColumns, assemble_packed_output, map_selected_points,
+    map_selected_to_crs, replace_packed_columns_dispatch,
 };
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
-
-pub(crate) fn packed_columns_err(error: PackedColumnError) -> PyErr {
-    match error {
-        PackedColumnError::Batch(error) => error.into(),
-        PackedColumnError::Row { row, error } => rows_err((row, error)),
-    }
-}
 
 impl PyGeometryArray {
     fn assemble_packed_result(
@@ -47,7 +39,7 @@ impl PyGeometryArray {
     pub(crate) fn reduce_packed_columns_detached<R>(
         &self,
         py: Python<'_>,
-        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<R> + Ungil,
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> BatchResult<R> + Ungil,
     ) -> PyResult<Option<R>>
     where
         R: Ungil,
@@ -55,9 +47,7 @@ impl PyGeometryArray {
         let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
-        let result = py
-            .detach(move || kernel(columns))
-            .map_err(packed_columns_err)?;
+        let result = py.detach(move || kernel(columns)).map_err(PyErr::from)?;
         Ok(Some(result))
     }
 
@@ -65,7 +55,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         output_frame: Frame,
-        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<PackedColumnOutput> + Ungil,
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> BatchResult<PackedColumnOutput> + Ungil,
     ) -> PyResult<Option<Self>> {
         let output = self
             .reduce_packed_columns_detached(py, kernel)?
@@ -81,7 +71,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         output_frame: Frame,
-        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<Option<PackedColumnOutput>>
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> BatchResult<Option<PackedColumnOutput>>
         + Ungil,
     ) -> PyResult<Option<Self>> {
         let Some(output) = self.reduce_packed_columns_detached(py, kernel)? else {
@@ -108,7 +98,7 @@ impl PyGeometryArray {
         };
         let output = py
             .detach(move || map_selected_points(columns, output_axes, map))
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)
                 .map_err(PyErr::from)?,
@@ -126,7 +116,7 @@ impl PyGeometryArray {
         };
         let output = py
             .detach(move || map_selected_to_crs(columns, &transformer))
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)
                 .map_err(PyErr::from)?,
@@ -143,12 +133,12 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let output = py
-            .detach(move || -> PackedColumnResult<PackedColumnOutput> {
+            .detach(move || -> BatchResult<PackedColumnOutput> {
                 let mut replacement_index = 0;
                 let output =
                     replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)?;
                 if replacement_index != replacement.len {
-                    return Err(PackedColumnError::Batch(
+                    return Err(BatchError::Batch(
                         crate::geometry::GeometryErrorKind::message(format!(
                             "coordinates must have length {}; got length {replacement_index}",
                             replacement.len
@@ -157,7 +147,7 @@ impl PyGeometryArray {
                 }
                 Ok(output)
             })
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)
                 .map_err(PyErr::from)?,
@@ -168,8 +158,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         left: &Self,
         right: &Self,
-        kernel: impl for<'a, 'b> FnOnce(PackedColumns<'a>, PackedColumns<'b>) -> PackedColumnResult<R>
-        + Ungil,
+        kernel: impl for<'a, 'b> FnOnce(PackedColumns<'a>, PackedColumns<'b>) -> BatchResult<R> + Ungil,
     ) -> PyResult<Option<R>>
     where
         R: Ungil,
@@ -182,7 +171,7 @@ impl PyGeometryArray {
         };
         let result = py
             .detach(move || kernel(left_columns, right_columns))
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(Some(result))
     }
 
@@ -190,7 +179,7 @@ impl PyGeometryArray {
     pub(crate) fn reduce_packed_points_detached<R>(
         &self,
         py: Python<'_>,
-        kernel: impl FnOnce(PointColumns<'_>) -> PackedColumnResult<R> + Ungil,
+        kernel: impl FnOnce(PointColumns<'_>) -> BatchResult<R> + Ungil,
     ) -> PyResult<Option<R>>
     where
         R: Ungil,
@@ -200,14 +189,14 @@ impl PyGeometryArray {
         };
         let rows = self.rows.clone();
         let result = py
-            .detach(move || -> PackedColumnResult<R> {
+            .detach(move || -> BatchResult<R> {
                 let columns = rows.packed_columns().expect("points");
                 let PackedColumns::Points(point_columns) = columns else {
                     unreachable!("reduce_packed_points_detached requires point storage");
                 };
                 kernel(point_columns)
             })
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(Some(result))
     }
 
@@ -230,7 +219,7 @@ impl PyGeometryArray {
         let left_rows = self.rows.clone();
         let right_rows = right.rows.clone();
         let values = py
-            .detach(move || -> PackedColumnResult<Option<Vec<T>>> {
+            .detach(move || -> BatchResult<Option<Vec<T>>> {
                 let left_columns = left_rows.packed_columns().expect("points");
                 let right_columns = right_rows.packed_columns().expect("points");
                 let PackedColumns::Points(left) = left_columns else {
@@ -245,9 +234,9 @@ impl PyGeometryArray {
                 };
                 kernel(left_xy.xs, left_xy.ys, right_xy.xs, right_xy.ys)
                     .map(Some)
-                    .map_err(PackedColumnError::Batch)
+                    .map_err(BatchError::Batch)
             })
-            .map_err(packed_columns_err)?;
+            .map_err(PyErr::from)?;
         Ok(values)
     }
 

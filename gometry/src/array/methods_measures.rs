@@ -6,6 +6,7 @@ use crate::array::{
     PyTypeMethods as _, Python, Shape, SpatialCurve, crs, crs_label, pymethods, resolve_metric,
 };
 use crate::dispatch::{MetricOp, kernels};
+use crate::error::BatchError;
 use crate::geometry::publication::PublicationRows;
 use crate::geometry::storage;
 use crate::geometry::storage::kernels::{
@@ -13,7 +14,7 @@ use crate::geometry::storage::kernels::{
     geographic_bounds_values_from_columns, geographic_bounds_values_from_columns_masked,
     reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
 };
-use crate::geometry::storage::packed_columns::{PackedColumnError, PackedColumns, XyColumns};
+use crate::geometry::storage::packed_columns::{PackedColumns, XyColumns};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::errors;
 use crate::py::numpy::float64_array;
@@ -648,7 +649,7 @@ impl PyGeometryArray {
                     missing.as_ref(),
                 ))
             };
-            values.map_err(PackedColumnError::Batch)
+            values.map_err(BatchError::Batch)
         })? {
             return Ok(Some(values));
         }

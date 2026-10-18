@@ -14,8 +14,8 @@ use crate::broadcast::metrics::{
     resolve_metric, rows_err,
 };
 use crate::dispatch::MetricOp;
+use crate::error::BatchError;
 use crate::geometry::packed_line_metrics::scale_metric_values;
-use crate::geometry::storage::packed_columns::PackedColumnError;
 use crate::geometry::storage::{ValidityMask, validity as missing};
 use crate::geometry::{
     PreparedPlan, ReduceSimd, pair_map4_guarded_f64, pair_select_mask, points_dwithin, storage,
@@ -404,7 +404,7 @@ pub(crate) fn array_crs_distances<'a>(
                     move |points| {
                         let (xs, ys) = points.geodesic_xy_lanes();
                         crs::geodesic_point_distances(&crs, &xs, &ys, target, *frame, &state)
-                            .map_err(PackedColumnError::Batch)
+                            .map_err(BatchError::Batch)
                     }
                 })?
             {
@@ -430,7 +430,7 @@ pub(crate) fn array_crs_distances<'a>(
                             *frame,
                             &state,
                         )
-                        .map_err(PackedColumnError::Batch)
+                        .map_err(BatchError::Batch)
                     }
                 })?
             {
@@ -1190,7 +1190,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             frame,
                             &state,
                         )
-                        .map_err(PackedColumnError::Batch)
+                        .map_err(BatchError::Batch)
                     }
                 })?
             {

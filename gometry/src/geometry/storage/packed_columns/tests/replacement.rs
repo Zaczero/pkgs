@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::BatchError;
 
 #[test]
 fn nullable_polygon_replacement_reports_the_logical_ring_row() {
@@ -28,5 +29,5 @@ fn nullable_polygon_replacement_reports_the_logical_ring_row() {
     else {
         panic!("open replacement ring is rejected");
     };
-    assert!(matches!(error, PackedColumnError::Row { row: 3, .. }));
+    assert!(matches!(error, BatchError::Row { row: 3, .. }));
 }

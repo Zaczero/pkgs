@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::builder::{PackedColumnBuilder, PointColumnBuilder};
-use super::packed_columns::{PackedColumnResult, batch_err};
-use crate::error::Result;
+use super::packed_columns::batch_err;
+use crate::error::{BatchResult, Result};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef, admit_packed_coord_count,
     materialized_packed_lines_len, materialized_packed_polygons_len,
@@ -77,7 +77,7 @@ pub(crate) fn gather_polygon_columns(
 /// Identity and Window resolve zero-copy and never need materialization.
 pub(crate) fn materialized_gather(
     storage: &GeometryArrayStorage,
-) -> PackedColumnResult<Option<GeometryArrayStorage>> {
+) -> BatchResult<Option<GeometryArrayStorage>> {
     match storage {
         GeometryArrayStorage::Packed(packed) => {
             Ok(materialize_gather(packed)?.map(GeometryArrayStorage::Packed))
@@ -86,7 +86,7 @@ pub(crate) fn materialized_gather(
     }
 }
 
-fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<PackedStorage>> {
+fn materialize_gather(storage: &PackedStorage) -> BatchResult<Option<PackedStorage>> {
     Ok(match storage {
         PackedStorage::Points { coords, row_map } => match row_map.as_deref() {
             RowSelectionRef::Gather(map) => Some(PackedStorage::Points {

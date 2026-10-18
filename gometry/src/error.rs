@@ -7,6 +7,9 @@
 //! `FrameError` in `crs::frame` — and composes
 //! here. One owned box carries every error kind.
 
+mod batch;
+
+pub(crate) use batch::{BatchError, BatchResult};
 use thiserror::Error as ThisError;
 
 use crate::FrameError;

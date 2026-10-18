@@ -6,8 +6,8 @@ use pyo3::prelude::PyResult;
 
 use crate::PyGeometryArray;
 use crate::array::ArrayRow;
+use crate::error::BatchError;
 use crate::geometry::storage::gather::materialized_gather;
-use crate::geometry::storage::packed_columns::PackedColumnError;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelectionRef};
 use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape, storage};
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
@@ -954,10 +954,10 @@ fn mixed_axes_error() -> NativeArrowExportError {
     NativeArrowExportError::invalid_geometry("mixed Z/M coordinate axes")
 }
 
-fn packed_columns_error(error: PackedColumnError) -> NativeArrowExportError {
+fn packed_columns_error(error: BatchError) -> NativeArrowExportError {
     match error {
-        PackedColumnError::Batch(error) => error.into(),
-        PackedColumnError::Row { row, error } => NativeArrowExportError::CoreRow { row, error },
+        BatchError::Batch(error) => error.into(),
+        BatchError::Row { row, error } => NativeArrowExportError::CoreRow { row, error },
     }
 }
 

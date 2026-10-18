@@ -2,12 +2,11 @@ use crate::array::{
     Arc, BoundsSeed, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point,
     PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
 };
+use crate::error::{BatchError, BatchResult};
 use crate::geographic::PointSelectionChart;
 use crate::geographic::chart::point_set_convex_hull_shape;
 use crate::geometry::storage::builder::PointColumnBuilder;
-use crate::geometry::storage::packed_columns::{
-    PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, XyColumns,
-};
+use crate::geometry::storage::packed_columns::{PackedColumnOutput, PackedColumns, XyColumns};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelection, column_window,
     packed_centroid_xy, packed_polygon_bounds, packed_surface_point,
@@ -195,11 +194,10 @@ where
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let may_cross_antimeridian =
                 packed_rows_may_cross_antimeridian(xs, domain, element_bounds);
-            storage::admit_packed_coord_count(columns.row_count())
-                .map_err(PackedColumnError::Batch)?;
+            storage::admit_packed_coord_count(columns.row_count()).map_err(BatchError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
-            columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
+            columns.collect_rows::<_, BatchResult<()>>(|row| {
                 let Some(row) = row else {
                     builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
                     return Ok(());
@@ -235,7 +233,7 @@ where
                     op,
                     || line_point(coords, xs, ys, window),
                 )
-                .map_err(|error| PackedColumnError::Row {
+                .map_err(|error| BatchError::Row {
                     row: row_index,
                     error,
                 })?;
@@ -245,9 +243,9 @@ where
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder
                     .finish_with_missing_placeholders()
-                    .map_err(PackedColumnError::Batch)?
+                    .map_err(BatchError::Batch)?
             } else {
-                builder.finish().map_err(PackedColumnError::Batch)?
+                builder.finish().map_err(BatchError::Batch)?
             }))
         },
         PackedColumns::Polygons(polygon_columns) => {
@@ -262,12 +260,11 @@ where
                     })
                 },
             };
-            storage::admit_packed_coord_count(columns.row_count())
-                .map_err(PackedColumnError::Batch)?;
+            storage::admit_packed_coord_count(columns.row_count()).map_err(BatchError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
-            columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
+            columns.collect_rows::<_, BatchResult<()>>(|row| {
                 let Some(row) = row else {
                     builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
                     return Ok(());
@@ -285,7 +282,7 @@ where
                     op,
                     || polygon_point(xs, ys, row, &mut crossings),
                 )
-                .map_err(|error| PackedColumnError::Row {
+                .map_err(|error| BatchError::Row {
                     row: row_index,
                     error,
                 })?;
@@ -295,9 +292,9 @@ where
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder
                     .finish_with_missing_placeholders()
-                    .map_err(PackedColumnError::Batch)?
+                    .map_err(BatchError::Batch)?
             } else {
-                builder.finish().map_err(PackedColumnError::Batch)?
+                builder.finish().map_err(BatchError::Batch)?
             }))
         },
         PackedColumns::Points(_) => unreachable!("points handled above"),

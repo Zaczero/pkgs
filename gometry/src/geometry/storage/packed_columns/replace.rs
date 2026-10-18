@@ -1,9 +1,9 @@
 use super::{
     CheckedRingWindow, CoordSeq, CoordSeqBuilder, CoordinateReplacement, CsrOffsetBuilder,
-    LineColumns, PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns,
-    PointColumns, PolygonColumns, ReplacementAxis, RingWindowError, batch_err, csr_value_window,
-    storage,
+    LineColumns, PackedColumnOutput, PackedColumns, PointColumns, PolygonColumns, ReplacementAxis,
+    RingWindowError, batch_err, csr_value_window, storage,
 };
+use crate::error::{BatchError, BatchResult};
 
 #[expect(
     clippy::indexing_slicing,
@@ -50,7 +50,7 @@ fn replacement_axis_value(
 fn finish_replacement_builder(
     builder: CoordSeqBuilder,
     allow_mask_placeholders: bool,
-) -> PackedColumnResult<CoordSeq> {
+) -> BatchResult<CoordSeq> {
     if allow_mask_placeholders {
         builder
             .finish_with_missing_placeholders()
@@ -64,7 +64,7 @@ fn replace_point_columns(
     point_columns: &PointColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     let old = point_columns.coords();
     let rows = point_columns.rows();
     let capacity = rows.present_count();
@@ -93,7 +93,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
     line_columns: &LineColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     let old = line_columns.coords();
     let capacity = line_columns.materialized_present_vertices(2)?;
     let mut builder = CoordSeqBuilder::with_capacity(replacement.output_axes(old.axes()), capacity);
@@ -132,7 +132,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
     polygon_columns: &PolygonColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     let old = polygon_columns.coords();
     let (vertex_capacity, ring_capacity) = polygon_columns.materialized_present_sizes()?;
     let mut builder =
@@ -189,7 +189,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
         for ring in rings {
             let window = csr_value_window(ring_offsets.as_slice(), ring..ring.wrapping_add(1));
             validate_replacement_ring(&coords, window)
-                .map_err(|error| PackedColumnError::Row { row, error })?;
+                .map_err(|error| BatchError::Row { row, error })?;
         }
     }
     Ok(PackedColumnOutput::Polygons {
@@ -203,7 +203,7 @@ fn replace_packed_columns_for_mask<const HAS_MISSING: bool>(
     columns: PackedColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(point_columns) => {
             replace_point_columns(&point_columns, replacement, replacement_index)
@@ -241,7 +241,7 @@ pub(crate) fn replace_packed_columns_dispatch(
     columns: PackedColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     let has_missing = match &columns {
         PackedColumns::Points(columns) => columns.missing.is_some(),
         PackedColumns::Lines(columns) => columns.missing.is_some(),

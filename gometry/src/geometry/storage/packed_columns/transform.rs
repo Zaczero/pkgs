@@ -1,9 +1,10 @@
 use super::map::{canonicalize_transformed_points, transform_selected_coords};
 use super::{
-    CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, GeometryErrorKind, PackedColumnError,
-    PackedColumnOutput, PackedColumnResult, PackedColumns, PointRows, TransformFailure, batch_err,
-    csr_value_window, map_masked_point_columns_to_crs, row_err, storage,
+    CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, GeometryErrorKind, PackedColumnOutput,
+    PackedColumns, PointRows, TransformFailure, batch_err, csr_value_window,
+    map_masked_point_columns_to_crs, row_err, storage,
 };
+use crate::error::{BatchError, BatchResult};
 
 #[derive(Clone, Copy)]
 pub(super) enum TargetLongitudeOutput {
@@ -11,7 +12,7 @@ pub(super) enum TargetLongitudeOutput {
     ContinuousChart,
 }
 
-fn packed_transform_failure(failure: TransformFailure, row: Option<usize>) -> PackedColumnError {
+fn packed_transform_failure(failure: TransformFailure, row: Option<usize>) -> BatchError {
     match (failure.coordinate, row) {
         (Some(_), Some(row)) => row_err(row, failure.error),
         _ => batch_err(failure.error),
@@ -43,7 +44,7 @@ fn polygon_row_for_coordinate(
 pub(crate) fn map_selected_to_crs(
     columns: PackedColumns<'_>,
     transformer: &crate::crs::TransformPlan,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(points) => {
             let rows = points.rows();

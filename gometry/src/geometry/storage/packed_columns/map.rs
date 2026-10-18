@@ -1,14 +1,11 @@
 use super::transform::TargetLongitudeOutput;
 use super::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder, GeographicFrame,
-    PackedColumnOutput, PackedColumnResult, PackedColumns, Point, TransformFailure, batch_err,
-    row_err, storage,
+    PackedColumnOutput, PackedColumns, Point, TransformFailure, batch_err, row_err, storage,
 };
+use crate::error::BatchResult;
 
-fn finish_pointwise_coords(
-    builder: CoordSeqBuilder,
-    has_missing: bool,
-) -> PackedColumnResult<CoordSeq> {
+fn finish_pointwise_coords(builder: CoordSeqBuilder, has_missing: bool) -> BatchResult<CoordSeq> {
     if has_missing {
         builder
             .finish_with_missing_placeholders()
@@ -69,7 +66,7 @@ pub(crate) fn map_selected_points(
     columns: PackedColumns<'_>,
     output_axes: CoordinateAxes,
     mut map: impl FnMut(Point) -> crate::error::Result<Point>,
-) -> PackedColumnResult<PackedColumnOutput> {
+) -> BatchResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(points) => {
             let rows = points.rows();
