@@ -1,9 +1,9 @@
 [package]
 name = "h2corn"
 version = "1.5.1"
-edition = "2024"
+edition.workspace = true
 license = "MIT"
-publish = false
+publish.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["pyo3-build-config"]
@@ -13,19 +13,17 @@ crate-type = ["cdylib"]
 name = "_lib"
 
 [dependencies]
-anstream = "1.0"
+anstream.workspace = true
 atoi_simd = { version = "0.18", default-features = false }
 bitflags = "2.13"
 bytes = "1.11"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 http = "1.3"
 memchr = "2.8"
-mimalloc = { version = "0.1.52", default-features = false, features = [
-  "local_dynamic_tls"
-] }
+mimalloc.workspace = true
 owo-colors = "4.2"
-parking_lot = "0.12"
-pyo3 = "0.30.1"
+parking_lot.workspace = true
+pyo3.workspace = true
 rustix = { version = "1.1", features = ["event", "fs", "net", "pipe", "time"] }
 rustls = { version = "0.23", default-features = false, features = [
   "aws_lc_rs",
@@ -33,7 +31,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "tls12"
 ] }
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
-thiserror = "2.0"
+thiserror.workspace = true
 tokio = { version = "1.48", features = [
   "io-util",
   "macros",
@@ -48,9 +46,10 @@ x509-cert = { version = "0.3", default-features = false, features = ["pem"] }
 zerocopy = { version = "0.8", features = ["derive"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.30.1", features = ["resolve-config"] }
+pyo3-build-config = { workspace = true, features = ["resolve-config"] }
 
 [dev-dependencies]
+rstest.workspace = true
 tempfile = "3.27"
 
 [target.'cfg(unix)'.dependencies]
@@ -58,7 +57,7 @@ tempfile = "3.27"
 # integer. Every typed rustix/std entry point wants a `BorrowedFd` first, whose
 # safety contract we cannot honour for an unvalidated value -- the raw `fcntl`
 # takes the integer directly and reports EBADF instead.
-libc = "0.2"
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

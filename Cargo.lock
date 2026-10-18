@@ -632,6 +632,7 @@ dependencies = [
  "libm",
  "perf-event-open-sys",
  "procfs-core",
+ "rstest",
  "serde",
  "serde_json",
  "statrs",
@@ -1023,6 +1024,7 @@ dependencies = [
  "parking_lot",
  "pyo3",
  "pyo3-build-config",
+ "rstest",
  "rustix",
  "rustls",
  "smallvec",
@@ -2883,6 +2885,7 @@ name = "zid"
 version = "1.5.0"
 dependencies = [
  "pyo3",
+ "rstest",
  "thiserror",
 ]
 
