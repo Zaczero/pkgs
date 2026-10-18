@@ -13,7 +13,7 @@ repository = "https://github.com/Zaczero/pkgs/tree/main/native/libtiff-sys"
 libz-sys = { version = "1.1.29", default-features = false, features = ["static", "stock-zlib"] }
 
 [build-dependencies]
-cmake = "0.1"
+cmake = { path = "../../vendor/cmake-rs/cmake", version = "0.1.58" }
 cmake-flags = { path = "../cmake-flags" }
 
 [lints]

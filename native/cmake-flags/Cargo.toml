@@ -9,7 +9,7 @@ repository = "https://github.com/Zaczero/pkgs/tree/main/native/cmake-flags"
 include = ["/Cargo.toml", "/src/**"]
 
 [dependencies]
-cmake = "0.1"
+cmake = { path = "../../vendor/cmake-rs/cmake", version = "0.1.58" }
 
 [lints]
 workspace = true
