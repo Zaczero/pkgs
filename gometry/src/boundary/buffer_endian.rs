@@ -1,14 +1,11 @@
 //! PEP 3118 buffer byte-order normalization for typed numeric ingest.
 //!
-//! `PyBuffer::<T>::get` accepts non-native-endian formats when the element
-//! size matches (pyo3's endian check is incorrect for little-endian hosts:
-//! it treats `>` as matching). Raw reinterpret and `PyBuffer_ToContiguous`
-//! never byteswap, so a big-endian `>f8`/`>u8` array is silently misread as
-//! host-endian. Callers that want host-native values must normalize.
+//! Typed buffer loads can expose bytes in a non-native order. Raw
+//! reinterpretation and `PyBuffer_ToContiguous` do not byteswap, so consumers
+//! that promise host-native values must normalize the captured bytes.
 
 use std::ffi::{CStr, c_int};
 
-use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::{Element, PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{PyBufferError, PyOverflowError};
 use pyo3::prelude::*;
@@ -39,17 +36,6 @@ pub(crate) fn get_untyped_buffer(value: &Bound<'_, PyAny>) -> PyResult<Option<Py
 pub(crate) fn try_typed_buffer<T: Element>(
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Option<PyBuffer<T>>> {
-    if let Ok(array) = value.cast::<PyUntypedArray>()
-        && array.ndim() == 0
-    {
-        if value.is_exact_instance_of::<PyUntypedArray>() {
-            // NumPy uses a null shape pointer for base scalar arrays; retain
-            // their existing scalar path.
-            return Ok(None);
-        }
-        drop(PyMemoryView::from(value)?);
-        return Ok(None);
-    }
     let Some(buffer) = get_untyped_buffer(value)? else {
         return Ok(None);
     };
