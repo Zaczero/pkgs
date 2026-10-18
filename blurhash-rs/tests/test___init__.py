@@ -115,12 +115,12 @@ def test_encode_rejects_invalid_component_count() -> None:
     img = Image.new('RGB', (1, 1), (255, 0, 0))
     with pytest.raises(
         ValueError,
-        match='x component count must be between 1 and 9; got 0',
+        match='x component count must be between 1 and 9, got 0',
     ):
         blurhash_encode(img, 0, 1)
     with pytest.raises(
         ValueError,
-        match='y component count must be between 1 and 9; got 10',
+        match='y component count must be between 1 and 9, got 10',
     ):
         blurhash_encode(img, 1, 10)
 
@@ -198,7 +198,7 @@ def test_native_encode_accepts_largest_representable_rgb_length() -> None:
     width = sys.maxsize // 3
     with pytest.raises(
         ValueError,
-        match=f'RGB buffer must contain {width * 3} bytes; got 0',
+        match=f'RGB buffer must contain {width * 3} bytes, got 0',
     ):
         encode_rgb(b'', width, 1, 1, 1)
 
