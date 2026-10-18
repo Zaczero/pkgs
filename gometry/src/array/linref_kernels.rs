@@ -196,7 +196,11 @@ pub(crate) fn line_interpolate_points_rows(
             Ok(builder) => builder,
             Err((row, error)) => return Err(note_array_row(error.into(), row)),
         };
-        return Groups::from_geometry_builder(frame, builder, array.missing().cloned());
+        return Ok(Groups::from_geometry_builder(
+            frame,
+            builder,
+            array.missing().cloned(),
+        )?);
     }
     let array = array.clone();
     let frame = array.frame.clone();
@@ -206,7 +210,7 @@ pub(crate) fn line_interpolate_points_rows(
         Ok(builder) => builder,
         Err((row, error)) => return Err(note_array_row(error.into(), row)),
     };
-    Groups::from_geometry_builder(frame, builder, missing)
+    Ok(Groups::from_geometry_builder(frame, builder, missing)?)
 }
 
 fn interpolate_mixed_row_groups(

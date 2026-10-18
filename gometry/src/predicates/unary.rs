@@ -63,21 +63,20 @@ pub(crate) fn is_simple_array(
     py: Python<'_>,
     values: &crate::PyGeometryArray,
 ) -> PyResult<Py<PyAny>> {
-    if let Some(result) = try_is_simple_packed(py, values) {
-        return result;
+    if let Some(result) = py.detach(|| try_is_simple_packed(values)) {
+        return result
+            .map_err(PyErr::from)
+            .and_then(|values| bool_array(py, values));
     }
     is_simple_array_row_fallback(py, values)
 }
 
 /// Dense + nullable packed is_simple only. Geographic admission failures and
 /// quotient charts fall through to the frame-aware lane.
-fn try_is_simple_packed(
-    py: Python<'_>,
-    array: &crate::PyGeometryArray,
-) -> Option<PyResult<Py<PyAny>>> {
+fn try_is_simple_packed(array: &crate::PyGeometryArray) -> Option<crate::error::Result<Vec<bool>>> {
     let domain = match crate::geometry::topology_domain(&array.frame) {
         Ok(domain) => domain,
-        Err(error) => return Some(Err(error.into())),
+        Err(error) => return Some(Err(error)),
     };
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
         let columns = array.packed_columns()?;
@@ -90,7 +89,7 @@ fn try_is_simple_packed(
                 }) {
                     Ok(Some(route)) => route,
                     Ok(None) => return None,
-                    Err(error) => return Some(Err(error.into())),
+                    Err(error) => return Some(Err(error)),
                 };
                 if route == crate::geometry::GeographicTopologyRoute::Quotient {
                     return None;
@@ -98,9 +97,7 @@ fn try_is_simple_packed(
             }
         }
     }
-    array
-        .is_simple_unary_packed()
-        .map(|values| values.and_then(|values| bool_array(py, values)))
+    array.is_simple_unary_packed()
 }
 
 fn is_simple_array_row_fallback(

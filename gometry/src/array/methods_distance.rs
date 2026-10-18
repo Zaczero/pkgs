@@ -302,126 +302,119 @@ where
 }
 
 impl PyGeometryArray {
-    pub(crate) fn centroid_unary_packed(&self) -> PyResult<Self> {
+    pub(crate) fn centroid_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         // A point is its own centroid; packed rows skip the per-row map.
         if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
         let frame = self.frame.clone();
         let domain = crate::geometry::topology_domain(&self.frame)?;
-        if let Some(points) = Python::attach(|py| {
-            packed_point_unary(
-                self,
-                py,
-                frame,
-                domain,
-                DerivedPointStrategy::Centroid,
-                Shape::centroid,
-                |_, xs, ys, window| {
-                    packed_centroid_xy(crate::geometry::centroid_line_row_columns(
-                        column_window(xs, &window),
-                        column_window(ys, &window),
-                    ))
-                },
-                |xs, ys, row, _crossings| {
-                    let crate::geometry::storage::PackedRow::Polygons { ring_offsets, .. } = row
-                    else {
-                        unreachable!("packed polygon centroid requires polygon storage")
-                    };
-                    let (centroid, bounds) =
-                        crate::geometry::centroid_polygon_row_columns_with_bounds(
-                            xs,
-                            ys,
-                            ring_offsets.as_slice(),
-                            row.polygon_rings()
-                                .expect("packed polygon row has a ring range"),
-                        );
-                    Ok((packed_centroid_xy(centroid)?, bounds))
-                },
-            )
-        })? {
+        if let Some(points) = packed_point_unary(
+            self,
+            py,
+            frame,
+            domain,
+            DerivedPointStrategy::Centroid,
+            Shape::centroid,
+            |_, xs, ys, window| {
+                packed_centroid_xy(crate::geometry::centroid_line_row_columns(
+                    column_window(xs, &window),
+                    column_window(ys, &window),
+                ))
+            },
+            |xs, ys, row, _crossings| {
+                let crate::geometry::storage::PackedRow::Polygons { ring_offsets, .. } = row else {
+                    unreachable!("packed polygon centroid requires polygon storage")
+                };
+                let (centroid, bounds) = crate::geometry::centroid_polygon_row_columns_with_bounds(
+                    xs,
+                    ys,
+                    ring_offsets.as_slice(),
+                    row.polygon_rings()
+                        .expect("packed polygon row has a ring range"),
+                );
+                Ok((packed_centroid_xy(centroid)?, bounds))
+            },
+        )? {
             return Ok(points);
         }
-        self.map_shapes(|shape| Ok(crate::geometry::unary_antimeridian_centroid(shape, domain)?))
+        self.map_shapes_detached(py, |shape| {
+            crate::geometry::unary_antimeridian_centroid(shape, domain)
+        })
     }
 
-    pub(crate) fn point_on_surface_unary_packed(&self) -> PyResult<Self> {
+    pub(crate) fn point_on_surface_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
         let frame = self.frame.clone();
         let domain = crate::geometry::topology_domain(&self.frame)?;
-        if let Some(points) = Python::attach(|py| {
-            packed_point_unary(
-                self,
-                py,
-                frame,
-                domain,
-                DerivedPointStrategy::Interior,
-                Shape::point_on_surface,
-                |_, xs, ys, window| {
-                    packed_surface_point(crate::geometry::point_on_surface_line_columns(
-                        column_window(xs, &window),
-                        column_window(ys, &window),
-                    ))
-                },
-                |xs, ys, row, crossings| {
-                    let crate::geometry::storage::PackedRow::Polygons {
-                        coords,
-                        ring_offsets,
-                        rings_start,
-                        rings_end,
-                        ..
-                    } = row
-                    else {
-                        unreachable!("packed polygon point-on-surface requires polygon storage")
-                    };
-                    let bounds = packed_polygon_bounds!(
-                        coords,
+        if let Some(points) = packed_point_unary(
+            self,
+            py,
+            frame,
+            domain,
+            DerivedPointStrategy::Interior,
+            Shape::point_on_surface,
+            |_, xs, ys, window| {
+                packed_surface_point(crate::geometry::point_on_surface_line_columns(
+                    column_window(xs, &window),
+                    column_window(ys, &window),
+                ))
+            },
+            |xs, ys, row, crossings| {
+                let crate::geometry::storage::PackedRow::Polygons {
+                    coords,
+                    ring_offsets,
+                    rings_start,
+                    rings_end,
+                    ..
+                } = row
+                else {
+                    unreachable!("packed polygon point-on-surface requires polygon storage")
+                };
+                let bounds = packed_polygon_bounds!(
+                    coords,
+                    ring_offsets.as_slice(),
+                    rings_start,
+                    rings_end,
+                );
+                let point =
+                    packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
+                        xs,
+                        ys,
                         ring_offsets.as_slice(),
-                        rings_start,
-                        rings_end,
-                    );
-                    let point = packed_surface_point(
-                        crate::geometry::point_on_surface_polygon_row_columns(
-                            xs,
-                            ys,
-                            ring_offsets.as_slice(),
-                            rings_start..rings_end,
-                            bounds,
-                            crossings,
-                        ),
-                    )?;
-                    Ok((point, bounds))
-                },
-            )
-        })? {
+                        rings_start..rings_end,
+                        bounds,
+                        crossings,
+                    ))?;
+                Ok((point, bounds))
+            },
+        )? {
             return Ok(points);
         }
-        self.map_shapes(|shape| {
-            Ok(crate::geometry::unary_antimeridian_derived(
+        self.map_shapes_detached(py, |shape| {
+            crate::geometry::unary_antimeridian_derived(
                 shape,
                 domain,
                 DerivedPointStrategy::Interior,
                 Shape::point_on_surface,
-            )?)
+            )
         })
     }
 
-    pub(crate) fn envelope_unary_packed(&self) -> PyResult<Self> {
+    pub(crate) fn envelope_unary_packed(&self) -> crate::error::BatchResult<Self> {
         if let crate::geometry::TopologyDomain::Geographic(frame) =
             crate::geometry::topology_domain(&self.frame)?
         {
-            return self.map_shapes(|shape| {
+            return self.map_shapes_native_indexed(|shape, _| {
                 crate::geographic::GeographicSupportEnvelope::try_from_shape_with_bounds(
                     frame,
                     shape,
                     shape.bounds(),
                 )
                 .map_err(crate::error::Error::from)?
-                .into_shape(frame)
-                .map_err(Into::into)
-            });
+                .into_shape(frame)});
         }
         if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
@@ -445,9 +438,9 @@ impl PyGeometryArray {
                 .checked_mul(5)
                 .filter(|&count| i32::try_from(count).is_ok())
                 .ok_or_else(|| {
-                    crate::PyErr::from(crate::error::Error::from(
+                    crate::error::Error::from(
                         crate::geometry::GeometryErrorKind::OffsetCapacityExceeded,
-                    ))
+                    )
                 })?;
             let mut xs = Vec::with_capacity(vertex_count);
             let mut ys = Vec::with_capacity(vertex_count);
@@ -487,7 +480,7 @@ impl PyGeometryArray {
         if let Some(boxes) = self.storage().envelope_box_shapes()? {
             return Ok(Self::from_shapes(boxes, self.frame.clone())?);
         }
-        self.map_shapes(|shape| Ok(shape.envelope()?))
+        self.map_shapes_native_indexed(|shape, _| shape.envelope())
     }
 
     pub(crate) fn convex_hull_unary_packed(

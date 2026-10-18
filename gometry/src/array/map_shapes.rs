@@ -1,13 +1,12 @@
 //! The `map_shapes*` combinator family: per-row `Shape` transforms over
-//! any storage, mask-aware, with detached (GIL-free) variants. Child
-//! module of [`super`] (`packed_ops`).
+//! any storage, mask-aware, with detached (GIL-free) variants.
 
 use pyo3::marker::Ungil;
 
-use crate::array::packed_ops::{
-    PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
+use crate::array::{
+    Arc, ComputedCaches, PyGeometryArray, PyResult, Python, Result, Shape, StorageLayout,
 };
-use crate::array::{Arc, ComputedCaches, StorageLayout};
+use crate::error::{BatchError, BatchResult};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
@@ -68,43 +67,18 @@ fn rebuild_shared_mixed(
 }
 
 impl PyGeometryArray {
-    /// Map every element through `transform`, preserving the array's CRS and
-    /// epoch. Packed `Points` storage is walked as stack `Shape::Point`s, so a
-    /// per-element transform never materializes an input `PyGeometry` wrapper
-    /// (only the transformed outputs are allocated); all-`Point` outputs
-    /// re-pack into `Points` storage, so point-to-point transforms keep the
-    /// packed representation end to end.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
-    )]
-    pub fn map_shapes(&self, transform: impl Fn(&Shape) -> PyResult<Shape>) -> PyResult<Self> {
-        self.map_shapes_indexed(|shape, _| transform(shape))
-    }
-
-    /// [`map_shapes`](Self::map_shapes) with the row index — the hook for
-    /// per-element [`F64Param`] arguments (`param.get(row)`).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
-    )]
-    pub fn map_shapes_indexed(
-        &self,
-        transform: impl Fn(&Shape, usize) -> PyResult<Shape>,
-    ) -> PyResult<Self> {
-        let shapes = try_map_shape_rows(self, transform)
-            .map_err(|(row, error)| note_array_row(error, row))?;
+    fn finish_mapped_shapes(&self, shapes: Vec<Shape>) -> Result<Self> {
         let result = Self::from_shapes(shapes, self.frame.clone())?;
-        Ok(if self.has_missing() {
-            self.scatter_present_result(result)?
+        if self.has_missing() {
+            self.scatter_present_result(result)
         } else {
-            result
-        })
+            Ok(result)
+        }
     }
 
-    /// [`map_shapes`](Self::map_shapes), but for pure-Rust kernels: clone the
-    /// array storage handle, run the serial loop without the GIL, and convert
-    /// the first failing row's crate error at the Python boundary.
+    /// Map present shapes with a pure-Rust kernel. The row walk and
+    /// result assembly run without the GIL; row errors retain their index until
+    /// conversion at the Python boundary.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
@@ -128,16 +102,15 @@ impl PyGeometryArray {
         py: Python<'_>,
         transform: impl Fn(&Shape, usize) -> Result<Shape> + Ungil,
     ) -> PyResult<Self> {
-        let array = self.clone();
-        let shapes = py
-            .detach(move || try_map_shape_rows(&array, transform))
-            .map_err(rows_err)?;
-        let result = Self::from_shapes(shapes, self.frame.clone())?;
-        Ok(if self.has_missing() {
-            self.scatter_present_result(result)?
-        } else {
-            result
-        })
+        Ok(py.detach(move || self.map_shapes_native_indexed(transform))?)
+    }
+
+    pub(crate) fn map_shapes_native_indexed(
+        &self,
+        transform: impl FnMut(&Shape, usize) -> Result<Shape>,
+    ) -> BatchResult<Self> {
+        let shapes = try_map_shape_rows(self, transform).map_err(BatchError::from)?;
+        Ok(self.finish_mapped_shapes(shapes)?)
     }
 
     /// Budgeted detached map for constructive operations whose generated work
@@ -152,43 +125,23 @@ impl PyGeometryArray {
         mut transform: impl FnMut(&Shape, usize, &mut crate::geometry::ExpansionBudget) -> Result<Shape>
         + Ungil,
     ) -> PyResult<Self> {
-        let array = self.clone();
-        let shapes = py
-            .detach(move || {
-                try_map_shape_rows(&array, |shape, row| {
-                    let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-                    transform(shape, row, &mut budget)
-                })
+        Ok(py.detach(move || {
+            self.map_shapes_native_indexed(|shape, row| {
+                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
+                transform(shape, row, &mut budget)
             })
-            .map_err(rows_err)?;
-        let result = Self::from_shapes(shapes, self.frame.clone())?;
-        Ok(if self.has_missing() {
-            self.scatter_present_result(result)?
-        } else {
-            result
-        })
+        })?)
     }
 
-    /// [`map_shapes`](Self::map_shapes) for transforms that often return
-    /// the input UNCHANGED (idempotent canonicalizers re-run on clean
-    /// data): `Ok(None)` reuses the row's existing `Shape` (clone of the
-    /// mixed-column value). The materialized result owns fresh array-side
-    /// prepared and frame-product slots.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
-    )]
-    #[cfg(test)]
-    pub fn map_shapes_shared(
+    fn map_shapes_shared_native_indexed(
         &self,
-        transform: impl Fn(&Shape) -> PyResult<Option<Shape>>,
-    ) -> PyResult<Self> {
+        transform: impl Fn(&Shape, usize) -> Result<Option<Shape>>,
+    ) -> BatchResult<Self> {
         match self.storage() {
             GeometryArrayStorage::Mixed(shapes) => {
-                // Two phases like `map_shapes` (transforms first, rebuild
+                // Two phases (transforms first, rebuild
                 // second): interleaving measured ~250 ns/row slower.
-                let changed = try_map_shape_rows(self, |shape, _| transform(shape))
-                    .map_err(|(row, error)| note_array_row(error, row))?;
+                let changed = try_map_shape_rows(self, transform).map_err(BatchError::from)?;
                 Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
             // Packed rows re-pack either way — the plain map already
@@ -198,13 +151,14 @@ impl PyGeometryArray {
                 PackedStorage::Points { .. }
                 | PackedStorage::Lines { .. }
                 | PackedStorage::Polygons { .. },
-            ) => self.map_shapes(|shape| Ok(transform(shape)?.unwrap_or_else(|| shape.clone()))),
+            ) => self.map_shapes_native_indexed(|shape, row| {
+                Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
+            }),
         }
     }
 
-    /// [`map_shapes_shared`](Self::map_shapes_shared), detached for pure-Rust
-    /// idempotent canonicalizers. Only `Shape` values cross the detached
-    /// boundary; unchanged mixed rows keep their stored `Shape`, while the
+    /// Map idempotent canonicalizers without the GIL.
+    /// Unchanged mixed rows keep their stored `Shape`, while the
     /// materialized result owns fresh array-side product slots.
     #[expect(
         clippy::impl_trait_in_params,
@@ -229,22 +183,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         transform: impl Fn(&Shape, usize) -> Result<Option<Shape>> + Ungil,
     ) -> PyResult<Self> {
-        match self.storage() {
-            GeometryArrayStorage::Mixed(shapes) => {
-                let array = self.clone();
-                let changed = py
-                    .detach(move || try_map_shape_rows(&array, transform))
-                    .map_err(rows_err)?;
-                Ok(rebuild_shared_mixed(self, shapes, changed)?)
-            },
-            GeometryArrayStorage::Packed(
-                PackedStorage::Points { .. }
-                | PackedStorage::Lines { .. }
-                | PackedStorage::Polygons { .. },
-            ) => self.map_shapes_detached_indexed(py, |shape, row| {
-                Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
-            }),
-        }
+        Ok(py.detach(|| self.map_shapes_shared_native_indexed(transform))?)
     }
 }
 
@@ -272,7 +211,7 @@ mod tests {
         let warmed0 = source.geometry_at(0).unwrap();
         let before_cache = source.row_products.frame_cache(0);
         let result = source
-            .map_shapes_shared(|shape| {
+            .map_shapes_shared_native_indexed(|shape, _| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(2.0, 0.0)))
                     .then(|| Shape::Point(Point::new_raw_xy(20.0, 0.0))))
             })
@@ -298,7 +237,7 @@ mod tests {
         let source = mixed_with_missing();
         let source_cache = source.row_products.frame_cache(0);
         let result = source
-            .map_shapes_shared(|_| Ok(None))
+            .map_shapes_shared_native_indexed(|_, _| Ok(None))
             .expect("no-op shared map");
         assert!(!result.row_products.shares_owner_with(&source.row_products));
         assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
@@ -316,7 +255,7 @@ mod tests {
         let source_unchanged = source.row_products.frame_cache(0);
         let source_changed = source.row_products.frame_cache(1);
         let result = source
-            .map_shapes_shared(|shape| {
+            .map_shapes_shared_native_indexed(|shape, _| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(0.0, 0.0)))
                     .then(|| Shape::Point(Point::new_raw_xy(10.0, 0.0))))
             })

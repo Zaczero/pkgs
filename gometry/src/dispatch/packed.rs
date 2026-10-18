@@ -156,8 +156,8 @@ pub(crate) fn try_unary_packed_f64(
 
 fn packed_bool_lane(
     array: &PyGeometryArray,
-    values: Option<PyResult<Vec<bool>>>,
-) -> Option<PyResult<Vec<bool>>> {
+    values: Option<crate::error::Result<Vec<bool>>>,
+) -> Option<crate::error::Result<Vec<bool>>> {
     let mut values = match values? {
         Ok(values) => values,
         Err(error) => return Some(Err(error)),
@@ -187,7 +187,11 @@ pub(crate) fn try_unary_packed_bool(
     // Every row of real topology work runs detached, like the f64 lanes; only
     // the ndarray build needs the interpreter back.
     let values = py.detach(|| packed_bool_values(array, op))?;
-    Some(values.and_then(|values| bool_array(py, values)))
+    Some(
+        values
+            .map_err(PyErr::from)
+            .and_then(|values| bool_array(py, values)),
+    )
 }
 
 /// The packed boolean kernels, with the missing-row sentinel applied.
@@ -195,7 +199,10 @@ pub(crate) fn try_unary_packed_bool(
     clippy::wildcard_enum_match_arm,
     reason = "only packed boolean predicates are handled here; other operations continue to later dispatch"
 )]
-fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult<Vec<bool>>> {
+fn packed_bool_values(
+    array: &PyGeometryArray,
+    op: Operation,
+) -> Option<crate::error::Result<Vec<bool>>> {
     // Packed bool kernels run over physical rows (including NaN placeholders
     // on missing slots). [`packed_bool_lane`] then writes the missing-row
     // sentinel (`false`) from the mask — identical to the shape-lane answer
@@ -203,7 +210,7 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
     // shape-lane cliff on nullable is_valid/is_simple.
     let domain = match crate::geometry::topology_domain(&array.frame) {
         Ok(domain) => domain,
-        Err(error) => return Some(Err(error.into())),
+        Err(error) => return Some(Err(error)),
     };
     if matches!(
         op,
@@ -220,7 +227,7 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
                 }) {
                     Ok(Some(route)) => route,
                     Ok(None) => return None,
-                    Err(error) => return Some(Err(error.into())),
+                    Err(error) => return Some(Err(error)),
                 };
                 if route == crate::geometry::GeographicTopologyRoute::Quotient {
                     // Packed validity/simplicity kernels intentionally know nothing
@@ -247,7 +254,7 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
                 Ok(frame) => {
                     packed_bool_lane(array, array.crosses_antimeridian_unary_packed(frame))
                 },
-                Err(error) => Some(Err(error.into())),
+                Err(error) => Some(Err(error)),
             }
         },
         _ => None,
@@ -323,19 +330,26 @@ pub(crate) fn try_unary_packed_array(
         Operation::ConvexHull => {
             return Some(array.convex_hull_unary_packed(py, resolver));
         },
-        Operation::Boundary => return array.boundary_unary_packed(),
-        Operation::Reverse => return Some(array.reverse_unary_packed()),
+        Operation::Boundary => {
+            return py
+                .detach(|| array.boundary_unary_packed())
+                .map(|result| result.map_err(PyErr::from));
+        },
+        Operation::Reverse => return Some(array.reverse_unary_packed(py)),
         Operation::Normalize => return Some(array.normalize_unary_packed(py)),
-        Operation::SwapXy => return Some(array.swap_xy_unary_packed()),
+        Operation::SwapXy => return Some(array.swap_xy_unary_packed(py)),
         Operation::UniquePoints => return Some(array.unique_points_unary_packed(py)),
         Operation::Force2d => return Some(array.force_2d_unary_packed(py)),
         _ => {},
     }
     match (op, packed?) {
-        (Operation::Centroid, PackedUnary::Synthesized) => Some(array.centroid_unary_packed()),
-        (Operation::Envelope, PackedUnary::Synthesized) => Some(array.envelope_unary_packed()),
+        (Operation::Centroid, PackedUnary::Synthesized) => Some(array.centroid_unary_packed(py)),
+        (Operation::Envelope, PackedUnary::Synthesized) => Some(
+            py.detach(|| array.envelope_unary_packed())
+                .map_err(PyErr::from),
+        ),
         (Operation::PointOnSurface, PackedUnary::Synthesized) => {
-            Some(array.point_on_surface_unary_packed())
+            Some(array.point_on_surface_unary_packed(py))
         },
         (
             Operation::Metric(MetricOp::Segmentize),
@@ -394,7 +408,7 @@ pub(crate) fn try_unary_packed_array(
             },
         ) => array.skew_unary_packed(*origin, *tan_x, *tan_y),
         (Operation::OrientPolygons, PackedUnary::OrientPolygons { ccw }) => {
-            Some(array.orient_polygons_unary_packed(*ccw))
+            Some(array.orient_polygons_unary_packed(py, *ccw))
         },
         (Operation::RemoveRepeatedPoints, PackedUnary::RemoveRepeatedPoints { tolerance }) => {
             Some(array.remove_repeated_points_unary_packed(py, tolerance))

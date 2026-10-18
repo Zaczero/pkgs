@@ -57,11 +57,10 @@ impl PyGeometryArray {
         output_frame: Frame,
         kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> BatchResult<PackedColumnOutput> + Ungil,
     ) -> PyResult<Option<Self>> {
-        let output = self
-            .reduce_packed_columns_detached(py, kernel)?
-            .map(|output| self.assemble_packed_result(output, output_frame))
-            .transpose()?;
-        Ok(output)
+        self.reduce_packed_columns_detached(py, move |columns| {
+            let output = kernel(columns)?;
+            Ok(self.assemble_packed_result(output, output_frame)?)
+        })
     }
 
     /// Like [`Self::map_packed_columns_detached`], but lets a packed kernel
@@ -74,16 +73,14 @@ impl PyGeometryArray {
         kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> BatchResult<Option<PackedColumnOutput>>
         + Ungil,
     ) -> PyResult<Option<Self>> {
-        let Some(output) = self.reduce_packed_columns_detached(py, kernel)? else {
-            return Ok(None);
-        };
-        let Some(output) = output else {
-            return Ok(None);
-        };
-        Ok(Some(
-            self.assemble_packed_result(output, output_frame)
-                .map_err(PyErr::from)?,
-        ))
+        Ok(self
+            .reduce_packed_columns_detached(py, move |columns| {
+                kernel(columns)?
+                    .map(|output| self.assemble_packed_result(output, output_frame))
+                    .transpose()
+                    .map_err(BatchError::from)
+            })?
+            .flatten())
     }
 
     pub(crate) fn map_packed_points_detached(
@@ -93,16 +90,9 @@ impl PyGeometryArray {
         output_axes: crate::geometry::CoordinateAxes,
         map: impl Fn(crate::geometry::Point) -> crate::error::Result<crate::geometry::Point> + Ungil,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) = self.rows.packed_columns() else {
-            return Ok(None);
-        };
-        let output = py
-            .detach(move || map_selected_points(columns, output_axes, map))
-            .map_err(PyErr::from)?;
-        Ok(Some(
-            self.assemble_packed_result(output, output_frame)
-                .map_err(PyErr::from)?,
-        ))
+        self.map_packed_columns_detached(py, output_frame, move |columns| {
+            map_selected_points(columns, output_axes, map)
+        })
     }
 
     pub(crate) fn map_packed_to_crs_detached(
@@ -111,16 +101,9 @@ impl PyGeometryArray {
         output_frame: Frame,
         transformer: crate::crs::TransformPlan,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) = self.rows.packed_columns() else {
-            return Ok(None);
-        };
-        let output = py
-            .detach(move || map_selected_to_crs(columns, &transformer))
-            .map_err(PyErr::from)?;
-        Ok(Some(
-            self.assemble_packed_result(output, output_frame)
-                .map_err(PyErr::from)?,
-        ))
+        self.map_packed_columns_detached(py, output_frame, move |columns| {
+            map_selected_to_crs(columns, &transformer)
+        })
     }
 
     pub(crate) fn replace_packed_coords_detached(
@@ -129,29 +112,20 @@ impl PyGeometryArray {
         output_frame: Frame,
         replacement: CoordinateReplacement,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) = self.rows.packed_columns() else {
-            return Ok(None);
-        };
-        let output = py
-            .detach(move || -> BatchResult<PackedColumnOutput> {
-                let mut replacement_index = 0;
-                let output =
-                    replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)?;
-                if replacement_index != replacement.len {
-                    return Err(BatchError::Batch(
-                        crate::geometry::GeometryErrorKind::message(format!(
-                            "coordinates must have length {}; got length {replacement_index}",
-                            replacement.len
-                        )),
-                    ));
-                }
-                Ok(output)
-            })
-            .map_err(PyErr::from)?;
-        Ok(Some(
-            self.assemble_packed_result(output, output_frame)
-                .map_err(PyErr::from)?,
-        ))
+        self.map_packed_columns_detached(py, output_frame, move |columns| {
+            let mut replacement_index = 0;
+            let output =
+                replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)?;
+            if replacement_index != replacement.len {
+                return Err(BatchError::Batch(
+                    crate::geometry::GeometryErrorKind::message(format!(
+                        "coordinates must have length {}; got length {replacement_index}",
+                        replacement.len
+                    )),
+                ));
+            }
+            Ok(output)
+        })
     }
 
     pub(crate) fn pair_packed_columns_detached<R>(

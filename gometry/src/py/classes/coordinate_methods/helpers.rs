@@ -89,26 +89,29 @@ pub(crate) fn coordinate_matrix_data(
         pyo3::exceptions::PyOverflowError::new_err("coordinate matrix is too large")
     })?;
     let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate matrix")?;
-    let mut data = vec![0.0; capacity];
-    let mut output = data.as_mut_slice();
-    view.for_each(&mut |_, run| {
-        let count = match run {
-            crate::geometry::CoordRun::Seq(seq) => seq.len(),
-            crate::geometry::CoordRun::Point(_) => 1,
-        }
-        .wrapping_mul(dims);
-        let (current, remaining) = std::mem::take(&mut output).split_at_mut(count);
-        output = remaining;
-        match run {
-            crate::geometry::CoordRun::Seq(seq) => {
-                interleave_coordinate_columns(seq, axes, order, missing, current);
-            },
-            crate::geometry::CoordRun::Point(point) => {
-                for (value, &axis) in current.iter_mut().zip(order) {
-                    *value = coordinate_ordinate(point, axis).unwrap_or(missing);
-                }
-            },
-        }
+    let data = py.detach(|| {
+        let mut data = vec![0.0; capacity];
+        let mut output = data.as_mut_slice();
+        view.for_each(&mut |_, run| {
+            let count = match run {
+                crate::geometry::CoordRun::Seq(seq) => seq.len(),
+                crate::geometry::CoordRun::Point(_) => 1,
+            }
+            .wrapping_mul(dims);
+            let (current, remaining) = std::mem::take(&mut output).split_at_mut(count);
+            output = remaining;
+            match run {
+                crate::geometry::CoordRun::Seq(seq) => {
+                    interleave_coordinate_columns(seq, axes, order, missing, current);
+                },
+                crate::geometry::CoordRun::Point(point) => {
+                    for (value, &axis) in current.iter_mut().zip(order) {
+                        *value = coordinate_ordinate(point, axis).unwrap_or(missing);
+                    }
+                },
+            }
+        });
+        data
     });
     Ok((rows, data))
 }

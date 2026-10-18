@@ -222,91 +222,93 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn reverse_unary_packed(&self) -> PyResult<Self> {
+    pub(crate) fn reverse_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => {
-                let (out_coords, out_offsets, out_map) = if row_map.is_identity() {
-                    (
-                        reverse_coord_windows(coords, offsets)?,
-                        offsets.clone(),
-                        row_map.clone(),
-                    )
-                } else {
-                    let (out_coords, out_offsets) =
-                        LineColumns::from_parts(coords, offsets, row_map.as_deref())
-                            .reverse_selected()?;
-                    (out_coords, out_offsets, RowSelection::Identity)
-                };
-                Ok(Self::from_result_storage(
-                    Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        coords: Arc::new(out_coords),
-                        offsets: out_offsets,
-                        row_map: out_map,
-                    })),
-                    self.frame.clone(),
-                    self.missing().cloned(),
-                    StorageLayout::LogicalRows,
-                    ComputedCaches::carried(
-                        Arc::clone(&self.bounds_cache),
-                        Arc::clone(&self.total_bounds_cache),
-                    ),
-                )?)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => {
-                let (out_coords, out_rings, out_polygons, out_map) = if row_map.is_identity() {
-                    (
-                        reverse_coord_windows(coords, ring_offsets)?,
-                        ring_offsets.clone(),
-                        polygon_offsets.clone(),
-                        row_map.clone(),
-                    )
-                } else {
-                    let (out_coords, out_rings, out_polygons) = PolygonColumns::from_parts(
-                        coords,
-                        ring_offsets,
-                        polygon_offsets,
-                        row_map.as_deref(),
-                    )
-                    .reverse_selected()?;
-                    (out_coords, out_rings, out_polygons, RowSelection::Identity)
-                };
-                Ok(Self::from_result_storage(
-                    Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                        coords: Arc::new(out_coords),
-                        ring_offsets: out_rings,
-                        polygon_offsets: out_polygons,
-                        row_map: out_map,
-                    })),
-                    self.frame.clone(),
-                    self.missing().cloned(),
-                    StorageLayout::LogicalRows,
-                    ComputedCaches::carried(
-                        Arc::clone(&self.bounds_cache),
-                        Arc::clone(&self.total_bounds_cache),
-                    ),
-                )?)
-            },
-            GeometryArrayStorage::Mixed(_) | GeometryArrayStorage::Packed(_) => {
-                self.map_shapes(|shape| Ok(shape.reverse()?))
-            },
-        }
+        Ok(py.detach(|| -> crate::error::BatchResult<Self> {
+            match self.storage() {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords,
+                    offsets,
+                    row_map,
+                }) => {
+                    let (out_coords, out_offsets, out_map) = if row_map.is_identity() {
+                        (
+                            reverse_coord_windows(coords, offsets)?,
+                            offsets.clone(),
+                            row_map.clone(),
+                        )
+                    } else {
+                        let (out_coords, out_offsets) =
+                            LineColumns::from_parts(coords, offsets, row_map.as_deref())
+                                .reverse_selected()?;
+                        (out_coords, out_offsets, RowSelection::Identity)
+                    };
+                    Ok(Self::from_result_storage(
+                        Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                            coords: Arc::new(out_coords),
+                            offsets: out_offsets,
+                            row_map: out_map,
+                        })),
+                        self.frame.clone(),
+                        self.missing().cloned(),
+                        StorageLayout::LogicalRows,
+                        ComputedCaches::carried(
+                            Arc::clone(&self.bounds_cache),
+                            Arc::clone(&self.total_bounds_cache),
+                        ),
+                    )?)
+                },
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords,
+                    ring_offsets,
+                    polygon_offsets,
+                    row_map,
+                }) => {
+                    let (out_coords, out_rings, out_polygons, out_map) = if row_map.is_identity() {
+                        (
+                            reverse_coord_windows(coords, ring_offsets)?,
+                            ring_offsets.clone(),
+                            polygon_offsets.clone(),
+                            row_map.clone(),
+                        )
+                    } else {
+                        let (out_coords, out_rings, out_polygons) = PolygonColumns::from_parts(
+                            coords,
+                            ring_offsets,
+                            polygon_offsets,
+                            row_map.as_deref(),
+                        )
+                        .reverse_selected()?;
+                        (out_coords, out_rings, out_polygons, RowSelection::Identity)
+                    };
+                    Ok(Self::from_result_storage(
+                        Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                            coords: Arc::new(out_coords),
+                            ring_offsets: out_rings,
+                            polygon_offsets: out_polygons,
+                            row_map: out_map,
+                        })),
+                        self.frame.clone(),
+                        self.missing().cloned(),
+                        StorageLayout::LogicalRows,
+                        ComputedCaches::carried(
+                            Arc::clone(&self.bounds_cache),
+                            Arc::clone(&self.total_bounds_cache),
+                        ),
+                    )?)
+                },
+                GeometryArrayStorage::Mixed(_) | GeometryArrayStorage::Packed(_) => {
+                    self.map_shapes_native_indexed(|shape, _| shape.reverse())
+                },
+            }
+        })?)
     }
 
-    pub(crate) fn swap_xy_unary_packed(&self) -> PyResult<Self> {
+    pub(crate) fn swap_xy_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         self.swap_xy_packed_storage()?
-            .map_or_else(|| self.map_shapes(|shape| Ok(shape.swap_xy()?)), Ok)
+            .map_or_else(|| self.map_shapes_detached(py, Shape::swap_xy), Ok)
     }
 
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
@@ -315,8 +317,8 @@ impl PyGeometryArray {
         self.map_shapes_detached(py, crate::geometry::Shape::unique_points)
     }
 
-    pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> PyResult<Self> {
-        self.map_shapes(|shape| Ok(shape.orient_polygons(!ccw)?))
+    pub(crate) fn orient_polygons_unary_packed(&self, py: Python<'_>, ccw: bool) -> PyResult<Self> {
+        self.map_shapes_detached(py, |shape| shape.orient_polygons(!ccw))
     }
 
     pub(crate) fn remove_repeated_points_unary_packed(

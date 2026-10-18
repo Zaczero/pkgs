@@ -342,7 +342,7 @@ impl PyCellArray {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets, missing)
+        Ok(Groups::from_cell_flat(kind, ids, offsets, missing)?)
     }
 
     /// Number of descendant cells each cell has at ``depth``.
@@ -546,7 +546,7 @@ impl PyCellArray {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets, missing)
+        Ok(Groups::from_cell_flat(kind, ids, offsets, missing)?)
     }
 
     /// Parent cell of every input cell.

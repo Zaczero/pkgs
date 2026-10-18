@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use pyo3::PyErr;
 
 use crate::array::{
     ArrayRow, Bound, CoordSeq, CsrOffsetColumn, Point, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, Result, Shape, curves, note_array_row, parse_curve_bounds, rows_err,
+    PyResult, Python, Result, Shape, curves, parse_curve_bounds, rows_err,
 };
 use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
@@ -421,7 +420,11 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        Groups::from_geometry_builder(frame, builder, self.missing().cloned())
+        Ok(Groups::from_geometry_builder(
+            frame,
+            builder,
+            self.missing().cloned(),
+        )?)
     }
 
     /// Budgeted group flattening for operations that synthesize a variable
@@ -463,7 +466,11 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        Groups::from_geometry_builder(frame, builder, self.missing().cloned())
+        Ok(Groups::from_geometry_builder(
+            frame,
+            builder,
+            self.missing().cloned(),
+        )?)
     }
 
     /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`]: the
@@ -544,16 +551,21 @@ impl PyGeometryArray {
             })
             .map_err(rows_err)?;
         let (points, ring_ends) = builder;
-        Groups::from_point_builder(frame, points, &ring_ends, self.missing().cloned())
+        Ok(Groups::from_point_builder(
+            frame,
+            points,
+            &ring_ends,
+            self.missing().cloned(),
+        )?)
     }
 
-    pub(crate) fn boundary_unary_packed(&self) -> Option<PyResult<Self>> {
+    pub(crate) fn boundary_unary_packed(&self) -> Option<Result<Self>> {
         if self.missing().is_some() {
             return None;
         }
         let domain = match crate::geometry::topology_domain(&self.frame) {
             Ok(domain) => domain,
-            Err(error) => return Some(Err(error.into())),
+            Err(error) => return Some(Err(error)),
         };
         if domain.is_geographic() {
             return None;
@@ -574,17 +586,14 @@ impl PyGeometryArray {
             if !valid.into_iter().all(|valid| valid) {
                 return None;
             }
-            return Some(
-                Self::from_storage(
-                    GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        coords: Arc::clone(coords),
-                        offsets: ring_offsets.clone().cast_level::<()>(),
-                        row_map: row_map.clone(),
-                    }),
-                    self.frame.clone(),
-                )
-                .map_err(PyErr::from),
-            );
+            return Some(Self::from_storage(
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords: Arc::clone(coords),
+                    offsets: ring_offsets.clone().cast_level::<()>(),
+                    row_map: row_map.clone(),
+                }),
+                self.frame.clone(),
+            ));
         }
         None
     }
@@ -615,9 +624,6 @@ impl PyGeometryArray {
         }))
     }
 }
-
-#[path = "map_shapes.rs"]
-mod map_shapes;
 
 #[cfg(test)]
 mod geographic_validity_admission_tests {

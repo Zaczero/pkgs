@@ -1031,8 +1031,7 @@ mod tests {
             GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
         ));
 
-        let result = gathered
-            .point_on_surface_unary_packed()
+        let result = pyo3::Python::attach(|py| gathered.point_on_surface_unary_packed(py))
             .expect("packed point-on-surface");
         assert!(matches!(
             result.storage(),

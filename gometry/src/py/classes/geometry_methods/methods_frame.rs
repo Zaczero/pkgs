@@ -38,13 +38,13 @@ impl PyGeometry {
     /// >>> import gometry as gm
     /// >>> gm.Point(-122.4, 37.8, crs=4326).estimate_local_crs()
     /// CRS("EPSG:32610")
-    pub fn estimate_local_crs(&self) -> PyResult<PyCrs> {
+    pub fn estimate_local_crs(&self, py: Python<'_>) -> PyResult<PyCrs> {
         let source = self.crs_str().ok_or_else(|| {
             CRSError::new_err("estimate_local_crs requires a CRS-tagged geometry")
         })?;
-        Ok(PyCrs::from_definition(crs_arc(
-            crs::local::estimate_local_crs(&self.shape, source)?,
-        )))
+        Ok(PyCrs::from_definition(crs_arc(py.detach(|| {
+            crs::local::estimate_local_crs(&self.shape, source)
+        })?)))
     }
 
     /// Attach or relabel the CRS *without* moving coordinates.

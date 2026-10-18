@@ -242,7 +242,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         from pandas.api.indexers import check_array_indexer
 
         if self._readonly:
-            raise ValueError('Cannot modify read-only array')
+            raise ValueError('cannot modify read-only array')
         size = len(self)
         if isinstance(key, (int, np.integer)) and not isinstance(key, bool):
             idx = int(key)

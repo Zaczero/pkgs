@@ -253,7 +253,7 @@ fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
     + pyo3::marker::Ungil,
-) -> std::result::Result<PublicationRows, (usize, crate::error::Error)> {
+) -> crate::error::BatchResult<PyGeometryArray> {
     py.detach(move || {
         let mut rows = array.row_operation();
         let mut output = PublicationRows::with_capacity(array.len());
@@ -281,9 +281,15 @@ fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
                     (row_index, result)
                 },
             };
-            result.map_err(|error| (logical, error))?;
+            result.map_err(|error| crate::error::BatchError::Row {
+                row: logical,
+                error,
+            })?;
         }
-        Ok(output)
+        drop(rows);
+        output
+            .finish(array.frame.clone())
+            .map_err(crate::error::BatchError::from)
     })
 }
 
@@ -296,11 +302,11 @@ fn run_unary_shape_rows<R: Into<GeometryOutput>>(
     + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
-    let rows = match resolver {
+    let output = match resolver {
         MetricResolver::None => {
             let domain = crate::geometry::topology_domain(&frame)?;
             execute_unary_shape_rows(py, array.clone(), domain, MetricCtx::None, mode, kernel)
-                .map_err(rows_err)?
+                .map_err(PyErr::from)?
         },
         resolver @ (MetricResolver::Antimeridian
         | MetricResolver::Metric { .. }
@@ -317,10 +323,10 @@ fn run_unary_shape_rows<R: Into<GeometryOutput>>(
                 },
             };
             drop(metric_scratch);
-            result.map_err(rows_err)?
+            result.map_err(PyErr::from)?
         },
     };
-    rows.finish(frame).map_err(PyErr::from)
+    Ok(output)
 }
 
 /// The per-row unary lane shared by every array return type: resolve the

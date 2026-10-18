@@ -241,24 +241,28 @@ impl PyGeometryArray {
     /// >>> arr = gm.GeometryArray([gm.Point(-122.4, 37.8, crs=4326)])
     /// >>> arr.estimate_local_crs()
     /// CRS("EPSG:32610")
-    pub fn estimate_local_crs(&self) -> PyResult<PyCrs> {
+    pub fn estimate_local_crs(&self, py: Python<'_>) -> PyResult<PyCrs> {
         let source = self.crs_str().ok_or_else(|| {
             CRSError::new_err("estimate_local_crs requires a CRS-tagged geometry array")
         })?;
-        let shapes = self
-            .present_shape_rows()
-            .map(|result| result.map(|(_, shape)| shape).map_err(PyErr::from))
-            .filter(|result| !matches!(result, Ok(shape) if shape.is_empty()))
-            .collect::<pyo3::PyResult<Vec<_>>>()?;
-        if shapes.is_empty() {
-            return Err(CRSError::new_err(
-                "estimate_local_crs requires at least one present, non-empty geometry",
-            ));
-        }
-        let collection = Shape::geometry_collection(shapes)?;
-        Ok(PyCrs::from_definition(crs_arc(
-            crs::local::estimate_local_crs(&collection, source)?,
-        )))
+        let definition = py.detach(|| -> crate::error::Result<_> {
+            let shapes = self
+                .present_shape_rows()
+                .map(|result| result.map(|(_, shape)| shape))
+                .filter(|result| !matches!(result, Ok(shape) if shape.is_empty()))
+                .collect::<crate::error::Result<Vec<_>>>()?;
+            if shapes.is_empty() {
+                return Err(crate::crs::CrsError::message(
+                    "estimate_local_crs requires at least one present, non-empty geometry",
+                ));
+            }
+            let collection = Shape::geometry_collection(shapes)?;
+            Ok(crs_arc(crs::local::estimate_local_crs(
+                &collection,
+                source,
+            )?))
+        })?;
+        Ok(PyCrs::from_definition(definition))
     }
 
     // NEP 13: opt out of numpy ufunc dispatch (we have our own & | - ^ /
@@ -1094,16 +1098,14 @@ impl PyGeometryArray {
         Ok(bounds.map(Bounds::into_tuple))
     }
 
-    pub(crate) fn is_empty_unary_packed(&self) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_empty_unary_packed(&self) -> crate::error::Result<Vec<bool>> {
         if self.has_missing() {
             return self
                 .row_operation()
                 .rows_with_missing(|| false)
                 .map(|row| match row {
                     ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => {
-                        row.row().with_shape(Shape::is_empty).map_err(PyErr::from)
-                    },
+                    ArrayRow::Present(row) => row.row().with_shape(Shape::is_empty),
                 })
                 .collect();
         }
@@ -1121,55 +1123,61 @@ impl PyGeometryArray {
             },
             GeometryArrayStorage::Mixed(_) => {
                 for shape in self.storage().iter_shapes() {
-                    output.push(shape.map_err(PyErr::from)?.is_empty());
+                    output.push(shape?.is_empty());
                 }
             },
         }
         Ok(output)
     }
 
-    pub(crate) fn is_closed_unary_packed(&self, domain: TopologyDomain) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_closed_unary_packed(
+        &self,
+        domain: TopologyDomain,
+    ) -> crate::error::Result<Vec<bool>> {
         if let Some(closed) = self
             .storage()
             .lines_bool(|coords| Ok(line_is_closed_in_domain(coords, domain)))
         {
-            return Ok(closed?);
+            return closed;
         }
-        Ok(self
+        self
             .storage()
-            .const_or_shape_bool(false, |shape| Ok(shape_is_closed_in_domain(shape, domain)))?)
+            .const_or_shape_bool(false, |shape| Ok(shape_is_closed_in_domain(shape, domain)))
     }
 
-    pub(crate) fn is_ring_unary_packed(&self, domain: TopologyDomain) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_ring_unary_packed(
+        &self,
+        domain: TopologyDomain,
+    ) -> crate::error::Result<Vec<bool>> {
         if let Some(ring) = self.storage().lines_bool(|coords| {
             Ok(line_is_closed_in_domain(coords, domain) && line_is_simple(coords)?)
         }) {
-            return Ok(ring?);
+            return ring;
         }
-        Ok(self.storage().const_or_shape_bool(false, |shape| {
+        self.storage().const_or_shape_bool(false, |shape| {
             let data = crate::geometry::PreparedPlan::transient(shape);
             crate::geometry::is_ring_data_in_frame(&data, domain)
-        })?)
+        })
     }
 
-    pub(crate) fn is_ccw_unary_packed(&self) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_ccw_unary_packed(&self) -> crate::error::Result<Vec<bool>> {
         if let Some(ccw) = self.storage().lines_bool(|coords| Ok(line_is_ccw(coords))) {
-            return Ok(ccw?);
+            return ccw;
         }
-        Ok(self
+        self
             .storage()
-            .const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))?)
+            .const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))
     }
 
-    pub(crate) fn is_simple_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
+    pub(crate) fn is_simple_unary_packed(&self) -> Option<crate::error::Result<Vec<bool>>> {
         let missing = self.missing();
         // Dense kernels avoid a per-row missing-mask branch.
         if missing.is_none() {
             if let Some(simple) = self.storage().lines_bool(line_is_simple) {
-                return Some(simple.map_err(PyErr::from));
+                return Some(simple);
             }
             if let Some(simple) = self.storage().polygons_bool(polygon_row_is_valid) {
-                return Some(simple.map_err(PyErr::from));
+                return Some(simple);
             }
             if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
                 return Some(Ok(vec![true; self.len()]));
@@ -1178,13 +1186,13 @@ impl PyGeometryArray {
         }
         // Nullable kernels skip placeholders and write false for missing rows.
         if let Some(simple) = self.storage().lines_bool_masked(missing, line_is_simple) {
-            return Some(simple.map_err(PyErr::from));
+            return Some(simple);
         }
         if let Some(simple) = self
             .storage()
             .polygons_bool_masked(missing, polygon_row_is_valid)
         {
-            return Some(simple.map_err(PyErr::from));
+            return Some(simple);
         }
         if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
             let mask = missing.expect("missing branch");
@@ -1193,7 +1201,7 @@ impl PyGeometryArray {
         None
     }
 
-    pub(crate) fn is_valid_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
+    pub(crate) fn is_valid_unary_packed(&self) -> Option<crate::error::Result<Vec<bool>>> {
         let missing = self.missing();
         if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
             self.storage()
@@ -1232,18 +1240,18 @@ impl PyGeometryArray {
             .storage()
             .lines_bool_masked(missing, |coords| Ok(line_is_valid(coords)))
         {
-            return Some(valid.map_err(PyErr::from));
+            return Some(valid);
         }
         if let Some(valid) = self
             .storage()
             .polygons_bool_masked(missing, polygon_row_is_valid)
         {
-            return Some(valid.map_err(PyErr::from));
+            return Some(valid);
         }
         None
     }
 
-    pub(crate) fn is_convex_unary_packed(&self) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_convex_unary_packed(&self) -> crate::error::Result<Vec<bool>> {
         let mut output = Vec::with_capacity(self.len());
         match self.storage() {
             GeometryArrayStorage::Packed(
@@ -1254,7 +1262,7 @@ impl PyGeometryArray {
             GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
             | GeometryArrayStorage::Mixed(_) => {
                 for (row, shape) in self.storage().iter_shapes().enumerate() {
-                    let shape = shape.map_err(PyErr::from)?;
+                    let shape = shape?;
                     let value = if self.is_row_missing(row) {
                         false
                     } else {
@@ -1281,12 +1289,12 @@ impl PyGeometryArray {
     pub(crate) fn crosses_antimeridian_unary_packed(
         &self,
         frame: crate::geographic::GeographicFrame,
-    ) -> Option<PyResult<Vec<bool>>> {
+    ) -> Option<crate::error::Result<Vec<bool>>> {
         if let Some(crosses) = self
             .storage()
             .lines_bool(|coords| Ok(crate::geometry::chain_crosses_antimeridian(coords, frame)))
         {
-            return Some(crosses.map_err(PyErr::from));
+            return Some(crosses);
         }
         if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
             return Some(Ok(vec![false; self.len()]));

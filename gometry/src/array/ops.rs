@@ -6,13 +6,13 @@
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
-    Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame, I64Param,
+    Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame,
     InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometryArray, PyResult,
     PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput, VoronoiOutput,
     bool_array, cdt_refinement_values, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, geometry, io, non_negative_int, note_array_row,
-    owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
-    row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
+    expected_geometry_or_array, geometry, io, owned_voronoi_boundary, pair_packed_equals_exact,
+    parse_precision, require_geojson_crs, rows_err, validate_equals_exact_tolerance,
+    validate_subdivide_max_vertices,
 };
 use crate::geometry::publication::{PublicationRows, publish_split_groups};
 use crate::geometry::storage;
@@ -755,115 +755,6 @@ impl PyGeometryArray {
                 axes.is_some()
             },
         })
-    }
-
-    pub(crate) fn sample_points_impl(
-        &self,
-        count: &Bound<'_, PyAny>,
-        seed: &Bound<'_, PyAny>,
-    ) -> PyResult<Groups> {
-        let len = self.len();
-        let count = I64Param::parse(count, "count", len)?;
-        count
-            .try_validate(|value| non_negative_int("sample_points", "count", value).map(|_| ()))?;
-        let seed = I64Param::parse(seed, "seed", len)?;
-        let mut total = 0_usize;
-        for (row, missing) in (0..len).map(|row| (row, self.is_row_missing(row))) {
-            if !missing {
-                let count = usize::try_from(count.get(row)).expect("validated non-negative");
-                crate::geometry::ExpansionBudget::check("sample_points", "count", count)?;
-                total = total
-                    .checked_add(count)
-                    .ok_or_else(|| Error::from(crate::error::ResourceError::SizeOverflow))?;
-            }
-        }
-        let domain = if total == 0 {
-            crate::geometry::TopologyDomain::Cartesian
-        } else {
-            crate::geometry::topology_domain(&self.frame)?
-        };
-        if domain.is_geographic() {
-            let built = (|| -> Result<Vec<Option<crate::geometry::PreparedSampling>>, (Error, Option<usize>)> {
-                let mut rows = Vec::with_capacity(len);
-                for logical_row in self.row_operation().rows_with_missing(|| ()) {
-                    match logical_row {
-                        crate::array::ArrayRow::Missing { .. } => rows.push(None),
-                        crate::array::ArrayRow::Present(row) => {
-                            let logical = row.logical();
-                            let count =
-                                usize::try_from(count.get(logical)).expect("validated non-negative");
-                            let seed = match &seed {
-                                I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
-                                I64Param::PerElement(_) => {
-                                    row_sample_seed(seed.get(logical) as u64, 0)
-                                },
-                            };
-                            let prepared = row
-                                .row()
-                                .try_with_shape(|shape| {
-                                    shape.sample_point_receipts_in_domain(
-                                        count, seed, logical, domain,
-                                    )
-                                })
-                                .map_err(|error| (error, None))?;
-                            rows.push(Some(prepared));
-                        },
-                    }
-                }
-                Ok(rows)
-            })();
-            let rows = match built {
-                Ok(rows) => rows,
-                Err((error, None)) => return Err(error.into()),
-                Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
-            };
-            return Ok(geometry::publish_sampling_groups(
-                rows,
-                self.frame.clone(),
-                self.missing().cloned(),
-            )?);
-        }
-        let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
-            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len);
-            for logical_row in self.row_operation().rows_with_missing(|| ()) {
-                let (row, values) = match logical_row {
-                    crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
-                    crate::array::ArrayRow::Present(row) => {
-                        let logical = row.logical();
-                        let count =
-                            usize::try_from(count.get(logical)).expect("validated non-negative");
-                        // One rule: a geometry seeded with `s` always draws
-                        // `row_sample_seed(s, 0)`. A single seed spreads across rows by
-                        // index; per-row seeds are each that row's OWN seed, so each
-                        // draws the stream a scalar with that seed draws. Both keep
-                        // rows independent AND agree with the scalar surface.
-                        let seed = match &seed {
-                            I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
-                            I64Param::PerElement(_) => row_sample_seed(seed.get(logical) as u64, 0),
-                        };
-                        let points = row
-                            .row()
-                            .try_with_shape(|shape| {
-                                shape
-                                    .sample_point_receipts_in_domain(count, seed, logical, domain)
-                                    .map(crate::geometry::PreparedSampling::into_points)
-                            })
-                            .map_err(|error| (error, None))?;
-                        (logical, Some(points))
-                    },
-                };
-                builder
-                    .push_row(values.into_iter().flatten().map(Shape::Point))
-                    .map_err(|error| (error, Some(row)))?;
-            }
-            Ok(builder)
-        })();
-        let builder = match built {
-            Ok(builder) => builder,
-            Err((error, None)) => return Err(error.into()),
-            Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
-        };
-        Groups::from_geometry_builder(self.frame.clone(), builder, self.missing().cloned())
     }
 
     pub(crate) fn voronoi_cells_impl(

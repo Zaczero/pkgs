@@ -903,9 +903,8 @@ mod geographic_masked_bounds_tests {
             )
             .unwrap();
 
-        let result = array
-            .centroid_unary_packed()
-            .expect("packed centroid succeeds");
+        let result =
+            Python::attach(|py| array.centroid_unary_packed(py)).expect("packed centroid succeeds");
         let actual = result
             .storage()
             .iter_shapes()

@@ -23,7 +23,6 @@ use crate::geometry::Shape;
 use crate::geometry::storage::ValidityMask;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
-use crate::py::errors::GeometryError;
 use crate::py::numpy::{
     ImmutableI64Owner, bool_array, frozen_i64_owner, frozen_i64_view, int64_array,
 };
@@ -82,20 +81,6 @@ const fn contiguous_positive_window(
         return None;
     }
     Some(start as usize..stop as usize)
-}
-
-fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<usize> {
-    // Parameter/content validation — GeometryError, never BufferError (D32:
-    // empty offsets used to underflow then surface as BufferError/panic).
-    let values_len = i64::try_from(values_len)
-        .map_err(|_| GeometryError::new_err("CSR values length does not fit in int64"))?;
-    if offsets.first() != Some(&0) || offsets.last() != Some(&values_len) {
-        return Err(GeometryError::new_err("invalid CSR offsets"));
-    }
-    if !offsets.is_sorted() {
-        return Err(GeometryError::new_err("invalid CSR offsets"));
-    }
-    Ok(offsets.len().saturating_sub(1))
 }
 
 fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyResult<bool> {

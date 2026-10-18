@@ -5,14 +5,22 @@
 use pyo3::Python;
 
 use crate::CsrBuilder;
-use crate::error::Result;
-use crate::geometry::TopologyDomain;
+use crate::error::{ResourceError, Result};
 use crate::geometry::publication::FinishedGeometry;
 use crate::geometry::storage::ValidityMask;
+use crate::geometry::{GeometryErrorKind, TopologyDomain};
 use crate::py::vectors::{
-    Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyOverflowError, PyResult,
-    Shape, validate_csr_offsets,
+    Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyResult, Shape,
 };
+
+fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> Result<usize> {
+    let values_len = i64::try_from(values_len)
+        .map_err(|_| GeometryErrorKind::message("CSR values length does not fit in int64"))?;
+    if offsets.first() != Some(&0) || offsets.last() != Some(&values_len) || !offsets.is_sorted() {
+        return Err(GeometryErrorKind::message("invalid CSR offsets"));
+    }
+    Ok(offsets.len().wrapping_sub(1))
+}
 
 impl Groups {
     pub(crate) fn from_finished(finished: FinishedGeometry) -> Result<Self> {
@@ -35,7 +43,7 @@ impl Groups {
         })
     }
 
-    pub(super) fn from_int64_values_csr(ids: Vec<i64>, offsets: Vec<i64>) -> PyResult<Self> {
+    pub(super) fn from_int64_values_csr(ids: Vec<i64>, offsets: Vec<i64>) -> Result<Self> {
         let row_count = validate_csr_offsets(&offsets, ids.len())?;
         Ok(Self {
             values: GroupsValues::Int64(ids.into()),
@@ -47,22 +55,23 @@ impl Groups {
 
     /// Adopt an already-built int64 CSR batch — the zero-copy hand-off from
     /// kernels that stream matches directly.
-    pub fn from_int64_csr(ids: Vec<usize>, offsets: Vec<i64>) -> PyResult<Self> {
+    pub fn from_int64_csr(ids: Vec<usize>, offsets: Vec<i64>) -> Result<Self> {
         // Row ids are bounded by `isize::MAX` (the Vec length bound), so they
         // always fit in i64; the bytemuck cast reuses that allocation in place.
         // The fallback arm only fires on an allocation-layout mismatch, which
         // no supported target produces.
-        fn cast_usize_vec(values: Vec<usize>) -> PyResult<Vec<i64>> {
+        fn cast_usize_vec(values: Vec<usize>) -> Result<Vec<i64>> {
             bytemuck::allocation::try_cast_vec(values).map_or_else(
                 |(_, values)| {
                     values
                         .into_iter()
                         .map(|value| {
                             i64::try_from(value).map_err(|_| {
-                                PyOverflowError::new_err("index does not fit in int64")
+                                ResourceError::SizeOverflowContext("index does not fit in int64")
+                                    .into()
                             })
                         })
-                        .collect::<pyo3::PyResult<Vec<_>>>()
+                        .collect::<Result<Vec<_>>>()
                 },
                 Ok,
             )
@@ -70,7 +79,7 @@ impl Groups {
         Self::from_int64_values_csr(cast_usize_vec(ids)?, offsets)
     }
 
-    pub(super) fn from_geometry_csr(values: PyGeometryArray, offsets: Vec<i64>) -> PyResult<Self> {
+    pub(super) fn from_geometry_csr(values: PyGeometryArray, offsets: Vec<i64>) -> Result<Self> {
         let row_count = validate_csr_offsets(&offsets, values.len())?;
         Ok(Self {
             values: GroupsValues::Geometry(Arc::new(values)),
@@ -88,7 +97,7 @@ impl Groups {
         line_offsets: crate::geometry::CsrOffsetColumn,
         group_offsets: Vec<i64>,
         missing: Option<ValidityMask>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let values = PyGeometryArray::packed_lines(coords, line_offsets, frame)?;
         Ok(Self::from_geometry_csr(values, group_offsets)?.with_row_missing(missing))
     }
@@ -98,7 +107,7 @@ impl Groups {
         frame: crate::Frame,
         builder: CsrBuilder<Shape>,
         missing: Option<ValidityMask>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let (shapes, offsets) = builder.finish();
         let values = PyGeometryArray::from_shapes(shapes, frame)?;
         Ok(Self::from_geometry_csr(values, offsets)?.with_row_missing(missing))
@@ -108,7 +117,7 @@ impl Groups {
         full: crate::geometry::PolygonizeFull,
         frame: &crate::Frame,
         missing: Option<&ValidityMask>,
-    ) -> PyResult<(PyGeometryArray, Self, Self, Self)> {
+    ) -> Result<(PyGeometryArray, Self, Self, Self)> {
         fn diagnostic_csr(
             rows: Vec<Vec<Shape>>,
         ) -> crate::error::Result<(Vec<Shape>, Vec<i64>, usize)> {
@@ -130,19 +139,18 @@ impl Groups {
         let cuts = diagnostic_csr(cuts)?;
         let dangles = diagnostic_csr(dangles)?;
         let invalid_rings = diagnostic_csr(invalid_rings)?;
-        let adopt =
-            |(shapes, offsets, row_count): (Vec<Shape>, Vec<i64>, usize)| -> PyResult<Self> {
-                Ok(Self {
-                    values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
-                        shapes,
-                        frame.clone(),
-                    )?)),
-                    offsets: offsets.into(),
-                    rows: 0..row_count,
-                    missing: None,
-                }
-                .with_row_missing(missing.cloned()))
-            };
+        let adopt = |(shapes, offsets, row_count): (Vec<Shape>, Vec<i64>, usize)| -> Result<Self> {
+            Ok(Self {
+                values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
+                    shapes,
+                    frame.clone(),
+                )?)),
+                offsets: offsets.into(),
+                rows: 0..row_count,
+                missing: None,
+            }
+            .with_row_missing(missing.cloned()))
+        };
         Ok((
             PyGeometryArray::from_shapes(polygons, frame.clone())?,
             adopt(cuts)?,
@@ -158,7 +166,7 @@ impl Groups {
         builder: CsrBuilder<crate::Point>,
         ring_ends: &[usize],
         missing: Option<ValidityMask>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let (vertices, offsets) = builder.finish();
         let values = if vertices.is_empty() {
             PyGeometryArray::from_shapes(Vec::new(), frame)?
@@ -171,11 +179,13 @@ impl Groups {
     /// Element-wise self-intersection rows as one flat geometry column.
     pub fn from_self_intersection_rows(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;
-        let builder = py.detach(|| self_intersection_csr(array, domain))?;
-        Self::from_geometry_builder(array.frame.clone(), builder, array.missing().cloned())
+        Ok(py.detach(|| {
+            let builder = self_intersection_csr(array, domain)?;
+            Self::from_geometry_builder(array.frame.clone(), builder, array.missing().cloned())
+        })?)
     }
 
-    pub(super) fn from_cell_csr(values: PyCellArray, offsets: Vec<i64>) -> PyResult<Self> {
+    pub(super) fn from_cell_csr(values: PyCellArray, offsets: Vec<i64>) -> Result<Self> {
         let row_count = validate_csr_offsets(&offsets, values.len())?;
         Ok(Self {
             values: GroupsValues::Cells(Arc::new(values)),
@@ -190,7 +200,7 @@ impl Groups {
         ids: Vec<u64>,
         offsets: Vec<i64>,
         missing: Option<ValidityMask>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let values = PyCellArray::from_ids(kind, ids);
         Ok(Self::from_cell_csr(values, offsets)?.with_row_missing(missing))
     }

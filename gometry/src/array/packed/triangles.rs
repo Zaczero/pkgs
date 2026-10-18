@@ -42,11 +42,11 @@ impl PyGeometryArray {
                 &source_context,
                 &mut budget,
             )?;
-            return Self::packed_triangles_with_ring_ends(
+            return Ok(Self::packed_triangles_with_ring_ends(
                 &published.points,
                 &published.ring_ends,
                 frame,
-            );
+            )?);
         }
         let capacity = count
             .checked_add(1)
@@ -76,7 +76,7 @@ impl PyGeometryArray {
         vertices: &[Point],
         ring_ends: &[usize],
         frame: Frame,
-    ) -> PyResult<Self> {
+    ) -> crate::error::Result<Self> {
         storage::admit_packed_coord_count(vertices.len())?;
         storage::admit_packed_coord_count(ring_ends.len())?;
         let count = ring_ends.len();
@@ -90,8 +90,7 @@ impl PyGeometryArray {
             if ring_len < 4 || end > vertices.len() {
                 return Err(crate::error::Error::from(
                     crate::geometry::GeometryErrorKind::MalformedCsrOffsets,
-                )
-                .into());
+                ));
             }
             rings.push_end(end, vertices.len())?;
             polygons.push_end(index.wrapping_add(1), count)?;
@@ -100,10 +99,9 @@ impl PyGeometryArray {
         if previous != vertices.len() {
             return Err(crate::error::Error::from(
                 crate::geometry::GeometryErrorKind::MalformedCsrOffsets,
-            )
-            .into());
+            ));
         }
-        Ok(Self::from_storage(
+        Self::from_storage(
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: Arc::new(CoordSeq::try_from_points(vertices)?),
                 ring_offsets: rings.finish(vertices.len())?.cast_level::<RingLevel>(),
@@ -111,6 +109,6 @@ impl PyGeometryArray {
                 row_map: RowSelection::Identity,
             }),
             frame,
-        )?)
+        )
     }
 }

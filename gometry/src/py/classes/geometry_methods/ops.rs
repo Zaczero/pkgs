@@ -225,11 +225,13 @@ impl PyGeometry {
                 py.detach(move || geometry::finish_mesh_publication_array(publication, frame))?;
             Ok(PyGeometryArray::from_finished(finished)?)
         } else {
-            PyGeometryArray::packed_triangles_with_ring_ends(
-                &publication.points,
-                &publication.ring_ends,
-                self.frame.clone(),
-            )
+            Ok(py.detach(|| {
+                PyGeometryArray::packed_triangles_with_ring_ends(
+                    &publication.points,
+                    &publication.ring_ends,
+                    self.frame.clone(),
+                )
+            })?)
         }
     }
 
