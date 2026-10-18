@@ -34,6 +34,11 @@ from _artifact_common import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from zipfile import ZipFile
+# These upstream guide pages use home-directory paths as documentation examples.
+UPSTREAM_PATH_EXAMPLE_MEMBERS = frozenset({
+    'vendor/pyo3/pyo3/guide/src/building-and-distribution.md',
+    'vendor/pyo3/pyo3/guide/src/faq.md',
+})
 X86_64_V2_TARGET_FEATURES = frozenset({
     'cmpxchg16b',
     'lahfsahf',
@@ -373,7 +378,10 @@ def content_leaks(
         for value in _printable_strings(payload)
     )
     for name, value in chain(members.items(), binary_values):
-        if any(name.endswith(f'/{member}') for member in SOURCE_TOOL_MEMBERS):
+        if any(
+            name.endswith(f'/{member}')
+            for member in SOURCE_TOOL_MEMBERS | UPSTREAM_PATH_EXAMPLE_MEMBERS
+        ):
             continue
         for match in ABSOLUTE_BUILD_PATH.finditer(value):
             if any(

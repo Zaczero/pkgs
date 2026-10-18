@@ -904,6 +904,22 @@ def test_absolute_build_paths_are_allowed_only_in_dev_wheels(
         )
 
 
+def test_path_leak_scan_allows_only_pyo3_documented_host_path_examples() -> None:
+    members = {
+        'gometry-0.0.0/vendor/pyo3/pyo3/guide/src/faq.md': (
+            'The example environment is rooted at /home/pyo3/project.'
+        ),
+        'gometry-0.0.0/vendor/pyo3/pyo3/src/buffer.rs': (
+            'Build path: /home/user/worktree/gometry.'
+        ),
+    }
+
+    assert artifact_content.content_leaks(members) == [
+        'gometry-0.0.0/vendor/pyo3/pyo3/src/buffer.rs: '
+        "absolute build path '/home/user/'"
+    ]
+
+
 def test_runtime_loader_facts_match_the_active_platform() -> None:
     facts = runtime_artifact._runtime_loader_identity()
 
