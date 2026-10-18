@@ -39,6 +39,7 @@ fn release_schema_twice(mut schema: Box<ArrowSchema>) {
 }
 
 fn exported(geometry: &PyGeometry) -> ExportedArray {
+    crate::test_support::initialize_python();
     let shapes = vec![geometry.shape.shape().clone()];
     let plan = plan_shapes(
         &shapes,
@@ -70,6 +71,7 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
 }
 
 fn exported_array(array: &PyGeometryArray) -> ExportedArray {
+    crate::test_support::initialize_python();
     let plan = plan_geometry_array(array, ArrowEncoding::Auto).expect("test array export plan");
     Python::attach(|py| {
         materialize_export_plan(
