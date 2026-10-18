@@ -175,6 +175,7 @@ def test_unfinished_custom_delimiter_preserves_filesystem_error_context(tmp_path
     assert caught.value.message == expected.value.message
     assert caught.value.name == expected.value.name == 'broken.html'
     assert caught.value.filename == expected.value.filename == str(template)
+    assert caught.value.lineno == expected.value.lineno == 2
 
 
 def test_delimiter_text_inside_jinja_strings_is_preserved():

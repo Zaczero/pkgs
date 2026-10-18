@@ -67,7 +67,7 @@ def _protect_jinja_syntax(
     environment: Environment,
     template: str,
     path: str | None,
-) -> tuple[str, list[str], str]:
+) -> tuple[str, list[str], str] | None:
     """Replace lexer-owned Jinja spans with placeholders before minification."""
     placeholder_prefix = ''
     lookup: list[str] = []
@@ -110,7 +110,7 @@ def _protect_jinja_syntax(
             raise RuntimeError(f'unexpected Jinja token outside tag: {token}')
 
     if parts is not None:
-        out.append(add_placeholder(''.join(parts)))
+        return None
 
     return ''.join(out), lookup, placeholder_prefix
 
@@ -161,12 +161,11 @@ def minify_loader(
         template: str,
     ) -> tuple[str, str | None, Callable[[], bool] | None]:
         source, path, up_to_date = super_get_source(environment, template)
-        source, lookup, placeholder_prefix = _protect_jinja_syntax(
-            source,
-            environment,
-            template,
-            path,
-        )
+        protected = _protect_jinja_syntax(source, environment, template, path)
+        if protected is None:
+            return source, path, up_to_date
+
+        source, lookup, placeholder_prefix = protected
         source = Minifier(**kwargs).minify(source)
 
         if lookup:
