@@ -24,7 +24,7 @@ pd = pytest.importorskip(
 )
 base = pytest.importorskip(
     'pandas.tests.extension.base',
-    reason='pandas==3.0.5 extension-test module is unavailable here',
+    reason='pandas extension-test module is unavailable in this environment',
 )
 _pandas = importlib.import_module('gometry._pandas')
 GeometryDtype = _pandas.GeometryDtype
@@ -212,7 +212,18 @@ class TestIndex(base.BaseIndexTests):
 
 
 class TestMissing(base.BaseMissingTests):
-    pass
+    def test_fillna_readonly(self, data_missing) -> None:
+        data = data_missing.copy()
+        data._readonly = True
+
+        result = data.fillna(data_missing[1])
+        assert result[0] == data_missing[1]
+        pd.testing.assert_extension_array_equal(data, data_missing)
+
+        before = data.copy()
+        with pytest.raises(ValueError, match='cannot modify read-only array'):
+            data.fillna(data_missing[1], copy=False)
+        pd.testing.assert_extension_array_equal(data, before)
 
 
 class TestCasting(base.BaseCastingTests):
