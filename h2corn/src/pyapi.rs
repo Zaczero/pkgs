@@ -431,7 +431,7 @@ fn parse_bind_target(raw: &str) -> PyResult<BindTarget> {
     })
 }
 
-fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
+fn init_tokio_runtime(worker_threads: usize) -> Result<(), ConfigError> {
     init_runtime(worker_threads, |worker_threads| {
         TokioRuntimeBuilder::new_multi_thread()
             .worker_threads(worker_threads)
@@ -442,10 +442,7 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
             .expect("tokio runtime construction succeeds")
     })
     .map_err(|initialized_threads| {
-        into_pyerr(ConfigError::runtime_threads_already_initialized(
-            initialized_threads,
-            worker_threads,
-        ))
+        ConfigError::runtime_threads_already_initialized(initialized_threads, worker_threads)
     })
 }
 
@@ -946,7 +943,8 @@ pub(crate) fn serve_fds<'py>(
     })?;
     let py_config = PyConfig(config);
     let config = py_config.server_config(prepared_tls.0.clone())?;
-    py.detach(|| init_tokio_runtime(config.runtime_threads))?;
+    py.detach(|| init_tokio_runtime(config.runtime_threads))
+        .map_err(into_pyerr)?;
     let config = Arc::new(config);
 
     let (main_shard, loop_factory) = ShardHandle::from_running_loop(py)?;
@@ -980,27 +978,21 @@ pub(crate) fn serve_fds<'py>(
             return Err(err);
         },
     };
-    let mut shard_threads: Vec<ShardThread> = Vec::new();
-    for index in 1..loop_count {
-        let thread = match py.detach(|| spawn_shard_thread(index, loop_factory)) {
-            Ok(thread) => thread,
-            Err(err) => {
-                for thread in shard_threads {
-                    if let Err(detail) = py.detach(|| thread.shutdown()) {
-                        crate::server::report_failure(
-                            "shard thread startup cleanup",
-                            Err(H2CornError::from(PyRuntimeError::new_err(format!(
-                                "shard thread panicked: {detail}"
-                            )))),
-                        );
-                    }
-                }
+    let shard_threads = if loop_count > 1 {
+        match py.detach(|| {
+            (1..loop_count)
+                .map(|index| spawn_shard_thread(index, loop_factory))
+                .collect::<PyResult<Vec<_>>>()
+        }) {
+            Ok(threads) => threads,
+            Err(error) => {
                 main_shard.detach(py);
-                return Err(err);
+                return Err(error);
             },
-        };
-        shard_threads.push(thread);
-    }
+        }
+    } else {
+        Vec::new()
+    };
     let secondary_apps = if lifespan_config.is_some() {
         shard_threads
             .iter()
@@ -1140,6 +1132,7 @@ mod tests {
                         .map(|()| worker_threads)
                         .map_err(|error| {
                             Python::attach(|py| {
+                                let error = into_pyerr(error);
                                 (
                                     error.is_instance_of::<PyValueError>(py),
                                     error.value(py).str().unwrap().to_string(),
