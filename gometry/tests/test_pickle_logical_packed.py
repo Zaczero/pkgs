@@ -219,7 +219,7 @@ def test_pickle_empty_packed_selection_and_permutation() -> None:
 
 def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
     """Packed rows are read through asserting constructors; corrupt payloads
-    must fail at unpickle with a GeometryError instead.
+    must fail at unpickle with ParseError(format='pickle') instead.
     """
     doubles = lambda *values: struct.pack(f'<{len(values)}d', *values)
     offsets = lambda *values: struct.pack(f'<{len(values)}i', *values)
@@ -316,8 +316,9 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         ),
     }
     for name, unpickle in rejected.items():
-        with pytest.raises(gm.GeometryError) as excinfo:
+        with pytest.raises(gm.ParseError) as excinfo:
             unpickle()
+        assert excinfo.value.format == 'pickle'
         assert type(excinfo.value).__name__ != 'PanicException', name
 
     # Zero-row packed polygon remains valid: [0]/[0] offsets, empty columns.
@@ -335,7 +336,7 @@ def test_packed_pickle_rejects_descending_offsets_with_valid_terminal_count() ->
     # descent makes this polygon CSR column invalid.
     polygon_offsets = struct.pack('<4i', 0, 1, 0, 1)
 
-    with pytest.raises(gm.GeometryError):
+    with pytest.raises(gm.ParseError) as error:
         _lib._unpickle_packed_array_v1(
             xs,
             ys,
@@ -346,6 +347,7 @@ def test_packed_pickle_rejects_descending_offsets_with_valid_terminal_count() ->
             None,
             None,
         )
+    assert error.value.format == 'pickle'
 
 
 @pytest.mark.parametrize(
@@ -372,8 +374,9 @@ def test_packed_pickle_rejects_partial_coordinate_values(
         case 'm':
             ms = valid + trailing
 
-    with pytest.raises(gm.GeometryError, match='coordinate byte length'):
+    with pytest.raises(gm.ParseError, match='coordinate byte length') as error:
         _lib._unpickle_packed_array_v1(xs, ys, zs, ms, (), None, None, None)
+    assert error.value.format == 'pickle'
 
 
 @pytest.mark.parametrize(
@@ -399,8 +402,9 @@ def test_packed_pickle_rejects_partial_offset_values(
     else:
         offsets = (line_offsets, polygon_offsets + trailing)
 
-    with pytest.raises(gm.GeometryError, match='offset byte length'):
+    with pytest.raises(gm.ParseError, match='offset byte length') as error:
         _lib._unpickle_packed_array_v1(xs, ys, None, None, offsets, None, None, None)
+    assert error.value.format == 'pickle'
 
 
 def test_packed_pickle_accepts_present_zero_ring_polygon() -> None:
@@ -483,21 +487,23 @@ def test_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
     poly = i([0, 1])
 
     # Z closes in XY but not Z (1 != 2) — the audit repro.
-    with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
+    with pytest.raises(gm.ParseError, match=r'closed|ring') as excinfo:
         _lib._unpickle_packed_array_v1(
             xs, ys, f([1.0, 1.0, 1.0, 2.0]), None, (ring, poly), None, None, None
         )
+    assert excinfo.value.format == 'pickle'
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # M-only unclosed (first M != last M).
-    with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
+    with pytest.raises(gm.ParseError, match=r'closed|ring') as excinfo:
         _lib._unpickle_packed_array_v1(
             xs, ys, None, f([1.0, 1.0, 1.0, 2.0]), (ring, poly), None, None, None
         )
+    assert excinfo.value.format == 'pickle'
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # ZM unclosed on both extra ordinates.
-    with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
+    with pytest.raises(gm.ParseError, match=r'closed|ring') as excinfo:
         _lib._unpickle_packed_array_v1(
             xs,
             ys,
@@ -508,6 +514,7 @@ def test_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
             None,
             None,
         )
+    assert excinfo.value.format == 'pickle'
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # Genuinely closed 3D ring still unpickles into packed storage.

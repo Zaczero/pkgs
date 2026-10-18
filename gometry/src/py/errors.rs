@@ -402,8 +402,8 @@ impl From<Error> for PyErr {
                 | G::InvalidMeasureRange(..)
                 | G::SubstringOrder(..)
                 | G::SnapGridTooFine
-                | G::InvalidDe9imPattern(_)
-                | G::PicklePayload(_) => GeometryError::new_err(message),
+                | G::InvalidDe9imPattern(_) => GeometryError::new_err(message),
+                G::PicklePayload(_) => parse_error(message, ParseFormat::Pickle),
                 G::OffsetCapacityExceeded | G::ExactCoordinateOutOfRange => {
                     PyOverflowError::new_err(message)
                 },

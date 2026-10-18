@@ -282,7 +282,21 @@ fn pickled_csr_offsets<Level>(
     let chunks = bytes.as_chunks::<4>().0;
     let mut offsets = Vec::with_capacity(chunks.len());
     offsets.extend(chunks.iter().map(|chunk| i32::from_le_bytes(*chunk)));
-    CsrOffsetColumn::try_from_shared_i32(SharedSlice::from_vec(offsets), end_cap)
+    CsrOffsetColumn::try_from_shared_i32(SharedSlice::from_vec(offsets), end_cap).map_err(|error| {
+        match error.kind() {
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::MalformedCsrOffsets,
+            ) => pickle_error(format!("packed-array pickle {error}")),
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::OffsetCapacityExceeded,
+            ) => pickle_error("packed-array pickle offset exceeds its payload bounds"),
+            crate::error::ErrorKind::Geometry(_)
+            | crate::error::ErrorKind::Crs(_)
+            | crate::error::ErrorKind::Io(_)
+            | crate::error::ErrorKind::Frame(_)
+            | crate::error::ErrorKind::Resource(_) => error,
+        }
+    })
 }
 
 /// Decode the little-endian `f64` columns of a packed payload.

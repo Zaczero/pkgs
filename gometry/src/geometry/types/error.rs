@@ -175,9 +175,8 @@ pub enum GeometryErrorKind {
     },
     #[error("offset buffer is malformed: CSR offsets must start at 0 and be non-decreasing")]
     MalformedCsrOffsets,
-    /// A serialized pickle payload violated the private packed-storage
-    /// contract. This is a Python `GeometryError`, not a geometry validity
-    /// failure: the payload itself is the malformed value.
+    /// A serialized pickle payload violated its reconstruction contract. The
+    /// Python boundary reports this as `ParseError(format="pickle")`.
     #[error("{0}")]
     PicklePayload(Box<str>),
     #[error("{0}")]
