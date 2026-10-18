@@ -1,12 +1,28 @@
 use super::live_handles::LiveHandles;
 use super::str_tree::{StaticStrTree, StrNode};
+use crate::error::Result;
 use crate::geometry::PreparedPlan;
 use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
-    NonNegative, PyGeometry, PyResult, PySpatialIndex, QueryDomain, Shape, aabb_box_distance_2,
-    crs, index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic,
-    pair_distance_planar, push_nearest_candidate, resolve_metric,
+    NonNegative, PyGeometry, PySpatialIndex, QueryDomain, Shape, aabb_box_distance_2, crs,
+    index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic, pair_distance_planar,
+    push_nearest_candidate, resolve_metric,
 };
+use crate::py::vectors::Groups;
+
+fn append_nearest_candidates(
+    builder: &mut crate::CsrBuilder<usize>,
+    distances: &mut Vec<f64>,
+    candidates: Vec<NearestCandidate>,
+    return_distance: bool,
+) {
+    for candidate in candidates {
+        builder.values_mut().push(candidate.idx);
+        if return_distance {
+            distances.push(candidate.distance);
+        }
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct NearestVisited {
@@ -199,7 +215,7 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
         max_distance: Option<NonNegative>,
         options: NearestOptions,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> crate::error::BatchResult<Vec<NearestCandidate>> {
         self.ensure_query_compatible(geometry, "spatial index nearest")?;
         let metric = resolve_metric(
             self.metric_crs_str(geometry.crs_str()),
@@ -218,7 +234,7 @@ impl PySpatialIndex {
         };
         query_domain.admit_shape(query_plan.shape(), query_plan.bounds(), None)?;
         let mut query_cache = || geometry.frame_cache();
-        match &resolved {
+        Ok(match &resolved {
             crs::ResolvedMetric::Planar { to_metre } => self.planar_nearest_core_ties(
                 to_metre.get(),
                 &query_plan,
@@ -241,7 +257,7 @@ impl PySpatialIndex {
                 &mut leaf_frontier,
                 &mut visited,
             ),
-        }
+        }?)
     }
 
     pub(crate) fn planar_nearest_core_ties(
@@ -254,7 +270,7 @@ impl PySpatialIndex {
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         let candidates = self.planar_nearest_core(
             to_metre,
             query,
@@ -291,7 +307,7 @@ impl PySpatialIndex {
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         let Some(query_bounds) = query.bounds().filter(|_| k > 0) else {
             return Ok(Vec::new());
         };
@@ -373,7 +389,7 @@ impl PySpatialIndex {
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         let candidates = self.geodesic_nearest_core(
             metric,
             resolved,
@@ -421,7 +437,7 @@ impl PySpatialIndex {
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         let Some(query_bounds) = query.bounds().filter(|_| k > 0) else {
             return Ok(Vec::new());
         };
@@ -498,7 +514,7 @@ impl PySpatialIndex {
         query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         self.reset_nearest_visited(visited);
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
@@ -538,13 +554,13 @@ impl PySpatialIndex {
     pub(crate) fn bound_ordered_nearest(
         &self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
-        exact: impl FnMut(usize) -> PyResult<Option<f64>>,
+        exact: impl FnMut(usize) -> Result<Option<f64>>,
         k: usize,
         max_distance: Option<NonNegative>,
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         self.bound_ordered_nearest_shared(
             bound,
             exact,
@@ -559,13 +575,13 @@ impl PySpatialIndex {
     fn bound_ordered_nearest_shared<S: NearestState>(
         &self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
-        mut exact: impl FnMut(usize) -> PyResult<Option<f64>>,
+        mut exact: impl FnMut(usize) -> Result<Option<f64>>,
         mut state: S,
         max_distance: Option<NonNegative>,
         frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
+    ) -> Result<Vec<NearestCandidate>> {
         let mut leaf_policy = HeapLeafPolicy { leaf_frontier };
         self.reset_nearest_visited(visited);
         frontier.clear();
@@ -657,10 +673,10 @@ impl PySpatialIndex {
     pub(super) fn consider_nearest_candidate<S: NearestState>(
         &self,
         entry_idx: usize,
-        exact: &mut impl FnMut(usize) -> PyResult<Option<f64>>,
+        exact: &mut impl FnMut(usize) -> Result<Option<f64>>,
         max_distance: Option<NonNegative>,
         state: &mut S,
-    ) -> PyResult<()> {
+    ) -> Result<()> {
         let Some(distance) = exact(entry_idx)? else {
             return Ok(());
         };
@@ -678,6 +694,122 @@ impl PySpatialIndex {
             .wrapping_sub(self.bulk_dead_entries)
             .wrapping_add(self.overflow.live_entry_count());
         visited.reset(self.rows.next_handle, self.rows.live_handles.len(), entries);
+    }
+}
+
+impl PySpatialIndex {
+    pub(crate) fn nearest_array(
+        &self,
+        array: &crate::PyGeometryArray,
+        k: usize,
+        max_distance: Option<NonNegative>,
+        return_distance: bool,
+        unit: Option<DistanceUnit>,
+        options: NearestOptions,
+    ) -> crate::error::BatchResult<(Groups, Option<Vec<f64>>)> {
+        // One frame check and metric resolution for the whole array;
+        // every storage's rows drive `nearest_core` on stack handles —
+        // no per-row `PyGeometry` materialization anywhere.
+        // Batch-local frontier heap reused across rows (clear+push;
+        // free-threading: not a receiver cache / lock).
+        self.ensure_frame_compatible(array.crs_ref(), array.epoch(), "spatial index nearest")?;
+        let metric = resolve_metric(
+            self.metric_crs_str(array.crs_str()),
+            unit,
+            crate::dispatch::MetricOp::Nearest,
+        )?;
+
+        let row_count = array.len();
+        let row_capacity = k.min(self.__len__());
+        let capacity = row_count.checked_mul(row_capacity).ok_or_else(|| {
+            crate::error::Error::from(crate::error::ResourceError::SizeOverflowContext(
+                "nearest output size overflows usize",
+            ))
+        })?;
+        let mut builder = crate::CsrBuilder::<usize>::with_capacity(capacity, row_count);
+        let mut distances = Vec::with_capacity(if return_distance { capacity } else { 0 });
+        let mut frontier = BinaryHeap::new();
+        let mut leaf_frontier = Vec::new();
+        let mut visited = NearestVisited::default();
+        let resolved = crate::crs::ResolvedMetric::from_model(&metric)?;
+        let query_domain = if k > 0 {
+            QueryDomain::for_query_frame(self, Some(&array.frame))?
+        } else {
+            QueryDomain::default()
+        };
+        match &resolved {
+            crate::crs::ResolvedMetric::Planar { to_metre } => {
+                let mut rows = array.row_operation();
+                for logical_row in rows.rows_with_missing(|| ()) {
+                    if let crate::array::ArrayRow::Present(row) = logical_row {
+                        let row_index = row.logical();
+                        let _ = query_domain.admit_row(
+                            row.row(),
+                            array.row_bounds_seed(row_index),
+                            Some(row_index),
+                        )?;
+                        let query = rows.prepared(row)?;
+                        let candidates = self.planar_nearest_core_ties(
+                            to_metre.get(),
+                            &query,
+                            k,
+                            max_distance,
+                            options,
+                            &mut frontier,
+                            &mut leaf_frontier,
+                            &mut visited,
+                        )?;
+                        append_nearest_candidates(
+                            &mut builder,
+                            &mut distances,
+                            candidates,
+                            return_distance,
+                        );
+                    }
+                    let end = builder.len();
+                    builder.push_end(end)?;
+                }
+            },
+            crate::crs::ResolvedMetric::Geodesic(geodesic) => {
+                let mut rows = array.row_operation();
+                for logical_row in rows.rows_with_missing(|| ()) {
+                    if let crate::array::ArrayRow::Present(row) = logical_row {
+                        let row_index = row.logical();
+                        let _ = query_domain.admit_row(
+                            row.row(),
+                            array.row_bounds_seed(row_index),
+                            Some(row_index),
+                        )?;
+                        let query = rows.prepared(row)?;
+                        let mut query_cache = || rows.frame_cache(row_index);
+                        let candidates = self.geodesic_nearest_core_ties(
+                            &metric,
+                            geodesic,
+                            &query,
+                            &mut query_cache,
+                            k,
+                            max_distance,
+                            options,
+                            &mut frontier,
+                            &mut leaf_frontier,
+                            &mut visited,
+                        )?;
+                        append_nearest_candidates(
+                            &mut builder,
+                            &mut distances,
+                            candidates,
+                            return_distance,
+                        );
+                    }
+                    let end = builder.len();
+                    builder.push_end(end)?;
+                }
+            },
+        }
+        let (ids, offsets) = builder.finish();
+        let matches =
+            Groups::from_int64_csr(ids, offsets)?.with_row_missing(array.missing().cloned());
+        Ok((matches, return_distance.then_some(distances)))
     }
 }
 

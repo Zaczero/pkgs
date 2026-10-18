@@ -417,8 +417,8 @@ fn destination_many_array(
     {
         let missing = array.missing().cloned();
         if let Some(axes) = uniform_point_axes_dispatch(&points, len, missing.as_ref()) {
-            let model =
-                resolve_metric(array.crs_str(), unit, MetricOp::Destination).map_err(row_zero)?;
+            let model = resolve_metric(array.crs_str(), unit, MetricOp::Destination)
+                .map_err(|error| row_zero(error.into()))?;
             let missing_for_rows = missing.clone();
             let kernel = DestinationPointKernel {
                 bearing: &bearing.values,

@@ -1,19 +1,20 @@
 use super::{
-    Bounds, CsrBuilder, DistanceUnit, DwithinDistance, IndexPredicate, PointRows, Predicate,
-    PreparedIndexQuery, PreparedPlan, PyGeometryArray, PyResult, PySpatialIndex, QueryDomain,
+    BatchResult, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, IndexPredicate, PointRows,
+    Predicate, PreparedIndexQuery, PreparedPlan, PyGeometryArray, PySpatialIndex, QueryDomain,
     RowMatches, Shape, ShapeData, ShapeRow, TopologyDomain, ValidityMask, admitted_query,
     candidate_policy, crs, csr_rows, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
 
 impl PySpatialIndex {
-    /// Visit each live row's matching higher handles for a symmetric predicate.
-    pub(crate) fn for_each_symmetric_matches(
+    /// Collect each unordered matching pair once, in live-handle order.
+    pub(crate) fn self_join_pairs(
         &self,
         predicate: IndexPredicate,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-        mut found: impl FnMut(usize, &[usize]),
-    ) -> PyResult<()> {
+    ) -> BatchResult<(Vec<i64>, Vec<i64>)> {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
         let spec = match predicate {
             IndexPredicate::Topological(predicate) => Some(predicate.spec()),
             IndexPredicate::Dwithin => None,
@@ -100,9 +101,14 @@ impl PySpatialIndex {
                 },
                 (None, None) => unreachable!("dwithin self-join resolves its metric once"),
             }
-            found(i, &candidates);
+            super::super::free_functions::append_join_matches(
+                &mut left,
+                &mut right,
+                i,
+                &candidates,
+            );
         }
-        Ok(())
+        Ok((left, right))
     }
 
     /// Refine packed point topological queries by indexed row. Candidate
@@ -115,7 +121,7 @@ impl PySpatialIndex {
         missing: Option<&ValidityMask>,
         predicate: Predicate,
         query_domain: QueryDomain,
-    ) -> PyResult<RowMatches> {
+    ) -> BatchResult<RowMatches> {
         let domain = self.domain()?;
         let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
         let mut queries = Vec::with_capacity(points.len());
@@ -123,7 +129,7 @@ impl PySpatialIndex {
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
                 let end = builder.len();
-                builder.push_end(end).map_err(pyo3::PyErr::from)?;
+                builder.push_end(end)?;
                 queries.push(None);
                 continue;
             }
@@ -135,7 +141,7 @@ impl PySpatialIndex {
             let row_start = builder.len();
             self.collect_point_candidates(point, builder.values_mut())?;
             let end = builder.len();
-            builder.push_end(end).map_err(pyo3::PyErr::from)?;
+            builder.push_end(end)?;
             let query = (end > row_start).then(|| {
                 (
                     PreparedPlan::new(ShapeData::new(Shape::Point(point))),
@@ -225,9 +231,7 @@ impl PySpatialIndex {
                 .filter(|&keep| keep)
                 .count();
             refined_ids = refined_ids.wrapping_add(kept_in_row);
-            refined_offsets
-                .push_end(refined_ids)
-                .map_err(pyo3::PyErr::from)?;
+            refined_offsets.push_end(refined_ids)?;
         }
         debug_assert_eq!(keep_rows.len(), 0);
         let mut keep_values = keep.into_iter();

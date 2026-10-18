@@ -1,16 +1,59 @@
 //! Internal (non-pymethods) mutation and handle helpers for
 //! [`PySpatialIndex`], plus the envelope builder shared by insert lanes.
 
+use crate::error::Result;
+use crate::geometry::GeometryErrorKind;
 use crate::py::index::{
-    Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
-    geodesic_domain_invalid, index_envelopes, index_metadata,
+    Frame, IndexEntry, PyGeometry, PyGeometryArray, PySpatialIndex, geodesic_domain_invalid,
+    index_envelopes, index_metadata,
 };
 
-fn checked_total_rows(start: usize, count: usize) -> PyResult<usize> {
-    super::checked_index_handle_end(start, count).map_err(pyo3::PyErr::from)
-}
-
 impl PySpatialIndex {
+    pub(crate) fn scalar_insert_is_local(&self, geometry: &PyGeometry) -> bool {
+        matches!(geometry.shape.shape(), crate::Shape::Point(_))
+            && geometry.frame == Frame::None
+            && self
+                .metadata
+                .as_ref()
+                .is_none_or(|frame| *frame == Frame::None)
+            && !self.overflow.single_insert_carries()
+            && match &self.rows.boxed {
+                super::BoxedRows::Dense(rows) => {
+                    self.rows.next_handle == self.rows.packed_len().wrapping_add(rows.len())
+                        && rows.len() < rows.capacity()
+                },
+                super::BoxedRows::Sparse(_) => true,
+            }
+    }
+
+    pub(crate) fn removal_is_local(&self, handle: usize) -> bool {
+        if self.non_prunable_live != 0 {
+            return false;
+        }
+        let removed_entries = self.cover_counts.get(&handle).copied().unwrap_or(1);
+        let rebuilds = if handle < self.bulk.initial_len() {
+            super::str_tree::compaction_due(
+                self.bulk.entry_count(),
+                self.bulk_dead_entries.wrapping_add(removed_entries),
+            )
+        } else {
+            self.overflow.should_compact(removed_entries)
+        };
+        if rebuilds {
+            return false;
+        }
+        if handle < self.rows.packed_len() {
+            return true;
+        }
+        match &self.rows.boxed {
+            super::BoxedRows::Dense(_) => false,
+            super::BoxedRows::Sparse(rows) => rows.get(&handle).is_some_and(|geometry| {
+                matches!(geometry.shape.shape(), crate::Shape::Point(_))
+                    && geometry.row_products.is_scalar_owner()
+            }),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
         let mut handles = Vec::with_capacity(self.rows.live_handles.len());
@@ -22,37 +65,67 @@ impl PySpatialIndex {
         self.rows.is_live(handle)
     }
 
-    /// Geometry at a live handle, ready for the Python leaf-typed boundary.
-    ///
-    /// Public pymethods must return [`crate::Typed`] so `isinstance(..., Point)`
-    /// (and the other leaves) holds — a bare [`crate::PyGeometry`] silently
-    /// yields the base `Geometry` class.
-    pub(crate) fn geometry_at_handle(&self, handle: usize) -> PyResult<crate::Typed> {
+    pub(crate) fn geometry_lookup_is_local(&self, handle: usize) -> Result<bool> {
+        if handle >= self.rows.packed_len() {
+            return Ok(true);
+        }
+        let source = &self
+            .rows
+            .packed
+            .as_ref()
+            .expect("packed handle has a source")
+            .source;
+        if source.row_products.cached_prepared_plan(handle).is_some() {
+            return Ok(true);
+        }
+        Ok(self.rows.operation().row(handle)?.point().is_some())
+    }
+
+    pub(crate) fn geometry_at_handle(&self, handle: usize) -> Result<PyGeometry> {
         let frame = self.metadata.clone().unwrap_or_default();
         let mut rows = self.rows.operation();
-        match rows.resolve(handle).map_err(crate::PyErr::from)? {
+        match rows.resolve(handle)? {
             super::IndexRowSource::Packed {
                 operation,
                 logical,
                 row,
             } => {
-                let geometry = operation.geometry_for_resolved_row(logical, row)?;
                 let plan = operation.prepared_at(logical, row)?.into_owned_plan();
-                Ok(crate::Typed(geometry.with_prepared_plan(plan)))
+                let source = &self
+                    .rows
+                    .packed
+                    .as_ref()
+                    .expect("packed handle has a source")
+                    .source;
+                let geometry = PyGeometry::with_row_products(
+                    std::sync::Arc::clone(plan.shape_arc()),
+                    source.frame.clone(),
+                    source.row_products.clone(),
+                    logical,
+                );
+                Ok(geometry.with_prepared_plan(plan))
             },
             super::IndexRowSource::Boxed(geometry) => {
                 if let Some(plan) = geometry.cached_prepared_plan() {
-                    return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
+                    return Ok(geometry.with_prepared_plan(plan));
                 }
-                Ok(crate::Typed(crate::PyGeometry::with_frame(
+                Ok(crate::PyGeometry::with_frame(
                     crate::ShapeData::new(geometry.shape.shape().clone()),
                     frame,
-                )))
+                ))
             },
         }
     }
 
-    pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
+    pub(crate) fn live_geometries(&self) -> Result<Vec<(usize, PyGeometry)>> {
+        let mut geometries = Vec::with_capacity(self.rows.live_handles.len());
+        for handle in self.rows.live_handles.iter() {
+            geometries.push((handle, self.geometry_at_handle(handle)?));
+        }
+        Ok(geometries)
+    }
+
+    pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> Result<usize> {
         let geometry = geometry.with_prepared_plan(geometry.prepared_plan());
         // A non-empty index validates the frame WITHOUT mutating; an empty index
         // will adopt this geometry's frame, but only AFTER the geometry is proven
@@ -74,7 +147,7 @@ impl PySpatialIndex {
         let bounds = geometry
             .shape
             .bounds()
-            .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
+            .ok_or_else(|| GeometryErrorKind::message("cannot index empty geometry"))?;
         let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
         let domain = crate::geometry::topology_domain(effective_frame)?;
         let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
@@ -91,7 +164,7 @@ impl PySpatialIndex {
                 .map(|&envelope| IndexEntry { idx, envelope }),
         );
         entry_counts[0] = entries.len();
-        let total_rows = checked_total_rows(idx, 1)?;
+        let total_rows = super::checked_index_handle_end(idx, 1)?;
         self.insert_prepared_rows(
             std::iter::once(geometry),
             &entries,
@@ -102,7 +175,7 @@ impl PySpatialIndex {
         )
     }
 
-    pub(crate) fn insert_items(&mut self, items: Vec<PyGeometry>) -> PyResult<Vec<usize>> {
+    pub(crate) fn insert_items(&mut self, items: Vec<PyGeometry>) -> Result<Vec<usize>> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
@@ -116,7 +189,7 @@ impl PySpatialIndex {
         }
         let adopt_frame = self.metadata.is_none().then(|| frame.clone()).flatten();
         let start = self.rows.next_handle;
-        checked_total_rows(start, items.len())?;
+        super::checked_index_handle_end(start, items.len())?;
         let mut entries = Vec::with_capacity(items.len());
         let mut entry_counts = Vec::with_capacity(items.len());
         let domain = crate::geometry::topology_domain(
@@ -130,7 +203,7 @@ impl PySpatialIndex {
             let bounds = geometry
                 .shape
                 .bounds()
-                .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
+                .ok_or_else(|| GeometryErrorKind::message("cannot index empty geometry"))?;
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
                 entries.push(IndexEntry {
@@ -152,7 +225,7 @@ impl PySpatialIndex {
         )
     }
 
-    pub(crate) fn insert_array(&mut self, array: &PyGeometryArray) -> PyResult<Vec<usize>> {
+    pub(crate) fn insert_array(&mut self, array: &PyGeometryArray) -> Result<Vec<usize>> {
         let len = array.len();
         if len == 0 {
             return Ok(Vec::new());
@@ -162,14 +235,14 @@ impl PySpatialIndex {
         // row mutation; indexing a placeholder would silently create a live
         // handle for a value the user did not provide.
         if array.has_missing() {
-            return Err(GeometryError::new_err(
+            return Err(GeometryErrorKind::message(
                 "cannot insert a GeometryArray containing missing geometries into a spatial index",
             ));
         }
         self.check_insert_frame(&array.frame)?;
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
         let start = self.rows.next_handle;
-        checked_total_rows(start, len)?;
+        super::checked_index_handle_end(start, len)?;
         let mut entries = Vec::with_capacity(len);
         let mut items = Vec::with_capacity(len);
         let mut entry_counts = Vec::with_capacity(len);
@@ -178,7 +251,7 @@ impl PySpatialIndex {
         for (offset, row) in array.storage().iter_rows().enumerate() {
             let bounds = row
                 .quick_bounds()
-                .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
+                .ok_or_else(|| GeometryErrorKind::message("cannot index empty geometry"))?;
             let shape = row.with_shape(std::clone::Clone::clone)?;
             let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
@@ -202,7 +275,7 @@ impl PySpatialIndex {
         )
     }
 
-    pub(crate) fn check_insert_frame(&self, frame: &Frame) -> PyResult<()> {
+    pub(crate) fn check_insert_frame(&self, frame: &Frame) -> Result<()> {
         match &self.metadata {
             Some(_) => {
                 // Exact identity — see insert_one.
@@ -219,12 +292,12 @@ impl PySpatialIndex {
         entry_counts: &[usize],
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
-    ) -> PyResult<Vec<usize>> {
+    ) -> Result<Vec<usize>> {
         let start = self.rows.next_handle;
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
-        let total_rows = checked_total_rows(start, count)?;
+        let total_rows = super::checked_index_handle_end(start, count)?;
         let mut handles = Vec::with_capacity(count);
         handles.extend((0..count).map(|offset| start.wrapping_add(offset)));
         self.insert_prepared_rows(
@@ -246,7 +319,7 @@ impl PySpatialIndex {
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
         total_rows: usize,
-    ) -> PyResult<usize> {
+    ) -> Result<usize> {
         let start = self.rows.next_handle;
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
@@ -279,7 +352,7 @@ impl PySpatialIndex {
         Ok(start)
     }
 
-    pub(crate) fn remove_handle(&mut self, handle: usize) -> PyResult<bool> {
+    pub(crate) fn remove_handle(&mut self, handle: usize) -> Result<bool> {
         if !self.rows.is_live(handle) {
             return Ok(false);
         }

@@ -2,38 +2,22 @@ use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::{PyBool, PyDict, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
-use super::impl_nearest::NearestVisited;
+use crate::parse_spatial_index_handle;
 use crate::py::crs::PyCrs;
 use crate::py::index::{
-    BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexPredicate,
-    IntoPyObject as _, NearestCandidate, NearestOptions, PreparedIndexQuery, Py, PyAny,
-    PyAnyMethods as _, PyResult, PySpatialIndex, Python, QueryDomain, build_spatial_index,
-    exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows, geometry_items,
-    join_indexed, parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
-    restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
+    Bound, DistanceUnit, GeometryError, HeapSize as _, IndexPredicate, IntoPyObject as _,
+    NearestOptions, Py, PyAny, PyAnyMethods as _, PyResult, PySpatialIndex, Python,
+    build_spatial_index, exact_geometry, exact_geometry_array, format_nearest, geometry_items,
+    index_ids, join_indexed, nearest_columns, parse_max_distance, pyfunction, pymethods,
+    query_distance, restore_spatial_index, spatial_index, validate_nearest_k,
 };
 use crate::py::numpy::int64_array;
 use crate::py::sizeof::python_sizeof;
-use crate::{CsrBuilder, parse_spatial_index_handle};
 
 type SpatialIndexReduce = (
     Py<PyAny>,
     (crate::PyGeometryArray, Py<PyTuple>, usize, bool),
 );
-
-fn append_nearest_candidates(
-    builder: &mut CsrBuilder<usize>,
-    distances: &mut Vec<f64>,
-    candidates: Vec<NearestCandidate>,
-    return_distance: bool,
-) {
-    for candidate in candidates {
-        builder.values_mut().push(candidate.idx);
-        if return_distance {
-            distances.push(candidate.distance);
-        }
-    }
-}
 
 #[path = "iter.rs"]
 mod iter;
@@ -46,6 +30,19 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
         .getattr(class_name)?
         .call1((slf,))?
         .unbind())
+}
+
+fn lookup_geometry(
+    py: Python<'_>,
+    index: &PySpatialIndex,
+    handle: usize,
+) -> PyResult<crate::Typed> {
+    let geometry = if index.geometry_lookup_is_local(handle)? {
+        index.geometry_at_handle(handle)?
+    } else {
+        py.detach(|| index.geometry_at_handle(handle))?
+    };
+    Ok(crate::Typed(geometry))
 }
 
 #[expect(
@@ -89,7 +86,9 @@ pub(crate) fn _unpickle_spatial_index_v1(
         }
         parsed_handles.push(handle);
     }
-    restore_spatial_index(values, &parsed_handles, next_handle, has_metadata)
+    Ok(handles
+        .py()
+        .detach(|| restore_spatial_index(values, &parsed_handles, next_handle, has_metadata))?)
 }
 
 fn parse_index_next_handle(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -166,7 +165,7 @@ impl PySpatialIndex {
     #[pyo3(signature = (values = None), text_signature = "(values=None)")]
     fn new(py: Python<'_>, values: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         values.map_or_else(
-            || spatial_index(Vec::new()),
+            || Ok(spatial_index(Vec::new())?),
             |values| build_spatial_index(py, values),
         )
     }
@@ -214,7 +213,7 @@ impl PySpatialIndex {
             .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v1"))?
             .unbind();
         let frame = self.metadata.clone().unwrap_or_default();
-        let (array, handles) = self.rows.pickle_live_rows(frame)?;
+        let (array, handles) = py.detach(|| self.rows.pickle_live_rows(frame))?;
         let handles = PyTuple::new(py, handles)?.unbind();
         Ok((
             callable,
@@ -228,7 +227,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn __copy__(&self, py: Python<'_>) -> PyResult<Py<Self>> {
-        Py::new(py, self.clone())
+        Py::new(py, py.detach(|| self.clone()))
     }
 
     #[pyo3(signature = (memo))]
@@ -238,7 +237,7 @@ impl PySpatialIndex {
         memo: &Bound<'_, PyAny>,
     ) -> PyResult<Py<Self>> {
         let _ = memo;
-        Py::new(py, self.clone())
+        Py::new(py, py.detach(|| self.clone()))
     }
 
     /// Return the geometry at a live handle.
@@ -253,11 +252,12 @@ impl PySpatialIndex {
     ///     A typed leaf (`Point`, `Polygon`, …) matching the stored kind —
     ///     never the bare base `Geometry` class.
     pub(crate) fn __getitem__(&self, handle: &Bound<'_, PyAny>) -> PyResult<crate::Typed> {
+        let py = handle.py();
         let handle = parse_handle_like(handle)?;
         if !self.is_live_handle(handle) {
             return Err(PyKeyError::new_err(handle));
         }
-        self.geometry_at_handle(handle)
+        lookup_geometry(py, self, handle)
     }
 
     /// Compare live handles and geometries using mapping value semantics.
@@ -270,11 +270,9 @@ impl PySpatialIndex {
             return Ok(false);
         }
         let values = PyDict::new(py);
-        for handle in self.rows.live_handles.iter() {
-            values.set_item(
-                handle,
-                self.geometry_at_handle(handle)?.into_pyobject(py)?.unbind(),
-            )?;
+        let geometries = py.detach(|| self.live_geometries())?;
+        for (handle, geometry) in geometries {
+            values.set_item(handle, crate::Typed(geometry).into_pyobject(py)?.unbind())?;
         }
         values.eq(other)
     }
@@ -391,7 +389,9 @@ impl PySpatialIndex {
     ) -> PyResult<Py<PyAny>> {
         let handle = parse_handle_like(handle)?;
         if self.is_live_handle(handle) {
-            return Ok(self.geometry_at_handle(handle)?.into_pyobject(py)?.unbind());
+            return Ok(lookup_geometry(py, self, handle)?
+                .into_pyobject(py)?
+                .unbind());
         }
         Ok(default.unwrap_or_else(|| py.None()))
     }
@@ -417,7 +417,10 @@ impl PySpatialIndex {
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
     pub(crate) fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
-        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
+        let index = slf.borrow();
+        let native = &*index;
+        let bytes = slf.py().detach(|| native.heap_bytes());
+        python_sizeof(slf.py(), slf.as_any(), bytes)
     }
 
     /// Return exact predicate-refined matches for a query geometry, array, or
@@ -487,120 +490,15 @@ impl PySpatialIndex {
         let geom = crate::normalize_geometry_batch(py, geom)?;
         if let Some(geometry) = exact_geometry(&geom) {
             let geometry = geometry.clone();
-            let matches =
-                py.detach(move || self.query_exact(&geometry, predicate, distance, unit))?;
-            return usize_array(py, matches);
+            let matches = py.detach(move || {
+                self.query_exact(&geometry, predicate, distance, unit)
+                    .map(index_ids)
+            })?;
+            return int64_array(py, matches);
         }
         if let Some(array) = exact_geometry_array(&geom) {
-            let array = array.clone();
-            if !array.is_compact_nullable()
-                && let Some(points) = array.storage().point_rows()
-            {
-                let results = py.detach(|| {
-                    self.point_rows_matches(
-                        &array,
-                        &points,
-                        array.missing(),
-                        Some(predicate),
-                        distance,
-                        unit,
-                    )
-                })?;
-                return Groups::from_int64_csr(results.ids, results.offsets)?
-                    .with_row_missing(array.missing().cloned())
-                    .into_py_any(py);
-            }
-            let plan =
-                PreparedIndexQuery::for_array(self, &array, Some(predicate), distance, unit)?;
-            if let IndexPredicate::Topological(topological) = predicate
-                && distance.is_none()
-            {
-                // One frame check for the whole array; rows feed the
-                // shape-level core with no per-row wrapper. Matches append
-                // straight into the CSR values column (one pass).
-                let missing = array.missing().cloned();
-                let (ids, offsets) = py.detach(move || {
-                    let row_count = array.len();
-                    let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
-                    let mut rows = array.row_operation();
-                    for logical_row in rows.rows_with_missing(|| ()) {
-                        if let crate::array::ArrayRow::Present(row) = logical_row {
-                            let row_index = row.logical();
-                            let shape = rows.prepared(row)?;
-                            self.topological_matches_append(
-                                &shape,
-                                &rows.frame_cache(row_index),
-                                topological,
-                                plan.query_domain(),
-                                Some(row_index),
-                                builder.values_mut(),
-                            )?;
-                        }
-                        let end = builder.len();
-                        builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                    }
-                    Ok::<_, PyErr>(builder.finish())
-                })?;
-                return Groups::from_int64_csr(ids, offsets)?
-                    .with_row_missing(missing)
-                    .into_py_any(py);
-            }
-            // dwithin array queries (the only distance-carrying lane left):
-            // one frame check + one metric resolution; rows run the shared
-            // candidate core and the pair kernel on stack handles — no
-            // per-row PyGeometry staging.
-            let missing = array.missing().cloned();
-            let (ids, offsets) = py.detach(move || {
-                let row_count = array.len();
-                let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
-                let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
-                    unreachable!("dwithin array query constructs a dwithin plan")
-                };
-                match resolved {
-                    crate::crs::ResolvedMetric::Planar { .. } => {
-                        let rows = array.row_operation();
-                        for logical_row in rows.rows_with_missing(|| ()) {
-                            if let crate::array::ArrayRow::Present(row) = logical_row {
-                                let row_index = row.logical();
-                                let row = row.row();
-                                self.planar_dwithin_query_row_matches_append(
-                                    row,
-                                    &plan,
-                                    builder.values_mut(),
-                                    array.row_bounds_seed(row_index),
-                                    Some(row_index),
-                                )?;
-                            }
-                            let end = builder.len();
-                            builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                        }
-                    },
-                    crate::crs::ResolvedMetric::Geodesic(metric) => {
-                        let mut rows = array.row_operation();
-                        for logical_row in rows.rows_with_missing(|| ()) {
-                            if let crate::array::ArrayRow::Present(row) = logical_row {
-                                let row_index = row.logical();
-                                let row = row.row();
-                                let mut query_cache = || rows.frame_cache(row_index);
-                                self.geodesic_dwithin_query_row_matches_append(
-                                    row,
-                                    metric,
-                                    &mut query_cache,
-                                    &plan,
-                                    builder.values_mut(),
-                                    array.row_bounds_seed(row_index),
-                                    Some(row_index),
-                                )?;
-                            }
-                            let end = builder.len();
-                            builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                        }
-                    },
-                }
-                Ok::<_, PyErr>(builder.finish())
-            })?;
-            return Groups::from_int64_csr(ids, offsets)?
-                .with_row_missing(missing)
+            return py
+                .detach(|| self.query_array(array, predicate, distance, unit))?
                 .into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -722,11 +620,7 @@ impl PySpatialIndex {
             )));
         }
         let distance = query_distance(Some(predicate), distance)?;
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        self.for_each_symmetric_matches(predicate, distance, unit, |i, matches| {
-            super::free_functions::append_join_matches(&mut left, &mut right, i, matches);
-        })?;
+        let (left, right) = py.detach(|| self.self_join_pairs(predicate, distance, unit))?;
         Ok((int64_array(py, left)?, int64_array(py, right)?))
     }
 
@@ -779,103 +673,15 @@ impl PySpatialIndex {
         let distance = query_distance(None, distance)?;
         let geom = crate::normalize_geometry_batch(py, geom)?;
         if let Some(geometry) = exact_geometry(&geom) {
-            let matches = self.candidate_ids_sorted(geometry, distance, unit)?;
-            return usize_array(py, matches);
+            let matches = py.detach(|| {
+                self.candidate_ids_sorted(geometry, distance, unit)
+                    .map(index_ids)
+            })?;
+            return int64_array(py, matches);
         }
         if let Some(array) = exact_geometry_array(&geom) {
-            if !array.is_compact_nullable()
-                && let Some(points) = array.storage().point_rows()
-            {
-                let results =
-                    self.point_rows_matches(array, &points, array.missing(), None, distance, unit)?;
-                return Groups::from_int64_csr(results.ids, results.offsets)?
-                    .with_row_missing(array.missing().cloned())
-                    .into_py_any(py);
-            }
-            // One frame check + one metric resolution for the whole array;
-            // rows answer from their window bounds and append into one CSR
-            // values column — no per-row PyGeometry, ShapeData, or second
-            // id-buffer copy.
-            let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
-            // Pure envelope candidates (no distance, not geographic): the
-            // element bounds are the whole answer, streamed straight off the
-            // packed columns; mixed storage takes the row loop below.
-            let domain = self.domain()?;
-            let envelope_only = matches!(plan, PreparedIndexQuery::Candidates { .. })
-                && !domain.is_geographic()
-                && !plan.query_domain().needs_admission();
-            let geographic_envelopes =
-                matches!(plan, PreparedIndexQuery::Candidates { .. }) && domain.is_geographic();
-            let row_count = array.len();
-            let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
-            if envelope_only {
-                // Missing and empty rows carry no bounds; the Groups validity
-                // mask distinguishes them after both append empty CSR windows.
-                let mut append = |bounds: Option<crate::Bounds>| -> PyResult<()> {
-                    if let Some(bounds) = bounds {
-                        self.envelope_candidates_append(bounds, builder.values_mut());
-                    }
-                    let end = builder.len();
-                    builder.push_end(end).map_err(pyo3::PyErr::from)
-                };
-                let visited = match array.existing_element_bounds() {
-                    Some(bounds) => {
-                        bounds.iter().try_for_each(|&bounds| append(bounds))?;
-                        true
-                    },
-                    None => array.try_for_each_element_bounds(&mut append)?,
-                };
-                if visited {
-                    let (ids, offsets) = builder.finish();
-                    return Groups::from_int64_csr(ids, offsets)?
-                        .with_row_missing(array.missing().cloned())
-                        .into_py_any(py);
-                }
-            }
-            let (predicate, distance, metric) = plan.candidate_parts();
-            let rows = array.row_operation();
-            for logical_row in rows.rows_with_missing(|| ()) {
-                if let crate::array::ArrayRow::Present(row) = logical_row {
-                    let row_index = row.logical();
-                    let row = row.row();
-                    let ids = builder.values_mut();
-                    let seeded = rows.bounds_seed(row_index);
-                    if envelope_only {
-                        if let Some(bounds) = match seeded {
-                            crate::array::BoundsSeed::Unset => row.quick_bounds(),
-                            crate::array::BoundsSeed::Value(bounds) => bounds,
-                        } {
-                            self.envelope_candidates_append(bounds, ids);
-                        }
-                    } else if geographic_envelopes {
-                        if let Some(bounds) = match seeded {
-                            crate::array::BoundsSeed::Unset => row.quick_bounds(),
-                            crate::array::BoundsSeed::Value(bounds) => bounds,
-                        } {
-                            row.try_with_shape(|shape| {
-                                self.collect_shape_candidates(shape, bounds, ids)
-                            })?;
-                        }
-                    } else {
-                        let prepared = plan.row(self, row, seeded, Some(row_index))?;
-                        self.candidate_ids_core_append(
-                            prepared.bounds,
-                            prepared.pruner_point,
-                            prepared.box_pruner,
-                            predicate,
-                            distance,
-                            metric,
-                            ids,
-                        );
-                    }
-                }
-                let end = builder.len();
-                builder.push_end(end).map_err(pyo3::PyErr::from)?;
-            }
-            let (ids, offsets) = builder.finish();
-            return Groups::from_int64_csr(ids, offsets)?
-                .with_row_missing(array.missing().cloned())
-                .into_py_any(py);
+            let groups = py.detach(|| self.candidate_array(array, distance, unit))?;
+            return groups.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
     }
@@ -947,124 +753,30 @@ impl PySpatialIndex {
         let geom = crate::normalize_geometry_batch(py, geom)?;
         if let Some(geometry) = exact_geometry(&geom) {
             let geometry = geometry.clone();
-            let pairs = py.detach(move || {
+            let (ids, distances) = py.detach(move || {
                 self.nearest_one(&geometry, k, unit, max_distance, NearestOptions {
                     exclude_equal: exclusive,
                     include_ties: ties,
                 })
+                .map(|pairs| nearest_columns(pairs, return_distance))
             })?;
-            return format_nearest(py, pairs, return_distance);
+            return format_nearest(py, int64_array(py, ids)?, distances);
         }
         if let Some(array) = exact_geometry_array(&geom) {
-            let array = array.clone();
-            let missing = array.missing().cloned();
-            // One frame check and metric resolution for the whole array;
-            // every storage's rows drive `nearest_core` on stack handles —
-            // no per-row `PyGeometry` materialization anywhere.
-            // Batch-local frontier heap reused across rows (clear+push;
-            // free-threading: not a receiver cache / lock).
-            self.ensure_frame_compatible(array.crs_ref(), array.epoch(), "spatial index nearest")?;
-            let metric = resolve_metric(
-                self.metric_crs_str(array.crs_str()),
-                unit,
-                crate::dispatch::MetricOp::Nearest,
-            )?;
-            let (ids, offsets, distances) = py.detach(move || {
-                let row_count = array.len();
-                let row_capacity = k.min(self.__len__());
-                let capacity = row_count.checked_mul(row_capacity).ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err(
-                        "nearest output size overflows usize",
-                    )
-                })?;
-                let mut builder = CsrBuilder::<usize>::with_capacity(capacity, row_count);
-                let mut distances = Vec::with_capacity(if return_distance { capacity } else { 0 });
-                let mut frontier = BinaryHeap::new();
-                let mut leaf_frontier = Vec::new();
-                let mut visited = NearestVisited::default();
-                let options = NearestOptions {
-                    exclude_equal: exclusive,
-                    include_ties: ties,
-                };
-                let resolved = crate::crs::ResolvedMetric::from_model(&metric)?;
-                let query_domain = if k > 0 {
-                    QueryDomain::for_query_frame(self, Some(&array.frame))?
-                } else {
-                    QueryDomain::default()
-                };
-                match &resolved {
-                    crate::crs::ResolvedMetric::Planar { to_metre } => {
-                        let mut rows = array.row_operation();
-                        for logical_row in rows.rows_with_missing(|| ()) {
-                            if let crate::array::ArrayRow::Present(row) = logical_row {
-                                let row_index = row.logical();
-                                let _ = query_domain.admit_row(
-                                    row.row(),
-                                    array.row_bounds_seed(row_index),
-                                    Some(row_index),
-                                )?;
-                                let query = rows.prepared(row)?;
-                                let candidates = self.planar_nearest_core_ties(
-                                    to_metre.get(),
-                                    &query,
-                                    k,
-                                    max_distance,
-                                    options,
-                                    &mut frontier,
-                                    &mut leaf_frontier,
-                                    &mut visited,
-                                )?;
-                                append_nearest_candidates(
-                                    &mut builder,
-                                    &mut distances,
-                                    candidates,
-                                    return_distance,
-                                );
-                            }
-                            let end = builder.len();
-                            builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                        }
+            let (matches, distances) = py.detach(|| {
+                self.nearest_array(
+                    array,
+                    k,
+                    max_distance,
+                    return_distance,
+                    unit,
+                    NearestOptions {
+                        exclude_equal: exclusive,
+                        include_ties: ties,
                     },
-                    crate::crs::ResolvedMetric::Geodesic(geodesic) => {
-                        let mut rows = array.row_operation();
-                        for logical_row in rows.rows_with_missing(|| ()) {
-                            if let crate::array::ArrayRow::Present(row) = logical_row {
-                                let row_index = row.logical();
-                                let _ = query_domain.admit_row(
-                                    row.row(),
-                                    array.row_bounds_seed(row_index),
-                                    Some(row_index),
-                                )?;
-                                let query = rows.prepared(row)?;
-                                let mut query_cache = || rows.frame_cache(row_index);
-                                let candidates = self.geodesic_nearest_core_ties(
-                                    &metric,
-                                    geodesic,
-                                    &query,
-                                    &mut query_cache,
-                                    k,
-                                    max_distance,
-                                    options,
-                                    &mut frontier,
-                                    &mut leaf_frontier,
-                                    &mut visited,
-                                )?;
-                                append_nearest_candidates(
-                                    &mut builder,
-                                    &mut distances,
-                                    candidates,
-                                    return_distance,
-                                );
-                            }
-                            let end = builder.len();
-                            builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                        }
-                    },
-                }
-                let (ids, offsets) = builder.finish();
-                Ok::<_, pyo3::PyErr>((ids, offsets, distances))
+                )
             })?;
-            return format_nearest_rows(py, ids, offsets, distances, return_distance, missing);
+            return format_nearest(py, matches.into_py_any(py)?, distances);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
     }
@@ -1111,16 +823,21 @@ impl PySpatialIndex {
     pub(crate) fn insert(&mut self, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = values.py();
         if let Some(geometry) = exact_geometry(values) {
-            return self.insert_one(geometry)?.into_py_any(py);
+            let handle = if self.scalar_insert_is_local(geometry) {
+                self.insert_one(geometry)?
+            } else {
+                py.detach(|| self.insert_one(geometry))?
+            };
+            return handle.into_py_any(py);
         }
         // Batch handles return a read-only int64 ndarray, matching every other
         // index id lane (query/candidates/nearest/join/self_join).
         let handles = if let Some(array) = exact_geometry_array(values) {
-            self.insert_array(array)?
+            py.detach(|| self.insert_array(array).map(index_ids))?
         } else {
-            self.insert_items(geometry_items(values)?)?
+            let items = geometry_items(values)?;
+            py.detach(|| self.insert_items(items).map(index_ids))?
         };
-        let handles = handles.into_iter().map(|handle| handle as i64).collect();
         int64_array(py, handles)
     }
 
@@ -1146,7 +863,14 @@ impl PySpatialIndex {
     /// >>> idx.remove(handle)
     /// True
     pub(crate) fn remove(&mut self, handle: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let py = handle.py();
         let handle = parse_handle_like(handle)?;
-        self.remove_handle(handle)
+        if !self.is_live_handle(handle) {
+            return Ok(false);
+        }
+        if !self.removal_is_local(handle) {
+            return Ok(py.detach(|| self.remove_handle(handle))?);
+        }
+        Ok(self.remove_handle(handle)?)
     }
 }

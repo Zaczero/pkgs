@@ -1,11 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
-use crate::geometry::storage::ValidityMask;
-use crate::py::index::{
-    AABB, BinaryHeap, Ordering, Py, PyAny, PyResult, Python, float64_array, int64_array,
-};
-use crate::py::vectors::Groups;
+use crate::py::index::{AABB, BinaryHeap, Ordering, Py, PyAny, PyResult, Python, float64_array};
 /// A frontier node of the best-first nearest traversal — a bulk STR node, an
 /// immutable overflow-run node, or an evaluated-bound entry — with its
 /// envelope's distance lower bound, min-ordered by that bound.
@@ -115,7 +111,9 @@ pub(crate) fn nearest_candidates_from_heap(
 }
 
 /// Validate the optional `max_distance` ceiling for a nearest query.
-pub(crate) fn parse_max_distance(max_distance: Option<f64>) -> PyResult<Option<NonNegative>> {
+pub(crate) fn parse_max_distance(
+    max_distance: Option<f64>,
+) -> crate::error::Result<Option<NonNegative>> {
     match max_distance {
         Some(distance) => Ok(Some(NonNegative::try_new("max_distance", distance)?)),
         None => Ok(None),
@@ -153,8 +151,8 @@ pub(crate) fn csr_rows<'a>(
 pub(crate) fn retain_row(
     ids: &mut Vec<usize>,
     row_start: usize,
-    mut keep: impl FnMut(usize) -> PyResult<bool>,
-) -> PyResult<()> {
+    mut keep: impl FnMut(usize) -> crate::error::BatchResult<bool>,
+) -> crate::error::BatchResult<()> {
     debug_assert!(row_start <= ids.len());
     let failed = std::cell::Cell::new(false);
     let mut failure = None;
@@ -182,29 +180,14 @@ pub(crate) fn retain_row(
     Ok(())
 }
 
-/// Column-form array nearest: CSR ids, plus one flat distances column
-/// parallel to `matches.values` when asked (the rows share the CSR offsets).
-pub(crate) fn format_nearest_rows(
-    py: Python<'_>,
-    ids: Vec<usize>,
-    offsets: Vec<i64>,
-    distances: Vec<f64>,
-    return_distance: bool,
-    missing: Option<ValidityMask>,
-) -> PyResult<Py<PyAny>> {
-    let matches = Groups::from_int64_csr(ids, offsets)?.with_row_missing(missing);
-    if return_distance {
-        let distances = float64_array(py, distances)?;
-        return (matches, distances).into_py_any(py);
-    }
-    matches.into_py_any(py)
+pub(crate) fn index_ids(ids: Vec<usize>) -> Vec<i64> {
+    ids.into_iter().map(|handle| handle as i64).collect()
 }
 
-pub(crate) fn format_nearest(
-    py: Python<'_>,
+pub(crate) fn nearest_columns(
     candidates: Vec<NearestCandidate>,
     return_distance: bool,
-) -> PyResult<Py<PyAny>> {
+) -> (Vec<i64>, Option<Vec<f64>>) {
     let mut ids = Vec::with_capacity(candidates.len());
     let mut distances = return_distance.then(|| Vec::with_capacity(candidates.len()));
     for candidate in candidates {
@@ -213,48 +196,42 @@ pub(crate) fn format_nearest(
             distances.push(candidate.distance);
         }
     }
-    let ids = int64_array(py, ids)?;
+    (ids, distances)
+}
+
+pub(crate) fn format_nearest(
+    py: Python<'_>,
+    ids: Py<PyAny>,
+    distances: Option<Vec<f64>>,
+) -> PyResult<Py<PyAny>> {
     if let Some(distances) = distances {
         let distances = float64_array(py, distances)?;
         return (ids, distances).into_py_any(py);
     }
-    ids.into_py_any(py)
+    Ok(ids)
 }
 
 #[cfg(test)]
 mod tests {
-    use pyo3::types::{PyAnyMethods as _, PyStringMethods as _};
-
     use super::*;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn retain_row_stops_after_the_first_refinement_error() {
-        crate::test_support::initialize_python();
-        let (message, visited) = pyo3::Python::attach(|py| {
-            let mut ids = vec![0, 1, 2, 3];
-            let mut visited = Vec::new();
-            let error = retain_row(&mut ids, 1, |id| {
-                visited.push(id);
-                if id == 2 {
-                    Err(pyo3::exceptions::PyValueError::new_err(
-                        "first refinement error",
-                    ))
-                } else {
-                    Ok(id % 2 == 0)
-                }
-            })
-            .expect_err("the second candidate fails");
-            let message = error
-                .value(py)
-                .str()
-                .expect("PyValueError has a string representation")
-                .to_str()
-                .expect("error message is valid UTF-8")
-                .to_owned();
-            (message, visited)
-        });
-        assert_eq!(message, "first refinement error");
+        let mut ids = vec![0, 1, 2, 3];
+        let mut visited = Vec::new();
+        let error = retain_row(&mut ids, 1, |id| {
+            visited.push(id);
+            if id == 2 {
+                Err(crate::geometry::GeometryErrorKind::message("first refinement error").into())
+            } else {
+                Ok(id % 2 == 0)
+            }
+        })
+        .expect_err("the second candidate fails");
+        let crate::error::BatchError::Batch(error) = error else {
+            panic!("scalar refinement error has no row annotation");
+        };
+        assert_eq!(error.to_string(), "first refinement error");
         assert_eq!(visited, [1, 2]);
     }
 }

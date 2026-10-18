@@ -1,6 +1,6 @@
 use super::{
-    Arc, Bounds, CsrBuilder, DwithinDistance, GeodesicPruner, IndexRowOperation, PointRows,
-    PreparedIndexQuery, PreparedPlan, PyResult, PySpatialIndex, QueryDomain, RowMatches, Shape,
+    Arc, BatchResult, Bounds, CsrBuilder, DwithinDistance, GeodesicPruner, IndexRowOperation,
+    PointRows, PreparedIndexQuery, PreparedPlan, PySpatialIndex, QueryDomain, RowMatches, Shape,
     ShapeData, ShapeRow, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
 
@@ -16,7 +16,7 @@ impl PySpatialIndex {
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
         logical_row: Option<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         matches.clear();
         self.planar_dwithin_query_row_matches_append(row, plan, matches, seeded_bounds, logical_row)
     }
@@ -29,7 +29,7 @@ impl PySpatialIndex {
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
         logical_row: Option<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let row_start = matches.len();
         let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
@@ -69,7 +69,7 @@ impl PySpatialIndex {
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
         logical_row: Option<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let row_start = matches.len();
         let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
@@ -116,8 +116,8 @@ impl PySpatialIndex {
             &mut Vec<usize>,
             usize,
             &mut IndexRowOperation<'_>,
-        ) -> PyResult<()>,
-    ) -> PyResult<RowMatches> {
+        ) -> BatchResult<()>,
+    ) -> BatchResult<RowMatches> {
         let coordinate_distance = model.coordinate_radius(distance.get());
         let geodesic_pruner = match model {
             crs::MetricModel::Geodesic { crs, frame, state }
@@ -132,7 +132,7 @@ impl PySpatialIndex {
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
                 let end = builder.len();
-                builder.push_end(end).map_err(pyo3::PyErr::from)?;
+                builder.push_end(end)?;
                 continue;
             }
             query_domain.admit_shape(
@@ -166,7 +166,7 @@ impl PySpatialIndex {
             self.finish_candidates(builder.values_mut(), row_start);
             refine(row, &query, builder.values_mut(), row_start, &mut products)?;
             let end = builder.len();
-            builder.push_end(end).map_err(pyo3::PyErr::from)?;
+            builder.push_end(end)?;
         }
         let (ids, offsets) = builder.finish();
         Ok(RowMatches { ids, offsets })

@@ -1,8 +1,11 @@
 use super::{
-    DistanceUnit, DwithinDistance, IndexPredicate, Predicate, PreparedIndexQuery, PreparedPlan,
-    PyGeometry, PyResult, PySpatialIndex, QueryDomain, ShapeRow, TopologyDomain, admitted_query,
-    candidate_policy, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
+    BatchResult, DistanceUnit, DwithinDistance, IndexPredicate, Predicate, PreparedIndexQuery,
+    PreparedPlan, PyGeometry, PyGeometryArray, PySpatialIndex, QueryDomain, ShapeRow,
+    TopologyDomain, admitted_query, candidate_policy, crs, pair_dwithin_geodesic,
+    pair_dwithin_planar, retain_row,
 };
+use crate::CsrBuilder;
+use crate::py::vectors::Groups;
 
 impl PySpatialIndex {
     pub(super) fn refine_prepared(
@@ -10,7 +13,7 @@ impl PySpatialIndex {
         geometry: &PyGeometry,
         candidates: Vec<usize>,
         plan: &PreparedIndexQuery,
-    ) -> PyResult<Vec<usize>> {
+    ) -> BatchResult<Vec<usize>> {
         let mut matches = candidates;
         let query_plan = geometry.prepared_plan();
         let domain = self.domain()?;
@@ -71,7 +74,7 @@ impl PySpatialIndex {
         predicate: IndexPredicate,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Vec<usize>> {
+    ) -> BatchResult<Vec<usize>> {
         let plan =
             PreparedIndexQuery::for_geometry(self, geometry, Some(predicate), distance, unit)?;
         let query_plan = geometry.prepared_plan();
@@ -117,7 +120,7 @@ impl PySpatialIndex {
         predicate: Predicate,
         query_domain: QueryDomain,
         logical_row: Option<usize>,
-    ) -> PyResult<Vec<usize>> {
+    ) -> BatchResult<Vec<usize>> {
         let mut matches = Vec::new();
         self.topological_matches_append(
             shape,
@@ -140,7 +143,7 @@ impl PySpatialIndex {
         query_domain: QueryDomain,
         logical_row: Option<usize>,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let row_start = out.len();
         let Some(query_bounds) = shape.bounds() else {
             return Ok(());
@@ -174,7 +177,7 @@ pub(super) fn retain_topological(
     products: &mut super::IndexRowOperation<'_>,
     matches: &mut Vec<usize>,
     row_start: usize,
-) -> PyResult<()> {
+) -> BatchResult<()> {
     let evaluator = crate::predicates::engine::FixedPredicate::new(spec, query, true);
     let element_count = matches.len().wrapping_sub(row_start);
     let mut query_prepared = None;
@@ -198,4 +201,116 @@ pub(super) fn retain_topological(
             },
         }
     })
+}
+
+impl PySpatialIndex {
+    pub(crate) fn query_array(
+        &self,
+        array: &PyGeometryArray,
+        predicate: IndexPredicate,
+        distance: Option<DwithinDistance>,
+        unit: Option<DistanceUnit>,
+    ) -> BatchResult<Groups> {
+        if !array.is_compact_nullable()
+            && let Some(points) = array.storage().point_rows()
+        {
+            let results = self.point_rows_matches(
+                array,
+                &points,
+                array.missing(),
+                Some(predicate),
+                distance,
+                unit,
+            )?;
+            return Ok(Groups::from_int64_csr(results.ids, results.offsets)?
+                .with_row_missing(array.missing().cloned()));
+        }
+        let plan = PreparedIndexQuery::for_array(self, array, Some(predicate), distance, unit)?;
+        if let IndexPredicate::Topological(topological) = predicate
+            && distance.is_none()
+        {
+            // One frame check for the whole array; rows feed the
+            // shape-level core with no per-row wrapper. Matches append
+            // straight into the CSR values column (one pass).
+            let missing = array.missing().cloned();
+            let (ids, offsets) = {
+                let row_count = array.len();
+                let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
+                let mut rows = array.row_operation();
+                for logical_row in rows.rows_with_missing(|| ()) {
+                    if let crate::array::ArrayRow::Present(row) = logical_row {
+                        let row_index = row.logical();
+                        let shape = rows.prepared(row)?;
+                        self.topological_matches_append(
+                            &shape,
+                            &rows.frame_cache(row_index),
+                            topological,
+                            plan.query_domain(),
+                            Some(row_index),
+                            builder.values_mut(),
+                        )?;
+                    }
+                    let end = builder.len();
+                    builder.push_end(end)?;
+                }
+                builder.finish()
+            };
+            return Ok(Groups::from_int64_csr(ids, offsets)?.with_row_missing(missing));
+        }
+        // dwithin array queries (the only distance-carrying lane left):
+        // one frame check + one metric resolution; rows run the shared
+        // candidate core and the pair kernel on stack handles — no
+        // per-row PyGeometry staging.
+        let missing = array.missing().cloned();
+        let (ids, offsets) = {
+            let row_count = array.len();
+            let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
+            let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
+                unreachable!("dwithin array query constructs a dwithin plan")
+            };
+            match resolved {
+                crate::crs::ResolvedMetric::Planar { .. } => {
+                    let rows = array.row_operation();
+                    for logical_row in rows.rows_with_missing(|| ()) {
+                        if let crate::array::ArrayRow::Present(row) = logical_row {
+                            let row_index = row.logical();
+                            let row = row.row();
+                            self.planar_dwithin_query_row_matches_append(
+                                row,
+                                &plan,
+                                builder.values_mut(),
+                                array.row_bounds_seed(row_index),
+                                Some(row_index),
+                            )?;
+                        }
+                        let end = builder.len();
+                        builder.push_end(end)?;
+                    }
+                },
+                crate::crs::ResolvedMetric::Geodesic(metric) => {
+                    let mut rows = array.row_operation();
+                    for logical_row in rows.rows_with_missing(|| ()) {
+                        if let crate::array::ArrayRow::Present(row) = logical_row {
+                            let row_index = row.logical();
+                            let row = row.row();
+                            let mut query_cache = || rows.frame_cache(row_index);
+                            self.geodesic_dwithin_query_row_matches_append(
+                                row,
+                                metric,
+                                &mut query_cache,
+                                &plan,
+                                builder.values_mut(),
+                                array.row_bounds_seed(row_index),
+                                Some(row_index),
+                            )?;
+                        }
+                        let end = builder.len();
+                        builder.push_end(end)?;
+                    }
+                },
+            }
+            builder.finish()
+        };
+        Ok(Groups::from_int64_csr(ids, offsets)?.with_row_missing(missing))
+    }
 }

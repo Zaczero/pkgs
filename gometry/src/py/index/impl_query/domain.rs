@@ -1,8 +1,10 @@
 use super::{
     Bounds, Crs, Frame, GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner, Point,
-    PreparedPlan, PyGeometry, PyResult, PySpatialIndex, TopologyDomain, crs, crs_label,
-    crs_mismatch_error, epoch_label, epoch_mismatch_error, index_envelopes, shape_pruner_point,
+    PreparedPlan, PyGeometry, PySpatialIndex, TopologyDomain, crs, index_envelopes,
+    shape_pruner_point,
 };
+use crate::FrameError;
+use crate::error::Result;
 
 impl PySpatialIndex {
     /// Reject a query geometry whose CRS/epoch is operationally incompatible
@@ -13,7 +15,7 @@ impl PySpatialIndex {
         &self,
         geometry: &PyGeometry,
         operation: &str,
-    ) -> PyResult<()> {
+    ) -> Result<()> {
         self.ensure_frame_compatible(geometry.crs_ref(), geometry.epoch(), operation)
     }
 
@@ -33,7 +35,7 @@ impl PySpatialIndex {
         query_crs: Option<&Crs>,
         query_epoch: Option<f64>,
         operation: &str,
-    ) -> PyResult<()> {
+    ) -> Result<()> {
         let Some(frame) = &self.metadata else {
             return Ok(());
         };
@@ -43,28 +45,20 @@ impl PySpatialIndex {
             _ => false,
         };
         if !crs_ok {
-            return Err(crs_mismatch_error(
-                format!(
-                    "{operation} requires the geometry to share the index CRS; index is {}, got {}",
-                    crs_label(frame.crs_str()),
-                    crs_label(query_crs.map(|crs| &**crs)),
-                ),
-                frame.crs_str(),
-                query_crs.map(Crs::as_str),
-                None,
-            ));
+            return Err(FrameError::CrsMismatch {
+                operation: operation.into(),
+                left: frame.crs_ref().cloned(),
+                right: query_crs.cloned(),
+            }
+            .into());
         }
         if query_epoch != frame.epoch() {
-            return Err(epoch_mismatch_error(
-                format!(
-                    "{operation} requires the geometry to share the index coordinate epoch; index is {}, got {}",
-                    epoch_label(frame.epoch()),
-                    epoch_label(query_epoch),
-                ),
-                frame.epoch(),
-                query_epoch,
-                None,
-            ));
+            return Err(FrameError::EpochMismatch {
+                operation: operation.into(),
+                left: frame.epoch(),
+                right: query_epoch,
+            }
+            .into());
         }
         Ok(())
     }
@@ -105,14 +99,13 @@ impl PySpatialIndex {
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
         query_bounds: Bounds,
-    ) -> PyResult<Option<GeodesicIndexPruner>> {
+    ) -> Result<Option<GeodesicIndexPruner>> {
         if let Some(point) = shape_pruner_point(query.shape()) {
             return Ok(self
                 .geodesic_pruner(metric, Some(point))
                 .map(GeodesicIndexPruner::Point));
         }
-        crs::ensure_geographic_domain_in_frame(resolved.frame, query.shape())
-            .map_err(pyo3::PyErr::from)?;
+        crs::ensure_geographic_domain_in_frame(resolved.frame, query.shape())?;
         if resolved.frame != crate::geographic::GeographicFrame::crs84()
             || self.non_prunable_live != 0
         {
@@ -133,13 +126,12 @@ impl PySpatialIndex {
     /// Whether this index's shared frame is geographic. All rows and the query
     /// share this frame (`ensure_query_compatible`), so it is an index-level
     /// property used by the quotient-aware relation path.
-    pub(crate) fn domain(&self) -> PyResult<TopologyDomain> {
-        Ok(self
-            .metadata
+    pub(crate) fn domain(&self) -> Result<TopologyDomain> {
+        self.metadata
             .as_ref()
             .map(crate::geometry::topology_domain)
             .transpose()
-            .map(|domain| domain.unwrap_or(TopologyDomain::Cartesian))?)
+            .map(|domain| domain.unwrap_or(TopologyDomain::Cartesian))
     }
 }
 

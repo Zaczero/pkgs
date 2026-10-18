@@ -1,12 +1,10 @@
 use rstar::Envelope as _;
 
 use crate::geographic::{
-    CircularInterval, GeographicAdmissionError, GeographicFrame, GeographicSupportEnvelope,
-    GeographicViewError, LongitudeWindows,
+    CircularInterval, GeographicFrame, GeographicSupportEnvelope, LongitudeWindows,
 };
 use crate::geometry::{Shape, TopologyDomain};
 use crate::predicates::engine::IndexEnvelope;
-use crate::py::errors::InvalidGeometryError;
 use crate::py::support::{AABB, Bounds, Point};
 
 /// Keep each part in the index until extra windows stop paying for their tree
@@ -61,7 +59,7 @@ pub(crate) fn index_envelopes(
     shape: &Shape,
     bounds: Bounds,
     domain: TopologyDomain,
-) -> pyo3::PyResult<EnvelopeCover> {
+) -> crate::error::Result<EnvelopeCover> {
     let planar = bounds_envelope(bounds);
     let whole = match domain {
         TopologyDomain::Cartesian => vec![planar],
@@ -172,10 +170,6 @@ fn margin(envelope: &AABB<[f64; 2]>) -> f64 {
     (upper[0] - lower[0]) + (upper[1] - lower[1])
 }
 
-fn geographic_view_py_error(error: &GeographicViewError) -> pyo3::PyErr {
-    InvalidGeometryError::new_err(error.to_string())
-}
-
 #[expect(
     clippy::float_cmp,
     reason = "exact canonical seam endpoints determine mirrored index windows"
@@ -183,12 +177,8 @@ fn geographic_view_py_error(error: &GeographicViewError) -> pyo3::PyErr {
 fn geographic_index_envelopes(
     shape: &Shape,
     frame: GeographicFrame,
-) -> pyo3::PyResult<Vec<AABB<[f64; 2]>>> {
-    let support =
-        GeographicSupportEnvelope::try_from_shape(frame, shape).map_err(|error| match error {
-            GeographicAdmissionError::Geographic(error) => geographic_view_py_error(&error),
-            GeographicAdmissionError::Resource(error) => error.into(),
-        })?;
+) -> crate::error::Result<Vec<AABB<[f64; 2]>>> {
+    let support = GeographicSupportEnvelope::try_from_shape(frame, shape)?;
     let Some((south, north)) = support.latitude_bounds() else {
         return Ok(Vec::new());
     };
@@ -237,7 +227,7 @@ pub(crate) fn point_from_bounds(bounds: Bounds) -> Option<Point> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::{AngularFactor, GeographicError};
+    use crate::geographic::{AngularFactor, GeographicAdmissionError, GeographicError};
     use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, MultiMember, MultiPoint};
 
     fn frame() -> GeographicFrame {
@@ -301,7 +291,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn shared_invalid_index_owner_keeps_its_original_diagnostic_path() {
         let frame = frame();
         let shared_bad_owner = Shape::geometry_collection(vec![
@@ -328,14 +317,11 @@ mod tests {
             } if value == f64::INFINITY
         ));
 
-        pyo3::Python::initialize();
-        let public_error = pyo3::Python::attach(|_| {
-            geographic_index_envelopes(&shape, frame)
-                .expect_err("index admission reports the original invalid coordinate")
-                .to_string()
-        });
-        assert!(public_error.contains("member 0, member 0, member 1"));
-        assert!(public_error.contains("longitude"));
+        let message = geographic_index_envelopes(&shape, frame)
+            .expect_err("index admission reports the original invalid coordinate")
+            .to_string();
+        assert!(message.contains("member 0, member 0, member 1"));
+        assert!(message.contains("longitude"));
     }
 
     #[test]

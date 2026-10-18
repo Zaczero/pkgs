@@ -1406,7 +1406,7 @@ def test_spatial_index_insert_array_matches_insert_loop() -> None:
 def test_spatial_index_insert_rejects_frame_mismatch() -> None:
     idx = gm.SpatialIndex(gm.points([0.0], [0.0], crs=4326))
     before = ids(idx.query(gm.box(-1, -1, 1, 1, crs=4326)))
-    with pytest.raises(gm.CRSMismatchError, match='share the index CRS'):
+    with pytest.raises(gm.CRSMismatchError, match='requires matching CRS metadata'):
         idx.insert(gm.points([0.0, 1.0], [0.0, 1.0], crs=3857))
     assert ids(idx.query(gm.box(-1, -1, 1, 1, crs=4326))) == before
 
@@ -1502,7 +1502,7 @@ def test_packed_array_index_mutates_like_a_boxed_one() -> None:
         (1, 3),
     ]
     geographic = gm.SpatialIndex(gm.points([10.0, 11.0], [50.0, 50.5], crs=4326))
-    with pytest.raises(gm.CRSMismatchError, match='share the index CRS'):
+    with pytest.raises(gm.CRSMismatchError, match='requires matching CRS metadata'):
         geographic.query(gm.Point(10.0, 50.1))
 
 
@@ -2308,7 +2308,7 @@ def test_geodesic_nearest_handles_arrays_and_ties_deterministically() -> None:
 
 def test_insert_enforces_the_index_frame_and_never_reuses_handles() -> None:
     idx = gm.SpatialIndex([gm.Point(0, 0, crs=4326, epoch=2020.0)])
-    with pytest.raises(gm.CRSMismatchError, match='share the index CRS'):
+    with pytest.raises(gm.CRSMismatchError, match='requires matching CRS metadata'):
         idx.insert(gm.Point(0, 0, crs=3857, epoch=2020.0))
     with pytest.raises(ValueError, match='coordinate epoch'):
         idx.insert(gm.Point(1, 1, crs=4326, epoch=2021.0))

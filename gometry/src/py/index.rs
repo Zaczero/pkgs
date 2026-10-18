@@ -23,17 +23,17 @@ use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
+use crate::error::{BatchError, BatchResult, Result};
 use crate::geometry::{Bounds, Point, Shape, ShapeData, TopologyDomain};
 use crate::py::errors::{GeometryError, parameter_error};
-use crate::py::numpy::{float64_array, int64_array, usize_array};
-use crate::py::vectors::Groups;
+use crate::py::numpy::float64_array;
 use crate::{
     Crs, DistanceUnit, DwithinDistance, Frame, GeometryArrayStorage, HeapSize, IndexEnvelope,
     NonNegative, PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs,
-    crs_label, epoch_label, exact_geometry, exact_geometry_array, geometry_items,
-    global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
-    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds,
-    resolve_metric, validate_dwithin_distance_arg, validate_nearest_k,
+    exact_geometry, exact_geometry_array, geometry_items, global_geographic_candidate_envelope,
+    index_envelopes, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
+    pair_dwithin_planar, point_from_bounds, resolve_metric, validate_dwithin_distance_arg,
+    validate_nearest_k,
 };
 
 pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::error::Result<usize> {
@@ -81,7 +81,7 @@ pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_inde
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
     Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
-    format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
+    format_nearest, index_ids, nearest_candidates_from_heap, nearest_columns, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
 pub(crate) use pymethods::{_unpickle_spatial_index_v1, PySpatialIndexIter};
@@ -190,7 +190,7 @@ impl QueryDomain {
     pub(crate) fn for_query_frame(
         index: &PySpatialIndex,
         query_frame: Option<&Frame>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         if index.metadata.is_some() {
             return Ok(Self(None));
         }
@@ -213,7 +213,7 @@ impl QueryDomain {
         shape: &Shape,
         bounds: Option<Bounds>,
         logical_row: Option<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let Some(frame) = self.0 else {
             return Ok(());
         };
@@ -221,8 +221,8 @@ impl QueryDomain {
             index_envelopes(shape, bounds, TopologyDomain::Geographic(frame)).map(|_| ())
         });
         match logical_row {
-            Some(row) => result.map_err(|error| crate::note_array_row(error, row)),
-            None => result,
+            Some(row) => result.map_err(|error| BatchError::Row { row, error }),
+            None => result.map_err(Into::into),
         }
     }
 
@@ -231,10 +231,10 @@ impl QueryDomain {
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
         logical_row: Option<usize>,
-    ) -> PyResult<Option<Bounds>> {
-        if !self.needs_admission() {
+    ) -> BatchResult<Option<Bounds>> {
+        let Some(frame) = self.0 else {
             return Ok(None);
-        }
+        };
         let bounds = match seeded_bounds {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
@@ -242,9 +242,11 @@ impl QueryDomain {
         let Some(bounds) = bounds else {
             return Ok(None);
         };
-        let result = row.with_shape(|shape| self.admit_shape(shape, Some(bounds), None))?;
+        let result = row.with_shape(|shape| {
+            index_envelopes(shape, bounds, TopologyDomain::Geographic(frame)).map(|_| ())
+        })?;
         match logical_row {
-            Some(row) => result.map_err(|error| crate::note_array_row(error, row))?,
+            Some(row) => result.map_err(|error| BatchError::Row { row, error })?,
             None => result?,
         }
         Ok(Some(bounds))
@@ -326,7 +328,7 @@ impl PreparedIndexQuery {
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         Self::for_frame(
             index,
             index.metadata.as_ref(),
@@ -343,7 +345,7 @@ impl PreparedIndexQuery {
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         Self::for_frame(
             index,
             Some(&geometry.frame),
@@ -360,7 +362,7 @@ impl PreparedIndexQuery {
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         Self::for_frame(
             index,
             Some(&array.frame),
@@ -378,7 +380,7 @@ impl PreparedIndexQuery {
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let crs = query_frame.and_then(Frame::crs_ref);
         let epoch = query_frame.and_then(Frame::epoch);
         index.ensure_frame_compatible(crs, epoch, "spatial index query")?;
@@ -419,11 +421,13 @@ impl PreparedIndexQuery {
             // `query_distance` owns both public argument invariants. Keep the
             // internal boundary fallible too, rather than representing either
             // impossible state with four independent Options.
-            (Some(IndexPredicate::Dwithin), None) => Err(GeometryError::new_err(
-                "predicate 'dwithin' requires a non-negative distance",
-            )),
+            (Some(IndexPredicate::Dwithin), None) => {
+                Err(crate::geometry::GeometryErrorKind::message(
+                    "predicate 'dwithin' requires a non-negative distance",
+                ))
+            },
             (Some(IndexPredicate::Topological(predicate)), Some(_)) => {
-                Err(GeometryError::new_err(format!(
+                Err(crate::geometry::GeometryErrorKind::message(format!(
                     "distance is only valid with predicate='dwithin'; '{}' is an exact relation",
                     predicate.token()
                 )))
@@ -440,7 +444,7 @@ impl PreparedIndexQuery {
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
         logical_row: Option<usize>,
-    ) -> PyResult<PreparedIndexRow> {
+    ) -> BatchResult<PreparedIndexRow> {
         let admitted_bounds = self
             .query_domain()
             .admit_row(row, seeded_bounds, logical_row)?;
@@ -465,7 +469,7 @@ impl PreparedIndexQuery {
                 None,
                 Some(bounds),
             ) => Some(row.try_with_shape(|shape| {
-                crs::ensure_geographic_domain_in_frame(*frame, shape).map_err(pyo3::PyErr::from)?;
+                crs::ensure_geographic_domain_in_frame(*frame, shape)?;
                 if *frame != crate::geographic::GeographicFrame::crs84()
                     || index.non_prunable_live != 0
                 {
@@ -481,7 +485,6 @@ impl PreparedIndexQuery {
                     ))
                 })
                 .map(Some)
-                .map_err(pyo3::PyErr::from)
             })?),
             _ => None,
         }
@@ -870,15 +873,12 @@ impl IndexRows {
     }
 
     /// Materialize only live geometries and their stable handles for pickle.
-    fn pickle_live_rows(&self, frame: Frame) -> PyResult<(PyGeometryArray, Vec<usize>)> {
+    fn pickle_live_rows(&self, frame: Frame) -> Result<(PyGeometryArray, Vec<usize>)> {
         let mut shapes = Vec::with_capacity(self.live_handles.len());
         let mut handles = Vec::with_capacity(self.live_handles.len());
         let mut rows = self.operation();
         for handle in self.live_handles.iter() {
-            let shape = rows
-                .row(handle)?
-                .with_shape(std::clone::Clone::clone)
-                .map_err(pyo3::PyErr::from)?;
+            let shape = rows.row(handle)?.with_shape(std::clone::Clone::clone)?;
             shapes.push(shape);
             handles.push(handle);
         }

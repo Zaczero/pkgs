@@ -304,13 +304,3 @@ pub(crate) unsafe fn float64_slice_array(
     freeze(&array)?;
     Ok(array.into_any().unbind())
 }
-
-pub(crate) fn usize_array(
-    py: Python<'_>,
-    values: impl IntoIterator<Item = usize>,
-) -> PyResult<Py<PyAny>> {
-    // Row ids come from CPython-visible sequence lengths (`isize`-bounded by
-    // the interpreter); converting to NumPy's fixed `int64` index lane is
-    // therefore lossless on supported targets.
-    int64_array(py, values.into_iter().map(|value| value as i64).collect())
-}

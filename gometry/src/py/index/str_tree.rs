@@ -387,6 +387,10 @@ impl StaticStrForest {
         self.total_entries
     }
 
+    pub(super) fn single_insert_carries(&self) -> bool {
+        self.runs.first().is_some_and(Option::is_some)
+    }
+
     pub(super) const fn live_entry_count(&self) -> usize {
         self.live_entries
     }

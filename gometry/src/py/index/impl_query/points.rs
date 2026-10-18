@@ -1,6 +1,6 @@
 use super::{
-    Arc, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GeodesicPruner, IndexPredicate,
-    PointRows, PreparedIndexQuery, PreparedPlan, PyGeometryArray, PyResult, PySpatialIndex,
+    Arc, BatchResult, Bounds, CsrBuilder, DistanceUnit, DwithinDistance, GeodesicPruner,
+    IndexPredicate, PointRows, PreparedIndexQuery, PreparedPlan, PyGeometryArray, PySpatialIndex,
     RowMatches, Shape, ShapeData, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar,
     retain_row,
 };
@@ -18,7 +18,7 @@ impl PySpatialIndex {
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<RowMatches> {
+    ) -> BatchResult<RowMatches> {
         let plan = PreparedIndexQuery::for_array(self, array, predicate, distance, unit)?;
         if distance.is_none()
             && let Some(IndexPredicate::Topological(predicate)) = predicate
@@ -115,7 +115,7 @@ impl PySpatialIndex {
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
                 let end = builder.len();
-                builder.push_end(end).map_err(pyo3::PyErr::from)?;
+                builder.push_end(end)?;
                 continue;
             }
             plan.query_domain().admit_shape(
@@ -183,7 +183,7 @@ impl PySpatialIndex {
                 _ => {},
             }
             let end = builder.len();
-            builder.push_end(end).map_err(pyo3::PyErr::from)?;
+            builder.push_end(end)?;
         }
         let (ids, offsets) = builder.finish();
         Ok(RowMatches { ids, offsets })

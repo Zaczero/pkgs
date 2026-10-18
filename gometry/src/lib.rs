@@ -45,7 +45,7 @@ use collections::csr::CsrBuilder;
 use collections::reserve_hint;
 use crs::frame::{
     Crs, Frame, FrameAdoption, FrameEdit, FrameError, GeometryTransformFrame, crs_arc, crs_label,
-    crs_operationally_equal, epoch_label, wgs84_crs,
+    crs_operationally_equal, wgs84_crs,
 };
 use crs::{Zt, ZtLaneRefs, ZtLanes, ZtValues};
 use geographic::lonlat::validate_lonlat_shape;

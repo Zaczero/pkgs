@@ -834,7 +834,7 @@ pub(crate) fn point_between(
         NavigationPath::Geodesic => point_binary_geometry_sink(
             py,
             &plan,
-            move |crs| resolve_metric(crs, unit, MetricOp::PointBetween),
+            move |crs| resolve_metric(crs, unit, MetricOp::PointBetween).map_err(Into::into),
             InterpolatePointKernel {
                 distance: distances,
                 normalized,

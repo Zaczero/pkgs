@@ -105,7 +105,7 @@ pub(crate) fn resolve_metric(
     crs: Option<&str>,
     unit: Option<DistanceUnit>,
     operation: MetricOp,
-) -> PyResult<crs::MetricModel> {
+) -> crate::error::Result<crs::MetricModel> {
     resolve_metric_with_state(crs, unit, operation, None)
 }
 
@@ -116,7 +116,7 @@ pub(crate) fn resolve_metric_at(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
     state: &crs::RuntimeState,
-) -> PyResult<crs::MetricModel> {
+) -> crate::error::Result<crs::MetricModel> {
     resolve_metric_with_state(crs, unit, operation, Some(state))
 }
 
@@ -125,16 +125,18 @@ fn resolve_metric_with_state(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
     state: Option<&crs::RuntimeState>,
-) -> PyResult<crs::MetricModel> {
+) -> crate::error::Result<crs::MetricModel> {
     #[cfg(test)]
     binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
     match unit {
         Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
-        Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
-            "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
+        Some(DistanceUnit::Meters) if crs.is_none() => {
+            Err(crate::geometry::GeometryErrorKind::message(format!(
+                "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
              use unit='planar' for raw coordinate units, or set a CRS"
-        ))),
+            )))
+        },
         Some(DistanceUnit::Meters) => {
             let crs = crs.expect("checked above");
             Ok(match state {

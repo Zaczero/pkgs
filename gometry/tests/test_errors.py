@@ -189,7 +189,9 @@ def test_crs_error_on_invalid_crs() -> None:
 
 def test_crs_mismatch_error_on_index_frame_guard() -> None:
     index = gm.SpatialIndex(gm.GeometryArray([gm.Point(0.5, 0.5)]))
-    with pytest.raises(errors.CRSMismatchError, match='share the index CRS') as query:
+    with pytest.raises(
+        errors.CRSMismatchError, match='requires matching CRS metadata'
+    ) as query:
         index.query(gm.box(0, 0, 1, 1, crs=4326))
     assert (
         query.value.field,
@@ -197,7 +199,7 @@ def test_crs_mismatch_error_on_index_frame_guard() -> None:
         query.value.right,
         query.value.index,
     ) == ('crs', None, 'EPSG:4326', None)
-    with pytest.raises(errors.CRSMismatchError, match='share the index CRS'):
+    with pytest.raises(errors.CRSMismatchError, match='requires matching CRS metadata'):
         index.insert(gm.Point(1, 1, crs=4326))
 
 

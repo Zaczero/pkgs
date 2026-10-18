@@ -183,7 +183,7 @@ pub(crate) fn join_pair_columns(
     // Matching is the native work `SpatialIndex.query` already detaches; only
     // pulling the operands out of Python needs the interpreter.
     if let Some(geometry) = exact_geometry(left) {
-        return py.detach(|| {
+        return Ok(py.detach(|| {
             join_item_pairs(
                 std::slice::from_ref(geometry),
                 index,
@@ -191,13 +191,13 @@ pub(crate) fn join_pair_columns(
                 distance,
                 unit,
             )
-        });
+        })?);
     }
     if let Some(array) = exact_geometry_array(left) {
-        return py.detach(|| join_array_pairs(array, index, predicate, distance, unit));
+        return Ok(py.detach(|| join_array_pairs(array, index, predicate, distance, unit))?);
     }
     let array = crate::PyGeometryArray::new(left, None, None)?;
-    py.detach(|| join_array_pairs(&array, index, predicate, distance, unit))
+    Ok(py.detach(|| join_array_pairs(&array, index, predicate, distance, unit))?)
 }
 
 pub(super) fn append_join_matches(
@@ -219,7 +219,7 @@ fn join_array_pairs(
     predicate: IndexPredicate,
     distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
-) -> PyResult<(Vec<i64>, Vec<i64>)> {
+) -> crate::error::BatchResult<(Vec<i64>, Vec<i64>)> {
     if !array.is_compact_nullable()
         && let Some(points) = array.storage().point_rows()
     {
@@ -323,7 +323,7 @@ fn join_item_pairs(
     predicate: IndexPredicate,
     distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
-) -> PyResult<(Vec<i64>, Vec<i64>)> {
+) -> crate::error::BatchResult<(Vec<i64>, Vec<i64>)> {
     let mut left_ids = Vec::new();
     let mut right_ids = Vec::new();
     for (left_idx, geometry) in left_items.iter().enumerate() {

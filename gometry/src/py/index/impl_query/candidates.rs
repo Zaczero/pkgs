@@ -1,9 +1,11 @@
 use super::{
-    AABB, Bounds, DistanceUnit, DwithinDistance, GeodesicBoxPruner, IndexEntry, IndexEnvelope,
-    IndexPredicate, Point, PredicateSpec, PreparedIndexQuery, PyGeometry, PyResult, PySpatialIndex,
-    Shape, ShapeRow, bounds_envelope, crs, global_geographic_candidate_envelope, index_envelopes,
-    point_from_bounds, sort_unique_row_ids,
+    AABB, BatchResult, Bounds, DistanceUnit, DwithinDistance, GeodesicBoxPruner, IndexEntry,
+    IndexEnvelope, IndexPredicate, Point, PredicateSpec, PreparedIndexQuery, PyGeometry,
+    PySpatialIndex, Shape, ShapeRow, bounds_envelope, crs, global_geographic_candidate_envelope,
+    index_envelopes, point_from_bounds, sort_unique_row_ids,
 };
+use crate::CsrBuilder;
+use crate::py::vectors::Groups;
 
 impl PySpatialIndex {
     /// Every live entry — the STR bulk (row liveness skipped) then the
@@ -184,7 +186,7 @@ impl PySpatialIndex {
         geometry: &PyGeometry,
         distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Vec<usize>> {
+    ) -> BatchResult<Vec<usize>> {
         let plan = PreparedIndexQuery::for_geometry(self, geometry, None, distance, unit)?;
         let query_plan = geometry.prepared_plan();
         let row = plan.row(
@@ -217,7 +219,7 @@ impl PySpatialIndex {
         &self,
         point: Point,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let shape = Shape::Point(point);
         let Some(bounds) = shape.bounds() else {
             return Ok(());
@@ -231,7 +233,7 @@ impl PySpatialIndex {
         shape: &Shape,
         bounds: Bounds,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         self.collect_cover_candidates(shape, bounds, IndexEnvelope::Intersecting, out)
     }
 
@@ -247,7 +249,7 @@ impl PySpatialIndex {
         bounds: Bounds,
         policy: IndexEnvelope,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) -> BatchResult<()> {
         let start = out.len();
         let cover = index_envelopes(shape, bounds, self.domain()?)?;
         for envelope in cover.windows(policy) {
@@ -263,4 +265,103 @@ impl PySpatialIndex {
 pub(super) const fn candidate_policy(spec: &PredicateSpec) -> IndexEnvelope {
     spec.index_envelope
         .expect("the index rejects a predicate it cannot accelerate")
+}
+
+impl PySpatialIndex {
+    pub(crate) fn candidate_array(
+        &self,
+        array: &crate::PyGeometryArray,
+        distance: Option<crate::DwithinDistance>,
+        unit: Option<crate::DistanceUnit>,
+    ) -> crate::error::BatchResult<Groups> {
+        if !array.is_compact_nullable()
+            && let Some(points) = array.storage().point_rows()
+        {
+            let results =
+                self.point_rows_matches(array, &points, array.missing(), None, distance, unit)?;
+            return Ok(Groups::from_int64_csr(results.ids, results.offsets)?
+                .with_row_missing(array.missing().cloned()));
+        }
+        // One frame check + one metric resolution for the whole array;
+        // rows answer from their window bounds and append into one CSR
+        // values column — no per-row PyGeometry, ShapeData, or second
+        // id-buffer copy.
+        let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
+        // Pure envelope candidates (no distance, not geographic): the
+        // element bounds are the whole answer, streamed straight off the
+        // packed columns; mixed storage takes the row loop below.
+        let domain = self.domain()?;
+        let envelope_only = matches!(plan, PreparedIndexQuery::Candidates { .. })
+            && !domain.is_geographic()
+            && !plan.query_domain().needs_admission();
+        let geographic_envelopes =
+            matches!(plan, PreparedIndexQuery::Candidates { .. }) && domain.is_geographic();
+        let row_count = array.len();
+        let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
+        if envelope_only {
+            // Missing and empty rows carry no bounds; the Groups validity
+            // mask distinguishes them after both append empty CSR windows.
+            let mut append = |bounds: Option<crate::Bounds>| -> BatchResult<()> {
+                if let Some(bounds) = bounds {
+                    self.envelope_candidates_append(bounds, builder.values_mut());
+                }
+                let end = builder.len();
+                builder.push_end(end).map_err(Into::into)
+            };
+            let visited = match array.existing_element_bounds() {
+                Some(bounds) => {
+                    bounds.iter().try_for_each(|&bounds| append(bounds))?;
+                    true
+                },
+                None => array.try_for_each_element_bounds(&mut append)?,
+            };
+            if visited {
+                let (ids, offsets) = builder.finish();
+                return Ok(Groups::from_int64_csr(ids, offsets)?
+                    .with_row_missing(array.missing().cloned()));
+            }
+        }
+        let (predicate, distance, metric) = plan.candidate_parts();
+        let rows = array.row_operation();
+        for logical_row in rows.rows_with_missing(|| ()) {
+            if let crate::array::ArrayRow::Present(row) = logical_row {
+                let row_index = row.logical();
+                let row = row.row();
+                let ids = builder.values_mut();
+                let seeded = rows.bounds_seed(row_index);
+                if envelope_only {
+                    if let Some(bounds) = match seeded {
+                        crate::array::BoundsSeed::Unset => row.quick_bounds(),
+                        crate::array::BoundsSeed::Value(bounds) => bounds,
+                    } {
+                        self.envelope_candidates_append(bounds, ids);
+                    }
+                } else if geographic_envelopes {
+                    if let Some(bounds) = match seeded {
+                        crate::array::BoundsSeed::Unset => row.quick_bounds(),
+                        crate::array::BoundsSeed::Value(bounds) => bounds,
+                    } {
+                        row.try_with_shape(|shape| {
+                            self.collect_shape_candidates(shape, bounds, ids)
+                        })?;
+                    }
+                } else {
+                    let prepared = plan.row(self, row, seeded, Some(row_index))?;
+                    self.candidate_ids_core_append(
+                        prepared.bounds,
+                        prepared.pruner_point,
+                        prepared.box_pruner,
+                        predicate,
+                        distance,
+                        metric,
+                        ids,
+                    );
+                }
+            }
+            let end = builder.len();
+            builder.push_end(end)?;
+        }
+        let (ids, offsets) = builder.finish();
+        Ok(Groups::from_int64_csr(ids, offsets)?.with_row_missing(array.missing().cloned()))
+    }
 }
