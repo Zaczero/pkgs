@@ -791,13 +791,11 @@ impl PyGeometryArray {
                 if let Some(plan) = chunk.cell(offset).prepared.get() {
                     return Ok(PreparedRow::Owned(Arc::clone(plan)));
                 }
-                // Seeded only for the row being built: a warm row returns above.
-                let transient = PreparedRow::transient_with_seed(packed, bounds())?;
-                let handle = chunk.cell(offset).prepared.get_or_init(|| match transient {
-                    PreparedRow::Transient(data) => Arc::new(data),
-                    PreparedRow::Shared(data) => Arc::clone(data),
-                    PreparedRow::Owned(data) => data,
-                });
+                // Seed bounds only for the row whose plan is initialized.
+                let handle = chunk.cell(offset).prepared.get_or_try_init(|| {
+                    PreparedRow::transient_with_seed(packed, bounds())
+                        .map(PreparedRow::into_owned_plan)
+                })?;
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
             packed @ ShapeRow::Packed(_) => PreparedRow::transient_with_seed(packed, bounds()),
@@ -887,6 +885,22 @@ mod frame_cache_row_tests {
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0], None, None).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn persistent_lines() -> PyGeometryArray {
+        let vertices = 34;
+        PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                (0..vertices).map(|value| value as f64).collect(),
+                vec![0.0; vertices],
+                None,
+                None,
+            )
+            .unwrap(),
+            crate::array::CsrOffsetColumn::try_new(vec![0, vertices], vertices).unwrap(),
             Frame::None,
         )
         .unwrap()
@@ -1487,22 +1501,29 @@ mod frame_cache_row_tests {
     }
 
     #[test]
-    fn concurrent_first_publication_keeps_one_prepared_arc() {
-        let products = Arc::new(RowProducts::fresh(1));
+    fn concurrent_packed_row_initialization_attempts_one_build() {
+        const THREADS: usize = 8;
+
+        let array = Arc::new(persistent_lines());
+        let attempted_builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let start = Arc::new(std::sync::Barrier::new(THREADS));
         let mut threads: Vec<_> = std::iter::repeat_with(|| {
-            let products = Arc::clone(&products);
+            let array = Arc::clone(&array);
+            let attempted_builds = Arc::clone(&attempted_builds);
+            let start = Arc::clone(&start);
             std::thread::spawn(move || {
-                products
-                    .operation()
-                    .prepared_plan::<std::convert::Infallible>(0, || {
-                        Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
-                            1.0, 2.0,
-                        )))))
+                start.wait();
+                let mut products = array.row_products.operation();
+                array
+                    .prepared_row_with(&mut products, 0, array.storage().row(0), || {
+                        attempted_builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        BoundsSeed::Unset
                     })
                     .unwrap()
+                    .into_owned_plan()
             })
         })
-        .take(8)
+        .take(THREADS)
         .collect();
         let first = threads
             .remove(0)
@@ -1514,6 +1535,31 @@ mod frame_cache_row_tests {
                 &thread.join().expect("publication thread must finish")
             ));
         }
+        assert_eq!(
+            attempted_builds.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the bounds seed runs inside the one fallible initializer"
+        );
+    }
+
+    #[test]
+    fn failed_prepared_plan_build_can_be_retried() {
+        let products = RowProducts::fresh(1);
+        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))));
+
+        let Err(_) = products.prepared_plan::<crate::error::Error>(0, || {
+            Err(crate::geometry::GeometryErrorKind::message(
+                "transient prepared-plan failure",
+            ))
+        }) else {
+            panic!("the first initializer attempt fails");
+        };
+        assert!(products.cached_prepared_plan(0).is_none());
+
+        let retried = products
+            .prepared_plan::<crate::error::Error>(0, || Ok(Arc::clone(&shape)))
+            .expect("a failed initializer leaves the row available for retry");
+        assert!(Arc::ptr_eq(retried.shape_arc(), &shape));
     }
 
     fn mixed_shapes() -> PyGeometryArray {
@@ -1848,6 +1894,28 @@ mod prepared_row_ownership_tests {
         .unwrap()
     }
 
+    fn many_short_rings() -> PyGeometryArray {
+        let ring_count = 34_usize;
+        let mut xs = Vec::with_capacity(ring_count.saturating_mul(3));
+        let mut ys = Vec::with_capacity(ring_count.saturating_mul(3));
+        let mut ring_ends = Vec::with_capacity(ring_count.saturating_add(1));
+        ring_ends.push(0);
+        for ring in 0..ring_count {
+            let x = ring as f64;
+            xs.extend([x, x + 1.0, x + 1.0]);
+            ys.extend([0.0, 0.0, 1.0]);
+            ring_ends.push(xs.len());
+        }
+        let coords = CoordSeq::try_from_vecs(xs, ys, None, None).unwrap();
+        PyGeometryArray::packed_polygons(
+            coords.clone(),
+            CsrOffsetColumn::<RingLevel>::try_new(ring_ends, coords.len()).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, ring_count], ring_count).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn packed_row_persistence_matches_the_execution_plan_boundary() {
         let linear = lines(3);
@@ -1890,6 +1958,25 @@ mod prepared_row_ownership_tests {
         assert!(!uses_linear_plan_for_len(33));
         drop(polygons.prepared_row(0, polygons.storage().row(0)).unwrap());
         assert_eq!(polygons.row_products.owner.chunks.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_packed_plan_initialization_retries_the_row_builder() {
+        let source = many_short_rings();
+        let mut products = source.row_products.operation();
+        let seed_calls = std::cell::Cell::new(0_usize);
+        for _ in 0..2 {
+            let Err(_) =
+                source.prepared_row_with(&mut products, 0, source.storage().row(0), || {
+                    seed_calls.set(seed_calls.get().saturating_add(1));
+                    BoundsSeed::Unset
+                })
+            else {
+                panic!("short rings fail during packed plan materialization");
+            };
+            assert!(products.cached_prepared_plan(0).is_none());
+        }
+        assert_eq!(seed_calls.get(), 2);
     }
 
     #[test]
