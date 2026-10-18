@@ -248,6 +248,7 @@ fn join_array_pairs(
         if let IndexPredicate::Topological(topological) = predicate
             && distance.is_none()
         {
+            let geographic = index.domain()?.is_geographic();
             let mut rows = array.row_operation();
             for logical_row in rows.rows_with_missing(|| ()) {
                 let crate::array::ArrayRow::Present(row) = logical_row else {
@@ -255,9 +256,10 @@ fn join_array_pairs(
                 };
                 let logical = row.logical();
                 let shape = rows.prepared(row)?;
+                let query_cache = geographic.then(|| rows.frame_cache(logical));
                 let matches = index.topological_matches(
                     &shape,
-                    &rows.frame_cache(logical),
+                    query_cache.as_deref(),
                     topological,
                     plan.query_domain(),
                     Some(logical),
@@ -272,7 +274,7 @@ fn join_array_pairs(
         };
         match resolved {
             crate::crs::ResolvedMetric::Planar { .. } => {
-                let rows = array.row_operation();
+                let mut rows = array.row_operation();
                 for logical_row in rows.rows_with_missing(|| ()) {
                     let crate::array::ArrayRow::Present(row) = logical_row else {
                         continue;
@@ -284,7 +286,8 @@ fn join_array_pairs(
                         &plan,
                         &mut scratch,
                         array.row_bounds_seed(logical),
-                        Some(logical),
+                        logical,
+                        &mut rows,
                     )?;
                     append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }
@@ -298,15 +301,14 @@ fn join_array_pairs(
                     let logical = row.logical();
                     let row = row.row();
                     scratch.clear();
-                    let mut query_cache = || rows.frame_cache(logical);
                     index.geodesic_dwithin_query_row_matches_append(
                         row,
                         metric,
-                        &mut query_cache,
                         &plan,
                         &mut scratch,
                         array.row_bounds_seed(logical),
-                        Some(logical),
+                        logical,
+                        &mut rows,
                     )?;
                     append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }

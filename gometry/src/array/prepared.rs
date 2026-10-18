@@ -351,6 +351,15 @@ impl<'a> ArrayRowOperation<'a> {
         row: ShapeRow<'a>,
         bounds: Option<Bounds>,
     ) -> crate::error::Result<PreparedRow<'a>> {
+        self.warm_prepared_at_with_seed(logical, row, BoundsSeed::Value(bounds))
+    }
+
+    pub(crate) fn warm_prepared_at_with_seed(
+        &mut self,
+        logical: usize,
+        row: ShapeRow<'a>,
+        bounds: BoundsSeed,
+    ) -> crate::error::Result<PreparedRow<'a>> {
         self.array
             .warm_prepared_row_or_transient_with(&mut self.products, logical, row, bounds)
     }
@@ -600,13 +609,6 @@ impl<'a> PreparedRow<'a> {
         Self::from_row(row, BoundsSeed::Unset)
     }
 
-    pub(crate) fn transient_with_bounds(
-        row: ShapeRow<'a>,
-        bounds: Option<Bounds>,
-    ) -> crate::error::Result<Self> {
-        Self::from_row(row, BoundsSeed::Value(bounds))
-    }
-
     pub(crate) fn transient_with_seed(
         row: ShapeRow<'a>,
         seed: BoundsSeed,
@@ -813,7 +815,12 @@ impl PyGeometryArray {
         bounds: Option<Bounds>,
     ) -> crate::error::Result<PreparedRow<'a>> {
         let mut products = self.row_products.operation();
-        self.warm_prepared_row_or_transient_with(&mut products, index, row, bounds)
+        self.warm_prepared_row_or_transient_with(
+            &mut products,
+            index,
+            row,
+            BoundsSeed::Value(bounds),
+        )
     }
 
     pub(crate) fn warm_prepared_row_or_transient_with<'a>(
@@ -821,16 +828,16 @@ impl PyGeometryArray {
         products: &mut RowProductsHandle,
         index: usize,
         row: ShapeRow<'a>,
-        bounds: Option<Bounds>,
+        bounds: BoundsSeed,
     ) -> crate::error::Result<PreparedRow<'a>> {
         if let ShapeRow::Handle(handle) = row {
             return Ok(PreparedRow::Shared(handle));
         }
         let Some((chunk, offset)) = products.existing_cell(index) else {
-            return PreparedRow::transient_with_bounds(row, bounds);
+            return PreparedRow::transient_with_seed(row, bounds);
         };
         chunk.cell(offset).prepared.get().map_or_else(
-            || PreparedRow::transient_with_bounds(row, bounds),
+            || PreparedRow::transient_with_seed(row, bounds),
             |plan| Ok(PreparedRow::Owned(Arc::clone(plan))),
         )
     }
@@ -2061,13 +2068,17 @@ mod prepared_row_ownership_tests {
         let seed = array.row_bounds_seed(0);
         assert!(matches!(seed, BoundsSeed::Unset));
 
-        // The array dwithin lane passes this seed to its transient query
-        // ShapeData. Unset must remain unset until exact refinement asks for it.
-        let prepared = PreparedRow::transient_with_seed(array.storage().row(0), seed).unwrap();
+        // The array dwithin lane reuses an existing plan or builds a transient
+        // one. Unset must not become a cached empty bound.
+        let mut rows = array.row_operation();
+        let prepared = rows
+            .warm_prepared_at_with_seed(0, array.storage().row(0), seed)
+            .unwrap();
         assert_eq!(
             prepared.bounds(),
             Some(crate::geometry::Bounds::new_raw(0.0, 0.0, 1.0, 1.0))
         );
+        assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
     }
 
     #[test]
@@ -2086,6 +2097,25 @@ mod prepared_row_ownership_tests {
             chunks.get(&0).unwrap().cells[0].prepared.get().unwrap()
         ));
         assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn warm_row_preparation_reuses_the_existing_plan() {
+        let array = lines(34);
+        let existing = array
+            .prepared_row(0, array.storage().row(0))
+            .unwrap()
+            .into_owned_plan();
+        let mut rows = array.row_operation();
+        let prepared = rows
+            .warm_prepared_at_with_seed(0, array.storage().row(0), BoundsSeed::Unset)
+            .unwrap();
+        let PreparedRow::Owned(prepared) = prepared else {
+            panic!("a warmed row returns its shared prepared plan");
+        };
+
+        assert!(Arc::ptr_eq(&existing, &prepared));
+        assert_eq!(array.row_products.initialized_counts(), (1, 1, 0));
     }
 
     #[test]

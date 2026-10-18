@@ -46,9 +46,11 @@ impl PySpatialIndex {
                     *distance,
                     metric,
                     plan.query_domain(),
-                    |_, query, ids, row_start, products| {
+                    &mut query_rows,
+                    |_, query, ids, row_start, products, _query_rows| {
                         retain_row(ids, row_start, |idx| {
-                            let data = products.prepared(idx)?;
+                            let mut source = products.resolve(idx)?;
+                            let data = source.prepared()?;
                             pair_dwithin_planar(to_metre.get(), query, &data, distance.get())
                                 .map_err(Into::into)
                         })
@@ -60,16 +62,19 @@ impl PySpatialIndex {
                     *distance,
                     metric,
                     plan.query_domain(),
-                    |row, query, ids, row_start, products| {
+                    &mut query_rows,
+                    |row, query, ids, row_start, products, query_rows| {
                         let query_cache = query_rows.frame_cache(row);
                         retain_row(ids, row_start, |idx| {
-                            let data = products.prepared(idx)?;
+                            let mut source = products.resolve(idx)?;
+                            let data = source.prepared()?;
+                            let candidate_cache = source.frame_cache();
                             pair_dwithin_geodesic(
                                 geodesic,
                                 query,
                                 &query_cache,
                                 &data,
-                                &*products.frame_cache(idx)?,
+                                &candidate_cache,
                                 distance.get(),
                             )
                             .map_err(Into::into)
@@ -168,7 +173,7 @@ impl PySpatialIndex {
                     let query_cache = query_rows.frame_cache(row);
                     super::refine::retain_topological(
                         &query,
-                        &query_cache,
+                        Some(&query_cache),
                         spec,
                         domain,
                         &mut index_products,

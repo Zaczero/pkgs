@@ -24,19 +24,94 @@ fn dwithin_exact_refinement_preserves_unset_query_bounds() {
         )
         .unwrap();
         let mut matches = Vec::new();
+        let mut query_rows = array.row_operation();
 
+        IndexRowOperation::reset_resolution_count();
         index
             .planar_dwithin_query_row_matches_append(
                 array.storage().row(0),
                 &plan,
                 &mut matches,
                 BoundsSeed::Unset,
-                None,
+                0,
+                &mut query_rows,
             )
             .unwrap();
 
         assert_eq!(matches, [0]);
         assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
+        assert_eq!(IndexRowOperation::resolution_count(), 1);
+    }
+
+    #[test]
+    fn scalar_dwithin_with_no_candidates_does_not_warm_the_query_plan() {
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+            Frame::None,
+        )])
+        .unwrap();
+        let query = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 10.0))),
+            Frame::None,
+        );
+        let distance = DwithinDistance::try_new("distance", 0.0).unwrap();
+
+        assert!(query.cached_prepared_plan().is_none());
+        IndexRowOperation::reset_resolution_count();
+        assert!(
+            index
+                .query_exact(&query, IndexPredicate::Dwithin, Some(distance), None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(query.cached_prepared_plan().is_none());
+        assert_eq!(IndexRowOperation::resolution_count(), 0);
+    }
+
+    #[test]
+    fn array_dwithin_with_no_candidates_does_not_warm_the_query_row() {
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+            Frame::None,
+        )])
+        .unwrap();
+        let array = PyGeometryArray::mixed_shapes(
+            vec![Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_vecs(vec![10.0, 11.0], vec![10.0, 11.0], None, None)
+                        .unwrap(),
+                )
+                .expect("fixture line has two vertices"),
+            )],
+            Frame::None,
+        )
+        .unwrap();
+        let plan = PreparedIndexQuery::for_array(
+            &index,
+            &array,
+            Some(IndexPredicate::Dwithin),
+            Some(DwithinDistance::try_new("distance", 0.0).unwrap()),
+            None,
+        )
+        .unwrap();
+        let mut matches = Vec::new();
+        let mut query_rows = array.row_operation();
+
+        IndexRowOperation::reset_resolution_count();
+        index
+            .planar_dwithin_query_row_matches_append(
+                array.storage().row(0),
+                &plan,
+                &mut matches,
+                BoundsSeed::Unset,
+                0,
+                &mut query_rows,
+            )
+            .unwrap();
+
+        assert!(matches.is_empty());
+        assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
+        assert_eq!(IndexRowOperation::resolution_count(), 0);
     }
 
     #[test]

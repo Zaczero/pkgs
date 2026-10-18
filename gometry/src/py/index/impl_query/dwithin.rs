@@ -1,37 +1,47 @@
 use super::{
-    Arc, BatchResult, Bounds, CsrBuilder, DwithinDistance, GeodesicPruner, IndexRowOperation,
-    PointRows, PreparedIndexQuery, PreparedPlan, PySpatialIndex, QueryDomain, RowMatches, Shape,
-    ShapeData, ShapeRow, ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
+    BatchResult, Bounds, CsrBuilder, DwithinDistance, GeodesicPruner, IndexRowOperation, PointRows,
+    PreparedIndexQuery, PreparedPlan, PySpatialIndex, QueryDomain, RowMatches, Shape, ShapeRow,
+    ValidityMask, crs, pair_dwithin_geodesic, pair_dwithin_planar, retain_row,
 };
+use crate::array::ArrayRowOperation;
 
 impl PySpatialIndex {
     /// One ARRAY-row dwithin query against the index: the shared candidate
     /// core plus the pair kernel, all on stack handles (frame and metric
     /// resolved once per array by the caller). Shared by `query()`'s array
     /// lane and `join`'s left-row lane.
-    pub(crate) fn planar_dwithin_query_row_matches(
+    pub(crate) fn planar_dwithin_query_row_matches<'a>(
         &self,
-        row: ShapeRow<'_>,
+        row: ShapeRow<'a>,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
-        logical_row: Option<usize>,
+        logical_row: usize,
+        query_rows: &mut ArrayRowOperation<'a>,
     ) -> BatchResult<()> {
         matches.clear();
-        self.planar_dwithin_query_row_matches_append(row, plan, matches, seeded_bounds, logical_row)
+        self.planar_dwithin_query_row_matches_append(
+            row,
+            plan,
+            matches,
+            seeded_bounds,
+            logical_row,
+            query_rows,
+        )
     }
 
     /// Append one dwithin result row directly to a flat CSR values column.
-    pub(crate) fn planar_dwithin_query_row_matches_append(
+    pub(crate) fn planar_dwithin_query_row_matches_append<'a>(
         &self,
-        row: ShapeRow<'_>,
+        row: ShapeRow<'a>,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
-        logical_row: Option<usize>,
+        logical_row: usize,
+        query_rows: &mut ArrayRowOperation<'a>,
     ) -> BatchResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
+        let prepared = plan.row(self, row, seeded_bounds, Some(logical_row))?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -42,36 +52,40 @@ impl PySpatialIndex {
             candidate_metric,
             matches,
         );
+        if matches.len() == row_start {
+            return Ok(());
+        }
         let PreparedIndexQuery::Dwithin {
             resolved, distance, ..
         } = plan
         else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
-        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds)?;
+        let query = query_rows.warm_prepared_at_with_seed(logical_row, row, seeded_bounds)?;
         let crs::ResolvedMetric::Planar { to_metre } = resolved else {
             unreachable!("planar dwithin runner receives a planar query")
         };
         let mut products = self.rows.operation();
         retain_row(matches, row_start, |idx| {
-            let data = products.prepared(idx)?;
+            let mut source = products.resolve(idx)?;
+            let data = source.prepared()?;
             pair_dwithin_planar(to_metre.get(), &data, &query, distance.get()).map_err(Into::into)
         })?;
         Ok(())
     }
 
-    pub(crate) fn geodesic_dwithin_query_row_matches_append(
+    pub(crate) fn geodesic_dwithin_query_row_matches_append<'a>(
         &self,
-        row: ShapeRow<'_>,
+        row: ShapeRow<'a>,
         metric: &crs::GeodesicMetric,
-        query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
-        logical_row: Option<usize>,
+        logical_row: usize,
+        query_rows: &mut ArrayRowOperation<'a>,
     ) -> BatchResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
+        let prepared = plan.row(self, row, seeded_bounds, Some(logical_row))?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -82,18 +96,23 @@ impl PySpatialIndex {
             candidate_metric,
             matches,
         );
+        if matches.len() == row_start {
+            return Ok(());
+        }
         let PreparedIndexQuery::Dwithin { distance, .. } = plan else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
-        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds)?;
-        let query_cache = query_cache();
+        let query = query_rows.warm_prepared_at_with_seed(logical_row, row, seeded_bounds)?;
+        let query_cache = query_rows.frame_cache(logical_row);
         let mut products = self.rows.operation();
         retain_row(matches, row_start, |idx| {
-            let data = products.prepared(idx)?;
+            let mut source = products.resolve(idx)?;
+            let data = source.prepared()?;
+            let candidate_cache = source.frame_cache();
             pair_dwithin_geodesic(
                 metric,
                 &data,
-                &*products.frame_cache(idx)?,
+                &candidate_cache,
                 &query,
                 &query_cache,
                 distance.get(),
@@ -110,12 +129,14 @@ impl PySpatialIndex {
         distance: DwithinDistance,
         model: &crs::MetricModel,
         query_domain: QueryDomain,
+        query_rows: &mut ArrayRowOperation<'_>,
         mut refine: impl FnMut(
             usize,
             &PreparedPlan,
             &mut Vec<usize>,
             usize,
             &mut IndexRowOperation<'_>,
+            &mut ArrayRowOperation<'_>,
         ) -> BatchResult<()>,
     ) -> BatchResult<RowMatches> {
         let coordinate_distance = model.coordinate_radius(distance.get());
@@ -140,7 +161,6 @@ impl PySpatialIndex {
                 Some(Bounds::from_point(point)),
                 Some(row),
             )?;
-            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             if distance.get() == f64::INFINITY {
                 self.append_live_handles(builder.values_mut());
@@ -164,7 +184,22 @@ impl PySpatialIndex {
                 self.append_live_handles(builder.values_mut());
             }
             self.finish_candidates(builder.values_mut(), row_start);
-            refine(row, &query, builder.values_mut(), row_start, &mut products)?;
+            if builder.len() != row_start {
+                let query_bounds = crate::array::BoundsSeed::Value(Some(Bounds::from_point(point)));
+                let query = query_rows.warm_prepared_at_with_seed(
+                    row,
+                    ShapeRow::Point(point),
+                    query_bounds,
+                )?;
+                refine(
+                    row,
+                    &query,
+                    builder.values_mut(),
+                    row_start,
+                    &mut products,
+                    query_rows,
+                )?;
+            }
             let end = builder.len();
             builder.push_end(end)?;
         }

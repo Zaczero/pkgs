@@ -36,6 +36,11 @@ use crate::{
     validate_nearest_k,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    static INDEX_ROW_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::error::Result<usize> {
     let end = start
         .checked_add(count)
@@ -809,6 +814,16 @@ impl<'a> IndexRowOperation<'a> {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn reset_resolution_count() {
+        INDEX_ROW_RESOLUTIONS.with(|count| count.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolution_count() -> usize {
+        INDEX_ROW_RESOLUTIONS.with(std::cell::Cell::get)
+    }
+
     pub(crate) fn resolve<'operation>(
         &'operation mut self,
         handle: usize,
@@ -816,6 +831,8 @@ impl<'a> IndexRowOperation<'a> {
         if !self.rows.live_handles.contains(handle) {
             return Err(Self::missing_handle(handle));
         }
+        #[cfg(test)]
+        INDEX_ROW_RESOLUTIONS.with(|count| count.set(count.get().saturating_add(1)));
         let packed_len = self.rows.packed_len();
         if handle < packed_len {
             let packed_store = self

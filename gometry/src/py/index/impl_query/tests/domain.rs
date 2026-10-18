@@ -18,8 +18,12 @@ fn refinement_kind_gate_precedes_geographic_admission(#[case] predicate: Predica
         query_domain: QueryDomain::default(),
         predicate,
     };
+    let query_plan = query.prepared_plan();
+    let query_cache = query.frame_cache();
     assert_eq!(
-        index.refine_prepared(&query, vec![0], &plan).unwrap(),
+        index
+            .refine_prepared(&query_plan, Some(&query_cache), vec![0], &plan)
+            .unwrap(),
         Vec::<usize>::new()
     );
 }

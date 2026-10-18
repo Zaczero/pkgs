@@ -10,21 +10,20 @@ use crate::py::vectors::Groups;
 impl PySpatialIndex {
     pub(super) fn refine_prepared(
         &self,
-        geometry: &PyGeometry,
+        query: &PreparedPlan,
+        query_cache: Option<&crate::geometry::FrameDependentCaches>,
         candidates: Vec<usize>,
         plan: &PreparedIndexQuery,
     ) -> BatchResult<Vec<usize>> {
         let mut matches = candidates;
-        let query_plan = geometry.prepared_plan();
         let domain = self.domain()?;
         let mut products = self.rows.operation();
         match plan {
             PreparedIndexQuery::Topological { predicate, .. } => {
                 let spec = predicate.spec();
-                let query_cache = geometry.frame_cache();
                 retain_topological(
-                    &query_plan,
-                    &query_cache,
+                    query,
+                    query_cache,
                     &spec,
                     domain,
                     &mut products,
@@ -39,23 +38,30 @@ impl PySpatialIndex {
                 match resolved {
                     crs::ResolvedMetric::Planar { to_metre } => {
                         retain_row(&mut matches, 0, |idx| {
-                            let data = products.prepared(idx)?;
-                            pair_dwithin_planar(to_metre.get(), &data, &query_plan, distance)
+                            let mut source = products.resolve(idx)?;
+                            let data = source.prepared()?;
+                            pair_dwithin_planar(to_metre.get(), &data, query, distance)
                                 .map_err(Into::into)
                         })?;
                     },
-                    crs::ResolvedMetric::Geodesic(metric) => retain_row(&mut matches, 0, |idx| {
-                        let data = products.prepared(idx)?;
-                        pair_dwithin_geodesic(
-                            metric,
-                            &data,
-                            &*products.frame_cache(idx)?,
-                            &query_plan,
-                            &geometry.frame_cache(),
-                            distance,
-                        )
-                        .map_err(Into::into)
-                    })?,
+                    crs::ResolvedMetric::Geodesic(metric) => {
+                        let query_cache =
+                            query_cache.expect("geographic refinement has a query cache");
+                        retain_row(&mut matches, 0, |idx| {
+                            let mut source = products.resolve(idx)?;
+                            let data = source.prepared()?;
+                            let cache = source.frame_cache();
+                            pair_dwithin_geodesic(
+                                metric,
+                                &data,
+                                &cache,
+                                query,
+                                query_cache,
+                                distance,
+                            )
+                            .map_err(Into::into)
+                        })?;
+                    },
                 }
             },
             PreparedIndexQuery::Candidates { .. }
@@ -77,24 +83,25 @@ impl PySpatialIndex {
     ) -> BatchResult<Vec<usize>> {
         let plan =
             PreparedIndexQuery::for_geometry(self, geometry, Some(predicate), distance, unit)?;
-        let query_plan = geometry.prepared_plan();
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {
+            let query_plan = geometry.prepared_plan();
+            let query_cache = matches!(self.domain()?, TopologyDomain::Geographic(_))
+                .then(|| geometry.frame_cache());
             return self.topological_matches(
                 &query_plan,
-                &geometry.frame_cache(),
+                query_cache.as_deref(),
                 predicate,
                 plan.query_domain(),
                 None,
             );
         }
-        let prepared = plan.row(
-            self,
-            ShapeRow::Handle(&query_plan),
-            crate::array::BoundsSeed::Unset,
-            None,
-        )?;
+        let query_plan = geometry.cached_prepared_plan();
+        let query_row = query_plan
+            .as_ref()
+            .map_or_else(|| ShapeRow::Shape(geometry.shape.shape()), ShapeRow::Handle);
+        let prepared = plan.row(self, query_row, crate::array::BoundsSeed::Unset, None)?;
         let mut candidates = Vec::new();
         let (candidate_predicate, candidate_distance, metric) = plan.candidate_parts();
         self.candidate_ids_core(
@@ -106,7 +113,27 @@ impl PySpatialIndex {
             metric,
             &mut candidates,
         );
-        self.refine_prepared(geometry, candidates, &plan)
+        if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        let query = query_plan.map_or_else(
+            || geometry.warm_prepared_with_seed(crate::array::BoundsSeed::Value(prepared.bounds)),
+            |plan| Ok(crate::array::PreparedRow::Owned(plan)),
+        )?;
+        let query_cache = match &plan {
+            PreparedIndexQuery::Dwithin {
+                resolved: crs::ResolvedMetric::Geodesic(_),
+                ..
+            } => Some(geometry.frame_cache()),
+            PreparedIndexQuery::Candidates { .. }
+            | PreparedIndexQuery::CandidatesDwithin { .. }
+            | PreparedIndexQuery::Topological { .. }
+            | PreparedIndexQuery::Dwithin {
+                resolved: crs::ResolvedMetric::Planar { .. },
+                ..
+            } => None,
+        };
+        self.refine_prepared(&query, query_cache.as_deref(), candidates, &plan)
     }
 
     /// One topological query against a pre-checked SHAPE handle — the
@@ -116,7 +143,7 @@ impl PySpatialIndex {
     pub(crate) fn topological_matches(
         &self,
         shape: &PreparedPlan,
-        query_cache: &crate::geometry::FrameDependentCaches,
+        query_cache: Option<&crate::geometry::FrameDependentCaches>,
         predicate: Predicate,
         query_domain: QueryDomain,
         logical_row: Option<usize>,
@@ -138,7 +165,7 @@ impl PySpatialIndex {
     pub(crate) fn topological_matches_append(
         &self,
         shape: &PreparedPlan,
-        query_cache: &crate::geometry::FrameDependentCaches,
+        query_cache: Option<&crate::geometry::FrameDependentCaches>,
         predicate: Predicate,
         query_domain: QueryDomain,
         logical_row: Option<usize>,
@@ -171,7 +198,7 @@ impl PySpatialIndex {
 
 pub(super) fn retain_topological(
     query: &PreparedPlan,
-    query_cache: &crate::geometry::FrameDependentCaches,
+    query_cache: Option<&crate::geometry::FrameDependentCaches>,
     spec: &super::PredicateSpec,
     domain: TopologyDomain,
     products: &mut super::IndexRowOperation<'_>,
@@ -182,18 +209,21 @@ pub(super) fn retain_topological(
     let element_count = matches.len().wrapping_sub(row_start);
     let mut query_prepared = None;
     retain_row(matches, row_start, |idx| {
-        let row = products.row(idx)?;
+        let mut source = products.resolve(idx)?;
+        let row = source.row();
         match domain {
             TopologyDomain::Cartesian => {
-                Ok(evaluator.cartesian(row, None, element_count, || products.prepared(idx))?)
+                Ok(evaluator.cartesian(row, None, element_count, || source.prepared())?)
             },
             TopologyDomain::Geographic(frame) => {
                 if let Some(verdict) = evaluator.kind_gate(row) {
                     return Ok(verdict);
                 }
+                let query_cache =
+                    query_cache.expect("geographic topological refinement has a query cache");
                 let query = admitted_query(&mut query_prepared, query, query_cache, frame)?;
-                let data = products.prepared(idx)?;
-                let cache = products.frame_cache(idx)?;
+                let data = source.prepared()?;
+                let cache = source.frame_cache();
                 Ok(evaluator.geographic(
                     query,
                     crate::geometry::GeographicPrepared::try_new(&data, &cache, frame)?,
@@ -232,6 +262,7 @@ impl PySpatialIndex {
             // One frame check for the whole array; rows feed the
             // shape-level core with no per-row wrapper. Matches append
             // straight into the CSR values column (one pass).
+            let domain = self.domain()?;
             let missing = array.missing().cloned();
             let (ids, offsets) = {
                 let row_count = array.len();
@@ -241,9 +272,11 @@ impl PySpatialIndex {
                     if let crate::array::ArrayRow::Present(row) = logical_row {
                         let row_index = row.logical();
                         let shape = rows.prepared(row)?;
+                        let query_cache = matches!(domain, TopologyDomain::Geographic(_))
+                            .then(|| rows.frame_cache(row_index));
                         self.topological_matches_append(
                             &shape,
-                            &rows.frame_cache(row_index),
+                            query_cache.as_deref(),
                             topological,
                             plan.query_domain(),
                             Some(row_index),
@@ -270,7 +303,7 @@ impl PySpatialIndex {
             };
             match resolved {
                 crate::crs::ResolvedMetric::Planar { .. } => {
-                    let rows = array.row_operation();
+                    let mut rows = array.row_operation();
                     for logical_row in rows.rows_with_missing(|| ()) {
                         if let crate::array::ArrayRow::Present(row) = logical_row {
                             let row_index = row.logical();
@@ -280,7 +313,8 @@ impl PySpatialIndex {
                                 &plan,
                                 builder.values_mut(),
                                 array.row_bounds_seed(row_index),
-                                Some(row_index),
+                                row_index,
+                                &mut rows,
                             )?;
                         }
                         let end = builder.len();
@@ -293,15 +327,14 @@ impl PySpatialIndex {
                         if let crate::array::ArrayRow::Present(row) = logical_row {
                             let row_index = row.logical();
                             let row = row.row();
-                            let mut query_cache = || rows.frame_cache(row_index);
                             self.geodesic_dwithin_query_row_matches_append(
                                 row,
                                 metric,
-                                &mut query_cache,
                                 &plan,
                                 builder.values_mut(),
                                 array.row_bounds_seed(row_index),
-                                Some(row_index),
+                                row_index,
+                                &mut rows,
                             )?;
                         }
                         let end = builder.len();

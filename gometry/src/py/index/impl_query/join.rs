@@ -32,19 +32,21 @@ impl PySpatialIndex {
         for i in self.rows.live_handles.iter() {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
-            let row = products.row(i)?;
+            let mut source = products.resolve(i)?;
+            let row = source.row();
             let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset, None)?;
             let (predicate, distance, metric) = plan.candidate_parts();
             candidates.clear();
             if let Some(spec) = spec {
-                let query = products.prepared(i)?;
-                if let Some(bounds) = query.bounds() {
-                    self.collect_cover_candidates(
-                        query.shape(),
-                        bounds,
-                        candidate_policy(&spec),
-                        &mut candidates,
-                    )?;
+                if let Some(bounds) = prepared.bounds {
+                    row.try_with_shape(|shape| {
+                        self.collect_cover_candidates(
+                            shape,
+                            bounds,
+                            candidate_policy(&spec),
+                            &mut candidates,
+                        )
+                    })?;
                 }
             } else {
                 self.candidate_ids_core(
@@ -58,48 +60,62 @@ impl PySpatialIndex {
                 );
             }
             candidates.retain(|&j| j > i);
-            match (spec, resolved) {
-                (Some(spec), _) => {
-                    let query = products.prepared(i)?;
-                    let query_cache = products.frame_cache(i)?;
-                    super::refine::retain_topological(
-                        &query,
-                        &query_cache,
-                        &spec,
-                        domain,
-                        &mut products,
-                        &mut candidates,
-                        0,
-                    )?;
-                },
-                (None, Some(resolved)) => {
-                    let query = products.prepared(i)?;
-                    match resolved {
+            if !candidates.is_empty() {
+                let query = source.prepared()?;
+                let query_cache = if matches!(domain, TopologyDomain::Geographic(_))
+                    && (spec.is_some()
+                        || matches!(resolved, Some(crs::ResolvedMetric::Geodesic(_))))
+                {
+                    Some(source.frame_cache())
+                } else {
+                    None
+                };
+                drop(source);
+                match (spec, resolved) {
+                    (Some(spec), _) => {
+                        super::refine::retain_topological(
+                            &query,
+                            query_cache.as_deref(),
+                            &spec,
+                            domain,
+                            &mut products,
+                            &mut candidates,
+                            0,
+                        )?;
+                    },
+                    (None, Some(resolved)) => match resolved {
                         crs::ResolvedMetric::Planar { to_metre } => {
                             retain_row(&mut candidates, 0, |idx| {
-                                let data = products.prepared(idx)?;
+                                let mut source = products.resolve(idx)?;
+                                let data = source.prepared()?;
                                 pair_dwithin_planar(to_metre.get(), &data, &query, radius)
                                     .map_err(Into::into)
                             })?;
                         },
                         crs::ResolvedMetric::Geodesic(metric) => {
-                            let query_cache = products.frame_cache(i)?;
+                            let query_cache = query_cache
+                                .as_deref()
+                                .expect("geographic query cache was prepared");
                             retain_row(&mut candidates, 0, |idx| {
-                                let data = products.prepared(idx)?;
+                                let mut source = products.resolve(idx)?;
+                                let data = source.prepared()?;
+                                let candidate_cache = source.frame_cache();
                                 pair_dwithin_geodesic(
                                     metric,
                                     &data,
-                                    &*products.frame_cache(idx)?,
+                                    &candidate_cache,
                                     &query,
-                                    &query_cache,
+                                    query_cache,
                                     radius,
                                 )
                                 .map_err(Into::into)
                             })?;
                         },
-                    }
-                },
-                (None, None) => unreachable!("dwithin self-join resolves its metric once"),
+                    },
+                    (None, None) => unreachable!("dwithin self-join resolves its metric once"),
+                }
+            } else {
+                drop(source);
             }
             super::super::free_functions::append_join_matches(
                 &mut left,
@@ -145,7 +161,8 @@ impl PySpatialIndex {
             let query = (end > row_start).then(|| {
                 (
                     PreparedPlan::new(ShapeData::new(Shape::Point(point))),
-                    query_rows.frame_cache(row),
+                    matches!(domain, TopologyDomain::Geographic(_))
+                        .then(|| query_rows.frame_cache(row)),
                 )
             });
             queries.push(query);
@@ -181,8 +198,10 @@ impl PySpatialIndex {
                 unreachable!("chunk_by yields nonempty candidate groups");
             };
             let idx = *idx;
-            let data = index_products.prepared(idx)?;
-            let candidate_cache = index_products.frame_cache(idx)?;
+            let mut source = index_products.resolve(idx)?;
+            let data = source.prepared()?;
+            let candidate_cache =
+                matches!(domain, TopologyDomain::Geographic(_)).then(|| source.frame_cache());
             let mut candidate_proof = None;
             let evaluator = crate::predicates::engine::FixedPredicate::new(&spec, &data, false);
             for (_, row, position) in group {
@@ -201,6 +220,9 @@ impl PySpatialIndex {
                         if let Some(verdict) = evaluator.kind_gate(ShapeRow::Shape(query.shape())) {
                             verdict
                         } else {
+                            let query_cache = query_cache
+                                .as_deref()
+                                .expect("geographic query has a frame cache");
                             let query_proof = query_proofs
                                 .get_mut(*row)
                                 .expect("geographic query proofs align with rows");
@@ -208,7 +230,9 @@ impl PySpatialIndex {
                             let candidate = admitted_query(
                                 &mut candidate_proof,
                                 &data,
-                                &candidate_cache,
+                                candidate_cache
+                                    .as_deref()
+                                    .expect("geographic candidate has a frame cache"),
                                 frame,
                             )?;
                             evaluator.geographic(candidate, query)?

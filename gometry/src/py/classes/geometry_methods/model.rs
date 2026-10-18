@@ -4,9 +4,10 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
-use crate::array::RowProducts;
+use crate::array::{BoundsSeed, PreparedRow, RowProducts};
 use crate::boundary::coordinates::measure_shape;
 use crate::geometry::PreparedPlan;
+use crate::geometry::storage::ShapeRow;
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::py::sizeof::python_sizeof;
@@ -881,6 +882,13 @@ impl PyGeometry {
             Ok::<_, std::convert::Infallible>(Arc::clone(&self.shape))
         });
         plan
+    }
+
+    pub(crate) fn warm_prepared_with_seed(&self, bounds: BoundsSeed) -> Result<PreparedRow<'_>> {
+        if let Some(plan) = self.cached_prepared_plan() {
+            return Ok(PreparedRow::Owned(plan));
+        }
+        PreparedRow::transient_with_seed(ShapeRow::Shape(self.shape.shape()), bounds)
     }
 
     pub(crate) fn cached_prepared_plan(&self) -> Option<Arc<PreparedPlan>> {

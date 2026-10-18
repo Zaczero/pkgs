@@ -101,6 +101,21 @@ def test_geographic_index_windows_reject_invalid_query_coordinates(predicate):
         index.query(gm.GeometryArray([query]), predicate=predicate)
 
 
+def test_empty_unframed_index_still_validates_dwithin_queries() -> None:
+    index = gm.SpatialIndex()
+    geographic_query = gm.Point(0, 91, crs=4326)
+
+    for query in (geographic_query, gm.GeometryArray([geographic_query])):
+        with pytest.raises(
+            gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 91\)'
+        ):
+            index.query(query, predicate='dwithin', distance=0.0)
+
+    for query in (gm.Point(0, 0), gm.GeometryArray([gm.Point(0, 0)])):
+        with pytest.raises(gm.GeometryError, match='non-negative finite number'):
+            index.query(query, predicate='dwithin', distance=-1.0)
+
+
 def geodesic_box_boundary(
     bounds: tuple[float, float, float, float],
 ) -> gm.LineString:
