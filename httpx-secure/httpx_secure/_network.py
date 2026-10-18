@@ -82,7 +82,7 @@ class _ProtectedBackend(httpcore.AsyncNetworkBackend):
                 socket_options=socket_options,
             )
             return _ProtectedStream(stream)
-        raise httpcore.ConnectTimeout('Connection establishment timed out')
+        raise httpcore.ConnectTimeout('connection establishment timed out')
 
     async def sleep(self, seconds: float) -> None:
         await self._backend.sleep(seconds)
@@ -90,9 +90,9 @@ class _ProtectedBackend(httpcore.AsyncNetworkBackend):
 
 def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
     if client.is_closed:
-        raise RuntimeError('Cannot protect a closed AsyncClient')
+        raise RuntimeError('cannot protect a closed AsyncClient')
     if type(client)._transport_for_url is not httpx.AsyncClient._transport_for_url:
-        raise ValueError('Custom AsyncClient routing is not supported')
+        raise ValueError('custom AsyncClient routing is not supported')
 
     pools: dict[int, httpcore.AsyncConnectionPool] = {}
     expired: list[httpcore.AsyncHTTP11Connection | httpcore.AsyncHTTP2Connection] = []
@@ -103,7 +103,7 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 continue
             if type(transport) is not httpx.AsyncHTTPTransport:
                 raise ValueError(
-                    f'Unsupported transport: {type(transport).__name__}; '
+                    f'unsupported transport: {type(transport).__name__}; '
                     'standard direct AsyncHTTPTransport is required'
                 )
             pool = transport._pool
@@ -111,7 +111,7 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 type(pool) is not httpcore.AsyncConnectionPool
                 or pool._proxy is not None
             ):
-                raise ValueError('Proxy transports are not supported')
+                raise ValueError('proxy transports are not supported')
             if pool._uds is not None:
                 raise ValueError('Unix-domain socket transports are not supported')
             if id(pool) in pools:
@@ -124,10 +124,10 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 httpcore.TrioBackend,
             )
             if type(backend) is not AutoBackend:
-                raise ValueError('Custom network backends are not supported')
+                raise ValueError('custom network backends are not supported')
             initialized: object = getattr(backend, '_backend', None)
             if initialized is not None and type(initialized) not in stock_backends:
-                raise ValueError('Custom network backends are not supported')
+                raise ValueError('custom network backends are not supported')
             if pool._requests:
                 raise RuntimeError(
                     'SSRF protection requires quiescent transports; '
@@ -135,17 +135,17 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 )
             for connection in pool._connections:
                 if type(connection) is not httpcore.AsyncHTTPConnection:
-                    raise ValueError('Unsupported HTTPcore connection layout')
+                    raise ValueError('unsupported HTTPcore connection layout')
                 if connection.is_closed():
                     continue
                 if not connection.is_idle():
-                    raise RuntimeError('Cannot protect an active connection')
+                    raise RuntimeError('cannot protect an active connection')
                 protocol = connection._connection
                 if type(protocol) not in (
                     httpcore.AsyncHTTP11Connection,
                     httpcore.AsyncHTTP2Connection,
                 ) or not hasattr(protocol, '_expire_at'):
-                    raise ValueError('Unsupported HTTPcore protocol layout')
+                    raise ValueError('unsupported HTTPcore protocol layout')
                 expired.append(
                     cast(
                         'httpcore.AsyncHTTP11Connection | httpcore.AsyncHTTP2Connection',
@@ -154,7 +154,7 @@ def protect_client(client: httpx.AsyncClient, policy: _AddressPolicy) -> None:
                 )
             pools[id(pool)] = pool
     except AttributeError as error:
-        raise ValueError('Unsupported HTTPX/HTTPcore transport layout') from error
+        raise ValueError('unsupported HTTPX/HTTPcore transport layout') from error
 
     backends = [
         (pool, _ProtectedBackend(pool._network_backend, policy))

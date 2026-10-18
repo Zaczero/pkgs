@@ -93,7 +93,7 @@ async def test_direct_mounts_and_duplicate_transport_routes_are_protected(
     [
         pytest.param(
             lambda: httpx.AsyncHTTPTransport(proxy='http://proxy.invalid'),
-            'Proxy transports are not supported',
+            'proxy transports are not supported',
             id='proxy',
         ),
         pytest.param(
@@ -103,7 +103,7 @@ async def test_direct_mounts_and_duplicate_transport_routes_are_protected(
         ),
         pytest.param(
             lambda: httpx.MockTransport(lambda _request: httpx.Response(200)),
-            'Unsupported transport: MockTransport',
+            'unsupported transport: MockTransport',
             id='custom',
         ),
     ],
@@ -126,7 +126,7 @@ async def test_unsupported_mount_rejects_setup_without_changing_usable_route(
 async def test_actual_environment_proxy_is_rejected(monkeypatch):
     monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.invalid')
     async with httpx.AsyncClient(trust_env=True) as client:
-        with pytest.raises(ValueError, match='Proxy transports are not supported'):
+        with pytest.raises(ValueError, match='proxy transports are not supported'):
             httpx_ssrf_protection(client)
 
 
