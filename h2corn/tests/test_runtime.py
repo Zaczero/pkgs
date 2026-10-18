@@ -81,7 +81,7 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
 
     assert all(ref() is None for ref in refs)
     fd_count = open_fd_count()
-    assert fd_count - fd_baseline < serves
+    assert fd_count == fd_baseline
 
 
 async def test_same_server_can_serve_twice_with_fresh_shutdown_state() -> None:
