@@ -8,9 +8,8 @@ The ``reference`` command does not need a config shim.
 
 Commands are the gate names (see :mod:`pyo3stubs.gates`), plus ``gen-docs``,
 ``check-all``, ``init``, and ``reference``. Exit status is 0 when no gate
-reported a violation, and 1 when any did — a gate that is skipped, disabled,
-inactive, or has nothing to check is reported separately and does not affect
-the status.
+reported a violation, and 1 when any did — a gate that is disabled, inactive,
+or has nothing to check is reported separately and does not affect the status.
 """
 
 from __future__ import annotations

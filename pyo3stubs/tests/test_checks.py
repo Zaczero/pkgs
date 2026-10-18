@@ -7,7 +7,7 @@ never written.
 :data:`CASES` is the load-bearing structure. A gate cannot be registered without
 a clean case and a seeded case, and the clean case asserts the gate reached
 ``OK`` — not merely "no violations" — so a gate that has quietly become
-inactive, skipped, or permanently red fails here rather than reading as a pass.
+inactive or permanently red fails here rather than reading as a pass.
 Two gates were red against this very fixture with nothing noticing.
 """
 
@@ -278,37 +278,16 @@ def test_every_gate_has_both_directions():
     assert sorted(CASES) == sorted(gate_names())
 
 
-def test_parser_gates_skip_on_pypy_before_importing_their_parser(tmp_path, monkeypatch):
-    """PyPy package tests retain interpreter-neutral stub checks."""
-    monkeypatch.setattr(
-        'pyo3stubs.gates.platform.python_implementation', lambda: 'PyPy'
-    )
-    cfg = make_config(tmp_path)
-    for name in (
-        'text-signature',
-        'token-vocabulary',
-        'leaked-types',
-        'rust-nullability',
-        'doc-contract',
-        'doc-structure',
-    ):
-        result = gate(name).run(cfg)
-        assert result.status is Status.SKIPPED
-        assert 'Rust source parser has no PyPy wheel' in result.line
-
-
 @pytest.mark.parametrize('name', gate_names())
 def test_gate_is_clean(name, tmp_path, pristine_stub, pristine_src):
     """The pristine fixture satisfies every gate, and every gate runs.
 
-    `Status.OK` rather than "no violations": a gate that is inactive, skipped,
-    or disabled reports no violations too, and reading that as a pass is how
+    `Status.OK` rather than "no violations": a gate that is inactive or
+    disabled reports no violations too, and reading that as a pass is how
     `duality` could print success on a project that never configured it.
     """
     cfg = CASES[name].clean(tmp_path, pristine_stub, pristine_src)
     result = gate(name).run(cfg)
-    if result.status is Status.SKIPPED:
-        pytest.skip(result.line)
     assert result.status is Status.OK, result.errors
 
 
@@ -318,8 +297,6 @@ def test_gate_fires(name, tmp_path, pristine_stub, pristine_src):
     case = CASES[name]
     cfg = case.seeded(tmp_path, pristine_stub, pristine_src)
     result = gate(name).run(cfg)
-    if result.status is Status.SKIPPED:
-        pytest.skip(result.line)
     assert result.status is Status.VIOLATIONS, result
     assert any(case.expect in error for error in result.errors), result.errors
 
@@ -1615,10 +1592,6 @@ def test_token_scan_is_bounded_by_its_own_macro(tmp_path, pristine_src):
         pytest.param(int.__dict__['real'], True, id='getset_descriptor'),
         pytest.param(dict.__dict__['fromkeys'], True, id='classmethod_descriptor'),
     ],
-)
-@pytest.mark.skipif(
-    sys.implementation.name != 'cpython',
-    reason='the fixtures exercise CPython C-level descriptor kinds',
 )
 def test_only_cpython_slot_wrappers_keep_their_own_docs(descriptor, injected):
     """The descriptor kind decides, and all four kinds are real C-level ones.

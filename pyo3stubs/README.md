@@ -4,7 +4,7 @@
 
 Keep your PyO3 extension's typing stubs, runtime API, and Rust docstrings in
 sync. `pyo3stubs` checks hand-authored `.pyi` files and fills in their
-documentation without replacing precise overloads or return types. Python 3.11+.
+documentation without replacing precise overloads or return types. CPython 3.11+.
 
 [Install](#install) · [First check](#first-check) ·
 [Configuration and gate reference](REFERENCE.md) ·
@@ -73,7 +73,7 @@ test_pyo3stubs_gate = gate_test('tools/stubconfig.py')
 ```
 
 The relative config path resolves against the test file and its parent
-directories. Violations fail their case; unsupported, disabled, inactive, and
+directories. Violations fail their case; disabled, inactive, and
 `nothing to check` results are skipped with their reason. Configuration shims
 are imported as trusted Python code; they run with the current process's
 authority and are not sandboxed.
@@ -90,9 +90,8 @@ Configure `surface`, `duality`, and `tokens` with the corresponding record
 classes. Their accepted values and defaults are listed under their field
 headings in the [configuration reference](REFERENCE.md).
 
-`validity` and `stubtest` use mypy. Several source-scanning and documentation
-gates require CPython; the reference identifies them. Other gates can also
-depend on the extension and configuration being checked.
+`validity` and `stubtest` use mypy. Source-scanning and documentation gates also
+inspect the extension and configuration being checked.
 
 ## CLI
 
@@ -105,8 +104,7 @@ uv run pyo3stubs --help
 ```
 
 `check-all` runs gates concurrently and reports every outcome in registry order.
-A skipped, disabled,
-inactive, or `nothing to check` result is visible but does not change its exit
+A disabled, inactive, or `nothing to check` result is visible but does not change its exit
 status; a collector crash is reported as a violation, and the remaining gates
 still run. The pytest adapter skips non-violation outcomes that did not examine
 subjects, with the reason. `reference` prints the configuration and gate

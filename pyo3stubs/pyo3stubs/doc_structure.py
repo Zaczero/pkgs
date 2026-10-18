@@ -21,7 +21,6 @@ from __future__ import annotations
 import ast
 import inspect
 import re
-import sys
 from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -1420,11 +1419,7 @@ def iter_doc_subjects(
     subjects for facade re-exports absent from the native stub.
     """
     if constructor_sources is None:
-        constructor_sources = (
-            _rust_constructor_sources(ctx.cfg)
-            if sys.implementation.name == 'cpython'
-            else {}
-        )
+        constructor_sources = _rust_constructor_sources(ctx.cfg)
     modules = [runtime_module] if runtime_module is not None else []
     classes: list[tuple[str, type]] = []
     if ctx.cfg.surface is not None:

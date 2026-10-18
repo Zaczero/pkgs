@@ -2,17 +2,13 @@
 name = "pyo3stubs"
 version = "0.1.0"
 requires-python = ">=3.11"
-# The doc generator, mypy oracle, and Rust parser have no PyPy wheels. Their
-# gates report themselves skipped there; the interpreter-neutral gates still
-# exercise the package's PyPy extension.
 dependencies = [
-  "libcst; platform_python_implementation == 'CPython'",
-  "mypy>=1.15; platform_python_implementation == 'CPython'",
-  # pyright runs on every interpreter: the wrapper is pure Python and the
-  # checker itself is Node. It reports what mypy does not, and vice versa.
+  "libcst",
+  "mypy>=1.15",
+  # The checker is Node-based and reports what mypy does not, and vice versa.
   "pyright>=1.1.400",
-  "tree-sitter>=0.25; platform_python_implementation == 'CPython'",
-  "tree-sitter-rust>=0.24; platform_python_implementation == 'CPython'",
+  "tree-sitter>=0.25",
+  "tree-sitter-rust>=0.24",
 ]
 
 [project.scripts]

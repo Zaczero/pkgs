@@ -250,18 +250,17 @@ A `dict[str, str]` mapping each allowlisted or deliberately divergent name to it
 
 Return the stub source with runtime docstrings injected; does not write.
 
-- Runtime dependency: LibCST (declared for CPython).
+- Runtime dependency: LibCST.
 
 ## Gates
 
-Gates run by default unless they require an optional configuration below. CPython-only gates report a skip on other interpreters.
+Gates run by default unless they require an optional configuration below.
 
 ### `validity`
 
 The stub type-checks on its own (mypy).
 
 - Requires: `mypy`.
-- CPython only: mypy does not run on this interpreter.
 - On failure: fix the stub until mypy is clean.
 
 ### `pyright`
@@ -283,7 +282,6 @@ Overload hygiene, finality, signature coverage, __match_args__.
 A manual text_signature agrees with the Rust signature attribute.
 
 - Requires: `Rust source`, `tree-sitter-rust`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: correct the Rust attribute that documents the wrong shape.
 
 ### `surface`
@@ -308,7 +306,6 @@ Stub Literal unions match the runtime token enums.
 
 - Enable with `StubConfig.tokens`.
 - Requires: `Rust source and tree-sitter-rust`, `compiled extension vocabulary export`, `configured Literal module`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: regenerate the Literal alias from the runtime vocabulary.
 
 ### `leaked-types`
@@ -316,7 +313,6 @@ Stub Literal unions match the runtime token enums.
 Every reachable pyclass is registered and publicly stubbed.
 
 - Requires: `Rust source and tree-sitter-rust`, `compiled extension`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: register the class, add a public stub class, or allowlist it.
 
 ### `rust-nullability`
@@ -324,7 +320,6 @@ Every reachable pyclass is registered and publicly stubbed.
 Every Option<..> Rust surface admits None in the stub.
 
 - Requires: `Rust source and tree-sitter-rust`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: widen the stub annotation with `| None`.
 
 ### `doc-contract`
@@ -332,7 +327,6 @@ Every Option<..> Rust surface admits None in the stub.
 Every public symbol is documented, exactly once.
 
 - Requires: `Rust source and tree-sitter-rust`, `compiled extension`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: document it in the Rust `///` comment, or in the stub override.
 
 ### `doc-structure`
@@ -340,7 +334,6 @@ Every public symbol is documented, exactly once.
 Documented prose covers callable signatures and descriptor results.
 
 - Requires: `Rust source and tree-sitter-rust`, `compiled extension`.
-- CPython only: the Rust source parser has no PyPy wheel.
 - On failure: document the parameter, or the return, in the Rust `///`.
 
 ### `gen-docs-sync`
@@ -348,7 +341,6 @@ Documented prose covers callable signatures and descriptor results.
 Stub docstrings match the runtime ones.
 
 - Requires: `Rust source and tree-sitter-rust`, `compiled extension`, `LibCST`.
-- CPython only: the doc generator has no PyPy wheel.
 - On failure: run `pyo3stubs gen-docs --config <shim>`.
 
 ### `stubtest`
@@ -356,7 +348,6 @@ Stub docstrings match the runtime ones.
 The stub matches the compiled runtime (mypy.stubtest).
 
 - Requires: `mypy.stubtest`, `compiled extension`.
-- CPython only: mypy does not run on this interpreter.
 - On failure: fix the stub, or add a stubtest allowlist entry.
 
 ## Result statuses
@@ -368,10 +359,6 @@ The gate ran and found no violations.
 ### `violations`
 
 The gate found one or more contract violations.
-
-### `skipped`
-
-The current Python implementation cannot run this gate.
 
 ### `disabled`
 
@@ -387,6 +374,6 @@ The gate ran, but its configured input contained no subjects to inspect.
 
 ## Command and pytest outcomes
 
-`pyo3stubs check-all` exits with status 1 when any gate reports a violation and 0 otherwise. A zero exit status does not mean every gate examined a subject: disabled, skipped, inactive, and `nothing to check` outcomes are reported separately and do not change the CLI exit status. The pytest adapter skips those same non-violation outcomes with their reason; only `ok` is a pytest pass.
+`pyo3stubs check-all` exits with status 1 when any gate reports a violation and 0 otherwise. A zero exit status does not mean every gate examined a subject: disabled, inactive, and `nothing to check` outcomes are reported separately and do not change the CLI exit status. The pytest adapter skips those same non-violation outcomes with their reason; only `ok` is a pytest pass.
 
 `pyo3stubs gen-docs` writes the rendered stub even when the `doc-contract` gate reports violations. Its nonzero status reports the contract failure; the generated file remains available for editing.

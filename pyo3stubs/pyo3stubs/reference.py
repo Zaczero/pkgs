@@ -164,7 +164,7 @@ def _other_exports() -> list[str]:
                 '',
                 _markdown_text(summary),
                 '',
-                '- Runtime dependency: LibCST (declared for CPython).',
+                '- Runtime dependency: LibCST.',
                 '',
             ))
     return lines
@@ -174,8 +174,7 @@ def _gate_reference() -> list[str]:
     lines = [
         '## Gates',
         '',
-        'Gates run by default unless they require an optional configuration below. '
-        'CPython-only gates report a skip on other interpreters.',
+        'Gates run by default unless they require an optional configuration below.',
         '',
     ]
     for entry in GATES:
@@ -190,8 +189,6 @@ def _gate_reference() -> list[str]:
             lines.append(f'- Enable with `StubConfig.{entry.activated_by}`.')
         if requirements:
             lines.append(f'- Requires: {requirements}.')
-        if entry.requires_cpython:
-            lines.append(f'- CPython only: {entry.cpython_reason}.')
         lines.extend((f'- On failure: {entry.remedy}.', ''))
     return lines
 
@@ -229,7 +226,7 @@ def render_reference() -> str:
         '',
         '`pyo3stubs check-all` exits with status 1 when any gate reports a '
         'violation and 0 otherwise. A zero exit status does not mean every '
-        'gate examined a subject: disabled, skipped, inactive, and '
+        'gate examined a subject: disabled, inactive, and '
         '`nothing to check` outcomes are reported separately and do not '
         'change the CLI exit status. The pytest adapter skips those same '
         'non-violation outcomes with their reason; only `ok` is a pytest '

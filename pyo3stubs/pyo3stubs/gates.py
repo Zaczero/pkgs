@@ -7,9 +7,8 @@ message and greet its user with a ``KeyError``.
 
 Two properties this file is responsible for:
 
-**A gate that cannot run says so.** Skipped (wrong interpreter), disabled, and
-inactive (its config is unset) are distinct outcomes, and none of them prints
-success. ``check-all`` on PyPy used to drop the two strongest gates in silence.
+**A gate that cannot run says so.** Disabled and inactive (its config is unset)
+are distinct outcomes, and none of them prints success.
 
 **A gate that crashes is a violation, not an abort.** Collectors are wrapped at
 this boundary, so one broken gate reports itself with its raising frame and the
@@ -19,7 +18,6 @@ other eleven still run — and the exit status is still non-zero.
 from __future__ import annotations
 
 import dataclasses
-import platform
 import time
 import traceback
 from collections.abc import Callable
@@ -53,8 +51,6 @@ class Status(Enum):
 
     OK = 'ok'
     VIOLATIONS = 'violations'
-    #: The interpreter cannot run it (mypy does not run on PyPy).
-    SKIPPED = 'skipped'
     #: ``StubConfig.disabled_gates`` turned it off.
     DISABLED = 'disabled'
     #: Its activating config field is unset, so there is nothing to check.
@@ -71,7 +67,6 @@ class Status(Enum):
 _STATUS_DESCRIPTIONS = {
     Status.OK: 'The gate ran and found no violations.',
     Status.VIOLATIONS: 'The gate found one or more contract violations.',
-    Status.SKIPPED: 'The current Python implementation cannot run this gate.',
     Status.DISABLED: 'StubConfig.disabled_gates explicitly disabled this gate.',
     Status.INACTIVE: 'The optional gate has no non-empty activating configuration.',
     Status.NOTHING_TO_CHECK: (
@@ -104,10 +99,6 @@ class Gate:
     #: ``StubConfig`` field that activates it; empty means always-on. The
     #: field activates the gate when it is set *and* non-empty.
     activated_by: str = ''
-    #: Backed by mypy, which does not run outside CPython.
-    requires_cpython: bool = False
-    #: Why the gate cannot run outside CPython.
-    cpython_reason: str = 'mypy does not run on this interpreter'
 
     @property
     def tier(self) -> str:
@@ -117,8 +108,6 @@ class Gate:
         """Why this gate will not run against ``cfg``, or None if it will."""
         if self.name in cfg.disabled_gates:
             return Status.DISABLED
-        if self.requires_cpython and platform.python_implementation() != 'CPython':
-            return Status.SKIPPED
         if self.activated_by and not getattr(cfg, self.activated_by):
             return Status.INACTIVE
         return None
@@ -182,11 +171,6 @@ class Result:
                 f'{self.gate.name}: nothing to check — this project has no '
                 f'{_plural(self.gate.subject, 0)}'
             )
-        if self.status is Status.SKIPPED:
-            return (
-                f'{self.gate.name}: skipped — needs CPython, and '
-                f'{self.gate.cpython_reason}'
-            )
         if self.status is Status.DISABLED:
             return f'{self.gate.name}: disabled by StubConfig.disabled_gates'
         if self.status is Status.INACTIVE:
@@ -220,7 +204,6 @@ GATES: tuple[Gate, ...] = (
         success='stub validity OK: mypy-clean',
         remedy='fix the stub until mypy is clean',
         requirements=('mypy',),
-        requires_cpython=True,
     ),
     Gate(
         name='pyright',
@@ -249,8 +232,6 @@ GATES: tuple[Gate, ...] = (
         remedy='correct the Rust attribute that documents the wrong shape',
         requirements=('Rust source', 'tree-sitter-rust'),
         subject='text_signature attribute',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='surface',
@@ -285,8 +266,6 @@ GATES: tuple[Gate, ...] = (
         ),
         activated_by='tokens',
         subject='token enum',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='leaked-types',
@@ -296,8 +275,6 @@ GATES: tuple[Gate, ...] = (
         remedy='register the class, add a public stub class, or allowlist it',
         requirements=('Rust source and tree-sitter-rust', 'compiled extension'),
         subject='pyclass export',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='rust-nullability',
@@ -307,8 +284,6 @@ GATES: tuple[Gate, ...] = (
         remedy='widen the stub annotation with `| None`',
         requirements=('Rust source and tree-sitter-rust',),
         subject='Option surface',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='doc-contract',
@@ -321,8 +296,6 @@ GATES: tuple[Gate, ...] = (
             'compiled extension',
         ),
         subject='public symbol',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='doc-structure',
@@ -335,8 +308,6 @@ GATES: tuple[Gate, ...] = (
             'compiled extension',
         ),
         subject='documented member',
-        requires_cpython=True,
-        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='gen-docs-sync',
@@ -349,8 +320,6 @@ GATES: tuple[Gate, ...] = (
             'compiled extension',
             'LibCST',
         ),
-        requires_cpython=True,
-        cpython_reason='the doc generator has no PyPy wheel',
     ),
     Gate(
         name='stubtest',
@@ -359,7 +328,6 @@ GATES: tuple[Gate, ...] = (
         success='stubtest OK: stub matches the runtime',
         remedy='fix the stub, or add a stubtest allowlist entry',
         requirements=('mypy.stubtest', 'compiled extension'),
-        requires_cpython=True,
     ),
 )
 
