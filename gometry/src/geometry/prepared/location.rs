@@ -207,7 +207,7 @@ impl PreparedPlan {
         self.point_membership_without_bounds(point, membership)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn point_location_scans(&self) -> u32 {
         self.topology()
             .point_scans

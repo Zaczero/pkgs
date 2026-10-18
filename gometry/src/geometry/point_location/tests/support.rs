@@ -162,6 +162,7 @@ fn square_with_hole() -> Polygon {
     }
 }
 
+#[cfg(debug_assertions)]
 fn sheared_comb(teeth: usize) -> Shape {
     let teeth = teeth as f64;
     let mut points = vec![(1.0, -2.0), (2.0 * teeth, -2.0), (2.0 * teeth, -1.0)];

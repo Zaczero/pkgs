@@ -1,5 +1,6 @@
 use super::*;
 use crate::crs::frame::Frame;
+#[cfg(debug_assertions)]
 use crate::geometry::storage::GeometryArrayStorage;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
