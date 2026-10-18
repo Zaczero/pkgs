@@ -753,13 +753,22 @@ mod tests {
         let src = line(5);
 
         for method in [SmoothMethod::Chaikin, SmoothMethod::CatmullRom] {
-            let message = src
+            let error = src
                 .smooth(iterations, method, true)
-                .expect_err("budget overflow must be rejected")
-                .to_string();
+                .expect_err("budget overflow must be rejected");
             assert!(
-                message.contains("reduce iterations"),
-                "iterations={iterations} method={method:?}: {message}"
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::GeneratedOutputTooLarge {
+                            operation: "smooth",
+                            parameter: "iterations",
+                            produced,
+                            limit,
+                        }
+                    ) if *produced > *limit && *limit == SMOOTH_MAX_COORDS
+                ),
+                "iterations={iterations} method={method:?}: {error}"
             );
         }
     }

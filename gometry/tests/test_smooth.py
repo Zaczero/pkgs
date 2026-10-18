@@ -194,20 +194,38 @@ def test_large_iterations_rejected_before_allocation(
     # an unbounded allocation. The projected coordinate count is checked with
     # checked arithmetic and rejected quickly, before any output is built.
     line = gm.LineString([(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)])
-    with pytest.raises(GeometryError, match='reduce iterations'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         line.smooth(iterations=iterations, method=method)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'smooth',
+        'iterations',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_large_iterations_rejected_on_array_lane() -> None:
     lines = gm.GeometryArray([gm.LineString([(0, 0), (1, 0), (2, 0)])])
-    with pytest.raises(GeometryError, match='reduce iterations'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         lines.smooth(iterations=40)
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'smooth',
+        'iterations',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_large_iterations_rejected_for_polygon_rings() -> None:
     square = gm.box(0, 0, 1, 1)
-    with pytest.raises(GeometryError, match='reduce iterations'):
+    with pytest.raises(gm.ResourceLimitError) as error:
         square.smooth(iterations=40, method='chaikin')
+    assert (error.value.code, error.value.operation, error.value.parameter) == (
+        'output_limit',
+        'smooth',
+        'iterations',
+    )
+    assert error.value.produced > error.value.limit
 
 
 def test_default_iterations_is_two() -> None:

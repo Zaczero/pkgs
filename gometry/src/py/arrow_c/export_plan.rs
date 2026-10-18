@@ -963,6 +963,7 @@ fn packed_columns_error(error: BatchError) -> NativeArrowExportError {
 
 #[cfg(test)]
 mod tests {
+    use pyo3::exceptions::PyOverflowError;
     use pyo3::prelude::*;
 
     use super::*;
@@ -1044,7 +1045,8 @@ mod tests {
             let core: crate::error::Error =
                 crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into();
             let core = NativeArrowExportError::from(core).into_py_err(py);
-            assert!(core.is_instance_of::<GeometryError>(py));
+            assert!(core.is_instance_of::<PyOverflowError>(py));
+            assert!(!core.is_instance_of::<GeometryError>(py));
             assert!(core.value(py).to_string().contains("i32 offset"));
         });
     }
