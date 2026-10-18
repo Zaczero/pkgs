@@ -125,6 +125,13 @@ pub(crate) use validate::{
 };
 
 /// Register sequence-pattern support before freezing the native type.
+#[cfg_attr(
+    not(Py_3_14),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "ABC registration and freezing are fallible on Python 3.14+"
+    )
+)]
 pub(crate) fn initialize_sequence_type<T: pyo3::PyClass>(
     module: &pyo3::Bound<'_, pyo3::types::PyModule>,
 ) -> pyo3::PyResult<()> {
