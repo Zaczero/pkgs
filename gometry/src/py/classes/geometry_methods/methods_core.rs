@@ -11,7 +11,7 @@ use crate::py::support::geojson_domain_metric;
 use crate::{
     Arc, Bounds, Frame, PyCoordinates, PyCrs, PyTypeError, Shape, coordinates,
     map_coordinates_callback, parse_coordinate_replacement, render_shape_html, render_shape_svg,
-    replace_shape_coordinates, require_geojson_crs,
+    require_geojson_crs,
 };
 
 #[expect(
@@ -244,8 +244,7 @@ impl PyGeometry {
         let axes = measure.shape_axes();
         let len = measure.len_for_python()?;
         let replacement = parse_coordinate_replacement(py, args, kwargs, axes, len)?;
-        let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape))
+        self.replace_coordinates_impl(py, replacement)
     }
     /// Apply a vectorized callback to this geometry's coordinate matrix.
     ///
@@ -278,8 +277,7 @@ impl PyGeometry {
             slf.clone().unbind().into_any(),
         );
         let replacement = map_coordinates_callback(py, &coords, func)?;
-        let shape = replace_shape_coordinates(geometry.shape.shape(), &replacement)?;
-        Ok(geometry.typed_shape(shape))
+        geometry.replace_coordinates_impl(py, replacement)
     }
     /// Whether the geometry is empty (no points, rings, or parts).
     ///

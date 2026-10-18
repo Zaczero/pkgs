@@ -12,7 +12,7 @@ use crate::array::{
     coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
     geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple, line_is_valid,
     map_coordinates_callback, parse_coordinate_replacement, parse_crs, polygon_is_valid, pymethods,
-    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
+    require_geojson_crs,
 };
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
@@ -23,11 +23,9 @@ use crate::geometry::CoordSeq;
 use crate::geometry::storage::kernels::{
     geographic_total_bounds_from_columns, raw_total_bounds_from_columns,
 };
-use crate::geometry::storage::packed_columns::validate_replacement_ring;
-use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
 use crate::geometry::{
-    ShapeCountQuery, TopologyDomain, line_is_closed_in_domain, shape_is_closed_in_domain, storage,
+    TopologyDomain, line_is_closed_in_domain, shape_is_closed_in_domain, storage,
 };
 use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
@@ -116,107 +114,6 @@ fn shapely_wkb_batch<'py>(
             .getattr("to_wkb")?
             .call1((values,))?,
     ))
-}
-
-/// Adopt dense identity-packed replacement columns directly. Selected and
-/// masked arrays need logical-row gathering/scattering and stay on the generic
-/// packed dispatcher below.
-fn replace_dense_packed_coordinates(
-    array: &PyGeometryArray,
-    replacement: CoordinateReplacement,
-) -> PyResult<Result<PyGeometryArray, CoordinateReplacement>> {
-    if array.has_missing() {
-        return Ok(Err(replacement));
-    }
-    match array.storage() {
-        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
-            if row_map.is_identity() =>
-        {
-            debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement.apply_to_seq(coords)?;
-            Ok(Ok(PyGeometryArray::packed_points(
-                coords,
-                array.frame.clone(),
-            )?))
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords,
-            offsets,
-            row_map,
-        }) if row_map.is_identity() => {
-            debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement.apply_to_seq(coords)?;
-            Ok(Ok(PyGeometryArray::packed_lines(
-                coords,
-                offsets.clone(),
-                array.frame.clone(),
-            )?))
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords,
-            ring_offsets,
-            polygon_offsets,
-            row_map,
-        }) if row_map.is_identity() => {
-            debug_assert_eq!(coords.len(), replacement.len);
-            let coords = replacement.apply_to_seq(coords)?;
-            for [start, end] in ring_offsets.array_windows::<2>() {
-                validate_replacement_ring(&coords, *start as usize..*end as usize)?;
-            }
-            Ok(Ok(PyGeometryArray::packed_polygons(
-                coords,
-                ring_offsets.clone(),
-                polygon_offsets.clone(),
-                array.frame.clone(),
-            )?))
-        },
-        GeometryArrayStorage::Packed(
-            PackedStorage::Points { .. }
-            | PackedStorage::Lines { .. }
-            | PackedStorage::Polygons { .. },
-        )
-        | GeometryArrayStorage::Mixed(_) => Ok(Err(replacement)),
-    }
-}
-
-fn replace_array_coordinates(
-    array: &PyGeometryArray,
-    py: Python<'_>,
-    replacement: CoordinateReplacement,
-) -> PyResult<PyGeometryArray> {
-    let replacement = match replace_dense_packed_coordinates(array, replacement)? {
-        Ok(output) => return Ok(output),
-        Err(replacement) => replacement,
-    };
-    if !matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
-        return Ok(array
-            .replace_packed_coords_detached(py, array.frame.clone(), replacement)?
-            .expect("non-Mixed storage has packed columns"));
-    }
-    let mut present_cursor = 0_usize;
-    let mut counts = ShapeCountQuery::default();
-    let mut shapes = Vec::with_capacity(
-        array
-            .missing()
-            .map_or(array.len(), storage::ValidityMask::present_count),
-    );
-    for row in array.row_operation().present_rows() {
-        let logical = row.logical();
-        let count = row.row().coordinates(&mut counts).map_err(PyErr::from)?;
-        let next_present_cursor = present_cursor
-            .checked_add(count)
-            .ok_or_else(|| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))
-            .map_err(PyErr::from)?;
-        let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
-        present_cursor = next_present_cursor;
-        shapes.push(
-            row.row()
-                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))
-                .map_err(|error| crate::note_array_row(error, logical))?,
-        );
-    }
-    debug_assert_eq!(present_cursor, replacement.len);
-    Ok(array.scatter_present_result(PyGeometryArray::from_shapes(shapes, array.frame.clone())?)?)
 }
 
 #[expect(
@@ -839,7 +736,7 @@ impl PyGeometryArray {
         }
         // Union axes of the coordinate view (NaN-padded for members that lack
         // Z/M). Non-uniform arrays (mixed-axes rows, heterogeneous GC) parse
-        // against that layout; replace_array_coordinates applies per-row via
+        // against that layout; native replacement applies per-row via
         // replace_shape_coordinates, which keeps each member's native axes.
         // Uniform packed arrays still take the dense columnar fast path.
         let view = self.coordinate_view();
@@ -847,7 +744,7 @@ impl PyGeometryArray {
         let axes = measure.present_axes();
         let len = measure.len_for_python()?;
         let replacement = parse_coordinate_replacement(py, args, kwargs, axes, len)?;
-        replace_array_coordinates(self, py, replacement)
+        self.replace_coordinates_impl(py, replacement)
     }
     /// Apply a vectorized callback to this array's coordinate matrix.
     ///
@@ -882,7 +779,7 @@ impl PyGeometryArray {
         let array = slf.borrow();
         let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
         let replacement = map_coordinates_callback(py, &coords, func)?;
-        replace_array_coordinates(&array, py, replacement)
+        array.replace_coordinates_impl(py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
     /// areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;
@@ -1368,7 +1265,7 @@ mod geographic_total_bounds_tests {
 mod mixed_replacement_row_note_tests {
     use pyo3::prelude::*;
 
-    use super::{PyGeometryArray, replace_array_coordinates};
+    use super::PyGeometryArray;
     use crate::crs::frame::Frame;
     use crate::geometry::storage::ValidityMask;
     use crate::geometry::storage::replacement::{CoordinateReplacement, ReplacementAxis};
@@ -1402,7 +1299,8 @@ mod mixed_replacement_row_note_tests {
                 positional: false,
             };
 
-            let error = replace_array_coordinates(&array, py, replacement)
+            let error = array
+                .replace_coordinates_impl(py, replacement)
                 .expect_err("open mixed polygon replacement fails");
             let notes = error
                 .value(py)

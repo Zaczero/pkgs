@@ -27,6 +27,18 @@ pub(super) struct TopologyPlan {
 }
 
 impl PreparedPlan {
+    pub(crate) fn existing_validity(&self) -> Option<bool> {
+        self.topology.get()?.validity.get().map(Option::is_none)
+    }
+
+    pub(crate) fn existing_simplicity(&self) -> Option<bool> {
+        self.topology.get()?.simplicity.get().copied()
+    }
+
+    pub(crate) fn existing_structure_issue(&self) -> Option<&ValidationIssue> {
+        self.topology.get()?.structure.get()?.as_deref()
+    }
+
     pub(crate) fn validate_cached(&self) -> Result<Option<&ValidationIssue>> {
         Ok(self
             .topology()

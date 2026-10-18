@@ -5,8 +5,8 @@
 use crate::broadcast::ShapeData;
 use crate::broadcast::{
     Arc, Bound, Bounds, CollectRows, CoordinateAxes, F64Param, Frame, GeometryArrayStorage,
-    GeometryError, GeometryInput, GeometryKind, Point, Py, PyGeometry, PyGeometryArray, PyResult,
-    Python, Result, Shape, bool_array, crs, float64_array, mask_missing, point_distance, rows_err,
+    GeometryInput, GeometryKind, Point, Py, PyGeometry, PyGeometryArray, PyResult, Python, Result,
+    Shape, bool_array, crs, float64_array, mask_missing, point_distance, rows_err,
 };
 
 crate::tokens::token_enum! {

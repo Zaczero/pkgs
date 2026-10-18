@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use super::{
-    DistanceUnit, Frame, GeographicFrame, GeometryError, MetricOp, PreparedPlan, PyGeometry,
-    PyResult, Shape, SourceArcContext, TopologyDomain, crs, validate_lonlat_shape,
+    DistanceUnit, Frame, GeographicFrame, MetricOp, PreparedPlan, PyGeometry, PyResult, Shape,
+    SourceArcContext, TopologyDomain, crs, validate_lonlat_shape,
 };
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
@@ -166,7 +166,7 @@ pub(crate) fn resolve_metric_3d(
     crs: Option<&str>,
     unit: Option<DistanceUnit>,
     operation: MetricOp,
-) -> PyResult<crs::MetricModel> {
+) -> crate::error::Result<crs::MetricModel> {
     #[cfg(test)]
     binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
@@ -175,10 +175,12 @@ pub(crate) fn resolve_metric_3d(
     let to_metre = crs::ensure_3d_metric(crs)?;
     match unit {
         None | Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
-        Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
-            "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
+        Some(DistanceUnit::Meters) if crs.is_none() => {
+            Err(crate::geometry::GeometryErrorKind::message(format!(
+                "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
              use unit='planar' for raw coordinate units, or set a CRS"
-        ))),
+            )))
+        },
         Some(DistanceUnit::Meters) => Ok(crs::MetricModel::Planar { to_metre }),
     }
 }

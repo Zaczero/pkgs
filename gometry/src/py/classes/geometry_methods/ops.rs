@@ -8,6 +8,7 @@ use std::sync::Arc;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::geometry::publication::{PublicationRows, publish_split_parts_array};
+use crate::geometry::storage::replacement::{CoordinateReplacement, replace_shape_coordinates};
 use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
@@ -43,6 +44,19 @@ fn publish_earcut_publication_for_domain(
 }
 
 impl PyGeometry {
+    pub(crate) fn replace_coordinates_impl(
+        &self,
+        py: Python<'_>,
+        replacement: CoordinateReplacement,
+    ) -> PyResult<Typed> {
+        let shape = if matches!(self.shape.shape(), Shape::Point(_) | Shape::Empty(..)) {
+            replace_shape_coordinates(self.shape.shape(), &replacement)?
+        } else {
+            py.detach(move || replace_shape_coordinates(self.shape.shape(), &replacement))?
+        };
+        Ok(self.typed_shape(shape))
+    }
+
     pub(crate) fn parts_to_array(
         &self,
         shapes: impl IntoIterator<Item = Shape>,
@@ -260,7 +274,7 @@ impl PyGeometry {
                         shape.polygon_triangles().map(|_| ())
                     }
                 })?;
-                return Err(error);
+                return Err(error.into());
             },
         };
         Ok(py.detach(move || match domain {
@@ -543,5 +557,88 @@ impl PyGeometry {
             )?;
             self.parts_to_array(parts)
         })?)
+    }
+}
+
+#[cfg(test)]
+mod coordinate_replacement_tests {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyCFunction, PyDict};
+
+    use super::*;
+    use crate::test_support::{boundary_probe, initialize_python};
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn scalar_application_preserves_axes_and_only_detaches_shape_rebuilds() {
+        initialize_python();
+        Python::attach(|py| {
+            for (wkt, xs, expected, attached) in [
+                ("POINT ZM (1 2 3 4)", vec![10.], "POINT ZM (10 2 3 4)", true),
+                ("POINT Z EMPTY", vec![], "POINT Z EMPTY", true),
+                (
+                    "LINESTRING ZM (0 0 3 30, 1 1 4 40)",
+                    vec![10., 11.],
+                    "LINESTRING ZM (10 0 3 30, 11 1 4 40)",
+                    false,
+                ),
+                (
+                    "GEOMETRYCOLLECTION (POINT ZM (1 2 3 4), LINESTRING (0 0, 1 1))",
+                    vec![10., 11., 12.],
+                    "GEOMETRYCOLLECTION (POINT ZM (10 2 3 4), LINESTRING (11 0, 12 1))",
+                    false,
+                ),
+            ] {
+                let geometry =
+                    PyGeometry::with_frame(crate::io::parse_wkt(wkt).unwrap(), Frame::None);
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("x", xs).unwrap();
+                let (result, events) = boundary_probe::capture(|| {
+                    geometry.with_coordinates(py, &PyTuple::empty(py), Some(&kwargs))
+                });
+                assert_eq!(
+                    result.unwrap().0.shape.shape(),
+                    &crate::io::parse_wkt(expected).unwrap()
+                );
+                assert_eq!(events, [
+                    ("shape replacement", attached),
+                    ("shape replacement finished", attached),
+                ]);
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn scalar_callback_precedes_detached_replacement() {
+        initialize_python();
+        Python::attach(|py| {
+            let geometry = Py::new(
+                py,
+                PyGeometry::with_frame(
+                    crate::io::parse_wkt("LINESTRING (0 0, 1 1)").unwrap(),
+                    Frame::None,
+                ),
+            )
+            .unwrap()
+            .into_bound(py);
+            let callback = PyCFunction::new_closure(py, None, None, |args, _kwargs| {
+                boundary_probe::record("callback");
+                args.get_item(0)?.call_method0("copy").map(Bound::unbind)
+            })
+            .unwrap();
+            let (result, events) = boundary_probe::capture(|| {
+                PyGeometry::map_coordinates(&geometry, py, callback.as_any())
+            });
+            assert_eq!(
+                result.unwrap().0.shape.shape(),
+                &crate::io::parse_wkt("LINESTRING (0 0, 1 1)").unwrap()
+            );
+            assert_eq!(events, [
+                ("callback", true),
+                ("shape replacement", false),
+                ("shape replacement finished", false),
+            ]);
+        });
     }
 }

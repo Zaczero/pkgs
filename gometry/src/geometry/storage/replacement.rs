@@ -1,8 +1,16 @@
 //! Coordinate replacement payload shared by array packed/mixed paths and the
 //! `Coordinates` setter surface.
 
+use std::cell::Cell;
+
 use crate::error::Result;
-use crate::geometry::{CoordSeq, CoordinateAxes, GeometryErrorKind, MColumn, Point, SharedSlice};
+use crate::geometry::storage::packed_columns::validate_replacement_ring;
+use crate::geometry::{
+    CoordSeq, CoordinateAxes, GeometryErrorKind, MColumn, MOrdinate, Point, Shape, SharedSlice,
+    ZOrdinate,
+};
+#[cfg(test)]
+use crate::test_support::boundary_probe;
 
 #[derive(Clone)]
 pub(crate) enum ReplacementAxis {
@@ -20,6 +28,182 @@ pub(crate) struct CoordinateReplacement {
     pub(crate) len: usize,
     pub(crate) axes: CoordinateAxes,
     pub(crate) positional: bool,
+}
+
+fn replacement_seq(
+    old: &CoordSeq,
+    replacement: &CoordinateReplacement,
+    cursor: &Cell<usize>,
+) -> Result<CoordSeq> {
+    // Union-layout matrices preserve each sequence's axes; padded columns do
+    // not add an ordinate to a member that lacked it.
+    if replacement.positional
+        && ((old.axes().has_z() && !replacement.axes.has_z())
+            || (old.axes().has_m() && !replacement.axes.has_m()))
+    {
+        return Err(GeometryErrorKind::message(
+            "coordinates must preserve each coordinate sequence axes",
+        ));
+    }
+    let start = cursor.get();
+    let end = start.wrapping_add(old.len());
+    cursor.set(end);
+    CoordSeq::try_from_vecs(
+        replacement
+            .x_column_for_seq(old, start..end)
+            .as_slice()
+            .to_vec(),
+        replacement
+            .y_column_for_seq(old, start..end)
+            .as_slice()
+            .to_vec(),
+        replacement
+            .z_column_for_seq(old, start..end)
+            .map(|values| values.as_slice().to_vec()),
+        replacement
+            .m_column_for_seq(old, start..end)
+            .map(|values| values.as_slice().to_vec()),
+    )
+}
+
+fn replacement_point(
+    old: &Point,
+    replacement: &CoordinateReplacement,
+    cursor: &Cell<usize>,
+) -> Result<Point> {
+    if replacement.positional
+        && ((old.axes.has_z() && !replacement.axes.has_z())
+            || (old.axes.has_m() && !replacement.axes.has_m()))
+    {
+        return Err(GeometryErrorKind::message(
+            "coordinates must preserve each coordinate sequence axes",
+        ));
+    }
+    let index = cursor.get();
+    cursor.set(index.wrapping_add(1));
+    Point::new_axes(
+        replacement.x_at(*old, index),
+        replacement.y_at(*old, index),
+        ZOrdinate(replacement.z_at(*old, index)),
+        MOrdinate(replacement.m_at(*old, index)),
+    )
+}
+
+fn validate_shape_rings(shape: &Shape) -> Result<()> {
+    match shape {
+        Shape::Polygon(polygon) => {
+            for ring in polygon.rings() {
+                validate_replacement_ring(ring, 0..ring.len())?;
+            }
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons {
+                for ring in polygon.rings() {
+                    validate_replacement_ring(ring, 0..ring.len())?;
+                }
+            }
+        },
+        Shape::GeometryCollection(items) => {
+            for item in items {
+                validate_shape_rings(item)?;
+            }
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
+    }
+    Ok(())
+}
+
+pub(crate) fn replace_shape_coordinates(
+    shape: &Shape,
+    replacement: &CoordinateReplacement,
+) -> Result<Shape> {
+    #[cfg(test)]
+    boundary_probe::record("shape replacement");
+    let cursor = Cell::new(0);
+    let mut replaced = shape.try_map_coordseqs(
+        |seq| replacement_seq(seq, replacement, &cursor),
+        |point| replacement_point(point, replacement, &cursor),
+    )?;
+    if cursor.get() != replacement.len {
+        return Err(GeometryErrorKind::message(format!(
+            "coordinates must have length {}; got length {}",
+            replacement.len,
+            cursor.get(),
+        )));
+    }
+    let replaces_axis = !matches!(&replacement.zs, ReplacementAxis::Carry)
+        || !matches!(&replacement.ms, ReplacementAxis::Carry);
+    if replaces_axis && has_empty_axis_change(&replaced, replacement) {
+        replaced = retag_empty_axes(&replaced, replacement)?;
+    }
+    validate_shape_rings(&replaced)?;
+    #[cfg(test)]
+    boundary_probe::record("shape replacement finished");
+    Ok(replaced)
+}
+
+fn has_empty_axis_change(shape: &Shape, replacement: &CoordinateReplacement) -> bool {
+    match shape {
+        Shape::Empty(_, axes) => replacement.output_axes(*axes) != *axes,
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .any(|geometry| has_empty_axis_change(geometry, replacement)),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => false,
+    }
+}
+
+fn retag_empty_axes(shape: &Shape, replacement: &CoordinateReplacement) -> Result<Shape> {
+    match shape {
+        Shape::Empty(kind, axes) => Ok(Shape::typed_empty(*kind, replacement.output_axes(*axes))),
+        Shape::GeometryCollection(geometries) => Ok(Shape::GeometryCollection(
+            geometries.try_map_members(|geometry| retag_empty_axes(geometry, replacement))?,
+        )),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => Ok(shape.clone()),
+    }
+}
+
+pub(crate) fn slice_replacement_for_shape(
+    replacement: &CoordinateReplacement,
+    start: usize,
+    len: usize,
+) -> CoordinateReplacement {
+    let end = start.wrapping_add(len);
+    let slice = |values: &SharedSlice<f64>| {
+        SharedSlice::from_vec(
+            values
+                .get(start..end)
+                .expect("replacement range is bounded by admitted coordinates")
+                .to_vec(),
+        )
+    };
+    let axis = |values: &ReplacementAxis| match values {
+        ReplacementAxis::Replace(values) => ReplacementAxis::Replace(slice(values)),
+        ReplacementAxis::Carry => ReplacementAxis::Carry,
+        ReplacementAxis::Drop => ReplacementAxis::Drop,
+    };
+    CoordinateReplacement {
+        xs: replacement.xs.as_ref().map(slice),
+        ys: replacement.ys.as_ref().map(slice),
+        zs: axis(&replacement.zs),
+        ms: axis(&replacement.ms),
+        len,
+        axes: replacement.axes,
+        positional: replacement.positional,
+    }
 }
 
 impl CoordinateReplacement {

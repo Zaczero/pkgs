@@ -8,6 +8,8 @@ use crate::geometry::{
     Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, TopologyDomain, canonical_f64_bits,
     shape_has_polar_ring_in_frame,
 };
+#[cfg(test)]
+use crate::test_support::boundary_probe;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GeographicTopologyRoute {
@@ -169,6 +171,8 @@ pub(crate) fn topology_domain_at(
     frame: &Frame,
     state: Option<&crate::crs::RuntimeState>,
 ) -> crate::error::Result<TopologyDomain> {
+    #[cfg(test)]
+    boundary_probe::record("topology domain");
     Ok(match frame.crs_str() {
         Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
             TopologyDomain::Geographic(GeographicFrame::crs84())

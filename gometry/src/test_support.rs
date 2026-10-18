@@ -517,3 +517,44 @@ pub(crate) fn initialize_python() {
         });
     });
 }
+
+pub(crate) fn python_is_attached() -> bool {
+    // SAFETY: The unchecked query observes attachment without acquiring or dereferencing
+    // a thread state, including on free-threaded interpreters.
+    unsafe { !pyo3::ffi::compat::PyThreadState_GetUnchecked().is_null() }
+}
+
+pub(crate) mod boundary_probe {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static EVENTS: RefCell<Option<Vec<(&'static str, bool)>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record(stage: &'static str) {
+        EVENTS.with_borrow_mut(|events| {
+            if let Some(events) = events {
+                events.push((stage, super::python_is_attached()));
+            }
+        });
+    }
+
+    pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, Vec<(&'static str, bool)>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                EVENTS.with_borrow_mut(|events| *events = None);
+            }
+        }
+        EVENTS.with_borrow_mut(|events| {
+            assert!(events.is_none(), "attachment probes cannot nest");
+            *events = Some(Vec::new());
+        });
+        let _reset = Reset;
+        let result = run();
+        let events = EVENTS
+            .with_borrow_mut(Option::take)
+            .expect("active boundary probe");
+        (result, events)
+    }
+}

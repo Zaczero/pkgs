@@ -20,8 +20,8 @@ use crate::geometry::{PreparedPlan, Shape, TopologyDomain};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
 
 fn execute_unary_scalar<R: BulkElement>(
-    py: Python<'_>,
     geometry: &PyGeometry,
+    plan: &PreparedPlan,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
@@ -32,8 +32,53 @@ fn execute_unary_scalar<R: BulkElement>(
         metric,
         lane: Lane::Scalar,
     };
-    let plan = geometry.prepared_plan();
-    py.detach(move || kernel(&plan, &ctx))
+    kernel(plan, &ctx)
+}
+
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only proven bounded predicate kernels execute attached; other operations keep their native boundary"
+)]
+fn scalar_unary_is_bounded(op: Operation, plan: &PreparedPlan, domain: TopologyDomain) -> bool {
+    use Shape::{
+        Empty, GeometryCollection, LineString, MultiLineString, MultiPoint, Point, Polygon,
+    };
+    let point_or_empty = matches!(plan.shape(), Point(_) | Empty(..));
+    match op {
+        Operation::IsEmpty => matches!(
+            plan.shape(),
+            Point(_) | Empty(..) | LineString(_) | MultiPoint(_)
+        ),
+        Operation::IsClosed => !matches!(plan.shape(), MultiLineString(_)),
+        Operation::IsCcw => match plan.shape() {
+            LineString(line) => line.len() < 4 || !plan.shape().is_closed(),
+            _ => true,
+        },
+        Operation::IsConvex => !matches!(plan.shape(), Polygon(_)),
+        Operation::IsRing => {
+            point_or_empty
+                || (!domain.is_geographic()
+                    && (!matches!(plan.shape(), LineString(_)) || !plan.shape().is_closed()))
+        },
+        Operation::IsSimple => {
+            point_or_empty
+                || (!domain.is_geographic()
+                    && (matches!(plan.shape(), GeometryCollection(_))
+                        || plan.existing_simplicity().is_some()))
+        },
+        Operation::IsValid => {
+            point_or_empty
+                || if domain.is_geographic() {
+                    plan.existing_structure_issue().is_some()
+                } else {
+                    plan.existing_validity().is_some()
+                }
+        },
+        Operation::CrossesAntimeridian => {
+            matches!(plan.shape(), Point(_) | Empty(..) | MultiPoint(_))
+        },
+        _ => false,
+    }
 }
 
 /// Scalar geometry lane: resolve metric once, run one kernel, return the bulk element.
@@ -45,28 +90,65 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
-    let mut metric_scratch =
-        (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
-    let result = {
-        let context_result = metric_scratch.as_mut().map_or_else(
-            || {
-                crate::geometry::topology_domain(&geometry.frame)
-                    .map(|domain| (domain, MetricCtx::None))
-                    .map_err(PyErr::from)
-            },
-            |scratch| resolver.resolve_topology_ctx(&geometry.frame, scratch),
-        );
-        let (domain, metric) = match context_result {
-            Ok(context) => context,
-            Err(error) => {
-                drop(metric_scratch);
-                return Err(error);
-            },
-        };
-        execute_unary_scalar(py, geometry, domain, metric, kernel)
+    let plan = geometry.prepared_plan();
+    if matches!(resolver, MetricResolver::None) {
+        let potentially_bounded = scalar_unary_is_bounded(op, &plan, TopologyDomain::Cartesian)
+            || (op == Operation::IsValid && plan.existing_structure_issue().is_some());
+        if potentially_bounded {
+            let crs = geometry.crs_str();
+            if crs.is_none_or(crate::crs::is_wgs84_lonlat) {
+                let domain = crate::geometry::topology_domain(&geometry.frame)?;
+                if scalar_unary_is_bounded(op, &plan, domain) {
+                    return Ok(execute_unary_scalar(
+                        geometry,
+                        &plan,
+                        domain,
+                        MetricCtx::None,
+                        kernel,
+                    )?);
+                }
+                return Ok(py.detach(|| {
+                    execute_unary_scalar(geometry, &plan, domain, MetricCtx::None, kernel)
+                })?);
+            }
+            let state = crate::crs::runtime_state_snapshot()?;
+            if crate::crs::thread_caches_are_current(&state)
+                && let Some(info) = crate::crs::info_if_cached(crs.expect("tagged frame"), &state)?
+            {
+                let domain = info
+                    .geographic_frame()
+                    .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic);
+                if scalar_unary_is_bounded(op, &plan, domain) {
+                    return Ok(execute_unary_scalar(
+                        geometry,
+                        &plan,
+                        domain,
+                        MetricCtx::None,
+                        kernel,
+                    )?);
+                }
+                return Ok(py.detach(|| {
+                    execute_unary_scalar(geometry, &plan, domain, MetricCtx::None, kernel)
+                })?);
+            }
+            return Ok(py.detach(|| {
+                let domain = crate::geometry::topology_domain_at(&geometry.frame, Some(&state))?;
+                execute_unary_scalar(geometry, &plan, domain, MetricCtx::None, kernel)
+            })?);
+        }
+    }
+    let run = || {
+        let mut scratch = MetricScratch::default();
+        let (domain, metric) = resolver.resolve_topology_ctx(&geometry.frame, &mut scratch)?;
+        execute_unary_scalar(geometry, &plan, domain, metric, kernel)
     };
-    drop(metric_scratch);
-    result.map_err(PyErr::from)
+    if matches!(resolver, MetricResolver::Antimeridian)
+        && geometry.crs_str().is_none()
+        && scalar_unary_is_bounded(op, &plan, TopologyDomain::Cartesian)
+    {
+        return Ok(run()?);
+    }
+    Ok(py.detach(run)?)
 }
 
 /// How the per-row unary fallback materializes a [`PreparedPlan`] handle.
@@ -319,7 +401,7 @@ fn run_unary_shape_rows<R: Into<GeometryOutput>>(
                 },
                 Err(error) => {
                     drop(metric_scratch);
-                    return Err(error);
+                    return Err(error.into());
                 },
             };
             drop(metric_scratch);
@@ -358,7 +440,7 @@ fn run_unary_rows<T: BulkElement>(
                 },
                 Err(error) => {
                     drop(metric_scratch);
-                    return Err(error);
+                    return Err(error.into());
                 },
             };
             drop(metric_scratch);
@@ -516,7 +598,7 @@ fn execute_scalar_linref<R: pyo3::marker::Ungil>(
             Ok(metric) => metric,
             Err(error) => {
                 drop(scratch);
-                return Err(error);
+                return Err(error.into());
             },
         };
         let resolved_metric = match metric.require_resolved(
@@ -663,18 +745,14 @@ pub(crate) fn unary_array_shapes_budgeted(
     let mut metric_scratch =
         (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let context = metric_scratch.as_mut().map_or_else(
-        || {
-            crate::geometry::topology_domain(&frame)
-                .map(|domain| (domain, MetricCtx::None))
-                .map_err(PyErr::from)
-        },
+        || crate::geometry::topology_domain(&frame).map(|domain| (domain, MetricCtx::None)),
         |scratch| resolver.resolve_topology_ctx(&frame, scratch),
     );
     let (domain, metric) = match context {
         Ok(context) => context,
         Err(error) => {
             drop(metric_scratch);
-            return Err(error);
+            return Err(error.into());
         },
     };
     let array = array.clone();
@@ -738,6 +816,248 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
             R::into_py(result, py, &frame)
         },
         Many(array) => unary_array(py, array, op, unit, packed, kernel),
+    }
+}
+
+#[cfg(test)]
+mod scalar_boundary_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::crs::frame::crs_arc_static;
+    use crate::dispatch::kernels;
+    use crate::test_support::{boundary_probe, initialize_python, python_is_attached};
+
+    type Kernel = fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<bool>;
+
+    fn make_geometry(wkt: &str, frame: Frame) -> PyGeometry {
+        PyGeometry::with_frame(crate::io::parse_wkt(wkt).unwrap(), frame)
+    }
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the attachment assertion must fail the test even when the tested kernel returns an expected error"
+    )]
+    fn predicate(
+        py: Python<'_>,
+        geometry: &PyGeometry,
+        op: Operation,
+        kernel: Kernel,
+        expected_attached: bool,
+    ) -> PyResult<bool> {
+        let attached = AtomicBool::new(!expected_attached);
+        let result = unary_scalar(py, geometry, op, None, |plan, ctx| {
+            attached.store(python_is_attached(), Ordering::Relaxed);
+            kernel(plan, ctx)
+        });
+        assert_eq!(attached.load(Ordering::Relaxed), expected_attached);
+        result
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn structural_and_endpoint_predicates_use_attached_kernels() {
+        initialize_python();
+        Python::attach(|py| {
+            for (wkt, op, kernel, expected) in [
+                (
+                    "LINESTRING (0 0, 1 1, 0 0)",
+                    Operation::IsClosed,
+                    kernels::unary_is_closed as Kernel,
+                    true,
+                ),
+                (
+                    "GEOMETRYCOLLECTION (LINESTRING (0 0, 1 1))",
+                    Operation::IsCcw,
+                    kernels::unary_is_ccw as Kernel,
+                    false,
+                ),
+                (
+                    "MULTIPOINT ((1 2), (3 4))",
+                    Operation::IsConvex,
+                    kernels::unary_is_convex as Kernel,
+                    false,
+                ),
+                (
+                    "LINESTRING (0 0, 1 1)",
+                    Operation::IsRing,
+                    kernels::unary_is_ring as Kernel,
+                    false,
+                ),
+                (
+                    "POINT (1 2)",
+                    Operation::IsValid,
+                    kernels::unary_is_valid as Kernel,
+                    true,
+                ),
+            ] {
+                let geometry = make_geometry(wkt, Frame::None);
+                assert_eq!(
+                    predicate(py, &geometry, op, kernel, true).unwrap(),
+                    expected,
+                    "{wkt}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn cartesian_validity_and_simplicity_detach_cold_but_not_cached_kernels() {
+        initialize_python();
+        Python::attach(|py| {
+            for (wkt, op, kernel, expected) in [
+                (
+                    "POLYGON ((0 0, 2 0, 2 2, 0 0))",
+                    Operation::IsValid,
+                    kernels::unary_is_valid as Kernel,
+                    true,
+                ),
+                (
+                    "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))",
+                    Operation::IsValid,
+                    kernels::unary_is_valid as Kernel,
+                    false,
+                ),
+                (
+                    "LINESTRING (0 0, 2 2, 0 2, 2 0)",
+                    Operation::IsSimple,
+                    kernels::unary_is_simple as Kernel,
+                    false,
+                ),
+            ] {
+                let geometry = make_geometry(wkt, Frame::None);
+                let plan = geometry.prepared_plan();
+                assert_eq!(plan.existing_validity(), None);
+                assert_eq!(plan.existing_simplicity(), None);
+                assert_eq!(
+                    predicate(py, &geometry, op, kernel, false).unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    predicate(py, &geometry, op, kernel, true).unwrap(),
+                    expected
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn geographic_admission_remains_detached_with_warm_topology() {
+        initialize_python();
+        Python::attach(|py| {
+            let geometry = make_geometry(
+                "LINESTRING (180 10, 170 20, 175 30, -180 10)",
+                Frame::Crs(crs_arc_static("EPSG:4326")),
+            );
+            for _ in 0..2 {
+                assert!(
+                    predicate(
+                        py,
+                        &geometry,
+                        Operation::IsRing,
+                        kernels::unary_is_ring,
+                        false
+                    )
+                    .unwrap()
+                );
+                assert!(
+                    predicate(
+                        py,
+                        &geometry,
+                        Operation::IsSimple,
+                        kernels::unary_is_simple,
+                        false
+                    )
+                    .unwrap()
+                );
+                assert!(
+                    predicate(
+                        py,
+                        &geometry,
+                        Operation::IsValid,
+                        kernels::unary_is_valid,
+                        false
+                    )
+                    .unwrap()
+                );
+            }
+            let invalid = make_geometry(
+                "LINESTRING (0 91, 1 92)",
+                Frame::Crs(crs_arc_static("EPSG:4326")),
+            );
+            predicate(
+                py,
+                &invalid,
+                Operation::IsSimple,
+                kernels::unary_is_simple,
+                false,
+            )
+            .unwrap_err();
+            predicate(
+                py,
+                &invalid,
+                Operation::IsRing,
+                kernels::unary_is_ring,
+                false,
+            )
+            .unwrap_err();
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn projected_metadata_miss_and_generation_change_share_the_native_boundary() {
+        initialize_python();
+        Python::attach(|py| {
+            crate::crs::reset_runtime_config().unwrap();
+            let geometry = make_geometry("POINT (1 2)", Frame::Crs(crs_arc_static("EPSG:3857")));
+            for _ in 0..2 {
+                let (result, events) = boundary_probe::capture(|| {
+                    predicate(
+                        py,
+                        &geometry,
+                        Operation::IsValid,
+                        kernels::unary_is_valid,
+                        false,
+                    )
+                });
+                assert!(result.unwrap());
+                assert_eq!(events, [("topology domain", false)]);
+                let (result, events) = boundary_probe::capture(|| {
+                    predicate(
+                        py,
+                        &geometry,
+                        Operation::IsValid,
+                        kernels::unary_is_valid,
+                        true,
+                    )
+                });
+                assert!(result.unwrap());
+                assert!(
+                    events.is_empty(),
+                    "cache hit must not repeat domain resolution: {events:?}"
+                );
+                crate::crs::reset_runtime_config().unwrap();
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn invalid_context_precedes_even_a_constant_predicate_kernel() {
+        initialize_python();
+        Python::attach(|py| {
+            let geometry = make_geometry("POINT (1 2)", Frame::Crs("EPSG:not-a-code".into()));
+            let called = AtomicBool::new(false);
+            let result = unary_scalar(py, &geometry, Operation::IsCcw, None, |plan, ctx| {
+                called.store(true, Ordering::Relaxed);
+                kernels::unary_is_ccw(plan, ctx)
+            });
+            result.unwrap_err();
+            assert!(!called.load(Ordering::Relaxed));
+        });
     }
 }
 

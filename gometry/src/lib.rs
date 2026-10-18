@@ -107,7 +107,6 @@ pub(crate) use py::classes::{
     PyCoordinates, PyCoordinatesIter, PyGeometry, PyGeometryCollection, PyGeometryParts,
     PyGeometryPartsIter, PyLineString, PyMultiLineString, PyMultiPoint, PyMultiPolygon, PyPoint,
     PyPolygon, Typed, map_coordinates_callback, parse_coordinate_replacement,
-    replace_shape_coordinates, slice_replacement_for_shape,
 };
 use py::functions::polyline::from_polyline;
 use py::functions::{

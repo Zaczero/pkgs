@@ -106,26 +106,26 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn replace_packed_coords_detached(
+    pub(crate) fn replace_packed_coords(
         &self,
-        py: Python<'_>,
-        output_frame: Frame,
-        replacement: CoordinateReplacement,
-    ) -> PyResult<Option<Self>> {
-        self.map_packed_columns_detached(py, output_frame, move |columns| {
-            let mut replacement_index = 0;
-            let output =
-                replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)?;
-            if replacement_index != replacement.len {
-                return Err(BatchError::Batch(
-                    crate::geometry::GeometryErrorKind::message(format!(
-                        "coordinates must have length {}; got length {replacement_index}",
-                        replacement.len
-                    )),
-                ));
-            }
-            Ok(output)
-        })
+        replacement: &CoordinateReplacement,
+    ) -> BatchResult<Option<Self>> {
+        let Some(columns) = self.rows.packed_columns() else {
+            return Ok(None);
+        };
+        let mut replacement_index = 0;
+        let output = replace_packed_columns_dispatch(columns, replacement, &mut replacement_index)?;
+        if replacement_index != replacement.len {
+            return Err(BatchError::Batch(
+                crate::geometry::GeometryErrorKind::message(format!(
+                    "coordinates must have length {}; got length {replacement_index}",
+                    replacement.len
+                )),
+            ));
+        }
+        Ok(Some(
+            self.assemble_packed_result(output, self.frame.clone())?,
+        ))
     }
 
     pub(crate) fn pair_packed_columns_detached<R>(

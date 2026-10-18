@@ -464,7 +464,7 @@ pub(crate) fn try_unary_packed_array(
                         Err(error) => Err(error.into()),
                     },
                 },
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             };
             drop(scratch);
             Some(result)

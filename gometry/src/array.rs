@@ -37,9 +37,9 @@ use crate::{
     line_interpolate_points_coordseq, line_interpolate_points_shape, line_locate_coordseq,
     map_coordinates_callback, note_array_row, overlay_operator, owned_voronoi_boundary,
     parse_coordinate_replacement, parse_crs, parse_curve_bounds, parse_interpolate_plan,
-    parse_precision, positive_int, pyclass, replace_shape_coordinates, require_geojson_crs,
-    resolve_metric, row_sample_seed, slice_replacement_for_shape, validate_densify_fraction,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_subdivide_max_vertices,
+    parse_precision, positive_int, pyclass, require_geojson_crs, resolve_metric, row_sample_seed,
+    validate_densify_fraction, validate_equals_exact_tolerance, validate_max_segment_length,
+    validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.
@@ -100,6 +100,7 @@ pub(crate) type ElementBounds = Arc<Vec<Option<Bounds>>>;
 
 /// Lazy array-wide aggregate bounds cache handle (`None` when every row is empty).
 type TotalBoundsCache = Arc<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>;
+mod coordinate_replacement;
 mod linref_kernels;
 mod map_shapes;
 mod masked;

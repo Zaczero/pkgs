@@ -592,7 +592,7 @@ where
             Ok(metric_ctx) => metric_ctx,
             Err(error) => {
                 drop(scratch);
-                return Err(error);
+                return Err(error.into());
             },
         };
         let resolved = match metric_ctx.require_resolved(op) {
@@ -1001,7 +1001,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                         Ok(context) => context,
                         Err(error) => {
                             drop(metric_scratch);
-                            return Err(error);
+                            return Err(error.into());
                         },
                     };
                 let ctx = CachelessRowContext {
@@ -1037,7 +1037,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                         Ok(context) => context,
                         Err(error) => {
                             drop(metric_scratch);
-                            return Err(error);
+                            return Err(error.into());
                         },
                     };
                 let left_fixed = if split_geographic_inputs {

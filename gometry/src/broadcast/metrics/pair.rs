@@ -1,7 +1,7 @@
 use crate::array::PyGeometryArray;
 use crate::broadcast::metrics::{
-    CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
-    PyGeometry, PyResult, Shape, crs,
+    CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryKind, Point, PyGeometry, PyResult,
+    Shape, crs,
 };
 use crate::crs::frame::Frame;
 use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};

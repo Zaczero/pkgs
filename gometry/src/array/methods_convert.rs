@@ -351,7 +351,7 @@ impl PyGeometryArray {
                 .resolve_topology_ctx(&self.frame, &mut metric_scratch)
             {
                 Ok(context) => context,
-                Err(error) => return Some(Err(error)),
+                Err(error) => return Some(Err(error.into())),
             };
             let metric_access = move || {
                 metric.geographic_chart_metric()?.ok_or_else(|| {

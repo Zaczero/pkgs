@@ -26,7 +26,7 @@ pub(crate) fn geojson_domain_metric<'a>(
 )> {
     let source_crs = crs.map_or_else(wgs84_crs, crs_arc);
     let frame = Frame::new(Some(source_crs), None)?;
-    crate::dispatch::MetricResolver::GeographicCarry.resolve_topology_ctx(&frame, scratch)
+    Ok(crate::dispatch::MetricResolver::GeographicCarry.resolve_topology_ctx(&frame, scratch)?)
 }
 
 /// Cached `gometry._types.Extremes` constructor — `extremes()` runs in

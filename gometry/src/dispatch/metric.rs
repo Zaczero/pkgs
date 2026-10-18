@@ -54,7 +54,7 @@ impl MetricResolver {
         self,
         frame: &Frame,
         scratch: &'a mut MetricScratch,
-    ) -> pyo3::PyResult<MetricCtx<'a>> {
+    ) -> crate::error::Result<MetricCtx<'a>> {
         if matches!(self, Self::GeographicCarry) {
             return self
                 .resolve_topology_ctx(frame, scratch)
@@ -69,7 +69,7 @@ impl MetricResolver {
         frame: &Frame,
         scratch: &'a mut MetricScratch,
         state: Option<&crs::RuntimeState>,
-    ) -> pyo3::PyResult<MetricCtx<'a>> {
+    ) -> crate::error::Result<MetricCtx<'a>> {
         let model = match self {
             Self::None => return Ok(MetricCtx::None),
             Self::Antimeridian => {
@@ -94,7 +94,7 @@ impl MetricResolver {
             Ok(metric) => metric,
             Err(error) => {
                 drop(model);
-                return Err(error.into());
+                return Err(error);
             },
         };
         let model = scratch.model.get_or_init(|| model);
@@ -110,7 +110,7 @@ impl MetricResolver {
         self,
         frame: &Frame,
         scratch: &'a mut MetricScratch,
-    ) -> pyo3::PyResult<(TopologyDomain, MetricCtx<'a>)> {
+    ) -> crate::error::Result<(TopologyDomain, MetricCtx<'a>)> {
         if matches!(self, Self::GeographicCarry) {
             scratch.clear();
             if frame.crs_str().is_none() {
