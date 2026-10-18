@@ -396,9 +396,12 @@ class TestSurfaceConsistency:
         )
         values = [gm.Point(1, 3, z=99, m=30), None, gm.Point(3, -2, z=7, m=40)]
         points = gm.GeometryArray(values)
+        gm.nearest_points(fixed, gm.Point(1, 3, z=99, m=30), unit='planar')
+        fixed_size = fixed.__sizeof__()
         left, right = gm.nearest_points(fixed, points, unit='planar')
         assert left.to_wkt() == ['POINT ZM (1 0 2 12)', None, 'POINT ZM (3 0 6 16)']
         assert right.to_wkt() == ['POINT ZM (1 3 99 30)', None, 'POINT ZM (3 -2 7 40)']
+        assert fixed.__sizeof__() == fixed_size
 
         crossing = gm.LineString([(179, 0), (-179, 0)], crs=4326)
         probes = gm.GeometryArray(

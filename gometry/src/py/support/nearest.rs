@@ -62,9 +62,9 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     domain: crate::geometry::TopologyDomain,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let fixed_plan = fixed.prepared_plan();
-    let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
     if let crate::crs::MetricModel::Geodesic { crs, state, .. } = model {
+        let fixed_cache = fixed.frame_cache();
         let rows = py.detach(move || {
             let mut rows = array_owned.row_operation();
             crate::crs::with_resolved_ellipsoid_metric_at(
