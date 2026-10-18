@@ -100,13 +100,13 @@ pub(crate) fn geographic_bounds_chart(
 
 impl Shape {
     /// XY-unique vertices in first-seen order.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
-    )]
     pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
         let mut unique = Vec::new();
         if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
+            )]
             let _reservation = unique.try_reserve(capacity);
         }
         let ControlFlow::Continue(()): ControlFlow<Infallible> = self
@@ -119,13 +119,13 @@ impl Shape {
 
     /// XY-unique vertices in first-seen order, keeping each survivor's full
     /// coordinates (Z/M and signed-zero spelling).
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
-    )]
     pub(crate) fn first_seen_xy_vertices(&self) -> crate::error::Result<Vec<Point>> {
         let mut unique = Vec::new();
         if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
+            )]
             let _reservation = unique.try_reserve(capacity);
         }
         let ControlFlow::Continue(()): ControlFlow<Infallible> = self
@@ -137,10 +137,6 @@ impl Shape {
     }
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Iterator size_hint is advisory and can greatly exceed the deduplicated output."
-)]
 pub(crate) fn unique_xy_points<I>(points: I) -> crate::error::Result<Vec<Point>>
 where
     I: IntoIterator,
@@ -151,7 +147,15 @@ where
     let capacity = upper.unwrap_or(lower);
     let mut seen = crate::collections::try_hash_set()?;
     let mut unique = Vec::new();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Iterator size_hint is advisory and can greatly exceed the deduplicated output."
+    )]
     let _seen_reservation = seen.try_reserve(capacity);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Iterator size_hint is advisory and can greatly exceed the deduplicated output."
+    )]
     let _unique_reservation = unique.try_reserve(capacity);
     for point in iter {
         let point = *point.borrow();

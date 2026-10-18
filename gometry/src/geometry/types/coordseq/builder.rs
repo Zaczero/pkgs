@@ -28,19 +28,8 @@ impl CoordSeqBuilder {
         }
     }
 
-    /// Reserve the admitted coordinate count before publishing the columns.
-    pub(crate) fn reserve_hint(&mut self, additional: usize) {
-        self.xs.reserve(additional);
-        self.ys.reserve(additional);
-        if let Some(column) = self.zs.as_mut() {
-            column.reserve(additional);
-        }
-        if let Some(column) = self.ms.as_mut() {
-            column.reserve(additional);
-        }
-    }
-
-    fn reserve(&mut self, additional: usize) {
+    /// Reserve capacity in all active coordinate columns.
+    pub(crate) fn reserve(&mut self, additional: usize) {
         self.xs.reserve(additional);
         self.ys.reserve(additional);
         if let Some(column) = self.zs.as_mut() {

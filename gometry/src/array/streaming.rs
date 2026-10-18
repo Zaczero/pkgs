@@ -485,7 +485,7 @@ impl StreamingShapes {
                 self.validity.len(),
             )?;
             if let Some(capacity) = polygon_capacity {
-                builder.coords.reserve_hint(capacity);
+                builder.coords.reserve(capacity);
             }
             builder.try_push(polygon)?;
             self.state = StreamingState::Polygons(builder);

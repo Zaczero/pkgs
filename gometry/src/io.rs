@@ -550,15 +550,15 @@ pub(crate) struct CheckedText {
 }
 
 impl CheckedText {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "Rendered-size estimates can substantially exceed the actual text length."
-    )]
     pub(crate) fn with_capacity_hint(capacity: usize, limit: usize) -> Self {
         let limit = limit.min(isize::MAX.unsigned_abs());
         let capacity = capacity.min(limit);
         let mut value = String::new();
         if isize::try_from(capacity).is_ok() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Rendered-size estimates can substantially exceed the actual text length."
+            )]
             let _reservation = value.try_reserve(capacity);
         }
         Self {

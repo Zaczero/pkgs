@@ -336,7 +336,7 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
     if events.is_empty() {
         return Ok(());
     }
-    output.reserve_hint(events.len());
+    output.reserve(events.len());
     let mut root_metric = RootMetricState::default();
     for event in events {
         let parameter = event.parameter.round()?;
