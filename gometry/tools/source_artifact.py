@@ -954,7 +954,32 @@ def required_source_records(
         ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',), None),
         # These path packages and their selected features attest the bundled
         # Rust sources; source_roots.txt owns the remaining native inputs.
+        ('cmake', '0.1.58', None, (), 'vendor/cmake-rs/cmake'),
         ('h3o', '0.11.0', None, ('std',), 'vendor/h3o'),
+        ('numpy', '0.30.0', None, (), 'vendor/rust-numpy'),
+        (
+            'pyo3',
+            '0.30.1',
+            None,
+            ('macros', 'multiple-pymethods', 'nightly'),
+            'vendor/pyo3/pyo3',
+        ),
+        (
+            'pyo3-build-config',
+            '0.30.1',
+            None,
+            (),
+            'vendor/pyo3/pyo3-build-config',
+        ),
+        ('pyo3-ffi', '0.30.1', None, (), 'vendor/pyo3/pyo3-ffi'),
+        ('pyo3-macros', '0.30.1', None, (), 'vendor/pyo3/pyo3-macros'),
+        (
+            'pyo3-macros-backend',
+            '0.30.1',
+            None,
+            (),
+            'vendor/pyo3/pyo3-macros-backend',
+        ),
         ('proj-sys', '0.27.0', None, ('bundled_proj', 'tiff'), 'vendor/proj-sys'),
         ('gometry-libtiff-sys', '0.1.0', None, (), 'native/libtiff-sys'),
         ('cmake-flags', '0.1.0', None, (), 'native/cmake-flags'),

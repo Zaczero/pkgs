@@ -2,8 +2,11 @@
 # `root` roots are copied into the standalone sdist by source_artifact.py.
 cargo native/cmake-flags
 cargo native/libtiff-sys
+cargo vendor/cmake-rs/cmake
 cargo vendor/h3o
+cargo vendor/pyo3/pyo3
 cargo vendor/proj-sys
+cargo vendor/rust-numpy
 root patches/proj
 root vendor/libtiff
 root vendor/nlohmann-json
