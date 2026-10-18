@@ -66,7 +66,8 @@ pub enum GeometryErrorKind {
         "interpolate_m would overwrite existing M ordinates; pass overwrite=True to replace them"
     )]
     MeasureOverwrite,
-    /// `produced` saturates at `usize::MAX` when the count itself overflows.
+    /// `produced` is the prospective count or a proven lower bound on required
+    /// output, saturating at `usize::MAX` when the count itself overflows.
     #[error(
         "{operation} would generate {}, exceeding the limit of {limit}; adjust {parameter}",
         generated_count(*produced)

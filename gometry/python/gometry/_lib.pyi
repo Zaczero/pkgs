@@ -491,7 +491,7 @@ class ResourceLimitError(RuntimeError):
     parameter: str | None
     """The parameter that controls generated output (else ``None``)."""
     produced: int | None
-    """The number of produced items for an output limit (else ``None``)."""
+    """Prospective item count or a proven lower bound exceeding the output limit (else ``None``)."""
     limit: int | None
     """The configured output limit (else ``None``)."""
 

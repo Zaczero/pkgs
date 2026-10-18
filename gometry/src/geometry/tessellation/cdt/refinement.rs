@@ -422,16 +422,16 @@ fn longest_edge_midpoint_for(
 
 impl ConstrainedMesh {
     /// Ruppert refinement of the inside faces to `min_angle` degrees and/or
-    /// `max_area`, inserting at most `limit` vertices. `Ok(false)` means the
-    /// budget or a topological placement ran out before the mesh met the
-    /// request; exact construction failures are returned as `Err`.
+    /// `max_area`, inserting at most `limit` vertices. A budget refusal reports
+    /// the prospective count of the next required insertion, excluding input
+    /// vertices. Construction failures retain their native error.
     pub(in crate::geometry::tessellation::delaunay) fn refine(
         &mut self,
         points: &mut Vec<Point>,
         min_angle: Option<f64>,
         max_area: Option<f64>,
         limit: usize,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let inside = self.inside_faces();
         let mut bad = BinaryHeap::new();
         #[cfg(test)]
@@ -453,7 +453,7 @@ impl ConstrainedMesh {
             }
         }
         if bad.is_empty() {
-            return Ok(true);
+            return Ok(());
         }
         let mut faces = FaceLabels::from_inside(&self.mesh, &inside);
         let mut circles = ConstraintIndex::new(&self.constraint_pieces, &self.coordinates)?;
@@ -467,7 +467,19 @@ impl ConstrainedMesh {
                 continue;
             }
             if inserted >= limit {
-                return Ok(false);
+                return Err(GeometryErrorKind::GeneratedOutputTooLarge {
+                    operation: "triangulate",
+                    parameter: if min_angle.is_none() {
+                        "max_area"
+                    } else if max_area.is_none() {
+                        "min_angle"
+                    } else {
+                        "min_angle/max_area"
+                    },
+                    produced: inserted.saturating_add(1),
+                    limit,
+                }
+                .into());
             }
             // No finite binary64 can represent this center. Ruppert can
             // still make progress with the explicitly chosen longest-edge
@@ -498,24 +510,21 @@ impl ConstrainedMesh {
                     {
                         self.prepare_split(&circles, edge)?
                     },
-                    LocationOutcome::Located(located) => Some(PreparedSplit {
+                    LocationOutcome::Located(located) => PreparedSplit {
                         candidate: center,
                         located,
                         constraint: None,
                         construction: Some(center_construction),
-                    }),
+                    },
                     LocationOutcome::Blocked(edge) => self.prepare_split(&circles, edge)?,
                 }
             };
-            let Some(PreparedSplit {
+            let PreparedSplit {
                 candidate,
                 located,
                 constraint,
                 construction,
-            }) = placed
-            else {
-                return Ok(false);
-            };
+            } = placed;
             if matches!(located, Located::OnVertex) {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             }
@@ -653,14 +662,10 @@ impl ConstrainedMesh {
             }
             inserted = inserted.wrapping_add(1);
         }
-        Ok(true)
+        Ok(())
     }
 
-    fn prepare_split(
-        &self,
-        circles: &ConstraintIndex,
-        e: HalfedgeId,
-    ) -> Result<Option<PreparedSplit>> {
+    fn prepare_split(&self, circles: &ConstraintIndex, e: HalfedgeId) -> Result<PreparedSplit> {
         let (start, end) = self.mesh.edge_vertices(e);
         if self.is_constrained(e) {
             let Some(piece) = self.constraint_pieces.get(ordered(start, end)) else {
@@ -682,7 +687,7 @@ impl ConstrainedMesh {
                 self.certify_split_incidence(circles, piece, candidate)?;
             }
             let located = self.locate_boundary_split(e, candidate)?;
-            return Ok(Some(PreparedSplit {
+            return Ok(PreparedSplit {
                 candidate,
                 located,
                 constraint: Some(PreparedConstraintSplit {
@@ -690,7 +695,7 @@ impl ConstrainedMesh {
                     certificate,
                 }),
                 construction: None,
-            }));
+            });
         }
         let midpoint = self.coordinates.rounded_midpoint(start, end)?;
         let located = match self.mesh.locate_bounded(
@@ -712,12 +717,12 @@ impl ConstrainedMesh {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             },
         };
-        Ok(Some(PreparedSplit {
+        Ok(PreparedSplit {
             candidate: midpoint,
             located,
             constraint: None,
             construction: Some(RefinementConstruction::EdgeMidpoint([start, end])),
-        }))
+        })
     }
 
     fn certify_constraint_split(

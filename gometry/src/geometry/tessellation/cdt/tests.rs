@@ -244,14 +244,11 @@ fn parity_flood_finds_the_inside_of_a_square_with_a_hole() {
 }
 
 #[test]
-fn refinement_meets_an_area_target_within_budget_and_reports_when_it_cannot() {
+fn refinement_meets_an_area_target_and_needs_no_budget_when_already_complete() {
     let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
     let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
     let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
-    assert!(
-        mesh.refine(&mut pts, None, Some(25.0), 10_000).unwrap(),
-        "a generous budget completes"
-    );
+    mesh.refine(&mut pts, None, Some(25.0), 10_000).unwrap();
     let inside = mesh.inside_faces();
     for (face, &kept) in mesh.mesh.face_ids().zip(&inside) {
         if kept && mesh.mesh.alive(face) {
@@ -261,12 +258,56 @@ fn refinement_meets_an_area_target_within_budget_and_reports_when_it_cannot() {
             );
         }
     }
-    let mut pts2 = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
-    let mut mesh2 = ConstrainedMesh::build(&pts2, &edges).unwrap();
-    assert!(
-        !mesh2.refine(&mut pts2, None, Some(0.5), 3).unwrap(),
-        "three vertices cannot reach 0.5 area"
-    );
+    let count = pts.len();
+    mesh.refine(&mut pts, None, Some(25.0), 0).unwrap();
+    assert_eq!(pts.len(), count);
+}
+
+#[rstest::rstest]
+#[case::no_insertions(0, 1, 4)]
+#[case::three_insertions(3, 4, 7)]
+fn refinement_budget_refusal_counts_the_next_required_generated_vertex(
+    #[case] limit: usize,
+    #[case] required: usize,
+    #[case] final_vertices: usize,
+) {
+    let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
+    let edges = [[0, 1], [1, 2], [2, 3], [3, 0]];
+    let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
+    let error = mesh.refine(&mut pts, None, Some(0.5), limit).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+            operation: "triangulate",
+            parameter: "max_area",
+            produced,
+            limit: reported_limit,
+        }) if *produced == required && *reported_limit == limit
+    ));
+    assert_eq!(pts.len(), final_vertices);
+}
+
+#[rstest::rstest]
+#[case::angle_only(None, "min_angle")]
+#[case::both_constraints(Some(0.5), "min_angle/max_area")]
+fn refinement_budget_refusal_names_the_active_quality_constraints(
+    #[case] max_area: Option<f64>,
+    #[case] parameter: &str,
+) {
+    let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 0.25), (0.125, 0.0625)]);
+    let edges = [[0, 1], [1, 2], [2, 3], [3, 0]];
+    let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
+    let error = mesh.refine(&mut pts, Some(25.0), max_area, 0).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+            operation: "triangulate",
+            parameter: reported_parameter,
+            produced: 1,
+            limit: 0,
+        }) if *reported_parameter == parameter
+    ));
+    assert_eq!(pts.len(), 4);
 }
 
 #[test]
@@ -278,7 +319,7 @@ fn refinement_keeps_construction_recipes_and_exact_boundary_roots() {
         min_angle: None,
         max_area: Some(crate::Positive::try_new("max_area", 25.0).unwrap()),
     };
-    assert!(mesh.refine(&mut points, None, Some(25.0), 10_000).unwrap());
+    mesh.refine(&mut points, None, Some(25.0), 10_000).unwrap();
 
     assert!(mesh.provenance.iter().any(|origin| {
         matches!(origin, NodeProvenance::InteriorRefinement {
@@ -406,7 +447,7 @@ fn refinement_initializes_global_state_once() {
     let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
     let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
     let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
-    assert!(mesh.refine(&mut pts, None, Some(100.0), 100).unwrap());
+    mesh.refine(&mut pts, None, Some(100.0), 100).unwrap();
     let counters = take_refinement_work_counters();
     assert_eq!(counters.inside_label_passes, 1);
     assert_eq!(counters.bad_face_scans, 1);

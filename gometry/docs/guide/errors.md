@@ -146,7 +146,7 @@ when handling other overflow sources too.
 | [`format`][gometry.ParseError.format] | [`ParseError`][gometry.ParseError] | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
 | [`position`][gometry.ParseError.position] | `ParseError` | WKT/EWKT reports the zero-based UTF-8 byte offset where parsing detected the error, including an EWKT prefix; WKB reports its zero-based binary byte offset; other codecs report `None` when unavailable |
 | [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
-| [`parameter`][gometry.ResourceLimitError.parameter] / [`produced`][gometry.ResourceLimitError.produced] / [`limit`][gometry.ResourceLimitError.limit] | bounded-output `ResourceLimitError` | Controlling parameter, produced count, and configured limit |
+| [`parameter`][gometry.ResourceLimitError.parameter] / [`produced`][gometry.ResourceLimitError.produced] / [`limit`][gometry.ResourceLimitError.limit] | bounded-output `ResourceLimitError` | Controlling parameter, prospective count (or proven lower bound), and configured limit |
 | [`code`][gometry.ResourceLimitError.code] | `ResourceLimitError` | `'output_limit'` or `'work_limit'`; `None` for hand-built errors |
 | `code` / `operation` | certified-output `OverflowError` | `'output_unrepresentable'` and the operation that could not publish its result |
 | [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |

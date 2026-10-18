@@ -217,17 +217,12 @@ pub(crate) fn prepare_constrained_triangle_plan<'a>(
         // input constraint vertices are not generated output and must not
         // consume this operation's cap.
         let limit = GENERATED_ITEM_LIMIT;
-        let complete = cdt.refine(
+        cdt.refine(
             &mut vertices,
             min_angle.map(crate::Positive::get),
             max_area.map(crate::Positive::get),
             limit,
         )?;
-        if !complete {
-            return Err(GeometryErrorKind::triangulation(format!(
-                "constrained refinement could not satisfy the requested quality within the limit of {GENERATED_ITEM_LIMIT} generated vertices; relax min_angle/max_area"
-            )));
-        }
     }
     cdt.finish_plan(vertices, refinement, force_xy)
 }
