@@ -147,25 +147,22 @@ fn bounded_text_preserves_utf8_and_discloses_truncation() {
     assert_eq!(text.capacity(), text.len());
 }
 
-#[test]
-fn completed_outcomes_preserve_schema_two_fields() {
-    for outcome in [
-        Collected::Observation(observation()),
-        Collected::CollectorError("collector unavailable".into()),
-    ] {
-        let record = invocation(19, outcome);
-        let value = serde_json::to_value(&record).expect("invocation JSON");
-        assert_eq!(value["run"], 19);
-        assert_eq!(value["started_ns"], "321");
-        match record.outcome {
-            Collected::Observation(_) => {
-                assert_eq!(value["observation"]["elapsed_ns"], "123");
-                assert!(value["error"].is_null());
-            },
-            Collected::CollectorError(_) => {
-                assert!(value["observation"].is_null());
-                assert_eq!(value["error"], "collector unavailable");
-            },
-        }
+#[rstest::rstest]
+#[case::collected_observation_observation(Collected::Observation(observation()))]
+#[case::collected_collectorerror_collector_unavailable_into(Collected::CollectorError("collector unavailable".into()))]
+fn completed_outcomes_preserve_schema_two_fields(#[case] outcome: Collected) {
+    let record = invocation(19, outcome);
+    let value = serde_json::to_value(&record).expect("invocation JSON");
+    assert_eq!(value["run"], 19);
+    assert_eq!(value["started_ns"], "321");
+    match record.outcome {
+        Collected::Observation(_) => {
+            assert_eq!(value["observation"]["elapsed_ns"], "123");
+            assert!(value["error"].is_null());
+        },
+        Collected::CollectorError(_) => {
+            assert!(value["observation"].is_null());
+            assert_eq!(value["error"], "collector unavailable");
+        },
     }
 }

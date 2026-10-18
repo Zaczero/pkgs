@@ -790,72 +790,34 @@ mod tests {
         verdict(&comparison, 3, Some(0.01)).1
     }
 
-    #[test]
-    fn verdicts_state_factors_beyond_one_and_a_half_and_percentages_below() {
-        for (estimate, bounds, decision, expected) in [
-            (
-                3.47,
-                Some((3.33, 3.62)),
-                Decision::More,
-                "B is 3.47× slower than A (95% CI 3.33–3.62×)",
-            ),
-            (
-                0.5,
-                Some((0.4, 0.6)),
-                Decision::Less,
-                "B is 2.00× faster than A (95% CI 1.67–2.50×)",
-            ),
-            (
-                0.3,
-                Some((0.0, 0.5)),
-                Decision::Less,
-                "B is 3.33× faster than A (95% CI at least 2.00×)",
-            ),
-            (
-                1.048,
-                Some((1.021, 1.074)),
-                Decision::More,
-                "B takes 4.8% more time than A (95% CI 2.1–7.4%)",
-            ),
-            (
-                0.952,
-                Some((0.93, 0.98)),
-                Decision::Less,
-                "B takes 4.8% less time than A (95% CI 2.0–7.0%)",
-            ),
-            (
-                1.002,
-                Some((0.995, 1.006)),
-                Decision::Equivalent,
-                "B is within ±1% of A (95% CI 0.5% less to 0.6% more)",
-            ),
-            (
-                1.01,
-                Some((0.98, 1.05)),
-                Decision::Unresolved,
-                "B vs A: no clear difference (95% CI 2.0% less to 5.0% more)",
-            ),
-            (
-                1.1,
-                Some((0.0, 2.26)),
-                Decision::Unresolved,
-                "B vs A: no clear difference (95% CI up to 2.26× slower)",
-            ),
-            (
-                1.1,
-                None,
-                Decision::Unresolved,
-                "B vs A: too noisy to bound with 3 runs",
-            ),
-            (
-                2.0,
-                None,
-                Decision::Insufficient,
-                "B vs A: no measurable variation, so no interval",
-            ),
-        ] {
-            assert_eq!(sentence(estimate, bounds, decision), expected);
-        }
+    #[rstest::rstest]
+    #[case::estimate_3_47(3.47, Some((3.33, 3.62)), Decision::More, "B is 3.47× slower than A (95% CI 3.33–3.62×)")]
+    #[case::estimate_0_5(0.5, Some((0.4, 0.6)), Decision::Less, "B is 2.00× faster than A (95% CI 1.67–2.50×)")]
+    #[case::estimate_0_3(0.3, Some((0.0, 0.5)), Decision::Less, "B is 3.33× faster than A (95% CI at least 2.00×)")]
+    #[case::estimate_1_048(1.048, Some((1.021, 1.074)), Decision::More, "B takes 4.8% more time than A (95% CI 2.1–7.4%)")]
+    #[case::estimate_0_952(0.952, Some((0.93, 0.98)), Decision::Less, "B takes 4.8% less time than A (95% CI 2.0–7.0%)")]
+    #[case::estimate_1_002(1.002, Some((0.995, 1.006)), Decision::Equivalent, "B is within ±1% of A (95% CI 0.5% less to 0.6% more)")]
+    #[case::estimate_1_01(1.01, Some((0.98, 1.05)), Decision::Unresolved, "B vs A: no clear difference (95% CI 2.0% less to 5.0% more)")]
+    #[case::estimate_1_1(1.1, Some((0.0, 2.26)), Decision::Unresolved, "B vs A: no clear difference (95% CI up to 2.26× slower)")]
+    #[case::estimate_1_1_f9deb717(
+        1.1,
+        None,
+        Decision::Unresolved,
+        "B vs A: too noisy to bound with 3 runs"
+    )]
+    #[case::estimate_2_0(
+        2.0,
+        None,
+        Decision::Insufficient,
+        "B vs A: no measurable variation, so no interval"
+    )]
+    fn verdicts_state_factors_beyond_one_and_a_half_and_percentages_below(
+        #[case] estimate: f64,
+        #[case] bounds: Option<(f64, f64)>,
+        #[case] decision: Decision,
+        #[case] expected: &'static str,
+    ) {
+        assert_eq!(sentence(estimate, bounds, decision), expected);
     }
 
     #[test]

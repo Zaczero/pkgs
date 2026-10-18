@@ -74,29 +74,29 @@ fn exact_arguments_preserve_spaces_and_shell_metacharacters() {
     );
 }
 
-#[test]
-fn command_arguments_stop_fast_option_parsing_and_preserve_double_dash() {
-    for explicit_end in [false, true] {
-        let mut args = vec!["--once", "--json"];
-        if explicit_end {
-            args.push("--");
-        }
-        args.extend([
-            "sh", "-c",
-            "test \"$#\" -eq 7 && test \"$1\" = --json && test \"$5\" = -- && test \"$6\" = --separator && test -z \"$7\"",
-            "fixture", "--json", "--runs", "7", "--help", "--", "--separator", "",
-            ":::", "true", "embedded:::marker",
-        ]);
-        let output = fast(&args);
-        assert!(output.status.success(), "{output:?}");
-        let result = json(&output);
-        assert_eq!(result["candidates"].as_array().expect("commands").len(), 2);
-        assert_eq!(result["invocations"].as_array().expect("runs").len(), 2);
-        assert_eq!(
-            result["candidates"][1]["argv"][1]["value"],
-            "embedded:::marker"
-        );
+#[rstest::rstest]
+#[case::disabled(false)]
+#[case::enabled(true)]
+fn command_arguments_stop_fast_option_parsing_and_preserve_double_dash(#[case] explicit_end: bool) {
+    let mut args = vec!["--once", "--json"];
+    if explicit_end {
+        args.push("--");
     }
+    args.extend([
+        "sh", "-c",
+        "test \"$#\" -eq 7 && test \"$1\" = --json && test \"$5\" = -- && test \"$6\" = --separator && test -z \"$7\"",
+        "fixture", "--json", "--runs", "7", "--help", "--", "--separator", "",
+        ":::", "true", "embedded:::marker",
+    ]);
+    let output = fast(&args);
+    assert!(output.status.success(), "{output:?}");
+    let result = json(&output);
+    assert_eq!(result["candidates"].as_array().expect("commands").len(), 2);
+    assert_eq!(result["invocations"].as_array().expect("runs").len(), 2);
+    assert_eq!(
+        result["candidates"][1]["argv"][1]["value"],
+        "embedded:::marker"
+    );
 }
 
 #[test]
@@ -423,17 +423,14 @@ fn check_does_not_require_a_fixed_run_count() {
     assert_eq!(json(&output)["exit_code"].as_i64(), code.map(i64::from));
 }
 
-#[test]
-fn invalid_effort_and_options_are_usage_errors() {
-    for args in [
-        vec!["--once", "--runs", "3", "true"],
-        vec!["--once", "--warmup", "1", "true"],
-        vec!["--time", "nan", "true"],
-        vec!["--margin", "NaN", "true"],
-        vec!["--unknown", "true"],
-    ] {
-        assert_eq!(fast(&args).status.code(), Some(2), "{args:?}");
-    }
+#[rstest::rstest]
+#[case::vec_once_runs_3_true(vec!["--once", "--runs", "3", "true"])]
+#[case::vec_once_warmup_1_true(vec!["--once", "--warmup", "1", "true"])]
+#[case::vec_time_nan_true(vec!["--time", "nan", "true"])]
+#[case::vec_margin_nan_true(vec!["--margin", "NaN", "true"])]
+#[case::vec_unknown_true(vec!["--unknown", "true"])]
+fn invalid_effort_and_options_are_usage_errors(#[case] args: Vec<&'static str>) {
+    assert_eq!(fast(&args).status.code(), Some(2), "{args:?}");
 }
 
 #[test]
@@ -734,59 +731,63 @@ fn stopped_command_is_killed_by_timeout() {
     );
 }
 
-#[test]
-fn explicit_color_overrides_no_color_but_json_remains_plain() {
-    for (format, expect_color) in [("--details", true), ("--json", false)] {
-        let output = Command::new(env!("CARGO_BIN_EXE_fast"))
-            .env("NO_COLOR", "1")
-            .env("TERM", "dumb")
-            .args(["--once", "--color", "always", format, "true"])
-            .output()
-            .expect("run");
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(output.stdout.contains(&0x1B), expect_color);
-    }
+#[rstest::rstest]
+#[case::details("--details", true)]
+#[case::json("--json", false)]
+fn explicit_color_overrides_no_color_but_json_remains_plain(
+    #[case] format: &'static str,
+    #[case] expect_color: bool,
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_fast"))
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .args(["--once", "--color", "always", format, "true"])
+        .output()
+        .expect("run");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout.contains(&0x1B), expect_color);
 }
 
-#[test]
-fn explicit_color_applies_to_help_without_interpreting_option_payloads() {
-    for (args, colored) in [
-        (vec!["--help", "--color", "always"], true),
-        (vec!["--color=always", "--help"], true),
-        (vec!["--color", "never", "--help"], false),
-        (vec!["--prepare=--color=always", "--help"], false),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_fast"))
-            .env("NO_COLOR", "1")
-            .args(args)
-            .output()
-            .expect("help");
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(output.stdout.contains(&0x1B), colored);
-    }
+#[rstest::rstest]
+#[case::vec_help_color_always(vec!["--help", "--color", "always"], true)]
+#[case::vec_color_always_help(vec!["--color=always", "--help"], true)]
+#[case::vec_color_never_help(vec!["--color", "never", "--help"], false)]
+#[case::vec_prepare_color_always_help(vec!["--prepare=--color=always", "--help"], false)]
+fn explicit_color_applies_to_help_without_interpreting_option_payloads(
+    #[case] args: Vec<&'static str>,
+    #[case] colored: bool,
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_fast"))
+        .env("NO_COLOR", "1")
+        .args(args)
+        .output()
+        .expect("help");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout.contains(&0x1B), colored);
 }
 
-#[test]
-fn color_environment_forces_piped_color_unless_disabled() {
-    for (args, no_color, colored) in [
-        (vec!["--once", "true"], false, true),
-        (vec!["--help"], false, true),
-        (vec!["--once", "true"], true, false),
-        (vec!["--once", "--color", "never", "true"], false, false),
-    ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_fast"));
-        command
-            .env("FORCE_COLOR", "1")
-            .env("TERM", "dumb")
-            .env_remove("CLICOLOR_FORCE")
-            .env_remove("NO_COLOR");
-        if no_color {
-            command.env("NO_COLOR", "1");
-        }
-        let output = command.args(&args).output().expect("run");
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(output.stdout.contains(&0x1B), colored, "{args:?}");
+#[rstest::rstest]
+#[case::vec_once_true(vec!["--once", "true"], false, true)]
+#[case::vec_help(vec!["--help"], false, true)]
+#[case::vec_once_true_f4721d99(vec!["--once", "true"], true, false)]
+#[case::vec_once_color_never_true(vec!["--once", "--color", "never", "true"], false, false)]
+fn color_environment_forces_piped_color_unless_disabled(
+    #[case] args: Vec<&'static str>,
+    #[case] no_color: bool,
+    #[case] colored: bool,
+) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fast"));
+    command
+        .env("FORCE_COLOR", "1")
+        .env("TERM", "dumb")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("NO_COLOR");
+    if no_color {
+        command.env("NO_COLOR", "1");
     }
+    let output = command.args(&args).output().expect("run");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout.contains(&0x1B), colored, "{args:?}");
 }
 
 #[test]
@@ -936,33 +937,34 @@ fn explicit_time_is_a_strict_budget_after_the_first_run() {
     assert_eq!(result["analysis"]["runs"], 1);
 }
 
-#[test]
-fn discarded_warmup_is_excluded_from_the_analysis() {
+#[rstest::rstest]
+#[case::none(None)]
+#[case::some_0(Some("0"))]
+fn discarded_warmup_is_excluded_from_the_analysis(#[case] warmup: Option<&'static str>) {
     // Whether the cheap first run is discarded depends on host load; the planner's
     // unit tests cover that decision. This checks how the decision is recorded.
-    for warmup in [None, Some("0")] {
-        let mut args = vec!["--time", "1s", "--json"];
-        if let Some(warmup) = warmup {
-            args.extend(["--warmup", warmup]);
-        }
-        args.extend(["true", ":::", "true"]);
-        let output = fast(&args);
-        assert!(output.status.success(), "{output:?}");
-        let result = json(&output);
-        let plan = &result["plan"];
-        let discarded = plan["discarded_runs"].as_u64().expect("discarded runs") as usize;
-        assert!(discarded <= usize::from(warmup.is_none()), "{plan}");
-        let measured = result["invocations"]
-            .as_array()
-            .expect("observations")
-            .iter()
-            .filter(|i| i["phase"] != "warmup")
-            .count()
-            / 2;
-        let kept = measured.wrapping_sub(discarded);
-        assert_eq!(result["analysis"]["runs"], kept, "{plan}");
-        assert_eq!(plan["planned_runs"], kept, "{plan}");
+
+    let mut args = vec!["--time", "1s", "--json"];
+    if let Some(warmup) = warmup {
+        args.extend(["--warmup", warmup]);
     }
+    args.extend(["true", ":::", "true"]);
+    let output = fast(&args);
+    assert!(output.status.success(), "{output:?}");
+    let result = json(&output);
+    let plan = &result["plan"];
+    let discarded = plan["discarded_runs"].as_u64().expect("discarded runs") as usize;
+    assert!(discarded <= usize::from(warmup.is_none()), "{plan}");
+    let measured = result["invocations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .filter(|i| i["phase"] != "warmup")
+        .count()
+        / 2;
+    let kept = measured.wrapping_sub(discarded);
+    assert_eq!(result["analysis"]["runs"], kept, "{plan}");
+    assert_eq!(plan["planned_runs"], kept, "{plan}");
 }
 
 #[test]
