@@ -1,27 +1,19 @@
-use pyo3::PyErr;
-use pyo3::exceptions::PyValueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(crate) enum BlurhashError {
-    #[error("Invalid image dimensions: expected positive width and height, got {width}x{height}")]
+    #[error("width and height must be positive; got {width}x{height}")]
     InvalidImageDimensions { width: usize, height: usize },
-    #[error("Image dimensions {width}x{height} exceed the supported storage size")]
+    #[error("image dimensions {width}x{height} exceed the supported storage size")]
     ImageDimensionsTooLarge { width: usize, height: usize },
-    #[error("Invalid RGB buffer length: expected {expected}, got {got}")]
+    #[error("RGB buffer must contain {expected} bytes; got {got}")]
     InvalidRGBBufferLength { expected: usize, got: usize },
-    #[error("Invalid {axis} component count: expected 1..=9, got {got}")]
+    #[error("{axis} component count must be between 1 and 9; got {got}")]
     InvalidComponentCount { axis: &'static str, got: u8 },
-    #[error("Invalid blurhash: malformed at index {index}")]
+    #[error("blurhash contains an invalid value at index {index}")]
     BlurhashMalformed { index: usize },
-    #[error("Invalid blurhash length: expected {expected}, got {got}")]
+    #[error("blurhash must contain {expected} bytes; got {got}")]
     BlurhashLengthMismatch { expected: usize, got: usize },
-    #[error("Invalid punch: expected a finite nonnegative contrast scale")]
+    #[error("punch must be finite and nonnegative")]
     InvalidPunch,
-}
-
-impl BlurhashError {
-    pub(crate) fn into_pyerr(self) -> PyErr {
-        PyValueError::new_err(self.to_string())
-    }
 }

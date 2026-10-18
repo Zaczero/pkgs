@@ -18,14 +18,15 @@ __all__ = [
 ]
 
 
-class BlurhashDecodeError(Exception):
+class BlurhashDecodeError(ValueError):
     """A hash or output-dimension error raised by :func:`blurhash_decode`.
 
-    The ``blurhash`` attribute retains the input passed to the decoder.
+    This is a :class:`ValueError`. The ``blurhash`` attribute retains the input
+    passed to the decoder.
     """
 
     def __init__(self, blurhash: str, message: str | None = None):
-        super().__init__(message or f'Invalid blurhash: {blurhash!r}')
+        super().__init__(message or f'invalid blurhash: {blurhash!r}')
         self.blurhash = blurhash
 
 
@@ -121,7 +122,7 @@ def blurhash_decode(
     if width <= 0 or height <= 0:
         raise BlurhashDecodeError(
             blurhash,
-            f'Invalid image dimensions: expected positive width and height, got {width}x{height}',
+            f'width and height must be positive; got {width}x{height}',
         )
     try:
         data = decode_rgb(blurhash, width, height, punch)

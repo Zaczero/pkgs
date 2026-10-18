@@ -13,10 +13,17 @@ mod srgb;
 
 use std::num::NonZeroUsize;
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use crate::errors::BlurhashError;
+
+impl From<BlurhashError> for PyErr {
+    fn from(error: BlurhashError) -> Self {
+        PyValueError::new_err(error.to_string())
+    }
+}
 
 struct RgbDimensions {
     width: NonZeroUsize,
@@ -106,9 +113,9 @@ fn encode_rgb(
     x_components: u8,
     y_components: u8,
 ) -> PyResult<String> {
-    let dimensions = RgbDimensions::new(width, height).map_err(BlurhashError::into_pyerr)?;
+    let dimensions = RgbDimensions::new(width, height)?;
     py.detach(|| encode::encode_rgb(rgb, &dimensions, x_components, y_components))
-        .map_err(BlurhashError::into_pyerr)
+        .map_err(PyErr::from)
 }
 
 #[pyfunction]
@@ -119,16 +126,13 @@ fn decode_rgb(
     height: usize,
     punch: f64,
 ) -> PyResult<Py<PyBytes>> {
-    let dimensions = RgbDimensions::new(width, height).map_err(BlurhashError::into_pyerr)?;
+    let dimensions = RgbDimensions::new(width, height)?;
     let blurhash = blurhash.trim();
-    let layout =
-        decode::decode_layout(blurhash.as_bytes(), punch).map_err(BlurhashError::into_pyerr)?;
-    dimensions
-        .validate_working_storage(layout.num_x, layout.num_y)
-        .map_err(BlurhashError::into_pyerr)?;
+    let layout = decode::decode_layout(blurhash.as_bytes(), punch)?;
+    dimensions.validate_working_storage(layout.num_x, layout.num_y)?;
     let out = PyBytes::new_with(py, dimensions.rgb_len(), |buf| {
         py.detach(|| decode::decode_rgb_into(blurhash, &dimensions, &layout, buf))
-            .map_err(BlurhashError::into_pyerr)
+            .map_err(PyErr::from)
     })?;
     Ok(out.unbind())
 }

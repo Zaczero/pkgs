@@ -71,7 +71,7 @@ def test_encode_1x1_red_matches_reference() -> None:
 def test_encode_rejects_zero_dimensions(size: tuple[int, int]) -> None:
     with pytest.raises(
         ValueError,
-        match=r'Invalid image dimensions: expected positive width and height',
+        match='width and height must be positive',
     ):
         blurhash_encode(Image.new('RGB', size))
 
@@ -115,12 +115,12 @@ def test_encode_rejects_invalid_component_count() -> None:
     img = Image.new('RGB', (1, 1), (255, 0, 0))
     with pytest.raises(
         ValueError,
-        match=r'Invalid x component count: expected 1\.\.=9, got 0',
+        match='x component count must be between 1 and 9; got 0',
     ):
         blurhash_encode(img, 0, 1)
     with pytest.raises(
         ValueError,
-        match=r'Invalid y component count: expected 1\.\.=9, got 10',
+        match='y component count must be between 1 and 9; got 10',
     ):
         blurhash_encode(img, 1, 10)
 
@@ -173,19 +173,19 @@ def test_decode_invalid_blurhash_raises() -> None:
 def test_decode_rejects_zero_dimensions(size: tuple[int, int]) -> None:
     with pytest.raises(
         BlurhashDecodeError,
-        match=r'Invalid image dimensions: expected positive width and height',
+        match='width and height must be positive',
     ):
         blurhash_decode('00TI:j', *size)
 
 
 def test_decode_rejects_width_height_overflow() -> None:
-    with pytest.raises(BlurhashDecodeError, match='Image dimensions'):
+    with pytest.raises(BlurhashDecodeError, match='image dimensions'):
         blurhash_decode('00TI:j', sys.maxsize, 3)
 
 
 def test_decode_rejects_rgb_channel_overflow() -> None:
     max_usize = sys.maxsize * 2 + 1
-    with pytest.raises(BlurhashDecodeError, match='Image dimensions'):
+    with pytest.raises(BlurhashDecodeError, match='image dimensions'):
         blurhash_decode('00TI:j', max_usize // 3 + 1, 1)
 
 
@@ -198,7 +198,7 @@ def test_native_encode_accepts_largest_representable_rgb_length() -> None:
     width = sys.maxsize // 3
     with pytest.raises(
         ValueError,
-        match=rf'Invalid RGB buffer length: expected {width * 3}, got 0',
+        match=f'RGB buffer must contain {width * 3} bytes; got 0',
     ):
         encode_rgb(b'', width, 1, 1, 1)
 
@@ -208,7 +208,7 @@ def test_native_encode_accepts_largest_representable_rgb_length() -> None:
     [(sys.maxsize, 3), ((sys.maxsize * 2 + 1) // 3 + 1, 1)],
 )
 def test_native_encode_rejects_dimension_overflow(size: tuple[int, int]) -> None:
-    with pytest.raises(ValueError, match='Image dimensions'):
+    with pytest.raises(ValueError, match='image dimensions'):
         encode_rgb(b'', *size, 1, 1)
 
 
@@ -223,8 +223,9 @@ def test_decode_rejects_negative_and_huge_python_dimensions(
 def test_decode_rejects_out_of_range_ac_component() -> None:
     with pytest.raises(BlurhashDecodeError) as excinfo:
         blurhash_decode('100000~~', 8, 8)
+    assert isinstance(excinfo.value, ValueError)
     assert excinfo.value.blurhash == '100000~~'
-    assert str(excinfo.value) == 'Invalid blurhash: malformed at index 6'
+    assert str(excinfo.value) == 'blurhash contains an invalid value at index 6'
 
 
 def test_decode_whitespace_suffix_is_ignored() -> None:
