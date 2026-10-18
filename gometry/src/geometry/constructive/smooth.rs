@@ -15,10 +15,9 @@ use crate::geometry::{
 /// allocation, mirroring the grid coverers' cell-output budget.
 pub(crate) const SMOOTH_MAX_COORDS: usize = GENERATED_ITEM_LIMIT;
 
-/// The domain error raised when a projected `smooth` output would exceed
-/// [`SMOOTH_MAX_COORDS`]. Names the driving parameter (`iterations`) and the
-/// computed size — a parameter-value violation, so it maps to Python
-/// `GeometryError`.
+/// The resource-limit error raised when a projected `smooth` output would
+/// exceed [`SMOOTH_MAX_COORDS`]. Names the driving parameter (`iterations`) and
+/// the computed output size.
 fn smooth_budget_error(produced: usize) -> crate::error::Error {
     GeometryErrorKind::GeneratedOutputTooLarge {
         operation: "smooth",
