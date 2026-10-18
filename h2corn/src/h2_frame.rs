@@ -976,20 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_control_lengths_fail_from_the_nine_byte_header() {
-        for (frame_type, valid, invalid) in [
-            (FrameType::PING, 8, [7, 9]),
-            (FrameType::RST_STREAM, 4, [3, 5]),
-            (FrameType::WINDOW_UPDATE, 4, [3, 5]),
-            (FrameType::PRIORITY, 5, [4, 6]),
-        ] {
-            validate_declared_payload_length(frame_type, FrameFlags::EMPTY, valid).unwrap();
-            for len in invalid {
-                assert!(
-                    validate_declared_payload_length(frame_type, FrameFlags::EMPTY, len).is_err()
-                );
-            }
-        }
+    fn settings_and_goaway_lengths_fail_from_the_frame_header() {
         validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::ACK, 0).unwrap();
         assert!(validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::ACK, 1).is_err());
         validate_declared_payload_length(FrameType::SETTINGS, FrameFlags::EMPTY, 6).unwrap();
@@ -998,6 +985,22 @@ mod tests {
         );
         validate_declared_payload_length(FrameType::GOAWAY, FrameFlags::EMPTY, 8).unwrap();
         assert!(validate_declared_payload_length(FrameType::GOAWAY, FrameFlags::EMPTY, 7).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::frametype_ping(FrameType::PING, 8, [7, 9])]
+    #[case::frametype_rst_stream(FrameType::RST_STREAM, 4, [3, 5])]
+    #[case::frametype_window_update(FrameType::WINDOW_UPDATE, 4, [3, 5])]
+    #[case::frametype_priority(FrameType::PRIORITY, 5, [4, 6])]
+    fn fixed_control_lengths_fail_from_the_nine_byte_header(
+        #[case] frame_type: FrameType,
+        #[case] valid: usize,
+        #[case] invalid: [usize; 2],
+    ) {
+        validate_declared_payload_length(frame_type, FrameFlags::EMPTY, valid).unwrap();
+        for len in invalid {
+            assert!(validate_declared_payload_length(frame_type, FrameFlags::EMPTY, len).is_err());
+        }
     }
 
     #[tokio::test]

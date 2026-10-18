@@ -958,44 +958,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bodyless_status_pathsend_with_declared_trailers_finishes_without_a_trailer_section() {
-        for (status, expected_len) in [
-            (http::types::status_code::NO_CONTENT, 0),
-            (http::types::status_code::NOT_MODIFIED, 6),
-        ] {
-            let mut controller = ResponseController::new(false, true);
-            let mut actions = http::response::ResponseActions::new();
+    #[rstest::rstest]
+    #[case::http_types_status_code_no_content(http::types::status_code::NO_CONTENT, 0)]
+    #[case::http_types_status_code_not_modified(http::types::status_code::NOT_MODIFIED, 6)]
+    fn bodyless_status_pathsend_with_declared_trailers_finishes_without_a_trailer_section(
+        #[case] status: http::types::HttpStatusCode,
+        #[case] expected_len: usize,
+    ) {
+        let mut controller = ResponseController::new(false, true);
+        let mut actions = http::response::ResponseActions::new();
 
-            controller
-                .handle_start(
-                    final_status(status),
-                    Vec::new(),
-                    true,
-                    http::header::ResponseConnectionDirective::default(),
-                )
-                .expect("response start is accepted");
-            controller
-                .handle_pathsend(
-                    &mut actions,
-                    http::pathsend::PathSource::Buffered(Bytes::from_static(b"hidden")),
-                    6,
-                )
-                .expect("suppressed pathsend is accepted");
+        controller
+            .handle_start(
+                final_status(status),
+                Vec::new(),
+                true,
+                http::header::ResponseConnectionDirective::default(),
+            )
+            .expect("response start is accepted");
+        controller
+            .handle_pathsend(
+                &mut actions,
+                http::pathsend::PathSource::Buffered(Bytes::from_static(b"hidden")),
+                6,
+            )
+            .expect("suppressed pathsend is accepted");
 
-            assert!(matches!(
-                actions.pop().expect("pathsend completes on the wire"),
-                http::response::ResponseAction::Final {
-                    body: http::response::FinalResponseBody::Suppressed { len },
-                    ..
-                } if len == expected_len
-            ));
-            controller
-                .handle_trailers(&mut actions, http::types::ResponseTrailers::new(), false)
-                .expect("declared trailers are discarded");
-            assert!(controller.is_complete());
-            assert!(actions.is_empty());
-        }
+        assert!(matches!(
+            actions.pop().expect("pathsend completes on the wire"),
+            http::response::ResponseAction::Final {
+                body: http::response::FinalResponseBody::Suppressed { len },
+                ..
+            } if len == expected_len
+        ));
+        controller
+            .handle_trailers(&mut actions, http::types::ResponseTrailers::new(), false)
+            .expect("declared trailers are discarded");
+        assert!(controller.is_complete());
+        assert!(actions.is_empty());
     }
 
     #[test]

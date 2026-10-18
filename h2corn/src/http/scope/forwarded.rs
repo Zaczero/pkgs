@@ -372,130 +372,133 @@ mod tests {
             .with_text(|host| assert_eq!(host, "/run/h2corn.sock"));
     }
 
-    #[test]
-    fn malformed_forwarded_dialect_changes_nothing_and_never_applies_prefix() {
-        for (forwarded, valid) in [
-            (Bytes::from_static(b"for=203.0.113.10;proto=\"https"), false),
-            (
-                Bytes::from_static(b"for=203.0.113.10;proto=1https;host=bad.example"),
-                false,
-            ),
-            (Bytes::from_static(b"for=\xff"), false),
-            (
-                Bytes::from_static(
-                    br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#,
-                ),
-                true,
-            ),
-            (
-                Bytes::from_static(
-                    br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#,
-                ),
-                true,
-            ),
+    #[rstest::rstest]
+    #[case::bytes_from_static_b_for_203_0_113_10_proto_https(
+        Bytes::from_static(b"for=203.0.113.10;proto=\"https"),
+        false
+    )]
+    #[case::bytes_from_static_b_for_203_0_113_10_proto_1http_d255cd73(
+        Bytes::from_static(b"for=203.0.113.10;proto=1https;host=bad.example"),
+        false
+    )]
+    #[case::bytes_from_static_b_for_xff(Bytes::from_static(b"for=\xff"), false)]
+    #[case::bytes_from_static_br_for_203_0_113_10_proto_http_9f80c9a0(
+        Bytes::from_static(
+            br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#,
+        ),
+        true
+    )]
+    #[case::bytes_from_static_br_for_203_0_113_10_proto_http_ef722432(
+        Bytes::from_static(
+            br#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#,
+        ),
+        true
+    )]
+    fn malformed_forwarded_dialect_changes_nothing_and_never_applies_prefix(
+        #[case] forwarded: Bytes,
+        #[case] valid: bool,
+    ) {
+        let prefix = Bytes::from_static(b"/edge");
+        let mut header_meta = RequestHeaderMeta::default();
+        header_meta.observe_known_header_slice(
+            KnownRequestHeaderName::Forwarded,
+            forwarded.as_ref(),
+            0,
+            true,
+        );
+        header_meta.observe_known_header_slice(
+            KnownRequestHeaderName::XForwardedPrefix,
+            prefix.as_ref(),
+            1,
+            true,
+        );
+        let x_for = Bytes::from_static(b"192.0.2.66");
+        let x_proto = Bytes::from_static(b"https");
+        let x_host = Bytes::from_static(b"attacker.example");
+        let x_port = Bytes::from_static(b"9443");
+        for (name, value, index) in [
+            (KnownRequestHeaderName::XForwardedFor, &x_for, 2),
+            (KnownRequestHeaderName::XForwardedProto, &x_proto, 3),
+            (KnownRequestHeaderName::XForwardedHost, &x_host, 4),
+            (KnownRequestHeaderName::XForwardedPort, &x_port, 5),
         ] {
-            let prefix = Bytes::from_static(b"/edge");
-            let mut header_meta = RequestHeaderMeta::default();
-            header_meta.observe_known_header_slice(
-                KnownRequestHeaderName::Forwarded,
-                forwarded.as_ref(),
-                0,
-                true,
-            );
-            header_meta.observe_known_header_slice(
-                KnownRequestHeaderName::XForwardedPrefix,
-                prefix.as_ref(),
-                1,
-                true,
-            );
-            let x_for = Bytes::from_static(b"192.0.2.66");
-            let x_proto = Bytes::from_static(b"https");
-            let x_host = Bytes::from_static(b"attacker.example");
-            let x_port = Bytes::from_static(b"9443");
-            for (name, value, index) in [
-                (KnownRequestHeaderName::XForwardedFor, &x_for, 2),
-                (KnownRequestHeaderName::XForwardedProto, &x_proto, 3),
-                (KnownRequestHeaderName::XForwardedHost, &x_host, 4),
-                (KnownRequestHeaderName::XForwardedPort, &x_port, 5),
-            ] {
-                header_meta.observe_known_header_slice(name, value.as_ref(), index, true);
-            }
-            let request = RequestHead {
-                http_version: HttpVersion::Http2,
-                method: Method::GET,
-                target: RequestTarget::normal(
-                    BytesStr::from_static("http"),
-                    BytesStr::from_static("/"),
+            header_meta.observe_known_header_slice(name, value.as_ref(), index, true);
+        }
+        let request = RequestHead {
+            http_version: HttpVersion::Http2,
+            method: Method::GET,
+            target: RequestTarget::normal(
+                BytesStr::from_static("http"),
+                BytesStr::from_static("/"),
+            ),
+            headers: RequestHeaders::from_h2(vec![
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::Forwarded),
+                    RequestHeaderValue::from_h2_validated(forwarded),
                 ),
-                headers: RequestHeaders::from_h2(vec![
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::Forwarded),
-                        RequestHeaderValue::from_h2_validated(forwarded),
-                    ),
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPrefix),
-                        RequestHeaderValue::from_h2_validated(prefix),
-                    ),
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedFor),
-                        RequestHeaderValue::from_h2_validated(x_for),
-                    ),
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedProto),
-                        RequestHeaderValue::from_h2_validated(x_proto),
-                    ),
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedHost),
-                        RequestHeaderValue::from_h2_validated(x_host),
-                    ),
-                    (
-                        RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPort),
-                        RequestHeaderValue::from_h2_validated(x_port),
-                    ),
-                ]),
-                header_meta,
-            };
-            let info = ConnectionInfo {
-                actual_server: Some(ServerEndpoint::Tcp(ServerAddr {
-                    ip: "198.51.100.20".parse().unwrap(),
-                    port: Some(std::num::NonZeroU16::new(8443).unwrap()),
-                })),
-                proxy_headers_trusted: true,
-                client: Some(ClientAddr {
-                    ip: "192.0.2.66".parse().unwrap(),
-                    port: 41234,
-                }),
-                server: None,
-            };
-            let mut config = ServerConfig {
-                root_path: Box::from(""),
-                ..test_fixtures::server_config_parts()
-            };
-            config.proxy.forwarded_fields = ForwardedFields::FORWARDED;
-            let view = resolve_scope_view(&request, &config, &info);
-            if valid {
-                assert_eq!(view.scheme, "https");
-                view.client
-                    .unwrap()
-                    .0
-                    .with_text(|host| assert_eq!(host, "203.0.113.10"));
-                view.server
-                    .0
-                    .with_text(|host| assert_eq!(host, "good.example"));
-                assert_eq!(view.server.1, Some(8443));
-                assert_eq!(view.root_path, "");
-                continue;
-            }
-            assert_eq!(view.scheme, "http");
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPrefix),
+                    RequestHeaderValue::from_h2_validated(prefix),
+                ),
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::XForwardedFor),
+                    RequestHeaderValue::from_h2_validated(x_for),
+                ),
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::XForwardedProto),
+                    RequestHeaderValue::from_h2_validated(x_proto),
+                ),
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::XForwardedHost),
+                    RequestHeaderValue::from_h2_validated(x_host),
+                ),
+                (
+                    RequestHeaderName::Known(KnownRequestHeaderName::XForwardedPort),
+                    RequestHeaderValue::from_h2_validated(x_port),
+                ),
+            ]),
+            header_meta,
+        };
+        let info = ConnectionInfo {
+            actual_server: Some(ServerEndpoint::Tcp(ServerAddr {
+                ip: "198.51.100.20".parse().unwrap(),
+                port: Some(std::num::NonZeroU16::new(8443).unwrap()),
+            })),
+            proxy_headers_trusted: true,
+            client: Some(ClientAddr {
+                ip: "192.0.2.66".parse().unwrap(),
+                port: 41234,
+            }),
+            server: None,
+        };
+        let mut config = ServerConfig {
+            root_path: Box::from(""),
+            ..test_fixtures::server_config_parts()
+        };
+        config.proxy.forwarded_fields = ForwardedFields::FORWARDED;
+        let view = resolve_scope_view(&request, &config, &info);
+        if valid {
+            assert_eq!(view.scheme, "https");
             view.client
                 .unwrap()
                 .0
-                .with_text(|host| assert_eq!(host, "192.0.2.66"));
+                .with_text(|host| assert_eq!(host, "203.0.113.10"));
             view.server
                 .0
-                .with_text(|host| assert_eq!(host, "198.51.100.20"));
+                .with_text(|host| assert_eq!(host, "good.example"));
             assert_eq!(view.server.1, Some(8443));
             assert_eq!(view.root_path, "");
+            return;
         }
+        assert_eq!(view.scheme, "http");
+        view.client
+            .unwrap()
+            .0
+            .with_text(|host| assert_eq!(host, "192.0.2.66"));
+        view.server
+            .0
+            .with_text(|host| assert_eq!(host, "198.51.100.20"));
+        assert_eq!(view.server.1, Some(8443));
+        assert_eq!(view.root_path, "");
     }
 }

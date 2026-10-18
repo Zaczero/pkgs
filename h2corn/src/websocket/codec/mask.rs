@@ -131,24 +131,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn websocket_mask_phase_is_preserved_across_segment_and_lane_boundaries() {
+    #[rstest::rstest]
+    #[case::len_0_usize(0_usize)]
+    #[case::len_1(1)]
+    #[case::len_2(2)]
+    #[case::len_3(3)]
+    #[case::len_4(4)]
+    #[case::len_5(5)]
+    #[case::len_7(7)]
+    #[case::len_8(8)]
+    #[case::len_31(31)]
+    #[case::len_32(32)]
+    #[case::len_33(33)]
+    #[case::len_63(63)]
+    #[case::len_64(64)]
+    #[case::len_65(65)]
+    #[case::len_95(95)]
+    #[case::len_96(96)]
+    #[case::len_97(97)]
+    #[case::len_127(127)]
+    #[case::len_128(128)]
+    #[case::len_129(129)]
+    fn websocket_mask_phase_is_preserved_across_segment_and_lane_boundaries(#[case] len: usize) {
         let mask = [0x37, 0xFA, 0x21, 0x3D];
-        for len in [
-            0_usize, 1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129,
-        ] {
-            let source = (0..len)
-                .map(|value| value.wrapping_mul(31) as u8)
-                .collect::<Vec<_>>();
-            let expected = copy_masked_scalar(&source, mask, 0);
-            for split in 0..=len {
-                let mut candidate = source.clone();
-                let key = MaskKey::new(mask);
-                let phase = apply_websocket_mask_phase(&mut candidate[..split], key, 0);
-                let final_phase = apply_websocket_mask_phase(&mut candidate[split..], key, phase);
-                assert_eq!(candidate, expected, "len={len}, split={split}");
-                assert_eq!(final_phase, len & 3);
-            }
+
+        let source = (0..len)
+            .map(|value| value.wrapping_mul(31) as u8)
+            .collect::<Vec<_>>();
+        let expected = copy_masked_scalar(&source, mask, 0);
+        for split in 0..=len {
+            let mut candidate = source.clone();
+            let key = MaskKey::new(mask);
+            let phase = apply_websocket_mask_phase(&mut candidate[..split], key, 0);
+            let final_phase = apply_websocket_mask_phase(&mut candidate[split..], key, phase);
+            assert_eq!(candidate, expected, "len={len}, split={split}");
+            assert_eq!(final_phase, len & 3);
         }
     }
 }

@@ -220,18 +220,18 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn unix_socket_open_errors_substitute_forbidden() {
-        for errno in [rustix::io::Errno::NXIO, rustix::io::Errno::OPNOTSUPP] {
-            let err = H2CornError::from(PathsendError::open_failed(
-                std::path::Path::new("socket"),
-                std::io::Error::from_raw_os_error(errno.raw_os_error()),
-            ));
-            assert_eq!(
-                pathsend_open_substitute_status(&err),
-                Some(status_code::FORBIDDEN)
-            );
-        }
+    #[rstest::rstest]
+    #[case::rustix_io_errno_nxio(rustix::io::Errno::NXIO)]
+    #[case::rustix_io_errno_opnotsupp(rustix::io::Errno::OPNOTSUPP)]
+    fn unix_socket_open_errors_substitute_forbidden(#[case] errno: rustix::io::Errno) {
+        let err = H2CornError::from(PathsendError::open_failed(
+            std::path::Path::new("socket"),
+            std::io::Error::from_raw_os_error(errno.raw_os_error()),
+        ));
+        assert_eq!(
+            pathsend_open_substitute_status(&err),
+            Some(status_code::FORBIDDEN)
+        );
     }
 
     #[tokio::test]

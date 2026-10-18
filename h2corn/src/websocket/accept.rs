@@ -387,19 +387,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn websocket_accept_matches_reference_across_varied_keys() {
-        for key in [
-            *b"AAAAAAAAAAAAAAAAAAAAAA==",
-            *b"/////////////////////w==",
-            *b"AAECAwQFBgcICQoLDA0ODw==",
-            *b"dGhlIHNhbXBsZSBub25jZQ==",
-            [0; 24],
-            [u8::MAX; 24],
-            [0x55; 24],
-            [0xAA; 24],
-        ] {
-            assert_eq!(websocket_accept(&key), reference_websocket_accept(&key));
-        }
+    #[rstest::rstest]
+    #[case::aaaaaaaaaaaaaaaaaaaaaa(*b"AAAAAAAAAAAAAAAAAAAAAA==")]
+    #[case::w(*b"/////////////////////w==")]
+    #[case::aaecawqfbgcicqolda0odw(*b"AAECAwQFBgcICQoLDA0ODw==")]
+    #[case::dghlihnhbxbszsbub25jzq(*b"dGhlIHNhbXBsZSBub25jZQ==")]
+    #[case::key_0_24([0; 24])]
+    #[case::u8_max_24([u8::MAX; 24])]
+    #[case::key_0x55_24([0x55; 24])]
+    #[case::key_0xaa_24([0xAA; 24])]
+    fn websocket_accept_matches_reference_across_varied_keys(#[case] key: [u8; 24]) {
+        assert_eq!(websocket_accept(&key), reference_websocket_accept(&key));
     }
 }

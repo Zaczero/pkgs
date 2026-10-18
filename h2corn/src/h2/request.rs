@@ -724,67 +724,63 @@ mod tests {
         block.freeze()
     }
 
-    #[test]
-    fn header_fragment_excludes_priority_and_padding_at_empty_and_nonempty_boundaries() {
+    #[rstest::rstest]
+    #[case::flags_0x05(0x05, &b"\x82"[..], &b"\x82"[..])]
+    #[case::flags_0x0d(0x0D, &b"\x02\x82\0\0"[..], &b"\x82"[..])]
+    #[case::flags_0x2d(0x2D, &b"\x02\0\0\0\x01\x10\x82\0\0"[..], &b"\x82"[..])]
+    #[case::flags_0x2d_af51dafa(0x2D, &b"\x02\0\0\0\x01\x10\0\0"[..], &b""[..])]
+    #[case::flags_0x0d_0bedfdf6(0x0D, &b"\0"[..], &b""[..])]
+    fn header_fragment_excludes_priority_and_padding_at_empty_and_nonempty_boundaries(
+        #[case] flags: u8,
+        #[case] payload: &'static [u8],
+        #[case] expected: &[u8],
+    ) {
         use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, RawFrame, StreamId};
-
-        for (flags, payload, expected) in [
-            (0x05, &b"\x82"[..], &b"\x82"[..]),
-            (0x0D, &b"\x02\x82\0\0"[..], &b"\x82"[..]),
-            (0x2D, &b"\x02\0\0\0\x01\x10\x82\0\0"[..], &b"\x82"[..]),
-            (0x2D, &b"\x02\0\0\0\x01\x10\0\0"[..], &b""[..]),
-            (0x0D, &b"\0"[..], &b""[..]),
-        ] {
-            let fragment = super::parse_header_block_fragment(RawFrame {
-                header: FrameHeader {
-                    frame_type: FrameType::HEADERS,
-                    flags: FrameFlags::from_bits_retain(flags),
-                    stream_id: StreamId::new(1),
-                },
-                payload: Bytes::from_static(payload),
-            })
-            .unwrap();
-            assert_eq!(fragment.block.as_ref(), expected);
-            assert!(fragment.end_headers);
-            assert!(fragment.end_stream);
-        }
+        let fragment = super::parse_header_block_fragment(RawFrame {
+            header: FrameHeader {
+                frame_type: FrameType::HEADERS,
+                flags: FrameFlags::from_bits_retain(flags),
+                stream_id: StreamId::new(1),
+            },
+            payload: Bytes::from_static(payload),
+        })
+        .unwrap();
+        assert_eq!(fragment.block.as_ref(), expected);
+        assert!(fragment.end_headers);
+        assert!(fragment.end_stream);
     }
 
-    #[test]
-    fn header_fragment_rejects_truncated_prefixes_and_excess_padding() {
+    #[rstest::rstest]
+    #[case::flags_0x08(0x08, &b""[..], H2Error::HeadersPaddedMissingPadLength)]
+    #[case::flags_0x20(0x20, &b"\0\0\0\0"[..], H2Error::HeadersPriorityTooShort)]
+    #[case::flags_0x28(0x28, &b"\0\0\0\0\0"[..], H2Error::HeadersPriorityTooShort)]
+    #[case::flags_0x08_e516fd57(0x08, &b"\x01"[..], H2Error::HeadersPaddingExceedsPayload)]
+    #[case::flags_0x28_509065df(0x28, &b"\x01\0\0\0\x01\x10"[..], H2Error::HeadersPaddingExceedsPayload)]
+    fn header_fragment_rejects_truncated_prefixes_and_excess_padding(
+        #[case] flags: u8,
+        #[case] payload: &'static [u8],
+        #[case] expected: H2Error,
+    ) {
         use crate::error::ErrorKind;
         use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, RawFrame, StreamId};
-
-        for (flags, payload, expected) in [
-            (0x08, &b""[..], H2Error::HeadersPaddedMissingPadLength),
-            (0x20, &b"\0\0\0\0"[..], H2Error::HeadersPriorityTooShort),
-            (0x28, &b"\0\0\0\0\0"[..], H2Error::HeadersPriorityTooShort),
-            (0x08, &b"\x01"[..], H2Error::HeadersPaddingExceedsPayload),
-            (
-                0x28,
-                &b"\x01\0\0\0\x01\x10"[..],
-                H2Error::HeadersPaddingExceedsPayload,
-            ),
-        ] {
-            let result = super::parse_header_block_fragment(RawFrame {
-                header: FrameHeader {
-                    frame_type: FrameType::HEADERS,
-                    flags: FrameFlags::from_bits_retain(flags),
-                    stream_id: StreamId::new(1),
-                },
-                payload: Bytes::from_static(payload),
-            });
-            let Err(error) = result else {
-                panic!("malformed HEADERS fragment was accepted");
-            };
-            let ErrorKind::H2(actual) = error.kind() else {
-                panic!("expected HTTP/2 protocol error, got {error:?}");
-            };
-            assert_eq!(
-                std::mem::discriminant(actual),
-                std::mem::discriminant(&expected)
-            );
-        }
+        let result = super::parse_header_block_fragment(RawFrame {
+            header: FrameHeader {
+                frame_type: FrameType::HEADERS,
+                flags: FrameFlags::from_bits_retain(flags),
+                stream_id: StreamId::new(1),
+            },
+            payload: Bytes::from_static(payload),
+        });
+        let Err(error) = result else {
+            panic!("malformed HEADERS fragment was accepted");
+        };
+        let ErrorKind::H2(actual) = error.kind() else {
+            panic!("expected HTTP/2 protocol error, got {error:?}");
+        };
+        assert_eq!(
+            std::mem::discriminant(actual),
+            std::mem::discriminant(&expected)
+        );
     }
 
     #[test]
@@ -1062,42 +1058,39 @@ mod tests {
     /// RFC 9113 8.3.1 — the check must cover CONNECT, whose target consumes
     /// the authority. A proxy that routes on `:authority` while the
     /// application trusts `Host` must never see the two disagree.
-    #[test]
-    fn connect_rejects_host_disagreeing_with_authority() {
-        for extra in [
-            [].as_slice(),
-            [(b":protocol".as_slice(), b"websocket".as_slice())].as_slice(),
-        ] {
-            let mut headers: Vec<(&[u8], &[u8])> =
-                vec![(b":method", b"CONNECT"), (b":authority", b"example.com")];
-            if !extra.is_empty() {
-                headers.extend_from_slice(&[(b":scheme", b"https"), (b":path", b"/chat")]);
-                headers.extend_from_slice(extra);
-            }
-            headers.push((b"host", b"attacker.example"));
-            let block = encode_request_block(&headers);
-
-            let mut decoder = Decoder::new(4096);
-            let result = decode_request_head(
-                &mut decoder,
-                block,
-                HeaderLimits::new(None, None),
-                true,
-                false,
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(RequestHeadError::Stream {
-                        error: H2Error::ConflictingRequestAuthority,
-                        ..
-                    })
-                ),
-                "CONNECT with a mismatched Host must be a stream protocol error, \
-                 got {result:?}"
-            );
+    #[rstest::rstest]
+    #[case::classic(&[])]
+    #[case::extended(&[(b":protocol".as_slice(), b"websocket".as_slice())])]
+    fn connect_rejects_host_disagreeing_with_authority(#[case] extra: &[(&[u8], &[u8])]) {
+        let mut headers: Vec<(&[u8], &[u8])> =
+            vec![(b":method", b"CONNECT"), (b":authority", b"example.com")];
+        if !extra.is_empty() {
+            headers.extend_from_slice(&[(b":scheme", b"https"), (b":path", b"/chat")]);
+            headers.extend_from_slice(extra);
         }
+        headers.push((b"host", b"attacker.example"));
+        let block = encode_request_block(&headers);
+
+        let mut decoder = Decoder::new(4096);
+        let result = decode_request_head(
+            &mut decoder,
+            block,
+            HeaderLimits::new(None, None),
+            true,
+            false,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(RequestHeadError::Stream {
+                    error: H2Error::ConflictingRequestAuthority,
+                    ..
+                })
+            ),
+            "CONNECT with a mismatched Host must be a stream protocol error, \
+             got {result:?}"
+        );
     }
 
     #[test]

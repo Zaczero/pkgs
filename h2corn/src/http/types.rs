@@ -1264,25 +1264,22 @@ mod tests {
     };
     use crate::http::header_meta::RequestHeaderMeta;
 
-    #[test]
-    fn request_method_fast_path_matches_standard_method_parsing() {
-        for bytes in [
-            b"GET".as_slice(),
-            b"POST",
-            b"HEAD",
-            b"PUT",
-            b"DELETE",
-            b"PATCH",
-            b"OPTIONS",
-            b"TRACE",
-            b"CONNECT",
-            b"PROPFIND",
-        ] {
-            assert_eq!(
-                parse_request_method(bytes).unwrap(),
-                Method::from_bytes(bytes).unwrap()
-            );
-        }
+    #[rstest::rstest]
+    #[case::get_as_slice(b"GET".as_slice())]
+    #[case::post(b"POST")]
+    #[case::head(b"HEAD")]
+    #[case::put(b"PUT")]
+    #[case::delete(b"DELETE")]
+    #[case::patch(b"PATCH")]
+    #[case::options(b"OPTIONS")]
+    #[case::trace(b"TRACE")]
+    #[case::connect(b"CONNECT")]
+    #[case::propfind(b"PROPFIND")]
+    fn request_method_fast_path_matches_standard_method_parsing(#[case] bytes: &'static [u8]) {
+        assert_eq!(
+            parse_request_method(bytes).unwrap(),
+            Method::from_bytes(bytes).unwrap()
+        );
     }
 
     #[test]
@@ -1492,26 +1489,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn h1_arena_spills_only_above_its_inline_capacity() {
-        for count in [0, 4, 8, 12, 16, 17, 32] {
-            let mut raw = Vec::with_capacity(count * 12);
-            for index in 0..count {
-                raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
-            }
-            let head = Bytes::from(raw);
-            let mut headers = H1RequestHeaders::new(head.clone());
-            for line in head.as_ref().split(|byte| *byte == b'\n').take(count) {
-                let line = line.strip_suffix(b"\r").unwrap_or(line);
-                let colon = line.iter().position(|byte| *byte == b':').unwrap();
-                headers
-                    .push(&line[..colon], line[colon + 1..].trim_ascii())
-                    .unwrap();
-            }
-            assert_eq!(headers.fields.len(), count);
-            assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);
-            assert!(headers.auxiliary.is_empty());
+    #[rstest::rstest]
+    #[case::count_0(0)]
+    #[case::count_4(4)]
+    #[case::count_8(8)]
+    #[case::count_12(12)]
+    #[case::count_16(16)]
+    #[case::count_17(17)]
+    #[case::count_32(32)]
+    fn h1_arena_spills_only_above_its_inline_capacity(#[case] count: usize) {
+        let mut raw = Vec::with_capacity(count.wrapping_mul(12));
+        for index in 0..count {
+            raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
         }
+        let head = Bytes::from(raw);
+        let mut headers = H1RequestHeaders::new(head.clone());
+        for line in head.as_ref().split(|byte| *byte == b'\n').take(count) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let colon = line.iter().position(|byte| *byte == b':').unwrap();
+            headers
+                .push(&line[..colon], line[colon.wrapping_add(1)..].trim_ascii())
+                .unwrap();
+        }
+        assert_eq!(headers.fields.len(), count);
+        assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);
+        assert!(headers.auxiliary.is_empty());
     }
 
     #[test]

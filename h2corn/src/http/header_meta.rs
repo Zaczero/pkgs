@@ -511,50 +511,51 @@ mod tests {
         assert!(websocket.request.per_message_deflate);
     }
 
-    #[test]
-    fn websocket_key_is_invalid_after_a_malformed_or_second_occurrence() {
-        let valid = Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ==");
-        let malformed = Bytes::from_static(b"not-a-websocket-key");
-
-        for (first, second) in [(&malformed, &valid), (&valid, &malformed), (&valid, &valid)] {
-            let mut meta = RequestHeaderMeta::default();
-            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, first, 0, true);
-            meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, second, 1, true);
-            assert_eq!(
-                meta.websocket()
-                    .expect("key creates handshake metadata")
-                    .key,
-                ParsedWebSocketKey::Invalid
-            );
-        }
+    #[rstest::rstest]
+    #[case::malformed_then_valid(&Bytes::from_static(b"not-a-websocket-key"), &Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="))]
+    #[case::valid_then_malformed(&Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="), &Bytes::from_static(b"not-a-websocket-key"))]
+    #[case::duplicate_valid(&Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="), &Bytes::from_static(b"dGhlIHNhbXBsZSBub25jZQ=="))]
+    fn websocket_key_is_invalid_after_a_malformed_or_second_occurrence(
+        #[case] first: &Bytes,
+        #[case] second: &Bytes,
+    ) {
+        let mut meta = RequestHeaderMeta::default();
+        meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, first, 0, true);
+        meta.observe_known_header(KnownRequestHeaderName::SecWebSocketKey, second, 1, true);
+        assert_eq!(
+            meta.websocket()
+                .expect("key creates handshake metadata")
+                .key,
+            ParsedWebSocketKey::Invalid
+        );
     }
 
-    #[test]
-    fn websocket_version_is_duplicate_after_any_second_occurrence() {
-        for (first, second) in [
-            (b"12".as_slice(), b"13".as_slice()),
-            (b"13", b"12"),
-            (b"13", b"13"),
-        ] {
-            let mut meta = RequestHeaderMeta::default();
-            meta.observe_known_header_slice(
-                KnownRequestHeaderName::SecWebSocketVersion,
-                first,
-                0,
-                true,
-            );
-            meta.observe_known_header_slice(
-                KnownRequestHeaderName::SecWebSocketVersion,
-                second,
-                1,
-                true,
-            );
-            assert_eq!(
-                meta.websocket()
-                    .expect("version creates handshake metadata")
-                    .version,
-                ParsedWebSocketVersion::Duplicate
-            );
-        }
+    #[rstest::rstest]
+    #[case::first_12_as_slice(b"12".as_slice(), b"13".as_slice())]
+    #[case::first_13(b"13", b"12")]
+    #[case::first_13_f448dd85(b"13", b"13")]
+    fn websocket_version_is_duplicate_after_any_second_occurrence(
+        #[case] first: &'static [u8],
+        #[case] second: &'static [u8],
+    ) {
+        let mut meta = RequestHeaderMeta::default();
+        meta.observe_known_header_slice(
+            KnownRequestHeaderName::SecWebSocketVersion,
+            first,
+            0,
+            true,
+        );
+        meta.observe_known_header_slice(
+            KnownRequestHeaderName::SecWebSocketVersion,
+            second,
+            1,
+            true,
+        );
+        assert_eq!(
+            meta.websocket()
+                .expect("version creates handshake metadata")
+                .version,
+            ParsedWebSocketVersion::Duplicate
+        );
     }
 }

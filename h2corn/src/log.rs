@@ -1073,31 +1073,27 @@ mod tests {
         assert!(line.as_slice().ends_with(&[b'z'; 4096]));
     }
 
-    #[test]
-    fn access_log_writer_matches_the_retained_smallvec_writer() {
-        let cases = [
-            vec![],
-            vec![b"".to_vec()],
-            vec![b"x".to_vec(); 129],
-            vec![vec![b'x'; 127], vec![b'y'], vec![b'z']],
-            vec![vec![b'q'; 128], b"suffix".to_vec()],
-            vec![
-                b"GET ".to_vec(),
-                b"/a\\b\"c".to_vec(),
-                b" HTTP/1.1".to_vec(),
-                b" 200".to_vec(),
-                b" 0.4ms\n".to_vec(),
-            ],
-        ];
-        for parts in cases {
-            let mut candidate = AccessLogBuf::new();
-            let mut baseline = smallvec::SmallVec::<[u8; super::ACCESS_LOG_LINE_CAPACITY]>::new();
-            for part in parts {
-                candidate.append(&part);
-                baseline.extend_from_slice(&part);
-            }
-            assert_eq!(candidate.as_slice(), baseline.as_slice());
+    #[rstest::rstest]
+    #[case::vec(vec![])]
+    #[case::vec_b_to_vec(vec![b"".to_vec()])]
+    #[case::vec_b_x_to_vec_129(vec![b"x".to_vec(); 129])]
+    #[case::vec_vec_b_x_127_vec_b_y_vec_b_z(vec![vec![b'x'; 127], vec![b'y'], vec![b'z']])]
+    #[case::vec_vec_b_q_128_b_suffix_to_vec(vec![vec![b'q'; 128], b"suffix".to_vec()])]
+    #[case::vec_b_get_to_vec_b_a_b_c_to_vec_b_http_1_1_to_ve_ccfd898c(vec![
+        b"GET ".to_vec(),
+        b"/a\\b\"c".to_vec(),
+        b" HTTP/1.1".to_vec(),
+        b" 200".to_vec(),
+        b" 0.4ms\n".to_vec(),
+    ])]
+    fn access_log_writer_matches_the_retained_smallvec_writer(#[case] parts: Vec<Vec<u8>>) {
+        let mut candidate = AccessLogBuf::new();
+        let mut baseline = smallvec::SmallVec::<[u8; super::ACCESS_LOG_LINE_CAPACITY]>::new();
+        for part in parts {
+            candidate.append(&part);
+            baseline.extend_from_slice(&part);
         }
+        assert_eq!(candidate.as_slice(), baseline.as_slice());
     }
 
     fn format_client(host: &str, port: u16) -> String {

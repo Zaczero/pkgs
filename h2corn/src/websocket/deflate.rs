@@ -619,16 +619,25 @@ mod tests {
         assert!(offers_compatible_permessage_deflate(
             b"permessage-deflate; server_max_window_bits=12, permessage-deflate"
         ));
-        for offer in [
-            b"permessage-deflate; client_max_window_bits=07".as_slice(),
-            b"permessage-deflate; client_max_window_bits=16",
-            b"permessage-deflate; client_max_window_bits=8; client_max_window_bits=9",
-            b"permessage-deflate; server_max_window_bits=12",
-            b"permessage-deflate; unknown",
-            b"permessage-deflate; client_no_context_takeover=yes",
-            b"permessage-deflate; =8",
-        ] {
-            assert!(!offers_compatible_permessage_deflate(offer), "{offer:?}");
-        }
+    }
+
+    #[rstest::rstest]
+    #[case::permessage_deflate_client_max_window_bits_07(b"permessage-deflate; client_max_window_bits=07".as_slice())]
+    #[case::permessage_deflate_client_max_window_bits_16(
+        b"permessage-deflate; client_max_window_bits=16"
+    )]
+    #[case::permessage_deflate_client_max_window_bits_8_client_max_window_bits_9(
+        b"permessage-deflate; client_max_window_bits=8; client_max_window_bits=9"
+    )]
+    #[case::permessage_deflate_server_max_window_bits_12(
+        b"permessage-deflate; server_max_window_bits=12"
+    )]
+    #[case::permessage_deflate_unknown(b"permessage-deflate; unknown")]
+    #[case::permessage_deflate_client_no_context_takeover_yes(
+        b"permessage-deflate; client_no_context_takeover=yes"
+    )]
+    #[case::permessage_deflate_8(b"permessage-deflate; =8")]
+    fn deflate_offer_parser_rejects_incompatible_parameters(#[case] offer: &[u8]) {
+        assert!(!offers_compatible_permessage_deflate(offer), "{offer:?}");
     }
 }

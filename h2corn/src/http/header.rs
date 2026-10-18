@@ -1365,18 +1365,7 @@ mod tests {
     use crate::runtime::test_fixtures;
 
     #[test]
-    fn content_length_parser_accepts_trimmed_ascii_digits() {
-        for (value, expected) in [
-            (b"0".as_slice(), 0),
-            (b"1", 1),
-            (b"18446744073709551615", u64::MAX),
-            (b" 42\t", 42),
-            (b"42, 42", 42),
-            (b"42,42, 42\t", 42),
-        ] {
-            assert_eq!(parse_content_length_header(value), Some(expected));
-        }
-
+    fn content_length_parser_accepts_long_leading_zero_prefixes() {
         let leading_zeroes = [b'0'; 1024];
         assert_eq!(parse_content_length_header(&leading_zeroes), Some(0));
         assert_eq!(
@@ -1385,17 +1374,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn content_length_parser_rejects_invalid_values() {
-        assert_eq!(parse_content_length_header(b""), None);
-        assert_eq!(parse_content_length_header(b" \t "), None);
-        assert_eq!(parse_content_length_header(b"4x"), None);
-        assert_eq!(parse_content_length_header(b"42, 43"), None);
-        assert_eq!(parse_content_length_header(b"42,"), None);
-        assert_eq!(parse_content_length_header(b",42"), None);
-        assert_eq!(parse_content_length_header(b"+1"), None);
-        assert_eq!(parse_content_length_header(b"18446744073709551616"), None);
-        assert_eq!(parse_content_length_header(b"\xff"), None);
+    #[rstest::rstest]
+    #[case::value_0(b"0".as_slice(), 0)]
+    #[case::value_1(b"1", 1)]
+    #[case::value_18446744073709551615(b"18446744073709551615", u64::MAX)]
+    #[case::value_42_t(b" 42\t", 42)]
+    #[case::value_42_42(b"42, 42", 42)]
+    #[case::value_42_42_42_t(b"42,42, 42\t", 42)]
+    fn content_length_parser_accepts_trimmed_ascii_digits(
+        #[case] value: &[u8],
+        #[case] expected: u64,
+    ) {
+        assert_eq!(parse_content_length_header(value), Some(expected));
+    }
+
+    #[rstest::rstest]
+    #[case::empty(b"")]
+    #[case::whitespace(b" \t ")]
+    #[case::nondigit(b"4x")]
+    #[case::conflicting_lengths(b"42, 43")]
+    #[case::trailing_comma(b"42,")]
+    #[case::leading_comma(b",42")]
+    #[case::explicit_sign(b"+1")]
+    #[case::overflow(b"18446744073709551616")]
+    #[case::non_ascii(b"\xff")]
+    fn content_length_parser_rejects_invalid_values(#[case] value: &[u8]) {
+        assert_eq!(parse_content_length_header(value), None);
     }
 
     #[test]
@@ -1405,16 +1409,7 @@ mod tests {
         assert!(request_authority_is_valid(b"example:99999"));
         assert!(request_authority_is_valid(b"[2001:db8::1]:443"));
         assert!(request_authority_is_valid(b"example"));
-        for authority in [
-            b"user@example:443".as_slice(),
-            b"example,other",
-            b"example/path",
-            b"[2001:db8::1",
-            b"2001:db8::1",
-            b"example:http",
-        ] {
-            assert!(!request_authority_is_valid(authority), "{authority:?}");
-        }
+
         let get = http::Method::GET;
         let options = http::Method::OPTIONS;
         assert!(request_path_is_valid(&get, b"/%00/ok%20here"));
@@ -1425,98 +1420,110 @@ mod tests {
         assert!(!request_path_is_valid(&get, b"*"));
     }
 
-    #[test]
-    fn trailer_field_classifier_preserves_the_exact_case_insensitive_set() {
-        for forbidden in [
-            b"connection".as_slice(),
-            b"proxy-connection",
-            b"keep-alive",
-            b"transfer-encoding",
-            b"upgrade",
-            b"te",
-            b"host",
-            b"content-length",
-            b"trailer",
-            b"authorization",
-            b"proxy-authorization",
-            b"www-authenticate",
-            b"proxy-authenticate",
-            b"if-match",
-            b"if-none-match",
-            b"if-modified-since",
-            b"if-unmodified-since",
-            b"if-range",
-            b"cache-control",
-            b"pragma",
-            b"expires",
-            b"content-encoding",
-            b"content-language",
-            b"content-location",
-            b"content-range",
-            b"content-type",
-            b"last-modified",
-            b"etag",
-        ] {
-            assert!(trailer_field_name_is_forbidden(forbidden), "{forbidden:?}");
-            let upper = forbidden
-                .iter()
-                .map(u8::to_ascii_uppercase)
-                .collect::<Vec<_>>();
-            assert!(trailer_field_name_is_forbidden(&upper), "{upper:?}");
-        }
-        for allowed in [b"content-digest".as_slice(), b"digest", b"x-trailer", b""] {
-            assert!(!trailer_field_name_is_forbidden(allowed), "{allowed:?}");
-        }
+    #[rstest::rstest]
+    #[case::user_example_443(b"user@example:443".as_slice())]
+    #[case::example_other(b"example,other")]
+    #[case::example_path(b"example/path")]
+    #[case::authority_2001_db8_1(b"[2001:db8::1")]
+    #[case::authority_2001_db8_1_e83c4d88(b"2001:db8::1")]
+    #[case::example_http(b"example:http")]
+    fn request_authority_rejects_illegal_octets_and_malformed_ports(#[case] authority: &[u8]) {
+        assert!(!request_authority_is_valid(authority), "{authority:?}");
     }
 
-    #[test]
-    fn header_value_validation_accepts_long_visible_ascii_and_rejects_controls() {
-        assert!(header_value_is_valid(
-            b"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/135.0 Safari/537.36"
-        ));
-        assert!(header_value_is_valid(
-            b"session=abc123; theme=light; csrftoken=def456; locale=en-US"
-        ));
-        assert!(header_value_is_valid(b"\tallowed-tab"));
-        assert!(!header_value_is_valid(b"abc\x7fxyz"));
-        assert!(!header_value_is_valid(b"line\nbreak"));
+    #[rstest::rstest]
+    #[case::connection(b"connection".as_slice())]
+    #[case::proxy_connection(b"proxy-connection")]
+    #[case::keep_alive(b"keep-alive")]
+    #[case::transfer_encoding(b"transfer-encoding")]
+    #[case::upgrade(b"upgrade")]
+    #[case::te(b"te")]
+    #[case::host(b"host")]
+    #[case::content_length(b"content-length")]
+    #[case::trailer(b"trailer")]
+    #[case::authorization(b"authorization")]
+    #[case::proxy_authorization(b"proxy-authorization")]
+    #[case::www_authenticate(b"www-authenticate")]
+    #[case::proxy_authenticate(b"proxy-authenticate")]
+    #[case::if_match(b"if-match")]
+    #[case::if_none_match(b"if-none-match")]
+    #[case::if_modified_since(b"if-modified-since")]
+    #[case::if_unmodified_since(b"if-unmodified-since")]
+    #[case::if_range(b"if-range")]
+    #[case::cache_control(b"cache-control")]
+    #[case::pragma(b"pragma")]
+    #[case::expires(b"expires")]
+    #[case::content_encoding(b"content-encoding")]
+    #[case::content_language(b"content-language")]
+    #[case::content_location(b"content-location")]
+    #[case::content_range(b"content-range")]
+    #[case::content_type(b"content-type")]
+    #[case::last_modified(b"last-modified")]
+    #[case::etag(b"etag")]
+    fn trailer_field_classifier_rejects_forbidden_fields_in_both_cases(#[case] forbidden: &[u8]) {
+        assert!(trailer_field_name_is_forbidden(forbidden), "{forbidden:?}");
+        let upper = forbidden
+            .iter()
+            .map(u8::to_ascii_uppercase)
+            .collect::<Vec<_>>();
+        assert!(trailer_field_name_is_forbidden(&upper), "{upper:?}");
     }
 
-    #[test]
-    fn last_csv_token_ignores_commas_inside_quotes() {
-        assert_eq!(last_csv_token("a, b"), "b");
-        assert_eq!(
-            last_csv_token("for=1.1.1.1;host=\"a,b\", for=2.2.2.2"),
-            "for=2.2.2.2"
-        );
-        assert_eq!(
-            last_csv_token("host=\"a,\\\"b\\\"\", proto=https"),
-            "proto=https"
-        );
+    #[rstest::rstest]
+    #[case::content_digest(b"content-digest".as_slice())]
+    #[case::digest(b"digest")]
+    #[case::x_trailer(b"x-trailer")]
+    #[case::b(b"")]
+    fn trailer_field_classifier_accepts_other_fields(#[case] allowed: &[u8]) {
+        assert!(!trailer_field_name_is_forbidden(allowed), "{allowed:?}");
     }
 
-    #[test]
-    fn parse_host_port_rejects_empty_or_malformed_hosts() {
-        assert_eq!(parse_host_port(":443"), None);
-        assert_eq!(parse_host_port("example:"), None);
-        assert_eq!(parse_host_port("example:abc"), None);
-        assert_eq!(parse_host_port("[]:443"), None);
-        assert_eq!(parse_host_port("1.1.1.1 \"GET /admin HTTP/1.1\" 200"), None);
-        assert_eq!(parse_host_port("\u{e9}"), None);
+    #[rstest::rstest]
+    #[case::user_agent(
+        b"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/135.0 Safari/537.36",
+        true
+    )]
+    #[case::cookies(b"session=abc123; theme=light; csrftoken=def456; locale=en-US", true)]
+    #[case::horizontal_tab(b"\tallowed-tab", true)]
+    #[case::delete_control(b"abc\x7fxyz", false)]
+    #[case::newline(b"line\nbreak", false)]
+    fn header_value_validation_accepts_long_visible_ascii_and_rejects_controls(
+        #[case] value: &[u8],
+        #[case] expected: bool,
+    ) {
+        assert_eq!(header_value_is_valid(value), expected);
     }
 
-    #[test]
-    fn parse_host_port_keeps_valid_host_forms() {
-        assert_eq!(parse_host_port("example.com"), Some(("example.com", None)));
-        assert_eq!(
-            parse_host_port("example.com:443"),
-            Some(("example.com", Some(443)))
-        );
-        assert_eq!(
-            parse_host_port("[2001:db8::1]:443"),
-            Some(("2001:db8::1", Some(443)))
-        );
-        assert_eq!(parse_host_port("2001:db8::1"), Some(("2001:db8::1", None)));
+    #[rstest::rstest]
+    #[case::plain("a, b", "b")]
+    #[case::quoted_comma("for=1.1.1.1;host=\"a,b\", for=2.2.2.2", "for=2.2.2.2")]
+    #[case::escaped_quote("host=\"a,\\\"b\\\"\", proto=https", "proto=https")]
+    fn last_csv_token_ignores_commas_inside_quotes(#[case] value: &str, #[case] expected: &str) {
+        assert_eq!(last_csv_token(value), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::empty_host(":443")]
+    #[case::empty_port("example:")]
+    #[case::nondigit_port("example:abc")]
+    #[case::empty_ip_literal("[]:443")]
+    #[case::request_injection("1.1.1.1 \"GET /admin HTTP/1.1\" 200")]
+    #[case::non_ascii("\u{e9}")]
+    fn parse_host_port_rejects_empty_or_malformed_hosts(#[case] value: &str) {
+        assert_eq!(parse_host_port(value), None);
+    }
+
+    #[rstest::rstest]
+    #[case::hostname("example.com", "example.com", None)]
+    #[case::hostname_port("example.com:443", "example.com", Some(443))]
+    #[case::ipv6_port("[2001:db8::1]:443", "2001:db8::1", Some(443))]
+    #[case::ipv6("2001:db8::1", "2001:db8::1", None)]
+    fn parse_host_port_keeps_valid_host_forms(
+        #[case] value: &str,
+        #[case] host: &str,
+        #[case] port: Option<u16>,
+    ) {
+        assert_eq!(parse_host_port(value), Some((host, port)));
     }
 
     #[test]
@@ -1556,19 +1563,9 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_parser_accepts_quoted_delimiters_and_escaped_pairs() {
+    fn forwarded_parser_preserves_fields_through_quoted_pairs() {
         let config = test_fixtures::server_config_parts();
-        for value in [
-            r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#,
-            r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#,
-            r#"for="203.0.113.10";proto="https";host="good.example:8443";ext="edge;one""#,
-            r#"for="203.0.113.10";ext="edge\;one""#,
-            r#"for=203.0.113.10;ext="edge,one",for=198.51.100.7"#,
-            r#"for=203.0.113.10;ext="edge\,one",for=198.51.100.7"#,
-            "for=203.0.113.10;ext=unknown",
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
-        }
+
         let parsed = parse_forwarded_value(
             r#"for="203.0.113.10";proto="https";host="good.example:8443";ext="edge\;one""#,
             &config,
@@ -1585,96 +1582,148 @@ mod tests {
         );
     }
 
-    #[test]
-    fn forwarded_parser_rejects_malformed_and_duplicate_parameters() {
+    #[rstest::rstest]
+    #[case::for_203_0_113_10_proto_https_host_good_example_8443_ext_edge_one(
+        r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge;one""#
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_example_8443_ext_5a8d9014(
+        r#"for=203.0.113.10;proto=https;host="good.example:8443";ext="edge\;one""#
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_example_8443_ext_39bd1bfc(
+        r#"for="203.0.113.10";proto="https";host="good.example:8443";ext="edge;one""#
+    )]
+    #[case::for_203_0_113_10_ext_edge_one(r#"for="203.0.113.10";ext="edge\;one""#)]
+    #[case::for_203_0_113_10_ext_edge_one_for_198_51_100_7(
+        r#"for=203.0.113.10;ext="edge,one",for=198.51.100.7"#
+    )]
+    #[case::for_203_0_113_10_ext_edge_one_for_198_51_100_7_eaa1ab95(
+        r#"for=203.0.113.10;ext="edge\,one",for=198.51.100.7"#
+    )]
+    #[case::for_203_0_113_10_ext_unknown("for=203.0.113.10;ext=unknown")]
+    fn forwarded_parser_accepts_quoted_delimiters_and_escaped_pairs(#[case] value: &str) {
         let config = test_fixtures::server_config_parts();
-        for value in [
-            "for=1.1.1.1;proto",
-            "for=1.1.1.1;proto=https=oops",
-            "for=1.1.1.1;=https",
-            "for=1.1.1.1;proto=",
-            "for=1.1.1.1;proto=\"https\"junk",
-            "for=1.1.1.1;proto=\"https",
-            "for=1.1.1.1;proto=\"https\\",
-            "for=1.1.1.1;proto=https;proto=http",
-            "for=1.1.1.1;ext=x;EXT=y",
-            "for=1.1.1.1;ext=\"bad\u{0001}\"",
-            "for=1.1.1.1,proto=\"unterminated;for=2.2.2.2",
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
-        }
+        assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
     }
 
-    #[test]
-    fn forwarded_parser_accepts_empty_optional_pairs_but_not_empty_list_elements() {
+    #[rstest::rstest]
+    #[case::for_1_1_1_1_proto("for=1.1.1.1;proto")]
+    #[case::for_1_1_1_1_proto_https_oops("for=1.1.1.1;proto=https=oops")]
+    #[case::for_1_1_1_1_https("for=1.1.1.1;=https")]
+    #[case::for_1_1_1_1_proto_4c49a5e9("for=1.1.1.1;proto=")]
+    #[case::for_1_1_1_1_proto_https_junk("for=1.1.1.1;proto=\"https\"junk")]
+    #[case::for_1_1_1_1_proto_https("for=1.1.1.1;proto=\"https")]
+    #[case::for_1_1_1_1_proto_https_bd7c46e9("for=1.1.1.1;proto=\"https\\")]
+    #[case::for_1_1_1_1_proto_https_proto_http("for=1.1.1.1;proto=https;proto=http")]
+    #[case::for_1_1_1_1_ext_x_ext_y("for=1.1.1.1;ext=x;EXT=y")]
+    #[case::for_1_1_1_1_ext_bad_u_0001("for=1.1.1.1;ext=\"bad\u{0001}\"")]
+    #[case::for_1_1_1_1_proto_unterminated_for_2_2_2_2(
+        "for=1.1.1.1,proto=\"unterminated;for=2.2.2.2"
+    )]
+    fn forwarded_parser_rejects_malformed_and_duplicate_parameters(#[case] value: &'static str) {
         let config = test_fixtures::server_config_parts();
-        for value in [
-            ";for=1.1.1.1;",
-            ";;for=1.1.1.1;;proto=https;;",
-            "for=1.1.1.1;;proto=https",
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
-        }
-        for value in [",for=1.1.1.1", "for=1.1.1.1,", "for=1.1.1.1,,proto=https"] {
-            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
-        }
-        for value in ["", ",", ", ,\t,"] {
-            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
-        }
+
+        assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
     }
 
-    #[test]
-    fn forwarded_parser_validates_nodes_and_authorities_atomically() {
+    #[rstest::rstest]
+    #[case::for_1_1_1_1(";for=1.1.1.1;")]
+    #[case::for_1_1_1_1_proto_https(";;for=1.1.1.1;;proto=https;;")]
+    #[case::for_1_1_1_1_proto_https_692577b2("for=1.1.1.1;;proto=https")]
+    fn forwarded_parser_accepts_empty_optional_pairs(#[case] value: &str) {
         let config = test_fixtures::server_config_parts();
-        for value in [
-            r#"for="203.0.113.10:abc";proto=https;host=good.example"#,
-            "for=203.0.113.10;proto=https;host=[bad",
-            "for=203.0.113.10;proto=https;host=2001:db8::1",
-            "for=203.0.113.10;proto=https;host=good%2.example",
-            "for=203.0.113.10;proto=https;host=good.example:65536",
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
-        }
-        for value in [
-            "for=unknown;proto=https;host=good.example",
-            "for=_hidden;proto=https;host=good.example",
-            r#"for="[2001:db8::1]:443";proto=https;host=good.example"#,
-            "for=203.0.113.10;proto=https;host=good.example",
-            "for=203.0.113.10;proto=https;host=good%2Eexample",
-            "for=203.0.113.10;proto=https;host=999.999.999.999",
-            r#"for=203.0.113.10;proto=https;host="[v1.a]""#,
-            r#"for=203.0.113.10;proto=https;host="[Vf.a:b]:443""#,
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
-        }
+        assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
     }
 
-    #[test]
-    fn forwarded_parser_matches_rfc_node_grammar() {
+    #[rstest::rstest]
+    #[case::for_1_1_1_1(",for=1.1.1.1")]
+    #[case::for_1_1_1_1_d3d76263("for=1.1.1.1,")]
+    #[case::for_1_1_1_1_proto_https("for=1.1.1.1,,proto=https")]
+    fn forwarded_parser_accepts_empty_elements_beside_a_valid_element(#[case] value: &str) {
         let config = test_fixtures::server_config_parts();
-        for value in [
-            "for=UNKNOWN",
-            "for=Unknown",
-            r#"for="unknown:443";by="Unknown:_trace""#,
-            r#"for="_hidden:123";by="_hidden:_port""#,
-            r#"for="203.0.113.10:99999";by="[2001:db8::1]:_port""#,
-            r#"for="[2001:db8::1]:12345""#,
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
-        }
-        for value in [
-            "for=unknown:443",
-            r#"for="unknown:""#,
-            r#"for="_hidden:""#,
-            r#"for="_hidden:123456""#,
-            r#"for="_hidden:_trace!""#,
-            r#"for="203.0.113.10:123456""#,
-            r#"for="203.0.113.10:_trace!""#,
-            r#"for=203.0.113.10;by="_bad!";proto=https"#,
-            r#"for=203.0.113.10;by="203.0.113.999";proto=https"#,
-        ] {
-            assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
-        }
+        assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+    }
+
+    #[rstest::rstest]
+    #[case::value_empty("")]
+    #[case::value_empty_08b53b7d(",")]
+    #[case::t(", ,\t,")]
+    fn forwarded_parser_rejects_lists_without_a_valid_element(#[case] value: &str) {
+        let config = test_fixtures::server_config_parts();
+        assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+    }
+
+    #[rstest::rstest]
+    #[case::for_203_0_113_10_abc_proto_https_host_good_example(
+        r#"for="203.0.113.10:abc";proto=https;host=good.example"#
+    )]
+    #[case::for_203_0_113_10_proto_https_host_bad("for=203.0.113.10;proto=https;host=[bad")]
+    #[case::for_203_0_113_10_proto_https_host_2001_db8_1(
+        "for=203.0.113.10;proto=https;host=2001:db8::1"
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_2_example(
+        "for=203.0.113.10;proto=https;host=good%2.example"
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_example_65536(
+        "for=203.0.113.10;proto=https;host=good.example:65536"
+    )]
+    fn forwarded_parser_rejects_invalid_nodes_and_authorities_atomically(#[case] value: &str) {
+        let config = test_fixtures::server_config_parts();
+        assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
+    }
+
+    #[rstest::rstest]
+    #[case::for_unknown_proto_https_host_good_example("for=unknown;proto=https;host=good.example")]
+    #[case::for_hidden_proto_https_host_good_example("for=_hidden;proto=https;host=good.example")]
+    #[case::for_2001_db8_1_443_proto_https_host_good_example(
+        r#"for="[2001:db8::1]:443";proto=https;host=good.example"#
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_example(
+        "for=203.0.113.10;proto=https;host=good.example"
+    )]
+    #[case::for_203_0_113_10_proto_https_host_good_2eexample(
+        "for=203.0.113.10;proto=https;host=good%2Eexample"
+    )]
+    #[case::for_203_0_113_10_proto_https_host_999_999_999_999(
+        "for=203.0.113.10;proto=https;host=999.999.999.999"
+    )]
+    #[case::for_203_0_113_10_proto_https_host_v1_a(r#"for=203.0.113.10;proto=https;host="[v1.a]""#)]
+    #[case::for_203_0_113_10_proto_https_host_vf_a_b_443(
+        r#"for=203.0.113.10;proto=https;host="[Vf.a:b]:443""#
+    )]
+    fn forwarded_parser_accepts_valid_nodes_and_authorities(#[case] value: &str) {
+        let config = test_fixtures::server_config_parts();
+        assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+    }
+
+    #[rstest::rstest]
+    #[case::for_unknown("for=UNKNOWN")]
+    #[case::for_unknown_70b4c87b("for=Unknown")]
+    #[case::for_unknown_443_by_unknown_trace(r#"for="unknown:443";by="Unknown:_trace""#)]
+    #[case::for_hidden_123_by_hidden_port(r#"for="_hidden:123";by="_hidden:_port""#)]
+    #[case::for_203_0_113_10_99999_by_2001_db8_1_port(
+        r#"for="203.0.113.10:99999";by="[2001:db8::1]:_port""#
+    )]
+    #[case::for_2001_db8_1_12345(r#"for="[2001:db8::1]:12345""#)]
+    fn forwarded_parser_accepts_rfc_node_forms(#[case] value: &str) {
+        let config = test_fixtures::server_config_parts();
+        assert!(parse_forwarded_value(value, &config).is_some(), "{value:?}");
+    }
+
+    #[rstest::rstest]
+    #[case::for_unknown_443("for=unknown:443")]
+    #[case::for_unknown(r#"for="unknown:""#)]
+    #[case::for_hidden(r#"for="_hidden:""#)]
+    #[case::for_hidden_123456(r#"for="_hidden:123456""#)]
+    #[case::for_hidden_trace(r#"for="_hidden:_trace!""#)]
+    #[case::for_203_0_113_10_123456(r#"for="203.0.113.10:123456""#)]
+    #[case::for_203_0_113_10_trace(r#"for="203.0.113.10:_trace!""#)]
+    #[case::for_203_0_113_10_by_bad_proto_https(r#"for=203.0.113.10;by="_bad!";proto=https"#)]
+    #[case::for_203_0_113_10_by_203_0_113_999_proto_https(
+        r#"for=203.0.113.10;by="203.0.113.999";proto=https"#
+    )]
+    fn forwarded_parser_rejects_malformed_rfc_nodes(#[case] value: &str) {
+        let config = test_fixtures::server_config_parts();
+        assert!(parse_forwarded_value(value, &config).is_none(), "{value:?}");
     }
 
     #[test]
@@ -1869,20 +1918,18 @@ mod tests {
         assert_eq!(scan.content_length(), Some(5));
     }
 
-    #[test]
-    fn http_date_format_matches_known_rfc7231_timestamps() {
-        let cases = [
-            (0, "Thu, 01 Jan 1970 00:00:00 GMT"),
-            (2_678_399, "Sat, 31 Jan 1970 23:59:59 GMT"),
-            (784_111_777, "Sun, 06 Nov 1994 08:49:37 GMT"),
-            (946_684_799, "Fri, 31 Dec 1999 23:59:59 GMT"),
-            (951_825_600, "Tue, 29 Feb 2000 12:00:00 GMT"),
-            (4_107_542_400, "Mon, 01 Mar 2100 00:00:00 GMT"),
-        ];
-
-        for (unix_seconds, expected) in cases {
-            assert_eq!(format_http_date(unix_seconds).as_ref(), expected.as_bytes());
-        }
+    #[rstest::rstest]
+    #[case::unix_seconds_0(0, "Thu, 01 Jan 1970 00:00:00 GMT")]
+    #[case::unix_seconds_2_678_399(2_678_399, "Sat, 31 Jan 1970 23:59:59 GMT")]
+    #[case::unix_seconds_784_111_777(784_111_777, "Sun, 06 Nov 1994 08:49:37 GMT")]
+    #[case::unix_seconds_946_684_799(946_684_799, "Fri, 31 Dec 1999 23:59:59 GMT")]
+    #[case::unix_seconds_951_825_600(951_825_600, "Tue, 29 Feb 2000 12:00:00 GMT")]
+    #[case::unix_seconds_4_107_542_400(4_107_542_400, "Mon, 01 Mar 2100 00:00:00 GMT")]
+    fn http_date_format_matches_known_rfc7231_timestamps(
+        #[case] unix_seconds: u64,
+        #[case] expected: &'static str,
+    ) {
+        assert_eq!(format_http_date(unix_seconds).as_ref(), expected.as_bytes());
     }
 
     #[test]

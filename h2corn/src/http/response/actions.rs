@@ -613,44 +613,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn no_content_clears_content_length_but_not_modified_preserves_representation_metadata() {
-        for streaming in [false, true] {
-            let headers = vec![(
-                Bytes::from_static(b"content-length").into(),
-                Bytes::from_static(b"7").into(),
-            )];
-            let mut no_content = ResponseStart::new(http::types::status_code::NO_CONTENT, headers);
-            if streaming {
-                assert_eq!(
-                    no_content.prepare_streaming(&ResponseHeaderConfig::default(), false),
-                    None
-                );
-            } else {
-                no_content.prepare_known_length(&ResponseHeaderConfig::default(), 7);
-            }
-            assert_eq!(no_content.declared_content_length(), None);
-            let (_, headers) = no_content.into_status_headers();
-            assert!(headers.iter().all(|(name, _)| {
-                name.kind() != http::types::ResponseHeaderKind::ContentLength
-            }));
-
-            let headers = vec![(
-                Bytes::from_static(b"content-length").into(),
-                Bytes::from_static(b"7").into(),
-            )];
-            let mut not_modified =
-                ResponseStart::new(http::types::status_code::NOT_MODIFIED, headers);
-            if streaming {
-                assert_eq!(
-                    not_modified.prepare_streaming(&ResponseHeaderConfig::default(), false),
-                    Some(7)
-                );
-            } else {
-                not_modified.prepare_known_length(&ResponseHeaderConfig::default(), 7);
-            }
-            assert_eq!(not_modified.declared_content_length(), Some(7));
+    #[rstest::rstest]
+    #[case::disabled(false)]
+    #[case::enabled(true)]
+    fn no_content_clears_content_length_but_not_modified_preserves_representation_metadata(
+        #[case] streaming: bool,
+    ) {
+        let headers = vec![(
+            Bytes::from_static(b"content-length").into(),
+            Bytes::from_static(b"7").into(),
+        )];
+        let mut no_content = ResponseStart::new(http::types::status_code::NO_CONTENT, headers);
+        if streaming {
+            assert_eq!(
+                no_content.prepare_streaming(&ResponseHeaderConfig::default(), false),
+                None
+            );
+        } else {
+            no_content.prepare_known_length(&ResponseHeaderConfig::default(), 7);
         }
+        assert_eq!(no_content.declared_content_length(), None);
+        let (_, headers) = no_content.into_status_headers();
+        assert!(
+            headers
+                .iter()
+                .all(|(name, _)| { name.kind() != http::types::ResponseHeaderKind::ContentLength })
+        );
+
+        let headers = vec![(
+            Bytes::from_static(b"content-length").into(),
+            Bytes::from_static(b"7").into(),
+        )];
+        let mut not_modified = ResponseStart::new(http::types::status_code::NOT_MODIFIED, headers);
+        if streaming {
+            assert_eq!(
+                not_modified.prepare_streaming(&ResponseHeaderConfig::default(), false),
+                Some(7)
+            );
+        } else {
+            not_modified.prepare_known_length(&ResponseHeaderConfig::default(), 7);
+        }
+        assert_eq!(not_modified.declared_content_length(), Some(7));
     }
 
     #[test]

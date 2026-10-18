@@ -291,26 +291,9 @@ async fn read_request_accepts_extension_method() {
 }
 
 #[tokio::test]
-async fn read_request_admits_each_target_form_only_for_its_methods() {
+async fn read_request_accepts_options_asterisk() {
     // RFC 9112 §3.2: authority-form belongs to CONNECT, asterisk-form to
     // OPTIONS, and the other two to neither.
-    for request in [
-        b"CONNECT /tunnel HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice(),
-        b"CONNECT * HTTP/1.1\r\nHost: example.com\r\n\r\n",
-        b"CONNECT http://example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n",
-        b"GET * HTTP/1.1\r\nHost: example.com\r\n\r\n",
-        b"GET example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n",
-        b"GET p/q HTTP/1.1\r\nHost: example.com\r\n\r\n",
-    ] {
-        assert!(
-            read_test_request(request)
-                .await
-                .expect("a malformed target is answered, not fatal")
-                .is_none(),
-            "expected rejection of {:?}",
-            str::from_utf8(request).expect("test input is UTF-8")
-        );
-    }
 
     assert!(
         parse_test_request(b"OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n")
@@ -319,6 +302,33 @@ async fn read_request_admits_each_target_form_only_for_its_methods() {
             .target
             .path_and_query()
             .is_some_and(|target| target.as_str() == "*")
+    );
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[case::connect_tunnel_http_1_1_r_nhost_example_com_r_n_r_n(b"CONNECT /tunnel HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice())]
+#[case::connect_http_1_1_r_nhost_example_com_r_n_r_n(
+    b"CONNECT * HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)]
+#[case::connect_http_example_com_p_http_1_1_r_nhost_example_com_r_n_r_n(
+    b"CONNECT http://example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)]
+#[case::get_http_1_1_r_nhost_example_com_r_n_r_n(b"GET * HTTP/1.1\r\nHost: example.com\r\n\r\n")]
+#[case::get_example_com_443_http_1_1_r_nhost_example_com_r_n_r_n(
+    b"GET example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)]
+#[case::get_p_q_http_1_1_r_nhost_example_com_r_n_r_n(
+    b"GET p/q HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)]
+async fn read_request_rejects_target_forms_for_incompatible_methods(#[case] request: &[u8]) {
+    assert!(
+        read_test_request(request)
+            .await
+            .expect("a malformed target is answered, not fatal")
+            .is_none(),
+        "expected rejection of {:?}",
+        str::from_utf8(request).expect("test input is UTF-8")
     );
 }
 
@@ -548,7 +558,7 @@ async fn read_request_classifies_h2c_upgrade() {
 }
 
 #[tokio::test]
-async fn read_request_classifies_h2c_bodies_and_rejects_duplicate_settings() {
+async fn read_request_classifies_h2c_bodies() {
     let content_length = parse_test_request(
         concat!(
             "POST / HTTP/1.1\r\n",
@@ -603,28 +613,32 @@ async fn read_request_classifies_h2c_bodies_and_rejects_duplicate_settings() {
         no_body.route,
         RequestRoute::Upgrade(UpgradeRequest::H2c { .. })
     ));
+}
 
-    for settings in ["", "AAEAAAAB"] {
-        let request = format!(
-            concat!(
-                "GET / HTTP/1.1\r\n",
-                "Host: example.com\r\n",
-                "Connection: Upgrade, HTTP2-Settings\r\n",
-                "Upgrade: h2c\r\n",
-                "HTTP2-Settings:\r\n",
-                "HTTP2-Settings: {settings}\r\n",
-                "\r\n",
-            ),
-            settings = settings,
-        );
-        assert!(
-            read_test_request(request.as_bytes())
-                .await
-                .expect("malformed upgrade is a client error")
-                .is_none(),
-            "a duplicate HTTP2-Settings header must be rejected: {settings:?}"
-        );
-    }
+#[rstest::rstest]
+#[tokio::test]
+#[case::settings_empty("")]
+#[case::aaeaaaab("AAEAAAAB")]
+async fn read_request_rejects_duplicate_h2c_settings(#[case] settings: &str) {
+    let request = format!(
+        concat!(
+            "GET / HTTP/1.1\r\n",
+            "Host: example.com\r\n",
+            "Connection: Upgrade, HTTP2-Settings\r\n",
+            "Upgrade: h2c\r\n",
+            "HTTP2-Settings:\r\n",
+            "HTTP2-Settings: {settings}\r\n",
+            "\r\n",
+        ),
+        settings = settings,
+    );
+    assert!(
+        read_test_request(request.as_bytes())
+            .await
+            .expect("malformed upgrade is a client error")
+            .is_none(),
+        "a duplicate HTTP2-Settings header must be rejected: {settings:?}"
+    );
 }
 
 #[tokio::test]
@@ -937,26 +951,24 @@ fn parse_chunk_size_accepts_hex_extensions_and_rejects_whitespace() {
     parse_chunk_size(b" \t1A").unwrap_err();
 }
 
-#[test]
-fn parse_chunk_size_enforces_extension_grammar() {
-    for line in [
-        b"1;foo; bar = token;baz=\"quoted \\\"value\\\"\"".as_slice(),
-        b"F \t; X\t=\t\"quoted\"",
-    ] {
-        assert!(parse_chunk_size(line).is_ok(), "{line:?} is legal");
-    }
-    for line in [
-        b" 1".as_slice(),
-        b"0x1",
-        b"1;",
-        b"1;=value",
-        b"1;\0",
-        b"1;foo=\"unterminated",
-        b"1;foo ",
-        b"1;foo=bar ",
-    ] {
-        assert!(parse_chunk_size(line).is_err(), "{line:?} is illegal");
-    }
+#[rstest::rstest]
+#[case::line_1_foo_bar_token_baz_quoted_value(b"1;foo; bar = token;baz=\"quoted \\\"value\\\"\"".as_slice())]
+#[case::f_t_x_t_t_quoted(b"F \t; X\t=\t\"quoted\"")]
+fn parse_chunk_size_accepts_extension_grammar(#[case] line: &[u8]) {
+    assert!(parse_chunk_size(line).is_ok(), "{line:?} is legal");
+}
+
+#[rstest::rstest]
+#[case::line_1(b" 1".as_slice())]
+#[case::line_0x1(b"0x1")]
+#[case::line_1_7dfe9bd4(b"1;")]
+#[case::line_1_value(b"1;=value")]
+#[case::line_1_0(b"1;\0")]
+#[case::line_1_foo_unterminated(b"1;foo=\"unterminated")]
+#[case::line_1_foo(b"1;foo ")]
+#[case::line_1_foo_bar(b"1;foo=bar ")]
+fn parse_chunk_size_rejects_malformed_extensions(#[case] line: &[u8]) {
+    assert!(parse_chunk_size(line).is_err(), "{line:?} is illegal");
 }
 
 #[test]
@@ -976,17 +988,18 @@ fn parse_chunk_size_rejects_empty_and_invalid_values() {
 }
 
 #[test]
-fn parse_chunk_size_rejects_hexadecimal_overflow() {
-    for line in [
-        b"10000000000000000".as_slice(),
-        b"10000000000000001;extension=value",
-        b"fffffffffffffffff",
-    ] {
-        assert!(matches!(
-            parse_chunk_size(line).unwrap_err().kind(),
-            ErrorKind::Http1(Http1Error::InvalidChunkSize)
-        ));
-    }
+fn parse_chunk_size_accepts_the_maximum_native_size() {
     let maximum = format!("{:x}", usize::MAX);
     assert_eq!(parse_chunk_size(maximum.as_bytes()).unwrap(), usize::MAX);
+}
+
+#[rstest::rstest]
+#[case::line_10000000000000000(b"10000000000000000".as_slice())]
+#[case::line_10000000000000001_extension_value(b"10000000000000001;extension=value")]
+#[case::fffffffffffffffff(b"fffffffffffffffff")]
+fn parse_chunk_size_rejects_hexadecimal_overflow(#[case] line: &[u8]) {
+    assert!(matches!(
+        parse_chunk_size(line).unwrap_err().kind(),
+        ErrorKind::Http1(Http1Error::InvalidChunkSize)
+    ));
 }

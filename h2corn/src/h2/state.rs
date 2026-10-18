@@ -1146,25 +1146,26 @@ mod tests {
         assert!(!ConnectionDrainState::Accepting.should_stop(false, || now));
     }
 
-    #[test]
-    fn packed_request_deadline_key_round_trips_kind_and_stream_id() {
+    #[rstest::rstest]
+    #[case::raw_1(1)]
+    #[case::stream_id_mask(STREAM_ID_MASK)]
+    fn packed_request_deadline_key_round_trips_kind_and_stream_id(#[case] raw: u32) {
         let instant = tokio::time::Instant::now();
-        for raw in [1, STREAM_ID_MASK] {
-            let stream_id = StreamId::new(raw).expect("test stream identifier is valid");
-            let headers = RequestInputDeadlineKey::headers(stream_id);
-            let body = RequestInputDeadlineKey::body(stream_id);
-            assert!(headers < body, "the body tag occupies the high bit");
-            assert!(matches!(
-                headers.with_instant(instant),
-                RequestInputDeadline::Headers(actual, at)
-                    if actual == stream_id && at == instant
-            ));
-            assert!(matches!(
-                body.with_instant(instant),
-                RequestInputDeadline::Body(actual, at)
-                    if actual == stream_id && at == instant
-            ));
-        }
+
+        let stream_id = StreamId::new(raw).expect("test stream identifier is valid");
+        let headers = RequestInputDeadlineKey::headers(stream_id);
+        let body = RequestInputDeadlineKey::body(stream_id);
+        assert!(headers < body, "the body tag occupies the high bit");
+        assert!(matches!(
+            headers.with_instant(instant),
+            RequestInputDeadline::Headers(actual, at)
+                if actual == stream_id && at == instant
+        ));
+        assert!(matches!(
+            body.with_instant(instant),
+            RequestInputDeadline::Body(actual, at)
+                if actual == stream_id && at == instant
+        ));
     }
     #[tokio::test]
     async fn request_task_scope_aborts_every_live_task_on_drop() {

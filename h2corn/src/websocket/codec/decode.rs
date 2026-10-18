@@ -516,28 +516,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn websocket_codec_reassembles_fragmented_text_and_binary() {
-        for opcode in [opcode::TEXT, opcode::BINARY] {
-            let mut codec = WebSocketCodec::default();
-            codec.push_segment(Bytes::from(encode_masked_client_frame(
-                opcode, b"hel", false,
-            )));
-            assert!(decode(&mut codec).unwrap().is_none());
-            codec.push_segment(Bytes::from(encode_masked_client_frame(
-                opcode::CONTINUATION,
-                b"lo",
-                true,
-            )));
+    #[rstest::rstest]
+    #[case::opcode_text(opcode::TEXT)]
+    #[case::opcode_binary(opcode::BINARY)]
+    fn websocket_codec_reassembles_fragmented_text_and_binary(#[case] opcode: u8) {
+        let mut codec = WebSocketCodec::default();
+        codec.push_segment(Bytes::from(encode_masked_client_frame(
+            opcode, b"hel", false,
+        )));
+        assert!(decode(&mut codec).unwrap().is_none());
+        codec.push_segment(Bytes::from(encode_masked_client_frame(
+            opcode::CONTINUATION,
+            b"lo",
+            true,
+        )));
 
-            let decoded = decode(&mut codec).unwrap().expect("final fragment decodes");
-            match decoded {
-                DecodedFrame::Text(text) => assert_eq!(text.as_bytes(), b"hello"),
-                DecodedFrame::Binary(payload) => assert_eq!(payload.as_ref(), b"hello"),
-                DecodedFrame::Ping(_) | DecodedFrame::Pong | DecodedFrame::Close(_) => {
-                    panic!("fragmented data must decode as its original opcode")
-                },
-            }
+        let decoded = decode(&mut codec).unwrap().expect("final fragment decodes");
+        match decoded {
+            DecodedFrame::Text(text) => assert_eq!(text.as_bytes(), b"hello"),
+            DecodedFrame::Binary(payload) => assert_eq!(payload.as_ref(), b"hello"),
+            DecodedFrame::Ping(_) | DecodedFrame::Pong | DecodedFrame::Close(_) => {
+                panic!("fragmented data must decode as its original opcode")
+            },
         }
     }
 
@@ -556,24 +556,32 @@ mod tests {
         assert_eq!(payload.as_ref(), b"ping");
     }
 
-    #[test]
-    fn reserved_opcodes_are_rejected_from_the_header_before_payload_arrives() {
-        for opcode in [3, 4, 5, 6, 7, 11, 12, 13, 14, 15] {
-            for payload_len in [0, 125, 126, (1_u64 << 63) - 1] {
-                let mut codec = WebSocketCodec::default();
-                let header = masked_header_only(opcode, true, payload_len);
-                for (index, byte) in header.iter().enumerate() {
-                    codec.push_segment(Bytes::copy_from_slice(std::slice::from_ref(byte)));
-                    if index + 1 == header.len() {
-                        let Err(err) = decode(&mut codec) else {
-                            panic!(
-                                "reserved opcode {opcode} with payload length {payload_len} must fail once its header is available"
-                            )
-                        };
-                        assert_eq!(err.close_code(), close_code::PROTOCOL_ERROR);
-                    } else {
-                        assert!(decode(&mut codec).unwrap().is_none());
-                    }
+    #[rstest::rstest]
+    #[case::opcode_3(3)]
+    #[case::opcode_4(4)]
+    #[case::opcode_5(5)]
+    #[case::opcode_6(6)]
+    #[case::opcode_7(7)]
+    #[case::opcode_11(11)]
+    #[case::opcode_12(12)]
+    #[case::opcode_13(13)]
+    #[case::opcode_14(14)]
+    #[case::opcode_15(15)]
+    fn reserved_opcodes_are_rejected_from_the_header_before_payload_arrives(#[case] opcode: u8) {
+        for payload_len in [0, 125, 126, (1_u64 << 63) - 1] {
+            let mut codec = WebSocketCodec::default();
+            let header = masked_header_only(opcode, true, payload_len);
+            for (index, byte) in header.iter().enumerate() {
+                codec.push_segment(Bytes::copy_from_slice(std::slice::from_ref(byte)));
+                if index.wrapping_add(1) == header.len() {
+                    let Err(err) = decode(&mut codec) else {
+                        panic!(
+                            "reserved opcode {opcode} with payload length {payload_len} must fail once its header is available"
+                        )
+                    };
+                    assert_eq!(err.close_code(), close_code::PROTOCOL_ERROR);
+                } else {
+                    assert!(decode(&mut codec).unwrap().is_none());
                 }
             }
         }
