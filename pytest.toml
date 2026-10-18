@@ -11,12 +11,10 @@ filterwarnings = [
   # next-best transformation; this warning reflects that environment capability.
   "ignore:Best transformation is not available:UserWarning",
 ]
-# Diagnostic, not a budget: pytest arms this with exit=False, so it dumps every
-# thread's stack and the test still runs to completion. Below --timeout it fires
-# on merely slow tests and buries passing runs in stack traces. Its value is the
-# case --timeout cannot reach, a native call that never returns to the
-# interpreter and so never lets the timeout thread run.
+# `--timeout=60` cannot interrupt a native call holding the GIL. Give it another
+# 30 seconds, then retain all thread stacks and terminate the stuck pytest worker.
 faulthandler_timeout = "90"
+faulthandler_exit_on_timeout = true
 addopts = [
   "-n", "auto",
   # Large native suites saturate memory and make individual workers miss their
