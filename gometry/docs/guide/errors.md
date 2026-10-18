@@ -4,20 +4,25 @@ description: Catch geometry errors, diagnose common failures, and identify faili
 
 # Errors & exceptions
 
-gometry exposes a typed exception hierarchy rooted at [`GeometryError`][gometry.GeometryError] rather than
-using generic `ValueError`s for every domain failure. Every class is available
-directly from `gometry`, such as
+Catch errors by the action your application can take: fix an input type, correct
+a value, reduce generated work, or handle a representation or resource failure.
+Gometry's exception classes are available directly from `gometry`, such as
 [`gm.CRSMismatchError`][gometry.CRSMismatchError].
 
 ```text
 ValueError
-└── GeometryError              every error gometry raises about your data or parameters
+└── GeometryError              invalid geometry, parameter value, or metadata
     ├── InvalidGeometryError        a geometry violates a structural or numeric rule
-    ├── GeometryTypeError    wrong geometry kind (also subclasses TypeError)
     ├── CRSError             a CRS could not be created, identified, exported, or used
     │   ├── CRSMismatchError operands carry incompatible CRS / coordinate-epoch metadata
     │   └── TransformError   a coordinate transform could not be built or failed to run
     └── ParseError           serialized input (WKT, WKB, GeoJSON, cell ids/tokens) is malformed
+
+TypeError
+└── GeometryTypeError        wrong geometry kind for the operation
+
+RuntimeError
+└── ResourceLimitError       output or computation budget exhausted
 ```
 
 Grid-cell surfaces follow the same split as everything else: an out-of-range
@@ -28,19 +33,25 @@ parameter value), while an invalid cell id, token, or quadkey is a
 
 ## Built-in exception compatibility
 
-1. **Domain errors are also `ValueError`s.** The base class subclasses
-   `ValueError` (the `json.JSONDecodeError` precedent), so a broad
-   `except ValueError` catches them while specific classes preserve recovery detail.
+1. **Invalid values are `ValueError`s.** `GeometryError` and its subclasses
+   identify bad data or parameter values; specific classes preserve recovery detail.
 2. **Python protocol semantics stay builtin.** A non-number where a number is
    required is a plain `TypeError` (floats *and* integers); an out-of-range
    `arr[i]` is an `IndexError`; an exhausted iterator is `StopIteration`.
    Those protocol failures are not rewrapped.
 
-[`GeometryTypeError`][gometry.GeometryTypeError] is a dual-base exception: handing
-[`line_substring`][gometry.Geometry.line_substring] a [`Polygon`][gometry.Polygon] is *both* a gometry domain error and a Python type
-error, so it subclasses both `GeometryError` and `TypeError` (so either `except`
-clause catches it). That is the one place gometry subclasses `TypeError` —
-wrong-kind domain failures, not protocol coercion.
+[`GeometryTypeError`][gometry.GeometryTypeError] subclasses only `TypeError`:
+handing [`line_substring`][gometry.Geometry.line_substring] a
+[`Polygon`][gometry.Polygon] requires a different geometry kind, not a repaired
+polygon. It is not caught by `except ValueError` or `except GeometryError`.
+
+[`ResourceLimitError`][gometry.ResourceLimitError] subclasses `RuntimeError`.
+It means a bounded computation stopped; it does not establish that the input is
+invalid or that no result exists. `OverflowError` means a size or result cannot
+be represented, including certified binary64 geometry output. Operating-system
+failures remain `OSError`; Python allocation failures remain `MemoryError`.
+Internal computation consistency failures use `RuntimeError`, not a bad-input
+exception.
 
 ## Catching errors
 
@@ -52,9 +63,11 @@ The most specific exception class identifies the recovery strategy:
 | reproject and retry on frame disagreements | [`CRSMismatchError`][gometry.CRSMismatchError] |
 | fall back when a transform cannot be built or run | [`TransformError`][gometry.TransformError] |
 | handle any CRS trouble in one place | [`CRSError`][gometry.CRSError] |
-| reject anything gometry complained about | [`GeometryError`][gometry.GeometryError] |
+| reject invalid geometry, metadata, or parameter values | [`GeometryError`][gometry.GeometryError] |
 | treat a wrong geometry kind as a type bug | `TypeError` *(or [`GeometryTypeError`][gometry.GeometryTypeError])* |
 | treat any bad value like the stdlib does | `ValueError` |
+| reduce generated output or work after a budget refusal | [`ResourceLimitError`][gometry.ResourceLimitError] |
+| handle an unrepresentable result or size | `OverflowError` |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -71,8 +84,7 @@ except gm.CRSMismatchError as e:
 
 A batch parser is fail-fast: one malformed row rejects the whole batch and the
 exception identifies the row. If partial recovery is an explicit application
-policy, parse rows individually and catch `ParseError`; a tool that wants
-"anything gometry rejected" catches `GeometryError`:
+policy, parse rows individually and catch `ParseError`:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -111,8 +123,8 @@ for catch in (TypeError, gm.GeometryTypeError):
 | [`ParseError`][gometry.ParseError] with `.format` set | a serialized input (WKT/WKB/GeoJSON/cell id/quadkey) is malformed | check `e.format` for which codec rejected it; a batch fails as a unit and attaches the failing row as a note |
 | `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call [`drop_missing()`][gometry.GeometryArray.drop_missing] first or [`fill_missing(...)`][gometry.GeometryArray.fill_missing] with an explicit replacement |
 | `GeometryError: ... must be between ... got ...` | a parameter value is out of its documented range | the message names the kwarg and the valid range |
-| `GeometryError: <operation> cannot be represented in binary64` | no adjacent-coordinate assignment passed the exact output certificate | simplify or snap near-coincident input boundaries when the application allows it, or split the operation |
-| `GeometryError: <operation> could not certify ... within its search budget` | the bounded search stopped before certifying an assignment; this does not prove that no assignment exists | simplify or snap near-coincident input boundaries when the application allows it, or split the operation |
+| `OverflowError: <operation> cannot be represented in binary64` | no adjacent-coordinate assignment passed the exact output certificate | simplify or snap near-coincident input boundaries when the application allows it, or split the operation |
+| `ResourceLimitError: <operation> could not certify ... within its search budget` | the bounded search stopped before certifying an assignment; this does not prove that no assignment exists | simplify or snap near-coincident input boundaries when the application allows it, or split the operation |
 | `GeometryError: unknown ... did you mean ...?` | a token typo (`'mitter'` vs `'miter'`, …) | take the suggestion; tokens are also `Literal`-typed, so a type checker catches this before runtime |
 | `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside the CRS-native longitude period or latitude/pole domain | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)` in native angular units; [`swap_xy()`][gometry.Geometry.swap_xy] repairs latitude-first data |
 | `ambiguous_full_turn_ring` in a geographic validation report | an unmarked ring winds once around the longitude period but its latitude span crosses the equator or lies entirely on it | close the boundary explicitly through a pole or split it into unambiguous rings |
@@ -120,9 +132,11 @@ for catch in (TypeError, gm.GeometryTypeError):
 
 ## Error attributes
 
-Operation-raised errors carry operation values as attributes, so
-handlers act on data instead of parsing messages. Class-level defaults are
-`None` when an attribute does not apply:
+Operation-raised errors carry operation values as attributes, so handlers act on
+data instead of parsing messages. Gometry classes provide `None` defaults when
+an attribute does not apply. Built-in `OverflowError` instances carry `code` and
+`operation` only for certified output refusals; use `getattr(error, 'code', None)`
+when handling other overflow sources too.
 
 | Attribute | Classes | Meaning |
 |---|---|---|
@@ -132,11 +146,12 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | [`format`][gometry.ParseError.format] | [`ParseError`][gometry.ParseError] | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
 | [`position`][gometry.ParseError.position] | `ParseError` | WKT/EWKT reports the zero-based UTF-8 byte offset where parsing detected the error, including an EWKT prefix; WKB reports its zero-based binary byte offset; other codecs report `None` when unavailable |
 | [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
-| [`parameter`][gometry.GeometryError.parameter] / [`produced`][gometry.GeometryError.produced] / [`limit`][gometry.GeometryError.limit] | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
-| [`code`][gometry.GeometryError.code] | `GeometryError` (selected output refusals) | `'output_limit'`, `'output_unrepresentable'`, or `'work_limit'`; `None` for errors without a stable refusal code |
+| [`parameter`][gometry.ResourceLimitError.parameter] / [`produced`][gometry.ResourceLimitError.produced] / [`limit`][gometry.ResourceLimitError.limit] | bounded-output `ResourceLimitError` | Controlling parameter, produced count, and configured limit |
+| [`code`][gometry.ResourceLimitError.code] | `ResourceLimitError` | `'output_limit'` or `'work_limit'`; `None` for hand-built errors |
+| `code` / `operation` | certified-output `OverflowError` | `'output_unrepresentable'` and the operation that could not publish its result |
 | [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |
 | [`source`][gometry.TransformError.source] / [`target`][gometry.TransformError.target] | [`TransformError`][gometry.TransformError] | Source and target CRS of a failed transform |
-| [`operation`][gometry.GeometryError.operation] | [`GeometryError`][gometry.GeometryError] (bounded-output or binary64 embedding); [`InvalidGeometryError`][gometry.InvalidGeometryError] (empty sequence or invalid coverage) | Operation associated with the failure |
+| [`operation`][gometry.ResourceLimitError.operation] / [`operation`][gometry.InvalidGeometryError.operation] | `ResourceLimitError`; `InvalidGeometryError` (empty sequence or invalid coverage) | Operation associated with the failure |
 | [`row`][gometry.InvalidGeometryError.row] / [`path`][gometry.InvalidGeometryError.path] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Failing array row and structural path |
 | [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Open-string validity issue code and human-readable issue detail |
 | [`location`][gometry.InvalidGeometryError.location] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Coordinate witness for the validity issue; quotient-topology issues choose a canonical coordinate of their contact set deterministically by minimum latitude then longitude |

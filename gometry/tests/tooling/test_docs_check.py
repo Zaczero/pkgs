@@ -1574,6 +1574,7 @@ def test_exported_namedtuple_forms_match_runtime_and_construct() -> None:
         'GeometryTypeError',
         'InvalidGeometryError',
         'ParseError',
+        'ResourceLimitError',
         'TransformError',
     }
     assert set(classifications) == expected_unavailable | set(namedtuple_classes), (

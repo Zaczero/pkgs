@@ -8,7 +8,7 @@ import pytest
 
 def test_geometry_amplification_returns_errors_before_allocation() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
-    with pytest.raises(gm.GeometryError, match='max_length') as output_limit:
+    with pytest.raises(gm.ResourceLimitError, match='max_length') as output_limit:
         line.segmentize(float.fromhex('0x0.0000000000001p-1022'))
     assert (
         output_limit.value.code,
@@ -16,9 +16,9 @@ def test_geometry_amplification_returns_errors_before_allocation() -> None:
         output_limit.value.parameter,
     ) == ('output_limit', 'segmentize', 'max_length')
     assert output_limit.value.produced > output_limit.value.limit
-    with pytest.raises(gm.GeometryError, match='count'):
+    with pytest.raises(gm.ResourceLimitError, match='count'):
         line.sample_points(16_000_001, seed=0)
-    with pytest.raises(gm.GeometryError, match='count'):
+    with pytest.raises(gm.ResourceLimitError, match='count'):
         line.line_interpolate(count=16_000_001)
 
 
@@ -45,5 +45,5 @@ def test_constrained_refinement_rejects_unbounded_or_nonterminating_requests() -
     polygon = gm.box(0.0, 0.0, 10.0, 10.0)
     with pytest.raises(gm.GeometryError, match='30 degrees'):
         polygon.triangulate(method='constrained', min_angle=31.0)
-    with pytest.raises(gm.GeometryError, match='max_area'):
+    with pytest.raises(gm.ResourceLimitError, match='max_area'):
         polygon.triangulate(method='constrained', max_area=1.0e-20)

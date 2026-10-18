@@ -68,7 +68,7 @@ pub enum GeometryErrorKind {
     MeasureOverwrite,
     /// `produced` saturates at `usize::MAX` when the count itself overflows.
     #[error(
-        "{operation} would generate {}, exceeding the limit of {limit}; reduce {parameter}",
+        "{operation} would generate {}, exceeding the limit of {limit}; adjust {parameter}",
         generated_count(*produced)
     )]
     GeneratedOutputTooLarge {

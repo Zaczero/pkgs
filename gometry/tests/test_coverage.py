@@ -250,12 +250,12 @@ def test_geographic_clean_never_collapses_a_rational_sliver() -> None:
         ),
     ]
     try:
-        outcome: gm.GeometryArray | gm.GeometryError = gm.coverage_clean(
+        outcome: gm.GeometryArray | OverflowError = gm.coverage_clean(
             rows, grid_size=0, gap_width=0, overlap_rule='min_index'
         )
-    except gm.GeometryError as error:
+    except OverflowError as error:
         outcome = error
-    if isinstance(outcome, gm.GeometryError):
+    if isinstance(outcome, OverflowError):
         assert outcome.code == 'output_unrepresentable'
     else:
         assert not outcome[1].is_empty

@@ -80,11 +80,11 @@ feature-count ceiling. [`CellArray.uncompact`][gometry.CellArray.uncompact]
 has no result-count limit.
 
 Other limits belong to specific operations. When an operation documents a
-generated-output cap, [`GeometryError.code`][gometry.GeometryError.code] is
+generated-output cap, [`ResourceLimitError.code`][gometry.ResourceLimitError.code] is
 `'output_limit'` for that refusal. A bounded exact search may return
 `code == 'work_limit'` when it stops before certification; that does not prove
 no acceptable result exists.
-`code == 'output_unrepresentable'` means the operation could not satisfy its
+An `OverflowError` with `code == 'output_unrepresentable'` means the operation could not satisfy its
 admitted output and preservation contract in its coordinate domain. None of
 these operation-specific errors is a general CPU deadline or a global resource
 guarantee.

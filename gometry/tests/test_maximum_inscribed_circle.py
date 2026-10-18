@@ -203,5 +203,5 @@ def test_maximum_inscribed_circle_rejects_a_disk_below_the_coordinate_spacing() 
     # retry once exhausted the generated-item budget before saying so.
     base = 2.0**60
     source = gm.Polygon([(base, base), (base + 2.0**20, base), (base, base + 2.0**12)])
-    with pytest.raises(gm.GeometryError, match='contained geometry'):
+    with pytest.raises(OverflowError, match='contained geometry'):
         source.maximum_inscribed_circle()

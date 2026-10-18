@@ -1,12 +1,11 @@
 //! The top-level `gometry` exception hierarchy and the single Rust→Python error
 //! seam.
 //!
-//! Every class subclasses `ValueError` through `GeometryError` (the
-//! `json.JSONDecodeError` precedent), so broad `except ValueError` handlers
-//! keep working while precise handlers catch the specific class.
-//! `GeometryTypeError` additionally subclasses `TypeError` (the
-//! `numpy.exceptions.AxisError` dual-base pattern) — a geometry of the wrong
-//! kind is both a gometry domain error and a Python type error.
+//! Invalid values derive from `GeometryError(ValueError)`, wrong geometry kinds
+//! from `GeometryTypeError(TypeError)`, and bounded computation refusals from
+//! `ResourceLimitError(RuntimeError)`. Numeric representation failures use
+//! `OverflowError`; allocation and operating-system failures keep their built-in
+//! categories. Recovery classes do not share an artificial common base.
 //!
 //! The [`From<Error>`] conversion is the one classification gate: it matches
 //! every domain kind exhaustively with no wildcard arm, so adding an error
@@ -14,10 +13,9 @@
 //! failures with domain meaning but no structured variant raise the right
 //! class directly (`GeometryError::new_err(...)`, `parse_error(...)`).
 
-use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyRuntimeError, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyString, PyType};
+use pyo3::types::PyString;
 use pyo3::{create_exception, ffi};
 
 use crate::error::{BatchError, Error, ErrorKind, ResourceError};
@@ -36,7 +34,19 @@ create_exception!(
     gometry,
     GeometryError,
     PyValueError,
-    "Base class for every error gometry raises about your data or parameters."
+    "A geometry, parameter value, or metadata value is invalid."
+);
+create_exception!(
+    gometry,
+    GeometryTypeError,
+    PyTypeError,
+    "An operation received a geometry of the wrong kind."
+);
+create_exception!(
+    gometry,
+    ResourceLimitError,
+    PyRuntimeError,
+    "An operation exceeded its output or computation budget."
 );
 create_exception!(
     gometry,
@@ -75,36 +85,10 @@ create_exception!(
     "A CRS transform used a lower-accuracy fallback because a required grid is unavailable."
 );
 
-/// `create_exception!` is single-base, so the dual-base class is built once at
-/// module init with a plain `type(name, bases, dict)` call and cached here.
-static GEOMETRY_TYPE_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
-
-/// The `GeometryTypeError` class: `(GeometryError, TypeError)` dual base.
-pub(crate) fn geometry_type_error(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
-    GEOMETRY_TYPE_ERROR
-        .get_or_try_init(py, || {
-            let bases = (py.get_type::<GeometryError>(), py.get_type::<PyTypeError>());
-            let dict = PyDict::new(py);
-            dict.set_item(
-                "__doc__",
-                "An operation received a geometry of the wrong kind.",
-            )?;
-            dict.set_item("__module__", "gometry")?;
-            let class = py
-                .get_type::<PyType>()
-                .call1(("GeometryTypeError", bases, dict))?;
-            Ok(class.cast_into::<PyType>()?.unbind())
-        })
-        .map(|class| class.bind(py))
-}
-
 /// Raise `GeometryTypeError` for a one-off wrong-geometry-kind boundary
 /// failure (the structured wrong-kind variants route here automatically).
 pub(crate) fn geometry_type_err(message: impl Into<String>) -> PyErr {
-    Python::attach(|py| match geometry_type_error(py).cloned() {
-        Ok(class) => PyErr::from_type(class, (message.into(),)),
-        Err(err) => err,
-    })
+    GeometryTypeError::new_err(message.into())
 }
 
 fn geometry_type_err_with_expected(message: String, expected: &'static str) -> PyErr {
@@ -334,11 +318,11 @@ pub(crate) fn native_overflow_error(message: &str) -> PyErr {
 
 fn native_crs_exponent_overflow_error() -> PyErr {
     Python::attach(|py| {
-        // SAFETY: `type_object_raw` returns the live custom exception type for
-        // the attached interpreter, and the C string has static storage.
+        // SAFETY: the attached interpreter owns the built-in exception type,
+        // and the C string has static storage.
         unsafe {
             ffi::PyErr_SetString(
-                <CRSError as pyo3::type_object::PyTypeInfo>::type_object_raw(py).cast(),
+                ffi::PyExc_OverflowError,
                 c"certified geodesic exponent range overflowed".as_ptr(),
             );
         }
@@ -386,8 +370,7 @@ impl From<Error> for PyErr {
                 // Wrong geometry kind for the operation → GeometryTypeError
                 // (a TypeError subclass — you handed the operation a geometry
                 // of the wrong type).
-                G::LineStringRequired => geometry_type_err_with_expected(message, "LineString"),
-                G::LinealRequired | G::SidedBufferRequiresLineal => {
+                G::LineStringRequired | G::LinealRequired | G::SidedBufferRequiresLineal => {
                     geometry_type_err_with_expected(message, "LineString or MultiLineString")
                 },
                 G::PointRequired { .. } => geometry_type_err_with_expected(message, "Point"),
@@ -420,22 +403,25 @@ impl From<Error> for PyErr {
                 | G::SubstringOrder(..)
                 | G::SnapGridTooFine
                 | G::InvalidDe9imPattern(_)
-                | G::OffsetCapacityExceeded
+                | G::PicklePayload(_) => GeometryError::new_err(message),
+                G::OffsetCapacityExceeded | G::ExactCoordinateOutOfRange => {
+                    PyOverflowError::new_err(message)
+                },
+                G::ExactRatioZeroDenominator
                 | G::ExactNodeCollision { .. }
                 | G::ExactUnexpectedContact { .. }
                 | G::NativeRefinementMismatch
                 | G::ExactCyclicOrder { .. }
-                | G::ExactGlobalFace { .. }
-                | G::PicklePayload(_) => GeometryError::new_err(message),
+                | G::ExactGlobalFace { .. } => PyRuntimeError::new_err(message),
                 G::UnrepresentableOutput { operation, .. }
                 | G::ExactEmbeddingUnrepresentable { operation, .. } => {
-                    with_attrs(GeometryError::new_err(message), &[
+                    with_attrs(PyOverflowError::new_err(message), &[
                         ("code", Attr::Str("output_unrepresentable")),
                         ("operation", Attr::Str(operation)),
                     ])
                 },
                 G::ExactEmbeddingSearchLimit { operation, .. } => {
-                    with_attrs(GeometryError::new_err(message), &[
+                    with_attrs(ResourceLimitError::new_err(message), &[
                         ("code", Attr::Str("work_limit")),
                         ("operation", Attr::Str(operation)),
                     ])
@@ -445,7 +431,7 @@ impl From<Error> for PyErr {
                     parameter,
                     produced,
                     limit,
-                } => with_attrs(GeometryError::new_err(message), &[
+                } => with_attrs(ResourceLimitError::new_err(message), &[
                     ("code", Attr::Str("output_limit")),
                     ("operation", Attr::Str(operation)),
                     ("parameter", Attr::Str(parameter)),
@@ -467,8 +453,6 @@ impl From<Error> for PyErr {
                 | G::AntimeridianPoleOrdinates
                 | G::Triangulation(_)
                 | G::Voronoi(_)
-                | G::ExactRatioZeroDenominator
-                | G::ExactCoordinateOutOfRange
                 | G::OrdinateDropped(_)
                 | G::MissingMeasure
                 | G::NonMonotonicMeasure
@@ -500,8 +484,10 @@ impl From<Error> for PyErr {
                 | C::GeodesicUnits { crs, .. } => {
                     with_attrs(CRSError::new_err(message), &[("crs", Attr::Str(crs))])
                 },
-                C::GeodesicExponentOverflow
-                | C::Create { .. }
+                C::GeodesicExponentOverflow => {
+                    unreachable!("exponent overflow is handled before formatting")
+                },
+                C::Create { .. }
                 | C::Export { .. }
                 | C::Identify { .. }
                 | C::EmptyGeometry
@@ -580,7 +566,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "InvalidGeometryError",
         py.get_type::<InvalidGeometryError>(),
     )?;
-    m.add("GeometryTypeError", geometry_type_error(py)?)?;
+    m.add("GeometryTypeError", py.get_type::<GeometryTypeError>())?;
+    m.add("ResourceLimitError", py.get_type::<ResourceLimitError>())?;
     m.add("CRSError", py.get_type::<CRSError>())?;
     m.add("CRSMismatchError", py.get_type::<CRSMismatchError>())?;
     m.add("TransformError", py.get_type::<TransformError>())?;
@@ -594,10 +581,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     geometry.setattr("param", py.None())?;
     geometry.setattr("value", py.None())?;
     geometry.setattr("code", py.None())?;
-    geometry.setattr("operation", py.None())?;
-    geometry.setattr("parameter", py.None())?;
-    geometry.setattr("produced", py.None())?;
-    geometry.setattr("limit", py.None())?;
+    let resource_limit = py.get_type::<ResourceLimitError>();
+    for name in ["code", "operation", "parameter", "produced", "limit"] {
+        resource_limit.setattr(name, py.None())?;
+    }
     py.get_type::<CRSError>().setattr("crs", py.None())?;
     py.get_type::<InvalidGeometryError>()
         .setattr("operation", py.None())?;
@@ -605,12 +592,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<InvalidGeometryError>()
             .setattr(name, py.None())?;
     }
-    py.get_type::<InvalidGeometryError>()
-        .setattr("parameter", py.None())?;
-    py.get_type::<InvalidGeometryError>()
-        .setattr("produced", py.None())?;
-    py.get_type::<InvalidGeometryError>()
-        .setattr("limit", py.None())?;
     py.get_type::<TransformError>()
         .setattr("source", py.None())?;
     py.get_type::<TransformError>()
@@ -618,7 +599,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py.get_type::<ParseError>().setattr("format", py.None())?;
     py.get_type::<ParseError>().setattr("position", py.None())?;
     py.get_type::<ParseError>().setattr("path", py.None())?;
-    let geometry_type = geometry_type_error(py)?;
+    let geometry_type = py.get_type::<GeometryTypeError>();
     geometry_type.setattr("expected", py.None())?;
     geometry_type.setattr("got", py.None())?;
     let mismatch = py.get_type::<CRSMismatchError>();
@@ -631,12 +612,38 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use pyo3::exceptions::{PyOSError, PyOverflowError};
+    use pyo3::exceptions::{PyOSError, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
     use pyo3::prelude::*;
 
-    use super::{CRSError, GeometryError, native_overflow_error};
+    use super::{GeometryError, ResourceLimitError, native_overflow_error};
     use crate::error::{Error, ResourceError};
     use crate::geometry::GeometryErrorKind;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn recovery_categories_do_not_conflate_types_values_and_computation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error: PyErr = Error::from(GeometryErrorKind::LineStringRequired).into();
+            assert!(error.is_instance_of::<PyTypeError>(py));
+            assert!(!error.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("expected")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "LineString or MultiLineString"
+            );
+            let error: PyErr = Error::from(GeometryErrorKind::OffsetCapacityExceeded).into();
+            assert!(error.is_instance_of::<PyOverflowError>(py));
+            assert!(!error.is_instance_of::<PyValueError>(py));
+            let error: PyErr = Error::from(GeometryErrorKind::ExactRatioZeroDenominator).into();
+            assert!(error.is_instance_of::<PyRuntimeError>(py));
+            assert!(!error.is_instance_of::<PyValueError>(py));
+        });
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
@@ -656,7 +663,7 @@ mod tests {
                 ),
                 (
                     Error::from(crate::crs::CrsError::GeodesicExponentOverflow),
-                    py.get_type::<CRSError>(),
+                    py.get_type::<PyOverflowError>(),
                     "certified geodesic exponent range overflowed",
                 ),
             ] {
@@ -770,7 +777,12 @@ mod tests {
             ];
             for (kind, code, operation, message_part) in cases {
                 let error: PyErr = Error::from(kind).into();
-                assert!(error.is_instance_of::<GeometryError>(py));
+                if code == "output_unrepresentable" {
+                    assert!(error.is_instance_of::<PyOverflowError>(py));
+                } else {
+                    assert!(error.is_instance_of::<ResourceLimitError>(py));
+                }
+                assert!(!error.is_instance_of::<GeometryError>(py));
                 let value = error.value(py);
                 assert_eq!(
                     value

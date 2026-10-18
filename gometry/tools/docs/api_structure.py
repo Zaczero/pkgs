@@ -56,6 +56,7 @@ ERRORS = (
     'CRSMismatchError',
     'TransformError',
     'ParseError',
+    'ResourceLimitError',
 )
 
 

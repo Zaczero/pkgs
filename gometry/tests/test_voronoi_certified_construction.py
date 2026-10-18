@@ -69,7 +69,7 @@ def _outcome(
             ),
             frozenset(segments),
         )
-    except gm.GeometryError as error:
+    except (gm.GeometryError, OverflowError, gm.ResourceLimitError) as error:
         return ('error', str(error))
 
 

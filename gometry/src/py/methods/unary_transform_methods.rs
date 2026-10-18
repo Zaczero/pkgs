@@ -90,6 +90,8 @@ InvalidGeometryError
 GeometryError
     If ``distance``/``quadrant_segments``/style parameters are invalid, or
     ``unit=meters`` is requested for a CRS-free geometry.
+ResourceLimitError
+    If generated output exceeds its budget.
 GeometryTypeError
     If ``side`` is ``'left'``/``'right'`` and the geometry is not lineal.
 
@@ -169,6 +171,8 @@ Raises
 ------
 GeometryError
     If ``distance``/``quadrant_segments``/style parameters are invalid.
+ResourceLimitError
+    If generated output exceeds its budget.
 
 See Also
 --------
@@ -305,9 +309,9 @@ keep_endpoints : bool, default True
 Raises
 ------
 GeometryError
-    If ``iterations`` is negative, or if it would smooth the geometry to
-    more coordinates than the output budget allows (a tiny input with a
-    very large ``iterations``).
+    If ``iterations`` is negative.
+ResourceLimitError
+    If smoothing would generate more coordinates than its output budget allows.
 
 Examples
 --------
@@ -509,8 +513,11 @@ GeometryError
     If neither or both constraints are supplied, ``max_length`` is not a
     positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
     combined with ``fraction``, ``path`` is combined with ``unit``,
-    ``unit='meters'`` is requested for a CRS-free geometry, or the
-    endpoint-preserving binary64 output cannot satisfy ``max_length``.
+    ``unit='meters'`` is requested for a CRS-free geometry.
+OverflowError
+    If endpoint-preserving binary64 output cannot satisfy ``max_length``.
+ResourceLimitError
+    If generated coordinates exceed the output budget.
 
 Examples
 --------
@@ -578,9 +585,11 @@ Raises
 ------
 GeometryError
     If the rectangle coordinates are non-finite, south exceeds north, or a
-    geographic endpoint is outside its CRS frame, or no adjacent binary64
-    assignment preserves the exact clipped result or the bounded embedding
-    search is exhausted.
+    geographic endpoint is outside its CRS frame.
+OverflowError
+    If no adjacent binary64 assignment preserves the exact clipped result.
+ResourceLimitError
+    If the bounded embedding search is exhausted.
 InvalidGeometryError
     If the input contains coordinates outside its geographic CRS domain.
 
@@ -787,10 +796,12 @@ Groups of GeometryArray
 Raises
 ------
 GeometryError
-    If ``max_vertices`` is below ``8``, exact partitioning cannot produce
-    parts within the requested bound, no adjacent binary64 assignment
-    preserves the exact subdivision, or the bounded embedding search is
-    exhausted.
+    If ``max_vertices`` is below ``8``.
+OverflowError
+    If exact partitioning cannot produce parts within the requested bound,
+    or no adjacent binary64 assignment preserves the exact subdivision.
+ResourceLimitError
+    If generated output or the bounded embedding search exceeds its budget.
 
 Examples
 --------

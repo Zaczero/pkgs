@@ -1,11 +1,4 @@
-"""The top-level gometry exception hierarchy: bases, pickling, and the
-class each error family raises (one pin per From<Error> mapping row).
-
-Every class subclasses ValueError through GeometryError, so broad
-``except ValueError`` handlers keep working; ``GeometryTypeError``
-additionally subclasses TypeError (the numpy.exceptions.AxisError dual-base
-pattern). The ``match=`` patterns double as message-grammar goldens.
-"""
+"""Public exception recovery categories, structured context, and pickling."""
 
 from __future__ import annotations
 
@@ -26,23 +19,25 @@ errors = gm
 HIERARCHY = {
     'GeometryError': ValueError,
     'InvalidGeometryError': errors.GeometryError,
-    'GeometryTypeError': errors.GeometryError,
+    'GeometryTypeError': TypeError,
     'CRSError': errors.GeometryError,
     'CRSMismatchError': errors.CRSError,
     'TransformError': errors.CRSError,
     'ParseError': errors.GeometryError,
+    'ResourceLimitError': RuntimeError,
 }
 
 
 def test_hierarchy_bases_identity_and_module() -> None:
     for name, base in HIERARCHY.items():
         cls = getattr(errors, name)
-        assert issubclass(cls, base)
-        assert issubclass(cls, ValueError)
+        assert cls.__bases__ == (base,)
         assert getattr(gm, name) is cls
         assert cls.__module__ == 'gometry'
         assert cls.__doc__
     assert issubclass(errors.GeometryTypeError, TypeError)
+    assert not issubclass(errors.GeometryTypeError, ValueError)
+    assert not issubclass(errors.ResourceLimitError, errors.GeometryError)
     assert issubclass(errors.AccuracyWarning, UserWarning)
     assert not issubclass(errors.AccuracyWarning, errors.GeometryError)
 
@@ -98,7 +93,8 @@ def test_parse_position_tracks_wkb_cursor(payload: bytes, position: int) -> None
 def test_structured_error_defaults_and_parse_position() -> None:
     assert errors.GeometryError('x').code is None
     assert errors.InvalidGeometryError('x').code is None
-    assert errors.GeometryTypeError('x').code is None
+    assert errors.ResourceLimitError('x').code is None
+    assert errors.ResourceLimitError('x').limit is None
     assert errors.ParseError('x').position is None
     assert errors.GeometryTypeError('x').expected is None
     assert errors.TransformError('x').source is None
@@ -149,6 +145,23 @@ def test_exceptions_pickle() -> None:
         assert str(clone) == 'boom'
 
 
+def test_resource_failure_preserves_recovery_fields_and_row_through_pickle() -> None:
+    lines = gm.GeometryArray([None, gm.LineString([(0, 0), (1, 0)])])
+    with pytest.raises(gm.ResourceLimitError, match='segmentize') as raised:
+        lines.segmentize(float.fromhex('0x0.0000000000001p-1022'))
+    error = raised.value
+    assert isinstance(error, RuntimeError)
+    assert not isinstance(error, ValueError)
+    assert error.code == 'output_limit'
+    assert error.operation == 'segmentize'
+    assert error.parameter == 'max_length'
+    assert error.produced > error.limit
+    assert error.__notes__ == ['while processing array element 1']
+    clone = pickle.loads(pickle.dumps(error))
+    assert type(clone) is gm.ResourceLimitError
+    assert clone.__dict__ == error.__dict__
+
+
 def test_invalid_geometry_error_on_structural_rules() -> None:
     with pytest.raises(
         errors.InvalidGeometryError, match='x must be finite'
@@ -173,7 +186,7 @@ def test_geometry_type_error_on_wrong_kind() -> None:
         line_only.line_interpolate(0.5)
     with pytest.raises(errors.GeometryTypeError) as excinfo:
         line_only.line_interpolate(0.5)
-    assert isinstance(excinfo.value, ValueError)
+    assert not isinstance(excinfo.value, ValueError)
     # Empty-point ordinate access is an AttributeError so `match Point(x, y)`
     # patterns FAIL (per the match protocol) instead of raising mid-match.
     with pytest.raises(AttributeError, match='empty point'):

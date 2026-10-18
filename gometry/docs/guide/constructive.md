@@ -239,12 +239,12 @@ straight chart edge, including across later cuts; see
 [Z/M under operations](geometry.md#zm-under-operations).
 
 If no assignment in the overlay operation's admitted finite coordinate domain
-passes the certificate, it raises [`GeometryError`][gometry.GeometryError] with
+passes the certificate, it raises `OverflowError` with
 `code == 'output_unrepresentable'` instead of returning geometry with changed
 topology. This is a refusal under that operation's drawing domain and
 preservation contract, not a claim that every possible binary64 drawing of the
 mathematical result is impossible. For a geographic overlay, exhausting the
-bounded work budget raises [`GeometryError`][gometry.GeometryError] with
+bounded work budget raises [`ResourceLimitError`][gometry.ResourceLimitError] with
 `code == 'work_limit'` and `operation` naming the call. No geometry is returned;
 the error means the operation stopped before it could finish its checked
 construction, not that no valid output exists.
@@ -398,7 +398,7 @@ with `unit=`.
 
 A request that would generate more than
 **16,000,000** output items from one geometry is refused with a
-[`GeometryError`][gometry.GeometryError] whose message names the operation,
+[`ResourceLimitError`][gometry.ResourceLimitError] whose message names the operation,
 produced count, limit, and controlling parameter. The limit bounds what a
 parameter makes of each geometry; an array's length is not charged against it:
 
@@ -462,10 +462,10 @@ tolerance per row.
 
 For CRS-free and projected planar input, a positive-radius
 `maximum_inscribed_circle` returns a contained 64-vertex `Polygon`. It raises
-`GeometryError` when finite coordinates cannot emit that contained result.
+`OverflowError` when finite coordinates cannot emit that contained result.
 Empty polygonal input returns `POLYGON EMPTY`. A zero or subnormal-radius result returns a finite
 `Point` only when its center is covered by the source; otherwise it raises
-`GeometryError`. Geographic results retain the documented local-projection
+`OverflowError`. Geographic results retain the documented local-projection
 approximation.
 
 The circle result is a geometry, and the radius result is numeric:
@@ -615,7 +615,7 @@ smallest enclosing circle as geometry; for planar/projected input,
 [`minimum_bounding_radius`][gometry.Geometry.minimum_bounding_radius] returns
 only that circle's correctly rounded mathematical minimum radius. The geometry
 is a certified circumscribed 64-gon around that minimum disk: its edges enclose
-the disk and its vertices lie outside it. It raises `GeometryError` rather than
+the disk and its vertices lie outside it. It raises `OverflowError` rather than
 silently changing the scalar radius or publishing a non-finite, invalid, or
 non-enclosing result when binary64 cannot represent the polygon.
 The existing realization-work budget also bounds recovery from intermediate
@@ -633,7 +633,7 @@ On arrays, the radius method returns a read-only `float64` NumPy column.
     Constrained `min_angle`/`max_area` refinement is bounded at 16,000,000 generated
     vertices. A request whose estimated work exceeds that limit, or whose
     quality cannot be satisfied within it, raises a
-    [`GeometryError`][gometry.GeometryError] naming the limit rather than
+    [`ResourceLimitError`][gometry.ResourceLimitError] naming the limit rather than
     returning an unconstrained result; relax the refinement targets when that
     happens.
 

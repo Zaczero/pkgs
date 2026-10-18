@@ -99,6 +99,8 @@ InvalidGeometryError
 GeometryError
     If input forms conflict, a value is non-finite, or a distance-only option
     is used with ``basis='m'``.
+ResourceLimitError
+    If ``count`` exceeds the generated-output budget.
 
 See Also
 --------

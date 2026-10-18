@@ -40,6 +40,7 @@ ERROR_EXPORTS = frozenset({
     'GeometryTypeError',
     'InvalidGeometryError',
     'ParseError',
+    'ResourceLimitError',
     'TransformError',
 })
 ALLOWED_BUILTIN_RAISES = frozenset({
@@ -51,6 +52,7 @@ ALLOWED_BUILTIN_RAISES = frozenset({
     'MemoryError',
     'OSError',
     'OverflowError',
+    'RuntimeError',
     'StopIteration',
     'ModuleNotFoundError',
     'ImportError',

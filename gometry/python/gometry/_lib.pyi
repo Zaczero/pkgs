@@ -206,6 +206,7 @@ __all__ = [
     'ParseError',
     'Point',
     'Polygon',
+    'ResourceLimitError',
     'S2Cell',
     'SpatialIndex',
     'SpatialIndexIterator',
@@ -441,7 +442,7 @@ class AccuracyWarning(UserWarning):
     """A CRS transform used a lower-accuracy fallback because a required grid is unavailable."""
 
 class GeometryError(ValueError):
-    """Base class for every error gometry raises about your data or parameters."""
+    """A geometry, parameter value, or metadata value is invalid."""
 
     category: Literal['layout', 'metadata'] | None
     """GeoParquet admission category, or ``None`` for other geometry errors."""
@@ -451,14 +452,6 @@ class GeometryError(ValueError):
     """The offending parameter's name, for value-lane errors (else ``None``)."""
     value: float | None
     """The offending numeric value, for value-lane errors (else ``None``)."""
-    operation: str | None
-    """The operation associated with a bounded-output or certified-embedding error (else ``None``)."""
-    parameter: str | None
-    """The parameter that controls bounded output (else ``None``)."""
-    produced: int | None
-    """The number of produced items for a bounded-output error (else ``None``)."""
-    limit: int | None
-    """The configured output limit, for bounded-output errors (else ``None``)."""
 
 class InvalidGeometryError(GeometryError):
     """A geometry violates a structural or numeric rule."""
@@ -480,13 +473,27 @@ class InvalidGeometryError(GeometryError):
     issue's contact set, chosen deterministically by minimum latitude then longitude.
     """
 
-class GeometryTypeError(GeometryError, TypeError):
+class GeometryTypeError(TypeError):
     """An operation received a geometry of the wrong kind."""
 
     expected: str | None
     """The expected geometry kind, for wrong-kind errors (else ``None``)."""
     got: str | None
     """The received geometry kind when known (else ``None``)."""
+
+class ResourceLimitError(RuntimeError):
+    """An operation exceeded its output or computation budget."""
+
+    code: Literal['output_limit', 'work_limit'] | None
+    """Which budget stopped the operation, or ``None`` for a hand-built error."""
+    operation: str | None
+    """The operation that exceeded its budget (else ``None``)."""
+    parameter: str | None
+    """The parameter that controls generated output (else ``None``)."""
+    produced: int | None
+    """The number of produced items for an output limit (else ``None``)."""
+    limit: int | None
+    """The configured output limit (else ``None``)."""
 
 class CRSError(GeometryError):
     """A CRS could not be created, identified, exported, or used."""
@@ -2046,9 +2053,10 @@ class Geometry:
             If the declared CRS cannot be resolved to a topology frame.
         InvalidGeometryError
             If a geographic coordinate read by boundary is outside its CRS domain.
-        GeometryError
-            If exact work exceeds the generated-item budget or emitted cells cannot
-            be certified.
+        ResourceLimitError
+            If exact work exceeds the generated-item or embedding-search budget.
+        OverflowError
+            If emitted cells cannot preserve the exact topology in binary64.
 
         Examples
         --------
@@ -2130,9 +2138,12 @@ class Geometry:
         ------
         GeometryError
             If a quality constraint is invalid or method-specific options are used
-            with the wrong algorithm. A boundary Steiner point that cannot be
-            represented at float resolution raises this error with
-            ``operation='triangulate'``.
+            with the wrong algorithm.
+        OverflowError
+            If a boundary Steiner point cannot be represented at float resolution;
+            ``operation`` is ``'triangulate'``.
+        ResourceLimitError
+            If refinement exceeds the generated-output budget.
         InvalidGeometryError
             If the input polygon is invalid or the triangulation cannot be constructed.
 
@@ -2186,9 +2197,9 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``iterations`` is negative, or if it would smooth the geometry to
-            more coordinates than the output budget allows (a tiny input with a
-            very large ``iterations``).
+            If ``iterations`` is negative.
+        ResourceLimitError
+            If smoothing would generate more coordinates than its output budget allows.
 
         Examples
         --------
@@ -2295,9 +2306,11 @@ class Geometry:
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic endpoint is outside its CRS frame, or no adjacent binary64
-            assignment preserves the exact clipped result or the bounded embedding
-            search is exhausted.
+            geographic endpoint is outside its CRS frame.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact clipped result.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If the input contains coordinates outside its geographic CRS domain.
 
@@ -2499,6 +2512,8 @@ class Geometry:
         GeometryError
             If ``distance``/``quadrant_segments``/style parameters are invalid, or
             ``unit=meters`` is requested for a CRS-free geometry.
+        ResourceLimitError
+            If generated output exceeds its budget.
         GeometryTypeError
             If ``side`` is ``'left'``/``'right'`` and the geometry is not lineal.
 
@@ -2641,9 +2656,10 @@ class Geometry:
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact repaired geometry
-            or the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact repaired geometry.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If the geometry cannot be repaired.
 
@@ -2997,6 +3013,8 @@ class Geometry:
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.
+        ResourceLimitError
+            If ``count`` exceeds the generated-output budget.
 
         See Also
         --------
@@ -3087,8 +3105,10 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``tolerance`` is not positive and finite, or a finite planar/projected
-            result cannot be certified and represented as a contained polygon.
+            If ``tolerance`` is not positive and finite.
+        OverflowError
+            If a finite planar/projected result cannot be certified and represented
+            as a contained polygon.
         InvalidGeometryError
             If invalid polygonal structure prevents the operation from completing.
 
@@ -3194,7 +3214,7 @@ class Geometry:
 
         Raises
         ------
-        GeometryError
+        OverflowError
             If the correctly rounded circle cannot be emitted as a finite, valid,
             source-enclosing polygon without changing its mathematical center or scalar
             radius.
@@ -3374,10 +3394,12 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``max_vertices`` is below ``8``, exact partitioning cannot produce
-            parts within the requested bound, no adjacent binary64 assignment
-            preserves the exact subdivision, or the bounded embedding search is
-            exhausted.
+            If ``max_vertices`` is below ``8``.
+        OverflowError
+            If exact partitioning cannot produce parts within the requested bound,
+            or no adjacent binary64 assignment preserves the exact subdivision.
+        ResourceLimitError
+            If generated output or the bounded embedding search exceeds its budget.
 
         Examples
         --------
@@ -3528,8 +3550,11 @@ class Geometry:
             If neither or both constraints are supplied, ``max_length`` is not a
             positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
             combined with ``fraction``, ``path`` is combined with ``unit``,
-            ``unit='meters'`` is requested for a CRS-free geometry, or the
-            endpoint-preserving binary64 output cannot satisfy ``max_length``.
+            ``unit='meters'`` is requested for a CRS-free geometry.
+        OverflowError
+            If endpoint-preserving binary64 output cannot satisfy ``max_length``.
+        ResourceLimitError
+            If generated coordinates exceed the output budget.
 
         Examples
         --------
@@ -3591,10 +3616,11 @@ class Geometry:
 
         Raises
         ------
-        GeometryError
-            If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
-            output and ``'voronoi_edge_lines'`` for edge output.
+        OverflowError
+            If the output cannot be represented in binary64. ``operation`` is
+            ``'voronoi_cells'`` for polygon output and ``'voronoi_edge_lines'`` for edges.
+        ResourceLimitError
+            If generated output or the embedding search exceeds its budget.
         InvalidGeometryError
             If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -3709,6 +3735,8 @@ class Geometry:
         ------
         GeometryError
             If ``distance``/``quadrant_segments``/style parameters are invalid.
+        ResourceLimitError
+            If generated output exceeds its budget.
 
         See Also
         --------
@@ -3802,6 +3830,8 @@ class Geometry:
         ------
         GeometryError
             If ``count`` or ``seed`` is invalid.
+        ResourceLimitError
+            If ``count`` exceeds the generated-output budget.
 
         Examples
         --------
@@ -4093,9 +4123,10 @@ class Geometry:
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact polygonized output
-            or the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact polygonized output.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If polygons cannot be assembled from the linework.
 
@@ -4181,9 +4212,10 @@ class Geometry:
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact noded linework or
-            the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact noded linework.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If noding fails on the input linework.
 
@@ -8547,9 +8579,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             If the declared CRS cannot be resolved to a topology frame.
         InvalidGeometryError
             If a geographic coordinate read by boundary is outside its CRS domain.
-        GeometryError
-            If exact work exceeds the generated-item budget or emitted cells cannot
-            be certified.
+        ResourceLimitError
+            If exact work exceeds the generated-item or embedding-search budget.
+        OverflowError
+            If emitted cells cannot preserve the exact topology in binary64.
 
         Examples
         --------
@@ -8653,9 +8686,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If a quality constraint is invalid or method-specific options are used
-            with the wrong algorithm. A boundary Steiner point that cannot be
-            represented at float resolution raises this error with
-            ``operation='triangulate'``.
+            with the wrong algorithm.
+        OverflowError
+            If a boundary Steiner point cannot be represented at float resolution;
+            ``operation`` is ``'triangulate'``.
+        ResourceLimitError
+            If refinement exceeds the generated-output budget.
         InvalidGeometryError
             If an input polygon is invalid or its triangulation cannot be constructed.
 
@@ -8709,9 +8745,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``iterations`` is negative, or if it would smooth the geometry to
-            more coordinates than the output budget allows (a tiny input with a
-            very large ``iterations``).
+            If ``iterations`` is negative.
+        ResourceLimitError
+            If smoothing would generate more coordinates than its output budget allows.
 
         Examples
         --------
@@ -8881,9 +8917,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic endpoint is outside its CRS frame, or no adjacent binary64
-            assignment preserves the exact clipped result or the bounded embedding
-            search is exhausted.
+            geographic endpoint is outside its CRS frame.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact clipped result.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If the input contains coordinates outside its geographic CRS domain.
 
@@ -9167,6 +9205,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryError
             If ``distance``/``quadrant_segments``/style parameters are invalid, or
             ``unit=meters`` is requested for a CRS-free geometry.
+        ResourceLimitError
+            If generated output exceeds its budget.
         GeometryTypeError
             If ``side`` is ``'left'``/``'right'`` and the geometry is not lineal.
 
@@ -9416,9 +9456,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact repaired geometry
-            or the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact repaired geometry.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If the geometry cannot be repaired.
 
@@ -9773,6 +9814,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.
+        ResourceLimitError
+            If ``count`` exceeds the generated-output budget.
 
         See Also
         --------
@@ -9870,8 +9913,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``tolerance`` is not positive and finite, or a finite planar/projected
-            result cannot be certified and represented as a contained polygon.
+            If ``tolerance`` is not positive and finite.
+        OverflowError
+            If a finite planar/projected result cannot be certified and represented
+            as a contained polygon.
         InvalidGeometryError
             If invalid polygonal structure prevents the operation from completing.
 
@@ -9981,7 +10026,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
-        GeometryError
+        OverflowError
             If the correctly rounded circle cannot be emitted as a finite, valid,
             source-enclosing polygon without changing its mathematical center or scalar
             radius.
@@ -10187,10 +10232,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``max_vertices`` is below ``8``, exact partitioning cannot produce
-            parts within the requested bound, no adjacent binary64 assignment
-            preserves the exact subdivision, or the bounded embedding search is
-            exhausted.
+            If ``max_vertices`` is below ``8``.
+        OverflowError
+            If exact partitioning cannot produce parts within the requested bound,
+            or no adjacent binary64 assignment preserves the exact subdivision.
+        ResourceLimitError
+            If generated output or the bounded embedding search exceeds its budget.
 
         Examples
         --------
@@ -10346,8 +10393,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             If neither or both constraints are supplied, ``max_length`` is not a
             positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
             combined with ``fraction``, ``path`` is combined with ``unit``,
-            ``unit='meters'`` is requested for a CRS-free geometry, or the
-            endpoint-preserving binary64 output cannot satisfy ``max_length``.
+            ``unit='meters'`` is requested for a CRS-free geometry.
+        OverflowError
+            If endpoint-preserving binary64 output cannot satisfy ``max_length``.
+        ResourceLimitError
+            If generated coordinates exceed the output budget.
 
         Examples
         --------
@@ -10425,10 +10475,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
-        GeometryError
-            If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
-            output and ``'voronoi_edge_lines'`` for edge output.
+        OverflowError
+            If the output cannot be represented in binary64. ``operation`` is
+            ``'voronoi_cells'`` for polygon output and ``'voronoi_edge_lines'`` for edges.
+        ResourceLimitError
+            If generated output or the embedding search exceeds its budget.
         InvalidGeometryError
             If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -10678,6 +10729,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If ``distance``/``quadrant_segments``/style parameters are invalid.
+        ResourceLimitError
+            If generated output exceeds its budget.
 
         See Also
         --------
@@ -10799,6 +10852,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If ``count`` or ``seed`` is invalid.
+        ResourceLimitError
+            If ``count`` exceeds the generated-output budget.
 
         Examples
         --------
@@ -11278,9 +11333,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact polygonized output
-            or the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact polygonized output.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If polygons cannot be assembled from the linework.
 
@@ -11381,9 +11437,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
-        GeometryError
-            If no adjacent binary64 assignment preserves the exact noded linework or
-            the bounded embedding search is exhausted.
+        OverflowError
+            If no adjacent binary64 assignment preserves the exact noded linework.
+        ResourceLimitError
+            If the bounded embedding search is exhausted.
         InvalidGeometryError
             If noding fails on the input linework.
 
@@ -20029,9 +20086,10 @@ def intersection(
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
         If either operand has coordinates outside its geographic CRS domain.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -20129,9 +20187,10 @@ def union(
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
         If either operand has coordinates outside its geographic CRS domain.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
 
     See Also
     --------
@@ -20258,9 +20317,10 @@ def difference(
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
         If either operand has coordinates outside its geographic CRS domain.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -20359,9 +20419,10 @@ def symmetric_difference(
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
         If either operand has coordinates outside its geographic CRS domain.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -20635,9 +20696,10 @@ def polygonize_all(
 
     Raises
     ------
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact polygonized
-        output, or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact polygonized output.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
 
     See Also
     --------
@@ -20784,9 +20846,11 @@ def coverage_clean(
     GeometryTypeError
         If a row is not a `Polygon` or `MultiPolygon`.
     GeometryError
-        If ``grid_size`` or ``gap_width`` is negative or non-finite, or no
-        adjacent binary64 assignment preserves the exact cleaned coverage or
-        the bounded embedding search is exhausted.
+        If ``grid_size`` or ``gap_width`` is negative or non-finite.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact cleaned coverage.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
     InvalidGeometryError
         If ``grid_size > 0`` and snap-repair cannot converge on a valid
         grid-aligned result.
@@ -20839,9 +20903,10 @@ def union_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
     InvalidGeometryError
         If ``values`` is empty or contains coordinates outside its geographic CRS
         domain.
@@ -20894,9 +20959,10 @@ def intersection_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
     InvalidGeometryError
         If ``values`` is empty or contains coordinates outside its geographic CRS
         domain.
@@ -20947,9 +21013,10 @@ def symmetric_difference_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact result topology,
-        or the bounded embedding search is exhausted.
+    OverflowError
+        If no adjacent binary64 assignment preserves the exact result topology.
+    ResourceLimitError
+        If the bounded embedding search is exhausted.
     InvalidGeometryError
         If ``values`` is empty or contains coordinates outside its geographic CRS
         domain.

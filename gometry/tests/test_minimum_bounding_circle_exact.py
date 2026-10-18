@@ -274,7 +274,7 @@ def test_planar_circle_inflates_a_disk_below_the_coordinate_spacing(name: str) -
 
 
 def test_planar_circle_rejects_a_positive_radius_below_the_minimum_subnormal() -> None:
-    with pytest.raises(gm.GeometryError, match='contained geometry') as caught:
+    with pytest.raises(OverflowError, match='contained geometry') as caught:
         gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(unit='planar')
     assert caught.value.operation == 'minimum_bounding_circle'
 
@@ -291,7 +291,7 @@ def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
 def test_planar_circle_rejects_overflowed_output_without_changing_radius() -> None:
     points = gm.MultiPoint(CASES['max-diagonal-overflow'])
     assert math.isinf(points.minimum_bounding_radius(unit='planar'))
-    with pytest.raises(gm.GeometryError, match='contained geometry'):
+    with pytest.raises(OverflowError, match='contained geometry'):
         points.minimum_bounding_circle(unit='planar')
 
 

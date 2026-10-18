@@ -671,6 +671,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'Point',
         'Polygon',
         'PolygonizeResult',
+        'ResourceLimitError',
         'S2Cell',
         'SpatialIndex',
         'Tile',
@@ -881,14 +882,8 @@ def test_area_accepts_a_raw_iterable_as_an_array() -> None:
     assert gm.area(g for g in (square,)).tolist() == [4.0]
 
 
-def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
-    """A wrong geometry KIND raises `GeometryTypeError`, not a bare `TypeError`.
-
-    These escaped `except gm.GeometryError` entirely. `GeometryTypeError`
-    dual-bases `(GeometryError, TypeError)`, so both spellings catch them and no
-    existing handler breaks. A wrong *Python* type still raises plain
-    `TypeError` — that distinction is the point.
-    """
+def test_geometry_kind_rejections_are_type_errors() -> None:
+    """Wrong geometry kinds are type failures, separate from invalid values."""
     point = gm.Point(0, 0)
     triangle = gm.MultiPoint([(0, 0), (1, 1), (0, 1)])
     for label, call in (
@@ -900,6 +895,5 @@ def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
     ):
         with pytest.raises(gm.GeometryTypeError) as info:
             call()
-        # dual base: anyone catching plain TypeError still catches it
         assert isinstance(info.value, TypeError), label
-        assert isinstance(info.value, gm.GeometryError), label
+        assert not isinstance(info.value, ValueError), label

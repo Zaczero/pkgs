@@ -35,9 +35,10 @@ CRSError
     If the declared CRS cannot be resolved to a topology frame.
 InvalidGeometryError
     If a geographic coordinate read by boundary is outside its CRS domain.
-GeometryError
-    If exact work exceeds the generated-item budget or emitted cells cannot
-    be certified.
+ResourceLimitError
+    If exact work exceeds the generated-item or embedding-search budget.
+OverflowError
+    If emitted cells cannot preserve the exact topology in binary64.
 
 ";
     array: r"
@@ -59,9 +60,10 @@ CRSError
     If the declared CRS cannot be resolved to a topology frame.
 InvalidGeometryError
     If a geographic coordinate read by boundary is outside its CRS domain.
-GeometryError
-    If exact work exceeds the generated-item budget or emitted cells cannot
-    be certified.
+ResourceLimitError
+    If exact work exceeds the generated-item or embedding-search budget.
+OverflowError
+    If emitted cells cannot preserve the exact topology in binary64.
 
 ";
     tail: r"Examples
@@ -430,8 +432,10 @@ centroid : Area/length-weighted center (may fall outside).
 Raises
 ------
 GeometryError
-    If ``tolerance`` is not positive and finite, or a finite planar/projected
-    result cannot be certified and represented as a contained polygon.
+    If ``tolerance`` is not positive and finite.
+OverflowError
+    If a finite planar/projected result cannot be certified and represented
+    as a contained polygon.
 InvalidGeometryError
     If invalid polygonal structure prevents the operation from completing.
 
@@ -539,7 +543,7 @@ GeometryArray
     tail: r"
 Raises
 ------
-GeometryError
+OverflowError
     If the correctly rounded circle cannot be emitted as a finite, valid,
     source-enclosing polygon without changing its mathematical center or scalar
     radius.
@@ -733,9 +737,10 @@ GeometryArray
     tail: r"
 Raises
 ------
-GeometryError
-    If no adjacent binary64 assignment preserves the exact noded linework or
-    the bounded embedding search is exhausted.
+OverflowError
+    If no adjacent binary64 assignment preserves the exact noded linework.
+ResourceLimitError
+    If the bounded embedding search is exhausted.
 InvalidGeometryError
     If noding fails on the input linework.
 
@@ -828,9 +833,10 @@ polygonize_all : Pool linework across all supplied geometries.
 
 Raises
 ------
-GeometryError
-    If no adjacent binary64 assignment preserves the exact polygonized output
-    or the bounded embedding search is exhausted.
+OverflowError
+    If no adjacent binary64 assignment preserves the exact polygonized output.
+ResourceLimitError
+    If the bounded embedding search is exhausted.
 InvalidGeometryError
     If polygons cannot be assembled from the linework.
 
@@ -970,6 +976,8 @@ Raises
 ------
 GeometryError
     If ``count`` or ``seed`` is invalid.
+ResourceLimitError
+    If ``count`` exceeds the generated-output budget.
 
 Examples
 --------
@@ -1159,10 +1167,11 @@ Groups[GeometryArray[Polygon]] or Groups[GeometryArray[LineString]]
     tail: r"
 Raises
 ------
-GeometryError
-    If the output cannot be represented in binary64 or its embedding search
-    exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
-    output and ``'voronoi_edge_lines'`` for edge output.
+OverflowError
+    If the output cannot be represented in binary64. ``operation`` is
+    ``'voronoi_cells'`` for polygon output and ``'voronoi_edge_lines'`` for edges.
+ResourceLimitError
+    If generated output or the embedding search exceeds its budget.
 InvalidGeometryError
     If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -1236,9 +1245,12 @@ Raises
 ------
 GeometryError
     If a quality constraint is invalid or method-specific options are used
-    with the wrong algorithm. A boundary Steiner point that cannot be
-    represented at float resolution raises this error with
-    ``operation='triangulate'``.
+    with the wrong algorithm.
+OverflowError
+    If a boundary Steiner point cannot be represented at float resolution;
+    ``operation`` is ``'triangulate'``.
+ResourceLimitError
+    If refinement exceeds the generated-output budget.
 InvalidGeometryError
     If the input polygon is invalid or the triangulation cannot be constructed.
 
@@ -1295,9 +1307,12 @@ Raises
 ------
 GeometryError
     If a quality constraint is invalid or method-specific options are used
-    with the wrong algorithm. A boundary Steiner point that cannot be
-    represented at float resolution raises this error with
-    ``operation='triangulate'``.
+    with the wrong algorithm.
+OverflowError
+    If a boundary Steiner point cannot be represented at float resolution;
+    ``operation`` is ``'triangulate'``.
+ResourceLimitError
+    If refinement exceeds the generated-output budget.
 InvalidGeometryError
     If an input polygon is invalid or its triangulation cannot be constructed.
 

@@ -1218,7 +1218,7 @@ def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
     source = gm.GeometryArray([sites]) if array else sites
     operation = 'voronoi_cells' if output == 'polygons' else 'voronoi_edge_lines'
     with pytest.raises(
-        gm.GeometryError,
+        OverflowError,
         match=(
             rf'(?m)^{operation} cannot be represented in binary64: '
             r'no assignment of adjacent floating-point coordinates to the \d+ '
@@ -1227,7 +1227,7 @@ def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
         ),
     ) as raised:
         source.voronoi(output=output, clip=clip)
-    assert type(raised.value) is gm.GeometryError
+    assert type(raised.value) is OverflowError
     assert raised.value.operation == operation
     assert raised.value.code == 'output_unrepresentable'
 

@@ -1514,5 +1514,5 @@ def test_w4b_smooth_catmull_and_chaikin_bit_stable_and_budget() -> None:
     assert smoothed.geometry_type == 'Polygon'
     assert smoothed.is_valid
     # Budget gate still rejects blow-ups.
-    with pytest.raises(gm.GeometryError, match=r'iterations|too large|budget|reduce'):
+    with pytest.raises(gm.ResourceLimitError, match='iterations'):
         line.smooth(iterations=40, method='catmull_rom')

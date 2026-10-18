@@ -245,7 +245,7 @@ def test_planar_segmentize_rejects_unrepresentable_output_distinct_from_budget_e
         line.segmentize,
         lambda value: gm.GeometryArray([line]).segmentize(value),
     ):
-        with pytest.raises(gm.GeometryError) as unrepresentable:
+        with pytest.raises(OverflowError) as unrepresentable:
             operation(maximum)
         assert unrepresentable.value.operation == 'segmentize'
         assert getattr(unrepresentable.value, 'parameter', None) is None
@@ -255,7 +255,7 @@ def test_planar_segmentize_rejects_unrepresentable_output_distinct_from_budget_e
     assert invalid.value.param == 'max_length'
     assert getattr(invalid.value, 'operation', None) is None
 
-    with pytest.raises(gm.GeometryError) as budget:
+    with pytest.raises(gm.ResourceLimitError) as budget:
         line.segmentize(float.fromhex('0x0.0000000000001p-1022'))
     assert budget.value.operation == 'segmentize'
     assert budget.value.parameter == 'max_length'

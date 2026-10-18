@@ -127,7 +127,7 @@ def test_hausdorff_of_a_covered_filled_operand_terminates() -> None:
 def test_amplification_past_every_count_names_its_parameter(
     call: object, parameter: str
 ) -> None:
-    with pytest.raises(gm.GeometryError, match=f'reduce {parameter}$') as info:
+    with pytest.raises(gm.ResourceLimitError, match=f'adjust {parameter}$') as info:
         call()  # type: ignore[operator]
     assert info.value.parameter == parameter
     assert info.value.produced > info.value.limit > 0

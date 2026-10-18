@@ -56,8 +56,8 @@ UNINSPECTABLE_ALLOWLIST: dict[str, str] = {
         'it uses the standard exception args semantics.'
     ),
     'GeometryTypeError': (
-        'Dynamic GeometryError/TypeError subclass with only doc and module '
-        'attributes; it inherits the standard exception args constructor.'
+        'TypeError subclass created without a custom constructor; '
+        'it uses the standard exception args semantics.'
     ),
     'InvalidGeometryError': (
         'GeometryError subclass created without a custom constructor; '
@@ -66,6 +66,10 @@ UNINSPECTABLE_ALLOWLIST: dict[str, str] = {
     'ParseError': (
         'GeometryError subclass created without a custom constructor; '
         'it inherits the standard ValueError-derived exception args.'
+    ),
+    'ResourceLimitError': (
+        'RuntimeError subclass created without a custom constructor; '
+        'it uses the standard exception args semantics.'
     ),
     'TransformError': (
         'CRSError subclass created without a custom constructor; '
