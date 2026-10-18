@@ -21,9 +21,10 @@ example below.
     pip install h2corn fastapi
     ```
 
-`h2corn` supports **Python 3.11 or newer**. Wheels are published for Linux,
-macOS, and Windows, including ABI-matched free-threaded CPython 3.14t builds.
-The multi-worker supervisor is Unix-only — see
+`h2corn` supports **CPython 3.11 or newer**. See
+[Python compatibility and wheels](compatibility.md) for standard and
+free-threaded versions and wheel families. The multi-worker supervisor is
+Unix-only — see
 [Operations](deployment/operations.md#worker-pool).
 
 With uv, prefix the commands below with `uv run`.

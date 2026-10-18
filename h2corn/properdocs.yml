@@ -187,6 +187,7 @@ nav:
         - Lifespan scope and messages: api/lifespan.md
   - Benchmarks: benchmarks.md
   - About:
+    - Python compatibility and wheels: compatibility.md
     - Support: support.md
     - FAQ: faq.md
     - Troubleshooting: troubleshooting.md

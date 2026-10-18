@@ -34,7 +34,9 @@
 
 ## Install
 
-h2corn supports Python 3.11 and newer.
+h2corn supports CPython 3.11 and newer. See
+[Python compatibility and wheels](docs/compatibility.md) for supported standard
+and free-threaded builds.
 
 ```bash
 pip install h2corn

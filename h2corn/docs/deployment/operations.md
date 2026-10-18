@@ -76,8 +76,9 @@ application on several event loops in parallel:
 h2corn hello:app --loop-threads 4
 ```
 
-PyPI publishes distinct `cp314t` wheels for free-threaded CPython 3.14t.
-Importing h2corn does not silently re-enable the GIL.
+See [Python compatibility and wheels](../compatibility.md) for supported
+free-threaded CPython versions and wheel families. Importing h2corn does not
+silently re-enable the GIL.
 
 Requests are balanced across the loops round-robin, and each request
 runs entirely on one loop. Each loop runs a separate ASGI lifespan cycle
