@@ -83,15 +83,27 @@ enum GeographicPointQueryRoute<'a> {
     Quotient(std::sync::Arc<ExactGeographicTopology>),
 }
 
-/// A fixed source's closed point membership, with its geographic route retained.
+/// A fixed source's point membership projection, with its geographic route retained.
 pub(crate) struct GeographicPointQueries<'a> {
     frame: GeographicFrame,
+    membership: PointMembership,
     route: GeographicPointQueryRoute<'a>,
 }
 
 impl GeographicPointQueries<'_> {
-    /// The query point must already be admitted in this geographic frame.
     pub(crate) fn covers(&self, point: Point) -> Result<bool> {
+        self.query_admitted(point)
+    }
+
+    /// Admit one coordinate and evaluate it against the prepared source.
+    pub(crate) fn query(&self, point: Point) -> Result<bool> {
+        let shape = Shape::Point(point);
+        ScalarGeographicView::try_new(self.frame, &shape)
+            .map_err(|diagnostic| geographic_admission_error(&diagnostic))?;
+        self.query_admitted(point)
+    }
+
+    fn query_admitted(&self, point: Point) -> Result<bool> {
         let longitude = self
             .frame
             .longitude()
@@ -99,11 +111,12 @@ impl GeographicPointQueries<'_> {
             .expect("the query point was admitted in the prepared geographic frame");
         let point = Point::new_raw_xy(longitude.get(), point.y);
         match &self.route {
-            GeographicPointQueryRoute::Cartesian(queries) => queries.covers(point),
-            GeographicPointQueryRoute::Quotient(topology) => {
-                Ok(PointMembership::BoundaryInclusive
-                    .accepts(topology.locate_point(point)?.geometry))
+            GeographicPointQueryRoute::Cartesian(queries) => {
+                queries.membership(point, self.membership)
             },
+            GeographicPointQueryRoute::Quotient(topology) => Ok(self
+                .membership
+                .accepts(topology.locate_point(point)?.geometry)),
         }
     }
 }
@@ -113,16 +126,31 @@ impl<'a> GeographicPrepared<'a> {
         self,
         expected_queries: usize,
     ) -> Result<GeographicPointQueries<'a>> {
+        self.prepare_point_membership(expected_queries, PointMembership::BoundaryInclusive)
+    }
+
+    pub(crate) fn prepare_point_membership(
+        self,
+        expected_queries: usize,
+        membership: PointMembership,
+    ) -> Result<GeographicPointQueries<'a>> {
         let route = match self.chart_route {
             GeographicTopologyRoute::ExactPartition => GeographicPointQueryRoute::Cartesian(
                 self.plan.prepare_point_queries(expected_queries)?,
             ),
             GeographicTopologyRoute::Quotient => {
-                GeographicPointQueryRoute::Quotient(self.exact_topology()?)
+                let topology = match membership {
+                    PointMembership::BoundaryInclusive => self.exact_topology()?,
+                    PointMembership::Strict => {
+                        self.plan.geographic_occurrence_topology(self.view)?
+                    },
+                };
+                GeographicPointQueryRoute::Quotient(topology)
             },
         };
         Ok(GeographicPointQueries {
             frame: self.frame(),
+            membership,
             route,
         })
     }

@@ -189,6 +189,23 @@ def test_relate_array_value_dispatch_preserves_operand_order_and_missing_masks()
     assert left_right[0] != right_left[0]
 
 
+def test_cartesian_scalar_predicate_and_xy_batches_do_not_retain_frame_sidecars() -> (
+    None
+):
+    polygon = gm.box(0, 0, 2, 2)
+    values = gm.GeometryArray([gm.Point(1, 1), gm.Point(3, 3)])
+    assert gm.intersects(polygon, gm.Point(1, 1))
+    before = polygon.__sizeof__()
+
+    np.testing.assert_array_equal(gm.intersects(polygon, values), [True, False])
+    assert polygon.__sizeof__() == before
+
+    np.testing.assert_array_equal(
+        gm.intersects(polygon, x=[1.0, 3.0], y=[1.0, 3.0]), [True, False]
+    )
+    assert polygon.__sizeof__() == before
+
+
 def test_planar_similarity_metrics_are_rust_backed() -> None:
     left = gm.LineString([(0, 0), (1, 1), (2, 1)])
     right = gm.LineString([(0, 1), (1, 2), (2, 2)])

@@ -22,6 +22,28 @@ def seam_box() -> gm.Polygon:
     )
 
 
+def test_xy_predicate_batches_preserve_strict_and_inclusive_seam_membership() -> None:
+    geometry = seam_box()
+
+    assert gm.intersects(geometry, x=np.array([180.0]), y=np.array([10.0])).tolist() == [
+        True
+    ]
+    assert gm.contains(geometry, x=np.array([180.0]), y=np.array([10.0])).tolist() == [
+        False
+    ]
+
+
+def test_xy_predicate_batches_use_prepared_membership_for_an_ordinary_chart() -> None:
+    geometry = gm.box(0, 0, 2, 2, crs=4326)
+
+    assert gm.intersects(geometry, x=np.array([2.0]), y=np.array([1.0])).tolist() == [
+        True
+    ]
+    assert gm.contains(geometry, x=np.array([2.0]), y=np.array([1.0])).tolist() == [
+        False
+    ]
+
+
 def _north_polar_cap() -> gm.Polygon:
     return gm.Polygon(
         [(-180, 80), (-90, 80), (0, 80), (90, 80), (180, 80), (-180, 80)],

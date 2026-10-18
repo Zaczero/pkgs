@@ -62,11 +62,13 @@ pub(crate) fn predicate_scalar_vs_array(
     }
     let missing = array.missing().cloned();
     let plan = scalar.prepared_plan();
-    let scalar_cache = scalar.frame_cache();
+    let scalar_cache = domain.is_geographic().then(|| scalar.frame_cache());
     let array = array.clone();
     bool_array_mask_missing(
         py,
         py.detach(move || {
+            let fallback_cache = crate::geometry::FrameDependentCaches::default();
+            let scalar_cache = scalar_cache.as_deref().unwrap_or(&fallback_cache);
             scalar_vs_shapes(
                 &spec,
                 &plan,
@@ -283,10 +285,12 @@ where
 {
     let output_missing = array.missing().cloned();
     let scalar_plan = scalar.prepared_plan();
-    let scalar_cache = scalar.frame_cache();
+    let scalar_cache = domain.is_geographic().then(|| scalar.frame_cache());
     let array = array.clone();
     let values = py
         .detach(move || {
+            let fallback_cache = crate::geometry::FrameDependentCaches::default();
+            let scalar_cache = scalar_cache.as_deref().unwrap_or(&fallback_cache);
             let mut rows = array.row_operation();
             rows.rows_with_missing(R::missing_value)
                 .map(|row| {
@@ -573,7 +577,7 @@ fn xy_array_values(
     x: Vec<f64>,
     y: Vec<f64>,
     original: &PreparedPlan,
-    original_cache: &crate::geometry::FrameDependentCaches,
+    original_cache: Option<&crate::geometry::FrameDependentCaches>,
     spec: PredicateSpec,
     domain: TopologyDomain,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
@@ -595,22 +599,24 @@ fn xy_array_values(
             })
             .collect_rows();
     }
+    let TopologyDomain::Geographic(frame) = domain else {
+        unreachable!("Cartesian coordinate queries return before geographic preparation")
+    };
+    let original_cache =
+        original_cache.expect("geographic coordinate queries have a source frame cache");
+    let prepared = crate::geometry::GeographicPrepared::try_new(original, original_cache, frame)
+        .map_err(|error| (0, error))?;
+    let membership = if spec.predicate == Predicate::Intersects {
+        PointMembership::BoundaryInclusive
+    } else {
+        PointMembership::Strict
+    };
+    let queries = prepared
+        .prepare_point_membership(x.len().min(y.len()), membership)
+        .map_err(|error| (0, error))?;
     x.into_iter()
         .zip(y)
-        .map(|(x, y)| {
-            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))));
-            let point_cache = crate::geometry::FrameDependentCaches::default();
-            topology_scalar_pair(
-                &spec,
-                &PreparedTopologyPair::try_for_domain(
-                    original,
-                    original_cache,
-                    &point,
-                    &point_cache,
-                    domain,
-                )?,
-            )
-        })
+        .map(|(x, y)| queries.query(Point::new_raw_xy(x, y)))
         .collect_rows()
 }
 
@@ -638,7 +644,6 @@ pub(crate) fn xy_predicate_values(
     };
     let domain = crate::geometry::topology_domain(&geometry.frame)?;
     let original = geometry.prepared_plan();
-    let original_cache = geometry.frame_cache();
     if scalar {
         let (Some(x), Some(y)) = (x.into_iter().next(), y.into_iter().next()) else {
             return Err(InvalidGeometryError::new_err(
@@ -650,6 +655,7 @@ pub(crate) fn xy_predicate_values(
             let matches = py.detach(move || cartesian_xy_matches(&original, point, inclusive))?;
             return Ok(py_bool(py, matches));
         }
+        let original_cache = geometry.frame_cache();
         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
         let point_cache = crate::geometry::FrameDependentCaches::default();
         let value = py.detach(move || {
@@ -664,8 +670,9 @@ pub(crate) fn xy_predicate_values(
         })?;
         return Ok(py_bool(py, value));
     }
+    let original_cache = domain.is_geographic().then(|| geometry.frame_cache());
     let result = py
-        .detach(move || xy_array_values(x, y, &original, &original_cache, spec, domain))
+        .detach(move || xy_array_values(x, y, &original, original_cache.as_deref(), spec, domain))
         .map_err(super::rows_err)?;
     bool_array(py, result)
 }
@@ -750,5 +757,102 @@ mod geographic_tests {
             actual, expected,
             "geographic XY result differs from scalar oracle"
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn geographic_xy_batch_reports_fixed_source_before_query_coordinates() {
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        let geometry = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 91.0)), frame);
+        let original = geometry.prepared_plan();
+        let original_cache = geometry.frame_cache();
+        let domain = crate::geometry::topology_domain(&geometry.frame).unwrap();
+
+        let (row, error) = xy_array_values(
+            vec![1.0],
+            vec![92.0],
+            &original,
+            Some(&original_cache),
+            Predicate::Intersects.spec(),
+            domain,
+        )
+        .expect_err("the invalid fixed source is admitted before the query point");
+
+        assert_eq!(row, 0);
+        let message = error.to_string();
+        assert!(message.contains("(0, 91)"));
+        assert!(!message.contains("(1, 92)"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn geographic_xy_batch_uses_inclusive_set_and_strict_occurrence_membership() {
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(170.0, -10.0),
+                    Point::new_raw_xy(-170.0, -10.0),
+                    Point::new_raw_xy(-170.0, 10.0),
+                    Point::new_raw_xy(170.0, 10.0),
+                    Point::new_raw_xy(170.0, -10.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ));
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        let geometry = PyGeometry::with_frame(shape, frame);
+        let original = geometry.prepared_plan();
+        let original_cache = geometry.frame_cache();
+        let domain = crate::geometry::topology_domain(&geometry.frame).unwrap();
+
+        let inclusive = xy_array_values(
+            vec![180.0],
+            vec![10.0],
+            &original,
+            Some(&original_cache),
+            Predicate::Intersects.spec(),
+            domain,
+        )
+        .expect("inclusive geographic query succeeds");
+        let strict = xy_array_values(
+            vec![180.0],
+            vec![10.0],
+            &original,
+            Some(&original_cache),
+            Predicate::Contains.spec(),
+            domain,
+        )
+        .expect("strict geographic query succeeds");
+
+        assert_eq!(inclusive, [true]);
+        assert_eq!(strict, [false]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn geographic_xy_batch_keeps_invalid_query_logical_row() {
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        let geometry = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame);
+        let original = geometry.prepared_plan();
+        let original_cache = geometry.frame_cache();
+        let domain = crate::geometry::topology_domain(&geometry.frame).unwrap();
+
+        let (row, error) = xy_array_values(
+            vec![1.0, 2.0],
+            vec![1.0, 91.0],
+            &original,
+            Some(&original_cache),
+            Predicate::Intersects.spec(),
+            domain,
+        )
+        .expect_err("the second query coordinate is invalid");
+
+        assert_eq!(row, 1);
+        assert!(error.to_string().contains("(2, 91)"));
     }
 }
