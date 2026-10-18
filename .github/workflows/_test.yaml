@@ -246,7 +246,6 @@ jobs:
           cd "$PACKAGE"
           if [[ "$FREETHREADED" == true ]]; then
             export MATURIN_PEP517_ARGS="--profile dev"
-            export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
           # PyPI brotli 1.2.0 re-enables the GIL when imported; HTTPX2's test
           # client imports it whenever installed. Drop this once a brotli
@@ -267,7 +266,7 @@ jobs:
           PY
           pytest_args=(tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
           if [[ "$FREETHREADED" == true ]]; then
-            pytest_args+=(-n 0)
+            pytest_args+=(-n 2)
           fi
           uv run --no-sync python -m pytest "${pytest_args[@]}"
 
