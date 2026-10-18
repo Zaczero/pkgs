@@ -30,8 +30,8 @@ fn shortlink_encode(py: Python<'_>, lon: f64, lat: f64, zoom: u8) -> PyResult<Py
 }
 
 #[pyfunction]
-fn shortlink_decode(s: &str) -> PyResult<(f64, f64, u8)> {
-    codec::decode(s).map_err(PyErr::from)
+fn shortlink_decode(py: Python<'_>, s: &str) -> PyResult<(f64, f64, u8)> {
+    py.detach(|| codec::decode(s)).map_err(PyErr::from)
 }
 
 #[pymodule]
