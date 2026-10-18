@@ -59,6 +59,18 @@ OTHER_TEST_RUNNERS = {'macos': MACOS_TEST_RUNNER, 'windows': WINDOWS_TEST_RUNNER
 # Free-threaded wheels in cibuildwheel 4 start at CPython 3.14 (3.13t removed).
 MIN_FREETHREADED_MINOR = (3, 14)
 
+FREETHREADED_TEST_EXCLUSIONS = {
+    'pyo3stubs': (
+        'The only tree-sitter-rust 0.24.2 wheels are cp39-abi3, and its source '
+        'build fails on CPython 3.15t; restore this cell when a compatible '
+        'release is available.'
+    ),
+    'starlette-compress': (
+        'The Brotli C extension re-enables the GIL on CPython 3.15t; restore '
+        'this cell when a GIL-safe Brotli dependency is available.'
+    ),
+}
+
 NATIVE_BUILD_RUNNERS = [
     LINUX_TEST_RUNNER,
     'ubuntu-26.04-arm',
@@ -352,6 +364,7 @@ def resolve_matrix(
     primary = max(stable_minors)
 
     has_rust = bool(info.get('crate'))
+    freethreaded_exclusion = FREETHREADED_TEST_EXCLUSIONS.get(package)
 
     ft_linux = available_stable_cpython_minors(
         catalog_entries, freethreaded=True, os_name='linux'
@@ -360,6 +373,8 @@ def resolve_matrix(
         freethreaded_linux = [
             minor for minor in stable_minors if minor.as_tuple >= MIN_FREETHREADED_MINOR
         ]
+    elif freethreaded_exclusion is not None:
+        freethreaded_linux = []
     else:
         freethreaded_linux = (
             [primary] if primary.as_tuple >= MIN_FREETHREADED_MINOR else []
@@ -393,7 +408,7 @@ def resolve_matrix(
         for abi in (('optimized', 'abi3t') if has_rust else ('optimized',))
     ]
 
-    return {
+    plan = {
         'type': info['type'],
         'import-name': info['import-name'],
         'publishable': info['publishable'],
@@ -404,6 +419,9 @@ def resolve_matrix(
         'build-matrix': build_matrix,
         'rust-toolchain': rust_toolchain_channel(package) if has_rust else '',
     }
+    if freethreaded_exclusion is not None:
+        plan['freethreaded-test-exclusion'] = freethreaded_exclusion
+    return plan
 
 
 def main(argv: Sequence[str] | None = None) -> None:

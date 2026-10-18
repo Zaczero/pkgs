@@ -76,7 +76,7 @@ def repository_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pure_python_plan_tests_latest_free_threaded_cpython_on_linux() -> None:
-    plan = matrix.resolve_matrix('starlette-compress', catalog=catalog())
+    plan = matrix.resolve_matrix('sizestr', catalog=catalog())
 
     assert plan['test-matrix'] == [
         *[
@@ -137,13 +137,11 @@ def test_native_plan_keeps_every_free_threaded_abi_boundary() -> None:
 @pytest.mark.parametrize(
     'package',
     [
-        'starlette-compress',
         'httpx-secure',
         'jinja2-htmlmin',
         'sizestr',
         'githead',
         'benchroom',
-        'pyo3stubs',
     ],
 )
 def test_each_pure_python_plan_has_one_linux_free_threaded_cell(
@@ -164,6 +162,20 @@ def test_each_pure_python_plan_has_one_linux_free_threaded_cell(
     ]
 
 
+@pytest.mark.parametrize(
+    ('package', 'reason'),
+    sorted(matrix.FREETHREADED_TEST_EXCLUSIONS.items()),
+)
+def test_pure_python_free_threaded_exclusions_name_the_blocker(
+    package: str,
+    reason: str,
+) -> None:
+    plan = matrix.resolve_matrix(package, catalog=catalog())
+
+    assert plan['freethreaded-test-exclusion'] == reason
+    assert not [cell for cell in plan['test-matrix'] if cell['freethreaded'] is True]
+
+
 def test_pure_python_plan_fails_if_latest_free_threaded_runtime_is_unavailable() -> (
     None
 ):
@@ -172,6 +184,6 @@ def test_pure_python_plan_fails_if_latest_free_threaded_runtime_is_unavailable()
         match=r'uv does not offer declared free-threaded CPython versions 3.15t',
     ):
         matrix.resolve_matrix(
-            'starlette-compress',
+            'sizestr',
             catalog=catalog(linux_ft=('3.14',)),
         )
