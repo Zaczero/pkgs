@@ -9,7 +9,6 @@ import h2.config
 import h2.connection
 import h2.events
 import pytest
-from fastapi import FastAPI, WebSocket
 from h2corn import Config, WebSocketScope
 
 from tests._support import (
@@ -860,6 +859,8 @@ def _build_websocket_unary_denial_response_app():
 
 
 async def test_websocket_rfc8441_echo_round_trip() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -887,6 +888,8 @@ async def test_websocket_rfc8441_echo_round_trip() -> None:
 
 
 async def test_http1_websocket_upgrade_round_trip() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -910,6 +913,8 @@ async def test_http1_websocket_upgrade_round_trip() -> None:
 
 
 async def test_http1_websocket_idle_session_ignores_timeout_request_body_idle() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -939,6 +944,8 @@ async def test_http1_websocket_idle_session_ignores_timeout_request_body_idle() 
 
 
 async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -990,6 +997,8 @@ async def test_websocket_accepts_requested_subprotocol_across_transports(
     handshake,
     expected_status: int,
 ) -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -1105,6 +1114,8 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
 
 
 async def test_http1_websocket_invalid_version_is_rejected_with_426() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -1253,6 +1264,8 @@ async def test_http1_websocket_invalid_or_duplicate_key_is_rejected_before_app_d
 
 
 async def test_http1_websocket_missing_key_is_rejected_with_400() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -1273,6 +1286,8 @@ async def test_http1_websocket_missing_key_is_rejected_with_400() -> None:
 
 
 async def test_http1_websocket_non_get_method_is_rejected_with_400() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2045,6 +2060,8 @@ async def test_websocket_closes_normally_every_time_the_app_just_returns() -> No
 
 
 async def test_websocket_multiple_messages_round_trip_on_one_stream() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2105,6 +2122,8 @@ async def test_websocket_multiple_messages_round_trip_on_one_stream() -> None:
 
 
 async def test_websocket_fragmented_text_message_round_trip() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2172,6 +2191,8 @@ async def test_websocket_fragmented_text_message_round_trip() -> None:
 async def test_websocket_fragmented_text_message_with_interleaved_ping_round_trip() -> (
     None
 ):
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2273,6 +2294,8 @@ async def test_websocket_fragmented_text_message_with_interleaved_ping_round_tri
 
 
 async def test_h2_websocket_single_frame_split_across_data_frames_round_trip() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2692,6 +2715,8 @@ async def test_websocket_scope_exposes_requested_subprotocols() -> None:
 
 
 async def test_websocket_invalid_version_is_rejected_with_426() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -2712,6 +2737,8 @@ async def test_websocket_invalid_version_is_rejected_with_426() -> None:
 
 
 async def test_websocket_rejects_unrequested_subprotocol() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3095,6 +3122,8 @@ async def test_websocket_send_after_disconnect_raises_oserror(
 
 
 async def test_websocket_rejects_rsv1_frames_without_extensions() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3110,6 +3139,8 @@ async def test_websocket_rejects_rsv1_frames_without_extensions() -> None:
 
 
 async def test_websocket_rejects_new_data_frame_before_fragment_completion() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3144,6 +3175,8 @@ async def test_websocket_invalid_outbound_close_reason_falls_back_to_1011(
 async def test_websocket_invalid_utf8_text_is_closed_with_1007(
     transport: str,
 ) -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3195,6 +3228,8 @@ async def test_deflate_offer_matrix(
     offer: str,
     negotiates: bool,
 ) -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3224,6 +3259,8 @@ async def test_deflate_offer_matrix(
 
 
 async def test_h2_websocket_permessage_deflate_round_trip() -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3294,6 +3331,8 @@ async def test_h2_websocket_permessage_deflate_round_trip() -> None:
 async def test_websocket_message_size_limit_closes_with_1009(
     transport: str,
 ) -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
@@ -3314,6 +3353,8 @@ async def test_websocket_message_size_limit_closes_with_1009(
 async def test_websocket_compressed_message_size_limit_closes_with_1009(
     transport: str,
 ) -> None:
+    from fastapi import FastAPI, WebSocket
+
     websocket_app = FastAPI()
 
     @websocket_app.websocket('/ws')
