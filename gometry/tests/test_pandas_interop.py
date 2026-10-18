@@ -103,7 +103,16 @@ def test_to_pandas(points: gm.GeometryArray) -> None:
     assert isinstance(series.array, GeometryExtensionArray)
 
 
-def test_extension_assignment_views_and_copies(points: gm.GeometryArray) -> None:
+@pytest.mark.parametrize(
+    'indexer',
+    [
+        pytest.param([1, 2], id='integer-list'),
+        pytest.param(slice(1, 3), id='slice'),
+    ],
+)
+def test_extension_assignment_views_and_copies(
+    points: gm.GeometryArray, indexer: list[int] | slice
+) -> None:
     array = GeometryExtensionArray(points)
     view = array.view()
     copied = array.copy()
@@ -113,7 +122,7 @@ def test_extension_assignment_views_and_copies(points: gm.GeometryArray) -> None
     assert view[0] == replacement
     assert copied[0] == points[0]
 
-    array[1:3] = [None, gm.Point(8, 8, crs=4326)]
+    array[indexer] = [None, gm.Point(8, 8, crs=4326)]
     assert view[1] is None
     assert view[2] == gm.Point(8, 8, crs=4326)
     assert copied.geometry_array.to_wkt() == points.to_wkt()
