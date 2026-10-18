@@ -27,8 +27,6 @@ exclude = [
     "/pyproject.toml",
     "/noxfile.py",
     "/.github",
-    "/guide/src/building-and-distribution.md",
-    "/guide/src/faq.md",
     "/tests/test_compile_error.rs",
     "/tests/ui",
 ]
