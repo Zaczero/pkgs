@@ -7,12 +7,22 @@ mod errors;
 
 use std::hint::unlikely;
 
+use pyo3::exceptions::{PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use crate::constants::MAX_ZIDS_AT_ONCE;
 use crate::core::{reserve_sequences, zid_from_time_and_sequence};
 use crate::errors::ZidError;
+
+impl From<ZidError> for PyErr {
+    fn from(error: ZidError) -> Self {
+        match error {
+            ZidError::TooManyZIDsAtOnce { .. } => PyValueError::new_err(error.to_string()),
+            ZidError::TimestampExhausted => PyOverflowError::new_err(error.to_string()),
+        }
+    }
+}
 
 #[pyfunction]
 /// Generate a process-local, monotonically reserved signed-63-bit identifier.
@@ -21,7 +31,7 @@ use crate::errors::ZidError;
 /// Raises OverflowError when the 47-bit timestamp horizon is exhausted.
 /// Forked children must exec before generation; there is no automatic reset.
 fn zid() -> PyResult<u64> {
-    core::zid().map_err(ZidError::into_pyerr)
+    core::zid().map_err(PyErr::from)
 }
 
 #[pyfunction]
@@ -36,11 +46,10 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
         return Ok(PyList::empty(py));
     }
     if unlikely(n > MAX_ZIDS_AT_ONCE) {
-        return Err(ZidError::TooManyZIDsAtOnce { attempted: n }.into_pyerr());
+        return Err(ZidError::TooManyZIDsAtOnce { attempted: n }.into());
     }
 
-    let (time, start_seq) =
-        reserve_sequences(n.wrapping_sub(1) as u16).map_err(ZidError::into_pyerr)?;
+    let (time, start_seq) = reserve_sequences(n.wrapping_sub(1) as u16)?;
 
     PyList::new(
         py,
@@ -65,4 +74,26 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zids, m)?)?;
     m.add_function(wrap_pyfunction!(parse_zid_timestamp, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn public_exception_classes_distinguish_horizon_and_count() {
+        Python::initialize();
+        Python::attach(|py| {
+            assert!(
+                PyErr::from(ZidError::TimestampExhausted).is_instance_of::<PyOverflowError>(py)
+            );
+            assert!(
+                PyErr::from(ZidError::TooManyZIDsAtOnce {
+                    attempted: 0x0001_0001,
+                })
+                .is_instance_of::<PyValueError>(py)
+            );
+        });
+    }
 }
