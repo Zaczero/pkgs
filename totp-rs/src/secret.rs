@@ -6,17 +6,26 @@ use pyo3::types::{PyBytes, PyString};
 use crate::base32::decode_base32_secret;
 use crate::errors::TotpError;
 
-pub(crate) type SecretBytes<'a> = Cow<'a, [u8]>;
+pub(crate) enum Secret<'a> {
+    Raw(&'a [u8]),
+    Base32(&'a str),
+}
 
-pub(crate) fn parse_secret_from_py<'a>(secret: &'a Bound<'_, PyAny>) -> PyResult<SecretBytes<'a>> {
-    if let Ok(value) = secret.cast::<PyBytes>() {
-        return Ok(Cow::Borrowed(value.as_bytes()));
+impl<'a> Secret<'a> {
+    pub(crate) fn from_py(secret: &'a Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(value) = secret.cast::<PyBytes>() {
+            return Ok(Self::Raw(value.as_bytes()));
+        }
+        if let Ok(value) = secret.cast::<PyString>() {
+            return Ok(Self::Base32(value.to_str()?));
+        }
+        Err(TotpError::InvalidSecretType.into_pyerr())
     }
 
-    if let Ok(value) = secret.cast::<PyString>() {
-        let decoded = decode_base32_secret(value.to_str()?).map_err(TotpError::into_pyerr)?;
-        return Ok(Cow::Owned(decoded));
+    pub(crate) fn decode(self) -> Result<Cow<'a, [u8]>, TotpError> {
+        match self {
+            Self::Raw(bytes) => Ok(Cow::Borrowed(bytes)),
+            Self::Base32(text) => decode_base32_secret(text).map(Cow::Owned),
+        }
     }
-
-    Err(TotpError::InvalidSecretType.into_pyerr())
 }

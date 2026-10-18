@@ -18,7 +18,7 @@ use pyo3::types::{PyInt, PyString};
 
 use crate::algorithm::parse_algorithm;
 use crate::errors::TotpError;
-use crate::secret::parse_secret_from_py;
+use crate::secret::Secret;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
 
@@ -96,7 +96,7 @@ fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
 fn parse_code_py(code: &Bound<'_, PyAny>, digits: Digits) -> Option<u32> {
     if let Ok(value) = code.cast::<PyString>() {
         if let Ok(s) = value.to_str() {
-            return parse_code_str(s, digits);
+            return code.py().detach(|| parse_code_str(s, digits));
         }
         return None;
     }
@@ -134,8 +134,18 @@ fn totp_generate(
     let counter =
         resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
 
-    let secret = parse_secret_from_py(secret)?;
-    let code = totp_code(secret.as_ref(), counter, digits.modulus, algorithm);
+    let secret = Secret::from_py(secret)?;
+    let code = py
+        .detach(|| {
+            let secret = secret.decode()?;
+            Ok::<_, TotpError>(totp_code(
+                secret.as_ref(),
+                counter,
+                digits.modulus,
+                algorithm,
+            ))
+        })
+        .map_err(TotpError::into_pyerr)?;
 
     Ok(format_code_py(py, code, digits))
 }
@@ -143,6 +153,7 @@ fn totp_generate(
 #[pyfunction]
 #[pyo3(signature = (secret, code, *, digits = 6, algorithm = "sha1", time = None, time_window = None, step_seconds = 30, t0 = 0, window = 1))]
 fn totp_verify(
+    py: Python<'_>,
     secret: &Bound<'_, PyAny>,
     code: &Bound<'_, PyAny>,
     digits: u8,
@@ -162,16 +173,19 @@ fn totp_verify(
         return Ok(false);
     };
 
-    let secret = parse_secret_from_py(secret)?;
-
-    Ok(verify(
-        secret.as_ref(),
-        counter,
-        window,
-        digits.modulus,
-        code,
-        algorithm,
-    ))
+    let secret = Secret::from_py(secret)?;
+    py.detach(|| {
+        let secret = secret.decode()?;
+        Ok(verify(
+            secret.as_ref(),
+            counter,
+            window,
+            digits.modulus,
+            code,
+            algorithm,
+        ))
+    })
+    .map_err(TotpError::into_pyerr)
 }
 
 #[pymodule]
