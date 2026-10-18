@@ -1,0 +1,137 @@
+From 3128febdf050ba17a61adb15d4d07c43b6587342 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sun, 18 Oct 2026 13:21:30 +0000
+Subject: [PATCH 1/2] Correct primitive buffer byte-order matching on
+ little-endian hosts
+
+Accept the little-endian format prefix instead of the big-endian prefix. Cover native, standard, explicit little/big, network and unmarked primitive formats, including a public Element predicate regression that fails for both reversed cases.
+---
+ newsfragments/0-endian.fixed.md   |  1 +
+ pytests/src/buf_and_str.rs        |  6 ++++++
+ pytests/tests/test_buf_and_str.py | 24 +++++++++++++++++++++-
+ src/buffer.rs                     | 34 ++++++++++++++++++++++++++++++-
+ 4 files changed, 63 insertions(+), 2 deletions(-)
+ create mode 100644 newsfragments/0-endian.fixed.md
+
+diff --git a/newsfragments/0-endian.fixed.md b/newsfragments/0-endian.fixed.md
+new file mode 100644
+index 00000000..e4b1c020
+--- /dev/null
++++ b/newsfragments/0-endian.fixed.md
+@@ -0,0 +1 @@
++Correct primitive buffer byte-order matching on little-endian platforms.
+diff --git a/pytests/src/buf_and_str.rs b/pytests/src/buf_and_str.rs
+index 3b621dce..d0b42204 100644
+--- a/pytests/src/buf_and_str.rs
++++ b/pytests/src/buf_and_str.rs
+@@ -8,10 +8,16 @@ pub mod buf_and_str {
+     use pyo3::buffer::PyBuffer;
+     use pyo3::prelude::*;
+     use pyo3::types::{PyBytes, PyMemoryView, PyString};
+     use std::borrow::Cow;
+ 
++    #[pyfunction]
++    fn compatible_f64_format(format: &str) -> bool {
++        let format = std::ffi::CString::new(format).unwrap();
++        <f64 as pyo3::buffer::Element>::is_compatible_format(&format)
++    }
++
+     /// This is for confirming that PyBuffer does not cause memory leak
+     #[pyclass]
+     struct BytesExtractor {}
+ 
+     #[pymethods]
+diff --git a/pytests/tests/test_buf_and_str.py b/pytests/tests/test_buf_and_str.py
+index 08346c84..d7899a01 100644
+--- a/pytests/tests/test_buf_and_str.py
++++ b/pytests/tests/test_buf_and_str.py
+@@ -1,6 +1,28 @@
+-from pyo3_pytests.buf_and_str import BytesExtractor, return_memoryview
++import sys
++
++import pytest
++from pyo3_pytests.buf_and_str import (
++    BytesExtractor,
++    compatible_f64_format,
++    return_memoryview,
++)
++
++
++@pytest.mark.parametrize(
++    ("format", "expected"),
++    [
++        ("d", True),
++        ("@d", True),
++        ("=d", True),
++        ("<d", sys.byteorder == "little"),
++        (">d", sys.byteorder == "big"),
++        ("!d", sys.byteorder == "big"),
++    ],
++)
++def test_compatible_f64_format_byte_order(format, expected):
++    assert compatible_f64_format(format) is expected
+ 
+ 
+ def test_extract_bytes():
+     extractor = BytesExtractor()
+     message = b'\\(-"-;) A message written in bytes'
+diff --git a/src/buffer.rs b/src/buffer.rs
+index a6b185e2..85a58454 100644
+--- a/src/buffer.rs
++++ b/src/buffer.rs
+@@ -198,11 +198,11 @@ fn standard_element_type_from_type_char(type_char: u8) -> ElementType {
+     }
+ }
+ 
+ #[cfg(target_endian = "little")]
+ fn is_matching_endian(c: u8) -> bool {
+-    c == b'@' || c == b'=' || c == b'>'
++    c == b'@' || c == b'=' || c == b'<'
+ }
+ 
+ #[cfg(target_endian = "big")]
+ fn is_matching_endian(c: u8) -> bool {
+     c == b'@' || c == b'=' || c == b'>' || c == b'!'
+@@ -887,10 +887,42 @@ mod tests {
+             let debug_repr = format!("{:?}", buffer);
+             assert_eq!(debug_repr, expected);
+         });
+     }
+ 
++    #[test]
++    fn test_element_format_byte_order() {
++        fn check<T: Element>(formats: [&CStr; 6]) {
++            for (format, expected) in formats.into_iter().zip([
++                true,
++                true,
++                true,
++                cfg!(target_endian = "little"),
++                cfg!(target_endian = "big"),
++                cfg!(target_endian = "big"),
++            ]) {
++                assert_eq!(
++                    T::is_compatible_format(format),
++                    expected,
++                    "{}: {format:?}",
++                    core::any::type_name::<T>()
++                );
++            }
++        }
++
++        check::<i8>([c"b", c"@b", c"=b", c"<b", c">b", c"!b"]);
++        check::<u8>([c"B", c"@B", c"=B", c"<B", c">B", c"!B"]);
++        check::<i16>([c"h", c"@h", c"=h", c"<h", c">h", c"!h"]);
++        check::<u16>([c"H", c"@H", c"=H", c"<H", c">H", c"!H"]);
++        check::<i32>([c"i", c"@i", c"=i", c"<i", c">i", c"!i"]);
++        check::<u32>([c"I", c"@I", c"=I", c"<I", c">I", c"!I"]);
++        check::<i64>([c"q", c"@q", c"=q", c"<q", c">q", c"!q"]);
++        check::<u64>([c"Q", c"@Q", c"=Q", c"<Q", c">Q", c"!Q"]);
++        check::<f32>([c"f", c"@f", c"=f", c"<f", c">f", c"!f"]);
++        check::<f64>([c"d", c"@d", c"=d", c"<d", c">d", c"!d"]);
++    }
++
+     #[test]
+     fn test_element_type_from_format() {
+         use super::ElementType::*;
+         use core::mem::size_of;
+ 

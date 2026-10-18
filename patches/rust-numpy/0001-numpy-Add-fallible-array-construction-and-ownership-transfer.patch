@@ -1,0 +1,750 @@
+From 89747d565fcf14191796dc47db24e1334b4389d2 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sun, 18 Oct 2026 13:44:35 +0000
+Subject: [PATCH] numpy: Add fallible array construction and ownership transfer
+
+Return Python construction errors through additive APIs while keeping existing infallible constructors and third-party IntoPyArray implementations source-compatible. Keep Rust owners alive until array creation succeeds, check null before assigning the base, and propagate base-assignment errors without releasing a stolen reference twice.
+
+Exercise deterministic container, array, zero-allocation and real NumPy base-assignment failures in an isolated test executable. Cover zero-copy numeric vectors, matrix layouts, readonly results and borrowed owners on CPython 3.15 and its free-threaded build.
+---
+ src/array.rs      | 138 ++++++++++++++--------
+ src/convert.rs    |  43 ++++++-
+ tests/array.rs    |  54 +++++++++
+ tests/fallible.rs | 288 ++++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 473 insertions(+), 50 deletions(-)
+ create mode 100644 tests/fallible.rs
+
+diff --git a/src/array.rs b/src/array.rs
+index ef5a5ce..3744532 100644
+--- a/src/array.rs
++++ b/src/array.rs
+@@ -228,76 +228,86 @@ impl<T: Element, D: Dimension> PyArray<T, D> {
+         flag: c_int,
+     ) -> Bound<'py, Self>
+     where
+         ID: IntoDimension<Dim = D>,
+     {
+-        let mut dims = dims.into_dimension();
+-        let ptr = unsafe {
+-            PY_ARRAY_API.PyArray_NewFromDescr(
+-                py,
+-                npyffi::get_type_object(py, npyffi::NpyTypes::PyArray_Type),
+-                T::get_dtype(py).into_dtype_ptr(),
+-                dims.ndim_cint(),
+-                dims.as_dims_ptr(),
+-                strides as *mut npy_intp, // strides
+-                ptr::null_mut(),          // data
+-                flag,                     // flag
+-                ptr::null_mut(),          // obj
+-            )
+-        };
+-
+-        unsafe { Bound::from_owned_ptr(py, ptr).cast_into_unchecked() }
++        unsafe { Self::try_new_from_descr(py, dims, strides, ptr::null(), flag) }
++            .expect("Failed to create NumPy array")
+     }
+ 
+-    unsafe fn new_with_data<'py, ID>(
++    unsafe fn try_new_from_descr<'py, ID>(
+         py: Python<'py>,
+         dims: ID,
+         strides: *const npy_intp,
+         data_ptr: *const T,
+-        container: *mut PyAny,
+-    ) -> Bound<'py, Self>
++        flags: c_int,
++    ) -> PyResult<Bound<'py, Self>>
+     where
+         ID: IntoDimension<Dim = D>,
+     {
+         let mut dims = dims.into_dimension();
+         let ptr = unsafe {
+             PY_ARRAY_API.PyArray_NewFromDescr(
+                 py,
+                 npyffi::get_type_object(py, npyffi::NpyTypes::PyArray_Type),
+                 T::get_dtype(py).into_dtype_ptr(),
+                 dims.ndim_cint(),
+                 dims.as_dims_ptr(),
+-                strides as *mut npy_intp,    // strides
+-                data_ptr as *mut c_void,     // data
+-                npyffi::NPY_ARRAY_WRITEABLE, // flag
+-                ptr::null_mut(),             // obj
++                strides as *mut npy_intp, // strides
++                data_ptr as *mut c_void,  // data
++                flags,                    // flag
++                ptr::null_mut(),          // obj
+             )
+         };
+ 
+-        unsafe {
+-            PY_ARRAY_API.PyArray_SetBaseObject(
+-                py,
+-                ptr as *mut npyffi::PyArrayObject,
+-                container as *mut ffi::PyObject,
+-            )
++        unsafe { Bound::from_owned_ptr_or_err(py, ptr).map(|array| array.cast_into_unchecked()) }
++    }
++
++    unsafe fn try_new_with_data<'py, ID>(
++        py: Python<'py>,
++        dims: ID,
++        strides: *const npy_intp,
++        data_ptr: *const T,
++        container: Bound<'py, PyAny>,
++    ) -> PyResult<Bound<'py, Self>>
++    where
++        ID: IntoDimension<Dim = D>,
++    {
++        let array = unsafe {
++            Self::try_new_from_descr(py, dims, strides, data_ptr, npyffi::NPY_ARRAY_WRITEABLE)?
+         };
+ 
+-        unsafe { Bound::from_owned_ptr(py, ptr).cast_into_unchecked() }
++        // NumPy steals the container reference on both success and failure.
++        let result = unsafe {
++            PY_ARRAY_API.PyArray_SetBaseObject(py, array.as_array_ptr(), container.into_ptr())
++        };
++        if result < 0 {
++            return Err(PyErr::fetch(py));
++        }
++        Ok(array)
+     }
+ 
+     pub(crate) unsafe fn from_raw_parts<'py>(
+         py: Python<'py>,
+         dims: D,
+         strides: *const npy_intp,
+         data_ptr: *const T,
+         container: PySliceContainer,
+     ) -> Bound<'py, Self> {
+-        let container = Bound::new(py, container)
+-            .expect("Failed to create slice container")
+-            .into_ptr();
++        unsafe { Self::try_from_raw_parts(py, dims, strides, data_ptr, container) }
++            .expect("Failed to create NumPy array")
++    }
+ 
+-        unsafe { Self::new_with_data(py, dims, strides, data_ptr, container.cast()) }
++    pub(crate) unsafe fn try_from_raw_parts<'py>(
++        py: Python<'py>,
++        dims: D,
++        strides: *const npy_intp,
++        data_ptr: *const T,
++        container: PySliceContainer,
++    ) -> PyResult<Bound<'py, Self>> {
++        let container = Bound::new(py, container)?.into_any();
++        unsafe { Self::try_new_with_data(py, dims, strides, data_ptr, container) }
+     }
+ 
+     /// Creates a NumPy array backed by `array` and ties its ownership to the Python object `container`.
+     ///
+     /// The resulting NumPy array will be writeable from Python space.  If this is undesirable, use
+@@ -333,27 +343,37 @@ impl<T: Element, D: Dimension> PyArray<T, D> {
+     /// ```
+     pub unsafe fn borrow_from_array<'py, S>(
+         array: &ArrayBase<S, D>,
+         container: Bound<'py, PyAny>,
+     ) -> Bound<'py, Self>
++    where
++        S: Data<Elem = T>,
++    {
++        unsafe { Self::try_borrow_from_array(array, container) }
++            .expect("Failed to create NumPy array")
++    }
++
++    /// Fallible version of [`borrow_from_array`][Self::borrow_from_array].
++    ///
++    /// Returns the Python exception if constructing the array or assigning its base fails.
++    ///
++    /// # Safety
++    ///
++    /// The same lifetime and reallocation requirements as [`borrow_from_array`][Self::borrow_from_array] apply.
++    pub unsafe fn try_borrow_from_array<'py, S>(
++        array: &ArrayBase<S, D>,
++        container: Bound<'py, PyAny>,
++    ) -> PyResult<Bound<'py, Self>>
+     where
+         S: Data<Elem = T>,
+     {
+         let (strides, dims) = (array.npy_strides(), array.raw_dim());
+         let data_ptr = array.as_ptr();
+ 
+         let py = container.py();
+ 
+-        unsafe {
+-            Self::new_with_data(
+-                py,
+-                dims,
+-                strides.as_ptr(),
+-                data_ptr,
+-                container.into_ptr().cast(),
+-            )
+-        }
++        unsafe { Self::try_new_with_data(py, dims, strides.as_ptr(), data_ptr, container) }
+     }
+ 
+     /// Construct a new NumPy array filled with zeros.
+     ///
+     /// If `is_fortran` is true, then it has Fortran/column-major order,
+@@ -378,23 +398,33 @@ impl<T: Element, D: Dimension> PyArray<T, D> {
+     /// ```
+     ///
+     /// [numpy-zeros]: https://numpy.org/doc/stable/reference/generated/numpy.zeros.html
+     /// [PyArray_Zeros]: https://numpy.org/doc/stable/reference/c-api/array.html#c.PyArray_Zeros
+     pub fn zeros<ID>(py: Python<'_>, dims: ID, is_fortran: bool) -> Bound<'_, Self>
++    where
++        ID: IntoDimension<Dim = D>,
++    {
++        Self::try_zeros(py, dims, is_fortran).expect("Failed to create NumPy array")
++    }
++
++    /// Fallible version of [`zeros`][Self::zeros].
++    ///
++    /// Returns the Python exception if NumPy cannot allocate the array.
++    pub fn try_zeros<ID>(py: Python<'_>, dims: ID, is_fortran: bool) -> PyResult<Bound<'_, Self>>
+     where
+         ID: IntoDimension<Dim = D>,
+     {
+         let mut dims = dims.into_dimension();
+         unsafe {
+             let ptr = PY_ARRAY_API.PyArray_Zeros(
+                 py,
+                 dims.ndim_cint(),
+                 dims.as_dims_ptr(),
+                 T::get_dtype(py).into_dtype_ptr(),
+                 if is_fortran { -1 } else { 0 },
+             );
+-            Bound::from_owned_ptr(py, ptr).cast_into_unchecked()
++            Bound::from_owned_ptr_or_err(py, ptr).map(|array| array.cast_into_unchecked())
+         }
+     }
+ 
+     /// Constructs a NumPy from an [`ndarray::Array`]
+     ///
+@@ -411,15 +441,23 @@ impl<T: Element, D: Dimension> PyArray<T, D> {
+     ///     let pyarray = PyArray::from_owned_array(py, array![[1, 2], [3, 4]]);
+     ///
+     ///     assert_eq!(pyarray.readonly().as_array(), array![[1, 2], [3, 4]]);
+     /// });
+     /// ```
+-    pub fn from_owned_array(py: Python<'_>, mut arr: Array<T, D>) -> Bound<'_, Self> {
++    pub fn from_owned_array(py: Python<'_>, arr: Array<T, D>) -> Bound<'_, Self> {
++        Self::try_from_owned_array(py, arr).expect("Failed to create NumPy array")
++    }
++
++    /// Fallible version of [`from_owned_array`][Self::from_owned_array].
++    ///
++    /// Takes ownership without copying. On failure, releases the Rust allocation
++    /// and returns the Python exception.
++    pub fn try_from_owned_array(py: Python<'_>, mut arr: Array<T, D>) -> PyResult<Bound<'_, Self>> {
+         let (strides, dims) = (arr.npy_strides(), arr.raw_dim());
+         let data_ptr = arr.as_mut_ptr();
+         unsafe {
+-            Self::from_raw_parts(
++            Self::try_from_raw_parts(
+                 py,
+                 dims,
+                 strides.as_ptr(),
+                 data_ptr,
+                 PySliceContainer::from(arr),
+@@ -545,10 +583,18 @@ impl<T: Element> PyArray<T, Ix1> {
+     #[inline(always)]
+     pub fn from_vec<'py>(py: Python<'py>, vec: Vec<T>) -> Bound<'py, Self> {
+         vec.into_pyarray(py)
+     }
+ 
++    /// Fallible version of [`from_vec`][Self::from_vec].
++    ///
++    /// Takes ownership without copying. On failure, releases the Rust allocation
++    /// and returns the Python exception.
++    pub fn try_from_vec<'py>(py: Python<'py>, vec: Vec<T>) -> PyResult<Bound<'py, Self>> {
++        vec.try_into_pyarray(py)
++    }
++
+     /// Construct a one-dimensional array from an [`Iterator`].
+     ///
+     /// If no reliable [`size_hint`][Iterator::size_hint] is available,
+     /// this method can allocate memory multiple times, which can hurt performance.
+     ///
+diff --git a/src/convert.rs b/src/convert.rs
+index ef7a8fd..109fa0d 100644
+--- a/src/convert.rs
++++ b/src/convert.rs
+@@ -1,11 +1,11 @@
+ //! Defines conversion traits between Rust types and NumPy data types.
+ 
+ use std::{ffi::c_int, mem, ptr};
+ 
+ use ndarray::{ArrayBase, Data, Dim, Dimension, IntoDimension, Ix1, OwnedRepr};
+-use pyo3::{Bound, Python};
++use pyo3::{Bound, PyResult, Python};
+ 
+ use crate::array::{PyArray, PyArrayMethods};
+ use crate::dtype::Element;
+ use crate::error::MAX_DIMENSIONALITY_ERR;
+ use crate::npyffi::{self, npy_intp};
+@@ -40,38 +40,66 @@ pub trait IntoPyArray: Sized {
+     /// The dimension type of the resulting array.
+     type Dim: Dimension;
+ 
+     /// Consumes `self` and moves its data into a NumPy array.
+     fn into_pyarray<'py>(self, py: Python<'py>) -> Bound<'py, PyArray<Self::Item, Self::Dim>>;
++
++    /// Consumes `self` and moves its data into a NumPy array, returning construction errors.
++    ///
++    /// Implementations for Rust-owned slices, vectors and arrays release their allocation
++    /// on failure without copying it. The default delegates to [`into_pyarray`][Self::into_pyarray];
++    /// custom implementations should override this method to report their construction errors.
++    fn try_into_pyarray<'py>(
++        self,
++        py: Python<'py>,
++    ) -> PyResult<Bound<'py, PyArray<Self::Item, Self::Dim>>> {
++        Ok(self.into_pyarray(py))
++    }
+ }
+ 
+ impl<T: Element> IntoPyArray for Box<[T]> {
+     type Item = T;
+     type Dim = Ix1;
+ 
+     fn into_pyarray<'py>(self, py: Python<'py>) -> Bound<'py, PyArray<Self::Item, Self::Dim>> {
++        self.try_into_pyarray(py)
++            .expect("Failed to create NumPy array")
++    }
++
++    fn try_into_pyarray<'py>(
++        self,
++        py: Python<'py>,
++    ) -> PyResult<Bound<'py, PyArray<Self::Item, Self::Dim>>> {
+         let container = PySliceContainer::from(self);
+         let dims = Dim([container.len]);
+         let strides = [mem::size_of::<T>() as npy_intp];
+         // The data pointer is derived only after dissolving `Box` into `PySliceContainer`
+         // to avoid unsound aliasing of Box<[T]> which is currently noalias,
+         // c.f. https://github.com/rust-lang/unsafe-code-guidelines/issues/326
+         let data_ptr = container.ptr as *mut T;
+-        unsafe { PyArray::from_raw_parts(py, dims, strides.as_ptr(), data_ptr, container) }
++        unsafe { PyArray::try_from_raw_parts(py, dims, strides.as_ptr(), data_ptr, container) }
+     }
+ }
+ 
+ impl<T: Element> IntoPyArray for Vec<T> {
+     type Item = T;
+     type Dim = Ix1;
+ 
+-    fn into_pyarray<'py>(mut self, py: Python<'py>) -> Bound<'py, PyArray<Self::Item, Self::Dim>> {
++    fn into_pyarray<'py>(self, py: Python<'py>) -> Bound<'py, PyArray<Self::Item, Self::Dim>> {
++        self.try_into_pyarray(py)
++            .expect("Failed to create NumPy array")
++    }
++
++    fn try_into_pyarray<'py>(
++        mut self,
++        py: Python<'py>,
++    ) -> PyResult<Bound<'py, PyArray<Self::Item, Self::Dim>>> {
+         let dims = Dim([self.len()]);
+         let strides = [mem::size_of::<T>() as npy_intp];
+         let data_ptr = self.as_mut_ptr();
+         unsafe {
+-            PyArray::from_raw_parts(
++            PyArray::try_from_raw_parts(
+                 py,
+                 dims,
+                 strides.as_ptr(),
+                 data_ptr,
+                 PySliceContainer::from(self),
+@@ -89,10 +117,17 @@ where
+     type Dim = D;
+ 
+     fn into_pyarray<'py>(self, py: Python<'py>) -> Bound<'py, PyArray<Self::Item, Self::Dim>> {
+         PyArray::from_owned_array(py, self)
+     }
++
++    fn try_into_pyarray<'py>(
++        self,
++        py: Python<'py>,
++    ) -> PyResult<Bound<'py, PyArray<Self::Item, Self::Dim>>> {
++        PyArray::try_from_owned_array(py, self)
++    }
+ }
+ 
+ /// Conversion trait from borrowing Rust types to [`PyArray`].
+ ///
+ /// This trait takes `&self` by reference, which means it allocates in Python heap and then copies the elements there.
+diff --git a/tests/array.rs b/tests/array.rs
+index a960c5d..4b0f28c 100644
+--- a/tests/array.rs
++++ b/tests/array.rs
+@@ -62,10 +62,55 @@ fn new_c_order() {
+         assert!(!arr.is_fortran_contiguous());
+         assert!(arr.is_aligned());
+     });
+ }
+ 
++#[test]
++fn fallible_constructors_preserve_values_layout_and_ownership() {
++    Python::attach(|py| {
++        let values = vec![1.25_f64, -3.5, 6.75];
++        let pointer = values.as_ptr();
++        let array = values.try_into_pyarray(py).unwrap();
++        assert_eq!(array.data(), pointer.cast_mut());
++        assert_eq!(array.readonly().as_slice().unwrap(), &[1.25, -3.5, 6.75]);
++        array.try_readwrite().unwrap().make_nonwriteable();
++        assert!(array.try_readwrite().is_err());
++
++        let bools = numpy::PyArray1::try_from_vec(py, vec![true, false, true]).unwrap();
++        assert_eq!(bools.readonly().as_slice().unwrap(), &[true, false, true]);
++        let ints = numpy::PyArray1::try_from_vec(py, vec![-9_i64, 17]).unwrap();
++        assert_eq!(ints.readonly().as_slice().unwrap(), &[-9, 17]);
++        let uints = numpy::PyArray1::try_from_vec(py, vec![u64::MAX, 23]).unwrap();
++        assert_eq!(uints.readonly().as_slice().unwrap(), &[u64::MAX, 23]);
++        let empty = numpy::PyArray1::<u64>::try_from_vec(py, vec![]).unwrap();
++        assert_eq!(empty.len(), 0);
++        let zeros = numpy::PyArray2::<bool>::try_zeros(py, [2, 3], true).unwrap();
++        assert_eq!(zeros.readonly().as_slice().unwrap(), &[false; 6]);
++        assert!(zeros.is_fortran_contiguous());
++
++        let matrix = array![[1.25, 2.5], [3.75, 5.0]].reversed_axes();
++        let pointer = matrix.as_ptr();
++        let numpy = matrix.try_into_pyarray(py).unwrap();
++        assert_eq!(numpy.data(), pointer.cast_mut());
++        assert_eq!(numpy.shape(), &[2, 2]);
++        assert_eq!(numpy.strides(), &[8, 16]);
++        assert_eq!(
++            numpy.readonly().as_array(),
++            array![[1.25, 3.75], [2.5, 5.0]]
++        );
++
++        let readonly = uints.readonly();
++        let view = readonly.as_array();
++        let borrowed = unsafe {
++            numpy::PyArray1::try_borrow_from_array(&view, uints.clone().into_any()).unwrap()
++        };
++        assert_eq!(borrowed.data(), uints.data());
++        assert!(borrowed.getattr("base").unwrap().is(&uints));
++        assert_eq!(borrowed.readonly().as_slice().unwrap(), &[u64::MAX, 23]);
++    });
++}
++
+ #[test]
+ fn new_fortran_order() {
+     Python::attach(|py| {
+         let dims = [3, 5];
+ 
+@@ -85,10 +130,19 @@ fn new_fortran_order() {
+         assert!(arr.is_fortran_contiguous());
+         assert!(arr.is_aligned());
+     });
+ }
+ 
++#[test]
++fn fallible_zeros_reports_invalid_dimensions() {
++    Python::attach(|py| {
++        let error = numpy::PyArray1::<f64>::try_zeros(py, usize::MAX, false).unwrap_err();
++        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
++        assert!(!pyo3::PyErr::occurred(py));
++    });
++}
++
+ #[test]
+ fn tuple_as_dim() {
+     Python::attach(|py| {
+         let dims = (3, 5);
+ 
+diff --git a/tests/fallible.rs b/tests/fallible.rs
+new file mode 100644
+index 0000000..6a0747c
+--- /dev/null
++++ b/tests/fallible.rs
+@@ -0,0 +1,288 @@
++//! This binary has one test because it temporarily replaces process-global C API slots.
++
++use std::{
++    ffi::{c_int, c_void},
++    ptr,
++    sync::{
++        Arc,
++        atomic::{AtomicPtr, AtomicUsize, Ordering},
++    },
++};
++
++use numpy::{
++    IntoPyArray, PyArray1, PyArrayDescr, PyArrayMethods,
++    npyffi::{PyArray_Descr, PyArrayObject, npy_intp},
++};
++#[cfg(not(Py_LIMITED_API))]
++use pyo3::types::PyTypeMethods;
++use pyo3::{
++    Bound, Py, PyAny, PyErr, Python, ffi, pyclass,
++    types::{PyAnyMethods, PyCapsule, PyCapsuleMethods},
++};
++
++static ERROR: AtomicPtr<ffi::PyObject> = AtomicPtr::new(ptr::null_mut());
++static SET_BASE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
++static FAILED_ARRAY: AtomicPtr<ffi::PyObject> = AtomicPtr::new(ptr::null_mut());
++static BASE_CALLS: AtomicUsize = AtomicUsize::new(0);
++
++#[cfg(not(Py_LIMITED_API))]
++unsafe extern "C" fn fail_alloc(
++    _ty: *mut ffi::PyTypeObject,
++    _items: ffi::Py_ssize_t,
++) -> *mut ffi::PyObject {
++    unsafe { ffi::PyErr_SetObject(ffi::PyExc_MemoryError, ERROR.load(Ordering::Relaxed)) };
++    ptr::null_mut()
++}
++
++unsafe extern "C" fn fail_new(
++    _ty: *mut ffi::PyTypeObject,
++    dtype: *mut PyArray_Descr,
++    _ndim: c_int,
++    _dims: *mut npy_intp,
++    _strides: *mut npy_intp,
++    _data: *mut c_void,
++    _flags: c_int,
++    _obj: *mut ffi::PyObject,
++) -> *mut ffi::PyObject {
++    unsafe {
++        ffi::Py_DECREF(dtype.cast());
++        ffi::PyErr_SetObject(ffi::PyExc_MemoryError, ERROR.load(Ordering::Relaxed));
++    }
++    ptr::null_mut()
++}
++
++unsafe extern "C" fn fail_zeros(
++    _ndim: c_int,
++    _dims: *mut npy_intp,
++    dtype: *mut PyArray_Descr,
++    _fortran: c_int,
++) -> *mut ffi::PyObject {
++    unsafe {
++        ffi::Py_DECREF(dtype.cast());
++        ffi::PyErr_SetObject(ffi::PyExc_MemoryError, ERROR.load(Ordering::Relaxed));
++    }
++    ptr::null_mut()
++}
++
++type SetBase = unsafe extern "C" fn(*mut PyArrayObject, *mut ffi::PyObject) -> c_int;
++
++unsafe extern "C" fn count_set_base(array: *mut PyArrayObject, owner: *mut ffi::PyObject) -> c_int {
++    BASE_CALLS.fetch_add(1, Ordering::Relaxed);
++    let original: SetBase = unsafe { std::mem::transmute(SET_BASE.load(Ordering::Relaxed)) };
++    unsafe { original(array, owner) }
++}
++
++unsafe extern "C" fn fail_set_base(array: *mut PyArrayObject, owner: *mut ffi::PyObject) -> c_int {
++    BASE_CALLS.fetch_add(1, Ordering::Relaxed);
++    let original: SetBase = unsafe { std::mem::transmute(SET_BASE.load(Ordering::Relaxed)) };
++    unsafe {
++        // Exercise NumPy's real "base already set" failure and reference stealing.
++        ffi::Py_INCREF(ffi::Py_None());
++        original(array, ffi::Py_None());
++        FAILED_ARRAY.store(
++            ffi::PyWeakref_NewRef(array.cast(), ptr::null_mut()),
++            Ordering::Relaxed,
++        );
++        let result = original(array, owner);
++        let py = Python::assume_attached();
++        let error = PyErr::fetch(py);
++        ERROR.store(error.value(py).as_ptr(), Ordering::Relaxed);
++        error.restore(py);
++        result
++    }
++}
++
++struct SlotGuard {
++    slot: *mut *const c_void,
++    original: *const c_void,
++}
++
++impl SlotGuard {
++    unsafe fn replace(slot: *mut *const c_void, replacement: *const c_void) -> Self {
++        let original = unsafe { slot.replace(replacement) };
++        Self { slot, original }
++    }
++}
++
++impl Drop for SlotGuard {
++    fn drop(&mut self) {
++        unsafe { self.slot.write(self.original) };
++    }
++}
++
++#[cfg(not(Py_LIMITED_API))]
++struct AllocGuard {
++    ty: *mut ffi::PyTypeObject,
++    original: Option<ffi::allocfunc>,
++}
++
++#[cfg(not(Py_LIMITED_API))]
++impl AllocGuard {
++    unsafe fn replace(ty: *mut ffi::PyTypeObject) -> Self {
++        let original = unsafe { (*ty).tp_alloc.replace(fail_alloc) };
++        Self { ty, original }
++    }
++}
++
++#[cfg(not(Py_LIMITED_API))]
++impl Drop for AllocGuard {
++    fn drop(&mut self) {
++        unsafe { (*self.ty).tp_alloc = self.original };
++    }
++}
++
++#[pyclass]
++struct DropWitness(Arc<AtomicUsize>);
++
++impl Drop for DropWitness {
++    fn drop(&mut self) {
++        self.0.fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++fn values(py: Python<'_>, drops: &Arc<AtomicUsize>) -> Vec<Py<PyAny>> {
++    vec![Py::new(py, DropWitness(drops.clone())).unwrap().into_any()]
++}
++
++fn assert_error(py: Python<'_>, error: PyErr) {
++    assert_eq!(error.value(py).as_ptr(), ERROR.load(Ordering::Relaxed));
++    assert!(!PyErr::occurred(py));
++}
++
++fn refcount(object: &Bound<'_, PyAny>) -> ffi::Py_ssize_t {
++    unsafe { ffi::Py_REFCNT(object.as_ptr()) }
++}
++
++#[test]
++fn construction_failures_preserve_errors_and_release_owners() {
++    Python::attach(|py| {
++        let warm = PyArray1::from_vec(py, vec![1_u64]);
++        #[cfg(not(Py_LIMITED_API))]
++        let container_type = warm.getattr("base").unwrap().get_type();
++        let module = if numpy::npyffi::is_numpy_2(py) {
++            "numpy._core._multiarray_umath"
++        } else {
++            "numpy.core._multiarray_umath"
++        };
++        let capsule = py
++            .import(module)
++            .unwrap()
++            .getattr("_ARRAY_API")
++            .unwrap()
++            .cast_into::<PyCapsule>()
++            .unwrap();
++        let api = capsule
++            .pointer_checked(None)
++            .unwrap()
++            .cast::<*const c_void>()
++            .as_ptr();
++        // NumPy API slot numbers are part of its published C ABI.
++        let new_slot = unsafe { api.add(94) };
++        let zeros_slot = unsafe { api.add(183) };
++        let base_slot = unsafe { api.add(282) };
++        SET_BASE.store(unsafe { base_slot.read() }.cast_mut(), Ordering::Relaxed);
++        let sentinel = pyo3::exceptions::PyMemoryError::new_err("array construction sentinel");
++        ERROR.store(sentinel.value(py).as_ptr(), Ordering::Relaxed);
++
++        // Replacing tp_alloc requires the full C API; the remaining failures
++        // exercise NumPy's capsule API on both full- and limited-API builds.
++        #[cfg(not(Py_LIMITED_API))]
++        {
++            let drops = Arc::new(AtomicUsize::new(0));
++            let input = values(py, &drops);
++            let _alloc = unsafe { AllocGuard::replace(container_type.as_type_ptr()) };
++            assert_error(py, input.try_into_pyarray(py).unwrap_err());
++            assert_eq!(
++                drops.load(Ordering::Relaxed),
++                1,
++                "container allocation failure"
++            );
++        }
++
++        let drops = Arc::new(AtomicUsize::new(0));
++        let input = values(py, &drops);
++        let dtype = PyArrayDescr::object(py);
++        let dtype_refs = refcount(dtype.as_any());
++        BASE_CALLS.store(0, Ordering::Relaxed);
++        {
++            let _new = unsafe { SlotGuard::replace(new_slot, fail_new as *const c_void) };
++            let _base = unsafe { SlotGuard::replace(base_slot, count_set_base as *const c_void) };
++            assert_error(py, input.try_into_pyarray(py).unwrap_err());
++        }
++        assert_eq!(
++            BASE_CALLS.load(Ordering::Relaxed),
++            0,
++            "null array must not reach SetBaseObject"
++        );
++        assert_eq!(drops.load(Ordering::Relaxed), 1, "array allocation failure");
++        assert_eq!(
++            refcount(dtype.as_any()),
++            dtype_refs,
++            "failed constructor consumes dtype"
++        );
++
++        let drops = Arc::new(AtomicUsize::new(0));
++        let input = values(py, &drops);
++        {
++            let _base = unsafe { SlotGuard::replace(base_slot, fail_set_base as *const c_void) };
++            assert_error(py, input.try_into_pyarray(py).unwrap_err());
++        }
++        assert_eq!(drops.load(Ordering::Relaxed), 1, "base assignment failure");
++        let weakref = unsafe {
++            Bound::<PyAny>::from_owned_ptr(
++                py,
++                FAILED_ARRAY.swap(ptr::null_mut(), Ordering::Relaxed),
++            )
++        };
++        assert!(
++            weakref.call0().unwrap().is_none(),
++            "failed array must be destroyed"
++        );
++
++        ERROR.store(sentinel.value(py).as_ptr(), Ordering::Relaxed);
++        let dtype = numpy::dtype::<bool>(py);
++        let dtype_refs = refcount(dtype.as_any());
++        {
++            let _zeros = unsafe { SlotGuard::replace(zeros_slot, fail_zeros as *const c_void) };
++            assert_error(py, PyArray1::<bool>::try_zeros(py, 3, false).unwrap_err());
++        }
++        assert_eq!(
++            refcount(dtype.as_any()),
++            dtype_refs,
++            "failed zeros consumes dtype"
++        );
++
++        let owner = warm.clone().into_any();
++        let readonly = warm.readonly();
++        let view = readonly.as_array();
++        let owner_refs = refcount(&owner);
++        {
++            let _new = unsafe { SlotGuard::replace(new_slot, fail_new as *const c_void) };
++            let result = unsafe { PyArray1::try_borrow_from_array(&view, owner.clone()) };
++            assert_error(py, result.unwrap_err());
++        }
++        assert_eq!(
++            refcount(&owner),
++            owner_refs,
++            "failed borrowed view releases base"
++        );
++        {
++            let _base = unsafe { SlotGuard::replace(base_slot, fail_set_base as *const c_void) };
++            let result = unsafe { PyArray1::try_borrow_from_array(&view, owner.clone()) };
++            assert_error(py, result.unwrap_err());
++        }
++        assert_eq!(
++            refcount(&owner),
++            owner_refs,
++            "failed base assignment steals borrowed owner"
++        );
++        let weakref = unsafe {
++            Bound::<PyAny>::from_owned_ptr(
++                py,
++                FAILED_ARRAY.swap(ptr::null_mut(), Ordering::Relaxed),
++            )
++        };
++        assert!(weakref.call0().unwrap().is_none());
++        ERROR.store(ptr::null_mut(), Ordering::Relaxed);
++    });
++}
+-- 
+2.54.0
+

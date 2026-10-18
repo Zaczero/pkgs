@@ -1,0 +1,613 @@
+From 72ecadcbf9311ae8b7bf196ac39c10ca530098cc Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sun, 18 Oct 2026 14:02:51 +0000
+Subject: [PATCH] Track environment changes used by CMake builds
+
+Cargo could reuse a native build after CMake or compiler environment inputs changed. Emit rerun metadata at cmake-rs environment reads and enable cc-rs environment tracking while querying compilers. The compiler query reports watched inputs without emitting linker metadata. Track PATH at actual bare-tool resolution and VisualStudioVersion at the separate Visual Studio generator probe.
+
+Add a Cargo/CMake fixture for target-qualified precedence and independent environment changes.
+---
+ src/lib.rs                    |  65 +++++-
+ tests/environment_tracking.rs | 389 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 444 insertions(+), 10 deletions(-)
+ create mode 100644 tests/environment_tracking.rs
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 59bba9b..919c88d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -437,10 +437,18 @@ impl Config {
+     /// options.
+     ///
+     /// This will run both the build system generator command as well as the
+     /// command to build the library.
+     pub fn build(&mut self) -> PathBuf {
++        for variable in [
++            "CMAKE_GENERATOR_INSTANCE",
++            "CMAKE_GENERATOR_PLATFORM",
++            "CMAKE_GENERATOR_TOOLSET",
++        ] {
++            rerun_if_env_changed(variable);
++        }
++
+         let target = match self.target.clone() {
+             Some(t) => t,
+             None => getenv_unwrap("TARGET"),
+         };
+         let host = self.host.clone().unwrap_or_else(|| getenv_unwrap("HOST"));
+@@ -514,23 +522,27 @@ impl Config {
+ 
+         let msvc = target.contains("msvc");
+         let ndk = self.uses_android_ndk();
+         let mut c_cfg = self.c_cfg.clone().unwrap_or_default();
+         c_cfg
+-            .cargo_metadata(false)
++            // `get_compiler` needs cc-rs' environment tracking, but it does not
++            // compile a library or emit linker metadata.
++            .cargo_metadata(true)
++            .emit_rerun_if_env_changed(true)
+             .cpp(false)
+             .opt_level(0)
+             .debug(false)
+             .warnings(false)
+             .host(&host)
+             .no_default_flags(ndk || self.no_default_flags);
+         if !ndk {
+             c_cfg.target(&target);
+         }
+         let mut cxx_cfg = self.cxx_cfg.clone().unwrap_or_default();
+         cxx_cfg
+-            .cargo_metadata(false)
++            .cargo_metadata(true)
++            .emit_rerun_if_env_changed(true)
+             .cpp(true)
+             .opt_level(0)
+             .debug(false)
+             .warnings(false)
+             .host(&host)
+@@ -817,28 +829,24 @@ impl Config {
+ 
+         if self.verbose_make {
+             cmd.arg("-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON");
+         }
+ 
+-        for (k, v) in c_compiler.env().iter().chain(&self.env) {
+-            cmd.env(k, v);
+-        }
++        set_compiler_env(&mut cmd, &c_compiler, &self.env);
+ 
+         if self.always_configure || !build_dir.join("CMakeCache.txt").exists() {
+             cmd.args(&self.configure_args);
+             run(cmd.env("CMAKE_PREFIX_PATH", cmake_prefix_path), "cmake");
+         } else {
+             println!("CMake project was already configured. Skipping configuration step.");
+         }
+ 
+         // And build!
+         let mut cmd = self.cmake_build_command(&target);
+         cmd.current_dir(&build_dir);
+ 
+-        for (k, v) in c_compiler.env().iter().chain(&self.env) {
+-            cmd.env(k, v);
+-        }
++        set_compiler_env(&mut cmd, &c_compiler, &self.env);
+ 
+         // If the generated project is Makefile based we should carefully transfer corresponding CARGO_MAKEFLAGS
+         let mut use_jobserver = false;
+         if fs::metadata(build_dir.join("Makefile")).is_ok() {
+             match env::var_os("CARGO_MAKEFLAGS") {
+@@ -896,49 +904,62 @@ impl Config {
+         println!("cargo:root={}", dst.display());
+         dst
+     }
+ 
+     fn cmake_executable(&mut self, target: &str) -> OsString {
+-        self.getenv_target_os("CMAKE")
++        let cmake = self.getenv_target_os("CMAKE");
++        #[cfg(windows)]
++        if cmake.is_none() {
++            // `find_cmake_executable` checks PATH before choosing the Visual
++            // Studio-bundled CMake executable.
++            rerun_if_env_changed("PATH");
++        }
++
++        let executable = cmake
+             .or_else(|| find_cmake_executable(target))
+-            .unwrap_or_else(|| OsString::from("cmake"))
++            .unwrap_or_else(|| OsString::from("cmake"));
++        rerun_if_path_searches_for(&executable);
++        executable
+     }
+ 
+     // If we are building for Emscripten, wrap the calls to CMake
+     // as "emcmake cmake ..." and "emmake cmake --build ...".
+     // https://emscripten.org/docs/compiling/Building-Projects.html
+ 
+     fn cmake_configure_command(&mut self, target: &str) -> Command {
+         if target.contains("emscripten") {
+             let emcmake = self
+                 .getenv_target_os("EMCMAKE")
+                 .unwrap_or_else(|| OsString::from("emcmake"));
++            rerun_if_path_searches_for(&emcmake);
+             let mut cmd = Command::new(emcmake);
+             cmd.arg(self.cmake_executable(target));
+             cmd
+         } else {
+             Command::new(self.cmake_executable(target))
+         }
+     }
+ 
+     fn cmake_build_command(&mut self, target: &str) -> Command {
+         if target.contains("emscripten") {
+             let emmake = self
+                 .getenv_target_os("EMMAKE")
+                 .unwrap_or_else(|| OsString::from("emmake"));
++            rerun_if_path_searches_for(&emmake);
+             let mut cmd = Command::new(emmake);
+             cmd.arg(self.cmake_executable(target));
+             cmd
+         } else {
+             Command::new(self.cmake_executable(target))
+         }
+     }
+ 
+     fn getenv_os(&mut self, v: &str) -> Option<OsString> {
+         if let Some(val) = self.env_cache.get(v) {
+             return val.clone();
+         }
++        rerun_if_env_changed(v);
+         let r = env::var_os(v);
+         println!("{} = {:?}", v, r);
+         self.env_cache.insert(v.to_string(), r.clone());
+         r
+     }
+@@ -960,10 +981,12 @@ impl Config {
+     }
+ 
+     fn visual_studio_generator(&self, target: &str) -> String {
+         use cc::windows_registry::{find_vs_version, VsVers};
+ 
++        // This cc-rs lookup reads VisualStudioVersion outside Build's tracking.
++        rerun_if_env_changed("VisualStudioVersion");
+         let base = match find_vs_version() {
+             Ok(VsVers::Vs18) => "Visual Studio 18 2026",
+             Ok(VsVers::Vs17) => "Visual Studio 17 2022",
+             Ok(VsVers::Vs16) => "Visual Studio 16 2019",
+             Ok(VsVers::Vs15) => "Visual Studio 15 2017",
+@@ -1113,16 +1136,38 @@ fn run(cmd: &mut Command, program: &str) {
+         ));
+     }
+ }
+ 
+ fn find_exe(path: &Path) -> PathBuf {
++    if path.is_absolute() {
++        return path.to_owned();
++    }
++    rerun_if_env_changed("PATH");
+     env::split_paths(&env::var_os("PATH").unwrap_or_default())
+         .map(|p| p.join(path))
+         .find(|p| fs::metadata(p).is_ok())
+         .unwrap_or_else(|| path.to_owned())
+ }
+ 
++fn rerun_if_env_changed(variable: &str) {
++    println!("cargo:rerun-if-env-changed={variable}");
++}
++
++fn set_compiler_env(command: &mut Command, compiler: &cc::Tool, extra: &[(OsString, OsString)]) {
++    // `get_envs` is newer than cmake-rs' minimum supported cc version.
++    #[allow(deprecated)]
++    for (key, value) in compiler.env().iter().chain(extra) {
++        command.env(key, value);
++    }
++}
++
++fn rerun_if_path_searches_for(program: &OsStr) {
++    if Path::new(program).components().count() == 1 {
++        rerun_if_env_changed("PATH");
++    }
++}
++
+ fn getenv_unwrap(v: &str) -> String {
+     match env::var(v) {
+         Ok(s) => s,
+         Err(..) => fail(&format!("environment variable `{}` not defined", v)),
+     }
+diff --git a/tests/environment_tracking.rs b/tests/environment_tracking.rs
+new file mode 100644
+index 0000000..b55df4f
+--- /dev/null
++++ b/tests/environment_tracking.rs
+@@ -0,0 +1,389 @@
++// Tool-selection wrappers use POSIX shell scripts.
++#![cfg(unix)]
++
++use std::env;
++use std::ffi::{OsStr, OsString};
++use std::fs;
++use std::os::unix::fs::PermissionsExt;
++use std::path::{Path, PathBuf};
++use std::process::{Command, Output};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
++
++struct Fixture {
++    root: PathBuf,
++    target: String,
++    cargo_target_dir: PathBuf,
++    run_log: PathBuf,
++    prefix_output: PathBuf,
++    tool_log: PathBuf,
++    original_path: OsString,
++    real_cmake: PathBuf,
++    real_cc: PathBuf,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        let temp_dir = env::var_os("CARGO_TARGET_TMPDIR")
++            .map(PathBuf::from)
++            .unwrap_or_else(env::temp_dir);
++        let id = format!(
++            "cmake-env-tracking-{}-{}",
++            std::process::id(),
++            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
++        );
++        let root = temp_dir.join(format!("{id}-source"));
++        let cargo_target_dir = temp_dir.join(format!("{id}-target"));
++        fs::create_dir(&root).unwrap();
++        fs::create_dir(&cargo_target_dir).unwrap();
++
++        let original_path = env::var_os("PATH").expect("PATH is required to run Cargo");
++        let real_cmake = find_executable(&original_path, "cmake");
++        let real_cc = find_executable(&original_path, "cc");
++        let target = rust_host();
++        let cmake_rs_path = toml_string(Path::new(env!("CARGO_MANIFEST_DIR")));
++
++        fs::write(
++            root.join("Cargo.toml"),
++            format!(
++                "[package]\n\
++                 name = \"environment-tracking-fixture\"\n\
++                 version = \"0.1.0\"\n\
++                 edition = \"2021\"\n\
++                 build = \"build.rs\"\n\
++                 \n\
++                 [build-dependencies]\n\
++                 cmake = {{ path = {cmake_rs_path} }}\n"
++            ),
++        )
++        .unwrap();
++        fs::create_dir(root.join("src")).unwrap();
++        fs::write(root.join("src/lib.rs"), "").unwrap();
++        fs::write(
++            root.join("build.rs"),
++            r#"
++use std::fs::{self, OpenOptions};
++use std::io::Write;
++use std::path::PathBuf;
++
++fn main() {
++    println!("cargo:rerun-if-changed=build.rs");
++    println!("cargo:rerun-if-changed=cmake-project/CMakeLists.txt");
++    println!("cargo:rerun-if-changed=cmake-project/source.c");
++
++    let run_log = std::env::var_os("ENV_TRACKING_RUN_LOG").unwrap();
++    writeln!(
++        OpenOptions::new().create(true).append(true).open(run_log).unwrap(),
++        "run"
++    )
++    .unwrap();
++
++    let out_dir = PathBuf::from(std::env::var_os("ENV_TRACKING_OUT_DIR").unwrap());
++    let destination = cmake::Config::new("cmake-project")
++        .out_dir(out_dir)
++        .always_configure(true)
++        .build();
++    let prefix = fs::read(destination.join("build/cmake-prefix.txt")).unwrap();
++    fs::write(
++        std::env::var_os("ENV_TRACKING_PREFIX_OUTPUT").unwrap(),
++        prefix,
++    )
++    .unwrap();
++}
++"#,
++        )
++        .unwrap();
++        fs::create_dir(root.join("cmake-project")).unwrap();
++        fs::write(
++            root.join("cmake-project/CMakeLists.txt"),
++            "cmake_minimum_required(VERSION 3.10)\n\
++             project(environment_tracking C)\n\
++             file(WRITE \"${CMAKE_BINARY_DIR}/cmake-prefix.txt\" \"$ENV{CMAKE_PREFIX_PATH}\")\n\
++             add_library(environment_tracking STATIC source.c)\n\
++             install(TARGETS environment_tracking ARCHIVE DESTINATION lib)\n",
++        )
++        .unwrap();
++        fs::write(
++            root.join("cmake-project/source.c"),
++            "int environment_tracking(void) { return 1; }\n",
++        )
++        .unwrap();
++
++        Self {
++            run_log: cargo_target_dir.join("build-script-runs.txt"),
++            prefix_output: cargo_target_dir.join("observed-prefix.txt"),
++            tool_log: cargo_target_dir.join("tools.txt"),
++            cargo_target_dir,
++            original_path,
++            real_cmake,
++            real_cc,
++            target,
++            root,
++        }
++    }
++
++    fn bin_with_tools(&self, label: &str) -> PathBuf {
++        let bin = self.root.join(format!("bin-{label}"));
++        fs::create_dir(&bin).unwrap();
++        write_wrapper(
++            &bin.join("cmake"),
++            &self.real_cmake,
++            &self.tool_log,
++            &format!("cmake-{label}"),
++        );
++        write_wrapper(
++            &bin.join("cc"),
++            &self.real_cc,
++            &self.tool_log,
++            &format!("cc-{label}"),
++        );
++        write_wrapper(
++            &bin.join("altcc"),
++            &self.real_cc,
++            &self.tool_log,
++            &format!("altcc-{label}"),
++        );
++        bin
++    }
++
++    fn compiler_wrapper(&self, label: &str) -> PathBuf {
++        let bin = self.root.join(format!("compiler-{label}"));
++        fs::create_dir(&bin).unwrap();
++        let wrapper = bin.join("cc");
++        write_wrapper(
++            &wrapper,
++            &self.real_cc,
++            &self.tool_log,
++            &format!("cc-{label}"),
++        );
++        wrapper
++    }
++
++    fn path_with(&self, first: &Path) -> OsString {
++        env::join_paths(
++            std::iter::once(first.to_owned()).chain(env::split_paths(&self.original_path)),
++        )
++        .unwrap()
++    }
++
++    fn cargo_check(&self, path: &OsStr, out_dir: &Path, vars: &[(&str, &OsStr)]) -> Output {
++        fs::write(&self.tool_log, "").unwrap();
++
++        let target_suffix = self.target.replace('-', "_");
++        let mut command = Command::new("cargo");
++        command
++            .arg("check")
++            .arg("--offline")
++            .arg("--verbose")
++            .arg("--manifest-path")
++            .arg(self.root.join("Cargo.toml"))
++            .arg("--target")
++            .arg(&self.target)
++            .arg("--target-dir")
++            .arg(&self.cargo_target_dir)
++            .env("PATH", path)
++            .env("ENV_TRACKING_RUN_LOG", &self.run_log)
++            .env("ENV_TRACKING_PREFIX_OUTPUT", &self.prefix_output)
++            .env("ENV_TRACKING_OUT_DIR", out_dir);
++
++        for name in [
++            "CMAKE",
++            "CMAKE_GENERATOR",
++            "CMAKE_GENERATOR_INSTANCE",
++            "CMAKE_GENERATOR_PLATFORM",
++            "CMAKE_GENERATOR_TOOLSET",
++            "CMAKE_PREFIX_PATH",
++            "CMAKE_TOOLCHAIN_FILE",
++            "CC",
++            "CXX",
++            "CFLAGS",
++            "CXXFLAGS",
++            "HOST_CC",
++            "TARGET_CC",
++            "HOST_CXX",
++            "TARGET_CXX",
++            "HOST_CFLAGS",
++            "TARGET_CFLAGS",
++            "HOST_CXXFLAGS",
++            "TARGET_CXXFLAGS",
++            "CC_FORCE_DISABLE",
++            "CC_KNOWN_WRAPPER_CUSTOM",
++            "CC_SHELL_ESCAPED_FLAGS",
++            "CRATE_CC_NO_DEFAULTS",
++            "CROSS_COMPILE",
++        ] {
++            command.env_remove(name);
++        }
++        for base in ["CC", "CXX", "CFLAGS", "CXXFLAGS", "CMAKE_PREFIX_PATH"] {
++            command
++                .env_remove(format!("{base}_{}", self.target))
++                .env_remove(format!("{base}_{target_suffix}"));
++        }
++
++        for (name, value) in vars {
++            command.env(name, value);
++        }
++
++        let output = command.output().unwrap();
++        let stdout = String::from_utf8_lossy(&output.stdout);
++        assert!(
++            !stdout.contains("cargo:rustc-link-lib=")
++                && !stdout.contains("cargo:rustc-link-search="),
++            "cmake's compiler discovery emitted Cargo link metadata:\n{stdout}"
++        );
++        assert!(
++            output.status.success(),
++            "nested cargo check failed:\n{stdout}\n{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        output
++    }
++
++    fn build_count(&self) -> usize {
++        fs::read_to_string(&self.run_log)
++            .unwrap_or_default()
++            .lines()
++            .count()
++    }
++
++    fn observed_prefix(&self) -> String {
++        fs::read_to_string(&self.prefix_output).unwrap()
++    }
++
++    fn tool_log(&self) -> String {
++        fs::read_to_string(&self.tool_log).unwrap_or_default()
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        let _ = fs::remove_dir_all(&self.root);
++        let _ = fs::remove_dir_all(&self.cargo_target_dir);
++    }
++}
++
++#[test]
++fn environment_changes_rebuild_and_use_current_tools() {
++    let fixture = Fixture::new();
++    let target_cc_name = format!("CC_{}", fixture.target);
++    let target_prefix_name = format!("CMAKE_PREFIX_PATH_{}", fixture.target);
++    let bin_a = fixture.bin_with_tools("a");
++    let bin_b = fixture.bin_with_tools("b");
++    let path_a = fixture.path_with(&bin_a);
++    let path_b = fixture.path_with(&bin_b);
++    let global_cc = fixture.compiler_wrapper("global");
++    let global_prefix = fixture.root.join("global-prefix");
++    let target_prefix_a = fixture.root.join("target-prefix-a");
++    let target_prefix_b = fixture.root.join("target-prefix-b");
++    let check = |path: &OsStr, out_dir: &Path, cc: &OsStr, prefix: &OsStr| {
++        fixture.cargo_check(
++            path,
++            out_dir,
++            &[
++                ("CC", global_cc.as_os_str()),
++                (target_cc_name.as_str(), cc),
++                ("CMAKE_PREFIX_PATH", global_prefix.as_os_str()),
++                (target_prefix_name.as_str(), prefix),
++            ],
++        );
++    };
++
++    check(
++        &path_a,
++        &fixture.cargo_target_dir.join("out-initial"),
++        OsStr::new("cc"),
++        target_prefix_a.as_os_str(),
++    );
++    assert_eq!(fixture.build_count(), 1);
++    assert_eq!(fixture.observed_prefix(), target_prefix_a.to_string_lossy());
++    let tools = fixture.tool_log();
++    assert!(tools.contains("cmake-a"), "{tools}");
++    assert!(tools.contains("cc-a"), "{tools}");
++    assert!(!tools.contains("cc-global"), "{tools}");
++
++    check(
++        &path_a,
++        &fixture.cargo_target_dir.join("out-prefix"),
++        OsStr::new("cc"),
++        target_prefix_b.as_os_str(),
++    );
++    assert_eq!(fixture.build_count(), 2);
++    assert_eq!(fixture.observed_prefix(), target_prefix_b.to_string_lossy());
++    let tools = fixture.tool_log();
++    assert!(tools.contains("cmake-a"), "{tools}");
++    assert!(tools.contains("cc-a"), "{tools}");
++    assert!(!tools.contains("cc-global"), "{tools}");
++
++    check(
++        &path_a,
++        &fixture.cargo_target_dir.join("out-compiler"),
++        OsStr::new("altcc"),
++        target_prefix_b.as_os_str(),
++    );
++    assert_eq!(fixture.build_count(), 3);
++    assert_eq!(fixture.observed_prefix(), target_prefix_b.to_string_lossy());
++    let tools = fixture.tool_log();
++    assert!(tools.contains("cmake-a"), "{tools}");
++    assert!(tools.contains("altcc-a"), "{tools}");
++    assert!(!tools.contains("cc-global"), "{tools}");
++
++    check(
++        &path_b,
++        &fixture.cargo_target_dir.join("out-path"),
++        OsStr::new("altcc"),
++        target_prefix_b.as_os_str(),
++    );
++    assert_eq!(fixture.build_count(), 4);
++    assert_eq!(fixture.observed_prefix(), target_prefix_b.to_string_lossy());
++    let tools = fixture.tool_log();
++    assert!(tools.contains("cmake-b"), "{tools}");
++    assert!(tools.contains("altcc-b"), "{tools}");
++    assert!(!tools.contains("cc-global"), "{tools}");
++}
++
++fn find_executable(path: &OsStr, name: &str) -> PathBuf {
++    env::split_paths(path)
++        .map(|directory| directory.join(name))
++        .find(|candidate| candidate.is_file())
++        .unwrap_or_else(|| panic!("could not find {name} on PATH"))
++}
++
++fn rust_host() -> String {
++    let output = Command::new("rustc").arg("-vV").output().unwrap();
++    assert!(output.status.success());
++    String::from_utf8(output.stdout)
++        .unwrap()
++        .lines()
++        .find_map(|line| line.strip_prefix("host: "))
++        .unwrap()
++        .to_owned()
++}
++
++fn toml_string(path: &Path) -> String {
++    format!(
++        "\"{}\"",
++        path.to_string_lossy()
++            .replace('\\', "\\\\")
++            .replace('"', "\\\"")
++    )
++}
++
++fn write_wrapper(path: &Path, real: &Path, log: &Path, label: &str) {
++    let script = format!(
++        "#!/bin/sh\n\
++         printf '%s\\n' {} >> {}\n\
++         exec {} \"$@\"\n",
++        shell_quote(OsStr::new(label)),
++        shell_quote(log.as_os_str()),
++        shell_quote(real.as_os_str())
++    );
++    fs::write(path, script).unwrap();
++    let mut permissions = fs::metadata(path).unwrap().permissions();
++    permissions.set_mode(0o755);
++    fs::set_permissions(path, permissions).unwrap();
++}
++
++fn shell_quote(value: &OsStr) -> String {
++    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
++}
+-- 
+2.54.0
+

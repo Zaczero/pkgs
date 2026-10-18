@@ -1,0 +1,257 @@
+From 1271749d131fdfbce66d854e7d8050db9919ceaa Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sun, 18 Oct 2026 13:27:06 +0000
+Subject: [PATCH 2/2] Accept scalar buffers with null shape and strides
+
+Zero-dimensional buffers represent one scalar and legitimately provide no shape or stride arrays. Require those arrays only for nonzero dimensions, and return empty metadata slices without constructing Rust slices from null pointers. Cover typed acquisition, C and Fortran copies, scalar pointers, and exactly-once explicit or automatic release.
+---
+ newsfragments/0-scalar.fixed.md   |  1 +
+ pytests/src/buf_and_str.rs        | 78 ++++++++++++++++++++++++++++++-
+ pytests/tests/test_buf_and_str.py | 33 +++++++++++++
+ src/buffer.rs                     | 24 ++++++----
+ 4 files changed, 126 insertions(+), 10 deletions(-)
+ create mode 100644 newsfragments/0-scalar.fixed.md
+
+diff --git a/newsfragments/0-scalar.fixed.md b/newsfragments/0-scalar.fixed.md
+new file mode 100644
+index 00000000..e8a4a7b1
+--- /dev/null
++++ b/newsfragments/0-scalar.fixed.md
+@@ -0,0 +1 @@
++Accept zero-dimensional buffers with null shape and strides, returning empty metadata slices for scalar values.
+diff --git a/pytests/src/buf_and_str.rs b/pytests/src/buf_and_str.rs
+index d0b42204..f642cdfc 100644
+--- a/pytests/src/buf_and_str.rs
++++ b/pytests/src/buf_and_str.rs
+@@ -3,21 +3,95 @@
+ use pyo3::prelude::*;
+ 
+ /// Objects related to PyBuffer and PyStr
+ #[pymodule]
+ pub mod buf_and_str {
+-    use pyo3::buffer::PyBuffer;
++    use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
+     use pyo3::prelude::*;
+-    use pyo3::types::{PyBytes, PyMemoryView, PyString};
++    use pyo3::types::{PyBytes, PyDict, PyMemoryView, PyString};
+     use std::borrow::Cow;
+ 
+     #[pyfunction]
+     fn compatible_f64_format(format: &str) -> bool {
+         let format = std::ffi::CString::new(format).unwrap();
+         <f64 as pyo3::buffer::Element>::is_compatible_format(&format)
+     }
+ 
++    #[pyclass]
++    struct ScalarBuffer {
++        #[pyo3(get)]
++        value: f64,
++        #[pyo3(get)]
++        releases: usize,
++    }
++
++    #[pymethods]
++    impl ScalarBuffer {
++        #[new]
++        fn new(value: f64) -> Self {
++            Self { value, releases: 0 }
++        }
++
++        unsafe fn __getbuffer__(
++            slf: PyRefMut<'_, Self>,
++            view: *mut pyo3::ffi::Py_buffer,
++            _flags: std::ffi::c_int,
++        ) {
++            let data = std::ptr::addr_of!(slf.value).cast_mut().cast();
++            // SAFETY: view points to the consumer's output buffer. The owned
++            // exporter reference pins the scalar until the view is released.
++            unsafe {
++                *view = pyo3::ffi::Py_buffer::new();
++                (*view).buf = data;
++                (*view).len = std::mem::size_of::<f64>() as isize;
++                (*view).itemsize = std::mem::size_of::<f64>() as isize;
++                (*view).format = c"d".as_ptr().cast_mut();
++                (*view).obj = slf.into_ptr();
++            }
++        }
++
++        unsafe fn __releasebuffer__(mut slf: PyRefMut<'_, Self>, _view: *mut pyo3::ffi::Py_buffer) {
++            slf.releases += 1;
++        }
++    }
++
++    #[pyfunction]
++    fn scalar_buffer_roundtrip<'py>(
++        value: &Bound<'py, PyAny>,
++        explicit_release: bool,
++    ) -> PyResult<Bound<'py, PyDict>> {
++        let py = value.py();
++        let buffer = PyUntypedBuffer::get(value)?;
++        let typed = buffer.as_typed::<f64>()?;
++        let info = PyDict::new(py);
++        info.set_item("dimensions", typed.dimensions())?;
++        info.set_item("item_count", typed.item_count())?;
++        info.set_item("shape", typed.shape())?;
++        info.set_item("strides", typed.strides())?;
++        info.set_item("suboffsets", typed.suboffsets())?;
++        info.set_item("c_contiguous", typed.is_c_contiguous())?;
++        info.set_item("f_contiguous", typed.is_fortran_contiguous())?;
++        info.set_item("c_slice_len", typed.as_slice_ptr().unwrap().len())?;
++        info.set_item("f_slice_len", typed.as_fortran_slice_ptr().unwrap().len())?;
++        info.set_item("scalar_pointer", typed.get_ptr(&[]) == typed.buf_ptr())?;
++        info.set_item("c_values", typed.to_vec(py)?)?;
++        info.set_item("f_values", typed.to_fortran_vec(py)?)?;
++        let mut copied = [0.0];
++        typed.copy_to_slice(py, &mut copied)?;
++        info.set_item("c_copy", copied)?;
++        typed.copy_to_fortran_slice(py, &mut copied)?;
++        info.set_item("f_copy", copied)?;
++        typed.copy_from_slice(py, &[3.5])?;
++        info.set_item("c_written", typed.to_vec(py)?)?;
++        typed.copy_from_fortran_slice(py, &[4.5])?;
++        info.set_item("f_written", typed.to_vec(py)?)?;
++        if explicit_release {
++            buffer.release(py);
++        }
++        Ok(info)
++    }
++
+     /// This is for confirming that PyBuffer does not cause memory leak
+     #[pyclass]
+     struct BytesExtractor {}
+ 
+     #[pymethods]
+diff --git a/pytests/tests/test_buf_and_str.py b/pytests/tests/test_buf_and_str.py
+index d7899a01..795a7583 100644
+--- a/pytests/tests/test_buf_and_str.py
++++ b/pytests/tests/test_buf_and_str.py
+@@ -1,15 +1,48 @@
+ import sys
+ 
+ import pytest
+ from pyo3_pytests.buf_and_str import (
+     BytesExtractor,
++    ScalarBuffer,
+     compatible_f64_format,
+     return_memoryview,
++    scalar_buffer_roundtrip,
+ )
+ 
+ 
++@pytest.mark.parametrize("explicit_release", [False, True], ids=["drop", "release"])
++def test_scalar_buffer_roundtrip(explicit_release):
++    value = ScalarBuffer(1.25)
++    info = scalar_buffer_roundtrip(value, explicit_release)
++    assert info == {
++        "dimensions": 0,
++        "item_count": 1,
++        "shape": [],
++        "strides": [],
++        "suboffsets": None,
++        "c_contiguous": True,
++        "f_contiguous": True,
++        "c_slice_len": 1,
++        "f_slice_len": 1,
++        "scalar_pointer": True,
++        "c_values": [1.25],
++        "f_values": [1.25],
++        "c_copy": [1.25],
++        "f_copy": [1.25],
++        "c_written": [3.5],
++        "f_written": [4.5],
++    }
++    assert value.value == 4.5
++    assert value.releases == 1
++
++
++def test_scalar_memoryview_typed_acquisition():
++    scalar = memoryview(bytearray(b"x")).cast("B", shape=[])
++    assert BytesExtractor.from_buffer(scalar) == 1
++
++
+ @pytest.mark.parametrize(
+     ("format", "expected"),
+     [
+         ("d", True),
+         ("@d", True),
+diff --git a/src/buffer.rs b/src/buffer.rs
+index 85a58454..c5239e9c 100644
+--- a/src/buffer.rs
++++ b/src/buffer.rs
+@@ -346,18 +346,18 @@ impl<T: Element> PyBuffer<T> {
+         }
+     }
+ 
+     /// Gets the buffer memory as a slice.
+     ///
+-    /// Returns null if the buffer is not C-style contiguous
++    /// Returns `None` if the buffer is not C-style contiguous.
+     pub fn as_slice_ptr(&self) -> Option<NonNull<[T]>> {
+         self.slice_pointer_internal(self.is_c_contiguous())
+     }
+ 
+     /// Gets the buffer memory as a slice.
+     ///
+-    /// This function returns null if the buffer is not Fortran-style contiguous
++    /// Returns `None` if the buffer is not Fortran-style contiguous.
+     pub fn as_fortran_slice_ptr(&self) -> Option<NonNull<[T]>> {
+         self.slice_pointer_internal(self.is_fortran_contiguous())
+     }
+ 
+     fn slice_pointer_internal(&self, contiguous: bool) -> Option<NonNull<[T]>> {
+@@ -544,13 +544,13 @@ impl PyUntypedBuffer {
+         // Create PyBuffer immediately so that if validation checks fail, the PyBuffer::drop code
+         // will call PyBuffer_Release (thus avoiding any leaks).
+         let buf = Self(Pin::from(buf));
+         let raw = buf.raw();
+ 
+-        if raw.shape.is_null() {
++        if raw.ndim != 0 && raw.shape.is_null() {
+             Err(PyBufferError::new_err("shape is null"))
+-        } else if raw.strides.is_null() {
++        } else if raw.ndim != 0 && raw.strides.is_null() {
+             Err(PyBufferError::new_err("strides is null"))
+         } else {
+             Ok(buf)
+         }
+     }
+@@ -686,27 +686,35 @@ impl PyUntypedBuffer {
+         self.raw().ndim as usize
+     }
+ 
+     /// Returns an array of length `dimensions`. `shape()[i]` is the length of the array in dimension number `i`.
+     ///
+-    /// May return None for single-dimensional arrays or scalar values (`dimensions() <= 1`);
+-    /// You can call `item_count()` to get the length of the single dimension.
++    /// Returns an empty slice for scalar values (`dimensions() == 0`).
+     ///
+     /// Despite Python using an array of signed integers, the values are guaranteed to be non-negative.
+     /// However, dimensions of length 0 are possible and might need special attention.
+     #[inline]
+     pub fn shape(&self) -> &[usize] {
+-        unsafe { slice::from_raw_parts(self.raw().shape.cast(), self.raw().ndim as usize) }
++        if self.raw().ndim == 0 {
++            &[]
++        } else {
++            unsafe { slice::from_raw_parts(self.raw().shape.cast(), self.raw().ndim as usize) }
++        }
+     }
+ 
+     /// Returns an array that holds, for each dimension, the number of bytes to skip to get to the next element in the dimension.
+     ///
+     /// Stride values can be any integer. For regular arrays, strides are usually positive,
+     /// but a consumer MUST be able to handle the case `strides[n] <= 0`.
++    /// Returns an empty slice for scalar values (`dimensions() == 0`).
+     #[inline]
+     pub fn strides(&self) -> &[isize] {
+-        unsafe { slice::from_raw_parts(self.raw().strides, self.raw().ndim as usize) }
++        if self.raw().ndim == 0 {
++            &[]
++        } else {
++            unsafe { slice::from_raw_parts(self.raw().strides, self.raw().ndim as usize) }
++        }
+     }
+ 
+     /// An array of length ndim.
+     /// If `suboffsets[n] >= 0`, the values stored along the nth dimension are pointers and the suboffset value dictates how many bytes to add to each pointer after de-referencing.
+     /// A suboffset value that is negative indicates that no de-referencing should occur (striding in a contiguous memory block).
