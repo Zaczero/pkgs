@@ -10,9 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 PACKAGE = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.usefixtures('mypy_provider')
 def test_package_is_mypy_strict_clean():
     from mypy import api
 

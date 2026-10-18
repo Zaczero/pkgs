@@ -39,18 +39,27 @@ from pyo3stubs.doc_structure import (
     iter_doc_subjects,
 )
 from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
-from pyo3stubs.gen import render_stub_with_docs
-from pyo3stubs.leaked_types import collect_errors as leaked_types
-from pyo3stubs.rust_nullability import collect_errors as rust_nullability
-from pyo3stubs.rust_scan import iter_sources, pyclass_names, rust_class_map
 from pyo3stubs.structural import collect_errors as structural
-from pyo3stubs.text_signature import collect_errors as text_signature
 from tests._support import make_config, seeded
+
+if importlib.util.find_spec('tree_sitter_rust') is not None:
+    from pyo3stubs.leaked_types import collect_errors as leaked_types
+    from pyo3stubs.rust_nullability import collect_errors as rust_nullability
+    from pyo3stubs.rust_scan import iter_sources, pyclass_names, rust_class_map
+    from pyo3stubs.text_signature import collect_errors as text_signature
 
 _GOMETRY_ROOT = Path(__file__).resolve().parents[2] / 'gometry'
 
 #: ``(tmp_path, pristine stub, pristine Rust) -> StubConfig``.
 Build = Callable[['Path', str, str], StubConfig]
+
+
+@pytest.fixture
+def render_stub_with_docs(rust_parser, libcst_provider):
+    from pyo3stubs.gen import render_stub_with_docs
+
+    return render_stub_with_docs
+
 
 _DUALITY_STUB = '''\
 from typing import Self, final
@@ -378,6 +387,7 @@ def test_cli_structural_check_accepts_a_clean_stub_and_rejects_a_real_mismatch(
     assert 'drop @final' in report
 
 
+@pytest.mark.usefixtures('libcst_provider')
 def test_cli_reference_matches_the_published_configuration_and_gate_reference(
     capsys,
 ):
@@ -402,6 +412,7 @@ def test_cli_reference_explains_its_libcst_requirement(monkeypatch, capsys):
     assert 'reference requires LibCST' in capsys.readouterr().err
 
 
+@pytest.mark.usefixtures('rust_parser', 'libcst_provider')
 def test_gen_docs_writes_the_stub_even_when_its_contract_fails(
     tmp_path, pristine_stub, capsys
 ):
@@ -633,6 +644,7 @@ def test_signature_coverage_rejects_empty_and_stale_class_allowlist_entries(
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_leak_allowlist_rot_is_reported(tmp_path):
     """An allowlist nobody prunes is how a real violation goes quiet."""
     cfg = make_config(
@@ -705,6 +717,7 @@ def test_match_args_value_drift(tmp_path, pristine_stub):
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_contract_flags_missing_runtime_doc(tmp_path, monkeypatch):
     lib = importlib.import_module('fakepkg._lib')
 
@@ -712,6 +725,7 @@ def test_doc_contract_flags_missing_runtime_doc(tmp_path, monkeypatch):
     assert any('Sealed.method' in e for e in doc_contract(make_config(tmp_path)))
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_contract_flags_missing_annotated_descriptor_doc(
     tmp_path, monkeypatch, pristine_stub
 ):
@@ -726,6 +740,7 @@ def test_doc_contract_flags_missing_annotated_descriptor_doc(
 
 
 @pytest.mark.parametrize('suffix', ['.py', '.pyi'])
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_checks_package_source_style(tmp_path, pristine_stub, suffix):
     cfg = make_config(tmp_path, stub_text=pristine_stub, docstring_style='numpy')
     source = cfg.stub_path.parent / f'facade{suffix}'
@@ -747,6 +762,7 @@ def helper(value):
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_checks_runtime_style_before_exemptions(
     tmp_path, monkeypatch, pristine_stub
 ):
@@ -767,6 +783,7 @@ def test_doc_structure_checks_runtime_style_before_exemptions(
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_requires_returns_for_annotated_descriptor(
     tmp_path, monkeypatch, pristine_stub
 ):
@@ -780,6 +797,7 @@ def test_doc_structure_requires_returns_for_annotated_descriptor(
     assert any('Sealed.maybe: no Returns section' in e for e in errors)
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_keeps_a_property_only_module_in_its_subjects(tmp_path):
     stub = '''\
 class Shape:
@@ -801,6 +819,7 @@ class Shape:
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_contract_requires_constructor_prose_not_just_class_prose(tmp_path):
     stub = '''\
 class Widget:
@@ -820,6 +839,7 @@ class Widget:
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_uses_the_binding_signature_for_constructor_parameters(
     tmp_path,
 ):
@@ -847,6 +867,7 @@ class Widget:
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_structure_rejects_constructor_default_drift(tmp_path):
     stub = '''\
 class Widget:
@@ -887,6 +908,7 @@ class Widget:
         pytest.param('*, a: Orphan', id='keyword-only'),
     ],
 )
+@pytest.mark.usefixtures('rust_parser')
 def test_leak_scan_sees_every_parameter_kind(tmp_path, pristine_stub, signature):
     """A leaked pyclass hides just as well behind `/` or `**` as anywhere else.
 
@@ -929,6 +951,7 @@ def test_structural_rejects_export_rot(tmp_path, pristine_stub, exports, expect)
     assert any(expect in e for e in errors), errors
 
 
+@pytest.mark.usefixtures('mypy_provider')
 def test_validity_rejects_a_shadowed_overload_whatever_the_config(
     tmp_path, pristine_stub
 ):
@@ -953,6 +976,7 @@ def test_validity_rejects_a_shadowed_overload_whatever_the_config(
     assert any('will never be matched' in e for e in errors), errors
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub):
     """A stub body containing `...` does not provide author prose.
 
@@ -977,6 +1001,7 @@ def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub)
     assert doc_contract(make_config(tmp_path, stub_text=documented)) == []
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_doc_contract_accepts_an_override_documented_by_inheritance(
     tmp_path, pristine_stub, monkeypatch
 ):
@@ -1054,6 +1079,7 @@ def test_doc_contract_accepts_an_override_documented_by_inheritance(
     )
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_flags_param_drift(tmp_path, pristine_src):
     mutated = seeded(
         pristine_src,
@@ -1064,6 +1090,7 @@ def test_text_signature_flags_param_drift(tmp_path, pristine_src):
     assert any('text_signature params' in e for e in errors), errors
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_matches_keyword_only_args_after_module_receiver(
     tmp_path,
     pristine_src,
@@ -1091,6 +1118,7 @@ def test_text_signature_matches_keyword_only_args_after_module_receiver(
     assert 'text_signature params' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):
     mutated = seeded(pristine_src, 'b = "x"', 'b = "y"')
     errors = text_signature(make_config(tmp_path, src_text=mutated))
@@ -1100,6 +1128,7 @@ def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):
     assert 'text_signature default \'x\' != signature default "y"' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_rejects_none_against_a_different_exposed_default(
     tmp_path,
     pristine_src,
@@ -1111,6 +1140,7 @@ def test_text_signature_rejects_none_against_a_different_exposed_default(
     assert 'text_signature default' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_rejects_an_unresolved_rust_default_comparison(
     tmp_path,
     pristine_src,
@@ -1122,6 +1152,7 @@ def test_text_signature_rejects_an_unresolved_rust_default_comparison(
     assert 'cannot verify' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_requires_exact_source_owned_default_presentations(
     tmp_path,
     pristine_src,
@@ -1159,6 +1190,7 @@ def test_text_signature_requires_exact_source_owned_default_presentations(
     assert 'effective default' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_rejects_unused_default_presentations(tmp_path, pristine_src):
     cfg = make_config(
         tmp_path,
@@ -1181,6 +1213,7 @@ def test_text_signature_default_presentations_require_a_reason():
         TextSignatureDefault(value='x', reason='')
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_validates_syntax_with_a_rust_kwargs_binding(
     tmp_path,
     pristine_src,
@@ -1200,6 +1233,7 @@ def test_text_signature_validates_syntax_with_a_rust_kwargs_binding(
     assert 'not a valid Python signature' in errors[0]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_ignores_spelling_of_the_same_value(tmp_path, pristine_src):
     """`1_000` and `1000` are one value; only a different value is drift."""
     same = seeded(seeded(pristine_src, 'b = "x"', 'b = 1_000'), "b='x'", 'b=1000')
@@ -1210,6 +1244,7 @@ def test_text_signature_ignores_spelling_of_the_same_value(tmp_path, pristine_sr
 
 
 @pytest.mark.parametrize('literal', [',', '(', ')('])
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_survives_a_delimiter_inside_a_default(
     tmp_path, pristine_src, literal
 ):
@@ -1228,6 +1263,7 @@ def test_text_signature_survives_a_delimiter_inside_a_default(
     assert text_signature(make_config(tmp_path, src_text=src)) == []
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_text_signature_rejects_a_body_that_is_not_python(tmp_path, pristine_src):
     """CPython's `inspect` parses `__text_signature__` as Python; so do we."""
     src = seeded(
@@ -1250,6 +1286,7 @@ def test_text_signature_rejects_a_body_that_is_not_python(tmp_path, pristine_src
         ),
     ],
 )
+@pytest.mark.usefixtures('rust_parser')
 def test_a_macro_declared_pyclass_is_found_by_argument_position(tmp_path, invocation):
     """Positions read off the parsed token tree, not a regex over raw text.
 
@@ -1267,6 +1304,7 @@ def test_a_macro_declared_pyclass_is_found_by_argument_position(tmp_path, invoca
     assert pyclass_names(cfg)['Point'].endswith('lib.rs')
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_a_single_name_macro_export_defaults_rust_to_the_python_name(tmp_path):
     cfg = make_config(
         tmp_path,
@@ -1276,6 +1314,7 @@ def test_a_single_name_macro_export_defaults_rust_to_the_python_name(tmp_path):
     assert rust_class_map(cfg) == {'Widget': 'Widget'}
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_skips_cfg_test_modules(tmp_path):
     """A pyclass inside a ``#[cfg(test)]`` module never ships; the scan skips it."""
     src = (
@@ -1296,6 +1335,7 @@ def test_rust_scan_skips_cfg_test_modules(tmp_path):
     assert pyclass_names(cfg)['Shipped'].endswith('lib.rs')
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_scope_drops_only_proven_test_cfg_items(tmp_path):
     src = """\
 #[pyclass]
@@ -1352,6 +1392,7 @@ mod tests {
     }
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_retains_nodes_and_recovers_macro_items_with_source_lines(
     tmp_path,
 ):
@@ -1409,6 +1450,7 @@ frozen_pymethods! {
     assert macro.text.startswith('frozen_pymethods!')
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_gometry_typed_return_gate_catches_real_bindings_not_literal_text(
     tmp_path, monkeypatch
 ):
@@ -1445,6 +1487,7 @@ frozen_pymethods! {
     ]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_gometry_algebraic_gate_scans_test_bodies_not_literal_text(
     tmp_path, monkeypatch
 ):
@@ -1474,6 +1517,7 @@ fn forbidden() {
     assert whitelisted_functions == 0
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_gometry_decision_surface_gate_ignores_literal_text(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'path', list(sys.path))
     gate = run_path(
@@ -1498,6 +1542,7 @@ fn decision() {
     ]
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_ignores_pyclasses_that_are_not_code(tmp_path):
     """A `#[pyclass]` in a comment, a string, or a macro *definition* is not one.
 
@@ -1524,6 +1569,7 @@ def test_rust_scan_ignores_pyclasses_that_are_not_code(tmp_path):
     assert set(rust_class_map(cfg)) == {'Real'}
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_does_not_leak_fields_across_a_unit_struct(tmp_path):
     """A unit struct has no body, so it cannot own the next struct's fields.
 
@@ -1570,6 +1616,10 @@ def test_token_scan_is_bounded_by_its_own_macro(tmp_path, pristine_src):
         pytest.param(dict.__dict__['fromkeys'], True, id='classmethod_descriptor'),
     ],
 )
+@pytest.mark.skipif(
+    sys.implementation.name != 'cpython',
+    reason='the fixtures exercise CPython C-level descriptor kinds',
+)
 def test_only_cpython_slot_wrappers_keep_their_own_docs(descriptor, injected):
     """The descriptor kind decides, and all four kinds are real C-level ones.
 
@@ -1589,7 +1639,7 @@ def test_only_cpython_slot_wrappers_keep_their_own_docs(descriptor, injected):
 
 
 def test_gen_docs_leaves_cpython_slot_wrappers_alone(
-    tmp_path, pristine_stub, monkeypatch
+    tmp_path, pristine_stub, monkeypatch, render_stub_with_docs
 ):
     """A slot's doc belongs to CPython, not to the class that registered it.
 
@@ -1624,6 +1674,7 @@ def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
     tmp_path,
     pristine_stub,
     monkeypatch,
+    render_stub_with_docs,
 ):
     lib = importlib.import_module('fakepkg._lib')
 
@@ -1655,7 +1706,9 @@ def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
     assert failures == []
 
 
-def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):
+def test_gen_docs_places_docstring_on_last_overload(
+    tmp_path, pristine_stub, render_stub_with_docs
+):
     # Move the docstring onto the FIRST variant; the renderer must put it back
     # on the last (the canonical carrier) and strip earlier variants.
     mutated = seeded(
@@ -1676,7 +1729,7 @@ def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):
     ) in rendered
 
 
-def test_gen_docs_is_idempotent(tmp_path):
+def test_gen_docs_is_idempotent(tmp_path, render_stub_with_docs):
     """Rendering an already-rendered stub must be a fixed point."""
     once = render_stub_with_docs(make_config(tmp_path))
     twice = render_stub_with_docs(make_config(tmp_path, stub_text=once))
@@ -1938,6 +1991,7 @@ def test_config_path_resolves_from_the_caller_not_the_cwd(tmp_path, monkeypatch)
         _find_upward(Path('tools/absent.py'), deep)
 
 
+@pytest.mark.usefixtures('rust_parser')
 def test_a_gate_that_examines_nothing_says_so(tmp_path):
     """Finding no violations and looking at nothing are different outcomes.
 
