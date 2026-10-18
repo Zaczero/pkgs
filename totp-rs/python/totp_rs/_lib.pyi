@@ -56,11 +56,12 @@ def totp_generate(
     supported.
 
     Raises:
-        ValueError: If the secret is not bytes or valid Base32 text, the
+        ValueError: If the secret contains invalid Base32 text, the
             algorithm or digit count is unsupported, the time arguments
             conflict, a derived counter uses a nonpositive step, or a time or
             derived counter is out of range or nonfinite.
-        TypeError: If a typed option has an incompatible Python type.
+        TypeError: If the secret is not bytes or a string, or a typed option
+            has an incompatible Python type.
         OverflowError: If ``digits`` is outside the unsigned-byte range or an
             ``i64`` time/counter option is outside its signed range.
     """
@@ -98,9 +99,9 @@ def totp_verify(
     in this order: T, T-1, T+1. It must fit an unsigned byte. String codes use
     their ASCII decimal digits; other bytes are ignored, and exactly ``digits``
     decimal digits are required. Integer codes must satisfy
-    ``0 <= code < 10**digits``. A malformed candidate returns ``False``. The secret is
-    parsed only after the candidate has the required shape, so a malformed
-    candidate returns ``False`` even if the secret is malformed.
+    ``0 <= code < 10**digits``. With valid secret and configuration arguments,
+    a malformed or nonmatching candidate returns ``False``. An invalid secret
+    raises an exception even when the candidate is malformed.
 
     The candidate code comparison uses a constant-time byte comparison. The
     complete verification is not constant-time: validation and counter search
@@ -108,12 +109,12 @@ def totp_verify(
     limit attempts.
 
     Raises:
-        ValueError: If the secret is not bytes or valid Base32 text, the
+        ValueError: If the secret contains invalid Base32 text, the
             algorithm or digit count is unsupported, the time arguments
             conflict, a derived counter uses a nonpositive step, or a time or
             derived counter is out of range or nonfinite.
-        TypeError: If a typed option has an incompatible Python type. A code
-            with an unsupported type returns ``False``.
+        TypeError: If the secret is not bytes or a string, the code is not a
+            string or integer, or a typed option has an incompatible Python type.
         OverflowError: If ``digits`` or ``window`` is outside the unsigned-byte
             range or an ``i64`` time/counter option is outside its signed range.
     """

@@ -13,14 +13,33 @@ use std::hint::unlikely;
 use std::num::NonZeroU32;
 use std::str;
 
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyString};
+use pyo3::types::{PyBytes, PyInt, PyString};
 
 use crate::algorithm::parse_algorithm;
 use crate::errors::TotpError;
 use crate::secret::Secret;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
+
+impl From<TotpError> for PyErr {
+    fn from(error: TotpError) -> Self {
+        PyValueError::new_err(error.to_string())
+    }
+}
+
+fn parse_secret<'a>(secret: &'a Bound<'_, PyAny>) -> PyResult<Secret<'a>> {
+    if let Ok(value) = secret.cast::<PyBytes>() {
+        return Ok(Secret::Raw(value.as_bytes()));
+    }
+    if let Ok(value) = secret.cast::<PyString>() {
+        return Ok(Secret::Base32(value.to_str()?));
+    }
+    Err(PyTypeError::new_err(
+        "secret must be bytes or a Base32 string",
+    ))
+}
 
 const MODULUS_BY_DIGITS: [NonZeroU32; 10] = {
     let mut table = [NonZeroU32::MIN; 10];
@@ -93,28 +112,28 @@ fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
     (seen_digits == digits.count).then_some(value)
 }
 
-fn parse_code_py(code: &Bound<'_, PyAny>, digits: Digits) -> Option<u32> {
+fn parse_code_py(code: &Bound<'_, PyAny>, digits: Digits) -> PyResult<Option<u32>> {
     if let Ok(value) = code.cast::<PyString>() {
         if let Ok(s) = value.to_str() {
-            return code.py().detach(|| parse_code_str(s, digits));
+            return Ok(code.py().detach(|| parse_code_str(s, digits)));
         }
-        return None;
+        return Ok(None);
     }
 
     if let Ok(value) = code.cast::<PyInt>() {
         let Ok(value) = value.extract::<u32>() else {
-            return None;
+            return Ok(None);
         };
-        return (value < digits.modulus.get()).then_some(value);
+        return Ok((value < digits.modulus.get()).then_some(value));
     }
 
-    None
+    Err(PyTypeError::new_err("code must be a string or an integer"))
 }
 
 #[pyfunction]
 #[pyo3(signature = (time = None, *, step_seconds = 30, t0 = 0))]
 fn totp_time_window(time: Option<f64>, step_seconds: i64, t0: i64) -> PyResult<i64> {
-    time_window_from_time(time, step_seconds, t0).map_err(TotpError::into_pyerr)
+    Ok(time_window_from_time(time, step_seconds, t0)?)
 }
 
 #[pyfunction]
@@ -129,23 +148,20 @@ fn totp_generate(
     step_seconds: i64,
     t0: i64,
 ) -> PyResult<Py<PyString>> {
-    let digits = admit_digits(digits).map_err(TotpError::into_pyerr)?;
-    let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
-    let counter =
-        resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
+    let digits = admit_digits(digits)?;
+    let algorithm = parse_algorithm(algorithm)?;
+    let counter = resolve_counter(time, time_window, step_seconds, t0)?;
 
-    let secret = Secret::from_py(secret)?;
-    let code = py
-        .detach(|| {
-            let secret = secret.decode()?;
-            Ok::<_, TotpError>(totp_code(
-                secret.as_ref(),
-                counter,
-                digits.modulus,
-                algorithm,
-            ))
-        })
-        .map_err(TotpError::into_pyerr)?;
+    let secret = parse_secret(secret)?;
+    let code = py.detach(|| {
+        let secret = secret.decode()?;
+        Ok::<_, TotpError>(totp_code(
+            secret.as_ref(),
+            counter,
+            digits.modulus,
+            algorithm,
+        ))
+    })?;
 
     Ok(format_code_py(py, code, digits))
 }
@@ -164,28 +180,26 @@ fn totp_verify(
     t0: i64,
     window: u8,
 ) -> PyResult<bool> {
-    let digits = admit_digits(digits).map_err(TotpError::into_pyerr)?;
-    let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
-    let counter =
-        resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
+    let digits = admit_digits(digits)?;
+    let algorithm = parse_algorithm(algorithm)?;
+    let counter = resolve_counter(time, time_window, step_seconds, t0)?;
 
-    let Some(code) = parse_code_py(code, digits) else {
-        return Ok(false);
-    };
-
-    let secret = Secret::from_py(secret)?;
+    let secret = parse_secret(secret)?;
+    let code = parse_code_py(code, digits)?;
     py.detach(|| {
         let secret = secret.decode()?;
-        Ok(verify(
-            secret.as_ref(),
-            counter,
-            window,
-            digits.modulus,
-            code,
-            algorithm,
-        ))
+        Ok::<_, TotpError>(code.is_some_and(|code| {
+            verify(
+                secret.as_ref(),
+                counter,
+                window,
+                digits.modulus,
+                code,
+                algorithm,
+            )
+        }))
     })
-    .map_err(TotpError::into_pyerr)
+    .map_err(PyErr::from)
 }
 
 #[pymodule]

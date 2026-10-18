@@ -286,31 +286,31 @@ def test_secret_accepts_base32_str(
 
 
 def test_invalid_inputs() -> None:
-    with pytest.raises(ValueError, match='Invalid step_seconds: must be positive'):
+    with pytest.raises(ValueError, match='step_seconds must be positive'):
         totp_time_window(0, step_seconds=0)
 
     for digits in (0, 10):
         with pytest.raises(
             ValueError,
-            match=f'Invalid digits: expected 1..=9, got {digits}',
+            match=f'digits must be between 1 and 9; got {digits}',
         ):
             totp_generate(SECRET_SHA1, digits=digits)
 
     with pytest.raises(
         ValueError,
-        match='Invalid algorithm: expected sha1, sha256, or sha512',
+        match='algorithm must be sha1, sha256, or sha512',
     ):
         totp_generate(SECRET_SHA1, algorithm='md5')  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(
         ValueError,
-        match='Invalid arguments: time and time_window cannot both be set',
+        match='time and time_window cannot both be set',
     ):
         totp_generate(SECRET_SHA1, time=0, time_window=0)
 
     with pytest.raises(
         ValueError,
-        match='Invalid arguments: time and time_window cannot both be set',
+        match='time and time_window cannot both be set',
     ):
         totp_verify(
             SECRET_SHA1,
@@ -328,11 +328,26 @@ def test_invalid_inputs() -> None:
     assert not totp_verify(SECRET_SHA1, -1, digits=6)
 
 
-def test_invalid_code_returns_false_before_invalid_secret_is_parsed() -> None:
-    assert not totp_verify('0', 'not-a-code')
-
+@pytest.mark.parametrize('code', ['not-a-code', '123456', -1, 10**100])
+def test_invalid_secret_is_not_hidden_by_candidate(code: str | int) -> None:
     with pytest.raises(
         ValueError,
-        match='Invalid secret: invalid Base32 character at index 0',
+        match='secret contains an invalid Base32 character at index 0',
     ):
-        totp_verify('0', '123456')
+        totp_verify('0', code)
+
+
+@pytest.mark.parametrize('secret', [None, 123, bytearray(b'secret')])
+def test_secret_type_errors(secret: object) -> None:
+    with pytest.raises(TypeError, match='secret must be bytes or a Base32 string'):
+        totp_generate(secret)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match='secret must be bytes or a Base32 string'):
+        totp_verify(secret, '123456')  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match='secret must be bytes or a Base32 string'):
+        totp_verify(secret, 'not-a-code')  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize('code', [None, 123456.0, b'123456', [], object()])
+def test_code_type_errors(code: object) -> None:
+    with pytest.raises(TypeError, match='code must be a string or an integer'):
+        totp_verify(SECRET_SHA1, code)  # pyright: ignore[reportArgumentType]
