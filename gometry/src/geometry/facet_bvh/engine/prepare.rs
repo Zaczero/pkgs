@@ -2,7 +2,8 @@ use crate::HeapSize;
 use crate::error::{ResourceError, Result};
 use crate::geometry::facet_bvh::engine::bvh::refine_facet_nearest;
 use crate::geometry::facet_bvh::{
-    FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_squared, point_aabb,
+    FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_lower, aabb_distance_squared,
+    aabb_distance_squared_lower, point_aabb,
 };
 use crate::geometry::{
     Bounds, Component, CoordSeq, Point, RunIdentity, Segment, Shape, XY, point_on_segment,
@@ -507,41 +508,16 @@ impl PreparedLinework {
                 .transpose()?
                 .unwrap_or(f64::INFINITY);
             let bound = if SQUARED {
-                aabb_distance_squared(aabb, point_aabb(probe.x, probe.y))
+                aabb_distance_squared_lower(aabb, point_aabb(probe.x, probe.y))
             } else {
-                aabb_distance(aabb, point_aabb(probe.x, probe.y))
+                aabb_distance_lower(aabb, point_aabb(probe.x, probe.y))
             };
             if bound > limit {
                 continue;
             }
             for &facet in &self.facets {
-                let limit = best
-                    .as_ref()
-                    .map(|b| {
-                        if SQUARED {
-                            Ok(b.distance_key.upper_bound())
-                        } else {
-                            b.distance_key.distance_upper_bound()
-                        }
-                    })
-                    .transpose()?
-                    .unwrap_or(f64::INFINITY);
-                let distance = if SQUARED {
-                    self.facet_point_distance_squared(facet, probe.x, probe.y)?
-                } else {
-                    self.facet_point_distance(facet, probe)?
-                };
-                if distance <= limit {
-                    changed |= refine_facet_nearest::<false>(
-                        self,
-                        facet,
-                        probe,
-                        f64::INFINITY,
-                        f64::INFINITY,
-                        keep,
-                        best,
-                    )?;
-                }
+                changed |=
+                    refine_facet_nearest::<false>(self, facet, probe, f64::INFINITY, keep, best)?;
             }
         }
         Ok(changed)
@@ -565,7 +541,7 @@ impl PreparedLinework {
         None
     }
 
-    /// Exact minimum squared distance from `(px, py)` to one facet's
+    /// Rounded minimum squared distance from `(px, py)` to one facet's
     /// segments — eight clamped-projection distances in one SIMD register
     /// for full facets, a scalar fold for chain tails.
     pub(crate) fn facet_point_distance_squared(

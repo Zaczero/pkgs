@@ -2,8 +2,9 @@
 //!
 //! Linework segments are grouped into *facets* of up to [`FACET_SEGMENTS`]
 //! consecutive segments, and a flat binary AABB tree over the facets drives
-//! branch-and-bound point probes. The exact point-vs-facet kernel evaluates
-//! all eight segment distances in one vector op.
+//! branch-and-bound point probes. The rounded point-vs-facet magnitude kernel
+//! evaluates all eight segment distances in one vector op. Exact nearest
+//! selection refines segments behind directed AABB lower bounds.
 //!
 //! There is deliberately NO segment×segment machinery: distance callers
 //! guarantee disjoint operands (the `intersects` short-circuit), and for
@@ -17,7 +18,7 @@
 //! augments every node with exact-source-supported direction strips. Directed
 //! AABB and strip bounds reject only when a certified source-space lower bound
 //! strictly exceeds the exact incumbent; uncertain comparisons use exact
-//! arithmetic. The other distance paths retain their squared/hypot kernels and
+//! arithmetic. Magnitude-only paths retain their squared/hypot kernels and
 //! established pruning bounds. The SIMD kernel computes the same
 //! clamped-projection distance as the scalar kernel (lane math may reassociate —
 //! measurement arithmetic per the project float policy).
@@ -27,8 +28,8 @@ mod engine;
 mod simd;
 
 pub(crate) use aabb::{
-    aabb_distance, aabb_distance_squared, aabb_distance_squared_lower, aabb_max_distance_squared,
-    aabbs_overlap, point_aabb, segment_aabb, union_aabb,
+    aabb_distance, aabb_distance_lower, aabb_distance_squared, aabb_distance_squared_lower,
+    aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 #[cfg(test)]
 pub(crate) use engine::NEAREST_WORK;

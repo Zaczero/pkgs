@@ -860,13 +860,11 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         let bvh = FacetBvh::build(&linework).expect("a live line has an indexable facet");
         let mut stack = Vec::new();
         let mut cuts = Vec::new();
-        let upper_bound = tolerance.next_up() * tolerance.next_up();
         for point in points {
             let mut nearest = None;
             bvh.nearest_point_with_stack::<true, true>(
                 &linework,
                 *point,
-                upper_bound,
                 tolerance,
                 &|_, segment| !same_point(segment.start, segment.end),
                 &mut stack,
@@ -976,11 +974,8 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
             end: end.xy(),
         };
         let selection = point_segment_selection(point.xy(), segment)?;
-        if selection.distance() > tolerance {
-            continue;
-        }
         let key = selection.distance_key(point.xy(), segment);
-        if tolerance == 0.0 && !key.is_exact_zero()? {
+        if !key.within_distance(tolerance)? {
             continue;
         }
         let closer = match best_key.as_ref() {

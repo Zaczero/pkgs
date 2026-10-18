@@ -2,8 +2,9 @@ use std::ops::ControlFlow;
 
 use crate::HeapSize;
 use crate::geometry::facet_bvh::{
-    Facet, PreparedLinework, aabb_distance, aabb_distance_squared, aabb_distance_squared_lower,
-    aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
+    Facet, PreparedLinework, aabb_distance, aabb_distance_lower, aabb_distance_squared,
+    aabb_distance_squared_lower, aabb_max_distance_squared, aabbs_overlap, point_aabb,
+    segment_aabb, union_aabb,
 };
 use crate::geometry::segments::projection::segment_projection;
 use crate::geometry::{
@@ -54,8 +55,8 @@ pub(crate) enum NearestTarget {
 /// longest-axis-median built. `2F − 1` nodes for `F` facets, root at 0.
 ///
 /// Layout is traversal-driven: the AABBs live in their own dense array
-/// (32 B each — the only bytes the pruned majority of node visits touch,
-/// two per cache line with no straddle), the per-node code words in a
+/// (32 B each — the only bytes the pruned majority of node visits touch),
+/// the per-node code words in a
 /// second; and a node's two children are ALLOCATED ADJACENTLY, so the
 /// nearer-child ordering reads both child bounds from neighboring memory
 /// instead of two distant tree regions.

@@ -127,7 +127,6 @@ enum SelectionProjectionSource {
 
 pub(crate) struct PointSegmentSelection {
     distance: f64,
-    pub(super) distance_squared: f64,
     filter: SquaredDistanceFilter,
     witness_kind: PointSegmentWitnessKind,
     projection: SelectionProjectionSource,

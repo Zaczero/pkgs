@@ -13,7 +13,7 @@ pub(crate) fn aabb_distance_squared(a: [f64; 4], b: [f64; 4]) -> f64 {
 /// Downward enclosure of squared distance between two AABBs.
 ///
 /// Each positive subtraction, product, and sum is moved one representable
-/// value toward negative infinity before it can be used to reject a clearance
+/// value toward negative infinity before it can be used to reject an exact
 /// candidate. The bound may be loose at underflow or overflow; it never
 /// overstates the source-space lower bound.
 pub(crate) fn aabb_distance_squared_lower(a: [f64; 4], b: [f64; 4]) -> f64 {
@@ -33,21 +33,31 @@ pub(crate) fn aabb_distance(a: [f64; 4], b: [f64; 4]) -> f64 {
     if squared.is_normal() || (dx == 0.0 && dy == 0.0) {
         squared.sqrt()
     } else {
-        let dx = dx.next_down().max(0.0);
-        let dy = dy.next_down().max(0.0);
-        let scale = dx.max(dy);
-        if scale == 0.0 {
-            return 0.0;
-        }
-        let nx = (dx / scale).next_down().max(0.0);
-        let ny = (dy / scale).next_down().max(0.0);
-        let sum = ((nx * nx).next_down().max(0.0) + (ny * ny).next_down().max(0.0))
-            .next_down()
-            .max(0.0);
-        (sum.sqrt().next_down().max(0.0) * scale)
-            .next_down()
-            .max(0.0)
+        aabb_distance_lower(a, b)
     }
+}
+
+/// Downward enclosure of distance between finite Cartesian boxes.
+///
+/// Lower every rounded operation, including gaps before normalization. Scaling
+/// keeps gaps useful when their squares underflow or overflow. An overflowing
+/// gap or product lowers to `f64::MAX`, still below the exact distance.
+pub(crate) fn aabb_distance_lower(a: [f64; 4], b: [f64; 4]) -> f64 {
+    let (dx, dy) = aabb_gaps(a, b);
+    let dx = dx.next_down().max(0.0);
+    let dy = dy.next_down().max(0.0);
+    let scale = dx.max(dy);
+    if scale == 0.0 {
+        return 0.0;
+    }
+    let nx = (dx / scale).next_down().max(0.0);
+    let ny = (dy / scale).next_down().max(0.0);
+    let sum = ((nx * nx).next_down().max(0.0) + (ny * ny).next_down().max(0.0))
+        .next_down()
+        .max(0.0);
+    (sum.sqrt().next_down().max(0.0) * scale)
+        .next_down()
+        .max(0.0)
 }
 
 pub(crate) fn aabb_gaps(a: [f64; 4], b: [f64; 4]) -> (f64, f64) {
@@ -171,5 +181,33 @@ mod tests {
             !ExactDyadic::from_f64(lower).cmp(&exact).is_gt(),
             "directed bound {lower:?} exceeded exact squared distance {exact:?}",
         );
+    }
+
+    #[rstest::rstest]
+    #[case::overlap([0.0, -1.0, 3.0, 2.0], [1.0, 0.0, 4.0, 3.0], [0.0, 0.0], [0.0, 0.0])]
+    #[case::touch_signed_zero([-1.0, -1.0, -0.0, -0.0], [0.0, 0.0, 1.0, 1.0], [-0.0, -0.0], [0.0, 0.0])]
+    #[case::two_gaps([0.0, 0.0, 1.0, 2.0], [4.0, 6.0, 5.0, 7.0], [1.0, 2.0], [4.0, 6.0])]
+    #[case::subnormal(point_aabb(0.0, 0.0), point_aabb(f64::from_bits(7), f64::from_bits(11)), [0.0, 0.0], [f64::from_bits(7), f64::from_bits(11)])]
+    #[case::normal_boundary(point_aabb(0.0, 0.0), point_aabb(f64::MIN_POSITIVE, f64::MIN_POSITIVE.next_down()), [0.0, 0.0], [f64::MIN_POSITIVE, f64::MIN_POSITIVE.next_down()])]
+    #[case::underflowed_square(point_aabb(0.0, 0.0), point_aabb(1e-200, 2e-200), [0.0, 0.0], [1e-200, 2e-200])]
+    #[case::overflowed_square(point_aabb(0.0, 0.0), point_aabb(1e200, 2e200), [0.0, 0.0], [1e200, 2e200])]
+    #[case::overflowed_gap(point_aabb(-f64::MAX, -f64::MAX), point_aabb(f64::MAX, f64::MAX), [-f64::MAX, -f64::MAX], [f64::MAX, f64::MAX])]
+    #[case::translated(point_aabb(1e100, 1e100), point_aabb(1e100_f64.next_up(), 1e100_f64.next_up().next_up()), [1e100, 1e100], [1e100_f64.next_up(), 1e100_f64.next_up().next_up()])]
+    fn nearest_bounds_do_not_exceed_exact_dyadic_box_distance(
+        #[case] left: [f64; 4],
+        #[case] right: [f64; 4],
+        #[case] left_nearest: [f64; 2],
+        #[case] right_nearest: [f64; 2],
+    ) {
+        let exact = exact_squared_distance(left_nearest, right_nearest);
+        for (a, b) in [(left, right), (right, left)] {
+            let lower_squared = aabb_distance_squared_lower(a, b);
+            assert!(lower_squared >= 0.0);
+            assert!(!ExactDyadic::from_f64(lower_squared).cmp(&exact).is_gt());
+            let lower = aabb_distance_lower(a, b);
+            assert!(lower >= 0.0);
+            let dyadic = ExactDyadic::from_f64(lower);
+            assert!(!dyadic.try_product(&dyadic).unwrap().cmp(&exact).is_gt());
+        }
     }
 }

@@ -276,6 +276,82 @@ def test_split_parts_preserves_coordinate_epoch() -> None:
     assert all(piece.epoch == 2020.0 for piece in pieces)
 
 
+@pytest.mark.parametrize('total_segments', [15, 16, 17, 56, 63, 64, 65, 71, 72, 73])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_line_locate_refines_full_facets_before_exact_selection(
+    total_segments: int, reverse: bool
+) -> None:
+    delta = 2.0**-60
+    contact_segments = total_segments - 8
+    contact = [(49.0 * i, 0.0) for i in range(contact_segments + 1)]
+    if reverse:
+        contact.reverse()
+    route = gm.MultiLineString(
+        [[(1.0, (i + 1) * delta) for i in range(9)], contact], crs=3857
+    )
+    expected = 49.0 * contact_segments - 1.0 if reverse else 1.0
+    assert route.line_locate(gm.Point(1.0, 0.0, crs=3857)) == expected
+
+
+@pytest.mark.parametrize('cutters', [28, 29])
+@pytest.mark.parametrize(
+    ('offset', 'tolerance', 'accepted'),
+    [
+        (0.0, 0.0, True),
+        (1.0, 1.0, True),
+        (math.nextafter(1.0, 0.0), 1.0, True),
+        (math.nextafter(1.0, math.inf), 1.0, False),
+        (2.0**-1072, 2.0**-1072, True),
+        (2.0**-1071, 2.0**-1072, False),
+        (2.0**-1074, 0.0, False),
+        (1e200, 1e200, True),
+    ],
+    ids=[
+        'contact',
+        'equality',
+        'inside',
+        'outside',
+        'subnormal-equality',
+        'subnormal-outside',
+        'nonzero-at-zero',
+        'overflowed-square',
+    ],
+)
+def test_split_duplicate_cutters_preserve_exact_closed_membership(
+    cutters: int, offset: float, tolerance: float, accepted: bool
+) -> None:
+    line = gm.LineString([(49.0 * i, 0.0) for i in range(9)], crs=3857)
+    points = gm.MultiPoint([(1.0, offset)] * cutters, crs=3857)
+    pieces = gm.split(line, points, tolerance=tolerance)
+    expected = (
+        [
+            [(0.0, 0.0), (1.0, 0.0)],
+            [(1.0, 0.0), *[(49.0 * i, 0.0) for i in range(1, 9)]],
+        ]
+        if accepted
+        else [[(49.0 * i, 0.0) for i in range(9)]]
+    )
+    assert len(pieces) == len(expected)
+    for piece, coordinates in zip(pieces, expected, strict=True):
+        np.testing.assert_array_equal(piece.coords, coordinates)
+
+
+@pytest.mark.parametrize('cutters', [28, 29])
+def test_split_rejects_exact_distance_above_a_rounded_equal_cutoff(
+    cutters: int,
+) -> None:
+    # The closest source vertex has squared distance 1 + 2^-54 > 1,
+    # although its binary64 distance rounds to 1.
+    line = gm.LineString(
+        [(5.0, 10.0), (1.0, 2.0**-27), *[(1.0, float(y)) for y in range(10, 17)]],
+        crs=3857,
+    )
+    points = gm.MultiPoint([(0.0, 0.0)] * cutters, crs=3857)
+    pieces = gm.split(line, points, tolerance=1.0)
+    assert len(pieces) == 1
+    np.testing.assert_array_equal(pieces[0].coords, line.coords)
+
+
 def test_split_tolerance_governs_membership_and_dedup() -> None:
     line = gm.LineString([(0, 0), (4, 0)], crs=4326)
     # Exact topological membership by default: a point 5e-10 off the line

@@ -2,8 +2,9 @@
 use super::NEAREST_WORK;
 use super::{
     BvhCode, BvhNode, Facet, FacetBvh, NearestCandidate, Point, PreparedLinework, Segment,
-    aabb_distance, aabb_distance_squared, aabb_max_distance_squared, facet_for_leaf, point_aabb,
-    point_segment_distance_squared, point_segment_selection,
+    aabb_distance, aabb_distance_lower, aabb_distance_squared, aabb_distance_squared_lower,
+    aabb_max_distance_squared, facet_for_leaf, point_aabb, point_segment_distance_squared,
+    point_segment_selection,
 };
 
 /// Expand the shared exact candidate rule in facet and streaming loops, avoiding
@@ -207,7 +208,7 @@ impl FacetBvh {
 
     /// Argmin sibling of the min sweep: the nearest `(probe vertex,
     /// projection)` pair from a full-point probe stream to the linework.
-    /// Safe squares use SIMD facet bounds; other exponents use distance space.
+    /// Directed box bounds reject candidates before exact segment selection.
     /// Winning segments retain their full source ordinates.
     pub(crate) fn nearest_to_points<const SQUARED: bool>(
         &self,
@@ -223,7 +224,6 @@ impl FacetBvh {
                 linework,
                 probe,
                 f64::INFINITY,
-                f64::INFINITY,
                 keep,
                 &mut stack,
                 best,
@@ -236,7 +236,6 @@ impl FacetBvh {
         &self,
         linework: &PreparedLinework,
         probe: Point,
-        upper_bound: f64,
         tolerance: f64,
         keep: &impl Fn(Point, Segment) -> bool,
         stack: &mut Vec<u32>,
@@ -245,7 +244,6 @@ impl FacetBvh {
         self.nearest_point_with_stack_and_ordinal::<SQUARED, BOUNDED>(
             linework,
             probe,
-            upper_bound,
             tolerance,
             &|point, _, segment| keep(point, segment),
             stack,
@@ -257,28 +255,42 @@ impl FacetBvh {
         &self,
         linework: &PreparedLinework,
         probe: Point,
-        upper_bound: f64,
         tolerance: f64,
         keep: &impl Fn(Point, usize, Segment) -> bool,
         stack: &mut Vec<u32>,
         best: &mut Option<NearestCandidate>,
     ) -> crate::error::Result<bool> {
         let mut changed_any = false;
+        let upper_bound = if BOUNDED && SQUARED {
+            if tolerance == 0.0 {
+                0.0
+            } else {
+                (tolerance * tolerance).next_up()
+            }
+        } else {
+            f64::INFINITY
+        };
         let probe_aabb = point_aabb(probe.x, probe.y);
         let bound = |aabb: [f64; 4]| {
             if SQUARED {
-                aabb_distance_squared(aabb, probe_aabb)
+                aabb_distance_squared_lower(aabb, probe_aabb)
             } else {
-                aabb_distance(aabb, probe_aabb)
+                aabb_distance_lower(aabb, probe_aabb)
             }
         };
         let mut distance_limit = if SQUARED {
             upper_bound
         } else {
-            best.as_ref()
+            let incumbent = best
+                .as_ref()
                 .map(|best| best.distance_key.distance_upper_bound())
                 .transpose()?
-                .unwrap_or(upper_bound)
+                .unwrap_or(f64::INFINITY);
+            if BOUNDED {
+                tolerance.min(incumbent)
+            } else {
+                incumbent
+            }
         };
         stack.clear();
         stack.push(0);
@@ -302,29 +314,21 @@ impl FacetBvh {
             match self.decode_node(index) {
                 BvhNode::Leaf(facet_index) => {
                     let facet = facet_for_leaf(linework, facet_index);
-                    let facet_distance = if SQUARED {
-                        linework.facet_point_distance_squared(facet, probe.x, probe.y)?
-                    } else {
-                        linework.facet_point_distance(facet, probe)?
-                    };
-                    if facet_distance <= limit {
-                        let changed = refine_facet_nearest_with_ordinal::<BOUNDED>(
-                            linework,
-                            facet,
-                            probe,
-                            upper_bound,
-                            tolerance,
-                            keep,
-                            best,
-                        )?;
-                        changed_any |= changed;
-                        if !SQUARED && changed {
-                            distance_limit = best
-                                .as_ref()
-                                .expect("refinement improved the nearest candidate")
-                                .distance_key
-                                .distance_upper_bound()?;
-                        }
+                    let changed = refine_facet_nearest_with_ordinal::<BOUNDED>(
+                        linework, facet, probe, tolerance, keep, best,
+                    )?;
+                    changed_any |= changed;
+                    if !SQUARED && changed {
+                        let incumbent = best
+                            .as_ref()
+                            .expect("refinement improved the nearest candidate")
+                            .distance_key
+                            .distance_upper_bound()?;
+                        distance_limit = if BOUNDED {
+                            tolerance.min(incumbent)
+                        } else {
+                            incumbent
+                        };
                     }
                 },
                 BvhNode::Internal(first_child) => {
@@ -374,7 +378,6 @@ pub(in crate::geometry::facet_bvh::engine) fn refine_facet_nearest<const BOUNDED
     linework: &PreparedLinework,
     facet: Facet,
     probe: Point,
-    upper_bound: f64,
     tolerance: f64,
     keep: &impl Fn(Point, Segment) -> bool,
     best: &mut Option<NearestCandidate>,
@@ -383,7 +386,6 @@ pub(in crate::geometry::facet_bvh::engine) fn refine_facet_nearest<const BOUNDED
         linework,
         facet,
         probe,
-        upper_bound,
         tolerance,
         &|probe, _, segment| keep(probe, segment),
         best,
@@ -394,7 +396,6 @@ fn refine_facet_nearest_with_ordinal<const BOUNDED: bool>(
     linework: &PreparedLinework,
     facet: Facet,
     probe: Point,
-    upper_bound: f64,
     tolerance: f64,
     keep: &impl Fn(Point, usize, Segment) -> bool,
     best: &mut Option<NearestCandidate>,
@@ -409,19 +410,227 @@ fn refine_facet_nearest_with_ordinal<const BOUNDED: bool>(
             continue;
         }
         let selection = point_segment_selection(probe.xy(), segment)?;
-        if BOUNDED && selection.distance_squared > upper_bound {
-            continue;
-        }
         if BOUNDED
-            && (selection.distance() > tolerance
-                || tolerance == 0.0
-                    && !selection
-                        .distance_key(probe.xy(), segment)
-                        .is_exact_zero()?)
+            && !selection
+                .distance_key(probe.xy(), segment)
+                .within_distance(tolerance)?
         {
             continue;
         }
         changed |= update_nearest_candidate!(&selection, probe, segment, || ordinal, best,)?;
     }
     Ok(changed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::numerics::product::exact_power_of_two;
+    use crate::geometry::{CoordSeq, CoordinateAxes, MOrdinate, ZOrdinate};
+
+    #[rstest::rstest]
+    #[case::tail(7)]
+    #[case::full(8)]
+    #[case::full_and_tail(9)]
+    #[case::below_tree(63)]
+    #[case::tree(64)]
+    #[case::above_tree(65)]
+    fn exact_nearest_refines_facets_before_selecting_source(
+        #[case] segments: u32,
+        #[values(false, true)] tree: bool,
+        #[values(false, true)] squared: bool,
+        #[values(-700, 0, 600)] exponent: i32,
+        #[values(false, true)] reversed: bool,
+    ) {
+        let scale = exact_power_of_two(exponent);
+        let delta = exact_power_of_two(-60) * scale;
+        let near: Vec<_> = (1..=9)
+            .map(|i| Point::new_raw_xy(scale, f64::from(i) * delta))
+            .collect();
+        let mut contact: Vec<_> = (0..=segments)
+            .map(|i| {
+                let x = 49.0 * f64::from(i);
+                Point::new_raw_axes(
+                    x * scale,
+                    0.0,
+                    ZOrdinate(Some(x + 100.0)),
+                    MOrdinate(Some(2.0 * x + 200.0)),
+                )
+            })
+            .collect();
+        if reversed {
+            contact.reverse();
+        }
+        let work = PreparedLinework::from_chains(vec![
+            CoordSeq::try_from_points(&near).unwrap(),
+            CoordSeq::try_from_points(&contact).unwrap(),
+        ])
+        .unwrap();
+        let probe = Point::new_raw_xy(scale, 0.0);
+        let mut best = None;
+        let keep = |_, _| true;
+        if tree {
+            let bvh = FacetBvh::build(&work).unwrap();
+            if squared {
+                bvh.nearest_to_points::<true>(&work, std::iter::once(probe), &keep, &mut best)
+            } else {
+                bvh.nearest_to_points::<false>(&work, std::iter::once(probe), &keep, &mut best)
+            }
+        } else if squared {
+            work.nearest_to_points::<true>(std::iter::once(probe), &keep, &mut best)
+        } else {
+            work.nearest_to_points::<false>(std::iter::once(probe), &keep, &mut best)
+        }
+        .unwrap();
+        let winner = best.unwrap();
+        let expected = if reversed {
+            (segments as usize).wrapping_add(7)
+        } else {
+            8
+        };
+        assert_eq!(winner.segment_ordinal(), Some(expected));
+        assert!(winner.distance_key.is_exact_zero().unwrap());
+        let (point, _) = winner
+            .target_point::<true>(&work, CoordinateAxes::XYZM)
+            .unwrap();
+        assert_eq!(point.x, scale);
+        assert_eq!(point.y, 0.0);
+        assert_eq!(point.z(), Some(101.0));
+        assert_eq!(point.m(), Some(202.0));
+    }
+
+    #[rstest::rstest]
+    #[case::exact_contact(0.0, 0.0, true)]
+    #[case::positive_equality(1.0, 1.0, true)]
+    #[case::positive_inside(1.0_f64.next_down(), 1.0, true)]
+    #[case::positive_outside(1.0_f64.next_up(), 1.0, false)]
+    #[case::subnormal_equality(f64::from_bits(7), f64::from_bits(7), true)]
+    #[case::subnormal_outside(f64::from_bits(8), f64::from_bits(7), false)]
+    #[case::nonzero_at_zero(f64::from_bits(1), 0.0, false)]
+    #[case::huge_equality(1e200, 1e200, true)]
+    fn bounded_nearest_uses_closed_exact_distance_cutoff(
+        #[case] offset: f64,
+        #[case] tolerance: f64,
+        #[case] accepted: bool,
+        #[values(false, true)] squared: bool,
+    ) {
+        let points: Vec<_> = (0..=8)
+            .map(|i| Point::new_raw_xy(49.0 * f64::from(i), 0.0))
+            .collect();
+        let work = PreparedLinework::from_chains(vec![CoordSeq::try_from_points(&points).unwrap()])
+            .unwrap();
+        let bvh = FacetBvh::build(&work).unwrap();
+        let mut stack = Vec::new();
+        let mut best = None;
+        let probe = Point::new_raw_xy(1.0, offset);
+        if squared {
+            bvh.nearest_point_with_stack::<true, true>(
+                &work,
+                probe,
+                tolerance,
+                &|_, _| true,
+                &mut stack,
+                &mut best,
+            )
+        } else {
+            bvh.nearest_point_with_stack::<false, true>(
+                &work,
+                probe,
+                tolerance,
+                &|_, _| true,
+                &mut stack,
+                &mut best,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            best.as_ref().map(NearestCandidate::segment_ordinal),
+            accepted.then_some(Some(0))
+        );
+    }
+
+    #[rstest::rstest]
+    fn bounded_nearest_rejects_distance_rounding_to_the_cutoff(
+        #[values(false, true)] squared: bool,
+    ) {
+        let points = [
+            Point::new_raw_xy(1.0, exact_power_of_two(-27)),
+            Point::new_raw_xy(49.0, 1.0),
+        ];
+        let work = PreparedLinework::from_chains(vec![CoordSeq::try_from_points(&points).unwrap()])
+            .unwrap();
+        let bvh = FacetBvh::build(&work).unwrap();
+        let mut stack = Vec::new();
+        let mut best = None;
+        let probe = Point::new_raw_xy(0.0, 0.0);
+        // The nearest endpoint's exact square is 1 + 2^-54, above the
+        // cutoff even though both its squared magnitude and distance round to 1.
+        if squared {
+            bvh.nearest_point_with_stack::<true, true>(
+                &work,
+                probe,
+                1.0,
+                &|_, _| true,
+                &mut stack,
+                &mut best,
+            )
+        } else {
+            bvh.nearest_point_with_stack::<false, true>(
+                &work,
+                probe,
+                1.0,
+                &|_, _| true,
+                &mut stack,
+                &mut best,
+            )
+        }
+        .unwrap();
+        assert!(best.is_none());
+    }
+
+    #[rstest::rstest]
+    fn nearest_keeps_interior_and_source_order_ties_across_facets(
+        #[values(false, true)] tree: bool,
+        #[values(false, true)] squared: bool,
+    ) {
+        let endpoint = [Point::new_raw_xy(1.0, 1.0); 2];
+        let upper: Vec<_> = (0..=8)
+            .map(|i| Point::new_raw_xy(49.0 * f64::from(i), 1.0))
+            .collect();
+        let lower: Vec<_> = (0..=8)
+            .map(|i| Point::new_raw_xy(49.0 * f64::from(i), -1.0))
+            .collect();
+        let work = PreparedLinework::from_chains(vec![
+            CoordSeq::try_from_points(&endpoint).unwrap(),
+            CoordSeq::try_from_points(&upper).unwrap(),
+            CoordSeq::try_from_points(&lower).unwrap(),
+        ])
+        .unwrap();
+        let probe = Point::new_raw_xy(1.0, 0.0);
+        let mut best = None;
+        if tree {
+            let bvh = FacetBvh::build(&work).unwrap();
+            if squared {
+                bvh.nearest_to_points::<true>(
+                    &work,
+                    std::iter::once(probe),
+                    &|_, _| true,
+                    &mut best,
+                )
+            } else {
+                bvh.nearest_to_points::<false>(
+                    &work,
+                    std::iter::once(probe),
+                    &|_, _| true,
+                    &mut best,
+                )
+            }
+        } else if squared {
+            work.nearest_to_points::<true>(std::iter::once(probe), &|_, _| true, &mut best)
+        } else {
+            work.nearest_to_points::<false>(std::iter::once(probe), &|_, _| true, &mut best)
+        }
+        .unwrap();
+        assert_eq!(best.unwrap().segment_ordinal(), Some(1));
+    }
 }

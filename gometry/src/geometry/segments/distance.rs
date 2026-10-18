@@ -375,6 +375,19 @@ pub(in crate::geometry) fn clearance_aabb_filter(
 }
 
 impl SquaredDistanceKey {
+    /// Closed distance cutoff on source coordinates, without rounded projection.
+    pub(in crate::geometry) fn within_distance(&self, tolerance: f64) -> Result<bool> {
+        debug_assert!(tolerance >= 0.0);
+        if tolerance == 0.0 {
+            return self.is_exact_zero();
+        }
+        if tolerance.is_infinite() {
+            return Ok(true);
+        }
+        let cutoff = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tolerance, 0.0));
+        Ok(!self.cmp_distance(&cutoff)?.is_gt())
+    }
+
     pub(in crate::geometry) fn cmp_distance(&self, other: &Self) -> Result<Ordering> {
         if let Some(order) = self.filter.disjoint_cmp(other.filter) {
             return Ok(order);
@@ -895,7 +908,6 @@ pub(crate) fn point_segment_selection(
             ..
         } => PointSegmentSelection {
             distance: measurement_squared.sqrt(),
-            distance_squared: measurement_squared,
             filter,
             witness_kind,
             projection,
@@ -922,11 +934,6 @@ pub(crate) fn point_segment_selection(
             };
             PointSegmentSelection {
                 distance,
-                distance_squared: if squared.is_finite() {
-                    squared
-                } else {
-                    f64::INFINITY
-                },
                 filter: if squared_norm_is_trustworthy(squared, false) {
                     SquaredDistanceFilter::source_squared(squared, 16.0 * (f64::EPSILON / 2.0))
                 } else {
