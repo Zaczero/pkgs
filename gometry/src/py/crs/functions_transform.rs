@@ -274,7 +274,10 @@ pub(crate) fn crs_transform(
     drain_accuracy_warning(py, &execution)?;
     let output = output.map_err(|error| match error {
         TransformOutputError::SizeOverflow => {
-            GeometryError::new_err("coordinate matrix size overflows usize")
+            crate::error::Error::from(crate::error::ResourceError::SizeOverflowContext(
+                "coordinate matrix size overflows usize",
+            ))
+            .into()
         },
         TransformOutputError::Allocation(error) => {
             pyo3::exceptions::PyMemoryError::new_err(error.to_string())
