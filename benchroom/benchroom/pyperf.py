@@ -22,8 +22,9 @@ def load(path: str | Path, *, name: str | None = None) -> tuple[Series, ...]:
     suite: Any = pyperf.BenchmarkSuite.load(str(path))  # pyright: ignore[reportUnknownMemberType]
     result: list[Series] = []
     for benchmark in suite:
-        if benchmark.get_unit() != 'second':
-            raise ValueError('pyperf timing import requires seconds')
+        unit = benchmark.get_unit()
+        if unit != 'second':
+            raise ValueError(f"benchmark unit must be 'second', got {unit!r} in {path}")
         values = tuple(
             statistics.fmean(run.values) for run in benchmark.get_runs() if run.values
         )

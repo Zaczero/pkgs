@@ -1,3 +1,6 @@
+import re
+
+import pytest
 from numpy.testing import assert_array_equal
 
 from benchroom import Series
@@ -23,3 +26,25 @@ def test_curves_order_by_measured_x_without_fitting():
     )
     (line,) = figure.axes[0].lines
     assert_array_equal(line.get_xydata(), [[10, 2], [50, 5], [100, 8]])
+
+
+def test_distribution_requires_series():
+    with pytest.raises(ValueError, match='series must not be empty'):
+        distribution([], title='Request latency', unit='seconds')
+
+
+@pytest.mark.parametrize(
+    ('values', 'message'),
+    [
+        pytest.param({}, 'values must not be empty', id='empty-values'),
+        pytest.param(
+            {'A': {}},
+            "values for series 'A' must not be empty",
+            id='empty-series',
+        ),
+    ],
+)
+def test_curves_name_empty_measurements(values, message):
+    with pytest.raises(ValueError, match=re.escape(message)) as caught:
+        curves(values, title='Input scaling', xlabel='Items', ylabel='ms')
+    assert str(caught.value) == message

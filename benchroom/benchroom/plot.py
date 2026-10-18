@@ -93,7 +93,7 @@ def distribution(
     mix the two in one plot.
     """
     if not series:
-        raise ValueError('distribution requires at least one series')
+        raise ValueError('series must not be empty')
     figure = _figure(title, unit, 'Observations at or below this value', dark)
     axes = figure.axes[0]
     for index, item in enumerate(series):
@@ -129,8 +129,11 @@ def curves(
     connected with straight lines; no fitted model or smooth density is
     inferred. The returned figure exposes ordinary Matplotlib axis controls.
     """
-    if not values or any(not points for points in values.values()):
-        raise ValueError('curves require nonempty measured series')
+    if not values:
+        raise ValueError('values must not be empty')
+    for name, points in values.items():
+        if not points:
+            raise ValueError(f'values for series {name!r} must not be empty')
     figure = _figure(title, xlabel, ylabel, dark)
     axes = figure.axes[0]
     for index, (name, points) in enumerate(values.items()):

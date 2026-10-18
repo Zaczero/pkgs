@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from benchroom import bootstrap_interval, median_interval, percentile
@@ -42,7 +44,43 @@ def test_paired_resampling_keeps_shared_variation():
     ) == (2, 2)
 
 
-@pytest.mark.parametrize('values', [[], [1, 2]])
-def test_invalid_percentile_rejected(values):
-    with pytest.raises(ValueError, match=r'at least one value|between zero and one'):
-        percentile(values, 1.5)
+@pytest.mark.parametrize(
+    ('values', 'fraction', 'message'),
+    [
+        pytest.param([], 0.5, 'values must not be empty', id='empty-values'),
+        pytest.param(
+            [1, 2],
+            -0.5,
+            'fraction must be between 0 and 1, got -0.5',
+            id='fraction-below-range',
+        ),
+        pytest.param(
+            [1, 2],
+            1.5,
+            'fraction must be between 0 and 1, got 1.5',
+            id='fraction-above-range',
+        ),
+    ],
+)
+def test_invalid_percentile_names_the_input(values, fraction, message):
+    with pytest.raises(ValueError, match=re.escape(message)) as caught:
+        percentile(values, fraction)
+    assert str(caught.value) == message
+
+
+def test_empty_median_interval_names_values():
+    with pytest.raises(ValueError, match='values must not be empty'):
+        median_interval([])
+
+
+@pytest.mark.parametrize(
+    ('size', 'samples', 'message'),
+    [
+        pytest.param(0, 5, 'size must be at least 1, got 0', id='empty-size'),
+        pytest.param(3, 0, 'samples must be at least 1, got 0', id='empty-samples'),
+    ],
+)
+def test_invalid_bootstrap_names_the_parameter(size, samples, message):
+    with pytest.raises(ValueError, match=re.escape(message)) as caught:
+        bootstrap_interval(size, lambda _indexes: 1.0, samples=samples)
+    assert str(caught.value) == message

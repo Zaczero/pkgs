@@ -32,8 +32,13 @@ class Series:
     x: float | None = None
 
     def __post_init__(self) -> None:
-        if not self.values or any(not math.isfinite(value) for value in self.values):
-            raise ValueError('series requires nonempty finite measurements')
+        if not self.values:
+            raise ValueError('values must not be empty')
+        for value in self.values:
+            if not math.isfinite(value):
+                raise ValueError(
+                    f'values must contain only finite measurements, got {value!r}'
+                )
 
     @property
     def median(self) -> float:
@@ -75,12 +80,17 @@ class Report:
 
     def __post_init__(self, series: tuple[Series, ...]) -> None:
         if not series:
-            raise ValueError('report requires at least one series')
+            raise ValueError('series must not be empty')
         if self.better not in {'lower', 'higher'}:
-            raise ValueError('better must be lower or higher')
+            raise ValueError(f"better must be 'lower' or 'higher', got {self.better!r}")
         keys = [(item.case, item.name, item.x) for item in series]
-        if len(set(keys)) != len(keys):
-            raise ValueError('duplicate case, implementation and size')
+        seen: set[tuple[str, str, float | None]] = set()
+        for key in keys:
+            if key in seen:
+                raise ValueError(
+                    f'series contains a duplicate (case, name, x) key, got {key!r}'
+                )
+            seen.add(key)
         object.__setattr__(
             self,
             'results',
@@ -101,7 +111,10 @@ class Report:
         """Build an editable Matplotlib comparison figure with 95% intervals."""
         from matplotlib.ticker import EngFormatter
 
-        from benchroom.plot import _COLORS, _figure  # pyright: ignore[reportPrivateUsage]
+        from benchroom.plot import (
+            _COLORS,  # pyright: ignore[reportPrivateUsage]
+            _figure,  # pyright: ignore[reportPrivateUsage]
+        )
 
         colors = _COLORS[dark]
         names = dict.fromkeys(item.name for item in self.results)
@@ -186,7 +199,7 @@ class Report:
         """Write SVG or PNG and an adjacent Markdown table; parents must exist."""
         path = Path(path)
         if path.suffix.lower() not in {'.svg', '.png'}:
-            raise ValueError('chart path must end in .svg or .png')
+            raise ValueError(f"chart path must end in '.svg' or '.png', got {path}")
         figure = self.figure(dark=dark)
         from benchroom.plot import save
 

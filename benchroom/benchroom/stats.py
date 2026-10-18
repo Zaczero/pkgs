@@ -23,9 +23,9 @@ def _exact_distribution_fits(size: int, samples: int) -> bool:
 def percentile(values: Sequence[float], fraction: float) -> float:
     """Return a linearly interpolated percentile; fraction lies in [0, 1]."""
     if not values:
-        raise ValueError('percentile requires at least one value')
+        raise ValueError('values must not be empty')
     if not 0 <= fraction <= 1:
-        raise ValueError('fraction must lie between zero and one')
+        raise ValueError(f'fraction must be between 0 and 1, got {fraction}')
     ordered = sorted(values)
     position = fraction * (len(ordered) - 1)
     lower = math.floor(position)
@@ -52,8 +52,10 @@ def bootstrap_interval(
     use ``samples`` seeded draws. Empty input and nonpositive samples raise
     ValueError.
     """
-    if size < 1 or samples < 1:
-        raise ValueError('bootstrap requires positive size and samples')
+    if size < 1:
+        raise ValueError(f'size must be at least 1, got {size}')
+    if samples < 1:
+        raise ValueError(f'samples must be at least 1, got {samples}')
     if _exact_distribution_fits(size, samples):
         orderings = math.factorial(size)
         weighted = [
@@ -83,7 +85,9 @@ def bootstrap_interval(
 def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, float]:
     """Return a 95% percentile bootstrap interval for independent-run medians."""
     size = len(values)
-    if not size or _exact_distribution_fits(size, _BOOTSTRAP_SAMPLES):
+    if not size:
+        raise ValueError('values must not be empty')
+    if _exact_distribution_fits(size, _BOOTSTRAP_SAMPLES):
         return bootstrap_interval(
             size,
             lambda indexes: statistics.median(values[index] for index in indexes),
