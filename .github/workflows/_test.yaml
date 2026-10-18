@@ -119,13 +119,17 @@ jobs:
           set -euo pipefail
           args=(--locked -p "$CARGO_PACKAGE" --target x86_64-unknown-linux-gnu -Z build-std
             --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Zsanitizer=address"]')
-          cargo nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
-          count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
-          if [[ "$count" == 0 && "$PACKAGE_TYPE" != rust ]]; then
-            echo "::notice::The instrumented package targets contain no Rust tests."
-          else
-            cargo nextest run "${args[@]}"
+          status=0
+          cargo nextest run "${args[@]}" || status=$?
+          if [[ "$status" == 4 && "$PACKAGE_TYPE" != rust ]]; then
+            cargo nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
+            count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
+            if [[ "$count" == 0 ]]; then
+              echo "::notice::The instrumented package targets contain no Rust tests."
+              exit 0
+            fi
           fi
+          exit "$status"
 
   test-miri:
     if: fromJson(inputs.plan).crate != '' && inputs.native-changed
@@ -134,7 +138,8 @@ jobs:
 
     env:
       # File-backed tests use uniquely owned host fixtures.
-      MIRIFLAGS: -Zmiri-disable-isolation
+      # Capture allocation backtraces on local reruns instead of every CI allocation.
+      MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-disable-leak-backtraces
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -167,13 +172,17 @@ jobs:
           PYO3_PYTHON="$(command -v python3)"
           export PYO3_PYTHON
           args=(--locked -p "$CARGO_PACKAGE" --profile default-miri)
-          cargo miri nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
-          count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
-          if [[ "$count" == 0 && "$PACKAGE_TYPE" != rust ]]; then
-            echo "::notice::The interpreted package targets contain no Rust tests."
-          else
-            cargo miri nextest run "${args[@]}"
+          status=0
+          cargo miri nextest run "${args[@]}" || status=$?
+          if [[ "$status" == 4 && "$PACKAGE_TYPE" != rust ]]; then
+            cargo miri nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
+            count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
+            if [[ "$count" == 0 ]]; then
+              echo "::notice::The interpreted package targets contain no Rust tests."
+              exit 0
+            fi
           fi
+          exit "$status"
 
   test:
     if: fromJson(inputs.plan).type != 'rust'
