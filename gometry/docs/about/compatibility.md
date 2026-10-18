@@ -4,19 +4,19 @@ description: gometry runtime, platform, optional-integration, and semantic-versi
 
 # Compatibility & deprecation policy
 
-gometry supports CPython 3.11–3.14 and free-threaded CPython 3.14t.
+gometry supports CPython 3.11–3.15 and free-threaded CPython 3.14t and 3.15t.
 NumPy is required; system GEOS, GDAL, and PROJ installations are not.
 
 ## Runtime and platform matrix
 
 | Surface | Supported |
 | --- | --- |
-| CPython tests | 3.11–3.14 on Linux; 3.14 on macOS, Windows, and Linux aarch64 |
-| Free-threaded CPython tests | 3.14t on Linux |
-| CPython wheels | 3.11–3.14 |
-| Free-threaded CPython wheels | 3.14t |
+| CPython test suite | 3.11–3.15 on Linux x86-64; 3.15 on macOS and Windows |
+| Free-threaded CPython test suite | 3.14t–3.15t on Linux x86-64; 3.15t on macOS and Windows |
+| Optimized CPython wheels | 3.11–3.15, including 3.14t and 3.15t |
+| Generic stable-ABI wheels | CPython 3.15 and newer, standard and free-threaded builds (`abi3` and `abi3t`) |
 | PyPy | Not included in the current test or wheel matrix |
-| Linux | glibc and musl, `x86_64` and `aarch64` |
+| Linux | glibc and musl 1.2 or newer, `x86_64` and `aarch64` |
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |
 
@@ -25,10 +25,20 @@ installation requires NumPy; it does not require system GEOS, GDAL, or PROJ.
 See [Installation](../get-started/installation.md) for CPU requirements and
 optional extras.
 
+Installers prefer a version-specific optimized wheel when one matches the
+interpreter. Generic stable-ABI wheels provide a fallback from CPython 3.15
+onward. Both wheel families cover the listed platforms; each built wheel is
+imported on its target platform before release. Runtime dependencies must also
+support the selected interpreter and platform.
+
 ## Optional integration matrix
 
 Optional dependencies are imported when their adapters are used. Each adapter
 defines how it handles copying, CRS, epochs, and missing rows.
+On Alpine, the `geopandas` and `viz` extras can require source builds of upstream
+dependencies such as Pyogrio and geoarrow-rust-core when matching musllinux
+wheels are unavailable. The core, Arrow, pandas, and Polars installations do not
+require those extras.
 
 | Boundary | Extra and minimum dependency | Supported entry points | Important boundary behavior |
 | --- | --- | --- | --- |

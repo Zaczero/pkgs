@@ -4,7 +4,8 @@ description: Install gometry from PyPI — NumPy is required, with no system GEO
 
 # Installation
 
-Install gometry from PyPI on CPython 3.11–3.14 or free-threaded CPython 3.14t.
+Install gometry from PyPI on CPython 3.11–3.15, including free-threaded CPython
+3.14t and 3.15t.
 
 === "uv"
 
@@ -22,7 +23,7 @@ Install gometry from PyPI on CPython 3.11–3.14 or free-threaded CPython 3.14t.
 
 | Requirement | Detail |
 |---|---|
-| Python | **CPython 3.11–3.14; free-threaded CPython 3.14t.** |
+| Python | See the [supported runtimes and wheel families](../about/compatibility.md#runtime-and-platform-matrix). |
 | Runtime dependencies | **NumPy.** `typing-extensions>=4.15` is also installed when Python is below 3.15. |
 | System libraries | No GEOS, GDAL, or system PROJ. |
 | CPU | **x86_64: x86-64-v2** (roughly 2009 or newer); **arm64: native arm64.** |
@@ -34,6 +35,9 @@ report CPU features, the check does not block import.
 
 Wheels bundle PROJ and its CRS resources. To add regional transformation grids,
 see [Transformation resources](../guide/crs.md#transformation-resources).
+Linux wheels cover both glibc and musl systems, including Alpine with musl 1.2
+or newer. Optional integrations can require source builds when their dependencies
+do not provide matching wheels; see [optional integration compatibility](../about/compatibility.md#optional-integration-matrix).
 
 ## Optional extras
 
