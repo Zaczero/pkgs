@@ -28,7 +28,7 @@ impl PreparedSupport {
             let capacity = shape.segment_count_capacity_hint();
             let mut spans = Vec::new();
             if let Some(capacity) = capacity {
-                let _reservation = spans.try_reserve(capacity);
+                spans.reserve(capacity);
             }
             let mut points = Vec::new();
             shape.try_for_each_segment(|segment| {

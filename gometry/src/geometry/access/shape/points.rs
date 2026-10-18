@@ -4,6 +4,10 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "The coordinate upper bound may greatly exceed the distinct point count."
+)]
 fn reserve_unique_points_capacity(
     capacity: usize,
     seen: &mut HashSet<Point>,
@@ -228,6 +232,10 @@ impl Shape {
     ) -> Result<ControlFlow<B>> {
         let mut seen = crate::collections::try_hash_set()?;
         if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "The coordinate upper bound may greatly exceed the distinct XY point count."
+            )]
             let _reservation = seen.try_reserve(capacity);
         }
         let mut publish = |point| {

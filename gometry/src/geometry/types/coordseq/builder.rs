@@ -28,15 +28,15 @@ impl CoordSeqBuilder {
         }
     }
 
-    /// Best-effort reservation for an optional coordinate-count hint.
+    /// Reserve the admitted coordinate count before publishing the columns.
     pub(crate) fn reserve_hint(&mut self, additional: usize) {
-        let _xs_reservation = self.xs.try_reserve(additional);
-        let _ys_reservation = self.ys.try_reserve(additional);
+        self.xs.reserve(additional);
+        self.ys.reserve(additional);
         if let Some(column) = self.zs.as_mut() {
-            let _zs_reservation = column.try_reserve(additional);
+            column.reserve(additional);
         }
         if let Some(column) = self.ms.as_mut() {
-            let _ms_reservation = column.try_reserve(additional);
+            column.reserve(additional);
         }
     }
 

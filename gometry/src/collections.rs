@@ -385,15 +385,6 @@ mod row_id_sort_tests {
     }
 
     #[test]
-    fn hash_table_try_reserve_reports_unrepresentable_layouts() {
-        let mut map = super::try_hash_map::<u64, u64>().unwrap();
-        assert!(map.try_reserve(usize::MAX).is_err());
-
-        let mut set = super::try_hash_set::<u64>().unwrap();
-        assert!(set.try_reserve(usize::MAX).is_err());
-    }
-
-    #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn collection_entropy_failure_remains_retryable_and_maps_to_os_error() {
         use crate::error::{ErrorKind, ResourceError};

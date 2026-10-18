@@ -257,7 +257,7 @@ impl Distance3dParts {
         let capacity = shape.metric_support_capacity_hint(RunIdentity::Full);
         let mut segments = Vec::new();
         if let Some(capacity) = capacity {
-            let _reservation = segments.try_reserve(capacity);
+            segments.reserve(capacity);
         }
         let outcome: std::ops::ControlFlow<()> =
             shape.for_each_first_support_run(RunIdentity::Full, |run| {

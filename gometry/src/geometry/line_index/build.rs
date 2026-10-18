@@ -137,9 +137,9 @@ impl LineIndex {
         let mut segments = Vec::new();
         let mut prefix = Vec::new();
         if let Some(upper) = upper {
-            let _segments_reservation = segments.try_reserve(upper);
+            segments.reserve(upper);
             if let Some(prefix_capacity) = upper.checked_add(1) {
-                let _prefix_reservation = prefix.try_reserve(prefix_capacity);
+                prefix.reserve(prefix_capacity);
             }
         }
         (segments, prefix)

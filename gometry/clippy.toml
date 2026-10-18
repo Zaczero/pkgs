@@ -1,0 +1,77 @@
+# Clippy loads the nearest config file without merging parent files. Keep the root
+# settings here so package-scoped allocation rules retain the workspace policy.
+absolute-paths-allowed-crates = ["std", "core", "alloc", "pyo3"]
+absolute-paths-max-segments = 3
+# Tests are held to ergonomics, not to the production panic budget.
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-large-stack-frames-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-unwrap-in-tests = true
+allow-useless-vec-in-tests = true
+avoid-breaking-exported-api = false
+check-inconsistent-struct-field-initializers = true
+disallowed-methods = [
+  { path = "slice::sort", reason = "Prefer sort_unstable; stable sorting may allocate and requires a local exception explaining the tie-order requirement." },
+  { path = "slice::sort_by", reason = "Prefer sort_unstable_by; stable sorting may allocate and requires a local exception explaining the tie-order requirement." },
+  { path = "slice::sort_by_key", reason = "Prefer sort_unstable_by_key; stable sorting may allocate and requires a local exception explaining the tie-order requirement." },
+  { path = "slice::sort_by_cached_key", reason = "Cached-key sorting allocates; require a local exception explaining stability and the measured benefit of caching keys." },
+  { path = "std::vec::Vec::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::vec::Vec::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::vec::Vec::try_with_capacity", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::vec::Vec::try_with_capacity_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::vec::Vec::try_shrink_to", reason = "Do not carry ordinary native allocation failures as recoverable errors." },
+  { path = "std::vec::Vec::try_shrink_to_fit", reason = "Do not carry ordinary native allocation failures as recoverable errors." },
+  { path = "std::string::String::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::string::String::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::string::String::try_with_capacity", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::HashMap::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::HashSet::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::VecDeque::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::VecDeque::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::VecDeque::try_with_capacity", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::BinaryHeap::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::collections::BinaryHeap::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::ffi::OsString::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::ffi::OsString::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::path::PathBuf::try_reserve", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::path::PathBuf::try_reserve_exact", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_uninit", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_uninit_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_zeroed", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_zeroed_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_uninit_slice", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_zeroed_slice", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_uninit_slice_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_new_zeroed_slice_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_clone_from_ref", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::boxed::Box::try_clone_from_ref_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new_uninit", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new_uninit_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new_zeroed", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_new_zeroed_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_clone_from_ref", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::rc::Rc::try_clone_from_ref_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new_uninit", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new_uninit_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new_zeroed", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_new_zeroed_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_clone_from_ref", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_clone_from_ref_in", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_pin", reason = "Ordinary native allocation failure is process-fatal." },
+  { path = "std::sync::Arc::try_pin_in", reason = "Ordinary native allocation failure is process-fatal." },
+]
+disallowed-types = [
+  { path = "std::collections::TryReserveError", reason = "Do not carry ordinary native allocation failures as recoverable errors." },
+  { path = "std::alloc::AllocError", reason = "Do not carry ordinary native allocation failures as recoverable errors." },
+]
+too-many-arguments-threshold = 10
+trivial-copy-size-limit = 16

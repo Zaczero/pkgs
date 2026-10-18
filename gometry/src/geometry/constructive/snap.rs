@@ -538,6 +538,10 @@ impl Shape {
         }
         let mut reference_points = Vec::new();
         if let Some(capacity) = reference.point_set_capacity_hint(RunIdentity::XY) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Duplicate XY vertices can make the output much smaller than its coordinate upper bound."
+            )]
             let _reservation = reference_points.try_reserve(capacity);
         }
         let ControlFlow::Continue(()): ControlFlow<Infallible> = reference

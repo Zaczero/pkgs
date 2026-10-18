@@ -118,7 +118,15 @@ pub(crate) fn metric_concave_hull(
                     let mut seen = crate::collections::try_hash_set()?;
                     let mut pairs = Vec::new();
                     if let Some(capacity) = capacity {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "XY deduplication can make these outputs much smaller than the coordinate count."
+                        )]
                         let _seen_reservation = seen.try_reserve(capacity);
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "XY deduplication can make these outputs much smaller than the coordinate count."
+                        )]
                         let _pairs_reservation = pairs.try_reserve(capacity);
                     }
                     let mut point_index = 0_usize;

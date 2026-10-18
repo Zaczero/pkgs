@@ -100,6 +100,10 @@ pub(crate) fn geographic_bounds_chart(
 
 impl Shape {
     /// XY-unique vertices in first-seen order.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
+    )]
     pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
         let mut unique = Vec::new();
         if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
@@ -115,6 +119,10 @@ impl Shape {
 
     /// XY-unique vertices in first-seen order, keeping each survivor's full
     /// coordinates (Z/M and signed-zero spelling).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The source-coordinate upper bound may greatly exceed the deduplicated output."
+    )]
     pub(crate) fn first_seen_xy_vertices(&self) -> crate::error::Result<Vec<Point>> {
         let mut unique = Vec::new();
         if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
@@ -129,6 +137,10 @@ impl Shape {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Iterator size_hint is advisory and can greatly exceed the deduplicated output."
+)]
 pub(crate) fn unique_xy_points<I>(points: I) -> crate::error::Result<Vec<Point>>
 where
     I: IntoIterator,
