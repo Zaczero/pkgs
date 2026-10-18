@@ -219,16 +219,17 @@ impl PreparedPlan {
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
     ) -> Result<Vec<f64>> {
+        let probe_count = probes.size_hint().0;
         let tester = self
             .shape()
             .has_area_parts()
-            .then(|| self.prepare_point_queries(probes.size_hint().0))
+            .then(|| self.prepare_point_queries(probe_count))
             .transpose()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
-        let mut distances = Vec::new();
+        let mut distances = Vec::with_capacity(probe_count);
         point_batch_coverage!(probes, tester, parts, bvh, stack, |point, covered| {
             let distance = if covered {
                 0.0
@@ -312,9 +313,10 @@ impl PreparedPlan {
         probes: impl Iterator<Item = (f64, f64)>,
         distance: f64,
     ) -> Result<Vec<bool>> {
+        let probe_count = probes.size_hint().0;
         if distance == f64::INFINITY {
             let present = !self.shape().is_empty();
-            let mut matches = Vec::new();
+            let mut matches = Vec::with_capacity(probe_count);
             for _ in probes {
                 matches.push(present);
             }
@@ -329,7 +331,7 @@ impl PreparedPlan {
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
-        let mut matches = Vec::new();
+        let mut matches = Vec::with_capacity(probe_count);
         point_batch_coverage!(probes, tester, parts, bvh, stack, |point, covered| {
             let matched = covered
                 || Self::dwithin_point_with_resolved(
