@@ -172,7 +172,8 @@ fn from_latlng_unit_sphere() {
     for (lat, lng) in [(0.5, -1.3), (FRAC_PI_2 / 2., PI), (80_f64.to_radians(), 0.)] {
         let res = Vec3d::from(LatLng::new_unchecked(lat, lng));
         assert_float_eq!(res.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
-        let _ = res.closest_face();
+        let (_, distance) = res.closest_face();
+        assert!(distance.is_finite() && distance >= 0.);
         let _ = res.to_cell(Resolution::Nine);
     }
 }
