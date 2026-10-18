@@ -11,11 +11,9 @@ NumPy is required; system GEOS, GDAL, and PROJ installations are not.
 
 | Surface | Supported |
 | --- | --- |
-| CPython test suite | 3.11–3.15 on Linux x86-64; 3.15 on macOS and Windows |
-| Free-threaded CPython test suite | 3.14t–3.15t on Linux x86-64; 3.15t on macOS and Windows |
 | Optimized CPython wheels | 3.11–3.15, including 3.14t and 3.15t |
 | Generic stable-ABI wheels | CPython 3.15 and newer, standard and free-threaded builds (`abi3` and `abi3t`) |
-| PyPy | Not included in the current test or wheel matrix |
+| PyPy | Not supported |
 | Linux | glibc and musl 1.2 or newer, `x86_64` and `aarch64` |
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |
@@ -27,9 +25,8 @@ optional extras.
 
 Installers prefer a version-specific optimized wheel when one matches the
 interpreter. Generic stable-ABI wheels provide a fallback from CPython 3.15
-onward. Both wheel families cover the listed platforms; each built wheel is
-imported on its target platform before release. Runtime dependencies must also
-support the selected interpreter and platform.
+onward. Both wheel families cover the listed platforms. Runtime dependencies
+must also support the selected interpreter and platform.
 
 ## Optional integration matrix
 
