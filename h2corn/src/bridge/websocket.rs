@@ -454,7 +454,16 @@ impl PyWebSocketSend {
         py: Python<'py>,
         message: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let event = parse_websocket_outbound_event(message).into_pyresult()?;
+        let event = match parse_websocket_outbound_event(message) {
+            Ok(event) => event,
+            Err(err) => {
+                return Err(if self.state.is_closed() || self.tx.is_closed() {
+                    into_pyerr(AsgiError::SendAfterClose)
+                } else {
+                    into_pyerr(err)
+                });
+            },
+        };
         // Validate the accepted subprotocol here rather than in the session.
         // Deferring it let `await send(...)` return successfully and the
         // request fail afterwards, so the application could neither catch the

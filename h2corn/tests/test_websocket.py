@@ -2991,22 +2991,56 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
 
 
 @pytest.mark.parametrize('transport', ['h2', 'http1'])
+@pytest.mark.parametrize(
+    ('message', 'expected_error'),
+    [
+        pytest.param(
+            {'type': 'websocket.send', 'text': 1},
+            TypeError,
+            id='malformed-payload',
+        ),
+        pytest.param({}, ValueError, id='missing-type'),
+        pytest.param(
+            {'type': 'websocket.unsupported'},
+            ValueError,
+            id='unsupported-type',
+        ),
+    ],
+)
 async def test_websocket_send_after_disconnect_raises_oserror(
     transport: str,
+    message: dict[str, object],
+    expected_error: type[Exception],
 ) -> None:
     state = {}
+    try_open_send = asyncio.Event()
+    open_send_finished = asyncio.Event()
 
     async def app(scope, receive, send):
         assert scope['type'] == 'websocket'
         assert (await receive()) == {'type': 'websocket.connect'}
         await send({'type': 'websocket.accept', 'headers': []})
+        await try_open_send.wait()
+        try:
+            await send(message)
+        except Exception as exc:
+            state['send_while_open'] = type(exc)
+        else:
+            state['send_while_open'] = None
+        open_send_finished.set()
         state['disconnect'] = await receive()
         try:
-            await send({'type': 'websocket.send', 'text': 'late'})
-        except OSError:
-            state['send_after_close'] = 'oserror'
+            await send(message)
+        except Exception as exc:
+            state['send_after_close'] = type(exc)
         else:
-            state['send_after_close'] = 'allowed'
+            state['send_after_close'] = None
+        try:
+            await send({'type': 'websocket.send', 'text': 'late'})
+        except OSError as exc:
+            state['valid_send_after_close'] = type(exc)
+        else:
+            state['valid_send_after_close'] = None
 
     config = Config(port=0)
     async with running_server(app, config) as server:
@@ -3025,6 +3059,8 @@ async def test_websocket_send_after_disconnect_raises_oserror(
                 path='/ws',
             )
             assert handshake.terminal is None
+            try_open_send.set()
+            await asyncio.wait_for(open_send_finished.wait(), timeout=5)
             conn.send_data(
                 stream_id,
                 _encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')),
@@ -3036,6 +3072,8 @@ async def test_websocket_send_after_disconnect_raises_oserror(
                 port=server_port(server),
                 path='/ws',
             )
+            try_open_send.set()
+            await asyncio.wait_for(open_send_finished.wait(), timeout=5)
             writer.write(_encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')))
         await writer.drain()
         try:
@@ -3048,10 +3086,12 @@ async def test_websocket_send_after_disconnect_raises_oserror(
             writer.close()
             await writer.wait_closed()
 
-    assert state == {
-        'disconnect': {'type': 'websocket.disconnect', 'code': 1000},
-        'send_after_close': 'oserror',
-    }
+    assert state['disconnect'] == {'type': 'websocket.disconnect', 'code': 1000}
+    assert state['send_while_open'] is expected_error
+    assert state['send_after_close'] is not None
+    assert issubclass(state['send_after_close'], OSError)
+    assert state['valid_send_after_close'] is not None
+    assert issubclass(state['valid_send_after_close'], OSError)
 
 
 async def test_websocket_rejects_rsv1_frames_without_extensions() -> None:

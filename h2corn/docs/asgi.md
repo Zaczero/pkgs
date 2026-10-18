@@ -80,16 +80,25 @@ namespace and to every other request.
 
 ## What `send()` raises
 
-`h2corn` validates each outbound message at `await send(message)`.
+`h2corn` checks an outbound message's shape and values at `await send(message)`. Response or
+WebSocket driver failures discovered after queueing terminate that response or session instead of
+being raised from that `send()` call.
 
 | Exception | Raised for |
 | --------- | ---------- |
 | `TypeError` | A field of the wrong Python type. |
 | `ValueError` | A malformed value: an unsupported message type, a missing required field, an invalid response header or trailer field, a non-final or non-three-digit status, an invalid WebSocket close value, an empty accepted subprotocol, or a `websocket.send` setting neither or both payload fields. |
-| `RuntimeError` | An invalid message sequence — a body before `http.response.start`, `http.response.pathsend` mixed with a body, trailers at the wrong point, an unexpected WebSocket event. Also a handshake that timed out, a compression failure, or an application that ended before completing its response. |
-| `OSError` | `send()` called after the stream has closed. |
+| `RuntimeError` | An invalid message sequence — a body before `http.response.start`, `http.response.pathsend` mixed with a body, or trailers at the wrong point. The response driver may detect it after the message was queued, so it is not necessarily catchable around that message's `send()`. |
+| `OSError` | `send()` called after the stream has closed, even if the message is malformed. |
 
 An exception raised by the application itself propagates unchanged.
+
+Driver outcomes include a WebSocket handshake timeout, compression failure, an unexpected session
+event, or an application returning before completing an HTTP response; they are not exceptions
+raised from an earlier `send()` call. A failed handshake ends with an HTTP error response; an
+accepted-session failure terminates the WebSocket session and may abort the application. A peer
+close is delivered to an accepted application as `websocket.disconnect`. `http.response.pathsend`
+maps a missing file to `404` and a permission failure or non-regular file to `403`.
 
 `ValueError` also covers a `websocket.accept` that names a subprotocol the client did not offer, or
 that carries a header the handshake owns. Both are raised from the `send()` call that supplied them,
