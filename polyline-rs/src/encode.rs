@@ -1,21 +1,6 @@
-use pyo3::prelude::*;
-
-use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, precision_scale};
+use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, PrecisionScale};
 use crate::errors::PolylineError;
 use crate::zigzag::zigzag_encode;
-
-fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, f64)> {
-    let mut it = coord.try_iter()?;
-
-    let first = it
-        .next()
-        .ok_or(PolylineError::CoordinateMustContain2Values { index })??;
-    let second = it
-        .next()
-        .ok_or(PolylineError::CoordinateMustContain2Values { index })??;
-
-    Ok((first.extract()?, second.extract()?))
-}
 
 fn encode_value(out: &mut Vec<u8>, delta: i32) {
     let mut value = zigzag_encode(delta);
@@ -51,21 +36,28 @@ fn encode_coordinate(
     Ok(current)
 }
 
-pub(crate) fn encode<const LATLON: bool>(
-    coordinates: &Bound<'_, PyAny>,
-    precision: i32,
-) -> PyResult<String> {
-    let scale =
-        precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
+pub(crate) struct Encoder {
+    out: Vec<u8>,
+    scale: f64,
+    last_lat: i32,
+    last_lon: i32,
+}
 
-    let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
-    let mut out = Vec::with_capacity(capacity);
-    let mut last_lat = 0;
-    let mut last_lon = 0;
+impl Encoder {
+    pub(crate) fn new(scale: &PrecisionScale, capacity: usize) -> Self {
+        Self {
+            out: Vec::with_capacity(capacity),
+            scale: scale.scale,
+            last_lat: 0,
+            last_lon: 0,
+        }
+    }
 
-    for (index, coord) in coordinates.try_iter()?.enumerate() {
-        let coord = coord?;
-        let (first, second) = extract_coord_pair(&coord, index)?;
+    pub(crate) fn push<const LATLON: bool>(
+        &mut self,
+        (first, second): (f64, f64),
+        index: usize,
+    ) -> Result<(), PolylineError> {
         let (lat_f, lon_f) = if LATLON {
             (first, second)
         } else {
@@ -73,10 +65,27 @@ pub(crate) fn encode<const LATLON: bool>(
         };
 
         // `f64::round` preserves this codec's half-away-from-zero rule.
-        last_lat = encode_coordinate(&mut out, lat_f, scale.scale, last_lat, index, "latitude")?;
-        last_lon = encode_coordinate(&mut out, lon_f, scale.scale, last_lon, index, "longitude")?;
+        self.last_lat = encode_coordinate(
+            &mut self.out,
+            lat_f,
+            self.scale,
+            self.last_lat,
+            index,
+            "latitude",
+        )?;
+        self.last_lon = encode_coordinate(
+            &mut self.out,
+            lon_f,
+            self.scale,
+            self.last_lon,
+            index,
+            "longitude",
+        )?;
+        Ok(())
     }
 
-    // Safety: all bytes are ASCII.
-    Ok(unsafe { String::from_utf8_unchecked(out) })
+    pub(crate) fn finish(self) -> String {
+        // Safety: all bytes are ASCII.
+        unsafe { String::from_utf8_unchecked(self.out) }
+    }
 }

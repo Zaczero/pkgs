@@ -1,6 +1,3 @@
-use pyo3::prelude::*;
-use pyo3::types::PyList;
-
 use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, precision_scale};
 use crate::errors::PolylineError;
 use crate::zigzag::zigzag_decode;
@@ -60,18 +57,17 @@ fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError
     Ok(zigzag_decode(value))
 }
 
-pub(crate) fn decode<'py, const LATLON: bool>(
-    py: Python<'py>,
+pub(crate) fn decode<const LATLON: bool>(
     line: &str,
     precision: i32,
-) -> PyResult<Bound<'py, PyList>> {
+) -> Result<Vec<(f64, f64)>, PolylineError> {
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
 
-    let mut cursor = DecodeCursor::new(line.as_bytes());
+    let mut cursor = DecodeCursor::new(line.trim().as_bytes());
     let mut last_lat = 0_i32;
     let mut last_lon = 0_i32;
-    let out = PyList::empty(py);
+    let mut out = Vec::new();
 
     while !cursor.is_empty() {
         let coord_index = cursor.index();
@@ -92,7 +88,7 @@ pub(crate) fn decode<'py, const LATLON: bool>(
 
         let lat = f64::from(last_lat) * scale.inverse_scale;
         let lon = f64::from(last_lon) * scale.inverse_scale;
-        out.append(if LATLON { (lat, lon) } else { (lon, lat) })?;
+        out.push(if LATLON { (lat, lon) } else { (lon, lat) });
     }
 
     Ok(out)
