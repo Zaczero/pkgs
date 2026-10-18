@@ -425,7 +425,11 @@ async def _start_blocked_request_server(
         await send({'type': 'http.response.start', 'status': status, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=0, timeout_graceful_shutdown=2.0)
+    config = Config(
+        port=0,
+        access_log=False,
+        timeout_graceful_shutdown=2.0,
+    )
     server = Server(app, config)
     server_task = asyncio.create_task(server.serve())
     await wait_for_server(server, server_task)

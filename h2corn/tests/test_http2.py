@@ -801,7 +801,7 @@ async def test_lifespan_startup_failure_is_reported() -> None:
         return FailingLifespan()
 
     fastapi_app = FastAPI(lifespan=lifespan)
-    server = Server(fastapi_app, Config(port=0))
+    server = Server(fastapi_app, Config(port=0, access_log=False))
 
     with pytest.raises(RuntimeError, match='boom'):
         await server.serve()

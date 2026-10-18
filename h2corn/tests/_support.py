@@ -360,11 +360,14 @@ _PRODUCTION_GRACEFUL_SHUTDOWN = Config().timeout_graceful_shutdown
 
 
 @asynccontextmanager
-async def running_server(app, config: Config):
+async def running_server(app, config: Config, *, access_log: bool = False):
     # Only when the test expressed no opinion: one that *is* about shutdown
     # timing passes its own value and keeps it.
     if config.timeout_graceful_shutdown == _PRODUCTION_GRACEFUL_SHUTDOWN:
         config = replace(config, timeout_graceful_shutdown=_TEST_GRACEFUL_SHUTDOWN)
+    # pytest's fd capture is a regular file; request logging would start a
+    # process-wide writer that can outlive an individual in-process test.
+    config = replace(config, access_log=access_log)
     server = Server(app, config)
     task = asyncio.create_task(server.serve())
     await wait_for_server(server, task)

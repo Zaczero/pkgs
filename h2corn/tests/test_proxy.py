@@ -1104,7 +1104,7 @@ async def test_untrusted_proxy_protocol_header_is_rejected() -> None:
 
 
 async def test_untrusted_proxy_protocol_configuration_fault_is_reported(
-    captured_stderr,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -1138,7 +1138,7 @@ async def test_untrusted_proxy_protocol_configuration_fault_is_reported(
             except ConnectionResetError:
                 pass
 
-    stderr = captured_stderr.readouterr().err
+    stderr = capfd.readouterr().err
     assert stderr
     assert (
         'connection failed: PROXY protocol requires the connection peer to be trusted'

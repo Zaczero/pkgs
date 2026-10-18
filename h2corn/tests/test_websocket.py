@@ -1209,7 +1209,7 @@ async def test_websocket_single_supported_version_dispatches(
     [_h2_websocket_handshake, _http1_websocket_handshake],
 )
 async def test_websocket_handshake_failure_names_its_cause(
-    handshake, captured_stderr: pytest.CaptureFixture[str]
+    handshake, capfd: pytest.CaptureFixture[str]
 ) -> None:
     """A 500 says why. An operator cannot act on a status code alone."""
 
@@ -1224,7 +1224,7 @@ async def test_websocket_handshake_failure_names_its_cause(
         status, _headers, _body = await handshake(port=server_port(server), path='/ws')
 
     assert status == 500
-    stderr = captured_stderr.readouterr().err
+    stderr = capfd.readouterr().err
     assert 'request failed:' in stderr, stderr
     assert 'before handshake' in stderr, stderr
 

@@ -587,7 +587,7 @@ async def test_send_after_a_real_response_close_raises(protocol: str) -> None:
 
 
 async def test_an_uncaught_late_send_is_not_reported_as_an_app_failure(
-    captured_stderr: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     """The server must not log the exception the server itself raised.
 
@@ -622,7 +622,7 @@ async def test_an_uncaught_late_send_is_not_reported_as_an_app_failure(
             await writer.wait_closed()
 
     assert (status, body) == (200, b'complete')
-    assert 'request failed:' not in captured_stderr.readouterr().err
+    assert 'request failed:' not in capfd.readouterr().err
 
 
 @pytest.mark.parametrize('protocol', ['h1', 'h2'])

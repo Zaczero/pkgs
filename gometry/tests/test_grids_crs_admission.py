@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 
 import gometry as gm
 import numpy as np
@@ -269,16 +270,24 @@ def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
     # emitted cells.
     from pyproj.transformer import TransformerGroup
 
-    operation = (
-        TransformerGroup(
-            7912,
-            7665,
-            always_xy=True,
-            allow_ballpark=False,
+    # This oracle intentionally accepts PROJ's best available operation when
+    # optional transformation grids are not installed.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='Best transformation is not available',
+            category=UserWarning,
         )
-        .transformers[0]
-        .to_json_dict()
-    )
+        operation = (
+            TransformerGroup(
+                7912,
+                7665,
+                always_xy=True,
+                allow_ballpark=False,
+            )
+            .transformers[0]
+            .to_json_dict()
+        )
     crs = json.dumps({
         'type': 'BoundCRS',
         'source_crs': json.loads(gm.CRS(7912).to_projjson()),

@@ -7,11 +7,12 @@ numeric and the strings are escaped at the formatter.
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 
 import pytest
-from h2corn import Config
 
-from tests._support import http1_request, running_server, server_port
+from tests._support import HANG_BOUND, http1_request
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,32 +27,95 @@ def _json_records(err: str) -> list[dict]:
 
 
 async def _serve_once(
-    log_format: str, target: bytes, *, access_log: bool = True
-) -> None:
-    async def app(scope, receive, send):
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'hello'})
+    log_path: Path,
+    log_format: str,
+    target: bytes,
+    *,
+    access_log: bool = True,
+) -> str:
+    # The process-wide batched sink must finish with the test that produced it.
+    script = f"""
+import asyncio
+import sys
 
-    async with running_server(
+from h2corn import Config, Server
+
+async def app(scope, receive, send):
+    await send({{'type': 'http.response.start', 'status': 200, 'headers': []}})
+    await send({{'type': 'http.response.body', 'body': b'hello'}})
+
+async def main():
+    server = Server(
         app,
-        Config(port=0, access_log=access_log, log_format=log_format, lifespan='off'),
-    ) as server:
-        await http1_request(
-            port=server_port(server),
-            request=b'GET '
-            + target
-            + b' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+        Config(
+            port=0,
+            access_log={access_log!r},
+            log_format={log_format!r},
+            lifespan='off',
+        ),
+    )
+    serving = asyncio.create_task(server.serve())
+    await server.wait_started()
+    print(server.addresses[0], flush=True)
+    await asyncio.to_thread(sys.stdin.buffer.read)
+    server.shutdown()
+    await serving
+
+asyncio.run(main())
+"""
+    with log_path.open('wb') as stderr:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            '-c',
+            script,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr,
         )
-    # The sink batches; give its writer a turn before reading the capture.
-    await asyncio.sleep(0.1)
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            address = await asyncio.wait_for(
+                process.stdout.readline(),
+                timeout=HANG_BOUND,
+            )
+            assert address, (
+                'server exited before reporting its address: '
+                f'{log_path.read_text(encoding="utf-8")}'
+            )
+            port = int(address.decode().rsplit(':', 1)[1])
+            await http1_request(
+                port=port,
+                request=b'GET '
+                + target
+                + b' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+            )
+        finally:
+            process.stdin.close()
+            try:
+                await process.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=HANG_BOUND)
+            except TimeoutError:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
+
+    assert process.returncode == 0, log_path.read_text(encoding='utf-8')
+    return log_path.read_text(encoding='utf-8')
 
 
 async def test_json_access_log_emits_one_parsable_record_per_request(
-    captured_stderr: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
-    await _serve_once('json', b'/items?q=1')
+    stderr = await _serve_once(tmp_path / 'server.stderr', 'json', b'/items?q=1')
 
-    records = _json_records(captured_stderr.readouterr().err)
+    records = _json_records(stderr)
+    assert '/items?q=1' not in capfd.readouterr().err
     # The banner is encoded too, so the stream is entirely machine-readable.
     assert [record['event'] for record in records] == [
         'starting',
@@ -76,29 +140,29 @@ async def test_json_access_log_emits_one_parsable_record_per_request(
 
 
 async def test_json_access_log_escapes_a_hostile_target(
-    captured_stderr: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     # A raw quote and backslash reach the log verbatim -- a request target is
     # not required to be percent-encoded on the wire. Unescaped, either one
     # ends the JSON string early and the record stops parsing.
-    await _serve_once('json', rb'/a"b\c')
+    stderr = await _serve_once(tmp_path / 'server.stderr', 'json', rb'/a"b\c')
 
-    requests = [
-        r
-        for r in _json_records(captured_stderr.readouterr().err)
-        if r['event'] == 'request'
-    ]
+    requests = [r for r in _json_records(stderr) if r['event'] == 'request']
     assert len(requests) == 1, requests
     assert requests[0]['target'] == '/a"b\\c'
 
 
 async def test_access_log_off_still_emits_diagnostics(
-    captured_stderr: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
-    await _serve_once('text', b'/quiet', access_log=False)
+    stderr = await _serve_once(
+        tmp_path / 'server.stderr',
+        'text',
+        b'/quiet',
+        access_log=False,
+    )
 
-    err = captured_stderr.readouterr().err
     # No per-request record...
-    assert '/quiet' not in err
+    assert '/quiet' not in stderr
     # ...but the stream is not silenced: diagnostics are a separate axis.
-    assert 'Listening on' in err
+    assert 'Listening on' in stderr

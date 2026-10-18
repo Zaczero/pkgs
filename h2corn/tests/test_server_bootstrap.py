@@ -2284,7 +2284,7 @@ async def test_serve_warns_about_settings_only_a_supervisor_implements(
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
 
-    server = Server(app, Config(port=0, max_requests=100))
+    server = Server(app, Config(port=0, max_requests=100, access_log=False))
     serving = asyncio.create_task(server.serve())
     # Recorded rather than scoped to a `pytest.warns` block: the warning is
     # raised by the serve task, so exactly when it lands relative to any
@@ -2309,7 +2309,7 @@ async def test_wait_started_resolves_when_the_listeners_are_live() -> None:
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
 
-    server = Server(app, Config(port=0))
+    server = Server(app, Config(port=0, access_log=False))
     serving = asyncio.create_task(server.serve())
     await server.wait_started()
     try:
@@ -2333,7 +2333,7 @@ async def test_wait_started_can_be_awaited_before_serve_begins() -> None:
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
 
-    server = Server(app, Config(port=0))
+    server = Server(app, Config(port=0, access_log=False))
     waiting = asyncio.ensure_future(server.wait_started())
     await asyncio.sleep(0)
     serving = asyncio.create_task(server.serve())
@@ -2384,7 +2384,7 @@ async def test_wait_started_does_not_call_a_stopped_server_started() -> None:
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
 
-    server = Server(app, Config(port=0))
+    server = Server(app, Config(port=0, access_log=False))
     serving = asyncio.create_task(server.serve())
     await server.wait_started()
     server.shutdown()
@@ -2407,7 +2407,7 @@ async def test_wait_started_refuses_to_wait_on_a_shutting_down_server() -> None:
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
 
-    server = Server(app, Config(port=0))
+    server = Server(app, Config(port=0, access_log=False))
     serving = asyncio.create_task(server.serve())
     await server.wait_started()
     server.shutdown()
@@ -2435,7 +2435,7 @@ async def test_shutdown_during_claimed_starting_generation() -> None:
     async def app(scope, receive, send):
         raise AssertionError('the test replaces the embedded lifecycle')
 
-    server = Server(app, Config(port=0, lifespan='off'))
+    server = Server(app, Config(port=0, lifespan='off', access_log=False))
 
     class ClaimWindowLock:
         def __init__(self) -> None:
@@ -2522,7 +2522,7 @@ async def test_shutdown_publishes_before_its_lifecycle_loop_can_close(
     async def app(_scope, _receive, _send):
         raise AssertionError('the test replaces the embedded lifecycle')
 
-    server = Server(app, Config(port=0, lifespan='off'))
+    server = Server(app, Config(port=0, lifespan='off', access_log=False))
 
     class PublicationLock:
         def __init__(self) -> None:
@@ -2715,7 +2715,7 @@ async def test_duplicate_serve_does_not_settle_active_generation() -> None:
         startup_entered.set()
         await asyncio.Future()
 
-    server = Server(app, Config(port=0, lifespan='on'))
+    server = Server(app, Config(port=0, lifespan='on', access_log=False))
     serving = asyncio.create_task(server.serve())
     await asyncio.wait_for(startup_entered.wait(), timeout=2)
     waiter_registered = asyncio.Event()
@@ -2783,6 +2783,7 @@ async def test_pre_native_exit_releases_created_listener(
         Config(
             bind=bind,
             lifespan='on',
+            access_log=False,
             timeout_lifespan_startup=0.02 if exit_kind == 'timeout' else 60,
         ),
     )
@@ -2839,7 +2840,11 @@ async def test_pre_native_exit_preserves_borrowed_fd() -> None:
 
         server = Server(
             app,
-            Config(bind=(f'fd://{listener.fileno()}',), lifespan='on'),
+            Config(
+                bind=(f'fd://{listener.fileno()}',),
+                access_log=False,
+                lifespan='on',
+            ),
         )
         with pytest.raises(RuntimeError, match='planned'):
             await asyncio.wait_for(server.serve(), timeout=2)

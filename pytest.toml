@@ -7,9 +7,6 @@ required_plugins = [
 ]
 filterwarnings = [
   "error",
-  # Projection-oracle tests may lack an optional datum grid and then select the
-  # next-best transformation; this warning reflects that environment capability.
-  "ignore:Best transformation is not available:UserWarning",
 ]
 # `--timeout=60` cannot interrupt a native call holding the GIL. Give it another
 # 30 seconds, then retain all thread stacks and terminate the stuck pytest worker.
