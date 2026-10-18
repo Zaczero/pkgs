@@ -266,6 +266,7 @@ pub(super) fn coordinate_vertices(
 
 /// Build a ``Polygon`` from an exterior ring and optional holes.
 pub(crate) fn build_polygon(
+    py: pyo3::Python<'_>,
     shell: Option<&Bound<'_, PyAny>>,
     holes: Option<&Bound<'_, PyAny>>,
     x: Option<&Bound<'_, PyAny>>,
@@ -345,7 +346,7 @@ pub(crate) fn build_polygon(
     let shape = if attached {
         finish()?
     } else {
-        pyo3::Python::attach(|py| py.detach(finish))?
+        py.detach(finish)?
     };
     geometry_with_crs_epoch(shape, crs, epoch)
 }

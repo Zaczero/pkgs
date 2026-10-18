@@ -4,7 +4,7 @@
 //! [`crate::py::functions::constructors`], then attaches the typed leaf marker through
 //! [`PyClassInitializer`].
 
-use pyo3::prelude::{PyClassInitializer, PyResult};
+use pyo3::prelude::{PyClassInitializer, PyResult, Python};
 use pyo3::types::PyDict;
 use pyo3::{Bound, PyAny};
 
@@ -362,6 +362,7 @@ impl PyPolygon {
         text_signature = "(shell=None, holes=None, *, x=None, y=None, z=None, m=None, crs=None, epoch=None)"
     )]
     fn new(
+        py: Python<'_>,
         shell: Option<&Bound<'_, PyAny>>,
         holes: Option<&Bound<'_, PyAny>>,
         x: Option<&Bound<'_, PyAny>>,
@@ -372,7 +373,7 @@ impl PyPolygon {
         epoch: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyClassInitializer<Self>> {
         Ok(leaf_initializer!(build_polygon(
-            shell, holes, x, y, z, m, crs, epoch
+            py, shell, holes, x, y, z, m, crs, epoch
         )?))
     }
 }
@@ -427,6 +428,7 @@ impl PyMultiPoint {
         text_signature = "(coordinates=None, *, x=None, y=None, z=None, m=None, crs=None, epoch=None)"
     )]
     fn new(
+        py: Python<'_>,
         coordinates: Option<&Bound<'_, PyAny>>,
         x: Option<&Bound<'_, PyAny>>,
         y: Option<&Bound<'_, PyAny>>,
@@ -436,6 +438,7 @@ impl PyMultiPoint {
         epoch: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyClassInitializer<Self>> {
         Ok(leaf_initializer!(build_multi_point(
+            py,
             coordinates,
             x,
             y,
@@ -490,12 +493,13 @@ impl PyMultiLineString {
         text_signature = "(lines=None, *, crs=None, epoch=None)"
     )]
     fn new(
+        py: Python<'_>,
         lines: Option<&Bound<'_, PyAny>>,
         crs: Option<&Bound<'_, PyAny>>,
         epoch: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyClassInitializer<Self>> {
         Ok(leaf_initializer!(build_multi_line_string(
-            lines, crs, epoch
+            py, lines, crs, epoch
         )?))
     }
 }
@@ -545,12 +549,13 @@ impl PyMultiPolygon {
         text_signature = "(polygons=None, *, crs=None, epoch=None)"
     )]
     fn new(
+        py: Python<'_>,
         polygons: Option<&Bound<'_, PyAny>>,
         crs: Option<&Bound<'_, PyAny>>,
         epoch: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyClassInitializer<Self>> {
         Ok(leaf_initializer!(build_multi_polygon(
-            polygons, crs, epoch
+            py, polygons, crs, epoch
         )?))
     }
 }

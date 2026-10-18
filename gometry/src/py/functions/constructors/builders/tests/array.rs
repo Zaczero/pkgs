@@ -78,6 +78,7 @@ fn polygon_shell_error_precedes_holes_provider_error() {
             .eval(c"(1 / x for x in [0])", None, None)
             .expect("holes provider");
         let error = build_polygon(
+            py,
             Some(&shell),
             Some(&holes),
             None,

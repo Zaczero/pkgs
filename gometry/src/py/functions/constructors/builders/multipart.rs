@@ -118,6 +118,7 @@ fn homogeneous_multipart_axes(
 
 /// Build a ``MultiPoint`` geometry from a coordinate sequence.
 pub(crate) fn build_multi_point(
+    py: pyo3::Python<'_>,
     coordinates: Option<&Bound<'_, PyAny>>,
     x: Option<&Bound<'_, PyAny>>,
     y: Option<&Bound<'_, PyAny>>,
@@ -127,7 +128,7 @@ pub(crate) fn build_multi_point(
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
     let parts = build_multi_point_parts(coordinates, x, y, z, m, crs, epoch)?;
-    pyo3::Python::attach(|py| parts.publish(py))
+    parts.publish(py)
 }
 
 pub(super) fn build_multi_point_parts(
@@ -238,12 +239,13 @@ pub(super) fn dense_multi_point_coordinates(
 
 /// Build a ``MultiLineString`` from a sequence of line coordinate sequences.
 pub(crate) fn build_multi_line_string(
+    py: pyo3::Python<'_>,
     lines: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
     let parts = build_multi_line_string_parts(lines, crs, epoch)?;
-    pyo3::Python::attach(|py| parts.publish(py))
+    parts.publish(py)
 }
 
 pub(super) fn build_multi_line_string_parts(
@@ -343,12 +345,13 @@ fn finish_multi_line_string(members: Vec<Shape>) -> crate::error::Result<Shape> 
 
 /// Build a ``MultiPolygon`` from a sequence of polygons.
 pub(crate) fn build_multi_polygon(
+    py: pyo3::Python<'_>,
     polygons: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
     let parts = build_multi_polygon_parts(polygons, crs, epoch)?;
-    pyo3::Python::attach(|py| parts.publish(py))
+    parts.publish(py)
 }
 
 pub(super) fn build_multi_polygon_parts(
