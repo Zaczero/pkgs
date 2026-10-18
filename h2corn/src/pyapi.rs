@@ -880,9 +880,12 @@ async fn run_serve_task(task: ServeTask) {
             },
         }
     }
+    // Keep the terminal delivery alive until the weak pump upgrades the shard.
+    let delivery_shard = Arc::clone(&main_shard);
     main_shard.push(PumpEvent::Detach {
         fut: resolve_fut,
         payload: ResolvePayload::Simple(Box::new(move |py| {
+            drop(delivery_shard);
             drop(loop_owned);
             result.into_pyresult().map(|()| py.None())
         })),
@@ -1015,7 +1018,7 @@ pub(crate) fn serve_fds<'py>(
 
     // The Python side awaits this duck future; it resolves when the server
     // future completes (shutdown or fatal error).
-    let server_done = match new_rust_future(py, Arc::clone(&main_shard)) {
+    let server_done = match new_rust_future(py, &main_shard) {
         Ok(future) => future,
         Err(err) => {
             drop(app);
@@ -1045,9 +1048,11 @@ pub(crate) fn serve_fds<'py>(
             && let Some(error) = unexpected_join_error(error)
         {
             let message = format!("server task panicked: {error}");
+            let delivery_shard = Arc::clone(&panic_shard);
             panic_shard.push(PumpEvent::Detach {
                 fut: panic_future,
                 payload: ResolvePayload::Simple(Box::new(move |_| {
+                    drop(delivery_shard);
                     Err(PyRuntimeError::new_err(message))
                 })),
             });

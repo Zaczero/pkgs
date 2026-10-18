@@ -1051,10 +1051,15 @@ async fn cancelled_in_flight_receive_requeues_before_a_concurrent_waiter() {
     let resolution: Box<dyn ResolveOp + Send> = Box::new(ReceiveResolve {
         event: first,
         guard: first_guard,
-        build_event: build_http_inbound_event,
+        build_event: super::build_http_inbound_event_ref,
     });
     assert_eq!(pulls.load(Ordering::Relaxed), 1);
     assert!(!flow.has_pending(), "consumption alone retains H2 credit");
+    Python::attach(|py| resolution.convert(py)).expect("event converts before publication");
+    assert!(
+        !flow.has_pending(),
+        "unpublished conversion retains H2 credit"
+    );
 
     let second_state = Arc::clone(&state);
     let (attempted_tx, attempted_rx) = oneshot::channel();

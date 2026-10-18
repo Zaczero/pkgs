@@ -9,6 +9,8 @@ and concurrent streams resolved in one pump batch never trip CPython's
 
 import asyncio
 import contextvars
+import gc
+import weakref
 
 import anyio
 import pytest
@@ -142,6 +144,77 @@ async def test_wait_for_receive_timeout_does_not_lose_body() -> None:
         )
     assert status == 200
     assert seen['body'] == b'late-body'
+
+
+async def test_cancel_message_cycle_is_collected_after_shutdown() -> None:
+    references = []
+    entered = asyncio.Event()
+
+    async def app(scope, receive, send):
+        future = receive()
+        references.append(weakref.ref(future))
+        assert future.cancel(msg=future)
+        entered.set()
+        await _respond(send, b'cancelled')
+
+    async with running_server(app, _config()) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(
+                b'POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\n'
+            )
+            await writer.drain()
+            await asyncio.wait_for(entered.wait(), 5)
+            await asyncio.wait_for(reader.readuntil(b'cancelled'), 5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    gc.collect()
+    assert len(references) == 1
+    assert references[0]() is None
+
+
+async def test_pending_callback_cycle_is_released_by_shutdown() -> None:
+    references = []
+    entered = asyncio.Event()
+    callback_ran = asyncio.Event()
+
+    async def app(scope, receive, send):
+        future = receive()
+        references.append(weakref.ref(future))
+
+        def done(_future, captured=future):
+            assert captured.done()
+            callback_ran.set()
+
+        future.add_done_callback(done)
+        entered.set()
+        await future
+
+    config = Config(
+        bind=('127.0.0.1:0',),
+        access_log=False,
+        lifespan='off',
+        timeout_graceful_shutdown=0,
+    )
+    writer = None
+    try:
+        async with running_server(app, config) as server:
+            _, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+            writer.write(
+                b'POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\n'
+            )
+            await writer.drain()
+            await asyncio.wait_for(entered.wait(), 5)
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+    await asyncio.wait_for(callback_ran.wait(), 5)
+    gc.collect()
+    assert len(references) == 1
+    assert references[0]() is None
 
 
 async def test_gather_with_receive_and_timer() -> None:

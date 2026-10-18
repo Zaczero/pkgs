@@ -10,7 +10,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 
 use crate::bridge::{
     EventSource, HttpInboundEvent, Requeueable, build_http_inbound_event,
-    parse_http_outbound_event, ready_awaitable, receive_or_await,
+    build_http_inbound_event_ref, parse_http_outbound_event, ready_awaitable, receive_or_await,
 };
 use crate::error::AsgiError;
 use crate::http::app::{HttpSendDisposition, HttpSendState};
@@ -411,7 +411,7 @@ impl PyHttpReceive {
                 }
             },
             HttpReceiveKind::Stream(state) => {
-                return receive_or_await(py, &self.shard, state, build_http_inbound_event);
+                return receive_or_await(py, &self.shard, state, build_http_inbound_event_ref);
             },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)
@@ -470,16 +470,12 @@ impl PyHttpSend {
 /// ASGI sends `http.disconnect` when the response has been fully sent or the
 /// client goes away — never merely because the body ran out. Answering at body
 /// EOF told an application watching for a departed peer that it had one.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "`fut` is the return value; it cannot be dropped before the function ends"
-)]
 fn disconnect_when_finished<'py>(
     py: Python<'py>,
     shard: &Shard,
     finished: &HttpSendState,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let fut = new_rust_future(py, Arc::clone(shard))?;
+    let fut = new_rust_future(py, shard)?;
     let waiter_fut = fut.clone_ref(py);
     let waiter_shard = Arc::clone(shard);
     // Registered rather than awaited in a spawned task: the response driver

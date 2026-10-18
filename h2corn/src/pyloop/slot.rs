@@ -92,17 +92,20 @@ impl<T: SlotValue, Guard> TaskSlot<T, Guard> {
 
     /// Fill the slot and wake its waiter, returning any outcome no waiter took.
     pub(crate) fn fill(&self, value: T) -> Result<(), T> {
-        let waker = {
+        let (waker, task) = {
             let mut state = self.state.lock();
             match &mut *state {
-                SlotState::Pending { waker, .. } => {
+                SlotState::Pending { waker, task } => {
                     let waker = waker.take();
+                    let task = task.take();
                     *state = SlotState::Done(value);
-                    waker
+                    drop(state);
+                    (waker, task)
                 },
                 SlotState::Done(_) | SlotState::Taken | SlotState::Abandoned => return Err(value),
             }
         };
+        drop(task);
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -231,6 +234,7 @@ impl<T: SlotValue, Guard> Drop for SlotFuture<T, Guard> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -238,6 +242,37 @@ mod tests {
 
     use super::{SlotAbandonment, SlotState, TaskSlot};
     use crate::pyloop::ShardHandle;
+
+    #[pyo3::pyclass]
+    struct SlotAnchor {
+        slot: Arc<TaskSlot<()>>,
+        dropped_outside_lock: Arc<AtomicBool>,
+    }
+
+    impl Drop for SlotAnchor {
+        fn drop(&mut self) {
+            self.dropped_outside_lock
+                .store(self.slot.state.try_lock().is_some(), Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn completion_releases_task_anchor_outside_slot_lock() {
+        Python::initialize();
+        Python::attach(|py| {
+            let slot = TaskSlot::<()>::new();
+            let dropped_outside_lock = Arc::new(AtomicBool::new(false));
+            let task = pyo3::Py::new(py, SlotAnchor {
+                slot: Arc::clone(&slot),
+                dropped_outside_lock: Arc::clone(&dropped_outside_lock),
+            })
+            .expect("task anchor");
+            assert!(slot.set_task(task.into_any()).is_none());
+            slot.fill(()).expect("completion");
+            assert!(dropped_outside_lock.load(Ordering::Relaxed));
+        });
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]

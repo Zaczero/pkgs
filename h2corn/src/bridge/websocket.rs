@@ -10,7 +10,8 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, wa
 
 use crate::bridge::{
     EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent,
-    build_websocket_inbound_event, parse_websocket_outbound_event, ready_none, receive_or_await,
+    build_websocket_inbound_event_ref, parse_websocket_outbound_event, ready_none,
+    receive_or_await,
 };
 use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, WebSocketFrameKind};
@@ -417,7 +418,12 @@ impl PyWebSocketReceive {
 #[pymethods]
 impl PyWebSocketReceive {
     fn __call__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        receive_or_await(py, &self.shard, &self.state, build_websocket_inbound_event)
+        receive_or_await(
+            py,
+            &self.shard,
+            &self.state,
+            build_websocket_inbound_event_ref,
+        )
     }
 }
 

@@ -840,21 +840,12 @@ impl<S: EventSource> Requeueable<S> {
 struct ReceiveResolve<S: EventSource> {
     event: S::Event,
     guard: OwnedMutexGuard<Requeueable<S>>,
-    build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
+    build_event: fn(Python<'_>, &S::Event) -> PyResult<Py<PyAny>>,
 }
 
 impl<S: EventSource> ResolveOp for ReceiveResolve<S> {
-    fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let Self {
-            event,
-            guard,
-            build_event,
-        } = *self;
-        let result = build_event(py, event);
-        // Resolution callbacks may immediately call receive() again. Release
-        // exclusive ownership before RustFuture invokes any of them.
-        drop(guard);
-        result
+    fn convert(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        (self.build_event)(py, &self.event)
     }
 
     fn requeue(self: Box<Self>) {
@@ -888,14 +879,14 @@ pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
     shard: &Shard,
     state: &Arc<Mutex<Requeueable<S>>>,
-    build_event: fn(Python<'_>, S::Event) -> PyResult<Py<PyAny>>,
+    build_event: fn(Python<'_>, &S::Event) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>>
 where
     S: EventSource,
 {
     let wait_signal = if let Ok(mut guard) = state.try_lock() {
         if let Some(event) = guard.try_next() {
-            return ready_awaitable(py, build_event(py, event)?);
+            return ready_awaitable(py, build_event(py, &event)?);
         }
         guard.wait_signal()
     } else {
@@ -913,7 +904,7 @@ where
     // Two references are intentional: Python owns the returned awaitable
     // while the pump owns its resolver until completion. Neither can be
     // dropped after the clone, so Clippy's merge suggestion is invalid here.
-    let fut = new_rust_future(py, Arc::clone(shard))?;
+    let fut = new_rust_future(py, shard)?;
     let waiter_fut = fut.clone_ref(py);
     let panic_fut = fut.clone_ref(py);
     let panic_shard = Arc::clone(shard);
@@ -947,65 +938,65 @@ pub(crate) fn build_http_inbound_event(
     py: Python<'_>,
     event: HttpInboundEvent,
 ) -> PyResult<Py<PyAny>> {
-    let (dict, credit) = match event {
+    let result = build_http_inbound_event_ref(py, &event);
+    if let HttpInboundEvent::Request {
+        credit: Some(credit),
+        ..
+    }
+    | HttpInboundEvent::RequestBatch {
+        credit: Some(credit),
+        ..
+    } = event
+    {
+        credit.release();
+    }
+    result
+}
+
+fn build_http_inbound_event_ref(py: Python<'_>, event: &HttpInboundEvent) -> PyResult<Py<PyAny>> {
+    let dict = match event {
         HttpInboundEvent::Request {
-            body,
-            more_body,
-            credit,
-        } => (
-            py_dict!(py, {
-                "type" => "http.request",
-                if !body.is_empty() => {
-                    "body" => PyBytes::new(py, body.as_ref()),
-                },
-                if more_body => {
-                    "more_body" => true,
-                },
-            }),
-            credit,
-        ),
+            body, more_body, ..
+        } => py_dict!(py, {
+            "type" => "http.request",
+            if !body.is_empty() => {
+                "body" => PyBytes::new(py, body.as_ref()),
+            },
+            if *more_body => {
+                "more_body" => true,
+            },
+        }),
         HttpInboundEvent::RequestBatch {
-            bodies,
-            body_bytes,
-            credit,
+            bodies, body_bytes, ..
         } => {
-            debug_assert_eq!(body_bytes, bodies.iter().map(Bytes::len).sum::<usize>());
-            let body = PyBytes::new_with_writer(py, body_bytes, |writer| {
+            debug_assert_eq!(*body_bytes, bodies.iter().map(Bytes::len).sum::<usize>());
+            let body = PyBytes::new_with_writer(py, *body_bytes, |writer| {
                 if let [first, second] = bodies.as_slice() {
                     writer.write_bytes(first.as_ref())?;
                     writer.write_bytes(second.as_ref())?;
                 } else {
-                    for body in &*bodies {
+                    for body in bodies {
                         writer.write_bytes(body.as_ref())?;
                     }
                 }
                 Ok(())
             })?;
-            (
-                py_dict!(py, {
-                    "type" => "http.request",
-                    "body" => body,
-                    "more_body" => true,
-                }),
-                credit,
-            )
-        },
-        HttpInboundEvent::HttpDisconnect => (
             py_dict!(py, {
-                "type" => "http.disconnect",
-            }),
-            None,
-        ),
+                "type" => "http.request",
+                "body" => body,
+                "more_body" => true,
+            })
+        },
+        HttpInboundEvent::HttpDisconnect => py_dict!(py, {
+            "type" => "http.disconnect",
+        }),
     };
-    if let Some(credit) = credit {
-        credit.release();
-    }
     Ok(dict.into_any().unbind())
 }
 
-pub(crate) fn build_websocket_inbound_event(
+fn build_websocket_inbound_event_ref(
     py: Python<'_>,
-    event: WebSocketInboundEvent,
+    event: &WebSocketInboundEvent,
 ) -> PyResult<Py<PyAny>> {
     let dict = match event {
         WebSocketInboundEvent::Connect => py_dict!(py, {
@@ -1022,7 +1013,7 @@ pub(crate) fn build_websocket_inbound_event(
         WebSocketInboundEvent::Disconnect { code, reason } => py_dict!(py, {
             "type" => "websocket.disconnect",
             "code" => code.get(),
-            if let Some(reason) = reason.filter(|reason| !reason.is_empty()) => {
+            if let Some(reason) = reason.as_ref().filter(|reason| !reason.is_empty()) => {
                 "reason" => reason.as_str(),
             },
         }),
@@ -1346,7 +1337,7 @@ fn await_send_result<F>(py: Python<'_>, shard: Shard, deliver: F) -> PyResult<Bo
 where
     F: Future<Output = bool> + Send + 'static,
 {
-    let fut = new_rust_future(py, Arc::clone(&shard))?;
+    let fut = new_rust_future(py, &shard)?;
     let waiter_fut = fut.clone_ref(py);
     let panic_fut = fut.clone_ref(py);
     let panic_shard = Arc::clone(&shard);

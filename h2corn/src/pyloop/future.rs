@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
-use pyo3::exceptions::{PyBaseException, PyStopIteration, PyTypeError};
+use pyo3::exceptions::{PyBaseException, PyRuntimeError, PyStopIteration, PyTypeError};
 use pyo3::prelude::*;
+use pyo3::pyclass::{PyTraverseError, PyVisit};
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTraceback, PyType};
 use smallvec::SmallVec;
@@ -34,19 +35,19 @@ pub(crate) enum ResolvePayload {
     Simple(Convert),
 }
 
-/// Exclusive either-convert-or-requeue ownership of a consumed event.
+/// Retains a consumed event until resolution commits or cancellation requeues it.
 pub(crate) trait ResolveOp: pyo3::marker::Ungil {
     /// Build the Python result under the GIL (e.g. the `http.request` dict).
-    fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>>;
+    fn convert(&self, py: Python<'_>) -> PyResult<Py<PyAny>>;
     /// Give the event back to its source after a cancellation race.
     fn requeue(self: Box<Self>);
 }
 
 impl ResolvePayload {
-    fn convert(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn convert(self, py: Python<'_>) -> (PyResult<Py<PyAny>>, Option<Box<dyn ResolveOp + Send>>) {
         match self {
-            Self::Op(op) => op.convert(py),
-            Self::Simple(convert) => convert(py),
+            Self::Op(op) => (op.convert(py), Some(op)),
+            Self::Simple(convert) => (convert(py), None),
         }
     }
 
@@ -64,6 +65,7 @@ enum FutureState {
         callbacks: Callbacks,
         callback_removal_revision: u64,
         abort: Option<AbortHandle>,
+        resolution_claimed: bool,
     },
     Ready(Py<PyAny>),
     Failed(Py<PyAny>),
@@ -74,11 +76,31 @@ enum FutureState {
 
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
 /// app task. Created pending; resolved exclusively by the pump.
-#[pyclass(frozen, name = "_RustFuture")]
+#[pyclass(frozen, weakref, name = "_RustFuture")]
 pub(crate) struct RustFuture {
     state: Mutex<FutureState>,
     blocking: AtomicBool,
-    shard: Shard,
+    event_loop: Mutex<Option<FutureLoop>>,
+}
+
+struct FutureLoop {
+    // These are per-future Python edges. Traversing a shared shard's edges
+    // once for each Rust Arc owner would overcount its Python references.
+    event_loop: Py<PyAny>,
+    call_soon: Py<PyAny>,
+}
+
+impl Drop for RustFuture {
+    fn drop(&mut self) {
+        // GC may clear another object in the cycle and deallocate this future
+        // without calling its tp_clear.
+        if let FutureState::Pending {
+            abort: Some(abort), ..
+        } = self.state.get_mut()
+        {
+            abort.abort();
+        }
+    }
 }
 
 impl RustFuture {
@@ -102,20 +124,16 @@ impl RustFuture {
     /// Pump-only: resolve and invoke stored callbacks directly. The caller
     /// must be a plain loop callback (never a running task).
     pub(super) fn resolve(self_: &Py<Self>, py: Python<'_>, payload: ResolvePayload) {
-        let callbacks = {
+        {
             let mut state = self_.get().state.lock();
             match &mut *state {
-                // Convert under the lock: all state transitions happen on
-                // the loop thread and `convert` builds plain objects (never
-                // re-entering this future), so no ordering window exists in
-                // which a cancellation could lose the event.
-                FutureState::Pending { callbacks, .. } => {
-                    let callbacks = mem::take(callbacks);
-                    *state = match payload.convert(py) {
-                        Ok(value) => FutureState::Ready(value),
-                        Err(err) => FutureState::Failed(err.value(py).clone().unbind().into_any()),
-                    };
-                    callbacks
+                FutureState::Pending {
+                    resolution_claimed, ..
+                } => {
+                    if *resolution_claimed {
+                        return;
+                    }
+                    *resolution_claimed = true;
                 },
                 // Cancelled while the payload was in flight: hand the event
                 // back so the next receive() observes it.
@@ -126,7 +144,31 @@ impl RustFuture {
                 },
                 FutureState::Ready(_) | FutureState::Failed(_) => return,
             }
+        }
+        // Allocation can run GC callbacks and finalizers, including cancel().
+        // Keep the raw event until publication decides whether it was accepted.
+        let (result, operation) = payload.convert(py);
+        let resolved = match result {
+            Ok(value) => FutureState::Ready(value),
+            Err(err) => FutureState::Failed(err.value(py).clone().unbind().into_any()),
         };
+        let callbacks = {
+            let mut state = self_.get().state.lock();
+            if let FutureState::Pending { callbacks, .. } = &mut *state {
+                let callbacks = mem::take(callbacks);
+                *state = resolved;
+                callbacks
+            } else {
+                drop(state);
+                if let Some(operation) = operation {
+                    operation.requeue();
+                }
+                return;
+            }
+        };
+        // Release the receive guard and flow-control credit before callbacks
+        // can immediately issue another receive().
+        drop(operation);
         for (callback, context) in callbacks {
             // Mirrors asyncio Handle semantics: run each callback in the
             // context captured at registration time.
@@ -147,17 +189,96 @@ impl RustFuture {
     }
 
     fn current_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &*self.state.lock() {
-            FutureState::Pending { .. } => Err(InvalidStateError::new_err("result is not set")),
-            FutureState::Ready(value) => Ok(value.clone_ref(py)),
-            FutureState::Failed(exc) => Err(PyErr::from_value(exc.bind(py).clone())),
-            FutureState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
+        let state = self.snapshot(py);
+        match state {
+            ResultSnapshot::Pending => Err(InvalidStateError::new_err("result is not set")),
+            ResultSnapshot::Ready(value) => Ok(value),
+            ResultSnapshot::Failed(exc) => Err(PyErr::from_value(exc.into_bound(py))),
+            ResultSnapshot::Cancelled(msg) => Err(cancelled_error(py, msg.as_ref())),
         }
     }
+
+    fn snapshot(&self, py: Python<'_>) -> ResultSnapshot {
+        match &*self.state.lock() {
+            FutureState::Pending { .. } => ResultSnapshot::Pending,
+            FutureState::Ready(value) => ResultSnapshot::Ready(value.clone_ref(py)),
+            FutureState::Failed(exc) => ResultSnapshot::Failed(exc.clone_ref(py)),
+            FutureState::Cancelled { msg } => {
+                ResultSnapshot::Cancelled(msg.as_ref().map(|msg| msg.clone_ref(py)))
+            },
+        }
+    }
+
+    fn schedule_done_callback(
+        &self,
+        py: Python<'_>,
+        callback: &Py<PyAny>,
+        future: &Bound<'_, PyAny>,
+        context: &Py<PyAny>,
+    ) -> PyResult<()> {
+        let call_soon = self
+            .event_loop
+            .lock()
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("future has been cleared"))?
+            .call_soon
+            .clone_ref(py);
+        let kwargs = PyDict::new(py);
+        kwargs.set_item(pyo3::intern!(py, "context"), context)?;
+        call_soon
+            .bind(py)
+            .call((callback.bind(py), future), Some(&kwargs))
+            .map(drop)
+    }
+}
+
+enum ResultSnapshot {
+    Pending,
+    Ready(Py<PyAny>),
+    Failed(Py<PyAny>),
+    Cancelled(Option<Py<PyAny>>),
 }
 
 #[pymethods]
 impl RustFuture {
+    #[expect(
+        clippy::same_name_method,
+        reason = "PyO3 requires this name for the generated GC traversal slot"
+    )]
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        match &*self.state.lock() {
+            FutureState::Pending { callbacks, .. } => {
+                for (callback, context) in callbacks {
+                    visit.call(callback)?;
+                    visit.call(context)?;
+                }
+            },
+            FutureState::Ready(value) | FutureState::Failed(value) => visit.call(value)?,
+            FutureState::Cancelled { msg } => visit.call(msg)?,
+        }
+        if let Some(event_loop) = &*self.event_loop.lock() {
+            visit.call(&event_loop.event_loop)?;
+            visit.call(&event_loop.call_soon)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&self) {
+        let state = mem::replace(&mut *self.state.lock(), FutureState::Cancelled {
+            msg: None,
+        });
+        let event_loop = self.event_loop.lock().take();
+        if let FutureState::Pending {
+            abort: Some(abort), ..
+        } = &state
+        {
+            abort.abort();
+        }
+        // Decrefs may reenter the cleared future.
+        drop(state);
+        drop(event_loop);
+    }
+
     #[getter("_asyncio_future_blocking")]
     fn blocking(&self) -> bool {
         self.blocking.load(Ordering::Relaxed)
@@ -168,8 +289,12 @@ impl RustFuture {
         self.blocking.store(value, Ordering::Relaxed);
     }
 
-    fn get_loop(&self, py: Python<'_>) -> Py<PyAny> {
-        self.shard.event_loop().clone_ref(py)
+    fn get_loop(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.event_loop
+            .lock()
+            .as_ref()
+            .map(|event_loop| event_loop.event_loop.clone_ref(py))
+            .ok_or_else(|| PyRuntimeError::new_err("future has been cleared"))
     }
 
     #[pyo3(signature = (callback, *, context = None))]
@@ -190,7 +315,9 @@ impl RustFuture {
                 return Ok(());
             }
         }
-        schedule_done_callback(&self_.get().shard, py, &callback, self_.as_any(), &context)
+        self_
+            .get()
+            .schedule_done_callback(py, &callback, self_.as_any(), &context)
     }
 
     fn remove_done_callback(&self, py: Python<'_>, callback: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -292,7 +419,9 @@ impl RustFuture {
         // cancel() is typically invoked from inside Task.__step — callbacks
         // MUST be deferred to a plain loop callback (`_enter_task` guard).
         for (callback, context) in callbacks {
-            schedule_done_callback(&self_.get().shard, py, &callback, self_.as_any(), &context)?;
+            self_
+                .get()
+                .schedule_done_callback(py, &callback, self_.as_any(), &context)?;
         }
         Ok(true)
     }
@@ -302,12 +431,11 @@ impl RustFuture {
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let state = self.state.lock();
-        match &*state {
-            FutureState::Pending { .. } => Err(InvalidStateError::new_err("exception is not set")),
-            FutureState::Ready(_) => Ok(None),
-            FutureState::Failed(exc) => Ok(Some(exc.clone_ref(py))),
-            FutureState::Cancelled { msg } => Err(cancelled_error(py, msg.as_ref())),
+        match self.snapshot(py) {
+            ResultSnapshot::Pending => Err(InvalidStateError::new_err("exception is not set")),
+            ResultSnapshot::Ready(_) => Ok(None),
+            ResultSnapshot::Failed(exc) => Ok(Some(exc)),
+            ResultSnapshot::Cancelled(msg) => Err(cancelled_error(py, msg.as_ref())),
         }
     }
 
@@ -441,36 +569,25 @@ fn copy_context(py: Python<'_>) -> PyResult<Py<PyAny>> {
 }
 
 /// Create a pending future plus its resolve handle.
-pub(crate) fn new_rust_future(py: Python<'_>, shard: Shard) -> PyResult<Py<RustFuture>> {
+pub(crate) fn new_rust_future(py: Python<'_>, shard: &Shard) -> PyResult<Py<RustFuture>> {
     Py::new(py, RustFuture {
         state: Mutex::new(FutureState::Pending {
             callbacks: SmallVec::new(),
             callback_removal_revision: 0,
             abort: None,
+            resolution_claimed: false,
         }),
         blocking: AtomicBool::new(false),
-        shard,
+        event_loop: Mutex::new(Some(FutureLoop {
+            event_loop: shard.event_loop().clone_ref(py),
+            call_soon: shard.call_soon().clone_ref(py),
+        })),
     })
 }
 
-/// Schedule `callback(future)` on the next loop iteration under `context`,
-/// matching asyncio.Future semantics (and the re-entrancy rule: done-future
-/// callbacks never run inline).
-fn schedule_done_callback(
-    shard: &Shard,
-    py: Python<'_>,
-    callback: &Py<PyAny>,
-    future: &Bound<'_, PyAny>,
-    context: &Py<PyAny>,
-) -> PyResult<()> {
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(pyo3::intern!(py, "context"), context)?;
-    shard
-        .call_soon()
-        .bind(py)
-        .call((callback.bind(py), future), Some(&kwargs))
-        .map(drop)
-}
+#[cfg(test)]
+#[path = "future_tests.rs"]
+mod ownership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -484,7 +601,7 @@ mod tests {
     use crate::pyloop::ShardHandle;
 
     fn run_throw_test(py: Python<'_>, test: &CStr) -> PyResult<()> {
-        let future = new_rust_future(py, ShardHandle::test_stub(py))?;
+        let future = new_rust_future(py, &ShardHandle::test_stub(py))?;
         let locals = PyDict::new(py);
         locals.set_item("future", &future)?;
         drop(future);
@@ -536,7 +653,7 @@ def assert_matches_native(*args):
     fn callback_equality_can_reenter_done() {
         Python::initialize();
         Python::attach(|py| {
-            let future = new_rust_future(py, ShardHandle::test_stub(py))
+            let future = new_rust_future(py, &ShardHandle::test_stub(py))
                 .expect("test future must be created");
             let locals = PyDict::new(py);
             locals
@@ -582,7 +699,7 @@ assert registered.observed_done is False
         if std::env::var_os(CHILD_MARKER).is_some() {
             Python::initialize();
             Python::attach(|py| {
-                let future = new_rust_future(py, ShardHandle::test_stub(py))
+                let future = new_rust_future(py, &ShardHandle::test_stub(py))
                     .expect("test future must be created");
                 let locals = PyDict::new(py);
                 locals
@@ -651,7 +768,7 @@ assert result.returncode == 0, (result.stdout, result.stderr)
     fn concurrent_add_survives_remove_snapshot() {
         Python::initialize();
         Python::attach(|py| {
-            let future = new_rust_future(py, ShardHandle::test_stub(py))
+            let future = new_rust_future(py, &ShardHandle::test_stub(py))
                 .expect("test future must be created");
             let locals = PyDict::new(py);
             locals
@@ -711,7 +828,7 @@ assert future.remove_done_callback(added_during_comparison) == 1
     fn concurrent_removals_commit_one_coherent_snapshot() {
         Python::initialize();
         Python::attach(|py| {
-            let future = new_rust_future(py, ShardHandle::test_stub(py))
+            let future = new_rust_future(py, &ShardHandle::test_stub(py))
                 .expect("test future must be created");
             let locals = PyDict::new(py);
             locals
@@ -767,7 +884,7 @@ assert sorted(removed_counts) == [0, 1]
     fn equality_error_does_not_partially_remove_callbacks() {
         Python::initialize();
         Python::attach(|py| {
-            let future = new_rust_future(py, ShardHandle::test_stub(py))
+            let future = new_rust_future(py, &ShardHandle::test_stub(py))
                 .expect("test future must be created");
             let locals = PyDict::new(py);
             locals
@@ -827,7 +944,8 @@ else:
                 .expect("test event loop must be created");
             let shard =
                 ShardHandle::from_event_loop(py, &event_loop).expect("test shard must be created");
-            let future = new_rust_future(py, shard).expect("test future must be created");
+            let future = new_rust_future(py, &shard).expect("test future must be created");
+            drop(shard);
             let locals = PyDict::new(py);
             locals
                 .set_item("future", &future)
